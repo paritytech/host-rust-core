@@ -3,6 +3,21 @@ import { err, ok, type Result, type ResultAsync } from "neverthrow";
 
 import { str, u8, type ResultPayload } from "./scale.js";
 
+/** Wire discriminant reserved for method-independent protocol errors. **/
+export const PROTOCOL_ERROR_ID = 255 as const;
+
+/** The peer rejected an outbound frame because it does not support its API. **/
+export class UnsupportedMessageError extends Error {
+  /** Wire discriminant of the unsupported outbound frame. **/
+  readonly discriminant: number;
+
+  constructor(discriminant: number) {
+    super(`Peer does not support wire message ${discriminant}`);
+    this.name = "UnsupportedMessageError";
+    this.discriminant = discriminant;
+  }
+}
+
 /**
  * Coerce an unknown thrown value into an `Error` instance.
  */
@@ -203,7 +218,14 @@ export interface SubscribeRawParams {
   onInterrupt?: (payload: Uint8Array) => void;
 
   /**
-   * Called when the underlying provider closes while the subscription is active.
+   * Called when the peer reports that it does not support this subscription's
+   * start frame.
+   **/
+  onUnsupported?: (error: UnsupportedMessageError) => void;
+
+  /**
+   * Called when a transport-level error terminates the subscription. Unsupported
+   * start frames use this callback when `onUnsupported` is absent.
    **/
   onClose?: (error: Error) => void;
 }

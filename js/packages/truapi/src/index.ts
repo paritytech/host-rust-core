@@ -15,7 +15,9 @@ export type {
 } from "./transport.js";
 export type { CreateTransportOptions } from "./client.js";
 export {
+  PROTOCOL_ERROR_ID,
   SubscriptionError,
+  UnsupportedMessageError,
   createIframeProvider,
   createMessagePortProvider,
   createWebSocketProvider,

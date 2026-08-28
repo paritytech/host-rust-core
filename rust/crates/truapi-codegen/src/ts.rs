@@ -9,6 +9,7 @@ use anyhow::{Result, bail};
 use convert_case::{Case, Casing};
 use indoc::{formatdoc, writedoc};
 
+use crate::RESERVED_PROTOCOL_ERROR_ID;
 use crate::rustdoc::*;
 
 mod examples;
@@ -583,7 +584,10 @@ fn method_wire_sort_id(method: &MethodDef) -> u8 {
 
 fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<String> {
     let wrappers = collect_versioned_wrappers(api);
-    let mut seen: BTreeMap<u8, String> = BTreeMap::new();
+    let mut seen = BTreeMap::from([(
+        RESERVED_PROTOCOL_ERROR_ID,
+        "reserved for protocol errors".to_string(),
+    )]);
     let mut constants: Vec<(String, ExpandedWireIds)> = Vec::new();
 
     for trait_def in &api.traits {
@@ -2831,6 +2835,62 @@ mod tests {
         .expect_err("duplicate ids must error");
 
         assert!(err.to_string().contains("wire id 3 reused"));
+    }
+
+    /// Discriminant 255 is reserved for protocol-level errors, so no API
+    /// method may claim it for any request, response, or subscription frame.
+    #[test]
+    fn generate_wire_table_reserves_protocol_error_id() {
+        let mut explicit_request = request_method("explicit_request", Some(255));
+        explicit_request.wire.response_id = Some(1);
+
+        let inferred_response = request_method("inferred_response", Some(254));
+
+        let mut explicit_response = request_method("explicit_response", Some(1));
+        explicit_response.wire.response_id = Some(255);
+
+        let mut explicit_start = subscription_method("explicit_start", Some(255));
+        explicit_start.wire.stop_id = Some(1);
+        explicit_start.wire.interrupt_id = Some(2);
+        explicit_start.wire.receive_id = Some(3);
+
+        let mut explicit_stop = subscription_method("explicit_stop", Some(1));
+        explicit_stop.wire.stop_id = Some(255);
+        explicit_stop.wire.interrupt_id = Some(2);
+        explicit_stop.wire.receive_id = Some(3);
+
+        let mut explicit_interrupt = subscription_method("explicit_interrupt", Some(1));
+        explicit_interrupt.wire.stop_id = Some(2);
+        explicit_interrupt.wire.interrupt_id = Some(255);
+        explicit_interrupt.wire.receive_id = Some(3);
+
+        let mut explicit_receive = subscription_method("explicit_receive", Some(1));
+        explicit_receive.wire.stop_id = Some(2);
+        explicit_receive.wire.interrupt_id = Some(3);
+        explicit_receive.wire.receive_id = Some(255);
+
+        let inferred_receive = subscription_method("inferred_receive", Some(252));
+
+        for method in [
+            explicit_request,
+            inferred_response,
+            explicit_response,
+            explicit_start,
+            explicit_stop,
+            explicit_interrupt,
+            explicit_receive,
+            inferred_receive,
+        ] {
+            let method_name = method.name.clone();
+            let error = generate_wire_table(&api(vec![method]), 2)
+                .expect_err(&format!("{method_name} must not allocate wire id 255"));
+            let message = error.to_string();
+            assert!(
+                message.contains("wire id 255 reused")
+                    && message.contains("reserved for protocol errors"),
+                "unexpected error for {method_name}: {message}",
+            );
+        }
     }
 
     #[test]

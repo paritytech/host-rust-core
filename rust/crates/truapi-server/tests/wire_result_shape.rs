@@ -26,7 +26,10 @@ use truapi::versioned::{Versioned, account, payment, statement_store};
 use truapi::{CallError, v01};
 
 use truapi_server::core::TrUApiCore;
-use truapi_server::frame::{Payload, ProtocolMessage, request_ids, subscription_ids};
+use truapi_server::frame::{
+    PROTOCOL_ERROR_ID, Payload, ProtocolErrorV1, ProtocolMessage, VersionedProtocolError,
+    request_ids, subscription_ids,
+};
 
 mod common;
 use common::{RecordingTransport, WireShapePlatform, test_runtime_config, test_spawner};
@@ -425,13 +428,34 @@ fn malformed_frames_are_dropped_without_panic() {
     assert!(
         futures::executor::block_on(core.receive_from_product(&[200u8 << 2, 0x61, 0x62])).is_none()
     );
+}
 
-    // A well-formed requestId envelope carrying an unknown wire discriminant.
-    let mut unknown_disc = Vec::new();
-    "p:1".to_string().encode_to(&mut unknown_disc);
-    unknown_disc.push(0xFA);
-    unknown_disc.extend_from_slice(&[0u8; 4]);
-    assert!(futures::executor::block_on(core.receive_from_product(&unknown_disc)).is_none());
+#[test]
+fn unknown_wire_discriminant_returns_correlated_protocol_error() {
+    let core = make_core();
+    let request = ProtocolMessage {
+        request_id: "p:unknown".into(),
+        payload: Payload {
+            id: 250,
+            value: vec![0, 0, 0, 0],
+        },
+    };
+    let response_bytes = futures::executor::block_on(core.receive_from_product(&request.encode()))
+        .expect("unknown message receives a protocol error");
+    let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
+    assert_eq!(
+        response,
+        ProtocolMessage {
+            request_id: "p:unknown".into(),
+            payload: Payload {
+                id: PROTOCOL_ERROR_ID,
+                value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                    discriminant: 250,
+                })
+                .encode(),
+            },
+        }
+    );
 }
 
 /// Drive a subscription through the encoded-frame boundary: `_start` yields

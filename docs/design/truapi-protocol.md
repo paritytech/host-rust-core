@@ -53,7 +53,7 @@ struct Message {
 
 Actions are not written by hand. They are derived mechanically from the TrUAPI methods, so the high-level method signature and the wire format can never drift apart. One method expands into several actions depending on its shape: a plain call becomes a request/response pair, while a subscription becomes a small lifecycle of start, stop, interrupt, and receive messages.
 
-Each action variant carries an explicit wire-protocol discriminant — its `request_id`, `response_id`, `start_id`, `stop_id`, `interrupt_id`, or `receive_id`. These ids are assigned per method in the `truapi` crate via the `#[wire(...)]` annotation. They are **append-only and never reused**: once an id ships it keeps its meaning forever, which is what lets a newer Host and an older Product still understand each other. The crate is the source of truth for their values.
+Each action variant carries an explicit wire-protocol discriminant, its `request_id`, `response_id`, `start_id`, `stop_id`, `interrupt_id`, or `receive_id`. These ids are assigned per method in the `truapi` crate via the `#[wire(...)]` annotation. They are **append-only and never reused**: once an id ships it keeps its meaning forever, which is what lets a newer Host and an older Product still understand each other. The crate is the source of truth for their values. Discriminant 255 is permanently reserved for protocol errors and cannot be assigned to an API method.
 
 Payloads are versioned independently of the action id, so a single message can evolve without renumbering anything around it. The current version `V1` encodes as discriminant `0`:
 
@@ -122,6 +122,12 @@ A single byte channel carries every call in both directions at once, so the two 
 #### Requests
 
 Every request expects exactly one response. Each Host or Product MUST send a response message for every request it receives, and the request and its response MUST share the same `requestId` — so the caller can match a reply to the call it made even with many calls in flight.
+
+If a Host has no handler for an incoming Product discriminant, it MUST send a protocol-error frame with discriminant 255 and the same `requestId`. The codec-version-1 payload is `V1(UnsupportedMessage { discriminant })`, encoded as the three bytes `[0, 0, unsupported_discriminant]`. The Product maps this method-independent response to its own pending request or subscription and reports a generic unsupported error.
+
+A protocol-error frame MUST NOT receive another protocol-error response. An unmatched error is ignored, while a malformed protocol-error payload closes the transport as a wire violation. These rules prevent error loops without hiding malformed control messages.
+
+Hosts released before this control frame was introduced still silently drop unknown discriminants. They must be upgraded once before they can safely reject APIs introduced by later packages. Existing API frames and codec version 1 remain unchanged.
 
 #### Subscription
 

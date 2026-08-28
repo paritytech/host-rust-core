@@ -3,6 +3,7 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
+  PROTOCOL_ERROR_ID,
   type HostInitiatedSubscriptionHandler,
   type ObservableSource,
   type ProtocolMessage,
@@ -13,6 +14,7 @@ import {
   type SubscribeRawParams,
   type Subscription,
   type TrUApiTransport,
+  UnsupportedMessageError,
   type WireProvider,
 } from "./transport.js";
 import {
@@ -145,6 +147,25 @@ function unwrapVersionedWireValue(value: unknown): unknown {
   return isVersionedWireValue(value) ? value.value : value;
 }
 
+function decodeUnsupportedMessage(payload: Uint8Array): number {
+  if (payload.length !== 3) {
+    throw new Error(
+      `Malformed protocol error payload: expected 3 bytes, received ${payload.length}`,
+    );
+  }
+  if (payload[0] !== 0) {
+    throw new Error(
+      `Malformed protocol error payload: unsupported version ${payload[0]}`,
+    );
+  }
+  if (payload[1] !== 0) {
+    throw new Error(
+      `Malformed protocol error payload: unknown error discriminant ${payload[1]}`,
+    );
+  }
+  return payload[2];
+}
+
 /**
  * Build a `TrUApiTransport` on top of a `WireProvider`, adding request/response
  * correlation and subscription start/receive/stop lifecycle handling.
@@ -161,6 +182,7 @@ export function createTransport(
     {
       ids: RequestFrameIds;
       resolve: (value: Uint8Array) => void;
+      resolveUnsupported: () => void;
       reject: (error: Error) => void;
     }
   >();
@@ -170,6 +192,7 @@ export function createTransport(
       ids: SubscriptionFrameIds;
       onReceive: (payload: Uint8Array) => void;
       onInterrupt?: (payload: Uint8Array) => void;
+      onUnsupported?: (error: UnsupportedMessageError) => void;
       onClose?: (error: Error) => void;
     }
   >();
@@ -237,6 +260,32 @@ export function createTransport(
       return;
     }
     const { requestId, payload } = decoded.value;
+
+    if (payload.id === PROTOCOL_ERROR_ID) {
+      let discriminant: number;
+      try {
+        discriminant = decodeUnsupportedMessage(payload.value);
+      } catch (error) {
+        closeWithError(error);
+        return;
+      }
+
+      const request = pending.get(requestId);
+      if (request?.ids.request === discriminant) {
+        pending.delete(requestId);
+        request.resolveUnsupported();
+        return;
+      }
+
+      const subscription = subscriptions.get(requestId);
+      if (subscription?.ids.start === discriminant) {
+        subscriptions.delete(requestId);
+        const error = new UnsupportedMessageError(discriminant);
+        if (subscription.onUnsupported) subscription.onUnsupported(error);
+        else subscription.onClose?.(error);
+      }
+      return;
+    }
 
     if (payload.id === W.SYSTEM_HANDSHAKE.request) {
       // Auto-respond to inbound `host_handshake_request` frames.
@@ -458,6 +507,11 @@ export function createTransport(
         pending.set(requestId, {
           ids,
           resolve: (response) => resolve(decodeResponse(response)),
+          resolveUnsupported: () =>
+            resolve({
+              success: false,
+              value: { tag: "Unsupported" } as Err,
+            }),
           reject,
         });
         try {
@@ -487,6 +541,7 @@ export function createTransport(
       payload,
       onReceive,
       onInterrupt,
+      onUnsupported,
       onClose,
     }: SubscribeRawParams) {
       if (closedError) {
@@ -499,6 +554,7 @@ export function createTransport(
         ids,
         onReceive,
         onInterrupt,
+        onUnsupported,
         onClose,
       });
       try {
