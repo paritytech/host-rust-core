@@ -85,11 +85,9 @@ fn exec_explains_how_to_pair_when_qr_scanning_has_no_terminal_ui() {
         .expect("reject QR scanning outside the terminal UI");
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(
-            "QR scanning needs an interactive signing host; use /pair <polkadotapp://pair?...>"
-        )
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "QR scanning needs an interactive signing host; use /pair <polkadotapp://pair?...>"
+    ));
 }
 
 #[test]

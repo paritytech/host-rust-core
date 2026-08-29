@@ -78,6 +78,16 @@ test("offers every source and removes the capability from browser history", asyn
   await expect(page).toHaveURL(`${scannerUrl}/`);
 });
 
+test("rejects an invalid or expired capability before choosing a source", async ({ page }) => {
+  await page.goto(`${scannerUrl}/#not-a-capability`);
+
+  await expect(page.locator("body")).toHaveAttribute("data-state", "expired");
+  await expect(
+    page.getByText("This scanner link is invalid or expired. Run /pair again in the terminal."),
+  ).toBeVisible();
+  await expect(page).toHaveURL(`${scannerUrl}/`);
+});
+
 test("recovers from denied camera access with an actionable alternative", async ({ page }) => {
   await page.addInitScript(() => {
     const denied = new DOMException("denied", "NotAllowedError");
@@ -120,6 +130,20 @@ test("sends a bounded grayscale image and completes without exposing the deeplin
   expect(lastFrame?.readUInt32LE(0)).toBe(1);
   expect(lastFrame?.readUInt32LE(4)).toBe(1);
   expect(lastFrame).toHaveLength(9);
+});
+
+test("identifies a lost terminal connection instead of blaming the image", async ({ page }) => {
+  frameStatus = 500;
+  await page.goto(`${scannerUrl}/#${TOKEN}`);
+
+  await page.locator("#image-file").setInputFiles({
+    name: "pairing.png",
+    mimeType: "image/png",
+    buffer: ONE_PIXEL_PNG,
+  });
+
+  await expect(page.locator("body")).toHaveAttribute("data-state", "expired");
+  await expect(page.getByText("The scanner lost its connection to the terminal.")).toBeVisible();
 });
 
 test("cancels the terminal scan and leaves a clear final state", async ({ page }) => {

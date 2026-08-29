@@ -102,6 +102,8 @@
     let scanTimer = null;
     let frameRequest = null;
 
+    class ScannerConnectionError extends Error {}
+
     const authenticatedHeaders = {
       Authorization: `Bearer ${token}`,
     };
@@ -216,6 +218,9 @@
           body: frame,
           signal: frameRequest.signal,
         });
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        throw new ScannerConnectionError();
       } finally {
         if (expectedGeneration === generation) frameRequest = null;
       }
@@ -224,7 +229,7 @@
       if (response.status === 409) return "multiple";
       if (response.status === 422) return "unrelated";
       if (response.status === 410) return "expired";
-      throw new Error(`scanner returned ${response.status}`);
+      throw new ScannerConnectionError();
     }
 
     function scheduleScan(expectedGeneration) {
@@ -343,6 +348,10 @@
         showPicker("Choose another image or source.");
       } catch (error) {
         if (expectedGeneration !== generation || error?.name === "AbortError") return;
+        if (error instanceof ScannerConnectionError) {
+          expire("The scanner lost its connection to the terminal.");
+          return;
+        }
         showAlert("The image could not be read. Choose another image.");
         showPicker("Choose another image or source.");
       }
