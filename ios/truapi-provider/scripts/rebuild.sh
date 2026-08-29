@@ -5,7 +5,8 @@
 #     (Sources/TrUAPIProvider + Sources/truapi_providerFFI)
 #
 # Run after changing the crate's uniffi surface or refreshing the bundled chain
-# specs, and commit the regenerated bindings with the source change.
+# specs. The outputs are gitignored, so the package's Swift target does not
+# exist until this has run.
 # Usage: ./scripts/rebuild.sh [--sim-only]
 #
 # --sim-only drops the device slice for a faster loop; publish.sh rejects the

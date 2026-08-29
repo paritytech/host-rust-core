@@ -95,8 +95,9 @@ scripts/battery.sh         Run the generated battery against both headless CLI h
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
 manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
-dependency. Its `scripts/rebuild.sh` regenerates the committed bindings and
-container bundle (`make xcframework` + `make uniffi`); see
+dependency. The UniFFI bindings and the container bundle are gitignored build
+outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
+(`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.

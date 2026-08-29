@@ -62,7 +62,9 @@ android/truapi-host/src/main/jniLibs/
 android/truapi-provider/src/main/kotlin/generated/
 android/truapi-provider/src/main/jniLibs/
 # UniFFI Swift bindings and the bundled container script
-ios/truapi-host/Sources/TrUAPIHost/truapi*.swift
+ios/truapi-host/Sources/TrUAPIHost/truapi.swift
+ios/truapi-host/Sources/TrUAPIHost/truapi_platform.swift
+ios/truapi-host/Sources/TrUAPIHost/truapi_server.swift
 ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 ios/truapi-host/Sources/truapiFFI/
 ios/truapi-host/Sources/truapi_platformFFI/

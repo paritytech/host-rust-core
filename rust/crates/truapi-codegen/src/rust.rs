@@ -22,7 +22,8 @@ pub use dispatcher::generate_dispatcher;
 pub use wasm_bridge::generate_wasm_bridge;
 pub use wire_table::generate_wire_table;
 
-/// Generates the Rust wire dispatcher and wire-table sources into `output_dir`.
+/// Generates the `truapi-server` wire dispatcher, wire table, and the `mod.rs`
+/// that declares them, into `output_dir`.
 pub fn generate(api: &ApiDefinition, output_dir: &Path) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     fs::write(
@@ -35,6 +36,8 @@ pub fn generate(api: &ApiDefinition, output_dir: &Path) -> Result<()> {
     fs::write(output_dir.join("wire_table.rs"), wire_table)?;
     Ok(())
 }
+
+/// Generates the Rust wasm-bindgen platform bridge source into `output_dir`.
 pub fn generate_wasm_bridge_file(
     definition: &PlatformDefinition,
     api: &ApiDefinition,

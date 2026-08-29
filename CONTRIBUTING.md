@@ -70,10 +70,14 @@ the full list of targets.
 ### Getting started
 
 ```bash
-make setup    # submodules + JS dependencies
-make codegen # generated Rust/TS/iOS outputs (git-ignored, regenerated from the Rust crates)
+make setup    # submodules, JS dependencies, and the generated outputs
 make build    # Rust workspace + TypeScript client
 ```
+
+The generated Rust, TypeScript and Swift outputs are git-ignored, so a fresh
+checkout has none of them and `truapi-server` does not compile until they
+exist. `make setup` produces them; `make codegen` regenerates them on their
+own.
 
 ### Making changes to the API
 
@@ -91,7 +95,9 @@ make playground   # rebuild the playground against the refreshed snapshot
 make test     # Rust + TypeScript client tests
 make check    # full suite: build, fmt, clippy, test, TS tests, playground build + lint
 ```
-`make build` and `make check` invoke `make check-generated` first, so a missing codegen output yields a hint to run `make codegen`.
+Every target that compiles `truapi-server` depends on `check-generated`, so a
+missing generated file names itself and points at `make codegen` instead of
+failing inside rustc.
 
 ## Pull requests
 

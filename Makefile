@@ -34,11 +34,18 @@ export VITE_NETWORKS
 # preview behavior.
 DOTLI_PREVIEW ?= preview:debug
 
+# truapi-server declares these modules unconditionally, so the crate does not
+# parse without them. They are gitignored and produced by scripts/codegen.sh.
+GENERATED_RUST := \
+	rust/crates/truapi-server/src/generated/mod.rs \
+	rust/crates/truapi-server/src/generated/dispatcher.rs \
+	rust/crates/truapi-server/src/generated/wire_table.rs \
+	rust/crates/truapi-server/src/wasm/generated_bridge.rs
+
 check-generated:
-	@test -f rust/crates/truapi-server/src/generated/dispatcher.rs \
-		|| { echo "Missing generated outputs. Run: make codegen"; exit 1; }
-	@test -f rust/crates/truapi-server/src/wasm/generated_bridge.rs \
-		|| { echo "Missing generated outputs. Run: make codegen"; exit 1; }
+	@for file in $(GENERATED_RUST); do \
+		test -f "$$file" || { echo "Missing $$file. Run: make codegen"; exit 1; }; \
+	done
 
 help: ## Show this help.
 	@awk 'BEGIN { FS = ":.*##"; printf "Usage: make <target>\n\nTargets:\n" } \
@@ -55,13 +62,12 @@ setup: ## First-time setup: submodules, JS dependencies, generated artifacts.
 	cd $(DOTLI) && bun install --frozen-lockfile
 	$(MAKE) dotli-link
 
-build: ## Build the Rust workspace and the TypeScript client.
-	@make check-generated
+build: check-generated ## Build the Rust workspace and the TypeScript client.
 	cargo build --workspace
 	cd $(TRUAPI_PKG) && npm run build
 	cd $(HOST_WASM_PKG) && npm run build
 
-headless: ## Build the truapi-host CLI and generated TypeScript client.
+headless: check-generated ## Build the truapi-host CLI and generated TypeScript client.
 	# The client build shells out to tsc, which `ensure-generated.sh` looks for at
 	# the root or in the package. Install workspace deps when neither is present so
 	# this target works on a checkout that has not run `make setup`.
@@ -106,7 +112,7 @@ $(CLI_RUNNER):
 
 cli-runner: $(CLI_RUNNER) ## Bundle the self-contained product-script runner into target/dist.
 
-cli-dist: $(CLI_RUNNER) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
+cli-dist: check-generated $(CLI_RUNNER) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
 	rustup target add $(CLI_TARGET)
 	$(CARGO) build -p truapi-host-cli --release --target $(CLI_TARGET)
 	rm -rf $(CLI_STAGE)
@@ -120,7 +126,7 @@ codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 	./scripts/codegen.sh
 	cd $(PLAYGROUND) && rm -rf node_modules/@parity && yarn install
 
-wasm: ## Rebuild the truapi-server and truapi-provider WASM bundles under js/packages/*/dist/.
+wasm: check-generated ## Rebuild the truapi-server and truapi-provider WASM bundles under js/packages/*/dist/.
 	cd $(HOST_WASM_PKG) && npm run build:wasm
 	cd $(PROVIDER_WASM_PKG) && npm run build:wasm
 
@@ -143,9 +149,9 @@ PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.so
 endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
-PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-check
+PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-out
 
-uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
+uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
 	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
@@ -236,7 +242,7 @@ ios-chat-all: ios-chat-run ios-chat-host-playground-run ## Run both local iOS Ch
 
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 
-uniffi-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-server cdylib.
+uniffi-kotlin: check-generated ## Regenerate Kotlin UniFFI bindings from the truapi-server cdylib.
 	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_KOTLIN_OUT)
 	mkdir -p $(UNIFFI_KOTLIN_OUT)
@@ -250,7 +256,7 @@ uniffi-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-server cdyli
 ANDROID_ABIS ?= arm64-v8a armeabi-v7a x86_64
 ANDROID_JNILIBS := android/truapi-host/src/main/jniLibs
 
-android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
+android-jni: check-generated ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
 	@command -v cargo-ndk >/dev/null || { echo "cargo-ndk not found: cargo install cargo-ndk"; exit 1; }
 	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
 		-o $(ANDROID_JNILIBS) \
@@ -281,16 +287,6 @@ provider-swift: ## Generate the TrUAPIProvider Swift bindings into target/uniffi
 		--language swift \
 		--out-dir $(PROVIDER_SWIFT_TMP)
 
-provider-swift-check: provider-swift ## Fail if the committed TrUAPIProvider bindings are stale.
-	@diff -u ios/truapi-provider/Sources/TrUAPIProvider/truapi_provider.swift \
-		$(PROVIDER_SWIFT_TMP)/truapi_provider.swift \
-		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/truapi_providerFFI.h \
-		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.h \
-		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/module.modulemap \
-		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.modulemap \
-		&& echo "Committed TrUAPIProvider bindings are current." \
-		|| { echo "Committed TrUAPIProvider bindings are stale: run 'make provider-ios'."; exit 1; }
-
 provider-ios: ## Build the TrUAPIProvider Swift bindings + xcframework (adds --sim-only via SIM_ONLY=1).
 	bash ios/truapi-provider/scripts/rebuild.sh $(if $(SIM_ONLY),--sim-only,)
 
@@ -317,13 +313,12 @@ provider-android-check: provider-kotlin ## Compile the provider Kotlin bindings 
 provider-android-publish-local: provider-kotlin provider-android-jni ## Publish the self-contained provider AAR (bindings + cdylib) to ~/.m2.
 	gradle :truapi-provider:publishReleasePublicationToMavenLocal
 
-test: ## Run Rust + TypeScript client tests.
+test: check-generated ## Run Rust + TypeScript client tests.
 	cargo test --workspace
 	cd $(TRUAPI_PKG) && npm test
 	cd $(HOST_WASM_PKG) && npm run build && npm test
 
-check: ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
-	@make check-generated
+check: check-generated ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
 	cargo build --workspace
 	cargo check --target wasm32-unknown-unknown -p truapi-server
 	cargo +nightly fmt --check

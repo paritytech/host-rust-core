@@ -345,6 +345,11 @@ jobs:
         with:
           node-version: "22"
 
+      # codegen.sh formats its generated Rust with `cargo +nightly fmt`.
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+          components: rustfmt
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           toolchain: stable
@@ -353,14 +358,17 @@ jobs:
         with:
           shared-key: ios-host-release
 
-      - name: Rebuild iOS host
+      # truapi-server declares its generated modules unconditionally and they are
+      # gitignored, so the crate does not compile until codegen has run.
+      - name: Generate the Rust codegen output
         run: |
-          set -euo pipefail
-          ./ios/truapi-host/scripts/rebuild.sh
-          if ! git diff --exit-code; then
-            echo "::error::The release commit has stale generated iOS host outputs. Run ios/truapi-host/scripts/rebuild.sh and commit them."
-            exit 1
-          fi
+          npm ci --ignore-scripts
+          TRUAPI_SKIP_PACKAGE_BUILD=1 ./scripts/codegen.sh
+
+      # rebuild.sh regenerates the bindings, xcframework and container bundle
+      # in place. They are gitignored, so there is nothing to diff against.
+      - name: Rebuild iOS host
+        run: ./ios/truapi-host/scripts/rebuild.sh
 
       - name: Test local XCFramework in the simulator
         env:

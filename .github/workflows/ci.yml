@@ -127,9 +127,6 @@ jobs:
       - name: Install workspace deps
         run: npm ci --ignore-scripts
 
-      - name: Run codegen
-        run: ./scripts/codegen.sh
-
       - name: Check no generated outputs are committed
         run: |
           committed="$(git ls-files -ci --exclude-standard)"
@@ -138,6 +135,9 @@ jobs:
             echo "Generated outputs above are committed. Untrack them with 'git rm --cached'." >&2
             exit 1
           fi
+
+      - name: Run codegen
+        run: ./scripts/codegen.sh
 
       - name: Check Rust/TS wire table parity
         run: TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity
@@ -160,6 +160,7 @@ jobs:
 
   ios-bindings:
     name: iOS bindings (uniffi)
+    needs: codegen
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,6 +173,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
+      # truapi-server declares its generated modules unconditionally, so the
+      # cdylib bindgen builds from does not compile without the codegen output.
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
+      # Swift bindgen is pure Rust codegen, so this needs neither Xcode nor the
+      # iOS targets, unlike rebuild.sh which also builds the xcframework. It
+      # gates that every UniFFI-exposed type still has a binding representation.
       - name: Generate Swift bindings
         run: make uniffi
 
@@ -196,10 +207,10 @@ jobs:
       # ios-swift on the output. On pull_request the checkout is the merge
       # commit, so HEAD^1 is the base. Other events always run the gate.
       #
-      # The list needs no broader rust/ entry: the generated bindings are
-      # committed under ios/, and ios-bindings runs unconditionally, so a Rust
-      # change that moves the UniFFI surface either carries an ios/ change or
-      # fails there first.
+      # The bindings are generated, not committed, so a UniFFI surface change
+      # leaves no ios/ diff to key on. The list therefore names every crate the
+      # bindings are generated from, plus js/container, which is compiled into
+      # the TrUAPIHost target as a resource.
       - name: Detect iOS-relevant changes
         id: filter
         run: |
@@ -209,7 +220,7 @@ jobs:
             exit 0
           fi
           if git diff --name-only HEAD^1 HEAD \
-            | grep -qE '^(ios/|Package\.swift$|Makefile$|rust/crates/truapi-server/src/native|rust/crates/truapi-provider/)'; then
+            | grep -qE '^(ios/|Package\.swift$|Makefile$|js/container/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/)'; then
             echo "ios=true" >> "$GITHUB_OUTPUT"
           else
             echo "ios=false" >> "$GITHUB_OUTPUT"
@@ -217,7 +228,7 @@ jobs:
 
   ios-swift:
     name: iOS package (swift compile)
-    needs: ios-changes
+    needs: [ios-changes, codegen]
     if: needs.ios-changes.outputs.ios == 'true'
     runs-on: macos-15
     timeout-minutes: 30
@@ -230,6 +241,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           toolchain: stable
@@ -239,6 +254,11 @@ jobs:
         with:
           shared-key: ios-swift-gate
 
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
       # Simulator slice only, debug profile. This gate compiles Swift and ships
       # no binary, so the device slice and release codegen are waste. The
       # published binary is older than the current Rust surface, so
@@ -246,8 +266,21 @@ jobs:
       - name: Build the simulator XCFramework
         run: make xcframework XCFRAMEWORK_TARGETS=aarch64-apple-ios-sim XCFRAMEWORK_PROFILE=debug
 
+      # make xcframework leaves the bindings in target/uniffi-swift-out; the
+      # package's Swift targets are gitignored, so they only exist once this
+      # copies them in.
+      - name: Sync the generated Swift bindings into the package
+        run: ./ios/truapi-host/scripts/sync-bindings.sh
+
       - name: Stage it into the package
         run: ./ios/truapi-host/scripts/stage-xcframework.sh
+
+      # TrUAPIHost declares Resources/truapi-container.js as a .copy resource,
+      # so SwiftPM refuses to resolve the package until this exists.
+      - name: Build the lockdown container bundle
+        run: |
+          npm --prefix js/container install --no-fund --no-audit
+          npm --prefix js/container run build
 
       - name: Build the simulator XCFramework for TrUAPIProvider
         run: PROFILE=debug ./ios/truapi-provider/scripts/rebuild.sh --sim-only
