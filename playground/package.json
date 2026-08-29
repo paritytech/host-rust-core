@@ -17,7 +17,6 @@
     "deploy:test": "yarn build && bulletin-deploy ./out truapi-playground --content-only && rm out.car",
     "lint:fix": "next lint --fix",
     "test:unit": "bun test tests/unit",
-    "test:qr-scanner": "playwright test --config playwright.qr-scanner.config.ts",
     "e2e": "playwright test",
     "e2e:cli": "TRUAPI_E2E_HOST=cli playwright test --config playwright.cli.config.ts",
     "e2e:cli-diagnosis": "bun tests/e2e/cli-diagnosis.ts",

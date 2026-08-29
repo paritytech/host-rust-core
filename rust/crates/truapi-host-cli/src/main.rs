@@ -3192,6 +3192,13 @@ async fn signing_interactive_loop(
                 }
             }
             ShellCommand::Quit => return Ok(None),
+            ShellCommand::Pair(PairCommand::Scan) => {
+                let image = match ui.read_pairing_image().await? {
+                    DriveResult::Complete(image) => image,
+                    DriveResult::Cancelled => continue,
+                };
+                run_interactive_pasted_pairing_image(session, image, &mut ui).await?;
+            }
             ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
                 Ok(script) => {
                     let product_id = product.current();
@@ -3252,6 +3259,36 @@ async fn run_interactive_operation(
     Ok(())
 }
 
+async fn run_interactive_pasted_pairing_image(
+    session: &mut SigningHostSession,
+    image: qr_scanner::RgbaFrame,
+    ui: &mut ActiveTerminalUi,
+) -> Result<()> {
+    let activity_checkpoint = ui.activity_checkpoint();
+    let operation = async {
+        let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode(&image))
+            .await
+            .context("join QR image decoder")??;
+        start_deeplink_responder(session, deeplink).await
+    };
+    match ui.drive("/pair", operation).await? {
+        DriveResult::Complete(Ok(())) => {}
+        DriveResult::Complete(Err(error)) => {
+            ui.finish_activities_since(
+                activity_checkpoint,
+                ActivityState::Failed,
+                "Stopped after an error",
+            );
+            ui.error_with_causes(&error);
+        }
+        DriveResult::Cancelled => {
+            ui.finish_activities_since(activity_checkpoint, ActivityState::Cancelled, "Cancelled");
+            ui.error("command cancelled");
+        }
+    }
+    Ok(())
+}
+
 async fn execute_interactive_operation(
     session: &mut SigningHostSession,
     frame_url: &str,
@@ -3263,26 +3300,14 @@ async fn execute_interactive_operation(
         ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
             start_deeplink_responder(session, deeplink).await?
         }
+        ShellCommand::Pair(PairCommand::Image(path)) => {
+            let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode_path(&path))
+                .await
+                .context("join QR image decoder")??;
+            start_deeplink_responder(session, deeplink).await?;
+        }
         ShellCommand::Pair(PairCommand::Scan) => {
-            let scanner = qr_scanner::ScannerServer::bind().await?;
-            let launch_url = scanner.launch_url();
-            let manual_url = match qr_scanner::open_browser(&launch_url).await {
-                Ok(()) => None,
-                Err(error) => {
-                    tracing::warn!(%error, "could not open the QR scanner browser");
-                    Some(launch_url)
-                }
-            };
-            ui.event(SystemEvent::QrScannerReady { manual_url });
-            match scanner.scan().await? {
-                qr_scanner::ScanOutcome::Deeplink(deeplink) => {
-                    ui.event(SystemEvent::QrScannerCodeRead);
-                    start_deeplink_responder(session, deeplink).await?;
-                }
-                qr_scanner::ScanOutcome::Cancelled => {
-                    ui.event(SystemEvent::QrScannerCancelled);
-                }
-            }
+            bail!("clipboard image paste must be handled by the terminal UI")
         }
         ShellCommand::Script(Some(script)) => {
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
@@ -3339,8 +3364,14 @@ async fn execute_non_interactive_command(
         ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
             respond_to_deeplink(session, deeplink).await?
         }
+        ShellCommand::Pair(PairCommand::Image(path)) => {
+            let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode_path(&path))
+                .await
+                .context("join QR image decoder")??;
+            respond_to_deeplink(session, deeplink).await?
+        }
         ShellCommand::Pair(PairCommand::Scan) => bail!(
-            "QR scanning needs an interactive signing host; use /pair <polkadotapp://pair?...>"
+            "clipboard image paste needs an interactive signing host; use /pair <image-path> or /pair <polkadotapp://pair?...>"
         ),
         ShellCommand::Script(script) => {
             let script = match script {

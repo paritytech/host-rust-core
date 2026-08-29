@@ -527,7 +527,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
-| `/pair` | no | yes | Open the local pairing QR scanner. TUI only. |
+| `/pair` | no | yes | Wait for a copied pairing QR image and read it on Ctrl-V. TUI only. |
+| `/pair <image-path>` | no | yes | Decode a pairing QR from a PNG, JPEG, or WebP image. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
@@ -551,7 +552,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 
 The shared parser recognizes every command, then the active role rejects
 commands it cannot execute. `/pair <url>` performs a fast prefix check; the
-Rust core then fully decodes and validates the V2 handshake.
+Rust core then fully decodes and validates the V2 handshake. Any other single
+quoted or escaped `/pair` argument is treated as an image path.
 
 `/devices` and `/devices --list` are equivalent. They sort peers by statement
 account ID and print each ID with any available host and platform metadata.
@@ -563,54 +565,46 @@ Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
 produce explicit errors.
 
-### 8.1 Pairing QR scanner
+### 8.1 Pairing QR image input
 
-Bare `/pair` is available only in the interactive signing-host TUI. It:
+Bare `/pair` is available only in the interactive signing-host TUI. It starts a
+terminal waiting state that instructs the operator to copy the QR image and
+press Ctrl-V. The TUI reads RGBA pixels directly from the operating-system
+clipboard. It does not depend on bracketed text paste, tmux clipboard forwarding,
+or a terminal-specific image escape protocol. A text paste during this state is
+rejected with instructions to copy the image itself or use an image path.
 
-1. binds a new IPv4 loopback listener on an operating-system-selected port;
-2. generates a 256-bit capability token and an independent content-security
-   policy nonce;
-3. asks the operating system to open the scanner URL in the default browser;
-4. shows that URL in the terminal only when automatic opening fails;
-5. accepts grayscale frames until it decodes exactly one valid
-   `polkadotapp://pair?handshake=...` proposal or receives cancellation; and
-6. passes the decoded deeplink to the same pairing responder used by
-   `/pair <url>`.
+`/pair <image-path>` reads a PNG, JPEG, or WebP file in either interactive or
+one-shot mode. Quoting and terminal-style path escaping are supported. Clipboard
+and file pixels remain in memory and are not written to a temporary file.
 
-The browser page offers app or screen capture, camera capture, and pasted,
-dropped, or selected PNG, JPEG, WebP, or AVIF images. Live sources show a
-preview and submit no more than one frame at a time. Frames are scaled to at
-most 1280 pixels per edge before conversion to grayscale. Image files larger
-than 20 MiB are rejected by the page.
+Before decoding, the implementation enforces all of these boundaries:
 
-The scanner distinguishes no QR code, an unrelated QR code, and more than one
-valid pairing code. Live capture continues after each of those conditions.
-Selected images return to the source picker with an actionable explanation.
-Permission denial, unavailable or busy cameras, ended capture streams, and a
-lost terminal connection also return clear recovery text. Switching sources,
-cancelling, completing, or leaving the page stops all media tracks and aborts
-the active frame request.
+- nonzero dimensions of at most 8192 pixels per edge;
+- at most 24 million pixels and an exact four RGBA bytes per pixel;
+- at most 64 MiB for an encoded image file; and
+- at most 256 MiB of image-decoder allocation.
 
-The scanner transport is single-use and has these boundaries:
+Alpha is composited over white before conversion to grayscale. The normal QR
+detector runs against both polarities. A bounded fallback recognizes horizontal
+and vertical finder-pattern ratios, groups the three axis-aligned finder marks,
+samples module centers, and passes the sampled matrix through the same QR error
+correction and payload decoder. This fallback supports the circular finder marks
+and light-on-dark presentation used by Polkadot app screenshots without a native
+or platform-specific barcode library. Candidate lines, finder groups, dimensions,
+and QR versions are bounded before combinatorial work.
 
-- it binds only `127.0.0.1` and accepts only loopback peers;
-- every request requires the exact generated `Host` value;
-- frame and cancellation requests require the exact loopback `Origin` and a
-  constant-time-checked bearer capability;
-- the capability starts in the URL fragment, is removed from browser history
-  before scanning, and is never returned in page content;
-- the page has no remote assets and is served with a nonce-based content
-  security policy, a restrictive permissions policy, no-store and no-referrer
-  policies, clickjacking protection, and same-origin isolation headers;
-- request headers, bodies, frame dimensions, and request time are bounded;
-- QR decoding runs off the asynchronous I/O executor; and
-- completion or cancellation drops the listener before the command continues.
+The result distinguishes no QR code, an unrelated QR code, and multiple distinct
+valid pairing codes. Exactly one decoded value must begin with
+`polkadotapp://pair?handshake=` and pass the Rust core V2 handshake decoder. It is
+then passed directly to the same pairing responder used by `/pair <url>` and is
+never logged. QR decoding runs on the blocking-task pool rather than the
+asynchronous I/O executor.
 
-The decoded deeplink is carried only in the successful frame response path to
-the existing pairing implementation. It is not put in a URL, browser response
-body, or scanner log. Ctrl-C drops the scan future and therefore the listener,
-connection, capability, and any pending result receiver. Non-interactive
-`exec '/pair'` fails with instructions to provide `/pair <url>` instead.
+A clipboard access or conversion error leaves `/pair` waiting so the operator
+can copy another image and press Ctrl-V again. Ctrl-C cancels the waiting state
+and returns to the command bar. Non-interactive `exec '/pair'` fails with
+instructions to provide `/pair <image-path>` or `/pair <url>` instead.
 
 ## 9. Terminal UI
 

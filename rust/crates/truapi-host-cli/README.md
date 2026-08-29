@@ -20,7 +20,7 @@ One binary, `truapi-host`:
 | Command | Role |
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
-| `signing-host` | Wallet-local host: owns signer identity, can run product scripts, scans pairing QR codes or accepts deeplinks, registers statement allowance on-chain, signs. |
+| `signing-host` | Wallet-local host: owns signer identity, can run product scripts, decodes copied pairing QR images or accepts deeplinks, registers statement allowance on-chain, signs. |
 | `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
@@ -175,9 +175,10 @@ Two players on one machine means two hosts, each with its own session and port
 pointed at the second port. Sessions isolate the signer, the storage and the
 permissions.
 
-The signing host opens an interactive terminal where you can type `/pair` to
-scan a pairing QR code, paste a link with `/pair <link>`, run `/script`, or use
-`/help` to discover the available commands. It uses `--mnemonic` /
+The signing host opens an interactive terminal where you can type `/pair` and
+press Ctrl-V to paste a copied QR image, provide an image file or deeplink with
+`/pair <value>`, run `/script`, or use `/help` to discover the available
+commands. It uses `--mnemonic` /
 `HOST_CLI_SIGNER_MNEMONIC` if set.
 Otherwise it auto-selects or creates a stored account under `--base-path` (default
 `$XDG_STATE_HOME/truapi-host` or `~/.local/state/truapi-host`), attests it
@@ -198,7 +199,8 @@ Commands always start with `/`:
 
 | Command | Result |
 | --- | --- |
-| `/pair` | Open a local browser scanner for a pairing QR code (signing host). |
+| `/pair` | Wait for a copied pairing QR image, then read it with Ctrl-V (signing host). |
+| `/pair <image-path>` | Decode a pairing QR from a PNG, JPEG, or WebP image (signing host). |
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
 | `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
 | `/devices --remove <statement-account-id>` | Remove one paired device by its 32-byte statement account ID. |
@@ -223,27 +225,28 @@ Commands always start with `/`:
 | `/copy` | Copy the retained transcript to the system clipboard. |
 | `/quit` | Shut down cleanly. |
 
-### Scanning a pairing QR code
+### Pasting a pairing QR image
 
-Run `/pair` in an interactive signing host. The CLI opens a short-lived local
-page where you can:
+Copy the QR image shown by the app, run `/pair` in an interactive signing host,
+then press Ctrl-V. Use the Control key on macOS, not Command-V. The TUI reads
+image pixels directly from the operating-system clipboard, so the flow stays in
+the terminal and works inside tmux without relying on terminal image protocols.
 
-- choose the app window or screen that shows the QR code;
-- use a camera; or
-- paste, drop, or choose a PNG, JPEG, WebP, or AVIF image.
+For a file, enter `/pair <image-path>`. A file dragged into most terminal command
+bars becomes an escaped path and works after `/pair `. PNG, JPEG, and WebP files
+are supported. One-shot `exec` mode accepts an image path or deeplink but cannot
+wait for Ctrl-V.
 
-The page keeps scanning after an unrelated QR code and explains camera or
-screen-capture permission failures without ending the command. Use **Choose
-another source** to recover, or **Cancel scan** to return to the terminal.
+Clipboard and file images are decoded in memory and are never written to a
+temporary file. The decoder accepts regular and light-on-dark QR codes, including
+the circular finder styling used by Polkadot apps. It distinguishes an image
+without a QR code, an unrelated QR code, and multiple pairing codes. Copy another
+image and press Ctrl-V again after a clipboard error, or press Ctrl-C to cancel.
 
-If the browser cannot be opened automatically, the terminal prints a URL to
-open manually on the same computer. Loopback URLs are not reachable from a
-different SSH client, so remote and one-shot workflows should keep using
-`/pair <url>` or `--deeplink <url>`.
-
-The scanner page and QR frames stay on the local machine. The listener accepts
-only loopback connections, expires after one successful scan or cancellation,
-and never places the decoded pairing deeplink in a browser URL.
+Images are limited to 8192 pixels per edge and 24 million pixels. Image files are
+also limited to 64 MiB. The decoded value must be exactly one valid
+`polkadotapp://pair?handshake=...` proposal before it reaches the existing
+pairing responder.
 
 Typing `/` opens autocomplete. Up/Down selects a completion; with the menu
 closed it navigates process-local command history. Tab inserts a completion,

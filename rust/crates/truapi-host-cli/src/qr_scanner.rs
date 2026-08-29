@@ -1,316 +1,37 @@
+use std::collections::VecDeque;
 use std::fmt;
-use std::process::Stdio;
-use std::str;
-use std::time::Duration;
+use std::fs::{self, File};
+use std::io::BufReader;
+use std::path::Path;
 
-use anyhow::{Context, Result as AnyResult};
-use subtle::ConstantTimeEq;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::time;
+use anyhow::{Context, Result as AnyResult, bail, ensure};
+use image::{ImageReader, Limits};
 use truapi_server::host_logic::sso::pairing::decode_pairing_deeplink;
-use zeroize::Zeroize;
 
-const MAX_FRAME_EDGE: u32 = 1280;
-const MAX_FRAME_BODY: usize = 8 + MAX_FRAME_EDGE as usize * MAX_FRAME_EDGE as usize;
-const MAX_REQUEST_HEAD: usize = 8 * 1024;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const PAGE_TEMPLATE: &str = include_str!("scanner_page.html");
+const MAX_IMAGE_EDGE: usize = 8_192;
+const MAX_IMAGE_PIXELS: usize = 24 * 1024 * 1024;
+const MAX_IMAGE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_IMAGE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_LINE_FINDERS: usize = 2_048;
+const MAX_FINDER_INTERSECTIONS: usize = 65_536;
+const MAX_FINDER_CLUSTERS: usize = 512;
+const MAX_GRID_FINDERS: usize = 64;
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum ScanOutcome {
-    Deeplink(String),
-    Cancelled,
-}
-
-pub(super) struct ScannerServer {
-    listener: TcpListener,
-    authority: String,
-    token: SessionToken,
-    csp_nonce: String,
-}
-
-impl ScannerServer {
-    pub(super) async fn bind() -> AnyResult<Self> {
-        Self::bind_with_credentials(random_hex(32)?, random_hex(16)?).await
-    }
-
-    async fn bind_with_credentials(token: String, csp_nonce: String) -> AnyResult<Self> {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .context("bind QR scanner to loopback")?;
-        let address = listener.local_addr().context("read QR scanner address")?;
-        Ok(Self {
-            listener,
-            authority: address.to_string(),
-            token: SessionToken(token),
-            csp_nonce,
-        })
-    }
-
-    pub(super) fn launch_url(&self) -> String {
-        format!("http://{}/#{}", self.authority, self.token.expose())
-    }
-
-    #[cfg(test)]
-    fn authority(&self) -> &str {
-        &self.authority
-    }
-
-    pub(super) async fn scan(self) -> AnyResult<ScanOutcome> {
-        loop {
-            let (mut stream, peer) = self
-                .listener
-                .accept()
-                .await
-                .context("accept QR scanner request")?;
-            if !peer.ip().is_loopback() {
-                continue;
-            }
-            if let Some(outcome) = self.handle_connection(&mut stream).await? {
-                return Ok(outcome);
-            }
-        }
-    }
-
-    async fn handle_connection(&self, stream: &mut TcpStream) -> AnyResult<Option<ScanOutcome>> {
-        let request = match time::timeout(REQUEST_TIMEOUT, read_request(stream)).await {
-            Ok(Ok(request)) => request,
-            Ok(Err(ReadRequestError::Http(response))) => {
-                write_response(stream, response, &[], &[]).await?;
-                return Ok(None);
-            }
-            Ok(Err(ReadRequestError::Io(error))) => {
-                return Err(error).context("read QR scanner request");
-            }
-            Err(_) => {
-                write_response(stream, HttpStatus::RequestTimeout, &[], &[]).await?;
-                return Ok(None);
-            }
-        };
-
-        let result = match authorize_host(&request, &self.authority) {
-            Ok(()) => match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/") => self.serve_page(stream, &request).await?,
-                ("POST", "/frame") => self.serve_frame(stream, request).await?,
-                ("POST", "/cancel") => self.serve_cancel(stream, &request).await?,
-                (_, "/" | "/frame" | "/cancel") => {
-                    write_response(stream, HttpStatus::MethodNotAllowed, &[], &[]).await?;
-                    None
-                }
-                _ => {
-                    write_response(stream, HttpStatus::NotFound, &[], &[]).await?;
-                    None
-                }
-            },
-            Err(status) => {
-                write_response(stream, status, &[], &[]).await?;
-                None
-            }
-        };
-        Ok(result)
-    }
-
-    async fn serve_page(
-        &self,
-        stream: &mut TcpStream,
-        request: &HttpRequest,
-    ) -> AnyResult<Option<ScanOutcome>> {
-        if !request.body.is_empty() {
-            write_response(stream, HttpStatus::BadRequest, &[], &[]).await?;
-            return Ok(None);
-        }
-        match unique_header(&request.headers, "Origin") {
-            Ok(Some(origin)) if origin != self.origin() => {
-                write_response(stream, HttpStatus::Forbidden, &[], &[]).await?;
-            }
-            Err(()) => write_response(stream, HttpStatus::BadRequest, &[], &[]).await?,
-            _ => {
-                let page = render_page(&self.csp_nonce);
-                let csp = format!(
-                    "default-src 'none'; script-src 'nonce-{}'; style-src 'nonce-{}'; \
-                     img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; \
-                     worker-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; \
-                     form-action 'none'; object-src 'none'",
-                    self.csp_nonce, self.csp_nonce
-                );
-                let headers = [
-                    ("Content-Type", "text/html; charset=utf-8"),
-                    ("Cache-Control", "no-store"),
-                    ("Content-Security-Policy", csp.as_str()),
-                    (
-                        "Permissions-Policy",
-                        "camera=(self), display-capture=(self), microphone=()",
-                    ),
-                    ("Referrer-Policy", "no-referrer"),
-                    ("X-Content-Type-Options", "nosniff"),
-                    ("X-Frame-Options", "DENY"),
-                    ("Cross-Origin-Opener-Policy", "same-origin"),
-                    ("Cross-Origin-Resource-Policy", "same-origin"),
-                ];
-                write_response(stream, HttpStatus::Ok, &headers, page.as_bytes()).await?;
-            }
-        }
-        Ok(None)
-    }
-
-    async fn serve_frame(
-        &self,
-        stream: &mut TcpStream,
-        request: HttpRequest,
-    ) -> AnyResult<Option<ScanOutcome>> {
-        if let Err(status) = self.authorize_post(&request) {
-            write_response(stream, status, &[], &[]).await?;
-            return Ok(None);
-        }
-        match unique_header(&request.headers, "Content-Type") {
-            Ok(Some("application/octet-stream")) => {}
-            Ok(_) => {
-                write_response(stream, HttpStatus::UnsupportedMediaType, &[], &[]).await?;
-                return Ok(None);
-            }
-            Err(()) => {
-                write_response(stream, HttpStatus::BadRequest, &[], &[]).await?;
-                return Ok(None);
-            }
-        }
-        let frame = match parse_frame_body(request.body) {
-            Ok(frame) => frame,
-            Err(_) => {
-                write_response(stream, HttpStatus::BadRequest, &[], &[]).await?;
-                return Ok(None);
-            }
-        };
-        let outcome = tokio::task::spawn_blocking(move || {
-            decode_frame(frame.width, frame.height, &frame.pixels)
-        })
-        .await
-        .context("join QR decoder")?;
-        match outcome {
-            Ok(FrameOutcome::PairingDeeplink(deeplink)) => {
-                write_response(stream, HttpStatus::Ok, &[], &[]).await?;
-                Ok(Some(ScanOutcome::Deeplink(deeplink)))
-            }
-            Ok(FrameOutcome::MultiplePairingCodes) => {
-                write_response(stream, HttpStatus::Conflict, &[], &[]).await?;
-                Ok(None)
-            }
-            Ok(FrameOutcome::NotPairing) => {
-                write_response(stream, HttpStatus::UnprocessableContent, &[], &[]).await?;
-                Ok(None)
-            }
-            Ok(FrameOutcome::NoQr) => {
-                write_response(stream, HttpStatus::NoContent, &[], &[]).await?;
-                Ok(None)
-            }
-            Err(_) => {
-                write_response(stream, HttpStatus::BadRequest, &[], &[]).await?;
-                Ok(None)
-            }
-        }
-    }
-
-    async fn serve_cancel(
-        &self,
-        stream: &mut TcpStream,
-        request: &HttpRequest,
-    ) -> AnyResult<Option<ScanOutcome>> {
-        if let Err(status) = self.authorize_post(request) {
-            write_response(stream, status, &[], &[]).await?;
-            return Ok(None);
-        }
-        if !request.body.is_empty() {
-            write_response(stream, HttpStatus::BadRequest, &[], &[]).await?;
-            return Ok(None);
-        }
-        write_response(stream, HttpStatus::NoContent, &[], &[]).await?;
-        Ok(Some(ScanOutcome::Cancelled))
-    }
-
-    fn authorize_post(&self, request: &HttpRequest) -> Result<(), HttpStatus> {
-        match unique_header(&request.headers, "Origin") {
-            Ok(Some(origin)) if origin == self.origin() => {}
-            Ok(_) => return Err(HttpStatus::Forbidden),
-            Err(()) => return Err(HttpStatus::BadRequest),
-        }
-        match unique_header(&request.headers, "Authorization") {
-            Ok(Some(value)) if self.token.matches_bearer(value) => Ok(()),
-            Ok(_) => Err(HttpStatus::Unauthorized),
-            Err(()) => Err(HttpStatus::BadRequest),
-        }
-    }
-
-    fn origin(&self) -> String {
-        format!("http://{}", self.authority)
-    }
-}
-
-pub(super) async fn open_browser(url: &str) -> AnyResult<()> {
-    let mut command = tokio::process::Command::new(browser_program()?);
-    command
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let status = time::timeout(Duration::from_secs(10), command.status())
-        .await
-        .context("timed out opening the QR scanner in a browser")?
-        .context("open the QR scanner in a browser")?;
-    if !status.success() {
-        anyhow::bail!("browser opener exited with {status}");
-    }
-    Ok(())
-}
-
-fn browser_program() -> AnyResult<&'static str> {
-    #[cfg(target_os = "macos")]
-    {
-        Ok("open")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        Ok("xdg-open")
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        anyhow::bail!("automatic browser opening is unsupported on this platform")
-    }
-}
-
-struct SessionToken(String);
-
-impl SessionToken {
-    fn expose(&self) -> &str {
-        &self.0
-    }
-
-    fn matches_bearer(&self, value: &str) -> bool {
-        let Some(candidate) = value.strip_prefix("Bearer ") else {
-            return false;
-        };
-        candidate.len() == self.0.len() && bool::from(candidate.as_bytes().ct_eq(self.0.as_bytes()))
-    }
-}
-
-impl Drop for SessionToken {
-    fn drop(&mut self) {
-        self.0.zeroize();
-    }
-}
-
-fn random_hex(bytes: usize) -> AnyResult<String> {
-    let mut value = vec![0; bytes];
-    getrandom::getrandom(&mut value)
-        .map_err(|error| anyhow::anyhow!("generate QR scanner capability: {error}"))?;
-    Ok(hex::encode(value))
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct GrayFrame {
-    width: u32,
-    height: u32,
+pub(super) struct RgbaFrame {
+    width: usize,
+    height: usize,
     pixels: Vec<u8>,
+}
+
+impl RgbaFrame {
+    pub(super) fn new(width: usize, height: usize, pixels: Vec<u8>) -> AnyResult<Self> {
+        validate_rgba_frame(width, height, &pixels)?;
+        Ok(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -321,88 +42,152 @@ enum FrameOutcome {
     PairingDeeplink(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum FrameError {
-    Header,
-    Dimensions {
-        width: u32,
-        height: u32,
-    },
-    Length {
-        width: u32,
-        height: u32,
-        actual: usize,
-    },
-}
-
-fn parse_frame_body(body: Vec<u8>) -> Result<GrayFrame, FrameError> {
-    let header: [u8; 8] = body
-        .get(..8)
-        .ok_or(FrameError::Header)?
-        .try_into()
-        .expect("the frame header is eight bytes");
-    let width = u32::from_le_bytes(header[..4].try_into().expect("width is four bytes"));
-    let height = u32::from_le_bytes(header[4..].try_into().expect("height is four bytes"));
-    let pixels = body[8..].to_vec();
-    if width == 0 || height == 0 || width > MAX_FRAME_EDGE || height > MAX_FRAME_EDGE {
-        return Err(FrameError::Dimensions { width, height });
-    }
-    let expected = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or(FrameError::Dimensions { width, height })?;
-    if pixels.len() != expected {
-        return Err(FrameError::Length {
-            width,
-            height,
-            actual: pixels.len(),
-        });
-    }
-    Ok(GrayFrame {
-        width,
-        height,
-        pixels,
-    })
-}
-
-fn render_page(nonce: &str) -> String {
-    PAGE_TEMPLATE.replace("__CSP_NONCE__", nonce)
-}
-
-fn decode_frame(width: u32, height: u32, pixels: &[u8]) -> Result<FrameOutcome, FrameError> {
-    if width == 0 || height == 0 || width > MAX_FRAME_EDGE || height > MAX_FRAME_EDGE {
-        return Err(FrameError::Dimensions { width, height });
-    }
-    let expected = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or(FrameError::Dimensions { width, height })?;
-    if pixels.len() != expected {
-        return Err(FrameError::Length {
-            width,
-            height,
-            actual: pixels.len(),
-        });
-    }
-
-    let width = width as usize;
-    let height = height as usize;
-    let mut image = rqrr::PreparedImage::prepare_from_greyscale(width, height, |column, row| {
-        pixels[row * width + column]
-    });
-    let mut decoded_any = false;
-    let mut pairing_deeplinks = Vec::new();
-    for grid in image.detect_grids() {
-        let Ok((_, payload)) = grid.decode() else {
-            continue;
-        };
-        decoded_any = true;
-        if payload.starts_with("polkadotapp://pair?handshake=")
-            && decode_pairing_deeplink(&payload).is_ok()
-            && !pairing_deeplinks.contains(&payload)
-        {
-            pairing_deeplinks.push(payload);
+impl FrameOutcome {
+    fn pairing_deeplink(self) -> AnyResult<String> {
+        match self {
+            Self::NoQr => bail!("no QR code found in the image"),
+            Self::NotPairing => bail!("the QR code is not a valid Polkadot pairing request"),
+            Self::MultiplePairingCodes => {
+                bail!("the image contains multiple Polkadot pairing QR codes")
+            }
+            Self::PairingDeeplink(deeplink) => Ok(deeplink),
         }
     }
+}
 
+#[derive(Debug, PartialEq, Eq)]
+enum FrameError {
+    Dimensions { width: usize, height: usize },
+    Length { expected: usize, actual: usize },
+}
+
+impl fmt::Display for FrameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dimensions { width, height } => write!(
+                formatter,
+                "image dimensions {width}x{height} exceed the supported limit"
+            ),
+            Self::Length { expected, actual } => write!(
+                formatter,
+                "RGBA image contains {actual} bytes, expected {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FrameError {}
+
+#[derive(Clone, Copy)]
+struct LineFinder {
+    line: f64,
+    center: f64,
+    module: f64,
+    foreground: bool,
+}
+
+#[derive(Clone, Copy)]
+struct Finder {
+    x: f64,
+    y: f64,
+    module: f64,
+    foreground: bool,
+    matches: usize,
+}
+
+pub(super) fn decode_path(path: &Path) -> AnyResult<String> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("read image metadata from {}", path.display()))?;
+    ensure!(
+        metadata.is_file(),
+        "{} is not an image file",
+        path.display()
+    );
+    ensure!(
+        metadata.len() <= MAX_IMAGE_FILE_BYTES,
+        "image file is larger than 64 MiB"
+    );
+
+    let file = File::open(path).with_context(|| format!("open image {}", path.display()))?;
+    let mut reader = ImageReader::new(BufReader::new(file))
+        .with_guessed_format()
+        .with_context(|| format!("detect image format for {}", path.display()))?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_EDGE as u32);
+    limits.max_image_height = Some(MAX_IMAGE_EDGE as u32);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .with_context(|| format!("decode image {}", path.display()))?
+        .into_rgba8();
+    let frame = RgbaFrame::new(
+        image.width() as usize,
+        image.height() as usize,
+        image.into_raw(),
+    )?;
+    decode(&frame)
+}
+
+pub(super) fn decode(frame: &RgbaFrame) -> AnyResult<String> {
+    decode_rgba_frame(frame.width, frame.height, &frame.pixels)?.pairing_deeplink()
+}
+
+fn validate_rgba_frame(width: usize, height: usize, pixels: &[u8]) -> Result<(), FrameError> {
+    let pixel_count = width
+        .checked_mul(height)
+        .filter(|count| {
+            width > 0
+                && height > 0
+                && width <= MAX_IMAGE_EDGE
+                && height <= MAX_IMAGE_EDGE
+                && *count <= MAX_IMAGE_PIXELS
+        })
+        .ok_or(FrameError::Dimensions { width, height })?;
+    let expected = pixel_count
+        .checked_mul(4)
+        .ok_or(FrameError::Dimensions { width, height })?;
+    if pixels.len() != expected {
+        return Err(FrameError::Length {
+            expected,
+            actual: pixels.len(),
+        });
+    }
+    Ok(())
+}
+
+fn decode_rgba_frame(
+    width: usize,
+    height: usize,
+    pixels: &[u8],
+) -> Result<FrameOutcome, FrameError> {
+    validate_rgba_frame(width, height, pixels)?;
+    let grayscale = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|pixel| {
+            let luminance =
+                (u32::from(pixel[0]) * 54 + u32::from(pixel[1]) * 183 + u32::from(pixel[2]) * 19)
+                    / 256;
+            ((luminance * u32::from(pixel[3]) + 255 * u32::from(255_u8.saturating_sub(pixel[3])))
+                / 255) as u8
+        })
+        .collect::<Vec<_>>();
+    let mut payloads = detected_payloads(width, height, &grayscale, false);
+    payloads.extend(detected_payloads(width, height, &grayscale, true));
+    payloads.extend(axis_aligned_payloads(width, height, &grayscale));
+    payloads.sort();
+    payloads.dedup();
+
+    let decoded_any = !payloads.is_empty();
+    let mut pairing_deeplinks = payloads
+        .into_iter()
+        .filter(|payload| {
+            payload.starts_with("polkadotapp://pair?handshake=")
+                && decode_pairing_deeplink(payload).is_ok()
+        })
+        .collect::<Vec<_>>();
     Ok(match pairing_deeplinks.len() {
         0 if decoded_any => FrameOutcome::NotPairing,
         0 => FrameOutcome::NoQr,
@@ -411,233 +196,248 @@ fn decode_frame(width: u32, height: u32, pixels: &[u8]) -> Result<FrameOutcome, 
     })
 }
 
-struct HttpRequest {
-    method: String,
-    target: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
+fn detected_payloads(width: usize, height: usize, pixels: &[u8], inverted: bool) -> Vec<String> {
+    let mut image = rqrr::PreparedImage::prepare_from_greyscale(width, height, |column, row| {
+        let value = pixels[row * width + column];
+        if inverted { 255 - value } else { value }
+    });
+    image
+        .detect_grids()
+        .into_iter()
+        .filter_map(|grid| grid.decode().ok().map(|(_, payload)| payload))
+        .collect()
 }
 
-enum ReadRequestError {
-    Http(HttpStatus),
-    Io(std::io::Error),
-}
-
-impl From<std::io::Error> for ReadRequestError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadRequestError> {
-    let mut bytes = Vec::with_capacity(1024);
-    let head_end = loop {
-        if let Some(offset) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break offset + 4;
-        }
-        if bytes.len() >= MAX_REQUEST_HEAD {
-            return Err(ReadRequestError::Http(
-                HttpStatus::RequestHeaderFieldsTooLarge,
-            ));
-        }
-        let mut chunk = [0; 1024];
-        let read = stream.read(&mut chunk).await?;
-        if read == 0 {
-            return Err(ReadRequestError::Http(HttpStatus::BadRequest));
-        }
-        bytes.extend_from_slice(&chunk[..read]);
-        if bytes.len() > MAX_REQUEST_HEAD + MAX_FRAME_BODY {
-            return Err(ReadRequestError::Http(HttpStatus::PayloadTooLarge));
-        }
+fn axis_aligned_payloads(width: usize, height: usize, pixels: &[u8]) -> Vec<String> {
+    let threshold = otsu_threshold(pixels);
+    let mut finders = match finder_points(width, height, pixels, threshold) {
+        Some(finders) => finders,
+        None => return Vec::new(),
     };
+    finders.sort_by_key(|finder| std::cmp::Reverse(finder.matches));
+    finders.truncate(MAX_GRID_FINDERS);
 
-    let mut parsed_headers = [httparse::EMPTY_HEADER; 32];
-    let mut parsed = httparse::Request::new(&mut parsed_headers);
-    let parsed_end = match parsed.parse(&bytes[..head_end]) {
-        Ok(httparse::Status::Complete(end)) => end,
-        _ => return Err(ReadRequestError::Http(HttpStatus::BadRequest)),
-    };
-    if parsed_end != head_end || parsed.version != Some(1) {
-        return Err(ReadRequestError::Http(HttpStatus::BadRequest));
+    let mut payloads = Vec::new();
+    for top_left in &finders {
+        for top_right in &finders {
+            for bottom_left in &finders {
+                if let Some(payload) = sample_grid(
+                    width,
+                    height,
+                    pixels,
+                    threshold,
+                    top_left,
+                    top_right,
+                    bottom_left,
+                ) && !payloads.contains(&payload)
+                {
+                    payloads.push(payload);
+                }
+            }
+        }
     }
-    let method = parsed
-        .method
-        .ok_or(ReadRequestError::Http(HttpStatus::BadRequest))?
-        .to_string();
-    let target = parsed
-        .path
-        .ok_or(ReadRequestError::Http(HttpStatus::BadRequest))?
-        .to_string();
-    let headers = parsed
-        .headers
-        .iter()
-        .map(|header| {
-            str::from_utf8(header.value)
-                .map(|value| (header.name.to_string(), value.to_string()))
-                .map_err(|_| ReadRequestError::Http(HttpStatus::BadRequest))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    payloads
+}
 
-    if headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("Transfer-Encoding"))
+fn finder_points(width: usize, height: usize, pixels: &[u8], threshold: u8) -> Option<Vec<Finder>> {
+    let horizontal = finder_lines(height, width, |row, column| {
+        pixels[row * width + column] > threshold
+    })?;
+    let vertical = finder_lines(width, height, |column, row| {
+        pixels[row * width + column] > threshold
+    })?;
+    let mut vertical_by_column = vec![Vec::new(); width];
+    for finder in vertical {
+        vertical_by_column[finder.line as usize].push(finder);
+    }
+    let mut finders: Vec<Finder> = Vec::new();
+    let mut intersections = 0;
+    for horizontal in &horizontal {
+        let radius = horizontal.module.ceil() as usize;
+        let center = horizontal.center.round() as usize;
+        let first_column = center.saturating_sub(radius);
+        let last_column = center.saturating_add(radius).min(width - 1);
+        for vertical in vertical_by_column[first_column..=last_column]
+            .iter()
+            .flatten()
+        {
+            intersections += 1;
+            if intersections > MAX_FINDER_INTERSECTIONS {
+                return None;
+            }
+            let module = (horizontal.module + vertical.module) / 2.0;
+            if horizontal.foreground != vertical.foreground
+                || (horizontal.module - vertical.module).abs() > module * 0.35
+                || (horizontal.center - vertical.line).abs() > module
+                || (horizontal.line - vertical.center).abs() > module
+            {
+                continue;
+            }
+            let x = (horizontal.center + vertical.line) / 2.0;
+            let y = (horizontal.line + vertical.center) / 2.0;
+            if let Some(existing) = finders.iter_mut().find(|existing| {
+                existing.foreground == horizontal.foreground
+                    && (existing.x - x).abs() < module * 2.0
+                    && (existing.y - y).abs() < module * 2.0
+            }) {
+                let matches = existing.matches as f64;
+                existing.x = (existing.x * matches + x) / (matches + 1.0);
+                existing.y = (existing.y * matches + y) / (matches + 1.0);
+                existing.module = (existing.module * matches + module) / (matches + 1.0);
+                existing.matches += 1;
+            } else {
+                if finders.len() == MAX_FINDER_CLUSTERS {
+                    return None;
+                }
+                finders.push(Finder {
+                    x,
+                    y,
+                    module,
+                    foreground: horizontal.foreground,
+                    matches: 1,
+                });
+            }
+        }
+    }
+    finders.retain(|finder| finder.matches >= 3);
+    Some(finders)
+}
+
+fn finder_lines<F>(line_count: usize, line_length: usize, mut pixel: F) -> Option<Vec<LineFinder>>
+where
+    F: FnMut(usize, usize) -> bool,
+{
+    let mut finders = Vec::new();
+    for line in 0..line_count {
+        let mut runs = VecDeque::with_capacity(5);
+        let mut start = 0;
+        for index in 1..=line_length {
+            if index < line_length && pixel(line, index) == pixel(line, start) {
+                continue;
+            }
+            runs.push_back((start, index - start, pixel(line, start)));
+            start = index;
+            if runs.len() < 5 {
+                continue;
+            }
+            let total = runs.iter().map(|(_, length, _)| *length).sum::<usize>();
+            let module = total as f64 / 7.0;
+            let units = [1.0, 1.0, 3.0, 1.0, 1.0];
+            if module >= 2.0
+                && runs.iter().zip(units).all(|((_, length, _), units)| {
+                    (*length as f64 - module * units).abs() <= module * 0.65
+                })
+            {
+                if finders.len() == MAX_LINE_FINDERS {
+                    return None;
+                }
+                finders.push(LineFinder {
+                    line: line as f64,
+                    center: runs[0].0 as f64 + total as f64 / 2.0,
+                    module,
+                    foreground: runs[0].2,
+                });
+            }
+            runs.pop_front();
+        }
+    }
+    Some(finders)
+}
+
+fn sample_grid(
+    width: usize,
+    height: usize,
+    pixels: &[u8],
+    threshold: u8,
+    top_left: &Finder,
+    top_right: &Finder,
+    bottom_left: &Finder,
+) -> Option<String> {
+    let module = (top_left.module + top_right.module + bottom_left.module) / 3.0;
+    if top_left.foreground != top_right.foreground
+        || top_left.foreground != bottom_left.foreground
+        || top_right.x <= top_left.x
+        || bottom_left.y <= top_left.y
+        || (top_right.y - top_left.y).abs() > module * 2.0
+        || (bottom_left.x - top_left.x).abs() > module * 2.0
     {
-        return Err(ReadRequestError::Http(HttpStatus::BadRequest));
-    }
-    let content_length = match unique_header(&headers, "Content-Length") {
-        Ok(Some(value)) => value
-            .parse::<usize>()
-            .map_err(|_| ReadRequestError::Http(HttpStatus::BadRequest))?,
-        Ok(None) => 0,
-        Err(()) => return Err(ReadRequestError::Http(HttpStatus::BadRequest)),
-    };
-    if content_length > MAX_FRAME_BODY {
-        return Err(ReadRequestError::Http(HttpStatus::PayloadTooLarge));
-    }
-    let body_prefix = &bytes[head_end..];
-    if body_prefix.len() > content_length {
-        return Err(ReadRequestError::Http(HttpStatus::BadRequest));
-    }
-    let mut body = Vec::with_capacity(content_length);
-    body.extend_from_slice(body_prefix);
-    while body.len() < content_length {
-        let remaining = content_length - body.len();
-        let mut chunk = vec![0; remaining.min(8192)];
-        let read = stream.read(&mut chunk).await?;
-        if read == 0 {
-            return Err(ReadRequestError::Http(HttpStatus::BadRequest));
-        }
-        body.extend_from_slice(&chunk[..read]);
+        return None;
     }
 
-    Ok(HttpRequest {
-        method,
-        target,
-        headers,
-        body,
-    })
+    let horizontal_size = (top_right.x - top_left.x) / module + 7.0;
+    let vertical_size = (bottom_left.y - top_left.y) / module + 7.0;
+    let version = ((((horizontal_size + vertical_size) / 2.0) - 17.0) / 4.0).round();
+    if !(1.0..=40.0).contains(&version) {
+        return None;
+    }
+    let size = version as usize * 4 + 17;
+    if (horizontal_size - size as f64).abs() > 1.0 || (vertical_size - size as f64).abs() > 1.0 {
+        return None;
+    }
+
+    let scale_x = (top_right.x - top_left.x) / (size - 7) as f64;
+    let scale_y = (bottom_left.y - top_left.y) / (size - 7) as f64;
+    let origin_x = top_left.x - scale_x * 3.5;
+    let origin_y = top_left.y - scale_y * 3.5;
+    if origin_x < 0.0
+        || origin_y < 0.0
+        || origin_x + size as f64 * scale_x >= width as f64
+        || origin_y + size as f64 * scale_y >= height as f64
+    {
+        return None;
+    }
+
+    let grid = rqrr::SimpleGrid::from_func(size, |column, row| {
+        let x = (origin_x + (column as f64 + 0.5) * scale_x).round() as usize;
+        let y = (origin_y + (row as f64 + 0.5) * scale_y).round() as usize;
+        (pixels[y * width + x] > threshold) == top_left.foreground
+    });
+    rqrr::Grid::new(grid)
+        .decode()
+        .ok()
+        .map(|(_, payload)| payload)
 }
 
-fn unique_header<'a>(headers: &'a [(String, String)], name: &str) -> Result<Option<&'a str>, ()> {
-    let mut values = headers
+fn otsu_threshold(pixels: &[u8]) -> u8 {
+    let mut histogram = [0_u64; 256];
+    for pixel in pixels {
+        histogram[*pixel as usize] += 1;
+    }
+    let total = pixels.len() as u64;
+    let sum = histogram
         .iter()
-        .filter(|(current, _)| current.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str());
-    let first = values.next();
-    if values.next().is_some() {
-        return Err(());
-    }
-    Ok(first)
-}
-
-fn authorize_host(request: &HttpRequest, authority: &str) -> Result<(), HttpStatus> {
-    match unique_header(&request.headers, "Host") {
-        Ok(Some(host)) if host == authority => Ok(()),
-        Ok(_) => Err(HttpStatus::MisdirectedRequest),
-        Err(()) => Err(HttpStatus::BadRequest),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum HttpStatus {
-    Ok,
-    NoContent,
-    BadRequest,
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    MethodNotAllowed,
-    Conflict,
-    PayloadTooLarge,
-    UnsupportedMediaType,
-    UnprocessableContent,
-    MisdirectedRequest,
-    RequestTimeout,
-    RequestHeaderFieldsTooLarge,
-}
-
-impl HttpStatus {
-    const fn code(self) -> u16 {
-        match self {
-            Self::Ok => 200,
-            Self::NoContent => 204,
-            Self::BadRequest => 400,
-            Self::Unauthorized => 401,
-            Self::Forbidden => 403,
-            Self::NotFound => 404,
-            Self::MethodNotAllowed => 405,
-            Self::Conflict => 409,
-            Self::PayloadTooLarge => 413,
-            Self::UnsupportedMediaType => 415,
-            Self::UnprocessableContent => 422,
-            Self::MisdirectedRequest => 421,
-            Self::RequestTimeout => 408,
-            Self::RequestHeaderFieldsTooLarge => 431,
+        .enumerate()
+        .map(|(value, count)| value as u64 * count)
+        .sum::<u64>();
+    let mut background_count = 0_u64;
+    let mut background_sum = 0_u64;
+    let mut best_variance = 0.0;
+    let mut threshold = 128;
+    for (value, count) in histogram.iter().enumerate() {
+        background_count += count;
+        if background_count == 0 || background_count == total {
+            continue;
+        }
+        background_sum += value as u64 * count;
+        let foreground_count = total - background_count;
+        let background_mean = background_sum as f64 / background_count as f64;
+        let foreground_mean = (sum - background_sum) as f64 / foreground_count as f64;
+        let variance = background_count as f64
+            * foreground_count as f64
+            * (background_mean - foreground_mean).powi(2);
+        if variance > best_variance {
+            best_variance = variance;
+            threshold = value as u8;
         }
     }
-
-    const fn reason(self) -> &'static str {
-        match self {
-            Self::Ok => "OK",
-            Self::NoContent => "No Content",
-            Self::BadRequest => "Bad Request",
-            Self::Unauthorized => "Unauthorized",
-            Self::Forbidden => "Forbidden",
-            Self::NotFound => "Not Found",
-            Self::MethodNotAllowed => "Method Not Allowed",
-            Self::Conflict => "Conflict",
-            Self::PayloadTooLarge => "Payload Too Large",
-            Self::UnsupportedMediaType => "Unsupported Media Type",
-            Self::UnprocessableContent => "Unprocessable Content",
-            Self::MisdirectedRequest => "Misdirected Request",
-            Self::RequestTimeout => "Request Timeout",
-            Self::RequestHeaderFieldsTooLarge => "Request Header Fields Too Large",
-        }
-    }
-}
-
-impl fmt::Display for HttpStatus {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} {}", self.code(), self.reason())
-    }
-}
-
-async fn write_response(
-    stream: &mut TcpStream,
-    status: HttpStatus,
-    headers: &[(&str, &str)],
-    body: &[u8],
-) -> AnyResult<()> {
-    let mut response = format!(
-        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    )
-    .into_bytes();
-    for (name, value) in headers {
-        response.extend_from_slice(name.as_bytes());
-        response.extend_from_slice(b": ");
-        response.extend_from_slice(value.as_bytes());
-        response.extend_from_slice(b"\r\n");
-    }
-    response.extend_from_slice(b"\r\n");
-    response.extend_from_slice(body);
-    stream
-        .write_all(&response)
-        .await
-        .context("write QR scanner response")?;
-    stream
-        .shutdown()
-        .await
-        .context("finish QR scanner response")?;
-    Ok(())
+    threshold
 }
 
 #[cfg(test)]
 mod tests {
     use parity_scale_codec::Encode;
     use qrcode::{Color, QrCode};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
+    use tempfile::tempdir;
     use truapi_server::host_logic::sso::pairing::{
         VersionedHandshakeProposal,
         v2::{Device, Proposal},
@@ -646,220 +446,116 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decodes_a_complete_pairing_proposal_from_grayscale_pixels() {
-        let deeplink = pairing_deeplink();
-        let frame = qr_frame(&deeplink);
+    fn decodes_a_light_on_dark_rgba_pairing_qr() {
+        let deeplink = pairing_deeplink_for(1);
+        let frame = qr_frame(&deeplink, true);
 
         assert_eq!(
-            decode_frame(frame.width, frame.height, &frame.pixels),
+            decode_rgba_frame(frame.width, frame.height, &frame.pixels),
             Ok(FrameOutcome::PairingDeeplink(deeplink))
         );
     }
 
     #[test]
-    fn distinguishes_an_unrelated_qr_from_a_frame_without_a_qr() {
-        let unrelated = qr_frame("https://example.com/not-a-pairing-code");
-        let blank = GrayFrame {
-            width: 320,
-            height: 240,
-            pixels: vec![255; 320 * 240],
-        };
+    fn decodes_the_circular_finder_styling_used_by_polkadot_apps() {
+        let deeplink = pairing_deeplink_for(1);
+        let frame = circular_finder_frame(&deeplink);
+        let grayscale = frame
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[0])
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            axis_aligned_payloads(frame.width, frame.height, &grayscale),
+            vec![deeplink]
+        );
+    }
+
+    #[test]
+    fn distinguishes_unrelated_qr_codes_from_images_without_a_qr() {
+        let unrelated = qr_frame("https://example.com/not-a-pairing-code", false);
+        let blank = RgbaFrame::new(320, 240, vec![255; 320 * 240 * 4]).expect("valid frame");
 
         assert_eq!(
             (
-                decode_frame(unrelated.width, unrelated.height, &unrelated.pixels),
-                decode_frame(blank.width, blank.height, &blank.pixels),
+                decode_rgba_frame(unrelated.width, unrelated.height, &unrelated.pixels),
+                decode_rgba_frame(blank.width, blank.height, &blank.pixels),
             ),
             (Ok(FrameOutcome::NotPairing), Ok(FrameOutcome::NoQr))
         );
     }
 
     #[test]
-    fn accepts_one_pairing_code_among_unrelated_codes_and_rejects_ambiguous_frames() {
-        let first = pairing_deeplink_for(1);
-        let second = pairing_deeplink_for(9);
-        let unrelated = qr_frame("https://example.com/not-a-pairing-code");
-        let first_code = qr_frame(&first);
-        let second_code = qr_frame(&second);
-
-        let pairing_and_unrelated = side_by_side(&first_code, &unrelated);
-        let unrelated_and_pairing = side_by_side(&unrelated, &first_code);
-        let two_pairing_codes = side_by_side(&first_code, &second_code);
-        let duplicate_pairing_code = side_by_side(&first_code, &first_code);
+    fn rejects_an_image_with_multiple_pairing_requests() {
+        let first = qr_frame(&pairing_deeplink_for(1), false);
+        let second = qr_frame(&pairing_deeplink_for(9), false);
+        let frame = side_by_side(&first, &second);
 
         assert_eq!(
-            (
-                decode_frame(
-                    pairing_and_unrelated.width,
-                    pairing_and_unrelated.height,
-                    &pairing_and_unrelated.pixels,
-                ),
-                decode_frame(
-                    unrelated_and_pairing.width,
-                    unrelated_and_pairing.height,
-                    &unrelated_and_pairing.pixels,
-                ),
-                decode_frame(
-                    two_pairing_codes.width,
-                    two_pairing_codes.height,
-                    &two_pairing_codes.pixels,
-                ),
-                decode_frame(
-                    duplicate_pairing_code.width,
-                    duplicate_pairing_code.height,
-                    &duplicate_pairing_code.pixels,
-                ),
-            ),
-            (
-                Ok(FrameOutcome::PairingDeeplink(first.clone())),
-                Ok(FrameOutcome::PairingDeeplink(first.clone())),
-                Ok(FrameOutcome::MultiplePairingCodes),
-                Ok(FrameOutcome::PairingDeeplink(first)),
-            )
+            decode_rgba_frame(frame.width, frame.height, &frame.pixels),
+            Ok(FrameOutcome::MultiplePairingCodes)
         );
     }
 
     #[test]
-    fn rejects_inconsistent_or_oversized_grayscale_frames_before_decoding() {
+    fn validates_dimensions_and_rgba_length_before_scanning() {
         assert_eq!(
             (
-                decode_frame(2, 2, &[0; 3]),
-                decode_frame(MAX_FRAME_EDGE + 1, 1, &[]),
+                decode_rgba_frame(0, 1, &[]),
+                decode_rgba_frame(MAX_IMAGE_EDGE + 1, 1, &[]),
+                decode_rgba_frame(2, 2, &[0; 15]),
             ),
             (
-                Err(FrameError::Length {
-                    width: 2,
-                    height: 2,
-                    actual: 3,
-                }),
                 Err(FrameError::Dimensions {
-                    width: MAX_FRAME_EDGE + 1,
+                    width: 0,
                     height: 1,
                 }),
-            )
-        );
-    }
-
-    #[test]
-    fn parses_the_bounded_binary_frame_contract_used_by_the_scanner_page() {
-        let mut body = Vec::from([2, 0, 0, 0, 2, 0, 0, 0]);
-        body.extend_from_slice(&[0, 85, 170, 255]);
-
-        assert_eq!(
-            (
-                parse_frame_body(body),
-                parse_frame_body(vec![2, 0, 0, 0, 2, 0, 0, 0, 0]),
-            ),
-            (
-                Ok(GrayFrame {
-                    width: 2,
-                    height: 2,
-                    pixels: vec![0, 85, 170, 255],
+                Err(FrameError::Dimensions {
+                    width: MAX_IMAGE_EDGE + 1,
+                    height: 1,
                 }),
                 Err(FrameError::Length {
-                    width: 2,
-                    height: 2,
-                    actual: 1,
+                    expected: 16,
+                    actual: 15,
                 }),
             )
         );
     }
 
     #[test]
-    fn bundled_page_exposes_every_scan_source_without_remote_assets() {
-        let page = render_page("fixture-nonce");
-
-        assert!(page.contains(r#"id="display-source""#));
-        assert!(page.contains(r#"id="camera-source""#));
-        assert!(page.contains(r#"id="image-file""#));
-        assert!(page.contains(r#"id="drop-zone""#));
-        assert!(page.contains("getDisplayMedia"));
-        assert!(page.contains("getUserMedia"));
-        assert!(page.contains("clipboardData"));
-        assert!(page.contains(r#"nonce="fixture-nonce""#));
-        assert!(!page.contains("__CSP_NONCE__"));
-        assert!(!page.contains("https://"));
-        assert!(!page.contains("http://"));
-    }
-
-    #[tokio::test]
-    async fn scanner_server_is_loopback_capability_scoped_and_one_shot() {
-        let token = "11".repeat(32);
-        let scanner = ScannerServer::bind_with_credentials(token.clone(), "fixture-nonce".into())
-            .await
-            .expect("bind scanner");
-        let authority = scanner.authority().to_string();
-        assert!(scanner.launch_url().ends_with(&format!("/#{token}")));
-        let scan = tokio::spawn(scanner.scan());
-
-        let page = request(
-            &authority,
-            &format!("GET / HTTP/1.1\r\nHost: {authority}\r\n\r\n"),
+    fn reads_a_png_image_path_and_rejects_oversized_files() {
+        let temporary = tempdir().expect("create fixture directory");
+        let deeplink = pairing_deeplink_for(1);
+        let frame = qr_frame(&deeplink, false);
+        let image_path = temporary.path().join("pairing.png");
+        image::save_buffer_with_format(
+            &image_path,
+            &frame.pixels,
+            frame.width as u32,
+            frame.height as u32,
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
         )
-        .await;
-        assert!(page.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(page.contains("Content-Security-Policy: default-src 'none';"));
-        assert!(
-            page.contains(
-                "Permissions-Policy: camera=(self), display-capture=(self), microphone=()"
-            )
-        );
-        assert!(!page.contains(&token));
+        .expect("write fixture image");
+        let oversized_path = temporary.path().join("oversized.png");
+        File::create(&oversized_path)
+            .expect("create oversized fixture")
+            .set_len(MAX_IMAGE_FILE_BYTES + 1)
+            .expect("size oversized fixture");
 
-        let frame = frame_body(qr_frame("https://example.com/not-pairing"));
-        let foreign = post_frame(&authority, &token, "http://example.com", &frame).await;
-        assert!(foreign.starts_with("HTTP/1.1 403 Forbidden\r\n"));
-
-        let missing_token = request(
-            &authority,
-            &format!(
-                "POST /frame HTTP/1.1\r\nHost: {authority}\r\nOrigin: http://{authority}\r\nContent-Type: application/octet-stream\r\nContent-Length: 0\r\n\r\n"
-            ),
-        )
-        .await;
-        assert!(missing_token.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
-
-        let unrelated =
-            post_frame(&authority, &token, &format!("http://{authority}"), &frame).await;
-        assert!(unrelated.starts_with("HTTP/1.1 422 Unprocessable Content\r\n"));
-
-        let deeplink = pairing_deeplink();
-        let valid = frame_body(qr_frame(&deeplink));
-        let accepted = post_frame(&authority, &token, &format!("http://{authority}"), &valid).await;
-        assert!(accepted.starts_with("HTTP/1.1 200 OK\r\n"));
         assert_eq!(
-            scan.await.expect("scanner task").expect("scanner result"),
-            ScanOutcome::Deeplink(deeplink)
+            decode_path(&image_path).expect("decode fixture path"),
+            deeplink
         );
-        assert!(TcpStream::connect(&authority).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn page_cancel_ends_the_scan_without_a_pairing_result() {
-        let token = "22".repeat(32);
-        let scanner = ScannerServer::bind_with_credentials(token.clone(), "fixture-nonce".into())
-            .await
-            .expect("bind scanner");
-        let authority = scanner.authority().to_string();
-        let scan = tokio::spawn(scanner.scan());
-
-        let response = request(
-            &authority,
-            &format!(
-                "POST /cancel HTTP/1.1\r\nHost: {authority}\r\nOrigin: http://{authority}\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\n\r\n"
-            ),
-        )
-        .await;
-
-        assert!(response.starts_with("HTTP/1.1 204 No Content\r\n"));
         assert_eq!(
-            scan.await.expect("scanner task").expect("scanner result"),
-            ScanOutcome::Cancelled
+            decode_path(&oversized_path)
+                .expect_err("oversized image must fail")
+                .to_string(),
+            "image file is larger than 64 MiB"
         );
-    }
-
-    fn pairing_deeplink() -> String {
-        pairing_deeplink_for(1)
     }
 
     fn pairing_deeplink_for(account_byte: u8) -> String {
@@ -876,89 +572,88 @@ mod tests {
         )
     }
 
-    fn qr_frame(payload: &str) -> GrayFrame {
+    fn qr_frame(payload: &str, inverted: bool) -> RgbaFrame {
         const QUIET_ZONE: usize = 4;
-        const SCALE: usize = 8;
+        const SCALE: usize = 6;
 
         let code = QrCode::new(payload.as_bytes()).expect("fixture QR encodes");
         let modules = code.to_colors();
         let module_width = code.width();
         let width = (module_width + QUIET_ZONE * 2) * SCALE;
-        let mut pixels = vec![255; width * width];
+        let background = if inverted { 24 } else { 255 };
+        let foreground = if inverted { 245 } else { 0 };
+        let mut pixels = vec![background; width * width * 4];
+        for alpha in pixels.iter_mut().skip(3).step_by(4) {
+            *alpha = 255;
+        }
         for row in 0..module_width {
             for column in 0..module_width {
                 if modules[row * module_width + column] != Color::Dark {
                     continue;
                 }
-                let output_row = (row + QUIET_ZONE) * SCALE;
-                let output_column = (column + QUIET_ZONE) * SCALE;
-                for y in output_row..output_row + SCALE {
-                    pixels[y * width + output_column..y * width + output_column + SCALE].fill(0);
+                for output_row in (row + QUIET_ZONE) * SCALE..(row + QUIET_ZONE + 1) * SCALE {
+                    for output_column in
+                        (column + QUIET_ZONE) * SCALE..(column + QUIET_ZONE + 1) * SCALE
+                    {
+                        let offset = (output_row * width + output_column) * 4;
+                        pixels[offset..offset + 3].fill(foreground);
+                    }
                 }
             }
         }
-        GrayFrame {
-            width: width as u32,
-            height: width as u32,
-            pixels,
-        }
+        RgbaFrame::new(width, width, pixels).expect("valid QR frame")
     }
 
-    fn side_by_side(left: &GrayFrame, right: &GrayFrame) -> GrayFrame {
-        const GAP: usize = 32;
+    fn circular_finder_frame(payload: &str) -> RgbaFrame {
+        const QUIET_ZONE: usize = 4;
+        const SCALE: usize = 6;
 
-        let left_width = left.width as usize;
-        let right_width = right.width as usize;
-        let width = left_width + GAP + right_width;
-        let height = left.height.max(right.height) as usize;
-        let mut pixels = vec![255; width * height];
-        for (source, offset) in [(left, 0), (right, left_width + GAP)] {
-            let source_width = source.width as usize;
-            for row in 0..source.height as usize {
-                pixels[row * width + offset..row * width + offset + source_width]
-                    .copy_from_slice(&source.pixels[row * source_width..(row + 1) * source_width]);
+        let code = QrCode::new(payload.as_bytes()).expect("fixture QR encodes");
+        let module_width = code.width();
+        let mut frame = qr_frame(payload, true);
+        for (finder_column, finder_row) in [
+            (QUIET_ZONE, QUIET_ZONE),
+            (QUIET_ZONE + module_width - 7, QUIET_ZONE),
+            (QUIET_ZONE, QUIET_ZONE + module_width - 7),
+        ] {
+            let center_x = (finder_column * SCALE) as f64 + 3.5 * SCALE as f64;
+            let center_y = (finder_row * SCALE) as f64 + 3.5 * SCALE as f64;
+            for row in finder_row * SCALE..(finder_row + 7) * SCALE {
+                for column in finder_column * SCALE..(finder_column + 7) * SCALE {
+                    let distance = ((column as f64 + 0.5 - center_x).powi(2)
+                        + (row as f64 + 0.5 - center_y).powi(2))
+                    .sqrt()
+                        / SCALE as f64;
+                    let value = if distance < 1.5 || (2.5..3.5).contains(&distance) {
+                        245
+                    } else {
+                        24
+                    };
+                    let offset = (row * frame.width + column) * 4;
+                    frame.pixels[offset..offset + 3].fill(value);
+                }
             }
         }
-        GrayFrame {
-            width: width as u32,
-            height: height as u32,
-            pixels,
+        frame
+    }
+
+    fn side_by_side(left: &RgbaFrame, right: &RgbaFrame) -> RgbaFrame {
+        const GAP: usize = 32;
+
+        let width = left.width + GAP + right.width;
+        let height = left.height.max(right.height);
+        let mut pixels = vec![255; width * height * 4];
+        for alpha in pixels.iter_mut().skip(3).step_by(4) {
+            *alpha = 255;
         }
-    }
-
-    fn frame_body(frame: GrayFrame) -> Vec<u8> {
-        let mut body = Vec::with_capacity(8 + frame.pixels.len());
-        body.extend_from_slice(&frame.width.to_le_bytes());
-        body.extend_from_slice(&frame.height.to_le_bytes());
-        body.extend_from_slice(&frame.pixels);
-        body
-    }
-
-    async fn post_frame(authority: &str, token: &str, origin: &str, body: &[u8]) -> String {
-        let mut request = format!(
-            "POST /frame HTTP/1.1\r\nHost: {authority}\r\nOrigin: {origin}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        )
-        .into_bytes();
-        request.extend_from_slice(body);
-        request_bytes(authority, &request).await
-    }
-
-    async fn request(authority: &str, request: &str) -> String {
-        request_bytes(authority, request.as_bytes()).await
-    }
-
-    async fn request_bytes(authority: &str, request: &[u8]) -> String {
-        let mut stream = TcpStream::connect(authority)
-            .await
-            .expect("connect scanner");
-        stream.write_all(request).await.expect("write request");
-        stream.shutdown().await.expect("finish request");
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .expect("read response");
-        String::from_utf8_lossy(&response).into_owned()
+        for (frame, column_offset) in [(left, 0), (right, left.width + GAP)] {
+            for row in 0..frame.height {
+                let source = row * frame.width * 4;
+                let destination = (row * width + column_offset) * 4;
+                pixels[destination..destination + frame.width * 4]
+                    .copy_from_slice(&frame.pixels[source..source + frame.width * 4]);
+            }
+        }
+        RgbaFrame::new(width, height, pixels).expect("valid combined frame")
     }
 }

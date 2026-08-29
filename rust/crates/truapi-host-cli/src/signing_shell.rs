@@ -57,8 +57,10 @@ pub enum SessionCommand {
 /// Pairing input selected through `/pair`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairCommand {
-    /// Acquire a pairing deeplink from a QR code.
+    /// Acquire a pairing deeplink from a copied QR image.
     Scan,
+    /// Decode a pairing deeplink from an image file.
+    Image(PathBuf),
     /// Answer the supplied Polkadot Mobile pairing deeplink.
     Deeplink(String),
 }
@@ -177,12 +179,19 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             if argument.is_empty() {
                 return Ok(ShellCommand::Pair(PairCommand::Scan));
             }
-            if !argument.starts_with("polkadotapp://pair?") {
-                return Err("/pair expects a polkadotapp://pair?... URL".to_string());
+            if argument.starts_with("polkadotapp://pair?") {
+                return Ok(ShellCommand::Pair(PairCommand::Deeplink(
+                    argument.to_string(),
+                )));
             }
-            Ok(ShellCommand::Pair(PairCommand::Deeplink(
-                argument.to_string(),
-            )))
+            let arguments = shlex::split(argument)
+                .ok_or_else(|| "invalid /pair image path quoting".to_string())?;
+            if arguments.len() != 1 || argument.contains("://") {
+                return Err("usage: /pair [<image-path> | <polkadotapp://pair?...>]".to_string());
+            }
+            Ok(ShellCommand::Pair(PairCommand::Image(PathBuf::from(
+                &arguments[0],
+            ))))
         }
         "/devices" => {
             if argument.is_empty() || argument == "--list" {
@@ -320,7 +329,7 @@ pub struct Completion {
 }
 
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
-    ("/pair", "scan a pairing QR or answer a pairing URL"),
+    ("/pair", "paste a pairing QR image or provide a file or URL"),
     ("/devices", "list or remove paired devices"),
     ("/approval", "show or change confirmation approval"),
     ("/script", "edit the last or run an existing product script"),
@@ -792,7 +801,8 @@ pub fn parse_approval(input: &str) -> Option<bool> {
 
 /// Text displayed by `/help` in either presentation mode.
 pub const HELP_TEXT: &str = "\
-/pair                   scan a pairing QR code
+/pair                   paste a copied pairing QR image with Ctrl-V
+/pair <image-path>      read a pairing QR image file
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
 /devices --remove <id>  remove one paired device by statement account ID
@@ -816,7 +826,7 @@ pub const HELP_TEXT: &str = "\
 /copy                   copy the transcript to the clipboard
 /quit                   shut down the signing host
 
-Keys: Up/Down completion or history, Tab complete, Ctrl-U/Ctrl-D scroll,
+Keys: Ctrl-V paste a pairing image, Up/Down completion or history, Tab complete, Ctrl-U/Ctrl-D scroll,
 Esc close completion or reject approval, Ctrl-C clear/cancel/quit";
 
 /// Help shown by the pairing-host command bar.
@@ -854,6 +864,12 @@ mod tests {
             Ok(ShellCommand::Pair(PairCommand::Deeplink(
                 "polkadotapp://pair?handshake=01".to_string()
             )))
+        );
+        assert_eq!(
+            parse_command(r#"/pair "/tmp/pairing QR.png""#),
+            Ok(ShellCommand::Pair(PairCommand::Image(PathBuf::from(
+                "/tmp/pairing QR.png"
+            ))))
         );
         assert_eq!(
             parse_command("/script scripts/my smoke.ts"),
@@ -1045,16 +1061,17 @@ mod tests {
     }
 
     #[test]
-    fn pair_command_advertises_scanning_and_the_deeplink_fallback() {
+    fn pair_command_advertises_image_paste_file_and_deeplink_inputs() {
         assert_eq!(
             completions_for_scope("/pair", &[], CommandScope::SigningHost),
             vec![Completion {
                 value: "/pair".to_string(),
-                description: "scan a pairing QR or answer a pairing URL",
+                description: "paste a pairing QR image or provide a file or URL",
             }]
         );
         assert!(HELP_TEXT.starts_with(
-            "/pair                   scan a pairing QR code\n\
+            "/pair                   paste a copied pairing QR image with Ctrl-V\n\
+             /pair <image-path>      read a pairing QR image file\n\
              /pair <url>             answer a Polkadot Mobile pairing URL"
         ));
     }

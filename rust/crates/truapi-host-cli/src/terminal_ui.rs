@@ -31,6 +31,7 @@ use tracing_subscriber::layer::{Context as LayerContext, Layer};
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;
+use crate::qr_scanner::RgbaFrame;
 use crate::signing_shell::{CommandEditor, contains_mnemonic, mask_mnemonic, parse_approval};
 
 const TRANSCRIPT_LIMIT: usize = 10_000;
@@ -180,11 +181,12 @@ pub enum SystemEvent {
         reason: String,
     },
     SigningHostResponderStarted,
-    QrScannerReady {
-        manual_url: Option<String>,
+    PairingImagePasteReady,
+    PairingImageRead,
+    PairingImagePasteFailed {
+        reason: String,
     },
-    QrScannerCodeRead,
-    QrScannerCancelled,
+    PairingImagePasteCancelled,
     AllowanceReady {
         target: String,
         sequence: u32,
@@ -775,6 +777,19 @@ impl ActiveTerminalUi {
             .context(context)
     }
 
+    fn read_clipboard_image(&mut self) -> Result<RgbaFrame> {
+        if self.clipboard.is_none() {
+            self.clipboard = Some(arboard::Clipboard::new().context("open system clipboard")?);
+        }
+        let image = self
+            .clipboard
+            .as_mut()
+            .expect("clipboard was initialized above")
+            .get_image()
+            .map_err(clipboard_image_error)?;
+        RgbaFrame::new(image.width, image.height, image.bytes.into_owned())
+    }
+
     /// Update the displayed log level after `/log` succeeds.
     pub fn set_log_level(&mut self, level: LogLevel) {
         self.app.log_level = level;
@@ -883,6 +898,57 @@ impl ActiveTerminalUi {
         }
     }
 
+    /// Wait for Ctrl-V and read a copied pairing QR image from the system clipboard.
+    pub async fn read_pairing_image(&mut self) -> Result<DriveResult<RgbaFrame>> {
+        self.app.busy = Some("/pair".to_string());
+        self.event(SystemEvent::PairingImagePasteReady);
+        loop {
+            self.draw()?;
+            tokio::select! {
+                event = self.receiver.recv() => {
+                    if let Some(event) = event {
+                        self.handle_ui_event(event);
+                        self.drain_pending_events();
+                    }
+                }
+                event = self.events.as_mut().expect("terminal events are active").next() => {
+                    let Some(event) = event else {
+                        self.app.busy = None;
+                        self.event(SystemEvent::PairingImagePasteCancelled);
+                        return Ok(DriveResult::Cancelled);
+                    };
+                    let event = event.context("read terminal event")?;
+                    if let Event::Key(key) = event
+                        && is_clipboard_image_paste(key)
+                    {
+                        match self.read_clipboard_image() {
+                            Ok(image) => {
+                                self.app.busy = None;
+                                self.event(SystemEvent::PairingImageRead);
+                                return Ok(DriveResult::Complete(image));
+                            }
+                            Err(error) => self.event(SystemEvent::PairingImagePasteFailed {
+                                reason: error.to_string(),
+                            }),
+                        }
+                        continue;
+                    }
+                    if matches!(event, Event::Paste(_)) {
+                        self.event(SystemEvent::PairingImagePasteFailed {
+                            reason: "The terminal pasted text. Copy the image itself and press Ctrl-V, or cancel and run /pair <image-path>.".to_string(),
+                        });
+                        continue;
+                    }
+                    if self.app.handle_busy_event(event) {
+                        self.app.busy = None;
+                        self.event(SystemEvent::PairingImagePasteCancelled);
+                        return Ok(DriveResult::Cancelled);
+                    }
+                }
+            }
+        }
+    }
+
     /// Drive `/login` while copying the first typed pairing deeplink event.
     pub async fn drive_pairing_login<F, T>(
         &mut self,
@@ -948,6 +1014,24 @@ fn pairing_deeplink_to_copy(enabled: bool, event: &UiEvent) -> Option<&str> {
         UiEvent::System(SystemEvent::PairingDeeplink { url }) => Some(url),
         _ => None,
     }
+}
+
+fn clipboard_image_error(error: arboard::Error) -> anyhow::Error {
+    match error {
+        arboard::Error::ContentNotAvailable => {
+            anyhow::anyhow!("clipboard does not contain an image")
+        }
+        arboard::Error::ConversionFailure => {
+            anyhow::anyhow!("clipboard image could not be converted to RGBA pixels")
+        }
+        error => anyhow::anyhow!("read image from system clipboard: {error}"),
+    }
+}
+
+fn is_clipboard_image_paste(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('v' | 'V'))
 }
 
 impl Drop for ActiveTerminalUi {
@@ -1436,20 +1520,28 @@ impl App {
                 None,
                 ActivityState::Running,
             ),
-            SystemEvent::QrScannerReady { manual_url } => self.start_activity(
-                "qr-scanner".to_string(),
-                "Waiting for a pairing QR code".to_string(),
-                manual_url.map(|url| format!("Open {url} manually")),
+            SystemEvent::PairingImagePasteReady => self.start_activity(
+                "pairing-image".to_string(),
+                "Waiting for a copied pairing QR image".to_string(),
+                Some(
+                    "Copy the QR image, then press Ctrl-V. To use a file, cancel and run /pair <image-path>."
+                        .to_string(),
+                ),
             ),
-            SystemEvent::QrScannerCodeRead => self.activity(
-                "qr-scanner".to_string(),
-                "Pairing QR code scanned".to_string(),
+            SystemEvent::PairingImageRead => self.activity(
+                "pairing-image".to_string(),
+                "Pairing QR image pasted".to_string(),
                 None,
                 ActivityState::Succeeded,
             ),
-            SystemEvent::QrScannerCancelled => self.activity(
-                "qr-scanner".to_string(),
-                "QR scan cancelled".to_string(),
+            SystemEvent::PairingImagePasteFailed { reason } => self.notice(
+                NoticeTone::Warning,
+                "Could not paste pairing image".to_string(),
+                Some(reason),
+            ),
+            SystemEvent::PairingImagePasteCancelled => self.activity(
+                "pairing-image".to_string(),
+                "Pairing image paste cancelled".to_string(),
                 None,
                 ActivityState::Cancelled,
             ),
@@ -2729,10 +2821,8 @@ fn text_display_width(text: &str) -> usize {
 fn redact_command(command: &str) -> String {
     if contains_mnemonic(command) {
         "/session --mnemonic <redacted>".to_string()
-    } else if command.trim_start().starts_with("/pair ") {
-        "/pair <pairing link>".to_string()
     } else {
-        sanitize_terminal_text(command)
+        redact_pairing_link(&sanitize_terminal_text(command))
     }
 }
 
@@ -2940,6 +3030,32 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_v_is_reserved_for_clipboard_images() {
+        assert!(is_clipboard_image_paste(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!is_clipboard_image_paste(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::NONE,
+        )));
+    }
+
+    #[test]
+    fn clipboard_image_errors_explain_empty_and_unreadable_contents() {
+        assert_eq!(
+            (
+                clipboard_image_error(arboard::Error::ContentNotAvailable).to_string(),
+                clipboard_image_error(arboard::Error::ConversionFailure).to_string(),
+            ),
+            (
+                "clipboard does not contain an image".to_string(),
+                "clipboard image could not be converted to RGBA pixels".to_string(),
+            )
+        );
+    }
+
+    #[test]
     fn mouse_wheel_and_end_navigate_while_an_approval_is_pending() {
         let mut app = test_app();
         app.transcript_height = 20;
@@ -3004,12 +3120,14 @@ mod tests {
         let mut app = test_app();
         app.handle_system_event(SystemEvent::SigningHostReady);
         app.push_command("/pair polkadotapp://pair?handshake=secret".to_string());
+        app.push_command("/pair \"/tmp/pairing QR.png\"".to_string());
         app.push_command("/session --mnemonic \"abandon abandon abandon about\"".to_string());
         app.stream(StreamKind::Stdout, "user id: alice.dot".to_string());
 
         let transcript = app.transcript_text();
         assert!(transcript.contains("✓ Signing host ready"));
         assert!(transcript.contains("─ /pair <pairing link>"));
+        assert!(transcript.contains("─ /pair \"/tmp/pairing QR.png\""));
         assert!(transcript.contains("─ /session --mnemonic <redacted>"));
         assert!(transcript.contains("  user id: alice.dot"));
         assert!(!transcript.contains("handshake=secret"));
@@ -3198,7 +3316,7 @@ mod tests {
         let (screen, _) = render_app(&mut app, 80, 16)?;
         let pair = screen
             .lines()
-            .find(|line| line.contains("scan a pairing"))
+            .find(|line| line.contains("paste a pairing"))
             .context("render pair completion")?;
         let script = screen
             .lines()
@@ -3213,7 +3331,7 @@ mod tests {
             line.find(description)
                 .map(|index| text_display_width(&line[..index]))
         };
-        assert_eq!(column(pair, "scan"), column(script, "edit"));
+        assert_eq!(column(pair, "paste"), column(script, "edit"));
         assert_eq!(
             column(script, "edit"),
             column(renew, "renew statement-store")
@@ -3367,18 +3485,17 @@ mod tests {
     }
 
     #[test]
-    fn qr_scanner_lifecycle_has_actionable_terminal_copy() {
+    fn pairing_image_lifecycle_has_actionable_terminal_copy() {
         let mut app = test_app();
-        app.handle_system_event(SystemEvent::QrScannerReady {
-            manual_url: Some("http://127.0.0.1:1234/#token".to_string()),
-        });
+        app.handle_system_event(SystemEvent::PairingImagePasteReady);
         let ready = app.transcript_text();
-        assert!(ready.contains("Waiting for a pairing QR code"));
-        assert!(ready.contains("Open http://127.0.0.1:1234/#token manually"));
+        assert!(ready.contains("Waiting for a copied pairing QR image"));
+        assert!(ready.contains("Copy the QR image, then press Ctrl-V"));
+        assert!(!ready.contains("http://"));
 
-        app.handle_system_event(SystemEvent::QrScannerCodeRead);
+        app.handle_system_event(SystemEvent::PairingImageRead);
 
-        assert!(app.transcript_text().contains("Pairing QR code scanned"));
+        assert!(app.transcript_text().contains("Pairing QR image pasted"));
     }
 
     #[test]
