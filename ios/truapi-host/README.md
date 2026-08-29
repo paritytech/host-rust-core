@@ -24,7 +24,21 @@ The generated bindings, the container bundle and the xcframework are all **gitig
                                 # "@parity/ios-host <version>" GitHub release,
                                 # and point the root Package.swift at it
                                 # (URL + checksum)
+./scripts/tag-release.sh <version>
+                                # commit the generated sources plus that
+                                # manifest and tag it <version>: the tag a
+                                # SwiftPM consumer resolves
 ```
+
+A consumer pins the plain semver tag, not the `@parity/ios-host@<version>` one,
+which SwiftPM cannot see:
+
+```swift
+.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.12.0")
+```
+
+`release-ios.yml` runs all three in order and clones and compiles the tag
+before pushing it. Run them by hand only as a fallback.
 
 When only the bindings need refreshing — a Rust surface change with no container
 or xcframework impact — skip the full rebuild, which needs Xcode and the iOS

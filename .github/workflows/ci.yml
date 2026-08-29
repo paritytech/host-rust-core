@@ -285,18 +285,44 @@ jobs:
       - name: Build the simulator XCFramework for TrUAPIProvider
         run: PROFILE=debug ./ios/truapi-provider/scripts/rebuild.sh --sim-only
 
-      # Compiling the test target is the point: the hand-written conformers a
-      # generated-file diff cannot see live there and in TrUAPIHost.swift.
-      - name: Compile the package and its tests
+      # Build the tag a release would cut, then compile from a clean clone of
+      # it. Compiling in place would pass on generated files that the tag does
+      # not carry, which is exactly the failure this guards: a consumer only
+      # ever sees the tag.
+      - name: Build the SwiftPM consumer tag
         run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./ios/truapi-host/scripts/tag-release.sh 0.0.0-ci
+
+      - name: Check the tag carries every generated file
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/tag-probe"
+          rm -rf "$probe"
+          git clone --quiet --branch 0.0.0-ci "file://$PWD" "$probe"
+          while read -r path; do
+            diff -u <(cd "$probe" && find "$path" -type f | sort) \
+                    <(find "$path" -type f | sort)
+          done <<< "$(sed -n -E 's/^[[:space:]]*path: "([^"]+)".*/\1/p' Package.swift | grep -v '/Binaries/')"
+
+      # The xcframework ships as a release asset rather than in the tag, so the
+      # locally built one stands in for it here.
+      - name: Compile the package and its tests from the tag
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/tag-probe"
+          mkdir -p "$probe/ios/truapi-host/Binaries" "$probe/ios/truapi-provider/Binaries"
+          cp -R ios/truapi-host/Binaries/truapi_server.xcframework "$probe/ios/truapi-host/Binaries/"
+          cp -R ios/truapi-provider/Binaries/truapi_provider.xcframework "$probe/ios/truapi-provider/Binaries/"
+          cd "$probe"
           xcodebuild build-for-testing \
             -scheme TrUAPIHost \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
-
-      - name: Compile TrUAPIProvider
-        run: swift build --target TrUAPIProvider
+          swift build --target TrUAPIProvider
 
   ts-client:
     name: "@parity/truapi"

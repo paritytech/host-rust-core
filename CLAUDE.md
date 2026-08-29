@@ -101,10 +101,14 @@ scripts/truapi-host-installer.sh
   neither.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
-  To publish the binary, include `@parity/ios-host <version>`
-  in the `release:` PR title. The release workflow rebuilds and simulator-tests
-  the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
-  only after the asset is live. When the title also names an npm package, the
+  To publish, include `@parity/ios-host <version>` in the `release:` PR title.
+  `release-ios.yml` rebuilds and simulator-tests the XCFramework, uploads it,
+  then cuts the plain semver tag `<version>` whose commit carries the generated
+  sources and a manifest pointing at that asset. That tag is the SwiftPM
+  contract: consumers pin `exact("<version>")`, and a branch cannot be consumed
+  directly because the generated sources are ignored there. The job clones and
+  compiles the tag before pushing it. Dispatching `release-ios` manually with a
+  pre-release version cuts a tag for app-side testing of an unmerged change. When the title also names an npm package, the
   iOS job waits on that publish being confirmed on npm.
   `publish.sh <version>` is the manual fallback.
   Keep `useLocalBinary = false` in committed manifests; `true` is for local
