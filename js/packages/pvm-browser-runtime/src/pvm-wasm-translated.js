@@ -25,6 +25,7 @@
   const MAX_GPU_SUBMITS_PER_UPDATE = 8;
   const MAX_TRUAPI_FRAME_BYTES = 1024 * 1024;
   const MAX_TRUAPI_RESPONSES = 32;
+  const MAX_TRUAPI_RESPONSE_BYTES = 4 * 1024 * 1024;
   const MAX_GPU_COMMANDS = 16_384;
   const GPU_ERROR_MALFORMED_BATCH = -2;
   const GPU_ERROR_QUOTA_EXCEEDED = -3;
@@ -261,6 +262,7 @@
       this.gpuSubmits = 0;
       this.gpuLastSequence = 0n;
       this.truapiResponses = [];
+      this.truapiResponseBytes = 0;
       this.tri2dSubmitted = false;
       this.maxGas = BigInt(maxGas);
       this.input = [];
@@ -412,10 +414,14 @@
       ) {
         throw new Error("invalid translated TrUAPI response");
       }
-      if (this.truapiResponses.length === MAX_TRUAPI_RESPONSES) {
+      if (
+        this.truapiResponses.length === MAX_TRUAPI_RESPONSES ||
+        this.truapiResponseBytes + bytes.byteLength > MAX_TRUAPI_RESPONSE_BYTES
+      ) {
         throw new Error("translated TrUAPI response queue overflow");
       }
       this.truapiResponses.push(bytes.slice());
+      this.truapiResponseBytes += bytes.byteLength;
     }
 
     stop() {
@@ -424,6 +430,7 @@
       this.coreInput.length = 0;
       this.gpuEvents.length = 0;
       this.truapiResponses.length = 0;
+      this.truapiResponseBytes = 0;
     }
 
     #resetBudget(hostcalls) {
@@ -807,6 +814,7 @@
           }
           this.#write(this.#u32(a0), response);
           this.truapiResponses.shift();
+          this.truapiResponseBytes -= response.byteLength;
           this.#setReg(7, BigInt(response.byteLength));
           return false;
         }

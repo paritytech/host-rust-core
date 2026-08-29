@@ -406,6 +406,26 @@ impl HostState {
         }
         self.input.push_back(event);
     }
+
+    fn take_truapi_request(&mut self) -> Option<Vec<u8>> {
+        let frame = self.truapi_requests.pop_front()?;
+        self.truapi_request_bytes -= frame.len();
+        Some(frame)
+    }
+
+    fn queue_truapi_response(&mut self, bytes: Vec<u8>) -> Result<()> {
+        if bytes.is_empty() || bytes.len() > MAX_TRUAPI_FRAME_BYTES {
+            return Err(anyhow!("invalid TrUAPI response frame"));
+        }
+        if self.truapi_responses.len() == MAX_QUEUED_TRUAPI_FRAMES
+            || self.truapi_response_bytes.saturating_add(bytes.len()) > MAX_QUEUED_TRUAPI_BYTES
+        {
+            return Err(anyhow!("TrUAPI response queue overflow"));
+        }
+        self.truapi_response_bytes += bytes.len();
+        self.truapi_responses.push_back(bytes);
+        Ok(())
+    }
 }
 
 pub struct Runtime {
@@ -1015,24 +1035,11 @@ impl Runtime {
     }
 
     pub fn take_truapi_request(&mut self) -> Option<Vec<u8>> {
-        let frame = self.state.truapi_requests.pop_front()?;
-        self.state.truapi_request_bytes -= frame.len();
-        Some(frame)
+        self.state.take_truapi_request()
     }
 
     pub fn send_truapi_response(&mut self, bytes: Vec<u8>) -> Result<()> {
-        if bytes.is_empty() || bytes.len() > MAX_TRUAPI_FRAME_BYTES {
-            return Err(anyhow!("invalid TrUAPI response frame"));
-        }
-        if self.state.truapi_responses.len() == MAX_QUEUED_TRUAPI_FRAMES
-            || self.state.truapi_response_bytes.saturating_add(bytes.len())
-                > MAX_QUEUED_TRUAPI_BYTES
-        {
-            return Err(anyhow!("TrUAPI response queue overflow"));
-        }
-        self.state.truapi_response_bytes += bytes.len();
-        self.state.truapi_responses.push_back(bytes);
-        Ok(())
+        self.state.queue_truapi_response(bytes)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1325,6 +1332,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn truapi_queues_enforce_frame_count_and_byte_limits() {
+        let mut state = HostState::new(HashMap::new(), PresentationProfile::Framebuffer, false);
+        assert!(state.queue_truapi_response(Vec::new()).is_err());
+        assert!(state
+            .queue_truapi_response(vec![0; MAX_TRUAPI_FRAME_BYTES + 1])
+            .is_err());
+
+        for _ in 0..MAX_QUEUED_TRUAPI_FRAMES {
+            state
+                .queue_truapi_response(vec![0; 1])
+                .expect("bounded response should queue");
+        }
+        assert!(
+            state.queue_truapi_response(vec![0; 1]).is_err(),
+            "frame-count overflow must fail closed"
+        );
+
+        state.truapi_responses.clear();
+        state.truapi_response_bytes = 0;
+        for _ in 0..(MAX_QUEUED_TRUAPI_BYTES / MAX_TRUAPI_FRAME_BYTES) {
+            state
+                .queue_truapi_response(vec![0; MAX_TRUAPI_FRAME_BYTES])
+                .expect("response within byte budget should queue");
+        }
+        assert!(
+            state.queue_truapi_response(vec![0; 1]).is_err(),
+            "byte-budget overflow must fail closed"
+        );
+
+        state.truapi_requests.push_back(vec![1, 2, 3]);
+        state.truapi_request_bytes = 3;
+        assert_eq!(state.take_truapi_request(), Some(vec![1, 2, 3]));
+        assert_eq!(state.truapi_request_bytes, 0);
+    }
     #[test]
     fn launch_limits_reject_unbounded_native_inputs() {
         assert!(validate_program_configuration(0, 1).is_err());
