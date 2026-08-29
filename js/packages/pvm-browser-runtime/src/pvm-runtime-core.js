@@ -139,6 +139,18 @@ globalThis.createPvmRuntime = endpoint => {
     }
   }
 
+  function drainTruapiRequests() {
+    while (pvm.pvm_browser_take_truapi_request?.()) {
+      const length = pvm.pvm_browser_truapi_request_length();
+      const bytes = new Uint8Array(
+        pvm.memory.buffer,
+        pvm.pvm_browser_truapi_request_pointer(),
+        length
+      ).slice();
+      postMessage({ type: "truapi-request", bytes }, [bytes.buffer]);
+    }
+  }
+
   function drainAudio() {
     while (pvm.pvm_browser_take_audio()) {
       const sampleRate = pvm.pvm_browser_audio_sample_rate();
@@ -194,6 +206,7 @@ globalThis.createPvmRuntime = endpoint => {
         drainFrame();
         drainTri2d();
         drainGpuBatches();
+        drainTruapiRequests();
         drainAudio();
         drainSave();
         drainLogs();
@@ -447,6 +460,7 @@ globalThis.createPvmRuntime = endpoint => {
       }
       drainTri2d();
       drainGpuBatches();
+      drainTruapiRequests();
       drainLogs();
     }
     startedAt = performance.now();
@@ -498,6 +512,21 @@ globalThis.createPvmRuntime = endpoint => {
     check(pvm.pvm_browser_send_gpu_event(), "send PolkaVM browser GPU event");
   }
 
+  function sendTruapiResponse(bytes) {
+    if (!running || !pvm || !bytes.byteLength) {
+      return;
+    }
+    if (translated) {
+      translated.sendTruapiResponse(bytes);
+      return;
+    }
+    stage(bytes);
+    check(
+      pvm.pvm_browser_send_truapi_response(),
+      "send PolkaVM browser TrUAPI response"
+    );
+  }
+
   endpoint.onmessage = event => {
     const message = event.data;
     if (message?.type === "start") {
@@ -517,6 +546,14 @@ globalThis.createPvmRuntime = endpoint => {
     } else if (message?.type === "gpu-event") {
       try {
         sendGpuEvent(new Uint8Array(message.bytes));
+      } catch (error) {
+        stopRuntime();
+        postMessage({ type: "error", message: error.message });
+        postMessage({ type: "terminated" });
+      }
+    } else if (message?.type === "truapi-response") {
+      try {
+        sendTruapiResponse(new Uint8Array(message.bytes));
       } catch (error) {
         stopRuntime();
         postMessage({ type: "error", message: error.message });

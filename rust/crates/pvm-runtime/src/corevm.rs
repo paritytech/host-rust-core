@@ -65,6 +65,10 @@ pub struct Vm {
     audio_channels: u32,
     epoca_input_events: VecDeque<[u8; crate::INPUT_EVENT_BYTES]>,
     started: Instant,
+    truapi_requests: VecDeque<Vec<u8>>,
+    truapi_request_bytes: usize,
+    truapi_responses: VecDeque<Vec<u8>>,
+    truapi_response_bytes: usize,
 
     import_syscall: Option<u32>,
     import_set_palette: Option<u32>,
@@ -78,6 +82,8 @@ pub struct Vm {
     import_time_ms: Option<u32>,
     import_log: Option<u32>,
     import_yield: Option<u32>,
+    import_truapi_send: Option<u32>,
+    import_truapi_poll: Option<u32>,
 }
 
 #[derive(Copy, Clone)]
@@ -218,6 +224,8 @@ impl Vm {
         let mut import_time_ms = None;
         let mut import_log = None;
         let mut import_yield = None;
+        let mut import_truapi_send = None;
+        let mut import_truapi_poll = None;
 
         for (import_index, import) in module.imports().into_iter().enumerate() {
             let Some(import) = import else {
@@ -238,6 +246,8 @@ impl Vm {
                 b"pvm_time_ms" => import_time_ms = Some(import_index),
                 b"host_log" => import_log = Some(import_index),
                 b"pvm_yield" => import_yield = Some(import_index),
+                b"host_truapi_send" => import_truapi_send = Some(import_index),
+                b"host_truapi_poll" => import_truapi_poll = Some(import_index),
                 _ => return Err(format!("unsupported import: {}", import).into()),
             }
         }
@@ -254,6 +264,10 @@ impl Vm {
             audio_channels: 0,
             epoca_input_events: VecDeque::with_capacity(MAX_QUEUED_INPUT_EVENTS),
             started: Instant::now(),
+            truapi_requests: VecDeque::new(),
+            truapi_request_bytes: 0,
+            truapi_responses: VecDeque::new(),
+            truapi_response_bytes: 0,
             import_syscall,
             import_set_palette,
             import_display,
@@ -266,11 +280,34 @@ impl Vm {
             import_time_ms,
             import_log,
             import_yield,
+            import_truapi_send,
+            import_truapi_poll,
         })
     }
 
     pub fn backend(&self) -> polkavm::BackendKind {
         self.backend
+    }
+
+    pub fn take_truapi_request(&mut self) -> Option<Vec<u8>> {
+        let frame = self.truapi_requests.pop_front()?;
+        self.truapi_request_bytes -= frame.len();
+        Some(frame)
+    }
+
+    pub fn send_truapi_response(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        if bytes.is_empty() || bytes.len() > crate::MAX_TRUAPI_FRAME_BYTES {
+            return Err("invalid TrUAPI response frame".into());
+        }
+        if self.truapi_responses.len() == crate::MAX_QUEUED_TRUAPI_FRAMES
+            || self.truapi_response_bytes.saturating_add(bytes.len())
+                > crate::MAX_QUEUED_TRUAPI_BYTES
+        {
+            return Err("TrUAPI response queue overflow".into());
+        }
+        self.truapi_response_bytes += bytes.len();
+        self.truapi_responses.push_back(bytes);
+        Ok(())
     }
 
     pub fn set_gas(&mut self, gas: u64) {
@@ -570,6 +607,49 @@ impl Vm {
                         written += event.len();
                     }
                     self.instance.set_reg(Reg::A0, written as u64);
+                    continue;
+                }
+                InterruptKind::Ecalli(hostcall) if Some(hostcall) == self.import_truapi_send => {
+                    let address = u32::try_from(self.instance.reg(Reg::A0))
+                        .map_err(|_| "TrUAPI request address is out of range".to_owned())?;
+                    let length = usize::try_from(self.instance.reg(Reg::A1)).unwrap_or(usize::MAX);
+                    if length == 0 || length > crate::MAX_TRUAPI_FRAME_BYTES {
+                        self.instance.set_reg(Reg::A0, 1);
+                        continue;
+                    }
+                    if self.truapi_requests.len() == crate::MAX_QUEUED_TRUAPI_FRAMES
+                        || self.truapi_request_bytes.saturating_add(length)
+                            > crate::MAX_QUEUED_TRUAPI_BYTES
+                    {
+                        self.instance.set_reg(Reg::A0, 2);
+                        continue;
+                    }
+                    let bytes = self.instance.read_memory(address, length as u32)?;
+                    self.truapi_request_bytes += bytes.len();
+                    self.truapi_requests.push_back(bytes);
+                    self.instance.set_reg(Reg::A0, 0);
+                    continue;
+                }
+                InterruptKind::Ecalli(hostcall) if Some(hostcall) == self.import_truapi_poll => {
+                    let address = u32::try_from(self.instance.reg(Reg::A0))
+                        .map_err(|_| "TrUAPI response address is out of range".to_owned())?;
+                    let capacity =
+                        usize::try_from(self.instance.reg(Reg::A1)).unwrap_or(usize::MAX);
+                    let Some(required) = self.truapi_responses.front().map(Vec::len) else {
+                        self.instance.set_reg(Reg::A0, 0);
+                        continue;
+                    };
+                    if capacity < required {
+                        let required = i32::try_from(required)
+                            .map_err(|_| "TrUAPI response length overflow".to_owned())?;
+                        self.instance.set_reg(Reg::A0, i64::from(-required) as u64);
+                        continue;
+                    }
+                    let response = self.truapi_responses.front().unwrap();
+                    self.instance.write_memory(address, response)?;
+                    self.truapi_responses.pop_front();
+                    self.truapi_response_bytes -= required;
+                    self.instance.set_reg(Reg::A0, required as u64);
                     continue;
                 }
                 InterruptKind::Ecalli(hostcall) if Some(hostcall) == self.import_asset_read => {

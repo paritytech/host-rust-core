@@ -165,6 +165,23 @@ impl ApplicationRuntime {
         }
     }
 
+    pub fn take_truapi_request(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Self::Cooperative(runtime) => runtime.take_truapi_request(),
+            Self::CoreVm(runtime) => runtime.vm.take_truapi_request(),
+        }
+    }
+
+    pub fn send_truapi_response(&mut self, bytes: Vec<u8>) -> Result<()> {
+        match self {
+            Self::Cooperative(runtime) => runtime.send_truapi_response(bytes),
+            Self::CoreVm(runtime) => runtime
+                .vm
+                .send_truapi_response(bytes)
+                .map_err(anyhow::Error::msg),
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub fn set_time_ms(&mut self, time_ms: u64) {
         if let Self::Cooperative(runtime) = self {

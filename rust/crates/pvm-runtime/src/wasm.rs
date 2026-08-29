@@ -37,6 +37,7 @@ struct BrowserHost {
     tri2d: Option<Tri2dFrame>,
     gpu_batch: Option<GpuBatch>,
     audio: Option<AudioChunk>,
+    truapi_request: Option<Vec<u8>>,
     log: Option<String>,
     save: Option<Vec<u8>>,
     translation: Vec<u8>,
@@ -52,6 +53,7 @@ impl BrowserHost {
             tri2d: None,
             gpu_batch: None,
             audio: None,
+            truapi_request: None,
             log: None,
             save: None,
             translation: Vec::new(),
@@ -70,6 +72,7 @@ impl BrowserHost {
         self.frame = None;
         self.tri2d = None;
         self.gpu_batch = None;
+        self.truapi_request = None;
         self.audio = None;
         self.log = None;
         self.save = None;
@@ -264,6 +267,14 @@ pub extern "C" fn pvm_browser_send_gpu_event() -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn pvm_browser_send_truapi_response() -> u32 {
+    status(|host| {
+        let bytes = std::mem::take(&mut host.staging);
+        host.running()?.send_truapi_response(bytes)
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn pvm_browser_init() -> u32 {
     status(|host| host.running()?.init())
 }
@@ -410,6 +421,33 @@ pub extern "C" fn pvm_browser_gpu_batch_length() -> u32 {
             .as_ref()
             .map_or(0, |batch| batch.bytes.len() as u32)
     })
+}
+
+#[no_mangle]
+pub extern "C" fn pvm_browser_take_truapi_request() -> u32 {
+    HOST.with(|host| {
+        let mut host = host.borrow_mut();
+        host.truapi_request = match &mut host.phase {
+            Phase::Running(runtime) => runtime.take_truapi_request(),
+            _ => None,
+        };
+        u32::from(host.truapi_request.is_some())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn pvm_browser_truapi_request_pointer() -> u32 {
+    HOST.with(|host| {
+        host.borrow()
+            .truapi_request
+            .as_ref()
+            .map_or(0, |frame| frame.as_ptr() as usize as u32)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn pvm_browser_truapi_request_length() -> u32 {
+    HOST.with(|host| host.borrow().truapi_request.as_ref().map_or(0, Vec::len) as u32)
 }
 #[no_mangle]
 pub extern "C" fn pvm_browser_take_audio() -> u32 {
