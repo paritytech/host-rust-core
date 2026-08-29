@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
+.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -34,6 +34,12 @@ export VITE_NETWORKS
 # preview behavior.
 DOTLI_PREVIEW ?= preview:debug
 
+check-generated:
+	@test -f rust/crates/truapi-server/src/generated/dispatcher.rs \
+		|| { echo "Missing generated outputs. Run: make codegen"; exit 1; }
+	@test -f rust/crates/truapi-server/src/wasm/generated_bridge.rs \
+		|| { echo "Missing generated outputs. Run: make codegen"; exit 1; }
+
 help: ## Show this help.
 	@awk 'BEGIN { FS = ":.*##"; printf "Usage: make <target>\n\nTargets:\n" } \
 	      /^[a-zA-Z0-9_-]+:.*?##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -50,6 +56,7 @@ setup: ## First-time setup: submodules, JS dependencies, generated artifacts.
 	$(MAKE) dotli-link
 
 build: ## Build the Rust workspace and the TypeScript client.
+	@make check-generated
 	cargo build --workspace
 	cd $(TRUAPI_PKG) && npm run build
 	cd $(HOST_WASM_PKG) && npm run build
@@ -316,6 +323,7 @@ test: ## Run Rust + TypeScript client tests.
 	cd $(HOST_WASM_PKG) && npm run build && npm test
 
 check: ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
+	@make check-generated
 	cargo build --workspace
 	cargo check --target wasm32-unknown-unknown -p truapi-server
 	cargo +nightly fmt --check

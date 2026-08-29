@@ -71,6 +71,7 @@ the full list of targets.
 
 ```bash
 make setup    # submodules + JS dependencies
+make codegen # generated Rust/TS/iOS outputs (git-ignored, regenerated from the Rust crates)
 make build    # Rust workspace + TypeScript client
 ```
 
@@ -90,6 +91,7 @@ make playground   # rebuild the playground against the refreshed snapshot
 make test     # Rust + TypeScript client tests
 make check    # full suite: build, fmt, clippy, test, TS tests, playground build + lint
 ```
+`make build` and `make check` invoke `make check-generated` first, so a missing codegen output yields a hint to run `make codegen`.
 
 ## Pull requests
 
