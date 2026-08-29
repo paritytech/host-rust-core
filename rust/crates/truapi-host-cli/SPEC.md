@@ -119,6 +119,7 @@ as the paired path.
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
 - the terminal UI and plain output;
+- local pairing QR acquisition;
 - product-frame WebSocket listening;
 - session and product switching;
 - child editor and Bun processes; and
@@ -526,6 +527,7 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
+| `/pair` | no | yes | Open the local pairing QR scanner. TUI only. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
@@ -548,8 +550,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/quit` | yes | yes | Leave the command loop. |
 
 The shared parser recognizes every command, then the active role rejects
-commands it cannot execute. `/pair` performs a fast prefix check; the Rust core
-then fully decodes and validates the V2 handshake.
+commands it cannot execute. `/pair <url>` performs a fast prefix check; the
+Rust core then fully decodes and validates the V2 handshake.
 
 `/devices` and `/devices --list` are equivalent. They sort peers by statement
 account ID and print each ID with any available host and platform metadata.
@@ -560,6 +562,55 @@ describes that only the selected peer is affected. `exec` removal runs directly.
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
 produce explicit errors.
+
+### 8.1 Pairing QR scanner
+
+Bare `/pair` is available only in the interactive signing-host TUI. It:
+
+1. binds a new IPv4 loopback listener on an operating-system-selected port;
+2. generates a 256-bit capability token and an independent content-security
+   policy nonce;
+3. asks the operating system to open the scanner URL in the default browser;
+4. shows that URL in the terminal only when automatic opening fails;
+5. accepts grayscale frames until it decodes exactly one valid
+   `polkadotapp://pair?handshake=...` proposal or receives cancellation; and
+6. passes the decoded deeplink to the same pairing responder used by
+   `/pair <url>`.
+
+The browser page offers app or screen capture, camera capture, and pasted,
+dropped, or selected PNG, JPEG, WebP, or AVIF images. Live sources show a
+preview and submit no more than one frame at a time. Frames are scaled to at
+most 1280 pixels per edge before conversion to grayscale. Image files larger
+than 20 MiB are rejected by the page.
+
+The scanner distinguishes no QR code, an unrelated QR code, and more than one
+valid pairing code. Live capture continues after each of those conditions.
+Selected images return to the source picker with an actionable explanation.
+Permission denial, unavailable or busy cameras, ended capture streams, and a
+lost terminal connection also return clear recovery text. Switching sources,
+cancelling, completing, or leaving the page stops all media tracks and aborts
+the active frame request.
+
+The scanner transport is single-use and has these boundaries:
+
+- it binds only `127.0.0.1` and accepts only loopback peers;
+- every request requires the exact generated `Host` value;
+- frame and cancellation requests require the exact loopback `Origin` and a
+  constant-time-checked bearer capability;
+- the capability starts in the URL fragment, is removed from browser history
+  before scanning, and is never returned in page content;
+- the page has no remote assets and is served with a nonce-based content
+  security policy, a restrictive permissions policy, no-store and no-referrer
+  policies, clickjacking protection, and same-origin isolation headers;
+- request headers, bodies, frame dimensions, and request time are bounded;
+- QR decoding runs off the asynchronous I/O executor; and
+- completion or cancellation drops the listener before the command continues.
+
+The decoded deeplink is carried only in the successful frame response path to
+the existing pairing implementation. It is not put in a URL, browser response
+body, or scanner log. Ctrl-C drops the scan future and therefore the listener,
+connection, capability, and any pending result receiver. Non-interactive
+`exec '/pair'` fails with instructions to provide `/pair <url>` instead.
 
 ## 9. Terminal UI
 

@@ -180,6 +180,11 @@ pub enum SystemEvent {
         reason: String,
     },
     SigningHostResponderStarted,
+    QrScannerReady {
+        manual_url: Option<String>,
+    },
+    QrScannerCodeRead,
+    QrScannerCancelled,
     AllowanceReady {
         target: String,
         sequence: u32,
@@ -1430,6 +1435,23 @@ impl App {
                 "Waiting for the pairing host".to_string(),
                 None,
                 ActivityState::Running,
+            ),
+            SystemEvent::QrScannerReady { manual_url } => self.start_activity(
+                "qr-scanner".to_string(),
+                "Waiting for a pairing QR code".to_string(),
+                manual_url.map(|url| format!("Open {url} manually")),
+            ),
+            SystemEvent::QrScannerCodeRead => self.activity(
+                "qr-scanner".to_string(),
+                "Pairing QR code scanned".to_string(),
+                None,
+                ActivityState::Succeeded,
+            ),
+            SystemEvent::QrScannerCancelled => self.activity(
+                "qr-scanner".to_string(),
+                "QR scan cancelled".to_string(),
+                None,
+                ActivityState::Cancelled,
             ),
             SystemEvent::AllowanceReady {
                 target,
@@ -3174,10 +3196,10 @@ mod tests {
         app.editor.set_text("/");
 
         let (screen, _) = render_app(&mut app, 80, 16)?;
-        let deeplink = screen
+        let pair = screen
             .lines()
-            .find(|line| line.contains("answer a Polkadot"))
-            .context("render deeplink completion")?;
+            .find(|line| line.contains("scan a pairing"))
+            .context("render pair completion")?;
         let script = screen
             .lines()
             .find(|line| line.contains("edit the last"))
@@ -3191,7 +3213,7 @@ mod tests {
             line.find(description)
                 .map(|index| text_display_width(&line[..index]))
         };
-        assert_eq!(column(deeplink, "answer"), column(script, "edit"));
+        assert_eq!(column(pair, "scan"), column(script, "edit"));
         assert_eq!(
             column(script, "edit"),
             column(renew, "renew statement-store")
@@ -3342,6 +3364,21 @@ mod tests {
         };
 
         assert!(event.human().contains("polkadotapp://pair?handshake=0123"));
+    }
+
+    #[test]
+    fn qr_scanner_lifecycle_has_actionable_terminal_copy() {
+        let mut app = test_app();
+        app.handle_system_event(SystemEvent::QrScannerReady {
+            manual_url: Some("http://127.0.0.1:1234/#token".to_string()),
+        });
+        let ready = app.transcript_text();
+        assert!(ready.contains("Waiting for a pairing QR code"));
+        assert!(ready.contains("Open http://127.0.0.1:1234/#token manually"));
+
+        app.handle_system_event(SystemEvent::QrScannerCodeRead);
+
+        assert!(app.transcript_text().contains("Pairing QR code scanned"));
     }
 
     #[test]

@@ -20,7 +20,7 @@ One binary, `truapi-host`:
 | Command | Role |
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
-| `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
+| `signing-host` | Wallet-local host: owns signer identity, can run product scripts, scans pairing QR codes or accepts deeplinks, registers statement allowance on-chain, signs. |
 | `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
@@ -175,9 +175,10 @@ Two players on one machine means two hosts, each with its own session and port
 pointed at the second port. Sessions isolate the signer, the storage and the
 permissions.
 
-The signing host opens an interactive terminal where you can paste a pairing
-link, type `/pair <link>`, run `/script`, or use `/help` to discover the
-available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
+The signing host opens an interactive terminal where you can type `/pair` to
+scan a pairing QR code, paste a link with `/pair <link>`, run `/script`, or use
+`/help` to discover the available commands. It uses `--mnemonic` /
+`HOST_CLI_SIGNER_MNEMONIC` if set.
 Otherwise it auto-selects or creates a stored account under `--base-path` (default
 `$XDG_STATE_HOME/truapi-host` or `~/.local/state/truapi-host`), attests it
 through the identity backend, waits for ring readiness, and rotates when the
@@ -197,6 +198,7 @@ Commands always start with `/`:
 
 | Command | Result |
 | --- | --- |
+| `/pair` | Open a local browser scanner for a pairing QR code (signing host). |
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
 | `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
 | `/devices --remove <statement-account-id>` | Remove one paired device by its 32-byte statement account ID. |
@@ -220,6 +222,28 @@ Commands always start with `/`:
 | `/clear` | Clear the visible transcript. |
 | `/copy` | Copy the retained transcript to the system clipboard. |
 | `/quit` | Shut down cleanly. |
+
+### Scanning a pairing QR code
+
+Run `/pair` in an interactive signing host. The CLI opens a short-lived local
+page where you can:
+
+- choose the app window or screen that shows the QR code;
+- use a camera; or
+- paste, drop, or choose a PNG, JPEG, WebP, or AVIF image.
+
+The page keeps scanning after an unrelated QR code and explains camera or
+screen-capture permission failures without ending the command. Use **Choose
+another source** to recover, or **Cancel scan** to return to the terminal.
+
+If the browser cannot be opened automatically, the terminal prints a URL to
+open manually on the same computer. Loopback URLs are not reachable from a
+different SSH client, so remote and one-shot workflows should keep using
+`/pair <url>` or `--deeplink <url>`.
+
+The scanner page and QR frames stay on the local machine. The listener accepts
+only loopback connections, expires after one successful scan or cancellation,
+and never places the decoded pairing deeplink in a browser URL.
 
 Typing `/` opens autocomplete. Up/Down selects a completion; with the menu
 closed it navigates process-local command history. Tab inserts a completion,

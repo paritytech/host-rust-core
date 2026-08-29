@@ -21,6 +21,7 @@ mod dotns_read;
 mod frame_server;
 mod network;
 mod platform;
+mod qr_scanner;
 mod register_name;
 mod script_runner;
 mod sessions;
@@ -65,8 +66,8 @@ use crate::sessions::{
     SessionProfile,
 };
 use crate::signing_shell::{
-    ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, ProductCommand, SessionCommand,
-    ShellCommand, parse_command,
+    ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, PairCommand, ProductCommand,
+    SessionCommand, ShellCommand, parse_command,
 };
 use crate::terminal_ui::{
     ActiveTerminalUi, ActivityState, DriveResult, SystemEvent, TerminalUi, UiHandle,
@@ -3028,7 +3029,7 @@ async fn signing_interactive_loop(
             session,
             &frame_url,
             &product_id,
-            ShellCommand::Pair(deeplink),
+            ShellCommand::Pair(PairCommand::Deeplink(deeplink)),
             input,
             &mut ui,
         )
@@ -3259,7 +3260,30 @@ async fn execute_interactive_operation(
     ui: UiHandle,
 ) -> Result<()> {
     match command {
-        ShellCommand::Pair(deeplink) => start_deeplink_responder(session, deeplink).await?,
+        ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
+            start_deeplink_responder(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Scan) => {
+            let scanner = qr_scanner::ScannerServer::bind().await?;
+            let launch_url = scanner.launch_url();
+            let manual_url = match qr_scanner::open_browser(&launch_url).await {
+                Ok(()) => None,
+                Err(error) => {
+                    tracing::warn!(%error, "could not open the QR scanner browser");
+                    Some(launch_url)
+                }
+            };
+            ui.event(SystemEvent::QrScannerReady { manual_url });
+            match scanner.scan().await? {
+                qr_scanner::ScanOutcome::Deeplink(deeplink) => {
+                    ui.event(SystemEvent::QrScannerCodeRead);
+                    start_deeplink_responder(session, deeplink).await?;
+                }
+                qr_scanner::ScanOutcome::Cancelled => {
+                    ui.event(SystemEvent::QrScannerCancelled);
+                }
+            }
+        }
         ShellCommand::Script(Some(script)) => {
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
             let script =
@@ -3312,7 +3336,12 @@ async fn execute_non_interactive_command(
     log_controller: &LogController,
 ) -> Result<Option<SessionClearTarget>> {
     match command {
-        ShellCommand::Pair(deeplink) => respond_to_deeplink(session, deeplink).await?,
+        ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
+            respond_to_deeplink(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Scan) => bail!(
+            "QR scanning needs an interactive signing host; use /pair <polkadotapp://pair?...>"
+        ),
         ShellCommand::Script(script) => {
             let script = match script {
                 Some(script) => {

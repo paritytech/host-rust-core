@@ -54,6 +54,15 @@ pub enum SessionCommand {
     ImportMnemonic(SecretMnemonic),
 }
 
+/// Pairing input selected through `/pair`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairCommand {
+    /// Acquire a pairing deeplink from a QR code.
+    Scan,
+    /// Answer the supplied Polkadot Mobile pairing deeplink.
+    Deeplink(String),
+}
+
 /// A mnemonic accepted by the command parser without exposing it through
 /// derived debug output or retaining it after the command is dropped.
 #[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
@@ -119,8 +128,8 @@ pub fn mask_mnemonic(command: &str) -> Option<String> {
 /// A command accepted by the signing-host command bar or `exec` mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellCommand {
-    /// Answer a Polkadot Mobile pairing deeplink.
-    Pair(String),
+    /// Scan or answer a Polkadot Mobile pairing request.
+    Pair(PairCommand),
     /// Inspect or remove paired devices for the active managed session.
     Devices(DeviceCommand),
     /// Inspect or change how future confirmations are approved.
@@ -166,12 +175,14 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
     match name {
         "/pair" => {
             if argument.is_empty() {
-                return Err("usage: /pair <polkadotapp://pair?...>".to_string());
+                return Ok(ShellCommand::Pair(PairCommand::Scan));
             }
             if !argument.starts_with("polkadotapp://pair?") {
                 return Err("/pair expects a polkadotapp://pair?... URL".to_string());
             }
-            Ok(ShellCommand::Pair(argument.to_string()))
+            Ok(ShellCommand::Pair(PairCommand::Deeplink(
+                argument.to_string(),
+            )))
         }
         "/devices" => {
             if argument.is_empty() || argument == "--list" {
@@ -309,7 +320,7 @@ pub struct Completion {
 }
 
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
-    ("/pair", "answer a Polkadot Mobile pairing URL"),
+    ("/pair", "scan a pairing QR or answer a pairing URL"),
     ("/devices", "list or remove paired devices"),
     ("/approval", "show or change confirmation approval"),
     ("/script", "edit the last or run an existing product script"),
@@ -781,6 +792,7 @@ pub fn parse_approval(input: &str) -> Option<bool> {
 
 /// Text displayed by `/help` in either presentation mode.
 pub const HELP_TEXT: &str = "\
+/pair                   scan a pairing QR code
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
 /devices --remove <id>  remove one paired device by statement account ID
@@ -834,10 +846,14 @@ mod tests {
     #[test]
     fn parses_all_operational_commands() {
         assert_eq!(
+            parse_command("/pair"),
+            Ok(ShellCommand::Pair(PairCommand::Scan))
+        );
+        assert_eq!(
             parse_command("/pair polkadotapp://pair?handshake=01"),
-            Ok(ShellCommand::Pair(
+            Ok(ShellCommand::Pair(PairCommand::Deeplink(
                 "polkadotapp://pair?handshake=01".to_string()
-            ))
+            )))
         );
         assert_eq!(
             parse_command("/script scripts/my smoke.ts"),
@@ -1026,6 +1042,21 @@ mod tests {
         assert_eq!(parse_approval(" YES "), Some(true));
         assert_eq!(parse_approval("n"), Some(false));
         assert_eq!(parse_approval("sure"), None);
+    }
+
+    #[test]
+    fn pair_command_advertises_scanning_and_the_deeplink_fallback() {
+        assert_eq!(
+            completions_for_scope("/pair", &[], CommandScope::SigningHost),
+            vec![Completion {
+                value: "/pair".to_string(),
+                description: "scan a pairing QR or answer a pairing URL",
+            }]
+        );
+        assert!(HELP_TEXT.starts_with(
+            "/pair                   scan a pairing QR code\n\
+             /pair <url>             answer a Polkadot Mobile pairing URL"
+        ));
     }
 
     #[test]
