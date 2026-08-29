@@ -70,6 +70,7 @@ rust/crates/
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
+  truapi-pvm-host/       Reviewed bridge to one immutable pvm-host-runtime release
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
@@ -91,6 +92,12 @@ docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
+
+The PolkaVM application runtime, GPU wire contract, browser workers, and
+reproducible browser assets live in
+[`paritytech/pvm-host-runtime`](https://github.com/paritytech/pvm-host-runtime).
+Hosts integrate through `truapi-pvm-host`, which pins one reviewed runtime
+source revision and exposes the matching native API and browser asset set.
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
