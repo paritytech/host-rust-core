@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
@@ -683,6 +684,11 @@ pub enum DriveResult<T> {
     Cancelled,
 }
 
+pub(super) enum PairingImageInput {
+    Pixels(RgbaFrame),
+    Path(PathBuf),
+}
+
 /// Full-screen terminal owner used by the signing-host session loop.
 pub struct ActiveTerminalUi {
     terminal: Option<Renderer>,
@@ -898,8 +904,8 @@ impl ActiveTerminalUi {
         }
     }
 
-    /// Wait for Ctrl-V and read a copied pairing QR image from the system clipboard.
-    pub async fn read_pairing_image(&mut self) -> Result<DriveResult<RgbaFrame>> {
+    /// Wait for a pasted or dropped pairing QR image.
+    pub async fn read_pairing_image(&mut self) -> Result<DriveResult<PairingImageInput>> {
         self.app.busy = Some("/pair".to_string());
         self.event(SystemEvent::PairingImagePasteReady);
         loop {
@@ -918,26 +924,47 @@ impl ActiveTerminalUi {
                         return Ok(DriveResult::Cancelled);
                     };
                     let event = event.context("read terminal event")?;
-                    if let Event::Key(key) = event
-                        && is_clipboard_image_paste(key)
-                    {
-                        match self.read_clipboard_image() {
-                            Ok(image) => {
-                                self.app.busy = None;
-                                self.event(SystemEvent::PairingImageRead);
-                                return Ok(DriveResult::Complete(image));
+                    match pairing_image_request(&event) {
+                        Some(PairingImageRequest::Clipboard) => {
+                            match self.read_clipboard_image() {
+                                Ok(image) => {
+                                    self.app.busy = None;
+                                    self.event(SystemEvent::PairingImageRead);
+                                    return Ok(DriveResult::Complete(PairingImageInput::Pixels(image)));
+                                }
+                                Err(error) => {
+                                    let reason = pairing_image_failure(
+                                        &error,
+                                        matches!(event, Event::Paste(_)),
+                                    );
+                                    self.event(SystemEvent::PairingImagePasteFailed { reason });
+                                }
                             }
-                            Err(error) => self.event(SystemEvent::PairingImagePasteFailed {
-                                reason: error.to_string(),
-                            }),
+                            continue;
                         }
-                        continue;
-                    }
-                    if matches!(event, Event::Paste(_)) {
-                        self.event(SystemEvent::PairingImagePasteFailed {
-                            reason: "The terminal pasted text. Copy the image itself and press Ctrl-V, or cancel and run /pair <image-path>.".to_string(),
-                        });
-                        continue;
+                        Some(PairingImageRequest::Path(path)) => {
+                            self.app.busy = None;
+                            self.event(SystemEvent::PairingImageRead);
+                            return Ok(DriveResult::Complete(PairingImageInput::Path(path)));
+                        }
+                        Some(PairingImageRequest::SubmitPath) => {
+                            let text = self.app.editor.text();
+                            self.app.editor.clear();
+                            if text.trim().is_empty() {
+                                continue;
+                            }
+                            let Some(path) = pairing_image_path(&text) else {
+                                self.event(SystemEvent::PairingImagePasteFailed {
+                                    reason: "The submitted text is not a readable image file path. Copy an image or drag an image file here."
+                                        .to_string(),
+                                });
+                                continue;
+                            };
+                            self.app.busy = None;
+                            self.event(SystemEvent::PairingImageRead);
+                            return Ok(DriveResult::Complete(PairingImageInput::Path(path)));
+                        }
+                        None => {}
                     }
                     if self.app.handle_busy_event(event) {
                         self.app.busy = None;
@@ -1032,6 +1059,65 @@ fn is_clipboard_image_paste(key: KeyEvent) -> bool {
     key.kind == KeyEventKind::Press
         && key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('v' | 'V'))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PairingImageRequest {
+    Clipboard,
+    Path(PathBuf),
+    SubmitPath,
+}
+
+fn pairing_image_request(event: &Event) -> Option<PairingImageRequest> {
+    match event {
+        Event::Paste(text) => Some(
+            pairing_image_path(text)
+                .map_or(PairingImageRequest::Clipboard, PairingImageRequest::Path),
+        ),
+        Event::Key(key) if is_clipboard_image_paste(*key) => Some(PairingImageRequest::Clipboard),
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && key.modifiers.is_empty()
+                && key.code == KeyCode::Enter =>
+        {
+            Some(PairingImageRequest::SubmitPath)
+        }
+        _ => None,
+    }
+}
+
+fn pairing_image_path(text: &str) -> Option<PathBuf> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(url) = reqwest::Url::parse(text)
+        && url.scheme() == "file"
+        && let Ok(path) = url.to_file_path()
+        && path.is_file()
+    {
+        return Some(path);
+    }
+    let path = PathBuf::from(text);
+    if path.is_file() {
+        return Some(path);
+    }
+    let mut words = shlex::split(text)?;
+    if words.len() != 1 {
+        return None;
+    }
+    let path = PathBuf::from(words.remove(0));
+    path.is_file().then_some(path)
+}
+
+fn pairing_image_failure(error: &anyhow::Error, pasted_text: bool) -> String {
+    if pasted_text {
+        format!(
+            "{error}; pasted text is not a readable image file path. Copy an image or drag an image file here."
+        )
+    } else {
+        error.to_string()
+    }
 }
 
 impl Drop for ActiveTerminalUi {
@@ -1522,15 +1608,15 @@ impl App {
             ),
             SystemEvent::PairingImagePasteReady => self.start_activity(
                 "pairing-image".to_string(),
-                "Waiting for a copied pairing QR image".to_string(),
+                "Waiting for a pairing QR image".to_string(),
                 Some(
-                    "Copy the QR image, then press Ctrl-V. To use a file, cancel and run /pair <image-path>."
+                    "Press Ctrl-V, use the terminal's paste shortcut, or drag an image file here."
                         .to_string(),
                 ),
             ),
             SystemEvent::PairingImageRead => self.activity(
                 "pairing-image".to_string(),
-                "Pairing QR image pasted".to_string(),
+                "Pairing QR image received".to_string(),
                 None,
                 ActivityState::Succeeded,
             ),
@@ -3042,6 +3128,59 @@ mod tests {
     }
 
     #[test]
+    fn normal_paste_and_enter_request_pairing_image_input() {
+        assert_eq!(
+            (
+                pairing_image_request(&Event::Paste("clipboard text".to_string())),
+                pairing_image_request(&Event::Key(KeyEvent::new(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                ))),
+            ),
+            (
+                Some(PairingImageRequest::Clipboard),
+                Some(PairingImageRequest::SubmitPath),
+            )
+        );
+    }
+
+    #[test]
+    fn dragged_image_paths_accept_terminal_text_formats() {
+        let directory = tempfile::tempdir().expect("create temporary directory");
+        let path = directory.path().join("pairing code.png");
+        std::fs::write(&path, []).expect("create image path");
+        let raw = path.display().to_string();
+        let quoted = format!("'{raw}'");
+        let escaped = raw.replace(' ', "\\ ");
+        let file_url = reqwest::Url::from_file_path(&path)
+            .expect("convert path to file URL")
+            .to_string();
+
+        assert_eq!(
+            [raw, quoted, escaped, file_url]
+                .map(|text| { pairing_image_request(&Event::Paste(text)) }),
+            std::array::from_fn(|_| Some(PairingImageRequest::Path(path.clone())))
+        );
+    }
+
+    #[test]
+    fn invalid_text_paste_explains_clipboard_and_file_recovery() {
+        let error = anyhow::anyhow!("clipboard does not contain an image");
+
+        assert_eq!(
+            (
+                pairing_image_failure(&error, true),
+                pairing_image_failure(&error, false),
+            ),
+            (
+                "clipboard does not contain an image; pasted text is not a readable image file path. Copy an image or drag an image file here."
+                    .to_string(),
+                "clipboard does not contain an image".to_string(),
+            )
+        );
+    }
+
+    #[test]
     fn clipboard_image_errors_explain_empty_and_unreadable_contents() {
         assert_eq!(
             (
@@ -3489,13 +3628,15 @@ mod tests {
         let mut app = test_app();
         app.handle_system_event(SystemEvent::PairingImagePasteReady);
         let ready = app.transcript_text();
-        assert!(ready.contains("Waiting for a copied pairing QR image"));
-        assert!(ready.contains("Copy the QR image, then press Ctrl-V"));
+        assert!(ready.contains("Waiting for a pairing QR image"));
+        assert!(ready.contains(
+            "Press Ctrl-V, use the terminal's paste shortcut, or drag an image file here"
+        ));
         assert!(!ready.contains("http://"));
 
         app.handle_system_event(SystemEvent::PairingImageRead);
 
-        assert!(app.transcript_text().contains("Pairing QR image pasted"));
+        assert!(app.transcript_text().contains("Pairing QR image received"));
     }
 
     #[test]

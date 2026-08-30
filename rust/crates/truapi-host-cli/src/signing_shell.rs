@@ -801,7 +801,7 @@ pub fn parse_approval(input: &str) -> Option<bool> {
 
 /// Text displayed by `/help` in either presentation mode.
 pub const HELP_TEXT: &str = "\
-/pair                   paste a copied pairing QR image with Ctrl-V
+/pair                   paste or drop a pairing QR image
 /pair <image-path>      read a pairing QR image file
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
@@ -826,7 +826,7 @@ pub const HELP_TEXT: &str = "\
 /copy                   copy the transcript to the clipboard
 /quit                   shut down the signing host
 
-Keys: Ctrl-V paste a pairing image, Up/Down completion or history, Tab complete, Ctrl-U/Ctrl-D scroll,
+Keys: Ctrl-V or terminal paste for a pairing image, Up/Down completion or history, Tab complete, Ctrl-U/Ctrl-D scroll,
 Esc close completion or reject approval, Ctrl-C clear/cancel/quit";
 
 /// Help shown by the pairing-host command bar.
@@ -1070,7 +1070,7 @@ mod tests {
             }]
         );
         assert!(HELP_TEXT.starts_with(
-            "/pair                   paste a copied pairing QR image with Ctrl-V\n\
+            "/pair                   paste or drop a pairing QR image\n\
              /pair <image-path>      read a pairing QR image file\n\
              /pair <url>             answer a Polkadot Mobile pairing URL"
         ));

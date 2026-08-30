@@ -527,7 +527,7 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
-| `/pair` | no | yes | Wait for a copied pairing QR image and read it on Ctrl-V. TUI only. |
+| `/pair` | no | yes | Wait for a pairing QR image from Ctrl-V, terminal paste, or drag-and-drop. TUI only. |
 | `/pair <image-path>` | no | yes | Decode a pairing QR from a PNG, JPEG, or WebP image. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
@@ -568,15 +568,21 @@ produce explicit errors.
 ### 8.1 Pairing QR image input
 
 Bare `/pair` is available only in the interactive signing-host TUI. It starts a
-terminal waiting state that instructs the operator to copy the QR image and
-press Ctrl-V. The TUI reads RGBA pixels directly from the operating-system
-clipboard. It does not depend on bracketed text paste, tmux clipboard forwarding,
-or a terminal-specific image escape protocol. A text paste during this state is
-rejected with instructions to copy the image itself or use an image path.
+terminal waiting state that accepts Control-V or the terminal's normal paste
+shortcut. In both cases the TUI reads RGBA pixels directly from the
+operating-system clipboard. A bracketed text paste triggers that clipboard read
+rather than carrying the pixels itself, so image paste continues to work through
+tmux without a terminal-specific image escape protocol.
+
+A dropped file is accepted as a raw, quoted, shell-escaped, or `file://` path.
+Bracketed path paste starts decoding immediately. A terminal that inserts the
+path as individual key events leaves it in the command bar for Enter to submit.
+Text that is neither backed by an image clipboard nor a readable file leaves
+`/pair` waiting with recovery instructions.
 
 `/pair <image-path>` reads a PNG, JPEG, or WebP file in either interactive or
-one-shot mode. Quoting and terminal-style path escaping are supported. Clipboard
-and file pixels remain in memory and are not written to a temporary file.
+one-shot mode. Clipboard and file pixels remain in memory and are not written to
+a temporary file.
 
 Before decoding, the implementation enforces all of these boundaries:
 
@@ -602,8 +608,8 @@ never logged. QR decoding runs on the blocking-task pool rather than the
 asynchronous I/O executor.
 
 A clipboard access or conversion error leaves `/pair` waiting so the operator
-can copy another image and press Ctrl-V again. Ctrl-C cancels the waiting state
-and returns to the command bar. Non-interactive `exec '/pair'` fails with
+can copy another image and paste again. Ctrl-C cancels the waiting state and
+returns to the command bar. Non-interactive `exec '/pair'` fails with
 instructions to provide `/pair <image-path>` or `/pair <url>` instead.
 
 ## 9. Terminal UI

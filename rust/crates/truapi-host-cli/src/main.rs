@@ -70,7 +70,8 @@ use crate::signing_shell::{
     SessionCommand, ShellCommand, parse_command,
 };
 use crate::terminal_ui::{
-    ActiveTerminalUi, ActivityState, DriveResult, SystemEvent, TerminalUi, UiHandle,
+    ActiveTerminalUi, ActivityState, DriveResult, PairingImageInput, SystemEvent, TerminalUi,
+    UiHandle,
 };
 
 /// Default product served by the pairing host's frame endpoint. Product ids
@@ -3193,11 +3194,11 @@ async fn signing_interactive_loop(
             }
             ShellCommand::Quit => return Ok(None),
             ShellCommand::Pair(PairCommand::Scan) => {
-                let image = match ui.read_pairing_image().await? {
-                    DriveResult::Complete(image) => image,
+                let input = match ui.read_pairing_image().await? {
+                    DriveResult::Complete(input) => input,
                     DriveResult::Cancelled => continue,
                 };
-                run_interactive_pasted_pairing_image(session, image, &mut ui).await?;
+                run_interactive_pairing_image(session, input, &mut ui).await?;
             }
             ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
                 Ok(script) => {
@@ -3259,16 +3260,19 @@ async fn run_interactive_operation(
     Ok(())
 }
 
-async fn run_interactive_pasted_pairing_image(
+async fn run_interactive_pairing_image(
     session: &mut SigningHostSession,
-    image: qr_scanner::RgbaFrame,
+    input: PairingImageInput,
     ui: &mut ActiveTerminalUi,
 ) -> Result<()> {
     let activity_checkpoint = ui.activity_checkpoint();
     let operation = async {
-        let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode(&image))
-            .await
-            .context("join QR image decoder")??;
+        let deeplink = tokio::task::spawn_blocking(move || match input {
+            PairingImageInput::Pixels(image) => qr_scanner::decode(&image),
+            PairingImageInput::Path(path) => qr_scanner::decode_path(&path),
+        })
+        .await
+        .context("join QR image decoder")??;
         start_deeplink_responder(session, deeplink).await
     };
     match ui.drive("/pair", operation).await? {

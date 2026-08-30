@@ -261,10 +261,6 @@ fn finder_points(width: usize, height: usize, pixels: &[u8], threshold: u8) -> O
             .iter()
             .flatten()
         {
-            intersections += 1;
-            if intersections > MAX_FINDER_INTERSECTIONS {
-                return None;
-            }
             let module = (horizontal.module + vertical.module) / 2.0;
             if horizontal.foreground != vertical.foreground
                 || (horizontal.module - vertical.module).abs() > module * 0.35
@@ -272,6 +268,10 @@ fn finder_points(width: usize, height: usize, pixels: &[u8], threshold: u8) -> O
                 || (horizontal.line - vertical.center).abs() > module
             {
                 continue;
+            }
+            intersections += 1;
+            if intersections > MAX_FINDER_INTERSECTIONS {
+                return None;
             }
             let x = (horizontal.center + vertical.line) / 2.0;
             let y = (horizontal.line + vertical.center) / 2.0;
@@ -440,7 +440,7 @@ mod tests {
     use tempfile::tempdir;
     use truapi_server::host_logic::sso::pairing::{
         VersionedHandshakeProposal,
-        v2::{Device, Proposal},
+        v2::{Device, MetadataEntry, MetadataKey, Proposal},
     };
 
     use super::*;
@@ -471,6 +471,17 @@ mod tests {
         assert_eq!(
             axis_aligned_payloads(frame.width, frame.height, &grayscale),
             vec![deeplink]
+        );
+    }
+
+    #[test]
+    fn ignores_incompatible_finder_noise_around_a_pairing_qr() {
+        let deeplink = pairing_deeplink_with_metadata(1, 168);
+        let frame = with_incompatible_finder_noise(&circular_finder_frame(&deeplink));
+
+        assert_eq!(
+            decode_rgba_frame(frame.width, frame.height, &frame.pixels),
+            Ok(FrameOutcome::PairingDeeplink(deeplink))
         );
     }
 
@@ -559,12 +570,26 @@ mod tests {
     }
 
     fn pairing_deeplink_for(account_byte: u8) -> String {
+        pairing_deeplink_with_metadata(account_byte, 0)
+    }
+
+    fn pairing_deeplink_with_metadata(account_byte: u8, metadata_len: usize) -> String {
+        let metadata = (0..metadata_len)
+            .map(|index| char::from(b'!' + ((index * 47 + 11) % 90) as u8))
+            .collect();
         let proposal = VersionedHandshakeProposal::V2(Proposal {
             device: Device {
-                statement_account_id: [account_byte; 32],
-                encryption_public_key: [account_byte.wrapping_add(1); 32],
+                statement_account_id: std::array::from_fn(|index| {
+                    account_byte.wrapping_add((index * 17) as u8)
+                }),
+                encryption_public_key: std::array::from_fn(|index| {
+                    account_byte.wrapping_add((index * 29 + 1) as u8)
+                }),
             },
-            metadata: Vec::new(),
+            metadata: (metadata_len > 0)
+                .then_some(MetadataEntry(MetadataKey::HostName, metadata))
+                .into_iter()
+                .collect(),
         });
         format!(
             "polkadotapp://pair?handshake={}",
@@ -635,6 +660,59 @@ mod tests {
             }
         }
         frame
+    }
+
+    fn with_incompatible_finder_noise(frame: &RgbaFrame) -> RgbaFrame {
+        const QR_LEFT: usize = 150;
+        const QR_TOP: usize = 1_000;
+        const HORIZONTAL_ROWS: usize = 63;
+        const HORIZONTAL_START: usize = 30;
+        const HORIZONTAL_MODULE: usize = 10;
+        const VERTICAL_FIRST_COLUMN: usize = 55;
+        const VERTICAL_COLUMNS: usize = 21;
+        const VERTICAL_START: usize = 100;
+        const VERTICAL_PATTERNS: usize = 50;
+        const VERTICAL_PATTERN_HEIGHT: usize = 16;
+
+        let width = QR_LEFT + frame.width;
+        let height = QR_TOP + frame.height;
+        let mut pixels = vec![24; width * height * 4];
+        for alpha in pixels.iter_mut().skip(3).step_by(4) {
+            *alpha = 255;
+        }
+        for row in 0..HORIZONTAL_ROWS {
+            for run in [(0, 1), (2, 5), (6, 7)] {
+                for column in HORIZONTAL_START + run.0 * HORIZONTAL_MODULE
+                    ..HORIZONTAL_START + run.1 * HORIZONTAL_MODULE
+                {
+                    let offset = (row * width + column) * 4;
+                    pixels[offset..offset + 3].fill(245);
+                }
+            }
+        }
+        for column in VERTICAL_FIRST_COLUMN..VERTICAL_FIRST_COLUMN + VERTICAL_COLUMNS {
+            for pattern in 0..VERTICAL_PATTERNS {
+                let start = VERTICAL_START + pattern * VERTICAL_PATTERN_HEIGHT;
+                for row in [
+                    start..start + 2,
+                    start + 4..start + 10,
+                    start + 12..start + 14,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let offset = (row * width + column) * 4;
+                    pixels[offset..offset + 3].fill(245);
+                }
+            }
+        }
+        for row in 0..frame.height {
+            let source = row * frame.width * 4;
+            let destination = ((row + QR_TOP) * width + QR_LEFT) * 4;
+            pixels[destination..destination + frame.width * 4]
+                .copy_from_slice(&frame.pixels[source..source + frame.width * 4]);
+        }
+        RgbaFrame::new(width, height, pixels).expect("valid noisy QR frame")
     }
 
     fn side_by_side(left: &RgbaFrame, right: &RgbaFrame) -> RgbaFrame {
