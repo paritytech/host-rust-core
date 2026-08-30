@@ -3405,12 +3405,12 @@ dependencies = [
 [[package]]
 name = "pvm-gpu-wire"
 version = "0.1.2"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=2b0810d024e76b623705419d0537e31728c18c29#2b0810d024e76b623705419d0537e31728c18c29"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=460b5632317c042fe2d9abc1bf1276ca0c15a50e#460b5632317c042fe2d9abc1bf1276ca0c15a50e"
 
 [[package]]
 name = "pvm-runtime"
 version = "0.1.2"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=2b0810d024e76b623705419d0537e31728c18c29#2b0810d024e76b623705419d0537e31728c18c29"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=460b5632317c042fe2d9abc1bf1276ca0c15a50e#460b5632317c042fe2d9abc1bf1276ca0c15a50e"
 dependencies = [
  "anyhow",
  "log",
@@ -3427,7 +3427,7 @@ dependencies = [
 [[package]]
 name = "pvm-runtime-assets"
 version = "0.1.2"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=2b0810d024e76b623705419d0537e31728c18c29#2b0810d024e76b623705419d0537e31728c18c29"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=460b5632317c042fe2d9abc1bf1276ca0c15a50e#460b5632317c042fe2d9abc1bf1276ca0c15a50e"
 
 [[package]]
 name = "qrcode"
