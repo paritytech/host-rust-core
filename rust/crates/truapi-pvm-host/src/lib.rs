@@ -10,7 +10,7 @@ pub use pvm_runtime::*;
 pub use pvm_runtime_assets::{BrowserAsset, RUNTIME_VERSION, browser_assets};
 
 /// Immutable standalone runtime source consumed by this bridge release.
-pub const RUNTIME_SOURCE_REVISION: &str = "8c0a018a48ebdd41a1e97801ef513e5cd2249193";
+pub const RUNTIME_SOURCE_REVISION: &str = "a211ac005529eaf7cc009e1363afe0a0d9240bad";
 
 #[cfg(test)]
 mod tests {
@@ -29,12 +29,24 @@ mod tests {
     #[cfg(feature = "browser-assets")]
     #[test]
     fn browser_assets_are_complete_and_source_identified() {
-        assert_eq!(RUNTIME_VERSION, "0.1.2");
+        assert_eq!(RUNTIME_VERSION, "0.1.4");
         assert_eq!(browser_assets().len(), 7);
         assert!(
             browser_assets()
                 .iter()
                 .any(|asset| asset.path == "pvm-browser-runtime.wasm")
         );
+    }
+
+    #[test]
+    fn motion_tilt_contract_is_reexported() {
+        let sample = MotionTiltSample {
+            sequence: 1,
+            timestamp_us: 2,
+            tilt_x: 0.25,
+            tilt_y: -0.5,
+            azimuth: None,
+        };
+        assert_eq!(sample.encode().unwrap().len(), MOTION_TILT_BYTES);
     }
 }
