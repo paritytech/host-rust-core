@@ -31,16 +31,23 @@ function writeXcframework(root) {
   }
 }
 
-async function withStaging(body, { writeSource = true } = {}) {
+async function withStaging(
+  body,
+  { writeSource = true, sourceName = "truapi_provider.xcframework" } = {},
+) {
   const workspace = mkdtempSync(join(tmpdir(), "truapi-provider-staging-"));
   try {
-    const source = join(workspace, "target/truapi_provider.xcframework");
+    const source = join(workspace, "target", sourceName);
     const packageRoot = join(workspace, "package");
     if (writeSource) writeXcframework(source);
     mkdirSync(packageRoot, { recursive: true });
 
     const result = await run("sh", [stageScript], {
-      env: { ...process.env, PACKAGE_ROOT: packageRoot, SOURCE: source },
+      env: {
+        ...process.env,
+        PROVIDER_PACKAGE_ROOT: packageRoot,
+        PROVIDER_XCFRAMEWORK: source,
+      },
     });
 
     await body({
@@ -82,6 +89,21 @@ test("staging keeps the headers and the rest of the tree", async () => {
       );
     }
   });
+});
+
+test("staging names the destination, not the source directory", async () => {
+  await withStaging(
+    ({ result, staged }) => {
+      assert.equal(result.status, 0, result.stderr);
+
+      const entries = readdirSync(staged, { recursive: true });
+      assert.ok(
+        entries.includes(join(slices[0], "Headers/truapi_providerFFI.h")),
+        "stages under the package's own name whatever the source is called",
+      );
+    },
+    { sourceName: "some-other-name.xcframework" },
+  );
 });
 
 test("staging refuses when the framework has not been built", async () => {

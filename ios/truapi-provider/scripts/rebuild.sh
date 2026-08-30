@@ -66,7 +66,7 @@ done
 echo "==> packaging truapi_provider.xcframework"
 xcodebuild -create-xcframework "${ARGS[@]}" -output "$OUT"
 
-sh "$PACKAGE_ROOT/scripts/stage-xcframework.sh"
+PROVIDER_XCFRAMEWORK="$OUT" sh "$PACKAGE_ROOT/scripts/stage-xcframework.sh"
 
 echo "done."
 echo "Build against it with TRUAPI_PROVIDER_USE_LOCAL_BINARY=1; publish with scripts/publish.sh."
