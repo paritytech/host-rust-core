@@ -86,8 +86,8 @@ use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
 use truapi::api::{
-    Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Notifications, Payment, Permissions,
-    Preimage, ResourceAllocation, Signing, System, Theme,
+    Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
+    Permissions, Preimage, ResourceAllocation, Signing, System, Theme,
 };
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
@@ -150,6 +150,7 @@ use truapi::versioned::local_storage::{
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
+use truapi::versioned::locale::HostLocaleSubscribeItem;
 use truapi::versioned::notifications::{
     HostPushNotificationCancelError, HostPushNotificationCancelRequest,
     HostPushNotificationCancelResponse, HostPushNotificationError, HostPushNotificationRequest,
@@ -2880,6 +2881,27 @@ impl Theme for ProductRuntimeHost {
                 Ok(item) => Some(HostThemeSubscribeItem::V1(item)),
                 Err(error) => {
                     warn!(reason = %error.reason, "theme platform stream failed");
+                    None
+                }
+            }
+        });
+        Subscription::new(Box::pin(stream))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Locale
+// ---------------------------------------------------------------------------
+
+#[truapi::async_trait]
+impl Locale for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "locale.subscribe"))]
+    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
+        let stream = self.platform.subscribe_locale().filter_map(|item| async {
+            match item {
+                Ok(item) => Some(HostLocaleSubscribeItem::V1(item)),
+                Err(error) => {
+                    warn!(reason = %error.reason, "locale platform stream failed");
                     None
                 }
             }

@@ -6,6 +6,7 @@ pub mod chat;
 pub mod coin_payment;
 pub mod entropy;
 pub mod local_storage;
+pub mod locale;
 pub mod notifications;
 pub mod payment;
 pub mod permissions;
@@ -22,6 +23,7 @@ pub use chat::Chat;
 pub use coin_payment::CoinPayment;
 pub use entropy::Entropy;
 pub use local_storage::LocalStorage;
+pub use locale::Locale;
 pub use notifications::Notifications;
 pub use payment::Payment;
 pub use permissions::Permissions;
@@ -40,6 +42,7 @@ pub trait TrUApi:
     + CoinPayment
     + Entropy
     + LocalStorage
+    + Locale
     + Notifications
     + Payment
     + Permissions
@@ -61,6 +64,7 @@ impl<T> TrUApi for T where
         + CoinPayment
         + Entropy
         + LocalStorage
+        + Locale
         + Notifications
         + Payment
         + Permissions
