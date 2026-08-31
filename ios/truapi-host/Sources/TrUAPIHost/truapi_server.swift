@@ -796,6 +796,19 @@ public protocol HostCallbacks: AnyObject, Sendable {
      */
     func localStorageClear(key: String) throws
 
+    /**
+     * Record a pending operation for a product's worker, returning a
+     * host-assigned id. The host keeps the product's worker alive while it
+     * holds at least one open operation.
+     */
+    func beginOperation(productId: String, label: String) async throws  -> UInt32
+
+    /**
+     * End a pending operation. Idempotent: an unknown or already-ended id
+     * succeeds.
+     */
+    func endOperation(productId: String, id: UInt32) async throws
+
 }
 /**
  * Callback surface that iOS and Android implement.
@@ -1231,6 +1244,47 @@ open func localStorageClear(key: String)throws   {try rustCallWithError(FfiConve
         FfiConverterString.lower(key),uniffiCallStatus
     )
 }
+}
+
+    /**
+     * Record a pending operation for a product's worker, returning a
+     * host-assigned id. The host keeps the product's worker alive while it
+     * holds at least one open operation.
+     */
+open func beginOperation(productId: String, label: String)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_hostcallbacks_begin_operation(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(productId),FfiConverterString.lower(label)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_u32,
+            completeFunc: ffi_truapi_server_rust_future_complete_u32,
+            freeFunc: ffi_truapi_server_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
+}
+
+    /**
+     * End a pending operation. Idempotent: an unknown or already-ended id
+     * succeeds.
+     */
+open func endOperation(productId: String, id: UInt32)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_hostcallbacks_end_operation(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(productId),FfiConverterUInt32.lower(id)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_void,
+            completeFunc: ffi_truapi_server_rust_future_complete_void,
+            freeFunc: ffi_truapi_server_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
 }
 
 
@@ -1977,6 +2031,94 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 writeReturn: writeReturn,
                 lowerError: FfiConverterTypeHostStorageError_lower
             )
+        },
+        beginOperation: { (
+            uniffiHandle: UInt64,
+            productId: RustBuffer,
+            label: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteU32,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> UInt32 in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.beginOperation(
+                     productId: try FfiConverterString.lift(productId),
+                     label: try FfiConverterString.lift(label)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: UInt32) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultU32(
+                        returnValue: FfiConverterUInt32.lower(returnValue),
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultU32(
+                        returnValue: 0,
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        endOperation: { (
+            uniffiHandle: UInt64,
+            productId: RustBuffer,
+            id: UInt32,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.endOperation(
+                     productId: try FfiConverterString.lift(productId),
+                     id: try FfiConverterUInt32.lift(id)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
         }
     )
 
@@ -2595,6 +2737,11 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func notifyPreimageChanged(key: Data, value: Data?)
 
     /**
+     * Push a host storage change to this execution's subscriptions for `key`.
+     */
+    func notifyStorageChanged(key: String, value: Data?)
+
+    /**
      * Push a host theme replacement to this execution's subscriptions.
      */
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
@@ -2785,6 +2932,19 @@ open func notifyPreimageChanged(key: Data, value: Data?)  {try! rustCall() {
     uniffi_truapi_server_fn_method_nativeproductexecution_notify_preimage_changed(
             self.uniffiCloneHandle(),
         FfiConverterData.lower(key),
+        FfiConverterOptionData.lower(value),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Push a host storage change to this execution's subscriptions for `key`.
+     */
+open func notifyStorageChanged(key: String, value: Data?)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_storage_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),
         FfiConverterOptionData.lower(value),uniffiCallStatus
     )
 }
@@ -5944,6 +6104,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 64902) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_begin_operation() != 49135) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_end_operation() != 25056) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5972,6 +6138,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_preimage_changed() != 21769) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_storage_changed() != 47215) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_theme_changed() != 3284) {

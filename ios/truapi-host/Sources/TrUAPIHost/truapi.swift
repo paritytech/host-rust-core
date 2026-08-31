@@ -1956,6 +1956,65 @@ public func FfiConverterTypeHostChatActionSubscribeItem_lower(_ value: HostChatA
 
 
 /**
+ * A change to a subscribed storage key, pushed to the subscriber.
+ */
+public struct HostLocalStorageChangeItem: Equatable, Hashable {
+    /**
+     * Value after the change. `Some` on write, `None` after clear.
+     */
+    public var value: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Value after the change. `Some` on write, `None` after clear.
+         */value: Data?) {
+        self.value = value
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostLocalStorageChangeItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostLocalStorageChangeItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostLocalStorageChangeItem {
+        return
+            try HostLocalStorageChangeItem(
+                value: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostLocalStorageChangeItem, into buf: inout [UInt8]) {
+        FfiConverterOptionData.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostLocalStorageChangeItem_lift(_ buf: RustBuffer) throws -> HostLocalStorageChangeItem {
+    return try FfiConverterTypeHostLocalStorageChangeItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostLocalStorageChangeItem_lower(_ value: HostLocalStorageChangeItem) -> RustBuffer {
+    return FfiConverterTypeHostLocalStorageChangeItem.lower(value)
+}
+
+
+/**
  * Locale the host currently presents its interface in, pushed to subscribers.
  */
 public struct HostLocaleSubscribeItem: Equatable, Hashable {
@@ -5671,6 +5730,88 @@ public func FfiConverterTypeHostPlatform_lift(_ buf: RustBuffer) throws -> HostP
 #endif
 public func FfiConverterTypeHostPlatform_lower(_ value: HostPlatform) -> RustBuffer {
     return FfiConverterTypeHostPlatform.lower(value)
+}
+
+
+
+/**
+ * Pending-operation error.
+ */
+
+public enum HostWorkerOperationError: Equatable, Hashable {
+
+    /**
+     * The product is already at the host's per-product limit of open
+     * operations.
+     */
+    case tooManyOpen
+    /**
+     * Catch-all host failure.
+     */
+    case unknown(
+        /**
+         * Human-readable failure reason.
+         */reason: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostWorkerOperationError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostWorkerOperationError: FfiConverterRustBuffer {
+    typealias SwiftType = HostWorkerOperationError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostWorkerOperationError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .tooManyOpen
+
+        case 2: return .unknown(reason: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: HostWorkerOperationError, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .tooManyOpen:
+            writeInt(&buf, Int32(1))
+
+
+        case let .unknown(reason):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(reason, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostWorkerOperationError_lift(_ buf: RustBuffer) throws -> HostWorkerOperationError {
+    return try FfiConverterTypeHostWorkerOperationError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostWorkerOperationError_lower(_ value: HostWorkerOperationError) -> RustBuffer {
+    return FfiConverterTypeHostWorkerOperationError.lower(value)
 }
 
 

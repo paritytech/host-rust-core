@@ -50,7 +50,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "0449982638d57658";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "e141a8b071605ab4";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: RequestFrameIds = RequestFrameIds {
@@ -516,6 +516,26 @@ pub const LOCALE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
     receive_id: 197,
 };
 
+/// Wire discriminants for `local_storage_subscribe`.
+pub const LOCAL_STORAGE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 198,
+    stop_id: 199,
+    interrupt_id: 200,
+    receive_id: 201,
+};
+
+/// Wire discriminants for `worker_begin_operation`.
+pub const WORKER_BEGIN_OPERATION: RequestFrameIds = RequestFrameIds {
+    request_id: 202,
+    response_id: 203,
+};
+
+/// Wire discriminants for `worker_end_operation`.
+pub const WORKER_END_OPERATION: RequestFrameIds = RequestFrameIds {
+    request_id: 204,
+    response_id: 205,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -806,5 +826,17 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "locale_subscribe",
         kind: WireKind::Subscription(LOCALE_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "local_storage_subscribe",
+        kind: WireKind::Subscription(LOCAL_STORAGE_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "worker_begin_operation",
+        kind: WireKind::Request(WORKER_BEGIN_OPERATION),
+    },
+    WireEntry {
+        method: "worker_end_operation",
+        kind: WireKind::Request(WORKER_END_OPERATION),
     },
 ];

@@ -36,13 +36,14 @@ use truapi::latest::{
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
-    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostLocaleSubscribeItem, HostNavigateToError, HostPlatform, HostPushNotificationRequest,
-    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
-    LegacyAccountTxPayload, NotificationId, ProductAccountId, ProductAccountTxPayload,
-    ProductProofContext, RemotePermission, RemotePermissionRequest, RemotePermissionResponse,
-    RingLocation,
+    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageChangeItem,
+    HostLocalStorageReadError, HostLocaleSubscribeItem, HostNavigateToError, HostPlatform,
+    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
+    HostWorkerOperationError, LegacyAccountTxPayload, NotificationId, ProductAccountId,
+    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
+    RemotePermissionResponse, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -946,6 +947,15 @@ pub trait ProductStorage: Send + Sync {
 
     /// Clear a value at a key.
     async fn clear(&self, key: String) -> Result<(), HostLocalStorageReadError>;
+
+    /// Emit the current value of a key, then each later change to it, from any
+    /// of the product's runtimes. A write that leaves the stored bytes
+    /// unchanged emits nothing. `key` is the UTF-8 bytes of the namespaced
+    /// storage key, the same key passed to [`Self::read`] as a `String`.
+    fn subscribe_storage(
+        &self,
+        key: Vec<u8>,
+    ) -> BoxStream<'static, Result<HostLocalStorageChangeItem, GenericError>>;
 }
 
 /// Open URLs in the system browser. Input is already trimmed, categorized,
@@ -2844,6 +2854,29 @@ pub trait PermissionStatusHost: Send + Sync {
     ) -> Result<DevicePermissionStatus, GenericError>;
 }
 
+/// Host store for a product's pending operations. The host keeps the product's
+/// worker runtime alive while it holds at least one open operation. Worker
+/// products reach these through the `Worker` protocol trait, which is gated to
+/// the Worker execution kind, so non-worker products never call them.
+#[async_trait]
+pub trait ProductOperations: Send + Sync {
+    /// Record a pending operation for this product. Returns its id. `label` is
+    /// a host log and UI hint, empty when the product gave none.
+    async fn begin_operation(
+        &self,
+        product: &ProductContext,
+        label: String,
+    ) -> Result<HostWorkerBeginOperationResponse, HostWorkerOperationError>;
+
+    /// Remove a pending operation. Idempotent: an unknown or already-ended id
+    /// returns `Ok`.
+    async fn end_operation(
+        &self,
+        product: &ProductContext,
+        id: u32,
+    ) -> Result<(), HostWorkerOperationError>;
+}
+
 /// Combined platform interface. A host must provide every capability trait
 /// listed here. Members marked optional may be omitted; the core answers their
 /// product calls with `Unsupported`. See [`OptionalPlatform`].
@@ -2860,6 +2893,7 @@ pub trait Platform:
     + ThemeHost
     + LocaleHost
     + PreimageHost
+    + ProductOperations
 {
 }
 
@@ -2876,6 +2910,7 @@ impl<T> Platform for T where
         + ThemeHost
         + LocaleHost
         + PreimageHost
+        + ProductOperations
 {
 }
 

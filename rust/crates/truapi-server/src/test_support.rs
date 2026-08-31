@@ -29,9 +29,10 @@ use truapi_platform::{
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
     JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
     Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
-    PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
-    ProductSubtreeReview, ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    PlatformInfo, PreimageHost, ProductContext, ProductOperations as PlatformProductOperations,
+    ProductStorage as PlatformProductStorage, ProductSubtreeReview, ResourceAllocationReview,
+    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -791,6 +792,42 @@ impl PlatformProductStorage for StubPlatform {
             .lock()
             .expect("local storage mutex poisoned")
             .remove(&key);
+        Ok(())
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: Vec<u8>,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        let key = String::from_utf8_lossy(&key).into_owned();
+        let value = self
+            .local_storage
+            .lock()
+            .expect("local storage mutex poisoned")
+            .get(&key)
+            .cloned();
+        Box::pin(stream::once(async move {
+            Ok(v01::HostLocalStorageChangeItem { value })
+        }))
+    }
+}
+
+#[truapi_platform::async_trait]
+impl PlatformProductOperations for StubPlatform {
+    async fn begin_operation(
+        &self,
+        _product: &ProductContext,
+        _label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        // The stub has no worker lifecycle to keep alive; a fixed id suffices.
+        Ok(v01::HostWorkerBeginOperationResponse { id: 1 })
+    }
+
+    async fn end_operation(
+        &self,
+        _product: &ProductContext,
+        _id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
         Ok(())
     }
 }

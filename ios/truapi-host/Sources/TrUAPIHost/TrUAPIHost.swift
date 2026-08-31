@@ -333,6 +333,16 @@ public protocol HostBridge: AnyObject, Sendable {
     /// per chain role. Invoked on the dispatcher thread; must return promptly.
     func supportedChains() throws -> HostChainSet
 
+    /// Begin a pending operation for a product's worker, returning a
+    /// host-assigned id. The host keeps the product's worker alive while it
+    /// holds at least one open operation. `label` is a log/UI hint, empty when
+    /// the product gave none.
+    func beginOperation(productId: String, label: String) async throws -> UInt32
+
+    /// End a pending operation. Idempotent: an unknown or already-ended id
+    /// succeeds.
+    func endOperation(productId: String, id: UInt32) async throws
+
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
 
@@ -404,6 +414,10 @@ public extension HostBridge {
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
+    /// Default: no worker keep-alive. Override to run background operations to
+    /// completion after the product's surface goes away.
+    func beginOperation(productId: String, label: String) async throws -> UInt32 { 0 }
+    func endOperation(productId: String, id: UInt32) async throws {}
 }
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
@@ -599,6 +613,18 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func localStorageClear(key: String) throws {
         try withStorageError {
             try bridge.storage.clear(key: key)
+        }
+    }
+
+    func beginOperation(productId: String, label: String) async throws -> UInt32 {
+        try await withHostRejection {
+            try await bridge.beginOperation(productId: productId, label: label)
+        }
+    }
+
+    func endOperation(productId: String, id: UInt32) async throws {
+        try await withHostRejection {
+            try await bridge.endOperation(productId: productId, id: id)
         }
     }
 
@@ -819,6 +845,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     ) throws
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
     func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
+    func notifyStorageChanged(key: String, value: Data?)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -896,6 +923,12 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
         inner.notifyLocaleChanged(locale: locale)
+    }
+
+    /// Push a host storage change for `key` to active TrUAPI storage
+    /// subscriptions. `value == nil` represents a cleared or absent key.
+    public func notifyStorageChanged(key: String, value: Data?) {
+        inner.notifyStorageChanged(key: key, value: value)
     }
 
     public func notifyPreimageChanged(key: Data, value: Data?) {
