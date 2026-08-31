@@ -432,6 +432,73 @@ mod tests {
         );
     }
 
+    /// Discriminant 255 is reserved for protocol-level errors, so no API
+    /// method may claim it for any request, response, or subscription frame.
+    #[test]
+    fn wire_table_reserves_protocol_error_id() {
+        let mut explicit_request = make_request_method("explicit_request", 255);
+        explicit_request.wire.response_id = Some(1);
+
+        let inferred_response = make_request_method("inferred_response", 254);
+
+        let mut explicit_response = make_request_method("explicit_response", 1);
+        explicit_response.wire.response_id = Some(255);
+
+        let mut explicit_start = make_subscription_method("explicit_start", 255);
+        explicit_start.wire.stop_id = Some(1);
+        explicit_start.wire.interrupt_id = Some(2);
+        explicit_start.wire.receive_id = Some(3);
+
+        let mut explicit_stop = make_subscription_method("explicit_stop", 1);
+        explicit_stop.wire.stop_id = Some(255);
+        explicit_stop.wire.interrupt_id = Some(2);
+        explicit_stop.wire.receive_id = Some(3);
+
+        let mut explicit_interrupt = make_subscription_method("explicit_interrupt", 1);
+        explicit_interrupt.wire.stop_id = Some(2);
+        explicit_interrupt.wire.interrupt_id = Some(255);
+        explicit_interrupt.wire.receive_id = Some(3);
+
+        let mut explicit_receive = make_subscription_method("explicit_receive", 1);
+        explicit_receive.wire.stop_id = Some(2);
+        explicit_receive.wire.interrupt_id = Some(3);
+        explicit_receive.wire.receive_id = Some(255);
+
+        let inferred_receive = make_subscription_method("inferred_receive", 252);
+
+        for method in [
+            explicit_request,
+            inferred_response,
+            explicit_response,
+            explicit_start,
+            explicit_stop,
+            explicit_interrupt,
+            explicit_receive,
+            inferred_receive,
+        ] {
+            let method_name = method.name.clone();
+            let api = ApiDefinition {
+                traits: vec![TraitDef {
+                    name: "Example".to_string(),
+                    module_path: Vec::new(),
+                    methods: vec![method],
+                    docs: None,
+                }],
+                public_trait_order: vec!["Example".to_string()],
+                types: Vec::new(),
+            };
+
+            let error = generate_wire_table(&api)
+                .expect_err(&format!("{method_name} must not allocate wire id 255"));
+            let message = error.to_string();
+            assert!(
+                message.contains("wire id 255 reused")
+                    && message.contains("reserved for protocol errors"),
+                "unexpected error for {method_name}: {message}",
+            );
+        }
+    }
+
     /// Pin `wire_const_name`'s `convert_case::Case::UpperSnake` behavior:
     /// digits split off (`v2` -> `V_2`) and acronyms split (`HTTPServer`
     /// snake-cases to `h_t_t_p_server`, then upper-snakes to

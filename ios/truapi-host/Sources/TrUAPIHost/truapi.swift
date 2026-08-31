@@ -1956,6 +1956,67 @@ public func FfiConverterTypeHostChatActionSubscribeItem_lower(_ value: HostChatA
 
 
 /**
+ * Locale the host currently presents its interface in, pushed to subscribers.
+ */
+public struct HostLocaleSubscribeItem: Equatable, Hashable {
+    /**
+     * BCP 47 language tag, such as `en`, `pt-BR` or `zh-Hans`. The set is
+     * open: a product that does not ship the tag chooses its own fallback.
+     */
+    public var languageTag: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * BCP 47 language tag, such as `en`, `pt-BR` or `zh-Hans`. The set is
+         * open: a product that does not ship the tag chooses its own fallback.
+         */languageTag: String) {
+        self.languageTag = languageTag
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostLocaleSubscribeItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostLocaleSubscribeItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostLocaleSubscribeItem {
+        return
+            try HostLocaleSubscribeItem(
+                languageTag: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostLocaleSubscribeItem, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.languageTag, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostLocaleSubscribeItem_lift(_ buf: RustBuffer) throws -> HostLocaleSubscribeItem {
+    return try FfiConverterTypeHostLocaleSubscribeItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostLocaleSubscribeItem_lower(_ value: HostLocaleSubscribeItem) -> RustBuffer {
+    return FfiConverterTypeHostLocaleSubscribeItem.lower(value)
+}
+
+
+/**
  * Push notification payload.
  *
  * When `scheduled_at` is `Some`, the notification is deferred to the given

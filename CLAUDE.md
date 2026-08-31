@@ -39,6 +39,9 @@ hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
 scripts/battery.sh         run the generated battery against both headless CLI host roles
+scripts/truapi-host-installer.sh
+                           one-liner installer for the prebuilt truapi-host CLI
+.github/consumers.json     maps each released package to the repos notified by a bump issue
 ```
 
 ### Crate + binding invariants
@@ -60,6 +63,18 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   unsupported leaf values instead of defining parallel `Native*` mirrors.
   Boundary-specific native types are reserved for lifecycle or callback
   behavior that has no canonical value-type equivalent.
+- `truapi-host-cli`'s crate version tracks `js/packages/truapi/package.json`,
+  kept in sync by `scripts/sync-release-versions.mjs`. A
+  `release: @parity/truapi <version>` therefore also publishes prebuilt
+  `truapi-host` binaries through `.github/workflows/release-cli.yml`: one
+  archive per target (`aarch64-apple-darwin`, `x86_64-unknown-linux-musl`,
+  `aarch64-unknown-linux-musl`) plus a `.sha256`, uploaded to the
+  `@parity/truapi@<version>` release, followed by the `truapi-host-cli-stable`
+  pointer that `scripts/truapi-host-installer.sh` and the CLI's own updater
+  read. Release asset URLs must percent-encode the tag
+  (`%40parity%2Ftruapi%40<version>`). `make cli-dist CLI_TARGET=<triple>`
+  reproduces one archive locally, and `make e2e-cli-update` installs and
+  self-updates it against a loopback release server.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever
@@ -195,8 +210,16 @@ yarn build              # static export to out/
 yarn lint
 ```
 
-The playground must be opened from inside a TrUAPI host. The fastest local
-setup is to run dotli's preview server alongside the playground and open
+The fastest way to exercise the playground is `truapi-host dev -- yarn dev`
+from `playground/`, which starts a signing host on `127.0.0.1:9955`, serves the
+browser bridge at `/bootstrap.js`, and runs the dev server with the host live.
+The playground's root layout carries the development-only `<script>` tag that
+loads it. TCP frame peers and browser origins are limited to loopback. On Unix,
+the CLI owns the wrapped command's process group and applies a five-second
+SIGTERM grace period before killing remaining descendants.
+
+The playground must otherwise be opened from inside a TrUAPI host. The fastest
+local setup is to run dotli's preview server alongside the playground and open
 `http://localhost:5173/localhost:3000` in any browser. Use the
 [`playground-local-stack`](.claude/skills/playground-local-stack/SKILL.md)
 skill to bring both servers up in tmux (it handles the `hosts/dotli/`

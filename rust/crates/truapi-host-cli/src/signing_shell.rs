@@ -28,6 +28,17 @@ pub enum DeviceCommand {
     Remove([u8; 32]),
 }
 
+/// Operation selected through `/approval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalCommand {
+    /// Print the current approval mode.
+    Current,
+    /// Prompt for every confirmation.
+    Manual,
+    /// Approve every confirmation without prompting.
+    Automatic,
+}
+
 /// Operation selected through `/session`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionCommand {
@@ -112,6 +123,8 @@ pub enum ShellCommand {
     Pair(String),
     /// Inspect or remove paired devices for the active managed session.
     Devices(DeviceCommand),
+    /// Inspect or change how future confirmations are approved.
+    Approval(ApprovalCommand),
     /// Edit the remembered product script, or run an explicit one, through the
     /// public frame endpoint.
     Script(Option<PathBuf>),
@@ -176,6 +189,12 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             }
             Err("usage: /devices [--list | --remove <statement-account-id>]".to_string())
         }
+        "/approval" => match argument {
+            "" => Ok(ShellCommand::Approval(ApprovalCommand::Current)),
+            "manual" => Ok(ShellCommand::Approval(ApprovalCommand::Manual)),
+            "automatic" => Ok(ShellCommand::Approval(ApprovalCommand::Automatic)),
+            _ => Err("usage: /approval [manual|automatic]".to_string()),
+        },
         "/script" => {
             if argument.is_empty() {
                 return Ok(ShellCommand::Script(None));
@@ -292,6 +311,7 @@ pub struct Completion {
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
     ("/pair", "answer a Polkadot Mobile pairing URL"),
     ("/devices", "list or remove paired devices"),
+    ("/approval", "show or change confirmation approval"),
     ("/script", "edit the last or run an existing product script"),
     ("/log", "set error, warn, info, debug, or trace"),
     ("/product", "show or switch the active product"),
@@ -323,6 +343,11 @@ const LOG_ARGUMENTS: &[(&str, &str)] = &[
     ("trace", "show all host and protocol activity"),
 ];
 
+const APPROVAL_ARGUMENTS: &[(&str, &str)] = &[
+    ("manual", "prompt for every confirmation"),
+    ("automatic", "approve confirmations automatically"),
+];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum CommandScope {
     PairingHost,
@@ -340,6 +365,11 @@ fn completions_for_scope(
     }
     if let Some(prefix) = input.strip_prefix("/log ") {
         return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
+    }
+    if scope == CommandScope::SigningHost
+        && let Some(prefix) = input.strip_prefix("/approval ")
+    {
+        return fixed_argument_completions("/approval", prefix, APPROVAL_ARGUMENTS);
     }
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/devices ")
@@ -754,6 +784,9 @@ pub const HELP_TEXT: &str = "\
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
 /devices --remove <id>  remove one paired device by statement account ID
+/approval               show the current confirmation approval mode
+/approval manual        prompt for every future confirmation
+/approval automatic     approve every future confirmation automatically
 /script                 edit and run the session's last Bun TypeScript script
 /script <path>          run an existing JS/TS product script with Bun
 /log <level>            set error, warn, info, debug, or trace
@@ -871,6 +904,26 @@ mod tests {
             panic!("unexpected mnemonic command")
         };
         assert_eq!(mnemonic.expose_secret(), MNEMONIC);
+    }
+
+    #[test]
+    fn parses_runtime_approval_commands() {
+        assert_eq!(
+            parse_command("/approval"),
+            Ok(ShellCommand::Approval(ApprovalCommand::Current))
+        );
+        assert_eq!(
+            parse_command("/approval manual"),
+            Ok(ShellCommand::Approval(ApprovalCommand::Manual))
+        );
+        assert_eq!(
+            parse_command("/approval automatic"),
+            Ok(ShellCommand::Approval(ApprovalCommand::Automatic))
+        );
+        assert_eq!(
+            parse_command("/approval sometimes").unwrap_err(),
+            "usage: /approval [manual|automatic]"
+        );
     }
 
     #[test]
@@ -1025,6 +1078,24 @@ mod tests {
             ]
         );
         assert!(completions_for_scope("/devices", &[], CommandScope::PairingHost).is_empty());
+    }
+
+    #[test]
+    fn approval_completion_is_signing_host_only() {
+        assert_eq!(
+            completions_for_scope("/approval ", &[], CommandScope::SigningHost),
+            vec![
+                Completion {
+                    value: "/approval manual".to_string(),
+                    description: "prompt for every confirmation",
+                },
+                Completion {
+                    value: "/approval automatic".to_string(),
+                    description: "approve confirmations automatically",
+                },
+            ]
+        );
+        assert!(completions_for_scope("/appro", &[], CommandScope::PairingHost).is_empty());
     }
 
     #[test]

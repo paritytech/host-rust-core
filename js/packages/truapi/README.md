@@ -135,7 +135,7 @@ Frames are SCALE encoded:
 [requestId: SCALE str][discriminant: u8][payload bytes...]
 ```
 
-The discriminant table is generated from Rust `#[wire(request_id = N)]` and `#[wire(start_id = N)]` annotations and is written to `src/generated/wire-table.ts`.
+The discriminant table is generated from Rust `#[wire(request_id = N)]` and `#[wire(start_id = N)]` annotations and is written to `src/generated/wire-table.ts`. Discriminant 255 is reserved for method-independent protocol errors. When a peer rejects an unknown API message with that frame, requests resolve as `CallError.Unsupported` and subscriptions terminate with an `UnsupportedMessageError` cause.
 
 ## Generated files
 

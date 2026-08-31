@@ -34,6 +34,8 @@ jobs:
     outputs:
       ios_version: ${{ steps.version.outputs.ios_version }}
       android_version: ${{ steps.version.outputs.android_version }}
+      cli_version: ${{ steps.version.outputs.cli_version }}
+      published: ${{ steps.confirm.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,6 +61,7 @@ jobs:
           packages=""
           ios_version=""
           android_version=""
+          cli_version=""
           seen_names="|"
 
           IFS=',' read -ra targets <<< "${release}"
@@ -84,7 +87,12 @@ jobs:
             seen_names+="${name}|"
 
             case "${name}" in
-              @parity/truapi) path="js/packages/truapi" ;;
+              # The truapi-host CLI crate tracks the protocol version, so a
+              # protocol release also publishes its prebuilt binaries.
+              @parity/truapi)
+                path="js/packages/truapi"
+                cli_version="${declared_version}"
+                ;;
               @parity/truapi-host) path="js/packages/truapi-host" ;;
               @parity/ios-host)
                 if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
@@ -124,6 +132,7 @@ jobs:
 
           echo "ios_version=${ios_version}" >> "$GITHUB_OUTPUT"
           echo "android_version=${android_version}" >> "$GITHUB_OUTPUT"
+          echo "cli_version=${cli_version}" >> "$GITHUB_OUTPUT"
 
           if [ -z "${packages}" ]; then
             echo "No requested npm packages need publishing."
@@ -274,6 +283,23 @@ jobs:
         if: steps.confirm.outcome == 'failure'
         run: exit 1
 
+  # Downstream hosts learn about a release from an issue on their own
+  # repository. Announcing only the confirmed subset keeps a consumer from
+  # being pointed at a version npm never accepted.
+  notify-consumers:
+    name: Notify consumer repositories
+    needs: release
+    if: needs.release.outputs.published != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/notify-consumers.yml
+    with:
+      published: ${{ needs.release.outputs.published }}
+      ref: ${{ github.event.workflow_run.head_sha }}
+    secrets:
+      CONSUMER_APP_ID: ${{ secrets.CONSUMER_APP_ID }}
+      CONSUMER_APP_KEY: ${{ secrets.CONSUMER_APP_KEY }}
+
   publish-android:
     name: Publish Android host
     needs: release
@@ -284,6 +310,19 @@ jobs:
     uses: ./.github/workflows/release-android.yml
     with:
       version: ${{ needs.release.outputs.android_version }}
+      ref: ${{ github.event.workflow_run.head_sha }}
+
+  publish-cli:
+    name: Publish truapi-host binaries
+    needs: release
+    if: needs.release.outputs.cli_version != ''
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-cli.yml
+    with:
+      version: ${{ needs.release.outputs.cli_version }}
       ref: ${{ github.event.workflow_run.head_sha }}
 
   publish-ios:

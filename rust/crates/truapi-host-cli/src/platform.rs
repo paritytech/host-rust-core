@@ -23,8 +23,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
 use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
-    JsonRpcConnection, Navigation, Notifications, PermissionStatusHost, Permissions, PreimageHost,
-    ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
+    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionStatusHost, Permissions,
+    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
     UserConfirmationReview,
 };
 
@@ -34,7 +34,7 @@ use crate::terminal_ui::{SystemEvent, UiHandle};
 static NEXT_STORAGE_TEMP_ID: AtomicU32 = AtomicU32::new(0);
 
 /// How the host answers confirmation prompts (the web/iOS "sign?" modals).
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalPolicy {
     /// Approve every sensitive action without prompting (`--auto-accept`).
     AutoAccept,
@@ -111,7 +111,7 @@ pub struct CliPlatform {
     next_notification_id: AtomicU32,
     scheduled_notifications:
         Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
-    approval: ApprovalPolicy,
+    approval: Mutex<ApprovalPolicy>,
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
     approvals_log: Option<PathBuf>,
@@ -192,11 +192,27 @@ impl CliPlatform {
             preimages: Mutex::new(HashMap::new()),
             next_notification_id: AtomicU32::new(1),
             scheduled_notifications: Arc::new(Mutex::new(HashMap::new())),
-            approval,
+            approval: Mutex::new(approval),
             approvals_log: std::env::var_os("TRUAPI_APPROVALS_LOG").map(PathBuf::from),
             ui,
             prompt_lock: AsyncMutex::new(()),
         })
+    }
+
+    /// Return the policy used by future confirmation requests.
+    pub fn approval_policy(&self) -> ApprovalPolicy {
+        *self
+            .approval
+            .lock()
+            .expect("approval policy mutex poisoned")
+    }
+
+    /// Change how future confirmation requests are decided.
+    pub fn set_approval_policy(&self, approval: ApprovalPolicy) {
+        *self
+            .approval
+            .lock()
+            .expect("approval policy mutex poisoned") = approval;
     }
 
     fn core_key(key: &CoreStorageKey) -> Vec<u8> {
@@ -362,7 +378,7 @@ impl CliPlatform {
 
     /// Resolve a confirmation: auto-accept, or prompt y/n on the CLI.
     async fn decide(&self, action: &str, detail: String) -> bool {
-        let approved = match self.approval {
+        let approved = match self.approval_policy() {
             ApprovalPolicy::AutoAccept => {
                 if let Some(ui) = &self.ui {
                     ui.success(format!("Approved {action} automatically"), Some(detail));
@@ -879,6 +895,18 @@ impl ThemeHost for CliPlatform {
     }
 }
 
+impl LocaleHost for CliPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<api::HostLocaleSubscribeItem, api::GenericError>> {
+        Box::pin(stream::once(async {
+            Ok(api::HostLocaleSubscribeItem {
+                language_tag: "en".to_string(),
+            })
+        }))
+    }
+}
+
 impl PreimageHost for CliPlatform {
     fn lookup_preimage(
         &self,
@@ -1384,6 +1412,23 @@ mod tests {
             std::fs::read_to_string(&path).expect("approvals transcript"),
             "approved allocate resources\ndenied sign VRF transcript\napproved sign VRF transcript\n",
         );
+    }
+
+    #[tokio::test]
+    async fn approval_policy_changes_apply_to_future_confirmations() {
+        let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::Prompt, None);
+
+        assert_eq!(platform.approval_policy(), ApprovalPolicy::Prompt);
+        platform.set_approval_policy(ApprovalPolicy::AutoAccept);
+        assert_eq!(platform.approval_policy(), ApprovalPolicy::AutoAccept);
+        assert!(
+            platform
+                .decide("test action", "test detail".to_string())
+                .await
+        );
+
+        platform.set_approval_policy(ApprovalPolicy::Prompt);
+        assert_eq!(platform.approval_policy(), ApprovalPolicy::Prompt);
     }
 
     /// A user id `validate_name` rejects must not leave the previous identity's

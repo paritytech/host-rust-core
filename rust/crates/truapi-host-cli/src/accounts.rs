@@ -590,58 +590,53 @@ async fn create_auto_account(
     username_prefix: &str,
     reserved_username: Option<&str>,
 ) -> Result<AccountRecord> {
-    validate_username_prefix(username_prefix)?;
+    let lite_username = lite_username_base(username_prefix)?;
     let name = store.next_auto_name(network.id);
     let mnemonic = Mnemonic::generate(12)
         .context("generate BIP-39 mnemonic")?
         .to_string();
     let identity = identity_from_mnemonic(&mnemonic)?;
 
-    for attempt in 0..8 {
-        let lite_username = generated_username(username_prefix, attempt);
-        if !attestation::lite_username_available(
-            network.identity_backend_base,
-            &identity.entropy,
-            &lite_username,
-        )
-        .await
-        .with_context(|| format!("check lite username {lite_username:?} availability"))?
-        {
-            continue;
-        }
-
-        let mut record = AccountRecord {
-            name: name.clone(),
-            network: network.id.to_string(),
-            mnemonic: mnemonic.clone(),
-            lite_username,
-            public_key_hex: format!("0x{}", hex::encode(identity.public_key)),
-            address: identity.address.clone(),
-            created_at_unix: now_unix(),
-            attested: false,
-            origin: AccountOrigin::Auto,
-            exhausted_statement_periods: BTreeSet::new(),
-        };
-        store.upsert(record.clone());
-        store.save()?;
-
-        debug!(
-            account = %record.name,
-            network = %record.network,
-            lite_username = %record.lite_username,
-            address = %record.address,
-            "created auto signer account"
-        );
-
-        record.lite_username = attest_record(network, &record, reserved_username).await?;
-        wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
-        record.attested = true;
-        store.upsert(record.clone());
-        store.save()?;
-        return Ok(record);
+    if !attestation::lite_username_available(
+        network.identity_backend_base,
+        &identity.entropy,
+        &lite_username,
+    )
+    .await
+    .with_context(|| format!("check lite username {lite_username:?} availability"))?
+    {
+        bail!("lite username {lite_username:?} is taken; pass a different --lite-username-prefix");
     }
 
-    bail!("could not find an available lite username for prefix {username_prefix:?}");
+    let mut record = AccountRecord {
+        name,
+        network: network.id.to_string(),
+        mnemonic,
+        lite_username,
+        public_key_hex: format!("0x{}", hex::encode(identity.public_key)),
+        address: identity.address,
+        created_at_unix: now_unix(),
+        attested: false,
+        origin: AccountOrigin::Auto,
+        exhausted_statement_periods: BTreeSet::new(),
+    };
+    store.upsert(record.clone());
+    store.save()?;
+
+    debug!(
+        account = %record.name,
+        network = %record.network,
+        lite_username = %record.lite_username,
+        address = %record.address,
+        "created auto signer account"
+    );
+
+    record.lite_username = attest_record(network, &record, reserved_username).await?;
+    wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+    record.attested = true;
+    store.upsert(record.clone());
+    store.save()?;
+    Ok(record)
 }
 
 async fn ensure_record_ready(
@@ -849,24 +844,11 @@ fn mnemonic_entropy(mnemonic: &str) -> Result<Vec<u8>> {
         .to_entropy())
 }
 
-fn validate_username_prefix(prefix: &str) -> Result<()> {
-    if prefix.is_empty() || !prefix.bytes().all(|byte| byte.is_ascii_lowercase()) {
-        bail!("--lite-username-prefix must contain lowercase ASCII letters only");
+fn lite_username_base(prefix: &str) -> Result<String> {
+    if prefix.len() < 6 || !prefix.bytes().all(|byte| byte.is_ascii_lowercase()) {
+        bail!("--lite-username-prefix must contain at least 6 lowercase ASCII letters");
     }
-    Ok(())
-}
-
-fn generated_username(prefix: &str, attempt: usize) -> String {
-    let mut username = prefix.to_string();
-    let mut seed = now_unix()
-        ^ u64::from(std::process::id())
-        ^ ((attempt as u64) << 32)
-        ^ (prefix.len() as u64);
-    while username.len() < prefix.len().max(6) + 6 {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        username.push((b'a' + (seed % 26) as u8) as char);
-    }
-    username
+    Ok(prefix.to_string())
 }
 
 fn now_unix() -> u64 {
@@ -979,6 +961,20 @@ mod tests {
         let rendered = format!("{:?}", store.data);
         assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");
         assert!(rendered.contains(REDACTED));
+    }
+
+    #[test]
+    fn numerical_aliases_make_random_username_suffixes_unnecessary() -> Result<()> {
+        assert_eq!(lite_username_base("majority")?, "majority");
+        Ok(())
+    }
+
+    #[test]
+    fn lite_username_prefix_requires_the_backend_minimum() {
+        assert_eq!(
+            lite_username_base("short").unwrap_err().to_string(),
+            "--lite-username-prefix must contain at least 6 lowercase ASCII letters"
+        );
     }
 
     #[test]
