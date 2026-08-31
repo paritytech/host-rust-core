@@ -1,10 +1,11 @@
 //! Unified [`Locale`] trait.
 
 use crate::versioned::locale::HostLocaleSubscribeItem;
-use crate::wire;
 use crate::{CallContext, Subscription};
+use crate::{wire, wire_trait};
 
 /// Host locale subscription.
+#[wire_trait(id = 208)]
 #[crate::async_trait]
 pub trait Locale: Send + Sync {
     /// Subscribe to the host's selected locale.
@@ -17,7 +18,7 @@ pub trait Locale: Send + Sync {
     /// );
     /// console.log("locale received:", locale.languageTag);
     /// ```
-    #[wire(start_id = 194)]
+    #[wire(start_id = 0)]
     async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
         Subscription::empty()
     }
