@@ -1,5 +1,12 @@
 # @parity/truapi
 
+## 0.12.0
+
+### Minor Changes
+
+- 8983638: Add `development_createAccountProof`, a development-only helper for creating a proof with an exact 32-byte context.
+- 654c0cf: Expose the host's selected language through `locale.subscribe()`.
+
 ## 0.11.0
 
 ### Minor Changes

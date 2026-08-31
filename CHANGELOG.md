@@ -5,6 +5,24 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.0] - 2026-08-31
+
+### Added
+
+- `development_createAccountProof` for raw proof contexts to unblock Humanity as a Product (#457)
+- open bump issues on consumer repos when a package is released (#529)
+
+### Changed
+
+- RFC: Host locale subscription (#526)
+- fix prebuilt script runner lookup (#532)
+
+### Fixed
+
+- reject unknown wire messages (#547)
+- declare the chat worker in the product manifest (#541)
+- downgrade response and error payloads to the caller's version (#525)
+
 ## [0.11.0] - 2026-08-27
 
 ### Added
@@ -19,11 +37,13 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.11.0, @parity/truapi-host 0.8.0 (#530)
 - remove legacy single-execution core (#508)
 - RFC: Host Identity and Version via `System.host_info` (#177)
 
 ### Fixed
 
+- make the CLI release pipeline work end to end (#531)
 - clear the sandbox client when the pipe closes (#509)
 - persist and restore paired SSO hosts (#501)
 - gate tags on a confirmed npm publish (#505)
@@ -590,4 +610,150 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 ### Fixed
 
 - clippy needless_borrow and stale type import
+
+## [0.8.0] - 2026-06-01
+
+### Added
+
+- create transaction refinement (#168)
+- experimental debug hooks across host-api, host-container, host-papp (#154)
+
+### Changed
+
+- 0.8 (#179)
+- Rename product-sdk to host-api-wrapper (#169)
+
+## [0.7.8] - 2026-05-11
+
+### RFCs
+
+- **Withdrawn:** RFC Title
+- **Withdrawn:** Permission Model for Host API
+- **Withdrawn:** Payment Host API
+- **Withdrawn:** RFC-0007: Deterministic Entropy Derivation for Products
+- **Withdrawn:** Statement Store Host API v0.2
+- **Withdrawn:** RFC-0009: Unauthenticated Product Access
+- **Withdrawn:** RFC-0010: W3S Allowance Management in TrUAPI
+- **Withdrawn:** Host API root account access
+- **Withdrawn:** RFC-0014: Get User Primary DotNS Name
+
+### Changed
+
+- 0.7.8 (#164)
+- Add @novasamatech/product-bulletin package wrapping @parity/bulletin-sdk (#114)
+
+## [0.7.7] - 2026-05-07
+
+### RFCs
+
+- **Accepted:** RFC-0014: Get User Primary DotNS Name
+
+### Added
+
+- sso sign methods now accept product account ID instead of SS58 address (#159)
+- Implemented more web apis, simplified working with buffers (#153)
+
+### Changed
+
+- 0.7.7 (#162)
+- 0.7.6 (#160)
+- Implement rfc 10 apis (#157)
+- 0.7.4 (#148)
+- RFC-0014: Get User Primary DotNS Name (#144)
+- 0.7.3 (#145)
+
+### Fixed
+
+- key derivation now matches Substrate's standard rules (#158)
+- reconnects (#151)
+
+## [0.7.1] - 2026-04-23
+
+### RFCs
+
+- **Accepted:** RFC Title
+- **Accepted:** Permission Model for Host API
+- **Accepted:** Payment Host API
+- **Accepted:** RFC-0007: Deterministic Entropy Derivation for Products
+- **Accepted:** Statement Store Host API v0.2
+- **Accepted:** RFC-0009: Unauthenticated Product Access
+- **Accepted:** RFC-0010: W3S Allowance Management in TrUAPI
+- **Accepted:** Host API root account access
+
+### Added
+
+- add pause/resume to drop the inner socket cleanly (#140)
+- add handoff-service package for P2P file transfers via HOP (#109)
+- add paseo-next network and drop unstable. PB-420 (#101)
+- implemented correct session initialization and batching logic (#100)
+- update Paseo stable stage endpoint (#45)
+- handleChainConnection now supports transaction submit permission check (#97)
+- add configurable destroyDelay to connection pool (#96)
+- remove withPolkadotSdkCompat usage, added enhanceBranch option to branched provider instead (#91)
+- add withSubscriptionReplay provider enhancer (#89)
+- add worker-sandbox package. PB-333 (#71)
+- papp secret storage reexport (#76)
+- implement chain connection PB-332 (#69)
+- RFC/features by .md files (#57)
+- make logger configurable (#19)
+- add Paseo stable stage endpoint (#43)
+- product-react-renderer package with chat adapter integration (#38)
+- added rate limiter. PB-192 (#20)
+- support updated statement store api (#33)
+- update stable stage endpoints (#29)
+- save session only after attestation (#24)
+- 0.6.0 (#22)
+- implement chain JSON RPC methods (#17)
+- changes for 0.5 release (#16)
+- added a disconnect attempt and an error toast. PB-118 (#15)
+- update sdk to 0.5 spec (#13)
+- add tr-ui, PairingPopover and theme support (#10)
+- added clearAll method to localStorageAdapter (#11)
+- retry auth requests, add tests (#12)
+- chat (#9)
+- host api spec (#7)
+- Support new statement store errors while submitting statements (#8)
+- Implemented correct Polkadot app pairing ui (#6)
+- papp integration (#5)
+- new package names, removed shared package
+- Support createTransaction interface
+- connection status listening
+
+### Changed
+
+- RFC-0010: W3S Allowance Management in TrUApi (#129)
+- 0.7 (#113)
+- 0.6.18 (#132)
+- RFC: Statement store Host API changes according to v0.2 discussion (#118)
+- RFC-0006: Payment Host API (#94)
+- 0.6.15 (#102)
+- 0.6.10 (#87)
+- 0.6.9 (#85)
+- 0.6.7 (#77)
+- Release/0.6.6 (#60)
+- release 0.6.5 (#35)
+- release 0.6.5 (#34)
+- release 0.6.4 (#32)
+- 0.6.1 (#30)
+- Initial commit
+
+### Fixed
+
+- send JSON-RPC unsubscribe on subscription teardown (#111)
+- buffer request statements to prevent race condition in waitForRequestMessage (#119)
+- attestation service now listens to the best block instead of finalized (#116)
+- close MessagePort on provider dispose PB-310 (#78)
+- disable papp ws heartbeat timeout (#70)
+- qr styles (#59)
+- add hostMetadata to sign-in payload. PB-293 (#37)
+- correct error message for unknown signing error (#36)
+- address normalization in sso sessions sign requests (#31)
+- chain connection sharing across products (#21)
+- added Preview People Chain (#14)
+- pairing ui logos and texts
+- Explicitly set account type to sr25519 in extension injector
+- simplified createTransaction codec
+- code style
+- node versions in github action
+- husky config
 
