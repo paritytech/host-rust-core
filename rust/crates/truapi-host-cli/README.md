@@ -105,13 +105,6 @@ make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
 
-### Raw proof contexts (development only)
-
-A product can bind a ring-VRF proof to 32 bytes of its choosing instead of a
-product-namespaced context by calling `development_createAccountProof` from
-`@parity/truapi`; the signing host honours it as is. Yet to be removed before a
-production release.
-
 ### Browser products
 
 `truapi-host dev` is one command for "run this product as if it were inside a
