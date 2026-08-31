@@ -45,9 +45,12 @@ pub(super) struct JsBridge {
     pub(super) device_permission: Function,
     pub(super) remote_permission: Function,
     pub(super) lookup_preimage: Function,
+    pub(super) begin_operation: Function,
+    pub(super) end_operation: Function,
     pub(super) read: Function,
     pub(super) write: Function,
     pub(super) clear: Function,
+    pub(super) subscribe_storage: Function,
     pub(super) subscribe_theme: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
@@ -81,9 +84,12 @@ impl JsBridge {
             device_permission: get_function(callbacks, "devicePermission")?,
             remote_permission: get_function(callbacks, "remotePermission")?,
             lookup_preimage: get_function(callbacks, "lookupPreimage")?,
+            begin_operation: get_function(callbacks, "beginOperation")?,
+            end_operation: get_function(callbacks, "endOperation")?,
             read: get_function(callbacks, "read")?,
             write: get_function(callbacks, "write")?,
             clear: get_function(callbacks, "clear")?,
+            subscribe_storage: get_function(callbacks, "subscribeStorage")?,
             subscribe_theme: get_function(callbacks, "subscribeTheme")?,
             confirm_user_action: get_function(callbacks, "confirmUserAction")?,
             chat_present: get_optional_function(callbacks, "createChatRoom")?.is_some()
@@ -390,6 +396,46 @@ impl truapi_platform::PreimageHost for WasmPlatform {
 }
 
 #[truapi_platform::async_trait]
+impl truapi_platform::ProductOperations for WasmPlatform {
+    async fn begin_operation(
+        &self,
+        product: &truapi_platform::ProductContext,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.begin_operation,
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                JsValue::from_str(&label),
+            ],
+        )
+        .await
+        .map_err(|reason| v01::HostWorkerOperationError::Unknown { reason })?;
+        decode_bytes::<v01::HostWorkerBeginOperationResponse>(
+            bytes,
+            "beginOperation response did not decode",
+        )
+        .map_err(|reason| v01::HostWorkerOperationError::Unknown { reason })
+    }
+
+    async fn end_operation(
+        &self,
+        product: &truapi_platform::ProductContext,
+        id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
+        invoke_unit(
+            &self.bridge.end_operation,
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                JsValue::from_f64(f64::from(id)),
+            ],
+        )
+        .await
+        .map_err(|reason| v01::HostWorkerOperationError::Unknown { reason })
+    }
+}
+
+#[truapi_platform::async_trait]
 impl truapi_platform::ProductStorage for WasmPlatform {
     async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
         invoke_optional_bytes_return(
@@ -421,6 +467,17 @@ impl truapi_platform::ProductStorage for WasmPlatform {
         invoke_unit(&self.bridge.clear, vec![JsValue::from_str(&key)])
             .await
             .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: Vec<u8>,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        invoke_js_subscription(
+            &self.bridge.subscribe_storage,
+            Some(key),
+            parse_host_local_storage_change_item_item,
+        )
     }
 }
 
@@ -455,6 +512,12 @@ fn parse_host_chat_list_subscribe_item_item(
     value: JsValue,
 ) -> Result<v01::HostChatListSubscribeItem, String> {
     decode_js_item::<v01::HostChatListSubscribeItem>(value, "HostChatListSubscribeItem")
+}
+
+fn parse_host_local_storage_change_item_item(
+    value: JsValue,
+) -> Result<v01::HostLocalStorageChangeItem, String> {
+    decode_js_item::<v01::HostLocalStorageChangeItem>(value, "HostLocalStorageChangeItem")
 }
 
 fn parse_host_locale_subscribe_item_item(

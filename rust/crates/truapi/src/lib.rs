@@ -58,13 +58,14 @@ pub mod latest {
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
         HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
-        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
-        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
-        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension, VrfSignature,
+        HostWorkerOperationError, NotificationId, OperationId, OperationStartedResult,
+        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
+        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
+        RemoteStatementStoreSubscribeRequest, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey,
+        RuntimeApi, RuntimeSpec, RuntimeType, SignedStatement, Statement, StatementProof,
+        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeName, ThemeVariant,
+        TxPayloadExtension, VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -133,6 +134,9 @@ pub mod latest {
     /// Product context bound to the current host runtime.
     pub type HostGetProductContextResponse =
         LatestOf<versioned::system::HostGetProductContextResponse>;
+    /// Storage key change pushed to a subscriber.
+    pub type HostLocalStorageChangeItem =
+        LatestOf<versioned::local_storage::HostLocalStorageChangeItem>;
     /// Local storage operation error.
     pub type HostLocalStorageReadError =
         LatestOf<versioned::local_storage::HostLocalStorageReadError>;
@@ -170,6 +174,9 @@ pub mod latest {
         LatestOf<versioned::signing::HostSignRawWithLegacyAccountRequest>;
     /// Current host theme pushed to subscribers.
     pub type HostThemeSubscribeItem = LatestOf<versioned::theme::HostThemeSubscribeItem>;
+    /// Result of beginning a worker pending operation.
+    pub type HostWorkerBeginOperationResponse =
+        LatestOf<versioned::worker::HostWorkerBeginOperationResponse>;
     /// Transaction creation payload for a legacy account.
     pub type LegacyAccountTxPayload =
         LatestOf<versioned::signing::HostCreateTransactionWithLegacyAccountRequest>;

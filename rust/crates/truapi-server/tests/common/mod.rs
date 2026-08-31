@@ -8,8 +8,8 @@ use truapi::v01;
 use truapi_platform::{
     AuthPresenter, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, PairingHostConfig, Permissions,
-    PlatformInfo, PreimageHost, ProductContext, ProductStorage, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    PlatformInfo, PreimageHost, ProductContext, ProductOperations, ProductStorage, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 use truapi_server::frame::ProtocolMessage;
 use truapi_server::transport::Transport;
@@ -84,6 +84,30 @@ impl ProductStorage for WireShapePlatform {
         Ok(())
     }
     async fn clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
+        Ok(())
+    }
+    fn subscribe_storage(
+        &self,
+        _key: Vec<u8>,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        Box::pin(stream::empty())
+    }
+}
+
+#[truapi_platform::async_trait]
+impl ProductOperations for WireShapePlatform {
+    async fn begin_operation(
+        &self,
+        _product: &ProductContext,
+        _label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        Ok(v01::HostWorkerBeginOperationResponse { id: 1 })
+    }
+    async fn end_operation(
+        &self,
+        _product: &ProductContext,
+        _id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
         Ok(())
     }
 }
