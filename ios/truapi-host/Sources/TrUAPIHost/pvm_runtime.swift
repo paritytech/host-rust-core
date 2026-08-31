@@ -545,6 +545,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterFloat: FfiConverterPrimitive {
+    typealias FfiType = Float
+    typealias SwiftType = Float
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Float {
+        return try lift(readFloat(&buf))
+    }
+
+    public static func write(_ value: Float, into buf: inout [UInt8]) {
+        writeFloat(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -637,6 +653,10 @@ public protocol NativePvmRuntimeProtocol: AnyObject, Sendable {
 
     func backend() throws  -> String
 
+    func clearMotionTilt() throws
+
+    func configureNativeGpu(width: UInt32, height: UInt32) throws
+
     func gpuReady() throws  -> Bool
 
     func `init`() throws
@@ -645,11 +665,17 @@ public protocol NativePvmRuntimeProtocol: AnyObject, Sendable {
 
     func lastGasUsed() throws  -> UInt64
 
+    func renderNativeGpu() throws  -> NativePvmGpuFrame?
+
+    func resizeNativeGpu(width: UInt32, height: UInt32) throws
+
     func sendGpuEvent(bytes: Data) throws
 
     func sendInput(eventType: NativePvmInputEventType, code: UInt8, x: UInt16, y: UInt16) throws
 
     func setGpuCapabilities(bytes: Data) throws
+
+    func setMotionTilt(sample: NativePvmMotionTiltSample) throws
 
     func takeAudio() throws  -> NativePvmAudioChunk?
 
@@ -741,6 +767,24 @@ open func backend()throws  -> String  {
 })
 }
 
+open func clearMotionTilt()throws   {try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
+        uniffiCallStatus in
+    uniffi_pvm_runtime_fn_method_nativepvmruntime_clear_motion_tilt(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+open func configureNativeGpu(width: UInt32, height: UInt32)throws   {try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
+        uniffiCallStatus in
+    uniffi_pvm_runtime_fn_method_nativepvmruntime_configure_native_gpu(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(width),
+        FfiConverterUInt32.lower(height),uniffiCallStatus
+    )
+}
+}
+
 open func gpuReady()throws  -> Bool  {
     return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
         uniffiCallStatus in
@@ -776,6 +820,25 @@ open func lastGasUsed()throws  -> UInt64  {
 })
 }
 
+open func renderNativeGpu()throws  -> NativePvmGpuFrame?  {
+    return try  FfiConverterOptionTypeNativePvmGpuFrame.lift(try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
+        uniffiCallStatus in
+    uniffi_pvm_runtime_fn_method_nativepvmruntime_render_native_gpu(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func resizeNativeGpu(width: UInt32, height: UInt32)throws   {try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
+        uniffiCallStatus in
+    uniffi_pvm_runtime_fn_method_nativepvmruntime_resize_native_gpu(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(width),
+        FfiConverterUInt32.lower(height),uniffiCallStatus
+    )
+}
+}
+
 open func sendGpuEvent(bytes: Data)throws   {try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
         uniffiCallStatus in
     uniffi_pvm_runtime_fn_method_nativepvmruntime_send_gpu_event(
@@ -802,6 +865,15 @@ open func setGpuCapabilities(bytes: Data)throws   {try rustCallWithError(FfiConv
     uniffi_pvm_runtime_fn_method_nativepvmruntime_set_gpu_capabilities(
             self.uniffiCloneHandle(),
         FfiConverterData.lower(bytes),uniffiCallStatus
+    )
+}
+}
+
+open func setMotionTilt(sample: NativePvmMotionTiltSample)throws   {try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
+        uniffiCallStatus in
+    uniffi_pvm_runtime_fn_method_nativepvmruntime_set_motion_tilt(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeNativePvmMotionTiltSample_lower(sample),uniffiCallStatus
     )
 }
 }
@@ -1133,6 +1205,130 @@ public func FfiConverterTypeNativePvmGpuBatch_lift(_ buf: RustBuffer) throws -> 
 #endif
 public func FfiConverterTypeNativePvmGpuBatch_lower(_ value: NativePvmGpuBatch) -> RustBuffer {
     return FfiConverterTypeNativePvmGpuBatch.lower(value)
+}
+
+
+public struct NativePvmGpuFrame: Equatable, Hashable {
+    public var width: UInt32
+    public var height: UInt32
+    public var rgba: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(width: UInt32, height: UInt32, rgba: Data) {
+        self.width = width
+        self.height = height
+        self.rgba = rgba
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativePvmGpuFrame: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativePvmGpuFrame: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePvmGpuFrame {
+        return
+            try NativePvmGpuFrame(
+                width: FfiConverterUInt32.read(from: &buf),
+                height: FfiConverterUInt32.read(from: &buf),
+                rgba: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NativePvmGpuFrame, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.width, into: &buf)
+        FfiConverterUInt32.write(value.height, into: &buf)
+        FfiConverterData.write(value.rgba, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePvmGpuFrame_lift(_ buf: RustBuffer) throws -> NativePvmGpuFrame {
+    return try FfiConverterTypeNativePvmGpuFrame.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePvmGpuFrame_lower(_ value: NativePvmGpuFrame) -> RustBuffer {
+    return FfiConverterTypeNativePvmGpuFrame.lower(value)
+}
+
+
+public struct NativePvmMotionTiltSample: Equatable, Hashable {
+    public var sequence: UInt32
+    public var timestampUs: UInt64
+    public var tiltX: Float
+    public var tiltY: Float
+    public var azimuth: Float?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sequence: UInt32, timestampUs: UInt64, tiltX: Float, tiltY: Float, azimuth: Float?) {
+        self.sequence = sequence
+        self.timestampUs = timestampUs
+        self.tiltX = tiltX
+        self.tiltY = tiltY
+        self.azimuth = azimuth
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativePvmMotionTiltSample: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativePvmMotionTiltSample: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePvmMotionTiltSample {
+        return
+            try NativePvmMotionTiltSample(
+                sequence: FfiConverterUInt32.read(from: &buf),
+                timestampUs: FfiConverterUInt64.read(from: &buf),
+                tiltX: FfiConverterFloat.read(from: &buf),
+                tiltY: FfiConverterFloat.read(from: &buf),
+                azimuth: FfiConverterOptionFloat.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NativePvmMotionTiltSample, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.sequence, into: &buf)
+        FfiConverterUInt64.write(value.timestampUs, into: &buf)
+        FfiConverterFloat.write(value.tiltX, into: &buf)
+        FfiConverterFloat.write(value.tiltY, into: &buf)
+        FfiConverterOptionFloat.write(value.azimuth, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePvmMotionTiltSample_lift(_ buf: RustBuffer) throws -> NativePvmMotionTiltSample {
+    return try FfiConverterTypeNativePvmMotionTiltSample.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePvmMotionTiltSample_lower(_ value: NativePvmMotionTiltSample) -> RustBuffer {
+    return FfiConverterTypeNativePvmMotionTiltSample.lower(value)
 }
 
 
@@ -1473,6 +1669,30 @@ public func FfiConverterTypeNativePvmPresentationProfile_lower(_ value: NativePv
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionFloat: FfiConverterRustBuffer {
+    typealias SwiftType = Float?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterFloat.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterFloat.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -1593,6 +1813,30 @@ fileprivate struct FfiConverterOptionTypeNativePvmGpuBatch: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeNativePvmGpuFrame: FfiConverterRustBuffer {
+    typealias SwiftType = NativePvmGpuFrame?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNativePvmGpuFrame.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNativePvmGpuFrame.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeNativePvmTri2dFrame: FfiConverterRustBuffer {
     typealias SwiftType = NativePvmTri2dFrame?
 
@@ -1682,6 +1926,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_backend() != 56657) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_clear_motion_tilt() != 37897) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_configure_native_gpu() != 23998) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_gpu_ready() != 61888) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1694,6 +1944,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_last_gas_used() != 63988) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_render_native_gpu() != 27664) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_resize_native_gpu() != 45190) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_send_gpu_event() != 11805) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1701,6 +1957,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_set_gpu_capabilities() != 28903) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_set_motion_tilt() != 50848) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_take_audio() != 21780) {

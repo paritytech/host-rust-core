@@ -29,6 +29,7 @@ dwarf-debug-info = false
 default = ["wasm-signing-host"]
 wasm-signing-host = []
 ws-bridge = ["dep:tokio", "dep:tokio-tungstenite", "dep:rand"]
+native-pvm-gpu = ["truapi-pvm-host/native-gpu"]
 
 [dependencies]
 truapi = { path = "../truapi" }

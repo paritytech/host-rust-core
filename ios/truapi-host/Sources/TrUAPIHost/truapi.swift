@@ -5222,6 +5222,10 @@ public enum HostDevicePermissionRequest: Equatable, Hashable {
      * Biometric authentication.
      */
     case biometrics
+    /**
+     * Device orientation and motion sensors.
+     */
+    case motionSensors
 
 
 
@@ -5260,6 +5264,8 @@ public struct FfiConverterTypeHostDevicePermissionRequest: FfiConverterRustBuffe
         case 8: return .openUrl
 
         case 9: return .biometrics
+
+        case 10: return .motionSensors
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5303,6 +5309,10 @@ public struct FfiConverterTypeHostDevicePermissionRequest: FfiConverterRustBuffe
 
         case .biometrics:
             writeInt(&buf, Int32(9))
+
+
+        case .motionSensors:
+            writeInt(&buf, Int32(10))
 
         }
     }
