@@ -1122,10 +1122,7 @@ fn pairing_image_failure(error: &anyhow::Error, pasted_text: bool) -> String {
 
 impl Drop for ActiveTerminalUi {
     fn drop(&mut self) {
-        // Owner-guarded: clear the slot only while it still holds this UI's own
-        // sender. A `ActiveTerminalUi` built without `enter` never installed one,
-        // and an unconditional clear then discards whatever is there — silently
-        // dropping the events its real owner is waiting on.
+        // Only the UI that installed the active sender may clear it.
         if let Ok(mut active) = active_ui().lock()
             && active
                 .as_ref()
@@ -3570,10 +3567,7 @@ mod tests {
         Ok(())
     }
 
-    /// A `ActiveTerminalUi` that never installed its sender must not clear the
-    /// slot on drop: it would discard the events its real owner is waiting on,
-    /// which made `sso_summary_bypasses_the_adjustable_log_filter` fail whenever
-    /// the two ran concurrently.
+    /// Dropping a UI leaves another UI's installed sender in place.
     #[test]
     fn dropping_a_foreign_ui_leaves_the_installed_sender_in_place() {
         let (installed, mut receiver) = mpsc::unbounded_channel();
