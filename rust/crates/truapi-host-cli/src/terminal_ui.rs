@@ -1122,7 +1122,15 @@ fn pairing_image_failure(error: &anyhow::Error, pasted_text: bool) -> String {
 
 impl Drop for ActiveTerminalUi {
     fn drop(&mut self) {
-        if let Ok(mut active) = active_ui().lock() {
+        // Owner-guarded: clear the slot only while it still holds this UI's own
+        // sender. A `ActiveTerminalUi` built without `enter` never installed one,
+        // and an unconditional clear then discards whatever is there — silently
+        // dropping the events its real owner is waiting on.
+        if let Ok(mut active) = active_ui().lock()
+            && active
+                .as_ref()
+                .is_some_and(|installed| installed.same_channel(&self.sender))
+        {
             *active = None;
         }
         if let Some(terminal) = self.terminal.take() {
@@ -3562,10 +3570,51 @@ mod tests {
         Ok(())
     }
 
+    /// A `ActiveTerminalUi` that never installed its sender must not clear the
+    /// slot on drop: it would discard the events its real owner is waiting on,
+    /// which made `sso_summary_bypasses_the_adjustable_log_filter` fail whenever
+    /// the two ran concurrently.
+    #[test]
+    fn dropping_a_foreign_ui_leaves_the_installed_sender_in_place() {
+        let (installed, mut receiver) = mpsc::unbounded_channel();
+        let restore = active_ui()
+            .lock()
+            .expect("lock active test UI")
+            .replace(installed);
+
+        {
+            let (sender, foreign_receiver) = mpsc::unbounded_channel();
+            let _foreign = ActiveTerminalUi {
+                terminal: None,
+                events: None,
+                receiver: foreign_receiver,
+                sender,
+                app: test_app(),
+                clipboard: None,
+                copy_next_pairing_deeplink: false,
+            };
+        }
+
+        let delivered = send_to_active(UiEvent::Log("after a foreign drop".to_string()));
+        *active_ui().lock().expect("unlock active test UI") = restore;
+
+        assert!(
+            delivered,
+            "the installed sender was cleared by a foreign drop"
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(UiEvent::Log(line)) if line == "after a foreign drop"
+        ));
+    }
+
     #[test]
     fn sso_summary_bypasses_the_adjustable_log_filter() {
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        *active_ui().lock().expect("lock active test UI") = Some(sender);
+        let restore = active_ui()
+            .lock()
+            .expect("lock active test UI")
+            .replace(sender);
         let filtered_logs = tracing_subscriber::fmt::layer()
             .with_writer(io::sink)
             .with_filter(tracing_subscriber::EnvFilter::new("error"));
@@ -3586,7 +3635,7 @@ mod tests {
                 elapsed_ms = 84_u64,
             );
         });
-        *active_ui().lock().expect("unlock active test UI") = None;
+        *active_ui().lock().expect("unlock active test UI") = restore;
 
         let UiEvent::Sso(event) = receiver.try_recv().expect("summary transcript event") else {
             panic!("expected SSO transcript event");
