@@ -3405,18 +3405,24 @@ dependencies = [
 [[package]]
 name = "pvm-gpu-wire"
 version = "0.1.5"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=81a484a131f40f114a64dfedf90527039b135a38#81a484a131f40f114a64dfedf90527039b135a38"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=059e37d1f14c6635c53b35647af0836e429f159d#059e37d1f14c6635c53b35647af0836e429f159d"
+
+[[package]]
+name = "pvm-motion-wire"
+version = "0.1.5"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=059e37d1f14c6635c53b35647af0836e429f159d#059e37d1f14c6635c53b35647af0836e429f159d"
 
 [[package]]
 name = "pvm-runtime"
 version = "0.1.5"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=81a484a131f40f114a64dfedf90527039b135a38#81a484a131f40f114a64dfedf90527039b135a38"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=059e37d1f14c6635c53b35647af0836e429f159d#059e37d1f14c6635c53b35647af0836e429f159d"
 dependencies = [
  "anyhow",
  "log",
  "polkavm 0.37.0 (git+https://github.com/paritytech/polkavm.git?rev=3df1d0309c4c81a1aad0a755d83570d203bba1d9)",
  "polkavm 0.37.0 (git+https://github.com/paritytech/polkavm.git?rev=e06cce9da5c6d3f72458168876ea304e27992094)",
  "pvm-gpu-wire",
+ "pvm-motion-wire",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3427,7 +3433,7 @@ dependencies = [
 [[package]]
 name = "pvm-runtime-assets"
 version = "0.1.5"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=81a484a131f40f114a64dfedf90527039b135a38#81a484a131f40f114a64dfedf90527039b135a38"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=059e37d1f14c6635c53b35647af0836e429f159d#059e37d1f14c6635c53b35647af0836e429f159d"
 
 [[package]]
 name = "qrcode"
