@@ -55,71 +55,52 @@ struct Message {
 [requestId: SCALE str][trait: u8][method: u8][payload bytes...]
 ```
 
-The two bytes after the `requestId` are the **`(trait, method)` discriminant pair**. The first byte identifies the API trait (`System`, `Account`, `Chain`, ...); the second identifies the action within that trait. The payload bytes are the SCALE-encoded action value, inlined without a length prefix — the receiver reads to the end of the transport frame. Conceptually, `Payload` is a per-trait enum whose variants are the **actions** — the individual things a Host and Product can say to each other.
+The two bytes after the `requestId` are the **`(trait, method)` discriminant pair**. The first byte identifies the API trait (`System`, `Account`, `Chain`, ...); the second identifies a method within it: exactly one id per method, regardless of that method's shape. The payload bytes are the SCALE-encoded value for that method's own nested envelope (below), inlined without a length prefix; the receiver reads to the end of the transport frame.
 
-Actions are not written by hand. They are derived mechanically from the TrUAPI methods, so the high-level method signature and the wire format can never drift apart. One method expands into several actions depending on its shape: a plain call becomes a request/response pair, while a subscription becomes a small lifecycle of start, stop, interrupt, and receive messages.
+Trait discriminants are assigned per trait in the `truapi` crate via the trait-level `#[wire_trait(id = N)]` annotation, with the `System` trait fixed at `193` (the lowest id the codec permits, see the appendix), so a handshake request frame always starts `[requestId][0xC1][0x00]`. Each method carries an explicit discriminant within its trait, assigned via the `#[wire(id = N)]` annotation and numbered from `0` independently inside every trait. Ids are **append-only per trait and never reused**: once a `(trait, method)` pair ships it keeps its meaning forever, which is what lets a newer Host and an older Product still understand each other, and adding methods to one trait never disturbs the ids of any other trait. The crate is the source of truth for all values. Trait discriminant `255` is permanently reserved for protocol errors and cannot be assigned to an API trait, so no method can ever be addressed there; a protocol error travels on the pair `(255, 255)`.
 
-Trait discriminants are assigned per trait in the `truapi` crate via the trait-level `#[wire_trait(id = N)]` annotation, with the `System` trait fixed at `193` — the lowest id the codec permits (see the appendix) — so a handshake request frame always starts `[requestId][0xC1][0x00]`. Each action carries an explicit method discriminant within its trait — its `request_id`, `response_id`, `start_id`, `stop_id`, `interrupt_id`, or `receive_id` — assigned per method via the `#[wire(...)]` annotation and numbered from `0` independently inside every trait. Ids are **append-only per trait and never reused**: once a `(trait, method)` pair ships it keeps its meaning forever, which is what lets a newer Host and an older Product still understand each other, and adding methods to one trait never disturbs the ids of any other trait. The crate is the source of truth for all values. Trait discriminant `255` is permanently reserved for protocol errors and cannot be assigned to an API trait, so no method can ever be addressed there; a protocol error travels on the pair `(255, 255)`.
+#### The nested envelope
 
-Payloads are versioned independently of the discriminant pair, so a single message can evolve without renumbering anything around it. The current version `V1` encodes as discriminant `0`:
+A `(trait, method)` pair names a method, not a direction: request and response share it, and so do a subscription's four phases. Direction, and the payload version, both live inside the payload bytes as a small nested envelope instead:
 
 ```rust
-enum Versioned<T> {
-  V1(T),
+enum Versioned<Shape> {
+  V1(Shape),
   // ...
+}
+
+enum Request<Req, Res> {
+  Request(Req),
+  Response(Res),
+}
+
+enum Subscription<Start, Item, Err> {
+  Start(Start),
+  Stop,
+  Interrupt(Option<Err>), // None = clean completion, Some(err) = failure
+  Receive(Item),
 }
 ```
 
-Actions are derived from the TrUAPI methods using the following algorithm:
+`Shape` is `Request<Req, Result<Ok, Err>>` for a plain call, or `Subscription<Start, Item, Err>` for a subscription, whichever the method's own return type calls for. The version tag therefore selects a method's *shape*: today every method has exactly one version and one shape, but a later version of the same method could switch a call to a subscription (or vice versa) without needing a new `(trait, method)` pair. On the wire, `Versioned<Shape>`'s tag and `Request`/`Subscription`'s own direction tag are two consecutive SCALE enum discriminant bytes: `[version][direction][...direction's own payload]`.
 
-- For request functions, actions are derived as follows:
-  - Request
-    - Name: `method_name + '_request'`
-    - Argument: `Versioned<(arg1, arg2, ...)>`
-    - Discriminant: `request_id`
-  - Response
-    - Name: `method_name + '_response'`
-    - Argument: `Versioned<Result<ReturnValue, ReturnError>>`
-    - Discriminant: `response_id`
-- For subscriptions, there are four messages:
-  - Subscribe
-    - Name: `method_name + '_start'`
-    - Argument: tuple of all arguments except the callback `Versioned<(arg1, arg2, ...)>`
-    - Discriminant: `start_id`
-  - Unsubscribe
-    - Name: `method_name + '_stop'`
-    - Argument: none
-    - Discriminant: `stop_id`
-  - Interrupt
-    - Name: `method_name + '_interrupt'`
-    - Argument: none
-    - Discriminant: `interrupt_id`
-  - Receive
-    - Name: `method_name + '_receive'`
-    - Argument: the versioned callback argument `Versioned<CallbackArg>`
-    - Discriminant: `receive_id`
+For example, a `system_feature_supported` request/response pair (trait `193`, method `1`) is carried entirely by the payload bytes at that one address:
 
-Put together, a slice of one trait's `Payload` actions looks like this (the payload types are illustrative; see the `truapi` crate for the real ones):
-
-```rust
-enum Payload {
-  host_handshake_request(Versioned::V1(HandshakeVersion)),
-  host_handshake_response(Versioned::V1(Result<(), GenericErr>)),
-
-  // ...
-  // imaginary subscription method
-
-  message_send_request(Versioned::V1((ChainId, str))),
-  message_send_response(Versioned::V1(Result<(), GenericErr>)),
-
-  message_subscribe_start(Versioned::V1(ChainId)),
-  message_subscribe_stop,
-  message_subscribe_interrupt,
-  message_subscribe_receive(Versioned::V1(str)),
-
-  // ...
-}
+```text
+outbound: [0xC1][0x01][0x00 V1][0x00 Request][...request fields]
+inbound:  [0xC1][0x01][0x00 V1][0x01 Response][0x00 Ok][...response fields]
 ```
+
+and a subscription's four phases (start, stop, interrupt, receive) all address the same `(trait, method)` pair, distinguished only by which `Subscription` variant tag follows the version byte:
+
+```text
+start:     [trait][method][0x00 V1][0x00 Start][...start fields]
+stop:      [trait][method][0x00 V1][0x01 Stop]
+interrupt: [trait][method][0x00 V1][0x02 Interrupt][...Option<Err>]
+receive:   [trait][method][0x00 V1][0x03 Receive][...item fields]
+```
+
+Request/response and subscription methods are both derived mechanically from the TrUAPI trait methods, so the high-level method signature and the wire format can never drift apart; nothing is written by hand.
 
 ### Rules
 
@@ -137,7 +118,7 @@ Hosts and Products released before this control frame was introduced still silen
 
 #### Subscription
 
-A subscription is not a one-shot call but an ongoing stream: the consumer asks once and then receives updates until it stops listening. Its four messages — `start`, `stop`, `interrupt`, and `receive` — MUST all share the same `requestId`, so a subscription handler can route every update and teardown signal to the right place.
+A subscription is not a one-shot call but an ongoing stream: the consumer asks once and then receives updates until it stops listening. Its four messages (`start`, `stop`, `interrupt`, and `receive`) all address the same `(trait, method)` pair (distinguished by the `Subscription` direction tag inside the payload) and MUST all share the same `requestId`, so a subscription handler can route every update and teardown signal to the right place.
 
 Each message has a defined role:
 
@@ -174,6 +155,8 @@ The concrete handshake request, response, and error types are defined in the `tr
 
 Codec version 1 used a single flat `u8` discriminant shared across all traits. Codec version 2 replaces it with the `(trait, method)` pair. This table is the one-time mapping between the two numberings; it exists only to interpret captured codec-1 traffic and old fixtures, and is never extended — new methods only ever get codec-2 pairs.
 
+Codec 1 spent a separate discriminant per action (request and response, or each of a subscription's four phases), where codec 2 spends one `(trait, method)` pair per *method* and folds direction into the payload (see [above](#the-nested-envelope)). The table below therefore still lists one row per historical codec-1 action, but every action belonging to the same method now maps to the same codec-2 pair.
+
 Trait id assignment. Ids start at 193 (`truapi::MIN_TRAIT_ID`), one past
 `truapi::MAX_CODEC_1_METHOD_ID`: `triangle-js-sdks` `host-api` allocated
 166..=171 to the RFC-0024 ring VRF methods, and this crate's own flat numbering
@@ -207,162 +190,162 @@ Per-action mapping (codec-1 flat id → codec-2 `(trait, method)` pair):
 | Action | Codec-1 id | Codec-2 (trait, method) |
 | --- | --- | --- |
 | `system_handshake_request` | 0 | (193, 0) |
-| `system_handshake_response` | 1 | (193, 1) |
-| `system_feature_supported_request` | 2 | (193, 2) |
-| `system_feature_supported_response` | 3 | (193, 3) |
-| `system_navigate_to_request` | 6 | (193, 4) |
-| `system_navigate_to_response` | 7 | (193, 5) |
+| `system_handshake_response` | 1 | (193, 0) |
+| `system_feature_supported_request` | 2 | (193, 1) |
+| `system_feature_supported_response` | 3 | (193, 1) |
+| `system_navigate_to_request` | 6 | (193, 2) |
+| `system_navigate_to_response` | 7 | (193, 2) |
 | `account_connection_status_subscribe_start` | 18 | (194, 0) |
-| `account_connection_status_subscribe_stop` | 19 | (194, 1) |
-| `account_connection_status_subscribe_interrupt` | 20 | (194, 2) |
-| `account_connection_status_subscribe_receive` | 21 | (194, 3) |
-| `account_get_account_request` | 22 | (194, 4) |
-| `account_get_account_response` | 23 | (194, 5) |
-| `account_get_account_alias_request` | 24 | (194, 6) |
-| `account_get_account_alias_response` | 25 | (194, 7) |
-| `account_create_account_proof_request` | 26 | (194, 8) |
-| `account_create_account_proof_response` | 27 | (194, 9) |
-| `account_get_legacy_accounts_request` | 28 | (194, 10) |
-| `account_get_legacy_accounts_response` | 29 | (194, 11) |
-| `account_get_user_id_request` | 110 | (194, 12) |
-| `account_get_user_id_response` | 111 | (194, 13) |
-| `account_request_login_request` | 112 | (194, 14) |
-| `account_request_login_response` | 113 | (194, 15) |
-| `account_sign_vrf_request` | 164 | (194, 16) |
-| `account_sign_vrf_response` | 165 | (194, 17) |
+| `account_connection_status_subscribe_stop` | 19 | (194, 0) |
+| `account_connection_status_subscribe_interrupt` | 20 | (194, 0) |
+| `account_connection_status_subscribe_receive` | 21 | (194, 0) |
+| `account_get_account_request` | 22 | (194, 1) |
+| `account_get_account_response` | 23 | (194, 1) |
+| `account_get_account_alias_request` | 24 | (194, 2) |
+| `account_get_account_alias_response` | 25 | (194, 2) |
+| `account_create_account_proof_request` | 26 | (194, 3) |
+| `account_create_account_proof_response` | 27 | (194, 3) |
+| `account_get_legacy_accounts_request` | 28 | (194, 4) |
+| `account_get_legacy_accounts_response` | 29 | (194, 4) |
+| `account_get_user_id_request` | 110 | (194, 5) |
+| `account_get_user_id_response` | 111 | (194, 5) |
+| `account_request_login_request` | 112 | (194, 6) |
+| `account_request_login_response` | 113 | (194, 6) |
+| `account_sign_vrf_request` | 164 | (194, 7) |
+| `account_sign_vrf_response` | 165 | (194, 7) |
 | `chain_follow_head_subscribe_start` | 76 | (195, 0) |
-| `chain_follow_head_subscribe_stop` | 77 | (195, 1) |
-| `chain_follow_head_subscribe_interrupt` | 78 | (195, 2) |
-| `chain_follow_head_subscribe_receive` | 79 | (195, 3) |
-| `chain_get_head_header_request` | 80 | (195, 4) |
-| `chain_get_head_header_response` | 81 | (195, 5) |
-| `chain_get_head_body_request` | 82 | (195, 6) |
-| `chain_get_head_body_response` | 83 | (195, 7) |
-| `chain_get_head_storage_request` | 84 | (195, 8) |
-| `chain_get_head_storage_response` | 85 | (195, 9) |
-| `chain_call_head_request` | 86 | (195, 10) |
-| `chain_call_head_response` | 87 | (195, 11) |
-| `chain_unpin_head_request` | 88 | (195, 12) |
-| `chain_unpin_head_response` | 89 | (195, 13) |
-| `chain_continue_head_request` | 90 | (195, 14) |
-| `chain_continue_head_response` | 91 | (195, 15) |
-| `chain_stop_head_operation_request` | 92 | (195, 16) |
-| `chain_stop_head_operation_response` | 93 | (195, 17) |
-| `chain_get_spec_genesis_hash_request` | 94 | (195, 18) |
-| `chain_get_spec_genesis_hash_response` | 95 | (195, 19) |
-| `chain_get_spec_chain_name_request` | 96 | (195, 20) |
-| `chain_get_spec_chain_name_response` | 97 | (195, 21) |
-| `chain_get_spec_properties_request` | 98 | (195, 22) |
-| `chain_get_spec_properties_response` | 99 | (195, 23) |
-| `chain_broadcast_transaction_request` | 100 | (195, 24) |
-| `chain_broadcast_transaction_response` | 101 | (195, 25) |
-| `chain_stop_transaction_request` | 102 | (195, 26) |
-| `chain_stop_transaction_response` | 103 | (195, 27) |
+| `chain_follow_head_subscribe_stop` | 77 | (195, 0) |
+| `chain_follow_head_subscribe_interrupt` | 78 | (195, 0) |
+| `chain_follow_head_subscribe_receive` | 79 | (195, 0) |
+| `chain_get_head_header_request` | 80 | (195, 1) |
+| `chain_get_head_header_response` | 81 | (195, 1) |
+| `chain_get_head_body_request` | 82 | (195, 2) |
+| `chain_get_head_body_response` | 83 | (195, 2) |
+| `chain_get_head_storage_request` | 84 | (195, 3) |
+| `chain_get_head_storage_response` | 85 | (195, 3) |
+| `chain_call_head_request` | 86 | (195, 4) |
+| `chain_call_head_response` | 87 | (195, 4) |
+| `chain_unpin_head_request` | 88 | (195, 5) |
+| `chain_unpin_head_response` | 89 | (195, 5) |
+| `chain_continue_head_request` | 90 | (195, 6) |
+| `chain_continue_head_response` | 91 | (195, 6) |
+| `chain_stop_head_operation_request` | 92 | (195, 7) |
+| `chain_stop_head_operation_response` | 93 | (195, 7) |
+| `chain_get_spec_genesis_hash_request` | 94 | (195, 8) |
+| `chain_get_spec_genesis_hash_response` | 95 | (195, 8) |
+| `chain_get_spec_chain_name_request` | 96 | (195, 9) |
+| `chain_get_spec_chain_name_response` | 97 | (195, 9) |
+| `chain_get_spec_properties_request` | 98 | (195, 10) |
+| `chain_get_spec_properties_response` | 99 | (195, 10) |
+| `chain_broadcast_transaction_request` | 100 | (195, 11) |
+| `chain_broadcast_transaction_response` | 101 | (195, 11) |
+| `chain_stop_transaction_request` | 102 | (195, 12) |
+| `chain_stop_transaction_response` | 103 | (195, 12) |
 | `chat_create_room_request` | 38 | (196, 0) |
-| `chat_create_room_response` | 39 | (196, 1) |
-| `chat_register_bot_request` | 40 | (196, 2) |
-| `chat_register_bot_response` | 41 | (196, 3) |
-| `chat_list_subscribe_start` | 42 | (196, 4) |
-| `chat_list_subscribe_stop` | 43 | (196, 5) |
-| `chat_list_subscribe_interrupt` | 44 | (196, 6) |
-| `chat_list_subscribe_receive` | 45 | (196, 7) |
-| `chat_post_message_request` | 46 | (196, 8) |
-| `chat_post_message_response` | 47 | (196, 9) |
-| `chat_action_subscribe_start` | 48 | (196, 10) |
-| `chat_action_subscribe_stop` | 49 | (196, 11) |
-| `chat_action_subscribe_interrupt` | 50 | (196, 12) |
-| `chat_action_subscribe_receive` | 51 | (196, 13) |
-| `chat_custom_message_render_start` | 52 | (196, 14) |
-| `chat_custom_message_render_stop` | 53 | (196, 15) |
-| `chat_custom_message_render_interrupt` | 54 | (196, 16) |
-| `chat_custom_message_render_receive` | 55 | (196, 17) |
+| `chat_create_room_response` | 39 | (196, 0) |
+| `chat_register_bot_request` | 40 | (196, 1) |
+| `chat_register_bot_response` | 41 | (196, 1) |
+| `chat_list_subscribe_start` | 42 | (196, 2) |
+| `chat_list_subscribe_stop` | 43 | (196, 2) |
+| `chat_list_subscribe_interrupt` | 44 | (196, 2) |
+| `chat_list_subscribe_receive` | 45 | (196, 2) |
+| `chat_post_message_request` | 46 | (196, 3) |
+| `chat_post_message_response` | 47 | (196, 3) |
+| `chat_action_subscribe_start` | 48 | (196, 4) |
+| `chat_action_subscribe_stop` | 49 | (196, 4) |
+| `chat_action_subscribe_interrupt` | 50 | (196, 4) |
+| `chat_action_subscribe_receive` | 51 | (196, 4) |
+| `chat_custom_message_render_start` | 52 | (196, 5) |
+| `chat_custom_message_render_stop` | 53 | (196, 5) |
+| `chat_custom_message_render_interrupt` | 54 | (196, 5) |
+| `chat_custom_message_render_receive` | 55 | (196, 5) |
 | `coin_payment_create_purse_request` | 136 | (197, 0) |
-| `coin_payment_create_purse_response` | 137 | (197, 1) |
-| `coin_payment_query_purse_request` | 138 | (197, 2) |
-| `coin_payment_query_purse_response` | 139 | (197, 3) |
-| `coin_payment_rebalance_purse_start` | 140 | (197, 4) |
-| `coin_payment_rebalance_purse_stop` | 141 | (197, 5) |
-| `coin_payment_rebalance_purse_interrupt` | 142 | (197, 6) |
-| `coin_payment_rebalance_purse_receive` | 143 | (197, 7) |
-| `coin_payment_delete_purse_start` | 144 | (197, 8) |
-| `coin_payment_delete_purse_stop` | 145 | (197, 9) |
-| `coin_payment_delete_purse_interrupt` | 146 | (197, 10) |
-| `coin_payment_delete_purse_receive` | 147 | (197, 11) |
-| `coin_payment_create_receivable_request` | 148 | (197, 12) |
-| `coin_payment_create_receivable_response` | 149 | (197, 13) |
-| `coin_payment_create_cheque_request` | 150 | (197, 14) |
-| `coin_payment_create_cheque_response` | 151 | (197, 15) |
-| `coin_payment_deposit_start` | 152 | (197, 16) |
-| `coin_payment_deposit_stop` | 153 | (197, 17) |
-| `coin_payment_deposit_interrupt` | 154 | (197, 18) |
-| `coin_payment_deposit_receive` | 155 | (197, 19) |
-| `coin_payment_refund_start` | 156 | (197, 20) |
-| `coin_payment_refund_stop` | 157 | (197, 21) |
-| `coin_payment_refund_interrupt` | 158 | (197, 22) |
-| `coin_payment_refund_receive` | 159 | (197, 23) |
-| `coin_payment_listen_for_payment_start` | 160 | (197, 24) |
-| `coin_payment_listen_for_payment_stop` | 161 | (197, 25) |
-| `coin_payment_listen_for_payment_interrupt` | 162 | (197, 26) |
-| `coin_payment_listen_for_payment_receive` | 163 | (197, 27) |
+| `coin_payment_create_purse_response` | 137 | (197, 0) |
+| `coin_payment_query_purse_request` | 138 | (197, 1) |
+| `coin_payment_query_purse_response` | 139 | (197, 1) |
+| `coin_payment_rebalance_purse_start` | 140 | (197, 2) |
+| `coin_payment_rebalance_purse_stop` | 141 | (197, 2) |
+| `coin_payment_rebalance_purse_interrupt` | 142 | (197, 2) |
+| `coin_payment_rebalance_purse_receive` | 143 | (197, 2) |
+| `coin_payment_delete_purse_start` | 144 | (197, 3) |
+| `coin_payment_delete_purse_stop` | 145 | (197, 3) |
+| `coin_payment_delete_purse_interrupt` | 146 | (197, 3) |
+| `coin_payment_delete_purse_receive` | 147 | (197, 3) |
+| `coin_payment_create_receivable_request` | 148 | (197, 4) |
+| `coin_payment_create_receivable_response` | 149 | (197, 4) |
+| `coin_payment_create_cheque_request` | 150 | (197, 5) |
+| `coin_payment_create_cheque_response` | 151 | (197, 5) |
+| `coin_payment_deposit_start` | 152 | (197, 6) |
+| `coin_payment_deposit_stop` | 153 | (197, 6) |
+| `coin_payment_deposit_interrupt` | 154 | (197, 6) |
+| `coin_payment_deposit_receive` | 155 | (197, 6) |
+| `coin_payment_refund_start` | 156 | (197, 7) |
+| `coin_payment_refund_stop` | 157 | (197, 7) |
+| `coin_payment_refund_interrupt` | 158 | (197, 7) |
+| `coin_payment_refund_receive` | 159 | (197, 7) |
+| `coin_payment_listen_for_payment_start` | 160 | (197, 8) |
+| `coin_payment_listen_for_payment_stop` | 161 | (197, 8) |
+| `coin_payment_listen_for_payment_interrupt` | 162 | (197, 8) |
+| `coin_payment_listen_for_payment_receive` | 163 | (197, 8) |
 | `entropy_derive_request` | 108 | (198, 0) |
-| `entropy_derive_response` | 109 | (198, 1) |
+| `entropy_derive_response` | 109 | (198, 0) |
 | `local_storage_read_request` | 12 | (199, 0) |
-| `local_storage_read_response` | 13 | (199, 1) |
-| `local_storage_write_request` | 14 | (199, 2) |
-| `local_storage_write_response` | 15 | (199, 3) |
-| `local_storage_clear_request` | 16 | (199, 4) |
-| `local_storage_clear_response` | 17 | (199, 5) |
+| `local_storage_read_response` | 13 | (199, 0) |
+| `local_storage_write_request` | 14 | (199, 1) |
+| `local_storage_write_response` | 15 | (199, 1) |
+| `local_storage_clear_request` | 16 | (199, 2) |
+| `local_storage_clear_response` | 17 | (199, 2) |
 | `notifications_send_push_notification_request` | 4 | (200, 0) |
-| `notifications_send_push_notification_response` | 5 | (200, 1) |
-| `notifications_cancel_push_notification_request` | 134 | (200, 2) |
-| `notifications_cancel_push_notification_response` | 135 | (200, 3) |
+| `notifications_send_push_notification_response` | 5 | (200, 0) |
+| `notifications_cancel_push_notification_request` | 134 | (200, 1) |
+| `notifications_cancel_push_notification_response` | 135 | (200, 1) |
 | `payment_balance_subscribe_start` | 118 | (201, 0) |
-| `payment_balance_subscribe_stop` | 119 | (201, 1) |
-| `payment_balance_subscribe_interrupt` | 120 | (201, 2) |
-| `payment_balance_subscribe_receive` | 121 | (201, 3) |
-| `payment_top_up_request` | 122 | (201, 4) |
-| `payment_top_up_response` | 123 | (201, 5) |
-| `payment_request_request` | 124 | (201, 6) |
-| `payment_request_response` | 125 | (201, 7) |
-| `payment_status_subscribe_start` | 126 | (201, 8) |
-| `payment_status_subscribe_stop` | 127 | (201, 9) |
-| `payment_status_subscribe_interrupt` | 128 | (201, 10) |
-| `payment_status_subscribe_receive` | 129 | (201, 11) |
+| `payment_balance_subscribe_stop` | 119 | (201, 0) |
+| `payment_balance_subscribe_interrupt` | 120 | (201, 0) |
+| `payment_balance_subscribe_receive` | 121 | (201, 0) |
+| `payment_top_up_request` | 122 | (201, 1) |
+| `payment_top_up_response` | 123 | (201, 1) |
+| `payment_request_request` | 124 | (201, 2) |
+| `payment_request_response` | 125 | (201, 2) |
+| `payment_status_subscribe_start` | 126 | (201, 3) |
+| `payment_status_subscribe_stop` | 127 | (201, 3) |
+| `payment_status_subscribe_interrupt` | 128 | (201, 3) |
+| `payment_status_subscribe_receive` | 129 | (201, 3) |
 | `permissions_request_device_permission_request` | 8 | (202, 0) |
-| `permissions_request_device_permission_response` | 9 | (202, 1) |
-| `permissions_request_remote_permission_request` | 10 | (202, 2) |
-| `permissions_request_remote_permission_response` | 11 | (202, 3) |
+| `permissions_request_device_permission_response` | 9 | (202, 0) |
+| `permissions_request_remote_permission_request` | 10 | (202, 1) |
+| `permissions_request_remote_permission_response` | 11 | (202, 1) |
 | `preimage_lookup_subscribe_start` | 64 | (203, 0) |
-| `preimage_lookup_subscribe_stop` | 65 | (203, 1) |
-| `preimage_lookup_subscribe_interrupt` | 66 | (203, 2) |
-| `preimage_lookup_subscribe_receive` | 67 | (203, 3) |
-| `preimage_submit_request` | 68 | (203, 4) |
-| `preimage_submit_response` | 69 | (203, 5) |
+| `preimage_lookup_subscribe_stop` | 65 | (203, 0) |
+| `preimage_lookup_subscribe_interrupt` | 66 | (203, 0) |
+| `preimage_lookup_subscribe_receive` | 67 | (203, 0) |
+| `preimage_submit_request` | 68 | (203, 1) |
+| `preimage_submit_response` | 69 | (203, 1) |
 | `resource_allocation_request_request` | 130 | (204, 0) |
-| `resource_allocation_request_response` | 131 | (204, 1) |
+| `resource_allocation_request_response` | 131 | (204, 0) |
 | `signing_create_transaction_request` | 30 | (205, 0) |
-| `signing_create_transaction_response` | 31 | (205, 1) |
-| `signing_create_transaction_with_legacy_account_request` | 32 | (205, 2) |
-| `signing_create_transaction_with_legacy_account_response` | 33 | (205, 3) |
-| `signing_sign_raw_with_legacy_account_request` | 34 | (205, 4) |
-| `signing_sign_raw_with_legacy_account_response` | 35 | (205, 5) |
-| `signing_sign_payload_with_legacy_account_request` | 36 | (205, 6) |
-| `signing_sign_payload_with_legacy_account_response` | 37 | (205, 7) |
-| `signing_sign_raw_request` | 114 | (205, 8) |
-| `signing_sign_raw_response` | 115 | (205, 9) |
-| `signing_sign_payload_request` | 116 | (205, 10) |
-| `signing_sign_payload_response` | 117 | (205, 11) |
+| `signing_create_transaction_response` | 31 | (205, 0) |
+| `signing_create_transaction_with_legacy_account_request` | 32 | (205, 1) |
+| `signing_create_transaction_with_legacy_account_response` | 33 | (205, 1) |
+| `signing_sign_raw_with_legacy_account_request` | 34 | (205, 2) |
+| `signing_sign_raw_with_legacy_account_response` | 35 | (205, 2) |
+| `signing_sign_payload_with_legacy_account_request` | 36 | (205, 3) |
+| `signing_sign_payload_with_legacy_account_response` | 37 | (205, 3) |
+| `signing_sign_raw_request` | 114 | (205, 4) |
+| `signing_sign_raw_response` | 115 | (205, 4) |
+| `signing_sign_payload_request` | 116 | (205, 5) |
+| `signing_sign_payload_response` | 117 | (205, 5) |
 | `statement_store_subscribe_start` | 56 | (206, 0) |
-| `statement_store_subscribe_stop` | 57 | (206, 1) |
-| `statement_store_subscribe_interrupt` | 58 | (206, 2) |
-| `statement_store_subscribe_receive` | 59 | (206, 3) |
-| `statement_store_create_proof_request` | 60 | (206, 4) |
-| `statement_store_create_proof_response` | 61 | (206, 5) |
-| `statement_store_submit_request` | 62 | (206, 6) |
-| `statement_store_submit_response` | 63 | (206, 7) |
-| `statement_store_create_proof_authorized_request` | 132 | (206, 8) |
-| `statement_store_create_proof_authorized_response` | 133 | (206, 9) |
+| `statement_store_subscribe_stop` | 57 | (206, 0) |
+| `statement_store_subscribe_interrupt` | 58 | (206, 0) |
+| `statement_store_subscribe_receive` | 59 | (206, 0) |
+| `statement_store_create_proof_request` | 60 | (206, 1) |
+| `statement_store_create_proof_response` | 61 | (206, 1) |
+| `statement_store_submit_request` | 62 | (206, 2) |
+| `statement_store_submit_response` | 63 | (206, 2) |
+| `statement_store_create_proof_authorized_request` | 132 | (206, 3) |
+| `statement_store_create_proof_authorized_response` | 133 | (206, 3) |
 | `theme_subscribe_start` | 104 | (207, 0) |
-| `theme_subscribe_stop` | 105 | (207, 1) |
-| `theme_subscribe_interrupt` | 106 | (207, 2) |
-| `theme_subscribe_receive` | 107 | (207, 3) |
+| `theme_subscribe_stop` | 105 | (207, 0) |
+| `theme_subscribe_interrupt` | 106 | (207, 0) |
+| `theme_subscribe_receive` | 107 | (207, 0) |
