@@ -1,5 +1,12 @@
 # @parity/truapi
 
+## 0.13.0
+
+### Minor Changes
+
+- Accept pasted pairing QR images in the `truapi-host` CLI terminal UI.
+- Rename the PreviewNet dotNS top-level domain from `.test` to `.testnet`.
+
 ## 0.12.0
 
 ### Minor Changes

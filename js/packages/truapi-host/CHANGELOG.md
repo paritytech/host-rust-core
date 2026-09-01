@@ -1,5 +1,17 @@
 # @parity/truapi-host
 
+## 0.10.0
+
+### Minor Changes
+
+- Rename the PreviewNet dotNS top-level domain from `.test` to `.testnet`.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @parity/truapi@0.13.0
+
 ## 0.9.0
 
 ### Minor Changes
