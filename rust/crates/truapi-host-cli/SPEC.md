@@ -480,7 +480,7 @@ non-Unix platforms the CLI stops and reaps the direct child.
 
 Accepted product identifiers are:
 
-- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.test`);
+- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.testnet`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 
