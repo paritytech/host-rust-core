@@ -7,12 +7,11 @@ import {
   PROTOCOL_ERROR_METHOD_ID,
   PROTOCOL_ERROR_TRAIT_ID,
   type HostInitiatedSubscriptionHandler,
+  type MethodIds,
   type ObservableSource,
   type ProtocolMessage,
   type RegisterHostInitiatedSubscriptionParams,
-  type RequestFrameIds,
   type RequestParams,
-  type SubscriptionFrameIds,
   type SubscribeRawParams,
   type Subscription,
   type TrUApiTransport,
@@ -20,32 +19,52 @@ import {
   UnsupportedMessageError,
   type WireProvider,
 } from "./transport.js";
-import {
-  CallError,
-  indexedTaggedUnion,
-  Result,
-  _void,
-  type CallErrorValue,
-  type Codec,
-  type ResultPayload,
-} from "./scale.js";
+import { type ResultPayload } from "./scale.js";
 import { TRUAPI_CODEC_VERSION } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 
 export type { Subscription, TrUApiTransport };
 
-const UNANSWERED_WIRE_IDS = new Set<string>(
-  Object.values(W).flatMap((ids) =>
-    "response" in ids
-      ? [`${ids.trait}:${ids.response}`]
-      : [
-          `${ids.trait}:${ids.stop}`,
-          `${ids.trait}:${ids.interrupt}`,
-          `${ids.trait}:${ids.receive}`,
-        ],
-  ),
+// Every method's request/response (or start/stop/interrupt/receive) frames
+// now share one (trait, method) address (RFC 0028): direction lives in the
+// payload, not the id. A late or duplicate *answer*-direction frame
+// (Response/Stop/Interrupt/Receive) for a known method can legitimately
+// arrive with no matching pending call or subscription (e.g. after a
+// request already timed out, or after `unsubscribe`), so those are ignored
+// rather than reported as a protocol violation. A *request*-direction frame
+// (Request/Start) with nothing to route to is never expected — it means
+// this build genuinely doesn't implement the pair (no client was ever
+// created, or the specific host-initiated method has no registration) — so
+// it still earns the same reply as an unknown pair.
+const KNOWN_WIRE_IDS = new Set<string>(
+  Object.values(W).map((ids) => `${ids.trait}:${ids.method}`),
 );
+
+/** Direction tag byte (right after the envelope's own version byte). **/
+const DIRECTION_REQUEST = 0;
+const DIRECTION_START = 0;
+const DIRECTION_STOP = 1;
+const DIRECTION_INTERRUPT = 2;
+const DIRECTION_RECEIVE = 3;
+
+/**
+ * Peek a nested wire envelope's direction tag (the second byte, right after
+ * the envelope's own version tag), without needing the concrete
+ * `{Method}Version` codec.
+ **/
+function directionTag(payload: Uint8Array): number | undefined {
+  return payload[1];
+}
+
+/**
+ * Encode `{Method}Version::V1(Subscription::Stop)` — a subscription
+ * cancellation — without needing the concrete `{Method}Version` codec:
+ * `Stop` carries no payload, so the two bytes are fully determined by the
+ * envelope version (always `V1` today; every real method has exactly one
+ * version).
+ **/
+const STOP_FRAME = new Uint8Array([0, DIRECTION_STOP]);
 
 /**
  * Version overrides used when constructing a transport.
@@ -75,110 +94,41 @@ function reportProtocolViolation(detail: string): void {
 }
 
 /**
- * Convert a positive protocol version number into the generated version tag
- * used by TrUAPI wire wrappers.
- */
-function protocolVersionTag(version: number): `V${number}` {
-  if (!Number.isInteger(version) || version < 1) {
-    throw new Error(`Invalid TrUAPI protocol version: ${version}`);
-  }
-  return `V${version}` as `V${number}`;
-}
-
-type HandshakeResponse = ResultPayload<
-  undefined,
-  CallErrorValue<T.VersionedHostHandshakeError>
->;
-const HANDSHAKE_WIRE_VERSION = 1;
-
-/**
  * How long a `system_handshake` call waits for the host's answer. Matches the
  * allowance the protocol spec gives the handshake.
  */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 /**
- * Build the versioned handshake response codec for the selected wire version.
+ * Encode a successful host-handshake response frame: `HostHandshakeVersion::
+ * V1(Request::Response(Ok(undefined)))`.
  */
-function handshakeResponseCodec(
-  version: number,
-): Codec<{ tag: `V${number}`; value: HandshakeResponse }> {
-  return indexedTaggedUnion({
-    [protocolVersionTag(version)]: [
-      version - 1,
-      Result(_void, CallError(T.VersionedHostHandshakeError)),
-    ] as const,
-  }) as Codec<{ tag: `V${number}`; value: HandshakeResponse }>;
-}
-
-/**
- * Encode a successful host-handshake response payload.
- */
-function encodeSuccessfulHandshakeResponse(version: number): Uint8Array {
-  return encodeHandshakeResponse(version, {
-    tag: protocolVersionTag(version),
-    value: {
-      success: true,
-      value: undefined,
-    },
+function encodeSuccessfulHandshakeResponse(): Uint8Array {
+  return T.HostHandshakeVersion.enc({
+    tag: "V1",
+    value: { tag: "Response", value: { success: true, value: undefined } },
   });
 }
 
 /**
- * Encode a host-handshake response that reports an unsupported codec version.
+ * Encode a host-handshake response frame reporting an unsupported codec
+ * version: `HostHandshakeVersion::V1(Request::Response(Err(CallError::Domain(
+ * HostHandshakeError::UnsupportedProtocolVersion))))`.
  */
-function encodeUnsupportedHandshakeResponse(version: number): Uint8Array {
-  return encodeHandshakeResponse(version, {
-    tag: protocolVersionTag(version),
+function encodeUnsupportedHandshakeResponse(): Uint8Array {
+  return T.HostHandshakeVersion.enc({
+    tag: "V1",
     value: {
-      success: false,
+      tag: "Response",
       value: {
-        tag: "Domain",
+        success: false,
         value: {
-          tag: "V1",
-          value: {
-            tag: "UnsupportedProtocolVersion",
-            value: undefined,
-          },
+          tag: "Domain",
+          value: { tag: "UnsupportedProtocolVersion", value: undefined },
         },
       },
     },
   });
-}
-
-/**
- * Encode a typed handshake response with the versioned response codec.
- */
-function encodeHandshakeResponse(
-  version: number,
-  response: { tag: `V${number}`; value: HandshakeResponse },
-): Uint8Array {
-  return handshakeResponseCodec(version).enc(response);
-}
-
-type VersionedWireValue = { tag: `V${number}`; value: unknown };
-
-/**
- * Check whether a decoded SCALE value has the generated `{ tag, value }`
- * wrapper shape used for versioned wire payloads.
- */
-function isVersionedWireValue(value: unknown): value is VersionedWireValue {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "tag" in value &&
-    "value" in value &&
-    typeof value.tag === "string" &&
-    /^V\d+$/.test(value.tag)
-  );
-}
-
-/**
- * Return the inner payload from a versioned wire wrapper, or the original
- * value when the payload is already unwrapped.
- */
-function unwrapVersionedWireValue(value: unknown): unknown {
-  return isVersionedWireValue(value) ? value.value : value;
 }
 
 /**
@@ -230,7 +180,7 @@ export function createTransport(
   const pending = new Map<
     string,
     {
-      ids: RequestFrameIds;
+      ids: MethodIds;
       resolve: (value: Uint8Array) => void;
       resolveUnsupported: () => void;
       reject: (error: Error) => void;
@@ -239,7 +189,7 @@ export function createTransport(
   const subscriptions = new Map<
     string,
     {
-      ids: SubscriptionFrameIds;
+      ids: MethodIds;
       onReceive: (payload: Uint8Array) => void;
       onInterrupt?: (payload: Uint8Array) => void;
       onClose?: (error: Error) => void;
@@ -247,7 +197,7 @@ export function createTransport(
   >();
   type BufferedHostStart = { requestId: string; payload: Uint8Array };
   type HostRoute = {
-    ids: SubscriptionFrameIds;
+    ids: MethodIds;
     decodeRequest: (payload: Uint8Array) => unknown;
     encodeItem: (item: unknown) => Uint8Array;
     interruptPayload: Uint8Array;
@@ -256,8 +206,8 @@ export function createTransport(
     handler?: (request: unknown) => ObservableSource<unknown>;
     instances: Map<string, { unsubscribe(): void }>;
   };
-  // Keyed by the full (trait, method) start pair: a bare start id would
-  // collide the moment two traits both number a subscription the same.
+  // Keyed by the full (trait, method) pair: a bare method id would collide
+  // the moment two traits both number a subscription the same.
   const hostRoutes = new Map<string, HostRoute>();
 
   /**
@@ -329,7 +279,7 @@ export function createTransport(
       const request = pending.get(requestId);
       if (
         request?.ids.trait === unsupported.traitId &&
-        request?.ids.request === unsupported.methodId
+        request?.ids.method === unsupported.methodId
       ) {
         pending.delete(requestId);
         request.resolveUnsupported();
@@ -339,7 +289,7 @@ export function createTransport(
       const subscription = subscriptions.get(requestId);
       if (
         subscription?.ids.trait === unsupported.traitId &&
-        subscription?.ids.start === unsupported.methodId
+        subscription?.ids.method === unsupported.methodId
       ) {
         subscriptions.delete(requestId);
         subscription.onClose?.(
@@ -354,13 +304,19 @@ export function createTransport(
 
     if (
       payload.traitId === W.SYSTEM_HANDSHAKE.trait &&
-      payload.methodId === W.SYSTEM_HANDSHAKE.request
+      payload.methodId === W.SYSTEM_HANDSHAKE.method &&
+      directionTag(payload.value) === DIRECTION_REQUEST
     ) {
       // Auto-respond to inbound `host_handshake_request` frames. Hosts ping
       // the product at startup and repeat until they see a matching response,
       // so this handler must always answer and must never tear the transport
       // down: a host whose codec this client cannot speak is exactly the peer
       // that needs an answer it can act on.
+      //
+      // The direction check above matters: request and response now share
+      // this address (RFC 0028), and a `Response` frame arriving here is the
+      // host's answer to this client's own `system.handshake()` call, which
+      // must fall through to the `pending` lookup below instead.
       //
       // Respond with the handshake method's selected wire version. The inner
       // request carries the wire codec version. A request body this client
@@ -370,28 +326,29 @@ export function createTransport(
       // raw SCALE error.
       let response: Uint8Array;
       try {
-        const request = unwrapVersionedWireValue(
-          T.VersionedHostHandshakeRequest.dec(payload.value),
-        ) as T.HostHandshakeRequest;
-        const requestedCodecVersion = request.codecVersion;
+        const envelope = T.HostHandshakeVersion.dec(payload.value);
+        if (envelope.value.tag !== "Request") {
+          throw new Error(`expected Request direction, got ${envelope.value.tag}`);
+        }
+        const requestedCodecVersion = envelope.value.value.codecVersion;
         response =
           requestedCodecVersion === codecVersion
-            ? encodeSuccessfulHandshakeResponse(HANDSHAKE_WIRE_VERSION)
-            : encodeUnsupportedHandshakeResponse(HANDSHAKE_WIRE_VERSION);
+            ? encodeSuccessfulHandshakeResponse()
+            : encodeUnsupportedHandshakeResponse();
       } catch (error) {
         reportProtocolViolation(
           `undecodable handshake request from the host (expected wire codec ${codecVersion}): ${
             toError(error).message
           }`,
         );
-        response = encodeUnsupportedHandshakeResponse(HANDSHAKE_WIRE_VERSION);
+        response = encodeUnsupportedHandshakeResponse();
       }
       try {
         send({
           requestId,
           payload: {
             traitId: W.SYSTEM_HANDSHAKE.trait,
-            methodId: W.SYSTEM_HANDSHAKE.response,
+            methodId: W.SYSTEM_HANDSHAKE.method,
             value: response,
           },
         });
@@ -405,33 +362,30 @@ export function createTransport(
       pairKey(payload.traitId, payload.methodId),
     );
     if (hostRoute) {
-      startHostSubscription(hostRoute, requestId, payload.value);
-      return;
-    }
-    for (const candidate of hostRoutes.values()) {
-      if (
-        payload.traitId !== candidate.ids.trait ||
-        payload.methodId !== candidate.ids.stop
-      )
-        continue;
-      const bufferedIndex = candidate.buffered.findIndex(
-        (start) => start.requestId === requestId,
-      );
-      if (bufferedIndex >= 0) candidate.buffered.splice(bufferedIndex, 1);
-      const instance = candidate.instances.get(requestId);
-      if (instance) {
-        candidate.instances.delete(requestId);
-        instance.unsubscribe();
+      const direction = directionTag(payload.value);
+      if (direction === DIRECTION_START) {
+        startHostSubscription(hostRoute, requestId, payload.value);
+      } else if (direction === DIRECTION_STOP) {
+        const bufferedIndex = hostRoute.buffered.findIndex(
+          (start) => start.requestId === requestId,
+        );
+        if (bufferedIndex >= 0) hostRoute.buffered.splice(bufferedIndex, 1);
+        const instance = hostRoute.instances.get(requestId);
+        if (instance) {
+          hostRoute.instances.delete(requestId);
+          instance.unsubscribe();
+        }
+      } else {
+        reportProtocolViolation(
+          `ignoring host-initiated frame for (${payload.traitId}, ${payload.methodId}): unexpected direction tag ${direction}, expected Start (${DIRECTION_START}) or Stop (${DIRECTION_STOP})`,
+        );
       }
       return;
     }
 
     const p = pending.get(requestId);
     if (p) {
-      if (
-        payload.traitId !== p.ids.trait ||
-        payload.methodId !== p.ids.response
-      ) {
+      if (payload.traitId !== p.ids.trait || payload.methodId !== p.ids.method) {
         // The host answered this request id on a discriminant the method does
         // not own. Dropping it unreported leaves the caller waiting forever
         // with no clue why, and a whole-trait skew is what a codec mismatch
@@ -440,10 +394,10 @@ export function createTransport(
         // Report it, then fall through rather than returning: the request stays
         // pending (this frame is not its answer), and the frame itself is one
         // this build cannot route, so it earns the same protocol-error reply as
-        // any other unroutable pair. A known client-bound pair is still filtered
-        // out by `UNANSWERED_WIRE_IDS` below.
+        // any other unroutable pair. A known method's answer-direction frame is
+        // still filtered out below.
         reportProtocolViolation(
-          `ignoring frame for request ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}), expected (${p.ids.trait}, ${p.ids.response})`,
+          `ignoring frame for request ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}), expected (${p.ids.trait}, ${p.ids.method})`,
         );
       } else {
         pending.delete(requestId);
@@ -458,9 +412,11 @@ export function createTransport(
 
     const subscription = subscriptions.get(requestId);
     if (subscription) {
+      const direction = directionTag(payload.value);
       if (
         payload.traitId === subscription.ids.trait &&
-        payload.methodId === subscription.ids.receive
+        payload.methodId === subscription.ids.method &&
+        direction === DIRECTION_RECEIVE
       ) {
         try {
           subscription.onReceive(payload.value);
@@ -474,24 +430,47 @@ export function createTransport(
         }
       } else if (
         payload.traitId === subscription.ids.trait &&
-        payload.methodId === subscription.ids.interrupt
+        payload.methodId === subscription.ids.method &&
+        direction === DIRECTION_INTERRUPT
       ) {
         subscriptions.delete(requestId);
         subscription.onInterrupt?.(payload.value);
       } else {
         reportProtocolViolation(
-          `ignoring frame for subscription ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}), expected receive (${subscription.ids.trait}, ${subscription.ids.receive}) or interrupt (${subscription.ids.trait}, ${subscription.ids.interrupt})`,
+          `ignoring frame for subscription ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}) direction ${direction}, expected receive (${DIRECTION_RECEIVE}) or interrupt (${DIRECTION_INTERRUPT}) on (${subscription.ids.trait}, ${subscription.ids.method})`,
         );
       }
       return;
     }
 
-    if (UNANSWERED_WIRE_IDS.has(`${payload.traitId}:${payload.methodId}`)) {
-      return;
+    if (KNOWN_WIRE_IDS.has(`${payload.traitId}:${payload.methodId}`)) {
+      const direction = directionTag(payload.value);
+      if (
+        direction === DIRECTION_STOP ||
+        direction === DIRECTION_INTERRUPT ||
+        direction === DIRECTION_RECEIVE
+      ) {
+        // A known method's answer-direction frame (Response/Stop/Interrupt/
+        // Receive) with nothing to route to: a normal late/stale frame, not
+        // a protocol violation.
+        return;
+      }
+      if (direction !== DIRECTION_REQUEST) {
+        // Neither a plausible late answer nor a valid Request/Start: the
+        // direction byte itself is out of range or missing. Still dropped
+        // (there is nothing to route it to), but logged rather than
+        // silently swallowed, matching the analogous case in the
+        // `hostRoute` branch above.
+        reportProtocolViolation(
+          `ignoring frame for known pair (${payload.traitId}, ${payload.methodId}): unexpected direction tag ${direction}`,
+        );
+        return;
+      }
     }
 
-    // Not pending, no subscription, and not a client-bound frame we ignore by
-    // design: this build does not implement the pair.
+    // Either an unknown pair, or a known method's request-direction frame
+    // (Request/Start) with nothing to route to: this build does not
+    // implement the pair.
     reportProtocolViolation(
       `unsupported frame with discriminant (${payload.traitId}, ${payload.methodId}): request ${requestId} is not pending and has no subscription`,
     );
@@ -551,7 +530,7 @@ export function createTransport(
         requestId,
         payload: {
           traitId: route.ids.trait,
-          methodId: route.ids.interrupt,
+          methodId: route.ids.method,
           value: route.interruptPayload,
         },
       });
@@ -608,7 +587,7 @@ export function createTransport(
               requestId,
               payload: {
                 traitId: route.ids.trait,
-                methodId: route.ids.receive,
+                methodId: route.ids.method,
                 value: route.encodeItem(item),
               },
             });
@@ -658,7 +637,7 @@ export function createTransport(
         // so the call that exists to detect the mismatch cannot hang on it.
         const deadline =
           ids.trait === W.SYSTEM_HANDSHAKE.trait &&
-          ids.request === W.SYSTEM_HANDSHAKE.request
+          ids.method === W.SYSTEM_HANDSHAKE.method
             ? setTimeout(() => {
                 if (!pending.delete(requestId)) {
                   return;
@@ -697,7 +676,7 @@ export function createTransport(
             requestId,
             payload: {
               traitId: ids.trait,
-              methodId: ids.request,
+              methodId: ids.method,
               value: payload,
             },
           });
@@ -739,7 +718,7 @@ export function createTransport(
           requestId,
           payload: {
             traitId: ids.trait,
-            methodId: ids.start,
+            methodId: ids.method,
             value: payload,
           },
         });
@@ -760,8 +739,8 @@ export function createTransport(
               requestId,
               payload: {
                 traitId: ids.trait,
-                methodId: ids.stop,
-                value: _void.enc(undefined),
+                methodId: ids.method,
+                value: STOP_FRAME,
               },
             });
           } catch {
@@ -777,10 +756,10 @@ export function createTransport(
       interruptPayload,
       bufferCapacity,
     }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
-      const key = pairKey(ids.trait, ids.start);
+      const key = pairKey(ids.trait, ids.method);
       if (hostRoutes.has(key)) {
         throw new Error(
-          `host-initiated subscription (${ids.trait}, ${ids.start}) is already registered`,
+          `host-initiated subscription (${ids.trait}, ${ids.method}) is already registered`,
         );
       }
       const route: HostRoute = {

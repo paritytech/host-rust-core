@@ -1,12 +1,11 @@
 export type {
+  MethodIds,
   ObservableLike,
   ObservableSource,
   Observer,
   Payload,
   ProtocolMessage,
-  RequestFrameIds,
   RequestParams,
-  SubscriptionFrameIds,
   Subscription,
   SubscribeRawParams,
   TrUApiTransport,

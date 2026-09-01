@@ -2,15 +2,7 @@ import type { Result } from "neverthrow";
 import { describe, expect, it } from "bun:test";
 
 import { createTransport } from "./client.js";
-import {
-    CallError,
-    indexedTaggedUnion,
-    Result as ScaleResult,
-    str,
-    _void,
-    type CallErrorValue,
-} from "./scale.js";
-import type { Codec } from "./scale.js";
+import { str, type CallErrorValue } from "./scale.js";
 import { createClient, SubscriptionError } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
@@ -20,9 +12,6 @@ import {
   PROTOCOL_ERROR_TRAIT_ID,
   UnsupportedMessageError,
 } from "./transport.js";
-
-/** Wrap a codec in the `{ V1: [0, codec] }` indexed-tagged-union envelope. */
-const versionedV1 = <T>(codec: Codec<T>) => indexedTaggedUnion({ V1: [0, codec] });
 
 function toHex(u: Uint8Array): string {
     return Array.from(u)
@@ -70,28 +59,21 @@ function providerFixture() {
     };
 }
 
-/** Encode a V1 host-handshake response result payload. */
-/** Encode the `UnsupportedProtocolVersion` handshake response payload. */
-function unsupportedHandshakeResponsePayload(): Uint8Array {
-    return versionedV1(ScaleResult(_void, CallError(T.VersionedHostHandshakeError))).enc({
-        tag: "V1",
-        value: {
-            success: false,
-            value: {
-                tag: "Domain",
-                value: { tag: "V1", value: { tag: "UnsupportedProtocolVersion", value: undefined } },
-            },
-        },
-    });
-}
-
+/** Encode a successful V1 host-handshake response envelope. */
 function handshakeResponsePayload(value: { success: true; value: undefined }): Uint8Array {
-    return versionedV1(ScaleResult(_void, CallError(T.VersionedHostHandshakeError))).enc({
+    return T.HostHandshakeVersion.enc({
         tag: "V1",
-        value,
+        value: { tag: "Response", value },
     });
 }
 
+/**
+ * Encode a V1 `account_get_account` response envelope. `value`'s domain
+ * error case takes the wrapped public shape (`{tag:"Domain",value:
+ * T.VersionedHostAccountGetError}`) and is unwrapped to the bare error the
+ * merged envelope carries on the wire — mirroring what the generated client
+ * does in reverse when decoding a response.
+ */
 function accountGetResponsePayload(
     value:
         | {
@@ -103,9 +85,15 @@ function accountGetResponsePayload(
               value: { tag: "Domain"; value: T.VersionedHostAccountGetError };
           },
 ): Uint8Array {
-    return versionedV1(
-        ScaleResult(T.HostAccountGetResponse, CallError(T.VersionedHostAccountGetError)),
-    ).enc({ tag: "V1", value });
+    return T.HostAccountGetVersion.enc({
+        tag: "V1",
+        value: {
+            tag: "Response",
+            value: value.success
+                ? value
+                : { success: false, value: { tag: "Domain", value: value.value.value.value } },
+        },
+    });
 }
 
 function rendererStart(
@@ -117,10 +105,10 @@ function rendererStart(
             requestId,
             payload: {
                 traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.start,
-                value: T.VersionedProductChatCustomMessageRenderRequest.enc({
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.method,
+                value: T.ProductChatCustomMessageRenderVersion.enc({
                     tag: "V1",
-                    value: request,
+                    value: { tag: "Start", value: request },
                 }),
             },
         }),
@@ -134,10 +122,10 @@ function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Ar
             requestId,
             payload: {
                 traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.receive,
-                value: T.VersionedProductChatCustomMessageRenderItem.enc({
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.method,
+                value: T.ProductChatCustomMessageRenderVersion.enc({
                     tag: "V1",
-                    value: node,
+                    value: { tag: "Receive", value: node },
                 }),
             },
         }),
@@ -145,14 +133,19 @@ function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Ar
     );
 }
 
+/**
+ * The fixed frame `transport.ts` sends to decline a host-initiated render:
+ * `[version=V1, direction=Interrupt, Option::None]`. The host only reads the
+ * direction byte for this flow, so one constant frame covers every method.
+ */
 function rendererInterrupt(requestId: string): Uint8Array {
     return unwrap(
         encodeWireMessage({
             requestId,
             payload: {
                 traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.interrupt,
-                value: new Uint8Array([0]),
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.method,
+                value: new Uint8Array([0, 2, 0]),
             },
         }),
         "encode renderer interrupt",
@@ -165,8 +158,8 @@ function rendererStop(requestId: string): Uint8Array {
             requestId,
             payload: {
                 traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.stop,
-                value: new Uint8Array(),
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.method,
+                value: new Uint8Array([0, 1]),
             },
         }),
         "encode renderer stop",
@@ -217,11 +210,14 @@ describe("generated client transport", () => {
         };
         void client.account.getAccount(request);
 
-        const expectedPayload = T.VersionedHostAccountGetRequest.enc({ tag: "V1", value: request });
+        const expectedPayload = T.HostAccountGetVersion.enc({
+            tag: "V1",
+            value: { tag: "Request", value: request },
+        });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
         expectedFrame[str.enc("p:1").length] = 194; // account trait
-        expectedFrame[str.enc("p:1").length + 1] = 4; // get_account request
+        expectedFrame[str.enc("p:1").length + 1] = 1; // get_account
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
         expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
@@ -234,14 +230,14 @@ describe("generated client transport", () => {
 
         void client.system.handshake();
 
-        const expectedPayload = T.VersionedHostHandshakeRequest.enc({
+        const expectedPayload = T.HostHandshakeVersion.enc({
             tag: "V1",
-            value: { codecVersion: 2 },
+            value: { tag: "Request", value: { codecVersion: 2 } },
         });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
         expectedFrame[str.enc("p:1").length] = 193; // system trait
-        expectedFrame[str.enc("p:1").length + 1] = 0; // handshake request
+        expectedFrame[str.enc("p:1").length + 1] = 0; // handshake
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
         expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
@@ -258,8 +254,7 @@ describe("generated client transport", () => {
                 requestId: "p:1",
                 payload: {
                     traitId: W.SYSTEM_HANDSHAKE.trait,
-
-                    methodId: W.SYSTEM_HANDSHAKE.response,
+                    methodId: W.SYSTEM_HANDSHAKE.method,
                     value: handshakeResponsePayload({ success: true, value: undefined }),
                 },
             }),
@@ -281,17 +276,15 @@ describe("generated client transport", () => {
                 requestId: "p:1",
                 payload: {
                     traitId: W.SYSTEM_GET_PRODUCT_CONTEXT.trait,
-                    methodId: W.SYSTEM_GET_PRODUCT_CONTEXT.response,
-                    value: versionedV1(
-                        ScaleResult(
-                            T.HostGetProductContextResponse,
-                            CallError(T.VersionedHostGetProductContextError),
-                        ),
-                    ).enc({
+                    methodId: W.SYSTEM_GET_PRODUCT_CONTEXT.method,
+                    value: T.HostGetProductContextVersion.enc({
                         tag: "V1",
                         value: {
-                            success: true,
-                            value: { productId: "truapi-playground.paseo" },
+                            tag: "Response",
+                            value: {
+                                success: true,
+                                value: { productId: "truapi-playground.paseo" },
+                            },
                         },
                     }),
                 },
@@ -322,8 +315,7 @@ describe("generated client transport", () => {
                 requestId: "p:1",
                 payload: {
                     traitId: W.ACCOUNT_GET_ACCOUNT.trait,
-
-                    methodId: W.ACCOUNT_GET_ACCOUNT.response,
+                    methodId: W.ACCOUNT_GET_ACCOUNT.method,
                     value: accountGetResponsePayload({
                         success: false,
                         value: { tag: "Domain", value: reason },
@@ -343,7 +335,7 @@ describe("generated client transport", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
         const response = transport.request<undefined, CallErrorValue<never>>({
-            ids: { trait: 200, request: 194, response: 195 },
+            ids: { trait: 200, method: 194 },
             payload: new Uint8Array(),
             decodeResponse: () => {
                 throw new Error("protocol errors must bypass the method response decoder");
@@ -364,7 +356,7 @@ describe("generated client transport", () => {
                     requestId: "p:2",
                     payload: {
                         traitId: W.LOCAL_STORAGE_READ.trait,
-                        methodId: W.LOCAL_STORAGE_READ.response,
+                        methodId: W.LOCAL_STORAGE_READ.method,
                         value: new Uint8Array(),
                     },
                 }),
@@ -380,7 +372,7 @@ describe("generated client transport", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
         const response = transport.request<string, CallErrorValue<never>>({
-            ids: { trait: 200, request: 194, response: 195 },
+            ids: { trait: 200, method: 194 },
             payload: new Uint8Array(),
             decodeResponse: () => ({ success: true, value: "supported" }),
         });
@@ -399,7 +391,7 @@ describe("generated client transport", () => {
             unwrap(
                 encodeWireMessage({
                     requestId: "p:1",
-                    payload: { traitId: 200, methodId: 195, value: new Uint8Array() },
+                    payload: { traitId: 200, methodId: 194, value: new Uint8Array() },
                 }),
                 "encode supported response",
             ),
@@ -414,13 +406,13 @@ describe("generated client transport", () => {
         const transport = createTransport(fixture.provider);
         const errors: Error[] = [];
         const subscription = transport.subscribeRaw({
-            ids: { trait: 7, start: 194, stop: 195, interrupt: 196, receive: 197 },
+            ids: { trait: 7, method: 194 },
             payload: new Uint8Array(),
             onReceive: () => {},
             onClose: (error) => errors.push(error),
         });
-        // Right trait, wrong method: an error about our stop id is not about our
-        // start, so it must not end the subscription.
+        // Right trait, wrong method: an error about a different method must
+        // not end this subscription.
         fixture.receive(unsupportedMessage(subscription.subscriptionId, 7, 195));
         // Right METHOD, wrong trait. Under a one-byte discriminant these two
         // were indistinguishable; the pair is the whole point, so a trait-8
@@ -459,7 +451,7 @@ describe("generated client transport", () => {
             unsupportedMessage(
                 subscription.subscriptionId,
                 W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-                W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start,
+                W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
             ),
         );
 
@@ -470,7 +462,7 @@ describe("generated client transport", () => {
         const cause = errors[0].cause as UnsupportedMessageError;
         expect([cause.traitId, cause.methodId]).toEqual([
             W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start,
+            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
         ]);
         expect(fixture.sent).toHaveLength(1);
     });
@@ -493,7 +485,7 @@ describe("generated client transport", () => {
             const fixture = providerFixture();
             const transport = createTransport(fixture.provider);
             const response = transport.request<undefined, CallErrorValue<never>>({
-                ids: { trait: 200, request: 194, response: 195 },
+                ids: { trait: 200, method: 194 },
                 payload: new Uint8Array(),
                 decodeResponse: () => ({ success: true, value: undefined }),
             });
@@ -533,7 +525,11 @@ describe("generated client transport", () => {
                     requestId: "h:known",
                     payload: {
                         traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                        methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.start,                        value: new Uint8Array(),
+                        methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.method,
+                        // [version=0, direction=Start=0]: no handler is ever
+                        // registered in this test (no client is created), so
+                        // this never reaches a typed decode of the rest.
+                        value: new Uint8Array([0, 0]),
                     },
                 }),
                 "encode known unhandled host start",
@@ -545,7 +541,7 @@ describe("generated client transport", () => {
                 unsupportedMessage(
                     "h:known",
                     W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                    W.CHAT_CUSTOM_MESSAGE_RENDER.start,
+                    W.CHAT_CUSTOM_MESSAGE_RENDER.method,
                 ),
             ),
         ]);
@@ -580,7 +576,7 @@ describe("generated client transport", () => {
                     requestId: "p:1",
                     payload: {
                         traitId: W.LOCAL_STORAGE_READ.trait,
-                        methodId: W.LOCAL_STORAGE_READ.response,
+                        methodId: W.LOCAL_STORAGE_READ.method,
                         value: new Uint8Array(),
                     },
                 }),
@@ -603,7 +599,7 @@ describe("generated client transport", () => {
                 requestId: "p:1",
                 payload: {
                     traitId: W.LOCAL_STORAGE_READ.trait,
-                    methodId: W.LOCAL_STORAGE_READ.response,
+                    methodId: W.LOCAL_STORAGE_READ.method,
                     value: new Uint8Array(),
                 },
             }),
@@ -623,18 +619,17 @@ describe("generated client transport", () => {
             onReceive: (payload) => received.push(payload),
         });
         subscription.unsubscribe();
-        for (const methodId of [
-            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
-            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt,
-        ]) {
+        // Receive (direction=3) and Interrupt(None) (direction=2) now share one
+        // address; both are distinguished by the direction byte in `value`.
+        for (const value of [new Uint8Array([0, 3]), new Uint8Array([0, 2, 0])]) {
             subscriptionFixture.receive(
                 unwrap(
                     encodeWireMessage({
                         requestId: subscription.subscriptionId,
                         payload: {
                             traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-                            methodId,
-                            value: new Uint8Array(),
+                            methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+                            value,
                         },
                     }),
                     "encode stale subscription frame",
@@ -645,18 +640,53 @@ describe("generated client transport", () => {
         expect(subscriptionFixture.sent).toHaveLength(2);
     });
 
+    it("logs a protocol violation for a known pair's out-of-range direction tag", () => {
+        const fixture = providerFixture();
+        createTransport(fixture.provider);
+
+        const warnings: unknown[][] = [];
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => {
+            warnings.push(args);
+        };
+        try {
+            fixture.receive(
+                unwrap(
+                    encodeWireMessage({
+                        requestId: "unrelated:1",
+                        payload: {
+                            traitId: W.LOCAL_STORAGE_READ.trait,
+                            methodId: W.LOCAL_STORAGE_READ.method,
+                            value: new Uint8Array([0, 99]),
+                        },
+                    }),
+                    "encode malformed-direction frame",
+                ),
+            );
+        } finally {
+            console.warn = originalWarn;
+        }
+
+        expect(fixture.sent).toHaveLength(0);
+        expect(
+            warnings.some((args) =>
+                String(args[0]).includes("unexpected direction tag 99"),
+            ),
+        ).toBe(true);
+    });
+
     it("auto-responds to an inbound handshake with the versioned-result shape", () => {
         const fixture = providerFixture();
         createTransport(fixture.provider);
 
-        const requestPayload = T.VersionedHostHandshakeRequest.enc({
+        const requestPayload = T.HostHandshakeVersion.enc({
             tag: "V1",
-            value: { codecVersion: 2 },
+            value: { tag: "Request", value: { codecVersion: 2 } },
         });
         const requestFrame = unwrap(
             encodeWireMessage({
                 requestId: "h:1",
-                payload: { traitId: W.SYSTEM_HANDSHAKE.trait, methodId: W.SYSTEM_HANDSHAKE.request, value: requestPayload },
+                payload: { traitId: W.SYSTEM_HANDSHAKE.trait, methodId: W.SYSTEM_HANDSHAKE.method, value: requestPayload },
             }),
             "encode inbound handshake_request",
         );
@@ -667,8 +697,7 @@ describe("generated client transport", () => {
                 requestId: "h:1",
                 payload: {
                     traitId: W.SYSTEM_HANDSHAKE.trait,
-
-                    methodId: W.SYSTEM_HANDSHAKE.response,
+                    methodId: W.SYSTEM_HANDSHAKE.method,
                     value: handshakeResponsePayload({ success: true, value: undefined }),
                 },
             }),
@@ -717,7 +746,7 @@ describe("generated client transport", () => {
                 requestId: "p:1",
                 payload: {
                     traitId: W.ACCOUNT_GET_ACCOUNT.trait + 1,
-                    methodId: W.ACCOUNT_GET_ACCOUNT.response,
+                    methodId: W.ACCOUNT_GET_ACCOUNT.method,
                     value: accountGetResponsePayload({
                         success: false,
                         value: {
@@ -754,11 +783,10 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-
-                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
-                    value: T.VersionedHostAccountConnectionStatusSubscribeItem.enc({
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+                    value: T.HostAccountConnectionStatusSubscribeVersion.enc({
                         tag: "V1",
-                        value: "Connected",
+                        value: { tag: "Receive", value: "Connected" },
                     }),
                 },
             }),
@@ -943,9 +971,11 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-
-                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt,
-                    value: _void.enc(undefined),
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+                    value: T.HostAccountConnectionStatusSubscribeVersion.enc({
+                        tag: "V1",
+                        value: { tag: "Interrupt", value: undefined },
+                    }),
                 },
             }),
             "encode interrupt",
@@ -977,11 +1007,13 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.PAYMENT_BALANCE_SUBSCRIBE.trait,
-
-                    methodId: W.PAYMENT_BALANCE_SUBSCRIBE.interrupt,
-                    value: versionedV1(CallError(T.VersionedHostPaymentBalanceSubscribeError)).enc({
+                    methodId: W.PAYMENT_BALANCE_SUBSCRIBE.method,
+                    // The merged envelope carries the bare domain error under
+                    // one shared version tag; the public `reason` above adds
+                    // back the per-error `V1` tag this test asserts against.
+                    value: T.HostPaymentBalanceSubscribeVersion.enc({
                         tag: "V1",
-                        value: callError,
+                        value: { tag: "Interrupt", value: { tag: "Domain", value: reason } },
                     }),
                 },
             }),
@@ -1016,11 +1048,11 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.COIN_PAYMENT_REBALANCE_PURSE.trait,
-
-                    methodId: W.COIN_PAYMENT_REBALANCE_PURSE.interrupt,
-                    value: versionedV1(
-                        CallError(T.VersionedHostCoinPaymentRebalancePurseError),
-                    ).enc({ tag: "V1", value: callError }),
+                    methodId: W.COIN_PAYMENT_REBALANCE_PURSE.method,
+                    value: T.HostCoinPaymentRebalancePurseVersion.enc({
+                        tag: "V1",
+                        value: { tag: "Interrupt", value: { tag: "Domain", value: reason } },
+                    }),
                 },
             }),
             "encode typed coin payment interrupt",
@@ -1051,9 +1083,11 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-
-                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
-                    value: _void.enc(undefined),
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+                    // [version=0, direction=Receive=3, item disc=0xff]: a
+                    // well-formed envelope prefix with an out-of-range item
+                    // discriminant, so decoding fails past the direction tag.
+                    value: new Uint8Array([0, 3, 0xff]),
                 },
             }),
             "encode malformed receive",
@@ -1071,9 +1105,8 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-
-                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.stop,
-                    value: _void.enc(undefined),
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+                    value: new Uint8Array([0, 1]),
                 },
             }),
             "encode stop after malformed receive",
@@ -1085,11 +1118,10 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-
-                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
-                    value: T.VersionedHostAccountConnectionStatusSubscribeItem.enc({
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+                    value: T.HostAccountConnectionStatusSubscribeVersion.enc({
                         tag: "V1",
-                        value: "Connected",
+                        value: { tag: "Receive", value: "Connected" },
                     }),
                 },
             }),
@@ -1118,9 +1150,8 @@ describe("generated client transport", () => {
                 requestId: sub.subscriptionId,
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
-
-                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.stop,
-                    value: _void.enc(undefined),
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+                    value: new Uint8Array([0, 1]),
                 },
             }),
             "encode explicit unsubscribe stop",

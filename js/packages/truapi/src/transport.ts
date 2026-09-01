@@ -157,53 +157,21 @@ export interface ObservableSource<Item> {
 }
 
 /**
- * Numeric frame ids for a one-shot request method.
+ * Wire discriminant pair addressing a method. One id addresses a method
+ * regardless of shape (request/response, or a subscription's four phases):
+ * direction and version are carried inside the payload (RFC 0028), not by a
+ * separate id per direction.
  **/
-export interface RequestFrameIds {
+export interface MethodIds {
   /**
-   * Wire trait discriminant carried by both frames.
+   * Wire trait discriminant.
    **/
   trait: number;
 
   /**
-   * Wire method discriminant for the outbound request frame.
+   * Wire method discriminant within the trait.
    **/
-  request: number;
-
-  /**
-   * Wire method discriminant for the inbound response frame.
-   **/
-  response: number;
-}
-
-/**
- * Numeric frame ids for a subscription method.
- **/
-export interface SubscriptionFrameIds {
-  /**
-   * Wire trait discriminant carried by all four frames.
-   **/
-  trait: number;
-
-  /**
-   * Wire method discriminant for the outbound start frame.
-   **/
-  start: number;
-
-  /**
-   * Wire method discriminant for the outbound stop frame.
-   **/
-  stop: number;
-
-  /**
-   * Wire method discriminant for the inbound interrupt frame.
-   **/
-  interrupt: number;
-
-  /**
-   * Wire method discriminant for the inbound receive frame.
-   **/
-  receive: number;
+  method: number;
 }
 
 /**
@@ -213,17 +181,19 @@ export interface RequestParams<Ok, Err> {
   /**
    * Wire discriminants for this request method.
    **/
-  ids: RequestFrameIds;
+  ids: MethodIds;
 
   /**
-   * SCALE-encoded request payload bytes.
+   * SCALE-encoded envelope payload bytes (`[version, direction=Request,
+   * ...request]`), constructed by the generated caller.
    **/
   payload: Uint8Array;
 
   /**
-   * Decode SCALE response payload bytes into the wire `ResultPayload`
-   * envelope. The transport unwraps the envelope into
-   * `ResultAsync<Ok, Err | UnsupportedCallError>`.
+   * Decode the full raw envelope payload bytes into the typed Ok/Err
+   * outcome. Implementations decode the method's `{Method}Version` envelope
+   * and reject any direction other than `Response`. The transport unwraps
+   * the result into `ResultAsync<Ok, Err | UnsupportedCallError>`.
    **/
   decodeResponse: (payload: Uint8Array) => ResultPayload<Ok, Err>;
 }
@@ -235,20 +205,23 @@ export interface SubscribeRawParams {
   /**
    * Wire discriminants for this subscription method.
    **/
-  ids: SubscriptionFrameIds;
+  ids: MethodIds;
 
   /**
-   * SCALE-encoded subscription start payload bytes.
+   * SCALE-encoded envelope payload bytes (`[version, direction=Start,
+   * ...start]`), constructed by the generated caller.
    **/
   payload: Uint8Array;
 
   /**
-   * Called with raw SCALE receive payload bytes.
+   * Called with the full raw envelope payload bytes when the peer sends a
+   * `Receive` frame.
    **/
   onReceive: (payload: Uint8Array) => void;
 
   /**
-   * Called with raw SCALE interrupt payload bytes when the peer interrupts the subscription.
+   * Called with the full raw envelope payload bytes when the peer sends an
+   * `Interrupt` frame.
    **/
   onInterrupt?: (payload: Uint8Array) => void;
 
@@ -277,10 +250,16 @@ export interface HostInitiatedSubscriptionRegistration<Request, Item> {
 /** Options used to register a host-initiated subscription method. **/
 export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
   /** Wire discriminants for the host-initiated subscription. **/
-  ids: SubscriptionFrameIds;
-  /** Decode the host's start payload. **/
+  ids: MethodIds;
+  /**
+   * Decode the host's full raw envelope payload bytes (a `Start` frame) into
+   * the typed request.
+   **/
   decodeRequest(payload: Uint8Array): Request;
-  /** Encode one product renderer emission. **/
+  /**
+   * Encode one product renderer emission as the full envelope payload bytes
+   * (a `Receive` frame).
+   **/
   encodeItem(item: Item): Uint8Array;
   /** Exact payload used when the product declines a render instance. **/
   interruptPayload: Uint8Array;

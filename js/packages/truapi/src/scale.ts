@@ -8,6 +8,7 @@
 import {
   Bytes,
   Enum,
+  Option,
   Struct,
   createCodec,
   createDecoder,
@@ -16,6 +17,7 @@ import {
   u8,
   _void,
   type Codec,
+  type ResultPayload,
 } from "scale-ts";
 import {
   bytesToHex as encodeHex,
@@ -24,6 +26,14 @@ import {
 
 export type { Codec };
 export type { ResultPayload } from "scale-ts";
+
+/**
+ * Bare-named type alias matching generated codegen's naming convention for
+ * generic wire types: `Result<Ok, Err>` is used as both a value (the codec
+ * builder re-exported below) and a type (this alias for scale-ts's own
+ * `ResultPayload`) in generated `types.ts`.
+ */
+export type Result<Ok, Err> = ResultPayload<Ok, Err>;
 
 export {
   Bytes,
@@ -140,6 +150,63 @@ export function CallError<D>(domain: Codec<D>): Codec<CallErrorValue<D>> {
     MalformedFrame: Struct({ reason: str }),
     HostFailure: Struct({ reason: str }),
   }) as Codec<CallErrorValue<D>>;
+}
+
+/**
+ * Public TS value for `truapi::versioned::Request<Req, Res>`. Named to match
+ * the value-space codec builder below: generated codegen references
+ * generic wire types under one bare name in both type and value position
+ * (e.g. `Request<A, B>` as a type, `Request(a, b)` as a codec), and
+ * TypeScript's separate type/value namespaces make that legal here.
+ */
+export type Request<Req, Res> =
+  | { tag: "Request"; value: Req }
+  | { tag: "Response"; value: Res };
+
+/**
+ * SCALE codec for `truapi::versioned::Request<Req, Res>`: the nested wire
+ * envelope's direction tag for a request/response method (RFC 0028).
+ * `Request`=0, `Response`=1, fixed by the Rust enum's declaration order.
+ */
+export function Request<Req, Res>(
+  req: Codec<Req>,
+  res: Codec<Res>,
+): Codec<Request<Req, Res>> {
+  return indexedTaggedUnion({
+    Request: [0, req],
+    Response: [1, res],
+  } as const) as unknown as Codec<Request<Req, Res>>;
+}
+
+/**
+ * Public TS value for `truapi::versioned::Subscription<Start, Item, Err>`.
+ * Named to match the value-space codec builder below (see {@link Request}'s
+ * doc for why the type and value share one bare name).
+ */
+export type Subscription<Start, Item, Err> =
+  | { tag: "Start"; value: Start }
+  | { tag: "Stop"; value?: undefined }
+  | { tag: "Interrupt"; value: Err | undefined }
+  | { tag: "Receive"; value: Item };
+
+/**
+ * SCALE codec for `truapi::versioned::Subscription<Start, Item, Err>`: the
+ * nested wire envelope's direction tag for a subscription method (RFC 0028).
+ * `Start`=0, `Stop`=1, `Interrupt`=2 (wrapping `Option<Err>` — `undefined`
+ * is a clean, error-free completion), `Receive`=3, fixed by the Rust enum's
+ * declaration order.
+ */
+export function Subscription<Start, Item, Err>(
+  start: Codec<Start>,
+  item: Codec<Item>,
+  err: Codec<Err>,
+): Codec<Subscription<Start, Item, Err>> {
+  return indexedTaggedUnion({
+    Start: [0, start],
+    Stop: [1, _void],
+    Interrupt: [2, Option(err)],
+    Receive: [3, item],
+  } as const) as unknown as Codec<Subscription<Start, Item, Err>>;
 }
 
 type TaggedUnionCodecs = {
