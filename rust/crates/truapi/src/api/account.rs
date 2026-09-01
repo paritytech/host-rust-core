@@ -31,7 +31,7 @@ pub trait Account: Send + Sync {
     /// );
     /// console.log("connection status:", status);
     /// ```
-    #[wire(start_id = 0)]
+    #[wire(id = 0)]
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
@@ -63,7 +63,7 @@ pub trait Account: Send + Sync {
     /// assert(otherProduct.isOk(), "cross-product getAccount was denied or failed:", otherProduct);
     /// console.log("other product account retrieved after approval:", otherProduct.value);
     /// ```
-    #[wire(request_id = 4)]
+    #[wire(id = 1)]
     async fn get_account(
         &self,
         _cx: &CallContext,
@@ -107,7 +107,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "getAccountAlias failed:", result);
     /// console.log("account alias:", result.value);
     /// ```
-    #[wire(request_id = 6)]
+    #[wire(id = 2)]
     async fn get_account_alias(
         &self,
         _cx: &CallContext,
@@ -152,7 +152,7 @@ pub trait Account: Send + Sync {
     /// );
     /// console.log("foreign account proof refused without prompting");
     /// ```
-    #[wire(request_id = 8)]
+    #[wire(id = 3)]
     async fn create_account_proof(
         &self,
         _cx: &CallContext,
@@ -186,7 +186,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "signVrf failed:", result);
     /// console.log("vrf signature:", result.value);
     /// ```
-    #[wire(request_id = 16)]
+    #[wire(id = 7)]
     async fn sign_vrf(
         &self,
         _cx: &CallContext,
@@ -215,7 +215,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "registerRingVrfKey failed:", result);
     /// console.log("ring VRF public key:", result.value);
     /// ```
-    #[wire(request_id = 168)]
+    #[wire(id = 8)]
     async fn register_ring_vrf_key(
         &self,
         _cx: &CallContext,
@@ -238,7 +238,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "listRingVrfKeys failed:", result);
     /// console.log("registered ring VRF keys:", result.value);
     /// ```
-    #[wire(request_id = 170)]
+    #[wire(id = 9)]
     async fn list_ring_vrf_keys(
         &self,
         _cx: &CallContext,
@@ -264,7 +264,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "ringVrfSign failed:", result);
     /// console.log("ring VRF signature:", result.value);
     /// ```
-    #[wire(request_id = 172)]
+    #[wire(id = 10)]
     async fn ring_vrf_sign(
         &self,
         _cx: &CallContext,
@@ -283,7 +283,7 @@ pub trait Account: Send + Sync {
     /// assert(result.value.accounts.length === 0, "unexpected legacy accounts:", result.value);
     /// console.log("legacy accounts:", result.value.accounts);
     /// ```
-    #[wire(request_id = 10)]
+    #[wire(id = 4)]
     async fn get_legacy_accounts(
         &self,
         _cx: &CallContext,
@@ -299,7 +299,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "getUserId failed:", result);
     /// console.log("user id:", result.value);
     /// ```
-    #[wire(request_id = 12)]
+    #[wire(id = 5)]
     async fn get_user_id(
         &self,
         _cx: &CallContext,
@@ -320,7 +320,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "requestLogin failed:", result);
     /// console.log("login completed:", result.value);
     /// ```
-    #[wire(request_id = 14)]
+    #[wire(id = 6)]
     async fn request_login(
         &self,
         _cx: &CallContext,

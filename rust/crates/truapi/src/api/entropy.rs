@@ -19,7 +19,7 @@ pub trait Entropy: Send + Sync {
     /// assert(result.isOk(), "derive failed:", result);
     /// console.log("entropy derived:", result.value);
     /// ```
-    #[wire(request_id = 0)]
+    #[wire(id = 0)]
     async fn derive(
         &self,
         _cx: &CallContext,

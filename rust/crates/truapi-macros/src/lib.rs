@@ -5,11 +5,14 @@
 //! `Versioned`/`IntoLatest`/`FromLatest` impls from `truapi::versioned`.
 //!
 //! The `wire` attribute marks a trait method with its wire-protocol
-//! discriminant ids, and the `wire_trait` attribute marks an API trait with
-//! its trait discriminant. Together they form the two-byte
-//! `(trait, method)` discriminant pair in the
+//! discriminant id, and the `wire_trait` attribute marks an API trait with
+//! its trait discriminant. Together they form the two-byte `(trait, method)`
+//! discriminant pair in the
 //! `Struct { request_id: str, payload: (trait, method, bytes) }` envelope;
-//! trait and method ordering become part of the wire protocol.
+//! trait and method ordering become part of the wire protocol. One id
+//! addresses a method regardless of its shape — direction (request/response,
+//! or a subscription's start/stop/interrupt/receive) is carried inside the
+//! method's versioned payload, not by a separate id.
 //!
 //! At compile time the macro validates that every id literal is a `u8`. It emits
 //! a hidden doc line so the value survives into rustdoc JSON, where
@@ -34,12 +37,7 @@ use syn::{
 #[derive(Default)]
 struct WireArgs {
     host_initiated: bool,
-    request_id: Option<u8>,
-    response_id: Option<u8>,
-    start_id: Option<u8>,
-    stop_id: Option<u8>,
-    interrupt_id: Option<u8>,
-    receive_id: Option<u8>,
+    id: Option<u8>,
 }
 
 struct ServiceArgs {
@@ -90,13 +88,18 @@ impl Parse for WireArgs {
                 input.parse::<Token![,]>()?;
                 continue;
             }
+            if key != "id" {
+                return Err(syn::Error::new(key.span(), "expected `id = N`"));
+            }
             input.parse::<Token![=]>()?;
             let lit: LitInt = input.parse()?;
             let value = lit.base10_parse().map_err(|err| {
                 syn::Error::new(lit.span(), format!("wire id must fit in a u8: {err}"))
             })?;
 
-            set_id(&mut args, &key, value)?;
+            if args.id.replace(value).is_some() {
+                return Err(syn::Error::new(key.span(), "duplicate `id`"));
+            }
 
             if input.is_empty() {
                 break;
@@ -104,48 +107,24 @@ impl Parse for WireArgs {
             input.parse::<Token![,]>()?;
         }
 
-        if args.request_id.is_none() && args.start_id.is_none() {
-            return Err(input.error("missing `request_id = N` or `start_id = N`"));
+        if args.id.is_none() {
+            return Err(input.error("missing `id = N`"));
         }
 
         Ok(args)
     }
 }
 
-fn set_id(args: &mut WireArgs, key: &Ident, value: u8) -> syn::Result<()> {
-    let target = if key == "request_id" {
-        &mut args.request_id
-    } else if key == "response_id" {
-        &mut args.response_id
-    } else if key == "start_id" {
-        &mut args.start_id
-    } else if key == "stop_id" {
-        &mut args.stop_id
-    } else if key == "interrupt_id" {
-        &mut args.interrupt_id
-    } else if key == "receive_id" {
-        &mut args.receive_id
-    } else {
-        return Err(syn::Error::new(
-            key.span(),
-            "expected one of `request_id`, `response_id`, `start_id`, `stop_id`, `interrupt_id`, `receive_id`",
-        ));
-    };
-
-    if target.replace(value).is_some() {
-        return Err(syn::Error::new(key.span(), format!("duplicate `{key}`")));
-    }
-
-    Ok(())
-}
-
-/// Mark a TrUAPI trait method with its wire-protocol discriminant id.
+/// Mark a TrUAPI trait method with its wire-protocol discriminant id. One id
+/// addresses the method regardless of shape (request/response or
+/// subscription) — direction is carried inside the method's versioned
+/// payload, not by a separate wire id.
 ///
 /// ```ignore
-/// #[wire(request_id = 4)]
+/// #[wire(id = 4)]
 /// async fn host_account_get(...) -> ...;
 ///
-/// #[wire(start_id = 42)]
+/// #[wire(id = 42)]
 /// async fn host_account_connection_status_subscribe(...) -> ...;
 /// ```
 ///
@@ -232,17 +211,10 @@ pub fn wire_trait(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn wire_tags(args: &WireArgs) -> Vec<String> {
-    let mut tags = [
-        ("request_id", args.request_id),
-        ("response_id", args.response_id),
-        ("start_id", args.start_id),
-        ("stop_id", args.stop_id),
-        ("interrupt_id", args.interrupt_id),
-        ("receive_id", args.receive_id),
-    ]
-    .into_iter()
-    .filter_map(|(name, value)| value.map(|id| format!("@wire_{name}={id}")))
-    .collect::<Vec<_>>();
+    let mut tags = Vec::new();
+    if let Some(id) = args.id {
+        tags.push(format!("@wire_id={id}"));
+    }
     if args.host_initiated {
         tags.push("@wire_host_initiated".to_string());
     }

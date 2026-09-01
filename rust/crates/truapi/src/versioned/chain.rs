@@ -1,6 +1,9 @@
 //! Versioned wrappers for [`Chain`](crate::api::Chain) methods.
 
+use crate::CallError;
 use crate::v01;
+use crate::versioned::Request as RequestEnvelope;
+use crate::versioned::Subscription as SubscriptionEnvelope;
 
 truapi_macros::versioned_type! {
     pub enum RemoteChainHeadFollowRequest { V1 => v01::RemoteChainHeadFollowRequest }
@@ -44,4 +47,94 @@ truapi_macros::versioned_type! {
     pub enum RemoteChainInfoRequest { V1 => v01::RemoteChainInfoRequest }
     pub enum RemoteChainInfoResponse { V1 => v01::RemoteChainInfoResponse }
     pub enum RemoteChainInfoError { V1 => v01::RemoteChainInfoError }
+
+    /// Wire-envelope version for
+    /// [`Chain::follow_head_subscribe`](crate::api::Chain::follow_head_subscribe).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadFollowVersion {
+        V1 => SubscriptionEnvelope<v01::RemoteChainHeadFollowRequest, v01::RemoteChainHeadFollowItem, CallError<crate::latest::GenericError>>,
+    }
+
+    /// Wire-envelope version for [`Chain::get_head_header`](crate::api::Chain::get_head_header).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadHeaderVersion {
+        V1 => RequestEnvelope<v01::RemoteChainHeadHeaderRequest, Result<v01::RemoteChainHeadHeaderResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for [`Chain::get_head_body`](crate::api::Chain::get_head_body).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadBodyVersion {
+        V1 => RequestEnvelope<v01::RemoteChainHeadBodyRequest, Result<v01::RemoteChainHeadBodyResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for [`Chain::get_head_storage`](crate::api::Chain::get_head_storage).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadStorageVersion {
+        V1 => RequestEnvelope<v01::RemoteChainHeadStorageRequest, Result<v01::RemoteChainHeadStorageResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for [`Chain::call_head`](crate::api::Chain::call_head).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadCallVersion {
+        V1 => RequestEnvelope<v01::RemoteChainHeadCallRequest, Result<v01::RemoteChainHeadCallResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for [`Chain::unpin_head`](crate::api::Chain::unpin_head).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadUnpinVersion {
+        V1 => RequestEnvelope<v01::RemoteChainHeadUnpinRequest, Result<(), CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for [`Chain::continue_head`](crate::api::Chain::continue_head).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadContinueVersion {
+        V1 => RequestEnvelope<v01::RemoteChainHeadContinueRequest, Result<(), CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for
+    /// [`Chain::stop_head_operation`](crate::api::Chain::stop_head_operation).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainHeadStopOperationVersion {
+        V1 => RequestEnvelope<v01::RemoteChainHeadStopOperationRequest, Result<(), CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for
+    /// [`Chain::get_spec_genesis_hash`](crate::api::Chain::get_spec_genesis_hash).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainSpecGenesisHashVersion {
+        V1 => RequestEnvelope<v01::RemoteChainSpecGenesisHashRequest, Result<v01::RemoteChainSpecGenesisHashResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for
+    /// [`Chain::get_spec_chain_name`](crate::api::Chain::get_spec_chain_name).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainSpecChainNameVersion {
+        V1 => RequestEnvelope<v01::RemoteChainSpecChainNameRequest, Result<v01::RemoteChainSpecChainNameResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for
+    /// [`Chain::get_spec_properties`](crate::api::Chain::get_spec_properties).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainSpecPropertiesVersion {
+        V1 => RequestEnvelope<v01::RemoteChainSpecPropertiesRequest, Result<v01::RemoteChainSpecPropertiesResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for
+    /// [`Chain::broadcast_transaction`](crate::api::Chain::broadcast_transaction).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainTransactionBroadcastVersion {
+        V1 => RequestEnvelope<v01::RemoteChainTransactionBroadcastRequest, Result<v01::RemoteChainTransactionBroadcastResponse, CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for [`Chain::stop_transaction`](crate::api::Chain::stop_transaction).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainTransactionStopVersion {
+        V1 => RequestEnvelope<v01::RemoteChainTransactionStopRequest, Result<(), CallError<v01::GenericError>>>,
+    }
+
+    /// Wire-envelope version for [`Chain::get_chain_info`](crate::api::Chain::get_chain_info).
+    /// Used only by the generated dispatcher/client.
+    pub enum RemoteChainInfoVersion {
+        V1 => RequestEnvelope<v01::RemoteChainInfoRequest, Result<v01::RemoteChainInfoResponse, CallError<v01::RemoteChainInfoError>>>,
+    }
 }

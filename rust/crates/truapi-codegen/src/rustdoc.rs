@@ -109,23 +109,16 @@ pub struct MethodDef {
     pub docs: Option<String>,
 }
 
-/// Raw wire ids extracted from `#[wire(...)]`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Raw wire id extracted from `#[wire(...)]`. One id addresses the method
+/// regardless of shape; direction (request/response, or a subscription's
+/// start/stop/interrupt/receive) is carried inside the method's versioned
+/// payload, not by a separate id.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WireAttrs {
     /// This subscription is started by the host and served by the product.
     pub host_initiated: bool,
-    /// Request frame discriminant.
-    pub request_id: Option<u8>,
-    /// Response frame discriminant.
-    pub response_id: Option<u8>,
-    /// Subscription start frame discriminant.
-    pub start_id: Option<u8>,
-    /// Subscription stop frame discriminant.
-    pub stop_id: Option<u8>,
-    /// Subscription interrupt frame discriminant.
-    pub interrupt_id: Option<u8>,
-    /// Subscription item frame discriminant.
-    pub receive_id: Option<u8>,
+    /// Method frame discriminant.
+    pub id: Option<u8>,
 }
 
 /// Wire-shape classification of a trait method.
@@ -444,6 +437,7 @@ fn should_skip_type_name(name: &str) -> bool {
     matches!(
         name,
         "Subscription"
+            | "Request"
             | "CallContext"
             | "CallError"
             | "CancellationFuture"
@@ -853,9 +847,10 @@ fn extract_wire_trait_id(trait_name: &str, docs: &str) -> Result<Option<u8>> {
     Ok(found)
 }
 
-/// Extracts `@wire_<name>_id=N` markers from a doc comment block. Annotated
-/// methods carry these markers via the `#[wire(...)]` proc-macro, which appends
-/// hidden doc strings so they propagate through rustdoc JSON.
+/// Extracts the `@wire_id=N` marker (and `@wire_host_initiated`) from a doc
+/// comment block. Annotated methods carry these markers via the `#[wire(...)]`
+/// proc-macro, which appends hidden doc strings so they propagate through
+/// rustdoc JSON.
 fn extract_wire_attrs(docs: &str) -> WireAttrs {
     let mut attrs = WireAttrs::default();
     for line in docs.lines() {
@@ -863,23 +858,15 @@ fn extract_wire_attrs(docs: &str) -> WireAttrs {
         if line.starts_with("@wire_host_initiated") {
             attrs.host_initiated = true;
         }
-        for (needle, target) in [
-            ("@wire_request_id=", &mut attrs.request_id),
-            ("@wire_response_id=", &mut attrs.response_id),
-            ("@wire_start_id=", &mut attrs.start_id),
-            ("@wire_stop_id=", &mut attrs.stop_id),
-            ("@wire_interrupt_id=", &mut attrs.interrupt_id),
-            ("@wire_receive_id=", &mut attrs.receive_id),
-        ] {
-            let Some(start) = line.find(needle).map(|index| index + needle.len()) else {
-                continue;
-            };
-            let end = line[start..]
-                .find(|c: char| !c.is_ascii_digit())
-                .map_or(line.len(), |offset| start + offset);
-            if let Ok(id) = line[start..end].parse::<u8>() {
-                *target = Some(id);
-            }
+        const NEEDLE: &str = "@wire_id=";
+        let Some(start) = line.find(NEEDLE).map(|index| index + NEEDLE.len()) else {
+            continue;
+        };
+        let end = line[start..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(line.len(), |offset| start + offset);
+        if let Ok(id) = line[start..end].parse::<u8>() {
+            attrs.id = Some(id);
         }
     }
     attrs

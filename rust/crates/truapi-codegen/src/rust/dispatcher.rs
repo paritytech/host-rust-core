@@ -47,10 +47,12 @@ pub fn generate_dispatcher(api: &ApiDefinition) -> Result<String> {
     let mut modules = Vec::with_capacity(traits.len());
     let mut uses_raw_err_payload = false;
     let mut uses_raw_unit_ok_payload = false;
+    let mut uses_legacy_versioned_helpers = false;
     for trait_def in &traits {
         let module = build_module(api, trait_def)?;
         uses_raw_err_payload |= module.uses_raw_err_payload;
         uses_raw_unit_ok_payload |= module.uses_raw_unit_ok_payload;
+        uses_legacy_versioned_helpers |= module.uses_legacy_versioned_helpers;
         modules.push(module.code);
     }
 
@@ -61,6 +63,7 @@ pub fn generate_dispatcher(api: &ApiDefinition) -> Result<String> {
         &traits,
         uses_raw_err_payload,
         uses_raw_unit_ok_payload,
+        uses_legacy_versioned_helpers,
     );
     writeln!(out).unwrap();
     write_top_register(&mut out, &traits);
@@ -99,6 +102,7 @@ struct ModuleEmission {
     code: String,
     uses_raw_err_payload: bool,
     uses_raw_unit_ok_payload: bool,
+    uses_legacy_versioned_helpers: bool,
 }
 
 /// Emit the `register_{module}` function for a single trait.
@@ -122,6 +126,12 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<ModuleEmiss
     }
     let uses_raw_err_payload = methods.iter().any(MethodEmission::uses_raw_err_payload);
     let uses_raw_unit_ok_payload = methods.iter().any(MethodEmission::uses_raw_unit_ok_payload);
+    let uses_legacy_versioned_helpers = methods
+        .iter()
+        .map(|method| method.uses_legacy_versioned_helpers(api))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .any(|uses| uses);
 
     let fn_name = format!("register_{module}");
     let trait_name = &trait_def.name;
@@ -139,7 +149,7 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<ModuleEmiss
     let last = methods.len().saturating_sub(1);
     for (idx, method) in methods.iter().enumerate() {
         let host_expr = if idx == last { "host" } else { "host.clone()" };
-        method.write(&mut code, host_expr)?;
+        method.write(&mut code, api, host_expr)?;
     }
     writeln!(code, "}}").unwrap();
 
@@ -147,6 +157,7 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<ModuleEmiss
         code,
         uses_raw_err_payload,
         uses_raw_unit_ok_payload,
+        uses_legacy_versioned_helpers,
     })
 }
 
@@ -185,6 +196,51 @@ fn write_host_initiated_callers(
                 versioned_wrapper_root(&method.name, "host-initiated item", item, &wrappers)?;
             let wire_name = wire_method_name(&trait_def.name, &method.name);
             let ids = const_name(&wire_name);
+            let request_path = format!("versioned::{module}::{request}");
+
+            let start_body = match envelope_type_name(Some(request), Some(item)) {
+                Some(version_type) => {
+                    let version_variant = single_variant(api, &version_type)?;
+                    let request_variant = single_variant(api, request)?;
+                    let envelope_path = format!("versioned::{module}::{version_type}");
+                    let bind = envelope_bind_name(request_variant);
+                    let version_number: u8 = version_variant
+                        .name
+                        .strip_prefix('V')
+                        .and_then(|n| n.parse().ok())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Host-initiated method `{}`: envelope variant `{}` is not named `V<number>`",
+                                method.name,
+                                version_variant.name
+                            )
+                        })?;
+                    formatdoc! {r#"
+                        let envelope = match request {{
+                            {request_pat} => {envelope_path}::{ev_name}(truapi::versioned::Subscription::Start({bind})),
+                        }};
+                        subscriptions.start(
+                            wire_table::{ids},
+                            {version_number},
+                            parity_scale_codec::Encode::encode(&envelope),
+                            transport,
+                        )
+                        "#,
+                        request_pat = variant_expr(&request_path, request_variant, bind),
+                        ev_name = version_variant.name,
+                    }
+                }
+                None => formatdoc! {r#"
+                    subscriptions.start(
+                        wire_table::{ids},
+                        1,
+                        parity_scale_codec::Encode::encode(&request),
+                        transport,
+                    )
+                    "#
+                },
+            };
+
             writedoc!(
                 out,
                 r#"
@@ -193,19 +249,15 @@ fn write_host_initiated_callers(
                 pub(crate) fn {wire_name}(
                     subscriptions: &HostInitiatedSubscriptionManager,
                     transport: Arc<dyn Transport>,
-                    request: versioned::{module}::{request},
+                    request: {request_path},
                 ) -> truapi::Subscription<
                     Result<versioned::{module}::{item}, truapi::latest::GenericError>,
                 > {{
-                    subscriptions.start(
-                        wire_table::{ids},
-                        parity_scale_codec::Encode::encode(&request),
-                        transport,
-                    )
-                }}
                 "#
             )
             .unwrap();
+            write_indented(out, 4, &start_body);
+            writeln!(out, "}}").unwrap();
         }
     }
     Ok(())
@@ -317,17 +369,59 @@ impl MethodEmission {
         })
     }
 
-    fn write(&self, out: &mut String, host_expr: &str) -> Result<()> {
+    fn write(&self, out: &mut String, api: &ApiDefinition, host_expr: &str) -> Result<()> {
         match self.kind {
-            MethodKind::Request => self.write_request(out, host_expr),
+            MethodKind::Request => self.write_request(out, api, host_expr),
             MethodKind::Subscription | MethodKind::ResultSubscription => {
-                self.write_subscription(out, host_expr)
+                self.write_subscription(out, api, host_expr)
             }
         }
     }
 
+    /// The merged `{Method}Version` wire-envelope type this method uses, if
+    /// one exists. Derived from the request or item wrapper's name (stripping
+    /// its `Request`/`Item` suffix, per the authoring convention every real
+    /// method follows); returns `None` when no such name can be derived
+    /// (synthetic/test methods whose wrapper names don't follow the
+    /// convention), in which case the method falls back to the legacy
+    /// (pre-nested-envelope) wire shape entirely unchanged. When a name *can*
+    /// be derived but doesn't resolve to a real single-version wrapper, that
+    /// is treated as an authoring bug and fails loudly instead of silently
+    /// falling back.
+    fn envelope<'a>(&self, api: &'a ApiDefinition) -> Result<Option<EnvelopeInfo<'a>>> {
+        let request_name = match &self.request_payload {
+            Some(WirePayload::Versioned(name)) => Some(name.as_str()),
+            _ => None,
+        };
+        let Some(type_name) = envelope_type_name(request_name, self.item_wrapper.as_deref()) else {
+            return Ok(None);
+        };
+        let variant = single_variant(api, &type_name)?;
+        Ok(Some(EnvelopeInfo { type_name, variant }))
+    }
+
     fn uses_raw_err_payload(&self) -> bool {
         matches!(self.request_payload, Some(WirePayload::Raw(_))) || self.uses_raw_unit_ok_payload()
+    }
+
+    /// Whether this method's *legacy* (non-nested-envelope) codegen path
+    /// calls any of `encode_versioned_{ok,err,unit_ok,interrupt}_payload`.
+    /// Every real method resolves to the nested envelope (see [`Self::envelope`]),
+    /// so these helpers end up unused there; this lets the emitted `use`s stay
+    /// conditional on some method actually needing them.
+    fn uses_legacy_versioned_helpers(&self, api: &ApiDefinition) -> Result<bool> {
+        if self.envelope(api)?.is_some() {
+            return Ok(false);
+        }
+        Ok(match self.kind {
+            MethodKind::Request => {
+                self.response_wrapper.is_some()
+                    || matches!(self.error_payload, WirePayload::Versioned(_))
+            }
+            MethodKind::Subscription | MethodKind::ResultSubscription => {
+                matches!(self.error_payload, WirePayload::Versioned(_))
+            }
+        })
     }
 
     fn uses_raw_unit_ok_payload(&self) -> bool {
@@ -336,7 +430,14 @@ impl MethodEmission {
             && matches!(self.error_payload, WirePayload::Raw(_))
     }
 
-    fn write_request(&self, out: &mut String, host_expr: &str) -> Result<()> {
+    fn write_request(&self, out: &mut String, api: &ApiDefinition, host_expr: &str) -> Result<()> {
+        match self.envelope(api)? {
+            Some(env) => self.write_request_envelope(out, api, host_expr, &env),
+            None => self.write_request_legacy(out, host_expr),
+        }
+    }
+
+    fn write_request_legacy(&self, out: &mut String, host_expr: &str) -> Result<()> {
         let module = &self.module;
         let method = &self.name;
         let ids = const_name(&self.wire_name);
@@ -510,7 +611,19 @@ impl MethodEmission {
         Ok(())
     }
 
-    fn write_subscription(&self, out: &mut String, host_expr: &str) -> Result<()> {
+    fn write_subscription(
+        &self,
+        out: &mut String,
+        api: &ApiDefinition,
+        host_expr: &str,
+    ) -> Result<()> {
+        match self.envelope(api)? {
+            Some(env) => self.write_subscription_envelope(out, api, host_expr, &env),
+            None => self.write_subscription_legacy(out, host_expr),
+        }
+    }
+
+    fn write_subscription_legacy(&self, out: &mut String, host_expr: &str) -> Result<()> {
         let module = &self.module;
         let method = &self.name;
         let ids = const_name(&self.wire_name);
@@ -643,9 +756,376 @@ impl MethodEmission {
         }
         writeln!(
             out,
-            "                Ok(subscription_stream::<versioned::{module}::{item}, _>(stream))"
+            "                Ok(({target_version_expr}, subscription_stream::<versioned::{module}::{item}, _>(stream)))"
         )
         .unwrap();
+        write_indented(
+            out,
+            4,
+            indoc! {
+                r#"
+                        })
+                    });
+                }
+                "#
+            },
+        );
+        Ok(())
+    }
+
+    /// Generates a request/response handler that decodes and encodes through
+    /// the nested wire envelope: incoming bytes are the merged
+    /// `{Method}Version` type, matched for the `Request` direction; outgoing
+    /// bytes are constructed as that same type's `Response` direction,
+    /// wrapping `Result<Ok, CallError<Err>>`. The trait method itself is
+    /// unchanged — it still takes/returns the original bare versioned
+    /// request/response/error types; only the wire shape nests differently.
+    fn write_request_envelope(
+        &self,
+        out: &mut String,
+        api: &ApiDefinition,
+        host_expr: &str,
+        env: &EnvelopeInfo<'_>,
+    ) -> Result<()> {
+        let module = &self.module;
+        let method = &self.name;
+        let ids = const_name(&self.wire_name);
+        let envelope_path = format!("versioned::{module}::{}", env.type_name);
+        let version_variant = &env.variant.name;
+
+        let Some(WirePayload::Versioned(request_name)) = &self.request_payload else {
+            bail!("Method `{method}`: nested envelope requires a versioned request");
+        };
+        let Some(error_name) = self.error_payload.versioned_name() else {
+            bail!("Method `{method}`: nested envelope requires a versioned error");
+        };
+        let request_variant = single_variant(api, request_name)?;
+        let error_variant = single_variant(api, error_name)?;
+        let error_bare_ty = variant_bare_type(error_variant)?;
+        let request_path = format!("versioned::{module}::{request_name}");
+        let error_path = format!("versioned::{module}::{error_name}");
+
+        let wrap_response = |inner: &str| {
+            format!(
+                "{envelope_path}::{version_variant}(truapi::versioned::Request::Response({inner}))"
+            )
+        };
+
+        writeln!(out, "    {{").unwrap();
+        self.write_execution_binding(out);
+        write_indented(
+            out,
+            8,
+            &formatdoc! {
+                r#"
+                let host = {host_expr};
+                dispatcher.on_request(wire_table::{ids}, move |request_id: String, bytes: Vec<u8>| {{
+                    let host = host.clone();
+                    Box::pin(async move {{
+                "#
+            },
+        );
+
+        write_indented(
+            out,
+            16,
+            &formatdoc! {
+                r#"
+                let envelope: {envelope_path} = match Decode::decode(&mut &bytes[..]) {{
+                    Ok(envelope) => envelope,
+                    Err(err) => {{
+                        let error: truapi::CallError<{error_bare_ty}> =
+                            truapi::CallError::MalformedFrame {{ reason: err.to_string() }};
+                        return Ok({wrap_err}.encode());
+                    }}
+                }};
+                let request: {request_path} = match envelope {{
+                    {envelope_path}::{version_variant}(truapi::versioned::Request::Request({bind})) => {request_ctor},
+                    _ => {{
+                        let error: truapi::CallError<{error_bare_ty}> =
+                            truapi::CallError::MalformedFrame {{
+                                reason: "expected a request-direction frame".to_string(),
+                            }};
+                        return Ok({wrap_err}.encode());
+                    }}
+                }};
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                "#,
+                bind = envelope_bind_name(request_variant),
+                request_ctor = variant_expr(&request_path, request_variant, envelope_bind_name(request_variant)),
+                wrap_err = wrap_response("Err(error)"),
+            },
+        );
+
+        if self.required_execution.is_some() {
+            write_indented(
+                out,
+                16,
+                &formatdoc! {
+                    r#"
+                    if !execution_allowed {{
+                        let error: truapi::CallError<{error_bare_ty}> = truapi::CallError::Denied;
+                        return Ok({wrap_err}.encode());
+                    }}
+                    "#,
+                    wrap_err = wrap_response("Err(error)"),
+                },
+            );
+        }
+
+        let unwrap_call_error = rewrap_call_error(&error_path, error_variant, "downgraded");
+
+        match &self.response_wrapper {
+            Some(response_name) => {
+                let response_variant = single_variant(api, response_name)?;
+                let response_path = format!("versioned::{module}::{response_name}");
+                let ok_extract = bare_ident_or_unit(response_variant);
+                write_indented(
+                    out,
+                    16,
+                    &formatdoc! {
+                        r#"
+                        let response: {response_path} = match host.{method}(&cx, request).await {{
+                            Ok(value) => value,
+                            Err(err) => {{
+                                let downgraded = downgrade_call_error(err, target_version);
+                                let error: truapi::CallError<{error_bare_ty}> = {unwrap_call_error};
+                                return Ok({wrap_err}.encode());
+                            }}
+                        }};
+                        let response = <{response_path} as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        );
+                        // Downgraded to the caller's version: a handler answers in
+                        // latest terms, and a peer that asked in an older version
+                        // cannot decode a newer variant.
+                        Ok(match response {{
+                            {response_pat} => {wrap_ok},
+                        }}.encode())
+                        "#,
+                        wrap_err = wrap_response("Err(error)"),
+                        response_pat = variant_expr(&response_path, response_variant, "bare"),
+                        wrap_ok = wrap_response(&format!("Ok({ok_extract})")),
+                    },
+                );
+            }
+            None => {
+                write_indented(
+                    out,
+                    16,
+                    &formatdoc! {
+                        r#"
+                        match host.{method}(&cx, request).await {{
+                            Ok(()) => Ok({wrap_unit_ok}.encode()),
+                            Err(err) => {{
+                                let downgraded = downgrade_call_error(err, target_version);
+                                let error: truapi::CallError<{error_bare_ty}> = {unwrap_call_error};
+                                Ok({wrap_err}.encode())
+                            }}
+                        }}
+                        "#,
+                        wrap_unit_ok = wrap_response("Ok(())"),
+                        wrap_err = wrap_response("Err(error)"),
+                    },
+                );
+            }
+        }
+
+        write_indented(
+            out,
+            4,
+            indoc! {
+                r#"
+                        })
+                    });
+                }
+                "#
+            },
+        );
+        Ok(())
+    }
+
+    /// Generates a subscription handler through the nested wire envelope:
+    /// incoming bytes are the merged `{Method}Version` type, matched for the
+    /// `Start` direction (the framework intercepts `Stop` frames before they
+    /// ever reach a registered handler, so only `Start` is handled here);
+    /// outgoing item frames are constructed as that type's `Receive`
+    /// direction. Natural stream completion (`Interrupt(None)`) is encoded
+    /// generically by the runtime with no per-method type knowledge needed,
+    /// so it isn't generated here.
+    fn write_subscription_envelope(
+        &self,
+        out: &mut String,
+        api: &ApiDefinition,
+        host_expr: &str,
+        env: &EnvelopeInfo<'_>,
+    ) -> Result<()> {
+        let module = &self.module;
+        let method = &self.name;
+        let ids = const_name(&self.wire_name);
+        let envelope_path = format!("versioned::{module}::{}", env.type_name);
+        let version_variant = &env.variant.name;
+        // The nested envelope currently supports exactly one version per
+        // method (see `single_variant`), so the version number is this
+        // literal, not something decoded per frame.
+        let version_number: u8 = version_variant
+            .strip_prefix('V')
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Method `{method}`: envelope variant `{version_variant}` is not named `V<number>`"
+                )
+            })?;
+
+        let Some(item_name) = self.item_wrapper.as_deref() else {
+            bail!("Method `{method}`: subscription methods must have an item wrapper");
+        };
+        let item_variant = single_variant(api, item_name)?;
+        let item_path = format!("versioned::{module}::{item_name}");
+
+        let is_result_sub = matches!(self.kind, MethodKind::ResultSubscription);
+        let has_request = matches!(self.request_payload, Some(WirePayload::Versioned(_)));
+
+        let (start_ty, start_ctor, start_bind) = match &self.request_payload {
+            Some(WirePayload::Versioned(request_name)) => {
+                let request_variant = single_variant(api, request_name)?;
+                let request_path = format!("versioned::{module}::{request_name}");
+                let bind = envelope_bind_name(request_variant);
+                (
+                    request_path.clone(),
+                    variant_expr(&request_path, request_variant, bind),
+                    bind,
+                )
+            }
+            _ => ("()".to_string(), "()".to_string(), "_bare"),
+        };
+
+        let error_bare_ty = if is_result_sub {
+            let Some(error_name) = self.error_payload.versioned_name() else {
+                bail!(
+                    "Method `{method}`: result subscription methods must have a versioned error wrapper"
+                );
+            };
+            variant_bare_type(single_variant(api, error_name)?)?
+        } else {
+            "truapi::latest::GenericError".to_string()
+        };
+
+        let wrap_start_err = format!(
+            "{envelope_path}::{version_variant}(truapi::versioned::Subscription::Interrupt(Some(error)))"
+        );
+        // A unit-typed binding trips clippy's `let_unit_value` lint, so a
+        // subscription with no `Start` payload names it `_request` instead
+        // of relying on a follow-up `let _ = request;` to silence it.
+        let request_binding = if has_request { "request" } else { "_request" };
+
+        writeln!(out, "    {{").unwrap();
+        self.write_execution_binding(out);
+        write_indented(
+            out,
+            8,
+            &formatdoc! {
+                r#"
+                let host = {host_expr};
+                dispatcher.on_subscription(wire_table::{ids}, move |request_id: String, bytes: Vec<u8>| {{
+                    let host = host.clone();
+                    Box::pin(async move {{
+                "#
+            },
+        );
+
+        write_indented(
+            out,
+            16,
+            &formatdoc! {
+                r#"
+                let envelope: {envelope_path} = match Decode::decode(&mut &bytes[..]) {{
+                    Ok(envelope) => envelope,
+                    Err(err) => {{
+                        let error: truapi::CallError<{error_bare_ty}> =
+                            truapi::CallError::MalformedFrame {{ reason: err.to_string() }};
+                        return Err({wrap_start_err}.encode());
+                    }}
+                }};
+                let {request_binding}: {start_ty} = match envelope {{
+                    {envelope_path}::{version_variant}(truapi::versioned::Subscription::Start({start_bind})) => {start_ctor},
+                    _ => {{
+                        let error: truapi::CallError<{error_bare_ty}> =
+                            truapi::CallError::MalformedFrame {{
+                                reason: "expected a start-direction frame".to_string(),
+                            }};
+                        return Err({wrap_start_err}.encode());
+                    }}
+                }};
+                let cx = CallContext::with_request_id(request_id.clone());
+                "#
+            },
+        );
+        let call_args = if has_request { "&cx, request" } else { "&cx" };
+
+        if self.required_execution.is_some() {
+            write_indented(
+                out,
+                16,
+                &formatdoc! {
+                    r#"
+                    if !execution_allowed {{
+                        let error: truapi::CallError<{error_bare_ty}> = truapi::CallError::Denied;
+                        return Err({wrap_start_err}.encode());
+                    }}
+                    "#
+                },
+            );
+        }
+
+        if is_result_sub {
+            let error_name = self.error_payload.versioned_name().expect("checked above");
+            let error_variant = single_variant(api, error_name)?;
+            let error_path = format!("versioned::{module}::{error_name}");
+            let unwrap_call_error = rewrap_call_error(&error_path, error_variant, "downgraded");
+            write_indented(
+                out,
+                16,
+                &formatdoc! {
+                    r#"
+                    let stream = match host.{method}({call_args}).await {{
+                        Ok(sub) => sub,
+                        Err(err) => {{
+                            let downgraded = downgrade_call_error(err, {version_number});
+                            let error: truapi::CallError<{error_bare_ty}> = {unwrap_call_error};
+                            return Err({wrap_start_err}.encode());
+                        }}
+                    }};
+                    "#
+                },
+            );
+        } else {
+            writeln!(
+                out,
+                "                let stream = host.{method}({call_args}).await;"
+            )
+            .unwrap();
+        }
+
+        write_indented(
+            out,
+            16,
+            &formatdoc! {
+                r#"
+                let stream = futures::StreamExt::map(stream, |item: {item_path}| match item {{
+                    {item_pat} => {envelope_path}::{version_variant}(
+                        truapi::versioned::Subscription::Receive({item_extract}),
+                    ),
+                }});
+                Ok(({version_number}, subscription_stream::<{envelope_path}, _>(stream)))
+                "#,
+                item_pat = variant_expr(&item_path, item_variant, "bare"),
+                item_extract = bare_ident_or_unit(item_variant),
+            },
+        );
+
         write_indented(
             out,
             4,
@@ -713,6 +1193,127 @@ impl MethodEmission {
             }
         }
         Ok(())
+    }
+}
+
+/// The merged wire-envelope type this method's frames nest into
+/// (`{Method}Version`), and its single declared version variant. Only
+/// single-version envelopes are currently generated; see [`single_variant`].
+struct EnvelopeInfo<'a> {
+    type_name: String,
+    variant: &'a VariantDef,
+}
+
+/// Derive the merged `{Method}Version` wire-envelope type name from a
+/// method's request or item wrapper name, stripping its `Request`/`Item`
+/// suffix — the naming convention every hand-authored envelope type follows.
+/// Returns `None` when neither name is present or neither ends in the
+/// expected suffix (synthetic/test methods opt out of the nested envelope
+/// entirely this way, falling back to the legacy wire shape).
+fn envelope_type_name(request: Option<&str>, item: Option<&str>) -> Option<String> {
+    if let Some(base) = request.and_then(|name| name.strip_suffix("Request")) {
+        return Some(format!("{base}Version"));
+    }
+    if let Some(base) = item.and_then(|name| name.strip_suffix("Item")) {
+        return Some(format!("{base}Version"));
+    }
+    None
+}
+
+/// Look up a versioned wrapper type's single declared variant. The nested
+/// wire envelope currently supports exactly one version per method; a type
+/// with more is a hard error rather than a silent partial implementation.
+fn single_variant<'a>(api: &'a ApiDefinition, name: &str) -> Result<&'a VariantDef> {
+    let type_def = api
+        .types
+        .iter()
+        .find(|type_def| type_def.name == name)
+        .ok_or_else(|| {
+            anyhow::anyhow!("versioned wrapper type `{name}` not found in extracted API")
+        })?;
+    let TypeDefKind::Enum(variants) = &type_def.kind else {
+        bail!("versioned wrapper type `{name}` is not an enum");
+    };
+    match variants.as_slice() {
+        [only] => Ok(only),
+        other => bail!(
+            "versioned wrapper `{name}` has {} versions; the nested wire envelope \
+             currently supports exactly one version per method",
+            other.len()
+        ),
+    }
+}
+
+/// Rust expression naming `variant` of `type_path`: either constructing it
+/// from `bare_ident`, or (identical syntax) pattern-matching it and binding
+/// `bare_ident` — unit variants take neither parens nor `bare_ident`.
+fn variant_expr(type_path: &str, variant: &VariantDef, bare_ident: &str) -> String {
+    match &variant.fields {
+        VariantFields::Unit => format!("{type_path}::{}", variant.name),
+        VariantFields::Unnamed(_) => format!("{type_path}::{}({bare_ident})", variant.name),
+        VariantFields::Named(_) => {
+            unreachable!("versioned wrapper variants are unit or single-field tuples")
+        }
+    }
+}
+
+/// The identifier (or unit literal) a matched [`variant_expr`] binds:
+/// `"bare"` for a single-field tuple variant, `"()"` for a unit variant.
+fn bare_ident_or_unit(variant: &VariantDef) -> &'static str {
+    match &variant.fields {
+        VariantFields::Unit => "()",
+        VariantFields::Unnamed(_) => "bare",
+        VariantFields::Named(_) => {
+            unreachable!("versioned wrapper variants are unit or single-field tuples")
+        }
+    }
+}
+
+/// Identifier to bind an envelope direction tag's inner value as (`Request`,
+/// `Start`, ...), which is always structurally present even when the
+/// destination variant it reconstructs is a unit that discards it. Binding
+/// as `"bare"` when the destination will reference it and `"_bare"` when it
+/// won't avoids an unused-variable warning on the otherwise-always-present
+/// envelope binding.
+fn envelope_bind_name(destination_variant: &VariantDef) -> &'static str {
+    match &destination_variant.fields {
+        VariantFields::Unit => "_bare",
+        VariantFields::Unnamed(_) => "bare",
+        VariantFields::Named(_) => {
+            unreachable!("versioned wrapper variants are unit or single-field tuples")
+        }
+    }
+}
+
+/// The Rust type of `variant`'s bare payload (`()` for a unit variant).
+fn variant_bare_type(variant: &VariantDef) -> Result<String> {
+    match &variant.fields {
+        VariantFields::Unit => Ok("()".to_string()),
+        VariantFields::Unnamed(types) if types.len() == 1 => rust_type_ref(&types[0]),
+        _ => bail!(
+            "versioned wrapper variant `{}` must be unit or a single-field tuple",
+            variant.name
+        ),
+    }
+}
+
+/// Emit a match expression that rewraps a `truapi::CallError<{old versioned
+/// error}>` value (`scrutinee`) into `truapi::CallError<{bare domain
+/// error}>` — unwrapping the domain payload's own (now-redundant) version
+/// tag, since the nested envelope's outer version tag already carries that
+/// information. Framework variants (`Denied`/`Unsupported`/`MalformedFrame`/
+/// `HostFailure`) carry no domain payload and pass through unchanged.
+fn rewrap_call_error(error_path: &str, error_variant: &VariantDef, scrutinee: &str) -> String {
+    let domain_pattern = variant_expr(error_path, error_variant, "bare");
+    let domain_bare = bare_ident_or_unit(error_variant);
+    formatdoc! {r#"
+        match {scrutinee} {{
+            truapi::CallError::Domain({domain_pattern}) => truapi::CallError::Domain({domain_bare}),
+            truapi::CallError::Denied => truapi::CallError::Denied,
+            truapi::CallError::Unsupported => truapi::CallError::Unsupported,
+            truapi::CallError::MalformedFrame {{ reason }} => truapi::CallError::MalformedFrame {{ reason }},
+            truapi::CallError::HostFailure {{ reason }} => truapi::CallError::HostFailure {{ reason }},
+        }}"#
     }
 }
 
@@ -883,13 +1484,14 @@ fn write_imports(
     traits: &[&TraitDef],
     uses_raw_err_payload: bool,
     uses_raw_unit_ok_payload: bool,
+    uses_legacy_versioned_helpers: bool,
 ) {
     writedoc!(
         out,
         r#"
         use std::sync::Arc;
 
-        use parity_scale_codec::Decode;
+        use parity_scale_codec::{{Decode, Encode}};
 
         use truapi::CallContext;
         use truapi::api::{{
@@ -907,11 +1509,7 @@ fn write_imports(
         use truapi_platform::ProductExecutionKind;
 
         use crate::dispatcher::Dispatcher;
-        use crate::frame::encode_versioned_err_payload;
-        use crate::frame::encode_versioned_interrupt_payload;
         use crate::frame::downgrade_call_error;
-        use crate::frame::encode_versioned_ok_payload;
-        use crate::frame::encode_versioned_unit_ok_payload;
         use crate::generated::wire_table;
         use crate::subscription::{{HostInitiatedSubscriptionManager, subscription_stream}};
         use crate::transport::Transport;
@@ -923,6 +1521,23 @@ fn write_imports(
     }
     if uses_raw_unit_ok_payload {
         writeln!(out, "use crate::frame::encode_raw_unit_ok_payload;").unwrap();
+    }
+    // Every real method resolves to the nested wire envelope (see
+    // `MethodEmission::envelope`), which encodes by constructing and
+    // encoding its envelope value directly rather than through these
+    // helpers. They remain for the legacy (non-nested-envelope) codegen
+    // path, imported only when some method actually falls back to it.
+    if uses_legacy_versioned_helpers {
+        writedoc!(
+            out,
+            r#"
+            use crate::frame::encode_versioned_err_payload;
+            use crate::frame::encode_versioned_interrupt_payload;
+            use crate::frame::encode_versioned_ok_payload;
+            use crate::frame::encode_versioned_unit_ok_payload;
+            "#
+        )
+        .unwrap();
     }
 }
 

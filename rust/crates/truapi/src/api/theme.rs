@@ -18,7 +18,7 @@ pub trait Theme: Send + Sync {
     /// );
     /// console.log("theme received:", theme);
     /// ```
-    #[wire(start_id = 0)]
+    #[wire(id = 0)]
     async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostThemeSubscribeItem> {
         Subscription::empty()
     }

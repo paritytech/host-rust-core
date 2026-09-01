@@ -152,12 +152,7 @@ mod tests {
             },
             wire: WireAttrs {
                 host_initiated: false,
-                request_id: Some(request_id),
-                response_id: None,
-                start_id: None,
-                stop_id: None,
-                interrupt_id: None,
-                receive_id: None,
+                id: Some(request_id),
             },
             docs: None,
         }
@@ -174,12 +169,7 @@ mod tests {
             }),
             wire: WireAttrs {
                 host_initiated: false,
-                request_id: None,
-                response_id: None,
-                start_id: Some(start_id),
-                stop_id: None,
-                interrupt_id: None,
-                receive_id: None,
+                id: Some(start_id),
             },
             docs: None,
         }
@@ -210,12 +200,12 @@ mod tests {
     }
 
     fn parse_entries(src: &str) -> Vec<(u8, String)> {
-        // Each method's ids are emitted as a named const, e.g.
-        //   pub const PREIMAGE_SUBMIT: RequestFrameIds = RequestFrameIds {
-        //       request_id: 68,
-        //       response_id: 69,
+        // Each method's id is emitted as a named const, e.g.
+        //   pub const PREIMAGE_SUBMIT: MethodIds = MethodIds {
+        //       trait_id: 203,
+        //       method_id: 68,
         //   };
-        // Reconstruct the `(id, "{method}_{suffix}")` pairs the assertions use.
+        // Reconstruct the `(method_id, method_name)` pairs the assertions use.
         let mut out = Vec::new();
         let mut lines = src.lines();
         while let Some(line) = lines.next() {
@@ -225,9 +215,8 @@ mod tests {
             let Some(colon) = rest.find(':') else {
                 continue;
             };
-            let is_sub = rest.contains("SubscriptionFrameIds");
             // Skip non-id consts (e.g. `WIRE_TABLE: &[WireEntry]`).
-            if !is_sub && !rest.contains("RequestFrameIds") {
+            if !rest.contains("MethodIds") {
                 continue;
             }
             let method = rest[..colon].trim().to_ascii_lowercase();
@@ -244,28 +233,15 @@ mod tests {
                 }
             }
 
-            let suffixes: &[(&str, &str)] = if is_sub {
-                &[
-                    ("start_id", "start"),
-                    ("stop_id", "stop"),
-                    ("interrupt_id", "interrupt"),
-                    ("receive_id", "receive"),
-                ]
-            } else {
-                &[("request_id", "request"), ("response_id", "response")]
-            };
-            for (field, suffix) in suffixes {
-                out.push((ids[field], format!("{method}_{suffix}")));
-            }
+            out.push((ids["method_id"], method));
         }
         out
     }
 
-    /// A single subscription method must reserve four consecutive wire
-    /// ids (start/stop/interrupt/receive) even when no sibling methods
-    /// exist to mask off-by-one errors.
+    /// A single subscription method reserves exactly one wire id, same as a
+    /// request method — direction lives in the payload, not the address.
     #[test]
-    fn wire_table_subscribe_method_reserves_four_ids() {
+    fn wire_table_subscribe_method_reserves_one_id() {
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
@@ -282,12 +258,7 @@ mod tests {
         let entries = parse_entries(&src);
         assert_eq!(
             entries,
-            vec![
-                (18, "account_connection_status_subscribe_start".into()),
-                (19, "account_connection_status_subscribe_stop".into()),
-                (20, "account_connection_status_subscribe_interrupt".into()),
-                (21, "account_connection_status_subscribe_receive".into()),
-            ],
+            vec![(18, "account_connection_status_subscribe".into())],
         );
     }
 
@@ -333,13 +304,11 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(_, tag)| tag == "statement_store_submit_request"),
+                .any(|(_, tag)| tag == "statement_store_submit"),
             "wire_table missing prefixed StatementStore tag:\n{table}"
         );
         assert!(
-            entries
-                .iter()
-                .any(|(_, tag)| tag == "preimage_submit_request"),
+            entries.iter().any(|(_, tag)| tag == "preimage_submit"),
             "wire_table missing prefixed Preimage tag:\n{table}"
         );
     }
@@ -411,10 +380,8 @@ mod tests {
         assert_eq!(table_a, table_b);
     }
 
-    /// Methods with a `#[wire(request_id = N)]` annotation get a 2-id
-    /// slot (request/response). Methods with `#[wire(start_id = N)]`
-    /// get a 4-id slot (start/stop/interrupt/receive). The emitter
-    /// must enforce that, and reject collisions.
+    /// Every method, request or subscription, gets exactly one wire id.
+    /// The emitter must reject collisions between them.
     #[test]
     fn wire_table_rejects_collisions() {
         let api = ApiDefinition {
@@ -591,8 +558,7 @@ mod tests {
     /// envelope, and refusing it would silently cost every trait its last slot.
     #[test]
     fn wire_table_allows_method_id_255_outside_the_reserved_trait() {
-        let mut method = make_request_method("explicit_request", 255);
-        method.wire.response_id = Some(1);
+        let method = make_request_method("explicit_request", 255);
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
@@ -638,13 +604,13 @@ mod tests {
         assert_eq!(module_for_trait("Account"), "account");
     }
 
-    /// A request-kind method must not carry subscription wire ids. The
-    /// emitter rejects `start_id` / `stop_id` / `interrupt_id` / `receive_id`
-    /// on a `MethodKind::Request`.
+    /// A method missing the mandatory `#[wire(id = N)]` annotation must fail
+    /// emission, not silently default to 0 — true for both request and
+    /// subscription kinds, which now share the same single-id path.
     #[test]
-    fn wire_table_request_with_subscription_id_errors() {
+    fn wire_table_missing_id_errors() {
         let mut method = make_request_method("alpha", 10);
-        method.wire.start_id = Some(99);
+        method.wire.id = None;
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
@@ -656,83 +622,10 @@ mod tests {
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
         };
-        let err = generate_wire_table(&api).expect_err("request kind + start_id must error");
+        let err = generate_wire_table(&api).expect_err("missing id annotation must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("must not use subscription wire ids"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    /// A subscription-kind method must not carry request wire ids.
-    #[test]
-    fn wire_table_subscription_with_request_id_errors() {
-        let mut method = make_subscription_method("connection_status_subscribe", 18);
-        method.wire.request_id = Some(99);
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Account".to_string(),
-                module_path: Vec::new(),
-                wire_trait_id: Some(193),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Account".to_string()],
-            types: vec![],
-        };
-        let err = generate_wire_table(&api).expect_err("subscription kind + request_id must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("must not use request wire ids"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    /// A request-kind method missing the mandatory `request_id` annotation
-    /// must fail emission, not silently default to 0.
-    #[test]
-    fn wire_table_missing_request_id_errors() {
-        let mut method = make_request_method("alpha", 10);
-        method.wire.request_id = None;
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Permissions".to_string(),
-                module_path: Vec::new(),
-                wire_trait_id: Some(197),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Permissions".to_string()],
-            types: vec![],
-        };
-        let err = generate_wire_table(&api).expect_err("missing request_id annotation must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("missing #[wire(request_id"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    /// Subscription-kind method missing `start_id` is similarly rejected.
-    #[test]
-    fn wire_table_missing_start_id_errors() {
-        let mut method = make_subscription_method("connection_status_subscribe", 18);
-        method.wire.start_id = None;
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Account".to_string(),
-                module_path: Vec::new(),
-                wire_trait_id: Some(193),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Account".to_string()],
-            types: vec![],
-        };
-        let err = generate_wire_table(&api).expect_err("missing start_id annotation must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("missing #[wire(start_id"),
+            msg.contains("missing #[wire(id"),
             "unexpected error message: {msg}",
         );
     }

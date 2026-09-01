@@ -39,7 +39,7 @@ pub trait ResourceAllocation: Send + Sync {
     /// );
     /// console.log("resource allocation outcomes:", result.value.outcomes);
     /// ```
-    #[wire(request_id = 0)]
+    #[wire(id = 0)]
     async fn request(
         &self,
         _cx: &CallContext,

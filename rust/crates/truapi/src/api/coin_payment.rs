@@ -34,7 +34,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "createPurse failed:", result);
     /// console.log("purse created:", result.value.purse);
     /// ```
-    #[wire(request_id = 0)]
+    #[wire(id = 0)]
     async fn create_purse(
         &self,
         _cx: &CallContext,
@@ -51,7 +51,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "queryPurse failed:", result);
     /// console.log("purse info:", result.value.info);
     /// ```
-    #[wire(request_id = 2)]
+    #[wire(id = 1)]
     async fn query_purse(
         &self,
         _cx: &CallContext,
@@ -74,7 +74,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("rebalance status:", status);
     /// ```
-    #[wire(start_id = 4)]
+    #[wire(id = 2)]
     async fn rebalance_purse(
         &self,
         _cx: &CallContext,
@@ -100,7 +100,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("delete status:", status);
     /// ```
-    #[wire(start_id = 8)]
+    #[wire(id = 3)]
     async fn delete_purse(
         &self,
         _cx: &CallContext,
@@ -119,7 +119,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "createReceivable failed:", result);
     /// console.log("receivable created:", result.value.receivable);
     /// ```
-    #[wire(request_id = 12)]
+    #[wire(id = 4)]
     async fn create_receivable(
         &self,
         _cx: &CallContext,
@@ -142,7 +142,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "createCheque failed:", result);
     /// console.log("cheque created:", result.value.cheque);
     /// ```
-    #[wire(request_id = 14)]
+    #[wire(id = 5)]
     async fn create_cheque(
         &self,
         _cx: &CallContext,
@@ -169,7 +169,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("deposit status:", status);
     /// ```
-    #[wire(start_id = 16)]
+    #[wire(id = 6)]
     async fn deposit(
         &self,
         _cx: &CallContext,
@@ -196,7 +196,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("refund status:", status);
     /// ```
-    #[wire(start_id = 20)]
+    #[wire(id = 7)]
     async fn refund(
         &self,
         _cx: &CallContext,
@@ -223,7 +223,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("payment received:", item);
     /// ```
-    #[wire(start_id = 24)]
+    #[wire(id = 8)]
     async fn listen_for_payment(
         &self,
         _cx: &CallContext,

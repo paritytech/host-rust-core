@@ -58,7 +58,7 @@ pub trait StatementStore: Send + Sync {
     /// const page = await waitForStatement();
     /// console.log("subscribe received", page);
     /// ```
-    #[wire(start_id = 0)]
+    #[wire(id = 0)]
     async fn subscribe(
         &self,
         _cx: &CallContext,
@@ -100,7 +100,7 @@ pub trait StatementStore: Send + Sync {
     ///   console.log("proof created:", result.value);
     /// }
     /// ```
-    #[wire(request_id = 4)]
+    #[wire(id = 1)]
     async fn create_proof(
         &self,
         _cx: &CallContext,
@@ -127,7 +127,7 @@ pub trait StatementStore: Send + Sync {
     /// assert(result.isOk(), "createProof failed:", result);
     /// console.log("proof created:", result.value);
     /// ```
-    #[wire(request_id = 8)]
+    #[wire(id = 3)]
     async fn create_proof_authorized(
         &self,
         _cx: &CallContext,
@@ -159,7 +159,7 @@ pub trait StatementStore: Send + Sync {
     /// assert(result.isOk(), "submit failed:", result);
     /// console.log("statement submitted");
     /// ```
-    #[wire(request_id = 6)]
+    #[wire(id = 2)]
     async fn submit(
         &self,
         _cx: &CallContext,

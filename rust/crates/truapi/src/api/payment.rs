@@ -24,7 +24,7 @@ pub trait Payment: Send + Sync {
     /// );
     /// console.log("balance received:", balance);
     /// ```
-    #[wire(start_id = 0)]
+    #[wire(id = 0)]
     async fn balance_subscribe(
         &self,
         _cx: &CallContext,
@@ -54,7 +54,7 @@ pub trait Payment: Send + Sync {
     /// assert(result.isOk(), "request failed:", result);
     /// console.log("payment requested:", result.value);
     /// ```
-    #[wire(request_id = 6)]
+    #[wire(id = 2)]
     async fn request(
         &self,
         _cx: &CallContext,
@@ -91,7 +91,7 @@ pub trait Payment: Send + Sync {
     /// );
     /// console.log("payment status received:", status);
     /// ```
-    #[wire(start_id = 8)]
+    #[wire(id = 3)]
     async fn status_subscribe(
         &self,
         _cx: &CallContext,
@@ -113,7 +113,7 @@ pub trait Payment: Send + Sync {
     /// assert(result.isOk(), "topUp failed:", result);
     /// console.log("balance topped up");
     /// ```
-    #[wire(request_id = 4)]
+    #[wire(id = 1)]
     async fn top_up(
         &self,
         _cx: &CallContext,

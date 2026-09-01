@@ -62,7 +62,7 @@ pub trait Signing: Send + Sync {
     ///   console.log(`${version} transaction created:`, result.value);
     /// }
     /// ```
-    #[wire(request_id = 0)]
+    #[wire(id = 0)]
     async fn create_transaction(
         &self,
         _cx: &CallContext,
@@ -119,7 +119,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
     /// console.log("transaction created:", result.value);
     /// ```
-    #[wire(request_id = 2)]
+    #[wire(id = 1)]
     async fn create_transaction_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -151,7 +151,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRawWithLegacyAccount failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 4)]
+    #[wire(id = 2)]
     async fn sign_raw_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -197,7 +197,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayloadWithLegacyAccount failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 6)]
+    #[wire(id = 3)]
     async fn sign_payload_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -227,7 +227,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRaw failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 8)]
+    #[wire(id = 4)]
     async fn sign_raw(
         &self,
         _cx: &CallContext,
@@ -264,7 +264,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayload failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 10)]
+    #[wire(id = 5)]
     async fn sign_payload(
         &self,
         _cx: &CallContext,

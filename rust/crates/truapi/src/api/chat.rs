@@ -26,7 +26,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "createRoom failed:", result);
     /// console.log("room created:", result.value);
     /// ```
-    #[wire(request_id = 0)]
+    #[wire(id = 0)]
     async fn create_room(
         &self,
         _cx: &CallContext,
@@ -46,7 +46,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "registerBot failed:", result);
     /// console.log("bot registered:", result.value);
     /// ```
-    #[wire(request_id = 2)]
+    #[wire(id = 1)]
     async fn register_bot(
         &self,
         _cx: &CallContext,
@@ -65,7 +65,7 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("room list received:", item);
     /// ```
-    #[wire(start_id = 4)]
+    #[wire(id = 2)]
     async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
         Subscription::empty()
     }
@@ -92,7 +92,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "postMessage failed:", result);
     /// console.log("message posted:", result.value);
     /// ```
-    #[wire(request_id = 8)]
+    #[wire(id = 3)]
     async fn post_message(
         &self,
         _cx: &CallContext,
@@ -111,7 +111,7 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("action received:", item);
     /// ```
-    #[wire(start_id = 10)]
+    #[wire(id = 4)]
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
@@ -127,7 +127,7 @@ pub trait Chat: Send + Sync {
     ///   return of({ tag: "String", value: { text: `${messageType}: ${payload}` } });
     /// });
     /// ```
-    #[wire(host_initiated, start_id = 14)]
+    #[wire(host_initiated, id = 5)]
     fn custom_message_render(
         &self,
         _cx: &CallContext,

@@ -18,7 +18,7 @@ pub trait Locale: Send + Sync {
     /// );
     /// console.log("locale received:", locale.languageTag);
     /// ```
-    #[wire(start_id = 0)]
+    #[wire(id = 0)]
     async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
         Subscription::empty()
     }

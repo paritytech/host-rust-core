@@ -386,6 +386,47 @@ fn versioned_wrapper_for<'a>(
     None
 }
 
+/// Name of a method's merged wire-envelope type (RFC 0028), derived the same
+/// way `truapi-codegen`'s Rust dispatcher emitter derives it: strip the
+/// `Request`/`Item` suffix off the request (or subscription item) wrapper's
+/// own name and append `Version`. Mirrors `envelope_type_name` in
+/// `rust/dispatcher.rs` so both languages name the same Rust type the same
+/// way.
+fn envelope_type_name(request: Option<&str>, item: Option<&str>) -> Option<String> {
+    if let Some(base) = request.and_then(|name| name.strip_suffix("Request")) {
+        return Some(format!("{base}Version"));
+    }
+    if let Some(base) = item.and_then(|name| name.strip_suffix("Item")) {
+        return Some(format!("{base}Version"));
+    }
+    None
+}
+
+/// Look up an extracted type definition by name.
+fn find_type<'a>(api: &'a ApiDefinition, name: &str) -> Option<&'a TypeDef> {
+    api.types.iter().find(|type_def| type_def.name == name)
+}
+
+/// Resolve a method's merged wire-envelope type name, if one was extracted
+/// for it. `None` when the method's request/item wrapper doesn't follow the
+/// `{Base}Request`/`{Base}Item` naming convention (synthetic test fixtures
+/// only; every real method resolves), or when the derived name isn't
+/// actually present in the extracted API (an authoring bug: the wrapper
+/// exists but its merged envelope type doesn't).
+fn method_envelope_name(
+    api: &ApiDefinition,
+    request_wrapper: Option<&str>,
+    item_wrapper: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(name) = envelope_type_name(request_wrapper, item_wrapper) else {
+        return Ok(None);
+    };
+    if find_type(api, &name).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(name))
+}
+
 /// Emits a JSDoc block for `docs` at the given indent. No-op when `docs` is
 /// `None` so callers can pipe rust doc strings through unconditionally.
 ///
@@ -497,52 +538,6 @@ fn generate_index() -> String {
     "export * from './types.js';\nexport * from './client.js';\n".to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExpandedWireIds {
-    Request {
-        request_id: u8,
-        response_id: u8,
-    },
-    Subscription {
-        start_id: u8,
-        stop_id: u8,
-        interrupt_id: u8,
-        receive_id: u8,
-    },
-}
-
-impl ExpandedWireIds {
-    fn sort_id(self) -> u8 {
-        match self {
-            ExpandedWireIds::Request { request_id, .. } => request_id,
-            ExpandedWireIds::Subscription { start_id, .. } => start_id,
-        }
-    }
-
-    fn entries(self, method_name: &str) -> Vec<(u8, String)> {
-        match self {
-            ExpandedWireIds::Request {
-                request_id,
-                response_id,
-            } => vec![
-                (request_id, format!("{method_name}_request")),
-                (response_id, format!("{method_name}_response")),
-            ],
-            ExpandedWireIds::Subscription {
-                start_id,
-                stop_id,
-                interrupt_id,
-                receive_id,
-            } => vec![
-                (start_id, format!("{method_name}_start")),
-                (stop_id, format!("{method_name}_stop")),
-                (interrupt_id, format!("{method_name}_interrupt")),
-                (receive_id, format!("{method_name}_receive")),
-            ],
-        }
-    }
-}
-
 fn trim_doc_lines(lines: &[&str]) -> Option<String> {
     let mut start = 0;
     let mut end = lines.len();
@@ -575,11 +570,7 @@ fn wire_const_name(trait_name: &str, method_name: &str) -> String {
 /// Sort key for stable, wire-id-ordered method emission shared by the
 /// playground and examples submodules.
 fn method_wire_sort_id(method: &MethodDef) -> u8 {
-    method
-        .wire
-        .request_id
-        .or(method.wire.start_id)
-        .unwrap_or(u8::MAX)
+    method.wire.id.unwrap_or(u8::MAX)
 }
 
 fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<String> {
@@ -592,7 +583,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
         RESERVED_PROTOCOL_ERROR_TRAIT_ID,
         "reserved for protocol errors".to_string(),
     )]);
-    let mut constants: Vec<(String, u8, ExpandedWireIds)> = Vec::new();
+    let mut constants: Vec<(String, u8, u8)> = Vec::new();
 
     for trait_def in &api.traits {
         // Method-less traits (e.g. the `TrUApi` umbrella trait) own no wire
@@ -608,11 +599,12 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
             );
         }
         for method in &trait_def.methods {
-            let wire_ids = wire_ids_for_method(trait_def, method)?;
-            for (id, tag) in wire_ids.entries(&method.name) {
-                if let Some(existing) = seen.insert((trait_id, id), tag.clone()) {
-                    bail!("wire id ({trait_id}, {id}) reused: `{existing}` and `{tag}` collide");
-                }
+            let method_id = wire_id_for_method(trait_def, method)?;
+            if let Some(existing) = seen.insert((trait_id, method_id), method.name.clone()) {
+                bail!(
+                    "wire id ({trait_id}, {method_id}) reused: `{existing}` and `{}` collide",
+                    method.name
+                );
             }
             if !method_is_included(trait_def, method, &wrappers, target_version)? {
                 continue;
@@ -620,12 +612,12 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
             constants.push((
                 wire_const_name(&trait_def.name, &method.name),
                 trait_id,
-                wire_ids,
+                method_id,
             ));
         }
     }
 
-    constants.sort_by_key(|(_, trait_id, ids)| (*trait_id, ids.sort_id()));
+    constants.sort_by_key(|(_, trait_id, method_id)| (*trait_id, *method_id));
 
     let mut out = String::new();
     writedoc!(
@@ -633,48 +625,25 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
         r#"
         // Auto-generated by truapi-codegen. Do not edit.
 
-        import type {{ RequestFrameIds, SubscriptionFrameIds }} from '../transport.js';
+        import type {{ MethodIds }} from '../transport.js';
 
-        // Wire-protocol (trait, method) discriminant pairs. Trait and method
-        // ordering are part of the protocol; only ever append within a trait
-        // or explicitly reserve gaps.
+        // Wire-protocol (trait, method) discriminant pairs. One id addresses
+        // a method regardless of shape; direction and version are carried
+        // inside the payload. Trait and method ordering are part of the
+        // protocol; only ever append within a trait or explicitly reserve
+        // gaps.
 
         "#
     )
     .unwrap();
-    for (name, trait_id, ids) in constants {
-        match ids {
-            ExpandedWireIds::Request {
-                request_id,
-                response_id,
-            } => {
-                out.push('\n');
-                out.push_str(&formatdoc! {"
-                    export const {name} = {{
-                      trait: {trait_id},
-                      request: {request_id},
-                      response: {response_id},
-                    }} as const satisfies RequestFrameIds;
-                "});
-            }
-            ExpandedWireIds::Subscription {
-                start_id,
-                stop_id,
-                interrupt_id,
-                receive_id,
-            } => {
-                out.push('\n');
-                out.push_str(&formatdoc! {"
-                    export const {name} = {{
-                      trait: {trait_id},
-                      start: {start_id},
-                      stop: {stop_id},
-                      interrupt: {interrupt_id},
-                      receive: {receive_id},
-                    }} as const satisfies SubscriptionFrameIds;
-                "});
-            }
-        }
+    for (name, trait_id, method_id) in constants {
+        out.push('\n');
+        out.push_str(&formatdoc! {"
+            export const {name} = {{
+              trait: {trait_id},
+              method: {method_id},
+            }} as const satisfies MethodIds;
+        "});
     }
 
     Ok(out)
@@ -710,7 +679,7 @@ fn method_is_included(
     wrappers: &HashMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<bool> {
-    wire_ids_for_method(trait_def, method)?;
+    wire_id_for_method(trait_def, method)?;
 
     let wrapper_names = method_versioned_wrappers(method, wrappers);
     Ok(
@@ -719,82 +688,14 @@ fn method_is_included(
     )
 }
 
-fn wire_ids_for_method(trait_def: &TraitDef, method: &MethodDef) -> Result<ExpandedWireIds> {
-    let wire = &method.wire;
-    match method.kind {
-        MethodKind::Request => {
-            if wire.start_id.is_some()
-                || wire.stop_id.is_some()
-                || wire.interrupt_id.is_some()
-                || wire.receive_id.is_some()
-            {
-                bail!(
-                    "method `{}::{}` is a request and must not use subscription wire ids",
-                    trait_def.name,
-                    method.name
-                );
-            }
-            let request_id = wire.request_id.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "method `{}::{}` is missing #[wire(request_id = N)] annotation",
-                    trait_def.name,
-                    method.name
-                )
-            })?;
-            let response_id =
-                infer_wire_id(wire.response_id, request_id, 1, &method.name, "response_id")?;
-            Ok(ExpandedWireIds::Request {
-                request_id,
-                response_id,
-            })
-        }
-        MethodKind::Subscription | MethodKind::ResultSubscription => {
-            if wire.request_id.is_some() || wire.response_id.is_some() {
-                bail!(
-                    "method `{}::{}` is a subscription and must not use request wire ids",
-                    trait_def.name,
-                    method.name
-                );
-            }
-            let start_id = wire.start_id.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "method `{}::{}` is missing #[wire(start_id = N)] annotation",
-                    trait_def.name,
-                    method.name
-                )
-            })?;
-            let stop_id = infer_wire_id(wire.stop_id, start_id, 1, &method.name, "stop_id")?;
-            let interrupt_id =
-                infer_wire_id(wire.interrupt_id, start_id, 2, &method.name, "interrupt_id")?;
-            let receive_id =
-                infer_wire_id(wire.receive_id, start_id, 3, &method.name, "receive_id")?;
-            Ok(ExpandedWireIds::Subscription {
-                start_id,
-                stop_id,
-                interrupt_id,
-                receive_id,
-            })
-        }
-    }
-}
-
-fn infer_wire_id(
-    explicit: Option<u8>,
-    anchor_id: u8,
-    offset: u8,
-    method_name: &str,
-    field_name: &str,
-) -> Result<u8> {
-    explicit.map_or_else(
-        || {
-            anchor_id.checked_add(offset).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "wire id overflow on `{method_name}` while inferring `{field_name}` from {anchor_id}"
-                )
-            })
-        },
-        Ok,
-    )
+fn wire_id_for_method(trait_def: &TraitDef, method: &MethodDef) -> Result<u8> {
+    method.wire.id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "method `{}::{}` is missing #[wire(id = N)] annotation",
+            trait_def.name,
+            method.name
+        )
+    })
 }
 
 /// Picks the wrapper variant the generated client emits on the wire for a
@@ -942,6 +843,7 @@ fn generate_types(api: &ApiDefinition, target_version: u32) -> Result<String> {
         // Auto-generated by truapi-codegen. Do not edit.
 
         import * as S from '../scale.js';
+        import {{ Request, Result, Subscription }} from '../scale.js';
         import type {{ HexString }} from '../scale.js';
 
         "#
@@ -988,7 +890,7 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         import * as S from '../scale.js';
         import type {{ HexString }} from '../scale.js';
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ HostInitiatedSubscriptionRegistration, ObservableLike, ObservableSource, Observer, Subscription, SubscriptionFrameIds, TrUApiTransport }} from '../transport.js';
+        import type {{ HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, ObservableSource, Observer, Subscription, TrUApiTransport }} from '../transport.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
@@ -1003,9 +905,12 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
           return new SubscriptionError(cause.message, {{ cause }});
         }}
 
-        // `_interrupt` payload sent when a host-initiated request arrives with no
-        // registered handler: SCALE `Result::Err` discriminant, declining the start.
-        const HOST_INITIATED_DECLINE_PAYLOAD = new Uint8Array([0]);
+        // Interrupt payload sent when a host-initiated render arrives with no
+        // registered handler, declining the start: `[version=V1, direction=
+        // Interrupt, Option::None]`. The host only inspects the direction
+        // byte for this flow, so this fixed frame (matching a clean,
+        // error-free interrupt) is valid for every method.
+        const HOST_INITIATED_DECLINE_PAYLOAD = new Uint8Array([0, 2, 0]);
         // Items buffered per host-initiated stream while the product's handler
         // observable has no subscriber yet.
         const HOST_INITIATED_BUFFER_CAPACITY = 64;
@@ -1048,6 +953,7 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         {
             emit_host_initiated_registration(
                 &mut out,
+                api,
                 trait_def,
                 method,
                 &wrappers,
@@ -1058,7 +964,15 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         writeln!(out, "  }}\n").unwrap();
 
         for method in methods {
-            emit_method(&mut out, trait_def, method, &wrappers, &ctx, target_version)?;
+            emit_method(
+                &mut out,
+                api,
+                trait_def,
+                method,
+                &wrappers,
+                &ctx,
+                target_version,
+            )?;
             writeln!(out).unwrap();
         }
 
@@ -1148,10 +1062,14 @@ fn write_observable_helper(out: &mut String) {
           onSubscribe,
         }}: {{
           transport: TrUApiTransport;
-          ids: SubscriptionFrameIds;
+          ids: MethodIds;
           payload: Uint8Array;
           decodeItem: (payload: Uint8Array) => Item;
-          decodeInterrupt?: (payload: Uint8Array) => Reason;
+          // `undefined` signals a clean, error-free completion (the wire
+          // envelope's `Interrupt(None)`), distinct from not being able to
+          // observe a typed reason at all (this method has no domain error,
+          // and `decodeInterrupt` itself is omitted).
+          decodeInterrupt?: (payload: Uint8Array) => Reason | undefined;
           onSubscribe?: (subscription: Subscription) => {{ unsubscribe(): void }};
         }}): ObservableLike<Item, Reason> {{
           const observable: ObservableLike<Item, Reason> = {{
@@ -1196,6 +1114,12 @@ fn write_observable_helper(out: &mut String) {
                       reason = decodeInterrupt(payload);
                     }} catch (error) {{
                       fail(error, false);
+                      return;
+                    }}
+                    if (reason === undefined) {{
+                      closed = true;
+                      stopForwarding();
+                      observer.complete?.();
                       return;
                     }}
                     fail(new SubscriptionError("Subscription interrupted", {{ reason }}), false);
@@ -1370,6 +1294,13 @@ struct ResponseEmission {
     wire_type_ts: String,
     wire_codec_expr: String,
     inner_codec_expr: String,
+    /// `Some(version)` when `inner_type_ts` is a domain error's own versioned
+    /// wrapper (`S.CallErrorValue<T.Versioned{Name}>`) rather than its bare
+    /// type. The merged wire envelope (RFC 0028) always carries the bare
+    /// domain error under one shared version tag, so a caller decoding
+    /// through it must re-wrap a `Domain` outcome in `{ tag: "V{version}",
+    /// value }` to keep presenting this same public shape.
+    wrap_version: Option<u32>,
 }
 
 fn versioned_value_cast(wire_type: &str, inner_type: &str, version: u32) -> String {
@@ -1408,12 +1339,14 @@ fn emit_response(
                 wire_type_ts: format!("T.{}", versioned_wrapper_ts_name(wrapper_name)),
                 wire_codec_expr: format!("T.{}", versioned_wrapper_ts_name(wrapper_name)),
                 inner_codec_expr: "S._void".to_string(),
+                wrap_version: None,
             }),
             VersionedKind::Tuple(inner) => Ok(ResponseEmission {
                 inner_type_ts: ts_type_qualified(inner)?,
                 wire_type_ts: format!("T.{}", versioned_wrapper_ts_name(wrapper_name)),
                 wire_codec_expr: format!("T.{}", versioned_wrapper_ts_name(wrapper_name)),
                 inner_codec_expr: codec_expr(inner, true, ctx)?,
+                wrap_version: None,
             }),
         };
     }
@@ -1423,6 +1356,7 @@ fn emit_response(
         wire_type_ts: ts_type_qualified(ty)?,
         wire_codec_expr: codec_expr(ty, true, ctx)?,
         inner_codec_expr: codec_expr(ty, true, ctx)?,
+        wrap_version: None,
     })
 }
 
@@ -1449,6 +1383,7 @@ fn emit_error_response(
             wire_type_ts: format!("{{ tag: \"V{version}\"; value: {inner_type_ts} }}"),
             wire_codec_expr,
             inner_codec_expr,
+            wrap_version: Some(version),
         });
     }
 
@@ -1465,6 +1400,7 @@ fn emit_error_response(
         wire_type_ts: inner_type_ts,
         wire_codec_expr: inner_codec_expr.clone(),
         inner_codec_expr,
+        wrap_version: None,
     })
 }
 
@@ -1503,8 +1439,22 @@ fn versioned_result_codec_expr(version: u32, ok_codec: &str, err_codec: &str) ->
     indexed_versioned_codec_expr([(version, format!("S.Result({ok_codec}, {err_codec})"))])
 }
 
+/// The request wrapper name for a method's single param, if its param shape
+/// is a recognized versioned wrapper (payloadless and multi/raw-param
+/// methods have no such wrapper to name).
+fn request_wrapper_name<'a>(
+    method: &'a MethodDef,
+    wrappers: &'a HashMap<String, VersionedWrapper>,
+) -> Option<&'a str> {
+    if method.params.len() != 1 {
+        return None;
+    }
+    versioned_wrapper_for(&method.params[0].type_ref, wrappers).map(|(name, _)| name)
+}
+
 fn emit_method(
     out: &mut String,
+    api: &ApiDefinition,
     trait_def: &TraitDef,
     method: &MethodDef,
     wrappers: &HashMap<String, VersionedWrapper>,
@@ -1526,17 +1476,7 @@ fn emit_method(
             let is_handshake = trait_def.name == "System" && method.name == "handshake";
             let response = emit_response(ok, wrappers, ctx, wire_version)?;
             let error = emit_error_response(err, wrappers, ctx, wire_version)?;
-            let response_codec = match wire_version {
-                Some(version) => versioned_result_codec_expr(
-                    version,
-                    &response.inner_codec_expr,
-                    &error.inner_codec_expr,
-                )?,
-                None => format!(
-                    "S.Result({}, {})",
-                    response.wire_codec_expr, error.wire_codec_expr
-                ),
-            };
+            let envelope = method_envelope_name(api, request_wrapper_name(method, wrappers), None)?;
 
             let arg_decl = if is_handshake || payload.param_list.is_empty() {
                 String::new()
@@ -1544,9 +1484,9 @@ fn emit_method(
                 format!("request: {}", payload.inner_type_ts)
             };
             let request_expr = if is_handshake {
-                "{ codecVersion: this.transport.codecVersion }"
+                "{ codecVersion: this.transport.codecVersion }".to_string()
             } else {
-                &payload.value_expr
+                payload.value_expr.clone()
             };
 
             writedoc!(
@@ -1560,19 +1500,77 @@ fn emit_method(
                 err_type = error.inner_type_ts
             )
             .unwrap();
-            write_payload_field(
-                out,
-                "      ",
-                &payload.wire_codec_expr,
-                payload.wire_version,
-                request_expr,
-            );
-            let value_suffix = if wire_version.is_some() { ".value" } else { "" };
-            writeln!(
-                out,
-                "      decodeResponse: (payload) => {response_codec}.dec(payload){value_suffix},"
-            )
-            .unwrap();
+
+            match envelope {
+                Some(envelope_name) => {
+                    let version = wire_version.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "method `{}` resolved wire envelope `{envelope_name}` with no selected wire version",
+                            method.name
+                        )
+                    })?;
+                    let method_name = &method.name;
+                    writedoc!(
+                        out,
+                        "
+                              payload: T.{envelope_name}.enc({{ tag: \"V{version}\", value: {{ tag: \"Request\", value: {request_expr} }} }}),
+                              decodeResponse: (payload) => {{
+                                const envelope = T.{envelope_name}.dec(payload);
+                                if (envelope.value.tag !== \"Response\") {{
+                                  throw new Error(`{method_name}: expected Response direction, got ${{envelope.value.tag}}`);
+                                }}
+                                const result = envelope.value.value;
+                        "
+                    )
+                    .unwrap();
+                    match error.wrap_version {
+                        Some(err_version) => writedoc!(
+                            out,
+                            "
+                                    if (!result.success) {{
+                                      return {{
+                                        success: false,
+                                        value: result.value.tag === \"Domain\"
+                                          ? {{ tag: \"Domain\" as const, value: {{ tag: \"V{err_version}\", value: result.value.value }} }}
+                                          : result.value,
+                                      }};
+                                    }}
+                                    return result;
+                            "
+                        )
+                        .unwrap(),
+                        None => writeln!(out, "        return result;").unwrap(),
+                    }
+                    writeln!(out, "      }},").unwrap();
+                }
+                None => {
+                    let response_codec = match wire_version {
+                        Some(version) => versioned_result_codec_expr(
+                            version,
+                            &response.inner_codec_expr,
+                            &error.inner_codec_expr,
+                        )?,
+                        None => format!(
+                            "S.Result({}, {})",
+                            response.wire_codec_expr, error.wire_codec_expr
+                        ),
+                    };
+                    write_payload_field(
+                        out,
+                        "      ",
+                        &payload.wire_codec_expr,
+                        payload.wire_version,
+                        &request_expr,
+                    );
+                    let value_suffix = if wire_version.is_some() { ".value" } else { "" };
+                    writeln!(
+                        out,
+                        "      decodeResponse: (payload) => {response_codec}.dec(payload){value_suffix},"
+                    )
+                    .unwrap();
+                }
+            }
+
             writedoc!(
                 out,
                 "
@@ -1584,6 +1582,11 @@ fn emit_method(
         }
         (MethodKind::Subscription, ReturnType::Subscription(ty)) => {
             let response = emit_response(ty, wrappers, ctx, wire_version)?;
+            let envelope = method_envelope_name(
+                api,
+                request_wrapper_name(method, wrappers),
+                versioned_wrapper_for(ty, wrappers).map(|(name, _)| name),
+            )?;
             emit_subscribe_method(
                 out,
                 &ts_method_name,
@@ -1593,11 +1596,17 @@ fn emit_method(
                 response.inner_type_ts.clone(),
                 None,
                 wire_version,
+                envelope,
             )?;
         }
         (MethodKind::ResultSubscription, ReturnType::ResultSubscription { item, err }) => {
             let response = emit_response(item, wrappers, ctx, wire_version)?;
             let error = emit_error_response(err, wrappers, ctx, wire_version)?;
+            let envelope = method_envelope_name(
+                api,
+                request_wrapper_name(method, wrappers),
+                versioned_wrapper_for(item, wrappers).map(|(name, _)| name),
+            )?;
             emit_subscribe_method(
                 out,
                 &ts_method_name,
@@ -1607,6 +1616,7 @@ fn emit_method(
                 response.inner_type_ts.clone(),
                 Some(error),
                 wire_version,
+                envelope,
             )?;
         }
         (kind, return_type) => {
@@ -1667,6 +1677,7 @@ fn emit_host_initiated_field(
 
 fn emit_host_initiated_registration(
     out: &mut String,
+    api: &ApiDefinition,
     trait_def: &TraitDef,
     method: &MethodDef,
     wrappers: &HashMap<String, VersionedWrapper>,
@@ -1676,22 +1687,61 @@ fn emit_host_initiated_registration(
     let (payload, response, version) =
         emit_host_initiated_types(method, wrappers, ctx, target_version)?;
     let wire_const = wire_const_name(&trait_def.name, &method.name);
-    writedoc!(
-        out,
-        "
-            this.{field} = transport.registerHostInitiatedSubscription({{
-              ids: W.{wire_const},
-              decodeRequest: (payload) => {request_codec}.dec(payload).value,
-              encodeItem: (item) => {item_codec}.enc({{ tag: \"V{version}\", value: item }}),
-              interruptPayload: HOST_INITIATED_DECLINE_PAYLOAD,
-              bufferCapacity: HOST_INITIATED_BUFFER_CAPACITY,
-            }});
-        ",
-        field = host_registration_field(method),
-        request_codec = payload.wire_codec_expr,
-        item_codec = response.wire_codec_expr,
-    )
-    .unwrap();
+    let ReturnType::Subscription(item_ty) = &method.return_type else {
+        bail!(
+            "host-initiated method `{}` must return Subscription<T>",
+            method.name
+        );
+    };
+    let envelope = method_envelope_name(
+        api,
+        request_wrapper_name(method, wrappers),
+        versioned_wrapper_for(item_ty, wrappers).map(|(name, _)| name),
+    )?;
+
+    match envelope {
+        Some(envelope_name) => {
+            let method_name = &method.name;
+            writedoc!(
+                out,
+                "
+                    this.{field} = transport.registerHostInitiatedSubscription({{
+                      ids: W.{wire_const},
+                      decodeRequest: (payload) => {{
+                        const envelope = T.{envelope_name}.dec(payload);
+                        if (envelope.value.tag !== \"Start\") {{
+                          throw new Error(`{method_name}: expected Start direction, got ${{envelope.value.tag}}`);
+                        }}
+                        return envelope.value.value;
+                      }},
+                      encodeItem: (item) => T.{envelope_name}.enc({{ tag: \"V{version}\", value: {{ tag: \"Receive\", value: item }} }}),
+                      interruptPayload: HOST_INITIATED_DECLINE_PAYLOAD,
+                      bufferCapacity: HOST_INITIATED_BUFFER_CAPACITY,
+                    }});
+                ",
+                field = host_registration_field(method),
+            )
+            .unwrap();
+        }
+        None => {
+            writedoc!(
+                out,
+                "
+                    this.{field} = transport.registerHostInitiatedSubscription({{
+                      ids: W.{wire_const},
+                      decodeRequest: (payload) => {request_codec}.dec(payload).value,
+                      encodeItem: (item) => {item_codec}.enc({{ tag: \"V{version}\", value: item }}),
+                      interruptPayload: HOST_INITIATED_DECLINE_PAYLOAD,
+                      bufferCapacity: HOST_INITIATED_BUFFER_CAPACITY,
+                    }});
+                ",
+                field = host_registration_field(method),
+                request_codec = payload.wire_codec_expr,
+                item_codec = response.wire_codec_expr,
+            )
+            .unwrap();
+        }
+    }
     Ok(())
 }
 
@@ -1741,6 +1791,7 @@ fn emit_subscribe_method(
     item_type_ts: String,
     err: Option<ResponseEmission>,
     wire_version: Option<u32>,
+    envelope: Option<String>,
 ) -> Result<()> {
     let observable_args = match err.as_ref() {
         Some(err) => format!("{item_type_ts}, {}", err.inner_type_ts),
@@ -1768,37 +1819,93 @@ fn emit_subscribe_method(
         "
     )
     .unwrap();
-    write_payload_field(
-        out,
-        "      ",
-        &payload.wire_codec_expr,
-        payload.wire_version,
-        &payload.value_expr,
-    );
-    let item_value = if let Some(version) = wire_version {
-        versioned_value_expr(
-            &format!("{}.dec(payload)", response.wire_codec_expr),
-            &response.wire_type_ts,
-            &item_type_ts,
-            version,
-        )
-    } else {
-        format!("{}.dec(payload)", response.wire_codec_expr)
-    };
-    writeln!(out, "      decodeItem: (payload) => {item_value},").unwrap();
-    if let Some(err) = err {
-        let err_value = if let Some(version) = wire_version {
-            versioned_value_expr(
-                &format!("{}.dec(payload)", err.wire_codec_expr),
-                &err.wire_type_ts,
-                &err.inner_type_ts,
-                version,
+
+    match envelope {
+        Some(envelope_name) => {
+            let version = wire_version.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "method `{ts_method_name}` resolved wire envelope `{envelope_name}` with no selected wire version"
+                )
+            })?;
+            writedoc!(
+                out,
+                "
+                      payload: T.{envelope_name}.enc({{ tag: \"V{version}\", value: {{ tag: \"Start\", value: {value_expr} }} }}),
+                      decodeItem: (payload) => {{
+                        const envelope = T.{envelope_name}.dec(payload);
+                        if (envelope.value.tag !== \"Receive\") {{
+                          throw new Error(`{ts_method_name}: expected Receive direction, got ${{envelope.value.tag}}`);
+                        }}
+                        return envelope.value.value;
+                      }},
+                ",
+                value_expr = payload.value_expr,
             )
-        } else {
-            format!("{}.dec(payload)", err.wire_codec_expr)
-        };
-        writeln!(out, "      decodeInterrupt: (payload) => {err_value},").unwrap();
+            .unwrap();
+            if let Some(err) = &err {
+                writedoc!(
+                    out,
+                    "
+                          decodeInterrupt: (payload) => {{
+                            const envelope = T.{envelope_name}.dec(payload);
+                            if (envelope.value.tag !== \"Interrupt\") {{
+                              throw new Error(`{ts_method_name}: expected Interrupt direction, got ${{envelope.value.tag}}`);
+                            }}
+                            const reason = envelope.value.value;
+                            if (reason === undefined) return undefined;
+                    "
+                )
+                .unwrap();
+                match err.wrap_version {
+                    Some(err_version) => writedoc!(
+                        out,
+                        "
+                                return reason.tag === \"Domain\"
+                                  ? {{ tag: \"Domain\" as const, value: {{ tag: \"V{err_version}\", value: reason.value }} }}
+                                  : reason;
+                              }},
+                        "
+                    )
+                    .unwrap(),
+                    None => writeln!(out, "        return reason;\n      }},").unwrap(),
+                }
+            }
+        }
+        None => {
+            write_payload_field(
+                out,
+                "      ",
+                &payload.wire_codec_expr,
+                payload.wire_version,
+                &payload.value_expr,
+            );
+            let item_value = if let Some(version) = wire_version {
+                versioned_value_expr(
+                    &format!("{}.dec(payload)", response.wire_codec_expr),
+                    &response.wire_type_ts,
+                    &item_type_ts,
+                    version,
+                )
+            } else {
+                format!("{}.dec(payload)", response.wire_codec_expr)
+            };
+            writeln!(out, "      decodeItem: (payload) => {item_value},").unwrap();
+            if let Some(err) = err {
+                let err_value = if let Some(version) = wire_version {
+                    versioned_value_expr(
+                        &format!("{}.dec(payload)", err.wire_codec_expr),
+                        &err.wire_type_ts,
+                        &err.inner_type_ts,
+                        version,
+                    )
+                } else {
+                    format!("{}.dec(payload)", err.wire_codec_expr)
+                };
+                writeln!(out, "      decodeInterrupt: (payload) => {err_value},").unwrap();
+            }
+        }
     }
+
     writedoc!(
         out,
         "
@@ -2566,16 +2673,9 @@ fn to_camel_case(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn request_wire(request_id: Option<u8>) -> WireAttrs {
+    fn wire_attrs(id: Option<u8>) -> WireAttrs {
         WireAttrs {
-            request_id,
-            ..WireAttrs::default()
-        }
-    }
-
-    fn subscription_wire(start_id: Option<u8>) -> WireAttrs {
-        WireAttrs {
-            start_id,
+            id,
             ..WireAttrs::default()
         }
     }
@@ -2610,7 +2710,7 @@ mod tests {
                 ok: TypeRef::Unit,
                 err: TypeRef::Unit,
             },
-            wire: request_wire(wire_id),
+            wire: wire_attrs(wire_id),
             docs: None,
         }
     }
@@ -2621,7 +2721,7 @@ mod tests {
             kind: MethodKind::Subscription,
             params: Vec::new(),
             return_type: ReturnType::Subscription(TypeRef::Unit),
-            wire: subscription_wire(wire_id),
+            wire: wire_attrs(wire_id),
             docs: None,
         }
     }
@@ -2665,7 +2765,7 @@ mod tests {
                 ok: named_type(response),
                 err: named_type(error),
             },
-            wire: request_wire(wire_id),
+            wire: wire_attrs(wire_id),
             docs: None,
         }
     }
@@ -2676,7 +2776,7 @@ mod tests {
             kind: MethodKind::Subscription,
             params: Vec::new(),
             return_type: ReturnType::Subscription(named_type(item)),
-            wire: subscription_wire(wire_id),
+            wire: wire_attrs(wire_id),
             docs: None,
         }
     }
@@ -2861,10 +2961,9 @@ mod tests {
 
         assert!(source.contains("export const EXAMPLE_STREAM = {"));
         assert!(source.contains("  trait: 200,"));
-        assert!(source.contains("  start: 2,"));
-        assert!(source.contains("  receive: 5,"));
+        assert!(source.contains("  method: 2,"));
         assert!(source.contains("export const EXAMPLE_LATER = {"));
-        assert!(source.contains("  request: 10,"));
+        assert!(source.contains("  method: 10,"));
         assert!(
             source
                 .find("export const EXAMPLE_STREAM")
@@ -2880,13 +2979,13 @@ mod tests {
         let err = generate_wire_table(
             &api(vec![
                 request_method("first", Some(2)),
-                subscription_method("second", Some(3)),
+                subscription_method("second", Some(2)),
             ]),
             2,
         )
         .expect_err("duplicate ids must error");
 
-        assert!(err.to_string().contains("wire id (200, 3) reused"));
+        assert!(err.to_string().contains("wire id (200, 2) reused"));
     }
 
     /// Trait 255 is reserved for protocol errors, so no API trait may declare
@@ -2913,8 +3012,7 @@ mod tests {
     /// would quietly cost every trait its last method slot.
     #[test]
     fn generate_wire_table_allows_method_id_255_outside_the_reserved_trait() {
-        let mut method = request_method("explicit_request", Some(255));
-        method.wire.response_id = Some(1);
+        let method = request_method("explicit_request", Some(255));
 
         generate_wire_table(&api(vec![method]), 2).expect("(200, 255) is an ordinary address");
     }
@@ -2925,14 +3023,13 @@ mod tests {
     /// considered, which is what makes that hold.
     #[test]
     fn generate_wire_table_rejects_the_reserved_trait_id_for_filtered_methods() {
-        let mut future = request_method_with_wrappers(
+        let future = request_method_with_wrappers(
             "future",
             Some(0),
             "FutureRequest",
             "FutureResponse",
             "FutureError",
         );
-        future.wire.response_id = Some(1);
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
@@ -2963,54 +3060,20 @@ mod tests {
         let err = generate_wire_table(&api(vec![request_method("missing", None)]), 2)
             .expect_err("missing wire id must error");
 
-        assert!(err.to_string().contains("missing #[wire(request_id = N)]"));
+        assert!(err.to_string().contains("missing #[wire(id = N)]"));
     }
 
     #[test]
-    fn generate_wire_table_uses_explicit_overrides() {
-        let mut request = request_method("custom_request", Some(2));
-        request.wire.response_id = Some(9);
-        let mut subscription = subscription_method("custom_stream", Some(20));
-        subscription.wire.stop_id = Some(30);
-        subscription.wire.interrupt_id = Some(31);
-        subscription.wire.receive_id = Some(32);
+    fn generate_wire_table_emits_one_id_per_method_regardless_of_kind() {
+        let request = request_method("custom_request", Some(2));
+        let subscription = subscription_method("custom_stream", Some(20));
 
         let source = generate_wire_table(&api(vec![request, subscription]), 2).expect("wire table");
 
         assert!(source.contains("export const EXAMPLE_CUSTOM_REQUEST = {"));
-        assert!(source.contains("  request: 2,"));
-        assert!(source.contains("  response: 9,"));
+        assert!(source.contains("  method: 2,"));
         assert!(source.contains("export const EXAMPLE_CUSTOM_STREAM = {"));
-        assert!(source.contains("  start: 20,"));
-        assert!(source.contains("  stop: 30,"));
-        assert!(source.contains("  interrupt: 31,"));
-        assert!(source.contains("  receive: 32,"));
-    }
-
-    #[test]
-    fn generate_wire_table_rejects_invalid_attrs_by_method_kind() {
-        let mut request = request_method("bad_request", Some(2));
-        request.wire.start_id = Some(4);
-        let err = generate_wire_table(&api(vec![request]), 2)
-            .expect_err("request with start id must error");
-        assert!(
-            err.to_string()
-                .contains("must not use subscription wire ids")
-        );
-
-        let mut subscription = subscription_method("bad_stream", Some(10));
-        subscription.wire.request_id = Some(12);
-        let err = generate_wire_table(&api(vec![subscription]), 2)
-            .expect_err("subscription with request id must error");
-        assert!(err.to_string().contains("must not use request wire ids"));
-    }
-
-    #[test]
-    fn generate_wire_table_rejects_inferred_overflow() {
-        let err = generate_wire_table(&api(vec![subscription_method("overflow", Some(253))]), 2)
-            .expect_err("overflow must error");
-
-        assert!(err.to_string().contains("wire id overflow"));
+        assert!(source.contains("  method: 20,"));
     }
 
     /// Method ids are scoped per trait: two traits may both use method id 0.
@@ -3133,7 +3196,7 @@ mod tests {
         let source = generate_wire_table(&api, 1).expect("generate wire table");
 
         assert!(source.contains("export const EXAMPLE_LEGACY = {"));
-        assert!(source.contains("  request: 2,"));
+        assert!(source.contains("  method: 2,"));
         assert!(!source.contains("FUTURE"));
         assert!(!source.contains("FUTURE_STREAM"));
     }
@@ -3214,7 +3277,7 @@ mod tests {
                         },
                         err: TypeRef::Unit,
                     },
-                    wire: request_wire(Some(2)),
+                    wire: wire_attrs(Some(2)),
                     docs: None,
                 }],
                 docs: None,
@@ -3259,7 +3322,7 @@ mod tests {
                             ok: TypeRef::Unit,
                             err: named_type("ExampleError"),
                         },
-                        wire: request_wire(Some(2)),
+                        wire: wire_attrs(Some(2)),
                         docs: None,
                     },
                     MethodDef {
@@ -3273,7 +3336,7 @@ mod tests {
                             ok: TypeRef::Unit,
                             err: named_type("ExampleError"),
                         },
-                        wire: request_wire(Some(4)),
+                        wire: wire_attrs(Some(4)),
                         docs: None,
                     },
                 ],
@@ -3332,7 +3395,7 @@ mod tests {
                         },
                         err: TypeRef::Unit,
                     },
-                    wire: request_wire(Some(2)),
+                    wire: wire_attrs(Some(2)),
                     docs: None,
                 }],
                 docs: None,
@@ -3379,7 +3442,7 @@ mod tests {
                         },
                         err: TypeRef::Unit,
                     },
-                    wire: request_wire(Some(2)),
+                    wire: wire_attrs(Some(2)),
                     docs: None,
                 }],
                 docs: None,

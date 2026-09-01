@@ -221,7 +221,56 @@ fn golden_dispatcher_and_wire_table() {
                 dump.display()
             );
         }
+        if output_name == "dispatcher.rs" {
+            // Every real method must resolve to the nested-envelope codegen
+            // path (RFC 0028): these markers belong only to the legacy
+            // (pre-RFC-0028) emission path, kept solely for truapi-codegen's
+            // own synthetic unit-test fixtures whose request/item wrapper
+            // names don't follow the `{Base}Request`/`{Base}Item` convention
+            // (see `envelope_type_name`). A real method's request or item
+            // wrapper always follows that convention, so a hit here means
+            // one silently fell through to the legacy path instead of
+            // failing loudly — most likely a renamed wrapper type no longer
+            // matching `envelope_type_name`'s expectations.
+            for marker in [
+                "RequestFrameIds",
+                "SubscriptionFrameIds",
+                "encode_versioned_ok_payload",
+                "encode_versioned_err_payload",
+                "encode_versioned_unit_ok_payload",
+                "encode_versioned_interrupt_payload",
+            ] {
+                assert!(
+                    !actual.contains(marker),
+                    "generated dispatcher.rs contains `{marker}`, a legacy (pre-RFC-0028) \
+                     codegen marker; every real method should resolve to the nested-envelope \
+                     path instead — check which method's request/item wrapper name stopped \
+                     matching `envelope_type_name`'s `{{Base}}Request`/`{{Base}}Item` convention"
+                );
+            }
+        }
     }
+
+    // `ts.rs` re-implements the same envelope/legacy fork independently of
+    // `rust/dispatcher.rs` (its own `envelope_type_name`/`method_envelope_name`),
+    // so a real method regressing to the legacy path there would slip past the
+    // Rust-side check above undetected. `S.indexedTaggedUnion(` is the codec
+    // shape the legacy fallback inlines directly into a method body
+    // (`versioned_result_codec_expr`/`write_payload_field`); the nested-envelope
+    // path only ever references a pre-built `T.{Method}Version` codec by name,
+    // so this string never appears in `client.ts` for a real method — it does
+    // appear throughout `types.ts`, where versioned wrapper *type* definitions
+    // legitimately use the same combinator, which is why only `client.ts` is
+    // scanned here.
+    let client_ts = fs::read_to_string(tempdir.path().join("ts").join("client.ts"))
+        .unwrap_or_else(|e| panic!("read generated client.ts: {e}"));
+    assert!(
+        !client_ts.contains("indexedTaggedUnion"),
+        "generated client.ts contains `S.indexedTaggedUnion(`, a legacy (pre-RFC-0028) \
+         codegen marker; every real method should resolve to the nested-envelope path \
+         instead — check which method's request/item wrapper name stopped matching \
+         `method_envelope_name`'s expectations on the TS side"
+    );
 }
 
 /// Idempotence guard at the integration level: running the binary twice

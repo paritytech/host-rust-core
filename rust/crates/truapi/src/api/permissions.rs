@@ -18,7 +18,7 @@ pub trait Permissions: Send + Sync {
     /// assert(result.isOk(), "requestDevicePermission failed:", result);
     /// console.log("device permission result:", result.value);
     /// ```
-    #[wire(request_id = 0)]
+    #[wire(id = 0)]
     async fn request_device_permission(
         &self,
         cx: &CallContext,
@@ -34,7 +34,7 @@ pub trait Permissions: Send + Sync {
     /// assert(result.isOk(), "requestRemotePermission failed:", result);
     /// console.log("remote permission result:", result.value);
     /// ```
-    #[wire(request_id = 2)]
+    #[wire(id = 1)]
     async fn request_remote_permission(
         &self,
         cx: &CallContext,

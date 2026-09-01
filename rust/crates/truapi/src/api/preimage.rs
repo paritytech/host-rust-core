@@ -27,7 +27,7 @@ pub trait Preimage: Send + Sync {
     /// assert(item.value === value, "preimage lookup returned the wrong value:", item);
     /// console.log("preimage lookup received:", item);
     /// ```
-    #[wire(start_id = 0)]
+    #[wire(id = 0)]
     async fn lookup_subscribe(
         &self,
         _cx: &CallContext,
@@ -44,7 +44,7 @@ pub trait Preimage: Send + Sync {
     /// assert(result.isOk(), "submit failed:", result);
     /// console.log("preimage submitted:", result.value);
     /// ```
-    #[wire(request_id = 4)]
+    #[wire(id = 1)]
     async fn submit(
         &self,
         _cx: &CallContext,
