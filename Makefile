@@ -139,7 +139,7 @@ UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-check
 
 uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
-	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
+	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge,native-pvm-gpu
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -439,7 +439,7 @@ xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulato
 	rustup target add $(XCFRAMEWORK_TARGETS)
 	for target in $(XCFRAMEWORK_TARGETS); do \
 		IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \
-			$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge --target $$target || exit 1; \
+			$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge,native-pvm-gpu --target $$target || exit 1; \
 	done
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
