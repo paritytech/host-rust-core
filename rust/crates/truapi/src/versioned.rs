@@ -38,6 +38,9 @@ pub trait FromLatest: Versioned {
 /// Direction tag for a request/response method: which half of the exchange
 /// this frame carries. Wrapped inside a method's version enum, so a method's
 /// version history is the one place its shape can change.
+// Not yet referenced outside this module's own tests: the generated code that
+// wraps every method's version enum in this lands in a separate stacked PR.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub(crate) enum Request<Req, Res> {
     /// Product-to-host call.
@@ -49,6 +52,7 @@ pub(crate) enum Request<Req, Res> {
 /// Direction tag for a subscription method: which half of the four-frame
 /// exchange this frame carries. `Stop` carries no payload; `Interrupt` carries
 /// `None` for natural stream completion or `Some(err)` for a failure.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub(crate) enum Subscription<Start, Item, Err> {
     /// Product-to-host subscription request.
