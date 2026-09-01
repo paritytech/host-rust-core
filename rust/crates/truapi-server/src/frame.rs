@@ -20,7 +20,7 @@ use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
 use truapi::CallError;
 use truapi::versioned::{FromLatest, IntoLatest, Versioned};
 
-use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds, WIRE_TABLE, WireKind};
+use crate::generated::wire_table::{MethodIds, WIRE_TABLE, WireKind};
 
 /// Top-level wire message. Encoded as `[requestId][trait][method][bytes]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +141,71 @@ pub fn encode_versioned_interrupt_payload<T: Encode>(value: T, version: u8) -> V
     out
 }
 
+/// Every nested wire envelope shares this fixed shape once its own
+/// `[version]` byte is stripped: a `truapi::versioned::Subscription`
+/// direction tag (`Start`=0, `Stop`=1, `Interrupt`=2, `Receive`=3), declared
+/// in that order in `truapi::versioned` — followed by whatever bytes that
+/// direction carries. These constants and the helpers below let runtime code
+/// that has no concrete `{Method}Version` type in scope (the framework
+/// dispatcher, the host-initiated subscription manager) still construct and
+/// inspect that structure. `Start` has no constant of its own: nothing needs
+/// to detect it by raw byte, since a `Start` frame is always decoded through
+/// the concrete `{Method}Version` type by the generated per-method handler.
+const SUBSCRIPTION_TAG_STOP: u8 = 1;
+const SUBSCRIPTION_TAG_INTERRUPT: u8 = 2;
+const SUBSCRIPTION_TAG_RECEIVE: u8 = 3;
+
+/// Peek a subscription frame's direction tag (the second byte, right after
+/// the envelope's own version tag) without needing the concrete
+/// `Start`/`Item`/`Err` types.
+pub fn subscription_direction_tag(bytes: &[u8]) -> Option<u8> {
+    bytes.get(1).copied()
+}
+
+/// Whether a subscription frame's direction tag is `Stop`.
+pub fn is_subscription_stop(bytes: &[u8]) -> bool {
+    subscription_direction_tag(bytes) == Some(SUBSCRIPTION_TAG_STOP)
+}
+
+/// Whether a subscription frame's direction tag is `Receive`.
+pub fn is_subscription_receive(bytes: &[u8]) -> bool {
+    subscription_direction_tag(bytes) == Some(SUBSCRIPTION_TAG_RECEIVE)
+}
+
+/// Whether a subscription frame's direction tag is `Interrupt`.
+pub fn is_subscription_interrupt(bytes: &[u8]) -> bool {
+    subscription_direction_tag(bytes) == Some(SUBSCRIPTION_TAG_INTERRUPT)
+}
+
+/// Split a subscription envelope frame into its direction tag and the
+/// direction's own inner bytes (byte 2 onward) — everything after the
+/// envelope's `[version, direction]` prefix. When the direction wraps a
+/// versioned type (e.g. a method's item wrapper), that type's own leading
+/// version tag is the first of these inner bytes and decodes directly; the
+/// outer envelope's version byte (byte 0) is redundant with it by
+/// construction and is discarded here, not reinserted. `None` if `bytes` is
+/// shorter than the two-byte prefix every envelope carries.
+pub fn split_subscription_direction(bytes: &[u8]) -> Option<(u8, &[u8])> {
+    let direction = *bytes.get(1)?;
+    Some((direction, &bytes[2..]))
+}
+
+/// Encode `{version_type}::V{version}(Subscription::Interrupt(None))` — a
+/// subscription's natural (error-free) completion — without needing the
+/// concrete `{version_type}`: `Option::None` always encodes as a single
+/// `0` byte, and `Interrupt`'s own tag position is fixed, so the three bytes
+/// are fully determined by `version` alone.
+pub fn encode_envelope_clean_interrupt(version: u8) -> Vec<u8> {
+    vec![version_index(version), SUBSCRIPTION_TAG_INTERRUPT, 0]
+}
+
+/// Encode `{version_type}::V{version}(Subscription::Stop)` — a subscription
+/// cancellation — without needing the concrete `{version_type}`: `Stop`
+/// carries no payload, so the two bytes are fully determined by `version`.
+pub fn encode_envelope_stop(version: u8) -> Vec<u8> {
+    vec![version_index(version), SUBSCRIPTION_TAG_STOP]
+}
+
 impl Encode for ProtocolMessage {
     fn encode_to<T: Output + ?Sized>(&self, dest: &mut T) {
         self.request_id.encode_to(dest);
@@ -203,10 +268,10 @@ pub struct Payload {
     pub value: Vec<u8>,
 }
 
-/// Request discriminants for a request method, by name. Walks the generated
+/// Wire discriminants for a request method, by name. Walks the generated
 /// [`WIRE_TABLE`]; intended for tests and embedders that route by method
 /// string rather than holding the generated const.
-pub fn request_ids(method: &str) -> Option<RequestFrameIds> {
+pub fn request_ids(method: &str) -> Option<MethodIds> {
     WIRE_TABLE
         .iter()
         .find_map(|entry| match (&entry.kind, entry.method == method) {
@@ -215,9 +280,9 @@ pub fn request_ids(method: &str) -> Option<RequestFrameIds> {
         })
 }
 
-/// Subscription discriminants for a subscription method, by name. Walks the
+/// Wire discriminants for a subscription method, by name. Walks the
 /// generated [`WIRE_TABLE`].
-pub fn subscription_ids(method: &str) -> Option<SubscriptionFrameIds> {
+pub fn subscription_ids(method: &str) -> Option<MethodIds> {
     WIRE_TABLE
         .iter()
         .find_map(|entry| match (&entry.kind, entry.method == method) {
@@ -378,32 +443,30 @@ mod tests {
         }
     }
 
-    /// All four subscription phases round-trip through the codec. Catches a
-    /// regression where `Decode` mishandles a frame whose payload is empty for
-    /// `_stop` / `_interrupt` (no inner data) but non-empty for `_start` /
-    /// `_receive`. The ids are the `account_connection_status_subscribe`
-    /// quartet (trait 194, methods 0..=3).
+    /// All four subscription phases share one `(trait, method)` address now
+    /// (direction lives in the payload) and still round-trip through the
+    /// codec. Catches a regression where `Decode` mishandles a frame whose
+    /// payload is a bare `[version, Stop]` pair (no further inner data) but
+    /// carries more for `Start`/`Interrupt`/`Receive`. The address is
+    /// `account_connection_status_subscribe`'s (trait 194, method 0).
     #[test]
     fn subscription_phases_round_trip_through_codec() {
-        let cases: &[(u8, Vec<u8>)] = &[
-            (0, vec![0x00, 0xaa]),             // start
-            (1, Vec::new()),                   // stop
-            (2, Vec::new()),                   // interrupt
-            (3, vec![0x01, 0x02, 0x03, 0x04]), // receive
+        let cases: &[Vec<u8>] = &[
+            vec![0x00, 0x00, 0xaa],             // start: [version, Start, item bytes]
+            vec![0x00, 0x01],                   // stop: [version, Stop]
+            vec![0x00, 0x02, 0x00],             // interrupt: [version, Interrupt, None]
+            vec![0x00, 0x03, 0x01, 0x02, 0x03], // receive: [version, Receive, item bytes]
         ];
-        for (method_id, value) in cases {
-            let msg = build(194, *method_id, value.clone());
+        for value in cases {
+            let msg = build(194, 0, value.clone());
             let bytes = msg.encode();
             assert_eq!(
                 bytes,
-                expected_wire(194, *method_id, value),
-                "encode mismatch for method id {method_id}"
+                expected_wire(194, 0, value),
+                "encode mismatch for payload {value:?}"
             );
             let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
-            assert_eq!(
-                decoded, msg,
-                "round-trip mismatch for method id {method_id}"
-            );
+            assert_eq!(decoded, msg, "round-trip mismatch for payload {value:?}");
         }
     }
 
@@ -413,25 +476,57 @@ mod tests {
     fn id_helpers_resolve_known_methods() {
         let handshake = request_ids("system_handshake").expect("known request method");
         assert_eq!(handshake.trait_id, 193);
-        assert_eq!(handshake.request_id, 0);
-        assert_eq!(handshake.response_id, 1);
+        assert_eq!(handshake.method_id, 0);
 
         let get_account = request_ids("account_get_account").expect("known request method");
         assert_eq!(get_account.trait_id, 194);
-        assert_eq!(get_account.request_id, 4);
+        assert_eq!(get_account.method_id, 1);
 
         let sub =
             subscription_ids("account_connection_status_subscribe").expect("known subscription");
         assert_eq!(sub.trait_id, 194);
-        assert_eq!(sub.start_id, 0);
-        assert_eq!(sub.stop_id, 1);
-        assert_eq!(sub.interrupt_id, 2);
-        assert_eq!(sub.receive_id, 3);
+        assert_eq!(sub.method_id, 0);
 
         // A request method is not a subscription and vice versa.
         assert!(subscription_ids("system_handshake").is_none());
         assert!(request_ids("account_connection_status_subscribe").is_none());
         assert!(request_ids("not_a_method").is_none());
+    }
+
+    #[test]
+    fn subscription_direction_helpers_read_the_second_byte() {
+        assert!(is_subscription_stop(&[0, 1]));
+        assert!(!is_subscription_stop(&[0, 0]));
+        assert!(is_subscription_receive(&[0, 3, 0xaa]));
+        assert!(is_subscription_interrupt(&[0, 2, 0]));
+        assert_eq!(subscription_direction_tag(&[5, 2]), Some(2));
+        assert_eq!(subscription_direction_tag(&[5]), None);
+    }
+
+    #[test]
+    fn split_subscription_direction_drops_the_two_byte_envelope_prefix() {
+        assert_eq!(
+            split_subscription_direction(&[0, 3, 0xaa, 0xbb]),
+            Some((3, [0xaa, 0xbb].as_slice()))
+        );
+        assert_eq!(
+            split_subscription_direction(&[0, 1]),
+            Some((1, [].as_slice()))
+        );
+        assert_eq!(split_subscription_direction(&[0]), None);
+        assert_eq!(split_subscription_direction(&[]), None);
+    }
+
+    #[test]
+    fn encode_envelope_clean_interrupt_is_version_then_interrupt_then_none() {
+        assert_eq!(encode_envelope_clean_interrupt(1), vec![0, 2, 0]);
+        assert_eq!(encode_envelope_clean_interrupt(2), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn encode_envelope_stop_is_version_then_stop() {
+        assert_eq!(encode_envelope_stop(1), vec![0, 1]);
+        assert_eq!(encode_envelope_stop(2), vec![1, 1]);
     }
 
     /// Genuine zero-byte payload (e.g. unit-typed response). `Decode` must

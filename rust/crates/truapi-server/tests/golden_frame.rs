@@ -13,17 +13,18 @@
 //!
 //! The frame encodes:
 //!   requestId = "p:1"
-//!   payload   = account_get_account_request,
-//!               inner = HostAccountGetRequest::V1(ProductAccountId {
+//!   payload   = account_get_account,
+//!               inner = HostAccountGetVersion::V1(Request::Request(ProductAccountId {
 //!                   dot_ns_identifier: "foo",
 //!                   derivation_index: DerivationIndex::Index(0),
-//!               })
+//!               }))
 //!
-//! On the wire (16 bytes):
+//! On the wire (17 bytes):
 //!   [0c 70 3a 31]                      requestId = compact-len(3) + "p:1"
 //!   [c2]                               trait discriminant 194 = account
-//!   [04]                               method discriminant 4 = get_account request
-//!   [00]                               versioned wrapper variant V1
+//!   [01]                               method discriminant 1 = get_account
+//!   [00]                               envelope version V1
+//!   [00]                               direction tag: Request
 //!   [0c 66 6f 6f]                      compact-len(3) + "foo"
 //!   [00]                               DerivationIndex variant Index
 //!   [00 00 00 00]                      u32 = 0
@@ -35,25 +36,27 @@
 
 use parity_scale_codec::{Decode, Encode};
 use truapi::v01;
-use truapi::versioned::account::HostAccountGetRequest;
+use truapi::versioned::Request as RequestEnvelope;
+use truapi::versioned::account::HostAccountGetVersion;
 use truapi_server::frame::{Payload, ProtocolMessage};
 use truapi_server::generated::wire_table;
 
 const GOLDEN: &[u8] = include_bytes!("snapshots/golden-account-get.bin");
 
-/// Payload byte count of the golden frame: one versioned-wrapper variant byte,
-/// a compact-length-prefixed 3-byte identifier, one `DerivationIndex` variant
-/// byte, and a `u32`. Spelled out term by term rather than measured from the
-/// codec, so a layout change has to move this number by hand.
-const GOLDEN_PAYLOAD_LEN: usize = 1 + 1 + 3 + 1 + 4;
+/// Payload byte count of the golden frame: the envelope's `[version,
+/// direction]` prefix, a compact-length-prefixed 3-byte identifier, one
+/// `DerivationIndex` variant byte, and a `u32`. Spelled out term by term
+/// rather than measured from the codec, so a layout change has to move this
+/// number by hand.
+const GOLDEN_PAYLOAD_LEN: usize = 2 + 1 + 3 + 1 + 4;
 
-fn expected_request() -> HostAccountGetRequest {
-    HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+fn expected_envelope() -> HostAccountGetVersion {
+    HostAccountGetVersion::V1(RequestEnvelope::Request(v01::HostAccountGetRequest {
         product_account_id: v01::ProductAccountId {
             dot_ns_identifier: "foo".to_string(),
             derivation_index: v01::DerivationIndex::Index(0),
         },
-    })
+    }))
 }
 
 #[test]
@@ -65,8 +68,8 @@ fn golden_account_get_frame_decodes_to_expected_message() {
         request_id: "p:1".to_string(),
         payload: Payload {
             trait_id: wire_table::ACCOUNT_GET_ACCOUNT.trait_id,
-            method_id: wire_table::ACCOUNT_GET_ACCOUNT.request_id,
-            value: expected_request().encode(),
+            method_id: wire_table::ACCOUNT_GET_ACCOUNT.method_id,
+            value: expected_envelope().encode(),
         },
     };
     assert_eq!(decoded, expected);
@@ -82,9 +85,9 @@ fn golden_account_get_payload_decodes_as_the_typed_request() {
          built against an older @parity/truapi now fails to decode"
     );
 
-    let request = HostAccountGetRequest::decode(&mut &decoded.payload.value[..])
-        .expect("golden payload must decode as the typed request");
-    assert_eq!(request, expected_request());
+    let envelope = HostAccountGetVersion::decode(&mut &decoded.payload.value[..])
+        .expect("golden payload must decode as the typed envelope");
+    assert_eq!(envelope, expected_envelope());
 }
 
 #[test]

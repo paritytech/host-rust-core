@@ -182,12 +182,6 @@ mod tests {
     use super::*;
     use parity_scale_codec::Encode;
     use truapi::v01;
-    use truapi::versioned::local_storage::{
-        HostLocalStorageClearRequest, HostLocalStorageReadRequest, HostLocalStorageWriteRequest,
-    };
-    use truapi::versioned::notifications::HostPushNotificationRequest;
-    use truapi::versioned::permissions::RemotePermissionRequest;
-    use truapi::versioned::system::HostFeatureSupportedRequest;
 
     use crate::frame::{Payload, request_ids, subscription_ids};
     use crate::test_support::{StubPlatform, runtime_config, test_spawner};
@@ -201,16 +195,19 @@ mod tests {
             product,
             test_spawner(),
         );
-        let request = HostFeatureSupportedRequest::V1(v01::HostFeatureSupportedRequest::Chain {
+        let request = v01::HostFeatureSupportedRequest::Chain {
             genesis_hash: vec![0u8; 32],
-        });
+        };
         let ids = request_ids("system_feature_supported").expect("known request method");
+        // [version=0, direction=Request=0][request bytes]
+        let mut value = vec![0x00, 0x00];
+        value.extend(request.encode());
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
                 trait_id: ids.trait_id,
-                method_id: ids.request_id,
-                value: request.encode(),
+                method_id: ids.method_id,
+                value,
             },
         };
         let encoded = frame.encode();
@@ -219,24 +216,26 @@ mod tests {
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
         assert_eq!(response.payload.trait_id, ids.trait_id);
-        assert_eq!(response.payload.method_id, ids.response_id);
-        // Wire payload is `Result<Ok, Err>`-shaped:
-        // [Ok disc=0x00][V1 variant 0x00][supported=1]
-        assert_eq!(response.payload.value, vec![0x00, 0x00, 0x01]);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        // [version=0, direction=Response=1][Ok disc=0x00][supported=1]
+        assert_eq!(response.payload.value, vec![0x00, 0x01, 0x00, 0x01]);
     }
 
     /// Drive a request frame through `TrUApiCore::receive_from_product`,
-    /// decode the response envelope, and return its payload bytes (without
-    /// the wrapping ProtocolMessage). Shared by the runtime-delegation
-    /// tests below.
+    /// decode the response envelope, and return the `Result<Res,
+    /// CallError<Err>>` bytes (the envelope's `[version, direction]` prefix
+    /// stripped). Shared by the runtime-delegation tests below.
     fn run_request(core: &TrUApiCore, method: &str, request_bytes: Vec<u8>) -> Vec<u8> {
         let ids = request_ids(method).expect("known request method");
+        // [version=0, direction=Request=0][request bytes]
+        let mut value = vec![0x00, 0x00];
+        value.extend(request_bytes);
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
                 trait_id: ids.trait_id,
-                method_id: ids.request_id,
-                value: request_bytes,
+                method_id: ids.method_id,
+                value,
             },
         };
         let response_bytes =
@@ -245,8 +244,13 @@ mod tests {
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
         assert_eq!(response.payload.trait_id, ids.trait_id);
-        assert_eq!(response.payload.method_id, ids.response_id);
-        response.payload.value
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            &response.payload.value[..2],
+            &[0x00, 0x01],
+            "expected version=V1, direction=Response"
+        );
+        response.payload.value[2..].to_vec()
     }
 
     fn make_core() -> TrUApiCore {
@@ -262,72 +266,68 @@ mod tests {
     #[test]
     fn local_storage_read_round_trips_none() {
         let core = make_core();
-        let request = HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest {
+        let request = v01::HostLocalStorageReadRequest {
             key: "missing".into(),
-        });
+        };
         let payload = run_request(&core, "local_storage_read", request.encode());
-        // Ok disc 0x00, V1 variant 0x00, Option::None = 0x00.
-        assert_eq!(payload, vec![0x00, 0x00, 0x00]);
+        // Ok disc 0x00, Option::None = 0x00.
+        assert_eq!(payload, vec![0x00, 0x00]);
     }
 
     #[test]
     fn local_storage_write_round_trips_unit_ok() {
         let core = make_core();
-        let request = HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest {
+        let request = v01::HostLocalStorageWriteRequest {
             key: "k".into(),
             value: vec![1, 2, 3],
-        });
+        };
         let payload = run_request(&core, "local_storage_write", request.encode());
-        // Ok disc 0x00, V1 variant 0x00.
-        assert_eq!(payload, vec![0x00, 0x00]);
+        // Ok disc 0x00.
+        assert_eq!(payload, vec![0x00]);
     }
 
     #[test]
     fn local_storage_clear_round_trips_unit_ok() {
         let core = make_core();
-        let request =
-            HostLocalStorageClearRequest::V1(v01::HostLocalStorageClearRequest { key: "k".into() });
+        let request = v01::HostLocalStorageClearRequest { key: "k".into() };
         let payload = run_request(&core, "local_storage_clear", request.encode());
-        // Ok disc 0x00, V1 variant 0x00.
-        assert_eq!(payload, vec![0x00, 0x00]);
+        // Ok disc 0x00.
+        assert_eq!(payload, vec![0x00]);
     }
 
     #[test]
     fn send_push_notification_delegates_to_platform() {
         let core = make_core();
-        let request = HostPushNotificationRequest::V1(v01::HostPushNotificationRequest {
+        let request = v01::HostPushNotificationRequest {
             text: "hi".into(),
             deeplink: None,
             scheduled_at: None,
-        });
+        };
         let payload = run_request(
             &core,
             "notifications_send_push_notification",
             request.encode(),
         );
-        // Ok disc 0x00, V1 variant 0x00, notification id 0.
+        // Ok disc 0x00, notification id 0.
         let mut expected = vec![0x00u8];
-        truapi::versioned::notifications::HostPushNotificationResponse::V1(
-            v01::HostPushNotificationResponse { id: 0 },
-        )
-        .encode_to(&mut expected);
+        v01::HostPushNotificationResponse { id: 0 }.encode_to(&mut expected);
         assert_eq!(payload, expected);
     }
 
     #[test]
     fn request_remote_permission_round_trips_granted() {
         let core = make_core();
-        let request = RemotePermissionRequest::V1(v01::RemotePermissionRequest {
+        let request = v01::RemotePermissionRequest {
             permission: v01::RemotePermission::ChainSubmit,
-        });
+        };
         let payload = run_request(
             &core,
             "permissions_request_remote_permission",
             request.encode(),
         );
-        // Stub permissions grants every request. Wire is Ok disc 0x00, V1
-        // variant 0x00, granted=1.
-        assert_eq!(payload, vec![0x00, 0x00, 0x01]);
+        // Stub permissions grants every request. Wire is Ok disc 0x00,
+        // granted=1.
+        assert_eq!(payload, vec![0x00, 0x01]);
     }
 
     /// `connection_status_subscribe` produces a stream whose first item is
@@ -363,8 +363,9 @@ mod tests {
             request_id: "p:1".into(),
             payload: Payload {
                 trait_id: sub_ids.trait_id,
-                method_id: sub_ids.start_id,
-                value: Vec::new(),
+                method_id: sub_ids.method_id,
+                // [version=0, direction=Start=0], no start payload.
+                value: vec![0x00, 0x00],
             },
         };
         futures::executor::block_on(core.dispatch(frame, dyn_transport));
@@ -385,8 +386,8 @@ mod tests {
         assert!(!sent.is_empty(), "expected at least one _receive frame");
         let first = &sent[0];
         assert_eq!(first.payload.trait_id, sub_ids.trait_id);
-        assert_eq!(first.payload.method_id, sub_ids.receive_id);
-        // V1(Disconnected): V1 variant 0x00, Disconnected discriminant 0x00.
-        assert_eq!(first.payload.value, vec![0x00, 0x00]);
+        assert_eq!(first.payload.method_id, sub_ids.method_id);
+        // [version=0, direction=Receive=3][Disconnected discriminant=0x00]
+        assert_eq!(first.payload.value, vec![0x00, 0x03, 0x00]);
     }
 }

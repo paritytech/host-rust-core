@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use parity_scale_codec::{Decode, Encode};
 
 use truapi::v01;
-use truapi::versioned::permissions::HostDevicePermissionRequest;
 use truapi_platform::{DevicePermissionStatus, PermissionStatusHost};
 use truapi_platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
 use truapi_server::frame::{Payload, ProtocolMessage, request_ids};
@@ -69,13 +68,15 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
     let product_runtime = runtime.product_runtime(product, sink.clone());
 
     let ids = request_ids("permissions_request_device_permission").expect("known request method");
+    // [version=0, direction=Request=0][request bytes]
+    let mut value = vec![0x00, 0x00];
+    value.extend(v01::HostDevicePermissionRequest::Camera.encode());
     let frame = ProtocolMessage {
         request_id: "p:1".into(),
         payload: Payload {
             trait_id: ids.trait_id,
-            method_id: ids.request_id,
-            value: HostDevicePermissionRequest::V1(v01::HostDevicePermissionRequest::Camera)
-                .encode(),
+            method_id: ids.method_id,
+            value,
         },
     };
     futures::executor::block_on(product_runtime.receive_frame(frame.encode()))
@@ -86,14 +87,15 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
         .iter()
         .map(|bytes| ProtocolMessage::decode(&mut &bytes[..]).expect("decode emitted frame"))
         .find(|message| {
-            message.payload.trait_id == ids.trait_id && message.payload.method_id == ids.response_id
+            message.payload.trait_id == ids.trait_id && message.payload.method_id == ids.method_id
         })
         .expect("dispatcher emitted a device-permission response");
 
-    // Wire payload is [version disc][Ok disc][body]. Assert the whole thing
-    // against each possible answer rather than splicing bytes out by index.
+    // Wire payload is [version disc][direction=Response][Ok disc][body].
+    // Assert the whole thing against each possible answer rather than
+    // splicing bytes out by index.
     for granted in [true, false] {
-        let mut expected = vec![0x00u8, 0x00u8];
+        let mut expected = vec![0x00u8, 0x01u8, 0x00u8];
         v01::HostDevicePermissionResponse { granted }.encode_to(&mut expected);
         if response.payload.value == expected {
             return granted;

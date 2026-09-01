@@ -507,7 +507,6 @@ mod tests {
     use parity_scale_codec::Decode;
     use parity_scale_codec::Encode;
     use truapi::v01;
-    use truapi::versioned::system::HostFeatureSupportedRequest;
     use truapi_platform::{HostInfo, PlatformInfo, ProductContext, SigningHostConfig};
 
     use crate::SigningHostRuntime;
@@ -636,17 +635,20 @@ mod tests {
         let response_bytes = rt.block_on(async {
             let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("dial");
 
+            // [version=0, direction=Request=0][request bytes]
+            let mut value = vec![0x00, 0x00];
+            value.extend(
+                v01::HostFeatureSupportedRequest::Chain {
+                    genesis_hash: vec![0u8; 32],
+                }
+                .encode(),
+            );
             let request_frame = ProtocolMessage {
                 request_id: "p:1".into(),
                 payload: Payload {
                     trait_id: ids.trait_id,
-                    method_id: ids.request_id,
-                    value: HostFeatureSupportedRequest::V1(
-                        v01::HostFeatureSupportedRequest::Chain {
-                            genesis_hash: vec![0u8; 32],
-                        },
-                    )
-                    .encode(),
+                    method_id: ids.method_id,
+                    value,
                 },
             };
             ws.send(WsMessage::Binary(request_frame.encode()))
@@ -667,10 +669,9 @@ mod tests {
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
         assert_eq!(response.payload.trait_id, ids.trait_id);
-        assert_eq!(response.payload.method_id, ids.response_id);
-        // Wire payload is `Result<Ok, Err>`-shaped:
-        // [Ok disc=0x00][V1 variant 0x00][supported=1]
-        assert_eq!(response.payload.value, vec![0x00, 0x00, 0x01]);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        // [version=0, direction=Response=1][Ok disc=0x00][supported=1]
+        assert_eq!(response.payload.value, vec![0x00, 0x01, 0x00, 0x01]);
 
         bridge.stop();
     }
