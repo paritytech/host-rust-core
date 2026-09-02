@@ -168,6 +168,22 @@ pub fn call_address(signature: &str, address: &[u8; 20]) -> Vec<u8> {
     data
 }
 
+/// Calldata for a view function taking an `address` and two `uint256` arguments.
+pub fn call_address_u256_pair(
+    signature: &str,
+    address: &[u8; 20],
+    first: u64,
+    second: u64,
+) -> Vec<u8> {
+    let mut data = call_address(signature, address);
+    for value in [first, second] {
+        let mut word = [0u8; 32];
+        word[24..].copy_from_slice(&value.to_be_bytes());
+        data.extend_from_slice(&word);
+    }
+    data
+}
+
 /// Calldata for a view function taking one `bytes32` argument.
 pub fn call_bytes32(signature: &str, word: &[u8; 32]) -> Vec<u8> {
     let mut data = call_no_args(signature);
@@ -366,7 +382,7 @@ pub fn decode_string_array(data: &[u8]) -> Result<Vec<String>, DotnsContractErro
         .collect()
 }
 
-/// Decodes `DotnsPopController.pendingClaims(address)`, an ABI
+/// Decodes a page returned by `DotnsPopController.pendingClaims`, an ABI
 /// `(string label, uint64 mintedAt)[]`, as `(label, minted_at)` pairs.
 pub fn decode_pending_claims_array(data: &[u8]) -> Result<Vec<(String, u64)>, DotnsContractError> {
     let array_at = word_usize(data, 0)?;
@@ -801,24 +817,90 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
         .map_err(|err| format!("DotnsRegistrar.exists({label}): {err}"))
 }
 
-/// Gateway-minted labels of `user` still waiting for `claimLabelStore`, from
-/// `DotnsPopController.pendingClaims(address)`, without the entries that have
-/// lapsed (`mintedAt + reservationDuration < now`, the controller's own
-/// `_isExpired`; `now` is `Timestamp.Now` at the pinned block).
+/// Page size for `DotnsPopController.pendingClaims(address,uint256,uint256)`.
+/// Kept below the contract's maximum so one dynamic-string response stays
+/// modest on both the plain-RPC and in-core transports.
+const PENDING_CLAIM_PAGE_LIMIT: u64 = 16;
+/// Upper bound on pending-claim pages read for one account.
+const PENDING_CLAIM_PAGE_MAX: u64 = 16;
+
+/// Gateway-minted labels of `user` still waiting for `claimLabelStore`, without
+/// entries that have lapsed (`mintedAt + reservationDuration < now`, the
+/// controller's own `_isExpired`; `now` is `Timestamp.Now` at the pinned block).
+///
+/// Current controllers expose paginated
+/// `pendingClaims(address,uint256,uint256)`. The one-argument view remains a
+/// first-page fallback for pre-pagination deployments; once a paginated call
+/// succeeds, a later-page revert is a real read failure rather than a signal
+/// to switch ABIs.
 async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     controller: &[u8; 20],
     user: &[u8; 20],
 ) -> Result<Vec<String>, String> {
-    // A revert is the controller's answer: no readable pending claims. The
-    // store is a separate source, so it is still read.
+    let mut claims = Vec::new();
+    for page in 0..PENDING_CLAIM_PAGE_MAX {
+        let offset = page * PENDING_CLAIM_PAGE_LIMIT;
+        let output = match transport
+            .view(
+                controller,
+                call_address_u256_pair(
+                    "pendingClaims(address,uint256,uint256)",
+                    user,
+                    offset,
+                    PENDING_CLAIM_PAGE_LIMIT,
+                ),
+            )
+            .await
+        {
+            Ok(output) => output,
+            Err(DotnsViewError::Reverted(_)) if page == 0 => {
+                return legacy_pending_claim_labels(transport, controller, user).await;
+            }
+            Err(DotnsViewError::Reverted(reason)) => {
+                return Err(format!(
+                    "DotnsPopController.pendingClaims offset {offset}: {reason}"
+                ));
+            }
+            Err(DotnsViewError::Failed(reason)) => {
+                return Err(format!(
+                    "DotnsPopController.pendingClaims offset {offset}: {reason}"
+                ));
+            }
+        };
+        let page_claims = decode_pending_claims_array(&output)
+            .map_err(|err| format!("DotnsPopController.pendingClaims offset {offset}: {err}"))?;
+        let short_page = (page_claims.len() as u64) < PENDING_CLAIM_PAGE_LIMIT;
+        claims.extend(page_claims);
+        if short_page {
+            break;
+        }
+        if page + 1 == PENDING_CLAIM_PAGE_MAX {
+            warn!(
+                user = %hex::encode(user),
+                read = PENDING_CLAIM_PAGE_MAX * PENDING_CLAIM_PAGE_LIMIT,
+                "DotnsPopController holds more pending claims than the pages read"
+            );
+        }
+    }
+    live_claim_labels(transport, controller, claims).await
+}
+
+/// Reads a pre-pagination controller. A revert from both ABI generations means
+/// there are no readable pending claims, so the separate `LabelStore` source
+/// still gets a chance to resolve the account.
+async fn legacy_pending_claim_labels<T: DotnsTransport + ?Sized>(
+    transport: &mut T,
+    controller: &[u8; 20],
+    user: &[u8; 20],
+) -> Result<Vec<String>, String> {
     let output = match transport
         .view(controller, call_address("pendingClaims(address)", user))
         .await
     {
         Ok(output) => output,
         Err(DotnsViewError::Reverted(reason)) => {
-            warn!(%reason, "DotnsPopController.pendingClaims reverted; reading the store only");
+            warn!(%reason, "DotnsPopController.pendingClaims reverted for both ABI generations; reading the store only");
             return Ok(Vec::new());
         }
         Err(DotnsViewError::Failed(reason)) => {
@@ -827,6 +909,16 @@ async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
     };
     let claims = decode_pending_claims_array(&output)
         .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
+    live_claim_labels(transport, controller, claims).await
+}
+
+/// Drops lapsed claims using the controller's duration and the pinned chain
+/// time. Kept shared by the current and legacy ABI paths.
+async fn live_claim_labels<T: DotnsTransport + ?Sized>(
+    transport: &mut T,
+    controller: &[u8; 20],
+    claims: Vec<(String, u64)>,
+) -> Result<Vec<String>, String> {
     if claims.is_empty() {
         return Ok(Vec::new());
     }
@@ -994,6 +1086,12 @@ mod tests {
         assert_eq!(hex::encode(selector("protocolRegistry()")), "7656419f");
         assert_eq!(hex::encode(selector("get(bytes32)")), "8eaa6ac0");
         assert_eq!(hex::encode(selector("TARGET()")), "cc1f2afa");
+        assert_eq!(
+            hex::encode(selector("pendingClaims(address,uint256,uint256)")),
+            "76025b85"
+        );
+        // Pre-pagination deployments use this selector; the reader falls back
+        // to it only when the current selector reverts on its first page.
         assert_eq!(hex::encode(selector("pendingClaims(address)")), "ca78533d");
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
         assert_eq!(hex::encode(selector("recordExists(bytes32)")), "f79fe538");
@@ -1024,6 +1122,18 @@ mod tests {
         assert_eq!(&address_call[..4], &selector("getLabelStore(address)"));
         assert!(address_call[4..16].iter().all(|b| *b == 0));
         assert_eq!(&address_call[16..], &[0xAA; 20]);
+
+        let address_pair_call =
+            call_address_u256_pair("pendingClaims(address,uint256,uint256)", &[0xBB; 20], 3, 16);
+        assert_eq!(address_pair_call.len(), 4 + 32 * 3);
+        assert_eq!(
+            &address_pair_call[..4],
+            &selector("pendingClaims(address,uint256,uint256)")
+        );
+        assert!(address_pair_call[4..16].iter().all(|b| *b == 0));
+        assert_eq!(&address_pair_call[16..36], &[0xBB; 20]);
+        assert_eq!(address_pair_call[67], 3);
+        assert_eq!(address_pair_call[99], 16);
 
         let pair_call = call_u256_pair("getLabels(uint256,uint256)", 0, 16);
         assert_eq!(pair_call.len(), 4 + 64);
@@ -1114,6 +1224,32 @@ mod tests {
         out
     }
 
+    /// A `(string label, uint64 mintedAt)[]` return value.
+    fn abi_pending_claims(claims: &[(&str, u64)]) -> Vec<u8> {
+        let structs: Vec<Vec<u8>> = claims
+            .iter()
+            .map(|(label, minted_at)| {
+                [
+                    abi_word(0x40).to_vec(),
+                    abi_word(*minted_at).to_vec(),
+                    abi_string(label),
+                ]
+                .concat()
+            })
+            .collect();
+        let mut out = abi_word(0x20).to_vec();
+        out.extend_from_slice(&abi_word(claims.len() as u64));
+        let mut offset = 32 * claims.len();
+        for claim in &structs {
+            out.extend_from_slice(&abi_word(offset as u64));
+            offset += claim.len();
+        }
+        for claim in structs {
+            out.extend_from_slice(&claim);
+        }
+        out
+    }
+
     #[test]
     fn abi_decoders_handle_addresses_string_arrays_and_pending_claims() {
         let mut address = [0u8; 32];
@@ -1138,24 +1274,7 @@ mod tests {
         );
 
         // pendingClaims = [("alice01", 42), ("bob", 7)].
-        let struct_a = [
-            abi_word(0x40).to_vec(),
-            abi_word(42).to_vec(),
-            abi_string("alice01"),
-        ]
-        .concat();
-        let struct_b = [
-            abi_word(0x40).to_vec(),
-            abi_word(7).to_vec(),
-            abi_string("bob"),
-        ]
-        .concat();
-        let mut claims = abi_word(0x20).to_vec();
-        claims.extend_from_slice(&abi_word(2));
-        claims.extend_from_slice(&abi_word(0x40));
-        claims.extend_from_slice(&abi_word(0x40 + struct_a.len() as u64));
-        claims.extend_from_slice(&struct_a);
-        claims.extend_from_slice(&struct_b);
+        let claims = abi_pending_claims(&[("alice01", 42), ("bob", 7)]);
         assert_eq!(
             decode_pending_claims_array(&claims).unwrap(),
             vec![("alice01".to_string(), 42), ("bob".to_string(), 7)]
@@ -1184,6 +1303,116 @@ mod tests {
         assert!(!claim_lapsed(1_000, 100, 1_100));
         assert!(claim_lapsed(1_000, 100, 1_101));
         assert!(!claim_lapsed(u64::MAX, 100, u64::MAX));
+    }
+
+    const SCRIPTED_NOW_SECS: u64 = 1_800_000_000;
+    const SCRIPTED_RESERVATION_DURATION: u64 = 100;
+
+    /// Pending-claim views with either the current paginated ABI or only the
+    /// pre-pagination fallback. Records current-ABI offsets for paging checks.
+    struct ScriptedPendingClaims {
+        legacy_only: bool,
+        offsets: Vec<u64>,
+    }
+
+    #[truapi_platform::async_trait]
+    impl DotnsTransport for ScriptedPendingClaims {
+        async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            assert_eq!(key, timestamp_now_key());
+            Ok(Some((SCRIPTED_NOW_SECS * 1_000).to_le_bytes().to_vec()))
+        }
+
+        async fn view(
+            &mut self,
+            _dest: &[u8; 20],
+            input: Vec<u8>,
+        ) -> Result<Vec<u8>, DotnsViewError> {
+            let sel: [u8; 4] = input[..4].try_into().expect("selector prefix; qed");
+            if sel == selector("pendingClaims(address,uint256,uint256)") {
+                assert_eq!(&input[16..36], &[0xAA; 20]);
+                let offset = decode_u64(&input[36..68]).expect("offset word");
+                let limit = decode_u64(&input[68..100]).expect("limit word");
+                assert_eq!(limit, PENDING_CLAIM_PAGE_LIMIT);
+                self.offsets.push(offset);
+                if self.legacy_only {
+                    return Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+                        detail: "(empty)".to_string(),
+                    }));
+                }
+                if offset == 0 {
+                    let labels = (0..PENDING_CLAIM_PAGE_LIMIT)
+                        .map(|index| format!("current{index:02}"))
+                        .collect::<Vec<_>>();
+                    let claims = labels
+                        .iter()
+                        .map(|label| (label.as_str(), SCRIPTED_NOW_SECS - 10))
+                        .collect::<Vec<_>>();
+                    return Ok(abi_pending_claims(&claims));
+                }
+                if offset == PENDING_CLAIM_PAGE_LIMIT {
+                    return Ok(abi_pending_claims(&[
+                        ("current16", SCRIPTED_NOW_SECS - 10),
+                        (
+                            "lapsed17",
+                            SCRIPTED_NOW_SECS - SCRIPTED_RESERVATION_DURATION - 1,
+                        ),
+                    ]));
+                }
+                panic!("unexpected pending-claim offset {offset}");
+            }
+            if sel == selector("pendingClaims(address)") {
+                assert!(self.legacy_only, "legacy ABI is fallback-only");
+                assert_eq!(&input[16..36], &[0xAA; 20]);
+                return Ok(abi_pending_claims(&[
+                    ("legacy01", SCRIPTED_NOW_SECS - 10),
+                    (
+                        "lapsed02",
+                        SCRIPTED_NOW_SECS - SCRIPTED_RESERVATION_DURATION - 1,
+                    ),
+                ]));
+            }
+            if sel == selector("reservationDuration()") {
+                return Ok(abi_word(SCRIPTED_RESERVATION_DURATION).to_vec());
+            }
+            panic!("unscripted view {}", hex::encode(sel));
+        }
+    }
+
+    #[test]
+    fn pending_claims_use_the_current_paginated_abi() {
+        let mut transport = ScriptedPendingClaims {
+            legacy_only: false,
+            offsets: Vec::new(),
+        };
+        let labels = futures::executor::block_on(pending_claim_labels(
+            &mut transport,
+            &[0xCC; 20],
+            &[0xAA; 20],
+        ))
+        .unwrap();
+
+        assert_eq!(transport.offsets, vec![0, PENDING_CLAIM_PAGE_LIMIT]);
+        assert_eq!(labels.len(), 17);
+        assert_eq!(labels.first().map(String::as_str), Some("current00"));
+        assert_eq!(labels.last().map(String::as_str), Some("current16"));
+        assert!(!labels.iter().any(|label| label == "lapsed17"));
+    }
+
+    #[test]
+    fn pending_claims_fall_back_to_the_legacy_abi() {
+        let mut transport = ScriptedPendingClaims {
+            legacy_only: true,
+            offsets: Vec::new(),
+        };
+        let labels = futures::executor::block_on(pending_claim_labels(
+            &mut transport,
+            &[0xCC; 20],
+            &[0xAA; 20],
+        ))
+        .unwrap();
+
+        assert_eq!(transport.offsets, vec![0]);
+        assert_eq!(labels, vec!["legacy01"]);
     }
 
     #[test]

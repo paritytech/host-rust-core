@@ -438,9 +438,11 @@ mod tests {
         let sel: [u8; 4] = input[..4].try_into().unwrap();
         let data = match (*dest, sel) {
             (DISPATCHER, s) if s == selector("TARGET()") => abi_address(&CONTROLLER),
-            (CONTROLLER, s) if s == selector("pendingClaims(address)") => {
+            (CONTROLLER, s) if s == selector("pendingClaims(address,uint256,uint256)") => {
                 // The user argument is the mapped H160 of the identity account.
                 assert_eq!(&input[16..36], account_to_h160(&ACCOUNT));
+                assert_eq!(&input[36..68], &abi_word(0));
+                assert_eq!(&input[68..100], &abi_word(16));
                 // One live claim and one that lapsed a second ago.
                 abi_pending_claims(&[
                     ("alice01", NOW_SECS - 10),
@@ -673,7 +675,7 @@ mod tests {
             .iter()
             .filter(|request| request.contains("chainHead_v1_call"))
             .count();
-        // TARGET, pendingClaims, reservationDuration, protocolRegistry,
+        // TARGET, one short pendingClaims page, reservationDuration, protocolRegistry,
         // get(storeFactory), getLabelStore, tld, one short getLabels page.
         assert_eq!(
             calls, 8,

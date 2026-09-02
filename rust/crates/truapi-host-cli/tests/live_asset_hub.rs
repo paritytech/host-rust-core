@@ -194,9 +194,9 @@ async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
 // ---------------------------------------------------------------------------
 
 use truapi_server::host_logic::dotns_gateway::{
-    DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, call_bytes32, classify_labels,
-    decode_address, discover_pop_controller, encode_revive_call, label_available, namehash_under,
-    resolve_labels, selector, view_output,
+    DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, call_address_u256_pair, call_bytes32,
+    classify_labels, decode_address, decode_pending_claims_array, discover_pop_controller,
+    encode_revive_call, label_available, namehash_under, resolve_labels, selector, view_output,
 };
 use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
 
@@ -251,6 +251,54 @@ impl DotnsTransport for PlainRpc {
             .map_err(|err| DotnsViewError::Failed(err.to_string()))?;
         view_output(&bytes)
     }
+}
+
+/// The post-wipe controller paginates pending claims. A zero-user query is a
+/// stable ABI probe: it must return an empty page rather than the empty revert
+/// produced when a client sends the removed one-argument selector.
+#[tokio::test]
+#[ignore = "needs network access to a live Asset Hub"]
+async fn live_asset_hub_serves_the_paginated_pending_claims_view() {
+    let (rpc, _metadata) = asset_hub().await;
+    let mut transport = PlainRpc(rpc);
+    let controller = discover_pop_controller(&mut transport)
+        .await
+        .expect("discovery")
+        .expect("gateway deployed");
+    let output = transport
+        .view(
+            &controller,
+            call_address_u256_pair("pendingClaims(address,uint256,uint256)", &[0u8; 20], 0, 1),
+        )
+        .await
+        .expect("current pendingClaims ABI");
+    assert!(decode_pending_claims_array(&output).unwrap().is_empty());
+}
+
+/// Resolves a real pending account through the same shared helper as the CLI
+/// and in-core lookup. The account and expected bare label are supplied at run
+/// time because a fresh network's pending claims are intentionally ephemeral.
+#[tokio::test]
+#[ignore = "needs LIVE_DOTNS_ACCOUNT and LIVE_PENDING_LABEL on a live Asset Hub"]
+async fn live_asset_hub_resolves_a_pending_claim_with_the_current_abi() {
+    let account_hex = std::env::var("LIVE_DOTNS_ACCOUNT").expect("LIVE_DOTNS_ACCOUNT");
+    let account: [u8; 32] = hex::decode(account_hex.trim_start_matches("0x"))
+        .expect("LIVE_DOTNS_ACCOUNT is hex")
+        .try_into()
+        .expect("LIVE_DOTNS_ACCOUNT is 32 bytes");
+    let expected = std::env::var("LIVE_PENDING_LABEL").expect("LIVE_PENDING_LABEL");
+
+    let (rpc, _metadata) = asset_hub().await;
+    let mut transport = PlainRpc(rpc);
+    let controller = discover_pop_controller(&mut transport)
+        .await
+        .expect("discovery")
+        .expect("gateway deployed");
+    let labels = resolve_labels(&mut transport, &controller, &account)
+        .await
+        .expect("resolve pending labels");
+    println!("live pending labels: {labels:?}");
+    assert!(labels.iter().any(|label| label == &expected), "{labels:?}");
 }
 
 /// `register_name` is authorized by `AsDotnsGatewayInfo::RegisterFullName`.
