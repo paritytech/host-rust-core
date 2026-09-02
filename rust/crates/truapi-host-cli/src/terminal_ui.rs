@@ -1122,7 +1122,12 @@ fn pairing_image_failure(error: &anyhow::Error, pasted_text: bool) -> String {
 
 impl Drop for ActiveTerminalUi {
     fn drop(&mut self) {
-        if let Ok(mut active) = active_ui().lock() {
+        // Only the UI that installed the active sender may clear it.
+        if let Ok(mut active) = active_ui().lock()
+            && active
+                .as_ref()
+                .is_some_and(|installed| installed.same_channel(&self.sender))
+        {
             *active = None;
         }
         if let Some(terminal) = self.terminal.take() {
@@ -3049,6 +3054,20 @@ mod tests {
     use ratatui::layout::Position;
     use tracing_subscriber::layer::SubscriberExt;
 
+    /// Serializes the tests that install their own sender into the active UI
+    /// slot, so one test's install cannot displace a sender another test is
+    /// still reading from.
+    static ACTIVE_UI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Claim the active UI slot for the duration of a test. A test that panics
+    /// while holding the slot poisons the lock; recover so the panic stays
+    /// local to that test instead of cascading into the next one.
+    fn lock_active_ui() -> std::sync::MutexGuard<'static, ()> {
+        ACTIVE_UI_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn test_app() -> App {
         App::new(
             "testnet".to_string(),
@@ -3562,10 +3581,50 @@ mod tests {
         Ok(())
     }
 
+    /// Dropping a UI leaves another UI's installed sender in place.
+    #[test]
+    fn dropping_a_foreign_ui_leaves_the_installed_sender_in_place() {
+        let _slot = lock_active_ui();
+        let (installed, mut receiver) = mpsc::unbounded_channel();
+        let restore = active_ui()
+            .lock()
+            .expect("lock active test UI")
+            .replace(installed);
+
+        {
+            let (sender, foreign_receiver) = mpsc::unbounded_channel();
+            let _foreign = ActiveTerminalUi {
+                terminal: None,
+                events: None,
+                receiver: foreign_receiver,
+                sender,
+                app: test_app(),
+                clipboard: None,
+                copy_next_pairing_deeplink: false,
+            };
+        }
+
+        let delivered = send_to_active(UiEvent::Log("after a foreign drop".to_string()));
+        *active_ui().lock().expect("unlock active test UI") = restore;
+
+        assert!(
+            delivered,
+            "the installed sender was cleared by a foreign drop"
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(UiEvent::Log(line)) if line == "after a foreign drop"
+        ));
+    }
+
     #[test]
     fn sso_summary_bypasses_the_adjustable_log_filter() {
+        let _slot = lock_active_ui();
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        *active_ui().lock().expect("lock active test UI") = Some(sender);
+        let restore = active_ui()
+            .lock()
+            .expect("lock active test UI")
+            .replace(sender);
         let filtered_logs = tracing_subscriber::fmt::layer()
             .with_writer(io::sink)
             .with_filter(tracing_subscriber::EnvFilter::new("error"));
@@ -3586,7 +3645,7 @@ mod tests {
                 elapsed_ms = 84_u64,
             );
         });
-        *active_ui().lock().expect("unlock active test UI") = None;
+        *active_ui().lock().expect("unlock active test UI") = restore;
 
         let UiEvent::Sso(event) = receiver.try_recv().expect("summary transcript event") else {
             panic!("expected SSO transcript event");

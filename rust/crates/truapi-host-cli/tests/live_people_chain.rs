@@ -206,8 +206,8 @@ async fn live_grace_window_still_leaves_a_full_period_of_slack() {
     let metadata = alloc::fetch_metadata(&rpc)
         .await
         .expect("live People metadata");
-    let grace = metadata
-        .constant_u32("Resources", "StmtStoreGraceWindow")
+    let grace = alloc::slot::statement_store_grace_window(&rpc, &metadata)
+        .await
         .expect("the runtime declares a statement-store grace window");
     let period = alloc::slot::STATEMENT_STORE_PERIOD_SECONDS;
 
@@ -246,7 +246,8 @@ async fn both_personhood_collections_resolve_on_the_live_chain() {
             .await
             .unwrap_or_else(|err| panic!("{collection} collection is absent on chain: {err}"));
         let slots = collection
-            .slots_per_period(&chain.metadata)
+            .slots_per_period(&rpc, &chain.metadata)
+            .await
             .unwrap_or_else(|err| panic!("{collection} declares no slot budget: {err}"));
         let ring_index = alloc::ring::read_current_ring_index(&rpc, collection)
             .await
@@ -266,10 +267,12 @@ async fn both_personhood_collections_resolve_on_the_live_chain() {
     // The pooled budget is what the fix delivers, so assert the two differ
     // rather than silently reading the same constant twice.
     let people = PersonhoodCollection::People
-        .slots_per_period(&chain.metadata)
+        .slots_per_period(&rpc, &chain.metadata)
+        .await
         .expect("People slot budget");
     let lite = PersonhoodCollection::LitePeople
-        .slots_per_period(&chain.metadata)
+        .slots_per_period(&rpc, &chain.metadata)
+        .await
         .expect("LitePeople slot budget");
     assert!(
         people > lite,
@@ -278,5 +281,32 @@ async fn both_personhood_collections_resolve_on_the_live_chain() {
     println!(
         "live pooled budget={} (People {people} + LitePeople {lite})",
         people + lite
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn dynamic_resources_values_resolve_on_the_live_chain() {
+    let rpc = connect().await;
+    let metadata = alloc::fetch_metadata(&rpc)
+        .await
+        .expect("live People metadata");
+
+    let cooldown = alloc::slot::replacement_cooldown(&rpc, &metadata)
+        .await
+        .expect("replacement cooldown view");
+    let long_term_storage_claims =
+        alloc::slot::long_term_storage_claims_per_period(&rpc, &metadata)
+            .await
+            .expect("long-term-storage claims view");
+
+    assert!(cooldown > 0, "replacement cooldown must be positive");
+    assert!(
+        long_term_storage_claims > 0,
+        "long-term-storage claims must be positive"
+    );
+    println!(
+        "live Resources views: replacement_cooldown={cooldown}s \
+         long_term_storage_claims_per_period={long_term_storage_claims}"
     );
 }
