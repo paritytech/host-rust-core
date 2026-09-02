@@ -438,9 +438,14 @@ mod tests {
         let sel: [u8; 4] = input[..4].try_into().unwrap();
         let data = match (*dest, sel) {
             (DISPATCHER, s) if s == selector("TARGET()") => abi_address(&CONTROLLER),
-            (CONTROLLER, s) if s == selector("pendingClaims(address)") => {
-                // The user argument is the mapped H160 of the identity account.
-                assert_eq!(&input[16..36], account_to_h160(&ACCOUNT));
+            (CONTROLLER, s) if s == selector("pendingClaims(address,uint256,uint256)") => {
+                // First page for the mapped identity account.
+                assert_eq!(
+                    &input[4..36],
+                    abi_address(&account_to_h160(&ACCOUNT)).as_slice()
+                );
+                assert_eq!(&input[36..68], &abi_word(0));
+                assert_eq!(&input[68..100], &abi_word(16));
                 // One live claim and one that lapsed a second ago.
                 abi_pending_claims(&[
                     ("alice01", NOW_SECS - 10),
