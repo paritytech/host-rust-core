@@ -566,7 +566,9 @@ impl PairingHost {
     }
 
     /// Spawn the background task that re-reads the persisted auth session on
-    /// every change notification and reconciles the in-memory session.
+    /// every change notification and reconciles the in-memory session. The
+    /// first tick runs at boot and announces its outcome even when nothing
+    /// changed, so the host always receives an opening auth state.
     #[instrument(skip_all, fields(runtime.method = "session_store.sync"))]
     pub(crate) fn start_session_store_sync(self: Arc<Self>, spawner: Spawner) {
         let pairing_host = Arc::downgrade(&self);
@@ -598,6 +600,7 @@ impl PairingHost {
                         cleared_after_read_error = true;
                     }
                 }
+                pairing_host.auth_state.announce_current();
             }
         }));
     }

@@ -7032,6 +7032,72 @@ mod tests {
     }
 
     #[test]
+    fn session_store_sync_announces_a_signed_out_boot() {
+        let platform = Arc::new(StubPlatform::default());
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        pairing_host
+            .clone()
+            .start_session_store_sync_for_tests(test_spawner());
+
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the signed-out state",
+        );
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected]
+        );
+    }
+
+    #[test]
+    fn session_store_sync_announces_a_restored_boot_once() {
+        let stored = sso_session_info();
+        let platform = Arc::new(StubPlatform {
+            session_blob: Some(crate::host_logic::session::encode_persisted_session(
+                &stored,
+            )),
+            ..Default::default()
+        });
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        pairing_host
+            .clone()
+            .start_session_store_sync_for_tests(test_spawner());
+
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the restored session",
+        );
+        futures::executor::block_on(pairing_host.activate_stored_session())
+            .expect("valid stored session activates");
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(connected_session_ui_info(&stored))]
+        );
+    }
+
+    #[test]
     fn session_store_sync_replaces_valid_blob_and_broadcasts_connected() {
         let mut replacement = sso_session_info();
         replacement.public_key = [0x44; 32];
@@ -7080,16 +7146,24 @@ mod tests {
         );
 
         assert!(host.test_session_state().current().is_none());
-        // `set_session` bypasses the auth state cell, so the cell never left
-        // `Disconnected` and clearing the invalid blob emits nothing. Only a
-        // session activation announces an unchanged state; a store-sync tick
-        // that finds nothing must not flash signed out at a signed-in host.
-        assert!(
-            platform
+        // `set_session` bypasses the auth state cell, so the clear is not a
+        // transition; the boot tick's announcement is the only emission.
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the cleared session",
+        );
+        assert_eq!(
+            *platform
                 .auth_states
                 .lock()
-                .expect("auth state list mutex poisoned")
-                .is_empty()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected]
         );
     }
 
