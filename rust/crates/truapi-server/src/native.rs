@@ -43,7 +43,7 @@ use crate::native_renderer::{NativeRendererObserver, NativeRendererSubscription}
 use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
-use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
+use crate::ws_bridge::{BridgeLogger, SharedWsBridge, WsBridgeEndpoint, WsBridgeStartError};
 
 /// Host-thrown storage failure wrapping the canonical error payload, so its
 /// variants remain defined once in `truapi`.
@@ -623,6 +623,11 @@ pub struct NativeTrUApiHostRuntime {
     events: Arc<NativeEventBus>,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
+    /// One localhost WebSocket listener shared by every product execution
+    /// this host runtime opens. Starts lazily on the first execution's
+    /// `start_ws_bridge` call and lives for as long as this host runtime.
+    #[cfg(feature = "ws-bridge")]
+    ws_bridge: Arc<SharedWsBridge>,
     /// The one Worker execution per product; opening another replaces it.
     worker_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
 }
@@ -665,6 +670,8 @@ impl NativeTrUApiHostRuntime {
             events,
             #[cfg(feature = "ws-bridge")]
             spawner,
+            #[cfg(feature = "ws-bridge")]
+            ws_bridge: Arc::new(SharedWsBridge::new()),
             worker_executions: Mutex::new(HashMap::new()),
         }))
     }
@@ -715,7 +722,9 @@ impl NativeTrUApiHostRuntime {
             chat_connection: Arc::new(crate::runtime::ActionChannel::chat()),
             renderer_connection: Arc::new(crate::runtime::ActionChannel::renderer()),
             #[cfg(feature = "ws-bridge")]
-            bridge: Mutex::new(None),
+            ws_bridge: self.ws_bridge.clone(),
+            #[cfg(feature = "ws-bridge")]
+            bridge_token: Mutex::new(None),
             #[cfg(feature = "ws-bridge")]
             product_control: Arc::new(Mutex::new(None)),
         });
@@ -1027,8 +1036,13 @@ pub struct NativeProductExecution {
         crate::runtime::ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>,
     >,
     closed: AtomicBool,
+    /// The host runtime's shared listener; every execution under the same
+    /// host runtime clones this same `Arc`.
     #[cfg(feature = "ws-bridge")]
-    bridge: Mutex<Option<WsBridge>>,
+    ws_bridge: Arc<SharedWsBridge>,
+    /// This execution's own registered token, if its bridge is running.
+    #[cfg(feature = "ws-bridge")]
+    bridge_token: Mutex<Option<String>>,
     #[cfg(feature = "ws-bridge")]
     product_control: Arc<Mutex<Option<crate::ProductRuntimeControl>>>,
 }
@@ -1071,13 +1085,13 @@ impl NativeProductExecution {
 
     #[cfg(feature = "ws-bridge")]
     fn stop_bridge(&self) {
-        if let Some(mut bridge) = self
-            .bridge
+        if let Some(token) = self
+            .bridge_token
             .lock()
             .expect("native product bridge mutex poisoned")
             .take()
         {
-            bridge.stop();
+            self.ws_bridge.revoke(&token);
         }
         *self
             .product_control
@@ -1256,7 +1270,11 @@ impl NativeProductExecution {
 #[cfg(feature = "ws-bridge")]
 #[uniffi::export]
 impl NativeProductExecution {
-    /// Start this execution's independently authenticated localhost bridge.
+    /// Register this execution against the host runtime's shared localhost
+    /// bridge, minting an independent authentication token. Every execution
+    /// under the same host runtime connects through the same port;
+    /// `bind_port` only has an effect for the first execution to register
+    /// while the shared listener is still unstarted.
     pub fn start_ws_bridge(&self, bind_port: u16) -> Result<WsBridgeEndpoint, WsBridgeStartError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(WsBridgeStartError::Io(
@@ -1264,7 +1282,7 @@ impl NativeProductExecution {
             ));
         }
         let mut guard = self
-            .bridge
+            .bridge_token
             .lock()
             .expect("native product bridge mutex poisoned");
         if guard.is_some() {
@@ -1288,12 +1306,14 @@ impl NativeProductExecution {
                 .expect("native product control mutex poisoned") = Some(product_runtime.control());
             product_runtime
         });
-        let (bridge, endpoint) = WsBridge::start(bind_port, runtime_factory, logger)?;
-        *guard = Some(bridge);
+        let endpoint = self
+            .ws_bridge
+            .register(bind_port, runtime_factory, logger)?;
+        *guard = Some(endpoint.token.clone());
         Ok(endpoint)
     }
 
-    /// Stop the active bridge while leaving the execution reusable.
+    /// Revoke this execution's bridge registration while leaving it reusable.
     pub fn stop_ws_bridge(&self) {
         self.stop_bridge();
     }
