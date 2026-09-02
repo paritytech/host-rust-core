@@ -29,8 +29,8 @@ git diff   js/packages/truapi/src/generated/
 ```
 
 The diff shape should match the Rust diff — new methods produce new
-client stubs and wire-table entries. Commit the regenerated files
-alongside the Rust changes.
+client stubs and wire-table entries. The generated files are gitignored;
+nothing is committed, CI regenerates them from the Rust changes.
 
 ## Failure modes
 

@@ -66,13 +66,15 @@ every PR. A green CI run is sufficient evidence for the static layers
 the e2e job runs the Playwright suite from the `e2e-dotli` skill against
 a freshly built dotli host.
 
-The `ios-bindings` job only compares the committed bindings against
-freshly generated ones. The `ios-swift` job compiles the package and its
+The `ios-bindings` job regenerates the Swift bindings, which proves
+every UniFFI-exposed type still has a binding representation; nothing is
+committed to diff against. The `ios-swift` job generates the package's
+Swift sources and container resource, then compiles the package and its
 test target on macOS, which is what catches a hand-written conformer
 that misses a new protocol requirement. It is path-filtered to pull
-requests touching `ios/`, `Package.swift`, the `Makefile` or
-`rust/crates/truapi-server/src/native*`, so it shows as skipped
-elsewhere.
+requests touching `ios/`, `Package.swift`, the `Makefile`,
+`js/container/` or any crate the bindings are generated from, so it
+shows as skipped elsewhere.
 
 Still uncovered: nothing compiles Kotlin, so `TrUAPIHost.kt` fails at
 release time, and the embedding apps are not built here at all.

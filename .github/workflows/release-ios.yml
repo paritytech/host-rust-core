@@ -21,7 +21,7 @@ on:
         required: true
         type: string
       manifest_branch:
-        description: "Branch to land the Package.swift follow-up commit on; empty to skip it"
+        description: "Branch to open the Package.swift follow-up pull request against; empty to skip it"
         required: false
         default: ""
         type: string
@@ -44,7 +44,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
+      actions: write
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild test \
-            -scheme TrUAPIHost \
+            -scheme TrUAPIHost-Package \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
@@ -127,12 +129,15 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # The consumer artifact. Commits the generated sources and the manifest
-      # that now points at the asset uploaded above, and tags it.
+      # that now points at the asset uploaded above, and tags it. A rerun finds
+      # the tag already present and the script accepts it when its manifest
+      # matches, so the push below is a no-op instead of a failure.
       - name: Build the SwiftPM consumer tag
         env:
           IOS_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          git fetch --tags origin
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           ./ios/truapi-host/scripts/tag-release.sh "${IOS_VERSION}"
@@ -176,9 +181,10 @@ jobs:
           git push origin "refs/tags/${IOS_VERSION}"
 
       # Keeps the branch's manifest pointing at the newest asset so a local
-      # build with useLocalBinary off resolves it. Skipped for a dispatched
-      # pre-release, which must not rewrite anyone's branch.
-      - name: Commit published manifest
+      # build with the local binary off resolves it. Lands as a pull request
+      # rather than a direct push so the branch protection still applies.
+      # Skipped for a dispatched pre-release, which must not touch any branch.
+      - name: Open published manifest pull request
         if: inputs.manifest_branch != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -217,18 +223,34 @@ jobs:
           git commit -m "build(ios): publish host XCFramework ${IOS_VERSION}"
 
           gh auth setup-git
-          attempt=1
-          until git push origin "HEAD:${RELEASE_BRANCH}"
-          do
-            if [ "${attempt}" -ge 3 ]; then
-              echo "::error::Could not push the Package.swift follow-up commit."
+          manifest_branch="release/ios-host-${IOS_VERSION}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${manifest_branch}" >/dev/null 2>&1; then
+            git fetch origin "refs/heads/${manifest_branch}:refs/remotes/origin/${manifest_branch}"
+            if ! git show "origin/${manifest_branch}:Package.swift" | cmp - Package.swift; then
+              echo "::error::${manifest_branch} already exists with a different Package.swift."
               exit 1
             fi
-            attempt=$((attempt + 1))
-            git fetch origin "${RELEASE_BRANCH}"
-            if ! git rebase "origin/${RELEASE_BRANCH}"; then
-              git rebase --abort
-              echo "::error::Package.swift changed while publishing; resolve the manifest update manually."
-              exit 1
-            fi
-          done
+          else
+            git push origin "HEAD:refs/heads/${manifest_branch}"
+          fi
+
+          pr_number="$(gh pr list \
+            --base "${RELEASE_BRANCH}" \
+            --head "${manifest_branch}" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "${pr_number}" ]; then
+            gh pr create \
+              --base "${RELEASE_BRANCH}" \
+              --head "${manifest_branch}" \
+              --title "build(ios): publish host XCFramework ${IOS_VERSION}" \
+              --body "Updates Package.swift with the published @parity/ios-host@${IOS_VERSION} XCFramework URL and verified checksum." \
+              --reviewer paritytech/host-sdk-team
+          else
+            echo "Manifest PR #${pr_number} is already open."
+          fi
+
+          # Events created by GITHUB_TOKEN do not start another workflow, so
+          # dispatch CI explicitly for the generated branch.
+          gh workflow run ci.yml --ref "${manifest_branch}"

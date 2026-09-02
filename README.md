@@ -131,7 +131,7 @@ dependency on the crate:
 - [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
   browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
 - [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
-  `Package.swift`, an xcframework plus committed Swift bindings, built by
+  `Package.swift`, an xcframework plus generated Swift bindings, built by
   `make provider-ios`.
 - [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
   Kotlin bindings and the cdylib per ABI, built by

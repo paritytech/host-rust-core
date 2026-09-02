@@ -330,7 +330,9 @@ jobs:
     needs: release
     if: needs.release.outputs.ios_version != ''
     permissions:
+      actions: write
       contents: write
+      pull-requests: write
     uses: ./.github/workflows/release-ios.yml
     with:
       version: ${{ needs.release.outputs.ios_version }}

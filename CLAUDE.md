@@ -107,12 +107,15 @@ scripts/truapi-host-installer.sh
   sources and a manifest pointing at that asset. That tag is the SwiftPM
   contract: consumers pin `exact("<version>")`, and a branch cannot be consumed
   directly because the generated sources are ignored there. The job clones and
-  compiles the tag before pushing it. Dispatching `release-ios` manually with a
-  pre-release version cuts a tag for app-side testing of an unmerged change. When the title also names an npm package, the
-  iOS job waits on that publish being confirmed on npm.
-  `publish.sh <version>` is the manual fallback.
-  Keep `useLocalBinary = false` in committed manifests; `true` is for local
-  testing against the rebuilt XCFramework only.
+  compiles the tag before pushing it, then opens a pull request against the
+  release branch that points `Package.swift` at the new asset. Dispatching
+  `release-ios` manually with a pre-release version cuts a tag for app-side
+  testing of an unmerged change without touching any branch. When the title
+  also names an npm package, the iOS job waits on that publish being confirmed
+  on npm. `publish.sh <version>` is the manual fallback.
+  `Package.swift` reads `TRUAPI_USE_LOCAL_BINARY` from the environment to build
+  against the rebuilt XCFramework; the tag script refuses a manifest that pins
+  the local binary.
 
 ## Code style
 

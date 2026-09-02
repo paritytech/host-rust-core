@@ -12,7 +12,8 @@
 # Expects the generated outputs to be present already: rebuild.sh for the host,
 # scripts/sync-bindings.sh under ios/truapi-provider for the provider, and the
 # js/container build for the lockdown resource. Creates the commit and tag
-# locally; pushing is the caller's decision.
+# locally; pushing is the caller's decision. Exits successfully without
+# changing anything when the tag already exists with an identical manifest.
 set -eu
 
 if [ $# -ne 1 ]; then
@@ -24,8 +25,14 @@ VERSION="$1"
 TRUAPI_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$TRUAPI_ROOT"
 
+# A rerun of the release finds the tag already cut. Accept it when it records
+# the same manifest, so the caller can push it again as a no-op.
 if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
-    echo "error: tag ${VERSION} already exists" >&2
+    if git diff --quiet "refs/tags/${VERSION}" -- Package.swift; then
+        echo "Tag ${VERSION} already exists with this manifest; nothing to do."
+        exit 0
+    fi
+    echo "error: tag ${VERSION} already exists with a different Package.swift" >&2
     exit 65
 fi
 
