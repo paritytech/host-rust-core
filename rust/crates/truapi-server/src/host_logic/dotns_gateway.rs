@@ -837,8 +837,6 @@ async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
 ) -> Result<Vec<String>, String> {
     let mut claims = Vec::new();
     for page in 0..CLAIM_PAGE_MAX {
-        // A revert is the controller's answer: no readable pending claims. The
-        // store is a separate source, so it is still read.
         let output = match transport
             .view(
                 controller,
@@ -853,8 +851,12 @@ async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
         {
             Ok(output) => output,
             Err(DotnsViewError::Reverted(reason)) => {
-                warn!(%reason, "DotnsPopController.pendingClaims reverted; reading the store only");
-                return Ok(Vec::new());
+                warn!(
+                    %reason,
+                    retained = claims.len(),
+                    "DotnsPopController.pendingClaims page reverted; retaining earlier pages"
+                );
+                break;
             }
             Err(DotnsViewError::Failed(reason)) => {
                 return Err(format!("DotnsPopController.pendingClaims: {reason}"));
@@ -1182,6 +1184,31 @@ mod tests {
         out
     }
 
+    fn abi_pending_claims(values: &[(String, u64)]) -> Vec<u8> {
+        let encoded = values
+            .iter()
+            .map(|(label, minted_at)| {
+                [
+                    abi_word(0x40).to_vec(),
+                    abi_word(*minted_at).to_vec(),
+                    abi_string(label),
+                ]
+                .concat()
+            })
+            .collect::<Vec<_>>();
+        let mut output = abi_word(0x20).to_vec();
+        output.extend_from_slice(&abi_word(encoded.len() as u64));
+        let mut offset = (encoded.len() * 32) as u64;
+        for value in &encoded {
+            output.extend_from_slice(&abi_word(offset));
+            offset += value.len() as u64;
+        }
+        for value in encoded {
+            output.extend_from_slice(&value);
+        }
+        output
+    }
+
     #[test]
     fn abi_decoders_handle_addresses_string_arrays_and_pending_claims() {
         let mut address = [0u8; 32];
@@ -1252,6 +1279,65 @@ mod tests {
         assert!(!claim_lapsed(1_000, 100, 1_100));
         assert!(claim_lapsed(1_000, 100, 1_101));
         assert!(!claim_lapsed(u64::MAX, 100, u64::MAX));
+    }
+
+    struct RevertingSecondClaimPage {
+        first_page: Vec<(String, u64)>,
+        pending_calls: usize,
+    }
+
+    #[truapi_platform::async_trait]
+    impl DotnsTransport for RevertingSecondClaimPage {
+        async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            assert_eq!(key, timestamp_now_key());
+            Ok(Some(100_000u64.to_le_bytes().to_vec()))
+        }
+
+        async fn view(
+            &mut self,
+            _dest: &[u8; 20],
+            input: Vec<u8>,
+        ) -> Result<Vec<u8>, DotnsViewError> {
+            let function: [u8; 4] = input[..4].try_into().expect("selector prefix");
+            if function == selector("pendingClaims(address,uint256,uint256)") {
+                self.pending_calls += 1;
+                let offset = decode_u64(&input[36..68]).expect("offset word");
+                let limit = decode_u64(&input[68..100]).expect("limit word");
+                assert_eq!(limit, CLAIM_PAGE_LIMIT);
+                if offset == 0 {
+                    return Ok(abi_pending_claims(&self.first_page));
+                }
+                assert_eq!(offset, CLAIM_PAGE_LIMIT);
+                return Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+                    detail: "offset past end".to_string(),
+                }));
+            }
+            if function == selector("reservationDuration()") {
+                return Ok(abi_word(100).to_vec());
+            }
+            panic!("unscripted view {}", hex::encode(function));
+        }
+    }
+
+    #[test]
+    fn a_later_pending_claim_page_revert_keeps_complete_earlier_pages() {
+        let expected = (0..CLAIM_PAGE_LIMIT)
+            .map(|index| format!("claim{index:02}"))
+            .collect::<Vec<_>>();
+        let mut transport = RevertingSecondClaimPage {
+            first_page: expected.iter().cloned().map(|label| (label, 50)).collect(),
+            pending_calls: 0,
+        };
+
+        let labels = futures::executor::block_on(pending_claim_labels(
+            &mut transport,
+            &[0xc0; 20],
+            &[0xaa; 20],
+        ))
+        .unwrap();
+
+        assert_eq!(labels, expected);
+        assert_eq!(transport.pending_calls, 2);
     }
 
     #[test]

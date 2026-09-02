@@ -17,6 +17,7 @@ pub mod rpc;
 pub mod slot;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
+pub mod view;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -61,6 +62,9 @@ pub enum StatementAllowanceError {
     /// Asset Hub PGAS claim failed.
     #[error(transparent)]
     Pgas(#[from] pgas::PgasError),
+    /// Runtime view-function dispatch or response decoding failed.
+    #[error(transparent)]
+    ViewFunction(#[from] view::ViewFunctionError),
     /// Bulletin allowance polling timed out.
     #[error("timed out waiting for Bulletin authorization")]
     BulletinAuthorizationTimeout,
@@ -537,13 +541,6 @@ pub async fn find_including_rings(
     let mut first_error = None;
     for candidate in candidates {
         let collection = candidate.collection;
-        if !collection.is_supported(metadata) {
-            // Logged rather than silent: if a runtime renames the constant, a
-            // full person quietly loses their wider budget and the only symptom
-            // is exhaustion at the light collection's share.
-            debug!(%collection, "chain declares no slot budget for this collection");
-            continue;
-        }
         match find_including_ring(rpc, metadata, collection, candidate.entropy, lookback).await {
             Ok(Some(ring)) => {
                 // A ring whose exponent has no proof domain cannot be proved
@@ -646,7 +643,7 @@ pub async fn register_statement_account(
                     }
                     // Nothing free: replace the oldest slot the runtime will
                     // let us take, and only then give up.
-                    let cooldown = slot::replacement_cooldown(metadata)?;
+                    let cooldown = slot::replacement_cooldown(rpc, metadata).await?;
                     let chain_now = slot::read_chain_now_seconds(rpc).await?;
                     match slot::replaceable_slot(
                         &occupied,
@@ -884,7 +881,7 @@ pub async fn register_statement_account_pooled(
         usable += 1;
         // Summed from the collections in play rather than from the full ones, so
         // the figure is the device's budget whichever branch reports it.
-        budget = budget.saturating_add(collection.slots_per_period(metadata)?);
+        budget = budget.saturating_add(collection.slots_per_period(rpc, metadata).await?);
         match &scan.selection {
             SlotSelection::Free(seq) => {
                 if free.is_none() {
@@ -923,7 +920,7 @@ pub async fn register_statement_account_pooled(
         Some((index, seq)) => (index, Preselected::Free(seq)),
         None if !params.allow_eviction => return Err(exhausted().into()),
         None => {
-            let cooldown = slot::replacement_cooldown(metadata)?;
+            let cooldown = slot::replacement_cooldown(rpc, metadata).await?;
             let chain_now = slot::read_chain_now_seconds(rpc).await?;
             let mut oldest: Option<(usize, u32, u64)> = None;
             for (index, occupied) in &full {
