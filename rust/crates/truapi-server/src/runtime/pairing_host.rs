@@ -7,6 +7,8 @@
 mod sso_channel;
 
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::channel::oneshot;
@@ -305,7 +307,7 @@ pub(crate) struct PairingHost {
     external_session_activation_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     /// Change notifications the sync task has finished reconciling.
     #[cfg(test)]
-    session_store_change_ticks: std::sync::atomic::AtomicUsize,
+    session_store_change_ticks: AtomicUsize,
     /// Self-reference captured by the spawned disconnect-monitor task.
     weak_self: Weak<PairingHost>,
     /// Task spawner for background monitors.
@@ -341,7 +343,7 @@ impl PairingHost {
             #[cfg(test)]
             external_session_activation_pause: Mutex::new(None),
             #[cfg(test)]
-            session_store_change_ticks: std::sync::atomic::AtomicUsize::new(0),
+            session_store_change_ticks: AtomicUsize::new(0),
             weak_self: weak_self.clone(),
             spawner: services.spawner.clone(),
         })
@@ -387,8 +389,7 @@ impl PairingHost {
     /// Change notifications the sync task has finished reconciling.
     #[cfg(test)]
     pub(crate) fn session_store_change_ticks_for_tests(&self) -> usize {
-        self.session_store_change_ticks
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.session_store_change_ticks.load(Ordering::SeqCst)
     }
 
     /// Test alias for [`Self::start_remote_monitor_for_current_session`].
@@ -605,12 +606,16 @@ impl PairingHost {
     #[instrument(skip_all, fields(runtime.method = "session_store.sync"))]
     pub(crate) fn start_session_store_sync(self: Arc<Self>, spawner: Spawner) {
         let pairing_host = Arc::downgrade(&self);
+        drop(self);
         spawner(Box::pin(async move {
-            let mut ticks = self.session_store_changes.subscribe();
+            let Some(booting) = pairing_host.upgrade() else {
+                return;
+            };
+            let mut ticks = booting.session_store_changes.subscribe();
             let mut sync = SessionStoreSync::default();
-            sync.reconcile(&self).await;
-            self.auth_state.announce_current();
-            drop(self);
+            sync.reconcile(&booting).await;
+            booting.auth_state.announce_current();
+            drop(booting);
             while ticks.next().await.is_some() {
                 let Some(pairing_host) = pairing_host.upgrade() else {
                     break;
@@ -619,7 +624,7 @@ impl PairingHost {
                 #[cfg(test)]
                 pairing_host
                     .session_store_change_ticks
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    .fetch_add(1, Ordering::SeqCst);
             }
         }));
     }
