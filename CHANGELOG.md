@@ -5,6 +5,16 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.13.1] - 2026-09-02
+
+### Fixed
+
+- resolve the dotNS controller whether the gateway stores a dispatcher or the controller (#564)
+- follow previewnet and paseo-next-v2 through their wipes (#579)
+- read Resources parameters through view functions (#577)
+- clear the active UI slot only while it owns it (#567)
+- page dotNS pendingClaims through its (address,uint256,uint256) view (#574)
+
 ## [0.13.0] - 2026-09-01
 
 ### Added
@@ -13,6 +23,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.13.0, @parity/truapi-host 0.10.0 (#568)
 - Paste pairing QR images in the host CLI (#552)
 
 ## [0.12.0] - 2026-08-31
@@ -445,7 +456,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 - Remove version field from RFC pseudocode CoinPaymentCheque
 - Fix codegen: collect error wrappers for ResultSubscription methods
 - Address review comments: remove version field, error aliases, and Resolvable type
-- Drop host*coin_payment* prefix from CoinPayment trait methods
+- Drop host_coin_payment_ prefix from CoinPayment trait methods
 - move notification methods from System to Notifications trait
 - implement RFC 0019 scheduled push notifications
 - Remove unused PaymentPurse alias and CoinPaymentInvoice type
@@ -528,7 +539,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 - truapi-codegen: emit HexString import in generated client.ts
 - add JsonRpc, Theme, ResourceAllocation traits + host_request_login
 - add remote_preimage_submit + statement_store_create_proof_authorized
-- add host*sign*\*\_with_legacy_account (wire 34–37)
+- add host_sign_*_with_legacy_account (wire 34–37)
 - rename remote_chain_head_follow → remote_chain_head_follow_subscribe
 - fix fmt
 - drop host_chat_create_simple_group entirely
@@ -621,3 +632,4 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 ### Fixed
 
 - clippy needless_borrow and stale type import
+
