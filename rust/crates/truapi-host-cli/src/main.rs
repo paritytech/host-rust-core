@@ -860,7 +860,7 @@ async fn report_slot_scan(
         }
         Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
-            let cooldown = alloc::slot::replacement_cooldown(metadata)?;
+            let cooldown = alloc::slot::replacement_cooldown(rpc, metadata).await?;
             // The runtime judges ages against its own clock, which trails ours.
             let chain_now = alloc::slot::read_chain_now_seconds(rpc).await?;
             println!(
