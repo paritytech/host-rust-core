@@ -7098,6 +7098,49 @@ mod tests {
     }
 
     #[test]
+    fn session_store_sync_stays_silent_on_an_unchanged_tick() {
+        let stored = sso_session_info();
+        let platform = Arc::new(StubPlatform {
+            session_blob: Some(crate::host_logic::session::encode_persisted_session(
+                &stored,
+            )),
+            ..Default::default()
+        });
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        pairing_host
+            .clone()
+            .start_session_store_sync_for_tests(test_spawner());
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the restored session",
+        );
+
+        pairing_host.notify_session_store_changed();
+        wait_until(
+            || pairing_host.session_store_change_ticks_for_tests() == 1,
+            "session store sync did not process the change tick",
+        );
+
+        // The store still holds the same session, so the tick is not a
+        // transition and must not repeat the opening state.
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(connected_session_ui_info(&stored))]
+        );
+    }
+
+    #[test]
     fn session_store_sync_replaces_valid_blob_and_broadcasts_connected() {
         let mut replacement = sso_session_info();
         replacement.public_key = [0x44; 32];
@@ -7192,8 +7235,8 @@ mod tests {
         assert_eq!(*session_clears.lock().unwrap(), 1);
     }
 
-    /// A persistently failing read clears the backing store once for the
-    /// initial sync tick. Further clears require explicit host notifications.
+    /// A persistently failing read clears the backing store once at boot.
+    /// Further clears require explicit host notifications.
     #[test]
     fn session_store_sync_clears_once_on_initial_persistent_read_error() {
         let session_clears = Arc::new(Mutex::new(0));
