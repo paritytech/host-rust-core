@@ -21,7 +21,7 @@
 //!
 //! On the wire (17 bytes):
 //!   [0c 70 3a 31]                      requestId = compact-len(3) + "p:1"
-//!   [c2]                               trait discriminant 194 = account
+//!   [02]                               trait discriminant 2 = account
 //!   [01]                               method discriminant 1 = get_account
 //!   [00]                               envelope version V1
 //!   [00]                               direction tag: Request

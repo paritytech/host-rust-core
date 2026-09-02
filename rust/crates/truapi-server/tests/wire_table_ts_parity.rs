@@ -184,11 +184,10 @@ fn rust_and_ts_wire_tables_agree() {
     );
 }
 
-/// `transport.ts` hand-mirrors two Rust constants that the generated table does
-/// not carry: the codec's trait-id floor and the reserved protocol-error
-/// address. They are hand-written on the TS side, so nothing but this test stops
-/// them drifting - and a drift means one language answers frames the other
-/// refuses.
+/// `transport.ts` hand-mirrors the reserved protocol-error address, which the
+/// generated table does not carry. It is hand-written on the TS side, so
+/// nothing but this test stops it drifting - and a drift means one language
+/// answers frames the other refuses.
 #[test]
 fn transport_ts_mirrors_the_rust_wire_constants() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -197,7 +196,6 @@ fn transport_ts_mirrors_the_rust_wire_constants() {
         .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
 
     for (name, expected) in [
-        ("MIN_TRAIT_ID", truapi::MIN_TRAIT_ID),
         ("PROTOCOL_ERROR_TRAIT_ID", 255),
         ("PROTOCOL_ERROR_METHOD_ID", 255),
     ] {

@@ -9,7 +9,7 @@ use crate::{CallContext, CallError};
 use crate::{wire, wire_trait};
 
 /// Notification methods for locally-rendered push notifications.
-#[wire_trait(id = 200)]
+#[wire_trait(id = 8)]
 #[crate::async_trait]
 pub trait Notifications: Send + Sync {
     /// Send a push notification to the user.

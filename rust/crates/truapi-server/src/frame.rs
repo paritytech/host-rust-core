@@ -362,9 +362,9 @@ mod tests {
     fn handshake_request_encodes_with_the_system_trait_pair() {
         // SCALE-encoded HostHandshakeRequest::V1(2u8) = [0u8 variant][2u8 codec_version]
         let inner: Vec<u8> = vec![0x00, 0x02];
-        // system trait = 193, handshake request = 0.
-        let msg = build(193, 0, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(193, 0, &inner));
+        // system trait = 1, handshake request = 0.
+        let msg = build(1, 0, inner.clone());
+        assert_eq!(msg.encode(), expected_wire(1, 0, &inner));
     }
 
     /// Pins where the pair lands for a multi-byte payload. The payload here is
@@ -377,9 +377,9 @@ mod tests {
         let mut inner = vec![0x00]; // V1 variant
         "foo".to_string().encode_to(&mut inner);
         0u32.encode_to(&mut inner);
-        // account trait = 194, get_account request = 4.
-        let msg = build(194, 4, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(194, 4, &inner));
+        // account trait = 2, get_account request = 4.
+        let msg = build(2, 4, inner.clone());
+        assert_eq!(msg.encode(), expected_wire(2, 4, &inner));
     }
 
     #[test]
@@ -448,7 +448,7 @@ mod tests {
     /// codec. Catches a regression where `Decode` mishandles a frame whose
     /// payload is a bare `[version, Stop]` pair (no further inner data) but
     /// carries more for `Start`/`Interrupt`/`Receive`. The address is
-    /// `account_connection_status_subscribe`'s (trait 194, method 0).
+    /// `account_connection_status_subscribe`'s (trait 2, method 0).
     #[test]
     fn subscription_phases_round_trip_through_codec() {
         let cases: &[Vec<u8>] = &[
@@ -458,11 +458,11 @@ mod tests {
             vec![0x00, 0x03, 0x01, 0x02, 0x03], // receive: [version, Receive, item bytes]
         ];
         for value in cases {
-            let msg = build(194, 0, value.clone());
+            let msg = build(2, 0, value.clone());
             let bytes = msg.encode();
             assert_eq!(
                 bytes,
-                expected_wire(194, 0, value),
+                expected_wire(2, 0, value),
                 "encode mismatch for payload {value:?}"
             );
             let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
@@ -475,16 +475,16 @@ mod tests {
     #[test]
     fn id_helpers_resolve_known_methods() {
         let handshake = request_ids("system_handshake").expect("known request method");
-        assert_eq!(handshake.trait_id, 193);
+        assert_eq!(handshake.trait_id, 1);
         assert_eq!(handshake.method_id, 0);
 
         let get_account = request_ids("account_get_account").expect("known request method");
-        assert_eq!(get_account.trait_id, 194);
+        assert_eq!(get_account.trait_id, 2);
         assert_eq!(get_account.method_id, 1);
 
         let sub =
             subscription_ids("account_connection_status_subscribe").expect("known subscription");
-        assert_eq!(sub.trait_id, 194);
+        assert_eq!(sub.trait_id, 2);
         assert_eq!(sub.method_id, 0);
 
         // A request method is not a subscription and vice versa.
@@ -533,10 +533,10 @@ mod tests {
     /// handle `remaining_len == 0` without erroring or reading past EOF.
     #[test]
     fn empty_payload_round_trips() {
-        // local_storage_clear_response = (199, 5).
-        let msg = build(199, 5, Vec::new());
+        // local_storage_clear_response = (7, 5).
+        let msg = build(7, 5, Vec::new());
         let bytes = msg.encode();
-        // [SCALE compact-len 0x0c][p][:][1][u8 199][u8 5] = 4 + 2 = 6 bytes total
+        // [SCALE compact-len 0x0c][p][:][1][u8 7][u8 5] = 4 + 2 = 6 bytes total
         assert_eq!(bytes.len(), 6);
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
         assert_eq!(decoded, msg);

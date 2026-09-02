@@ -6,8 +6,6 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-pub use truapi::{MAX_CODEC_1_METHOD_ID, MIN_TRAIT_ID};
-
 /// Minimum rustdoc JSON `format_version` the extractors are tested against.
 /// Emitted by nightly 2026-02-23 (rustc 1.95.0-nightly); older formats may
 /// encode item shapes differently and are rejected outright.

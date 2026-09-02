@@ -101,27 +101,16 @@ pub fn generate_wire_table(api: &ApiDefinition) -> Result<String> {
 }
 
 /// The trait's wire discriminant. Every API trait must carry a
-/// `#[wire_trait(id = N)]` annotation whose id is at least
-/// [`MIN_TRAIT_ID`] and is not 255, which is reserved for protocol errors
+/// `#[wire_trait(id = N)]` annotation; 255 is reserved for protocol errors
 /// (that one is caught as a collision against the seeded reservation, not
 /// here).
 fn trait_wire_id(trait_def: &TraitDef) -> Result<u8> {
-    let id = trait_def.wire_trait_id.ok_or_else(|| {
+    trait_def.wire_trait_id.ok_or_else(|| {
         anyhow::anyhow!(
             "trait `{}` is missing #[wire_trait(id = N)] annotation",
             trait_def.name
         )
-    })?;
-    if id < MIN_TRAIT_ID {
-        bail!(
-            "trait `{}` has wire trait id {id}, below the minimum {MIN_TRAIT_ID}: \
-             ids under {MIN_TRAIT_ID} are reserved so that a codec 1 frame, whose \
-             single flat method byte never exceeded {MAX_CODEC_1_METHOD_ID}, can \
-             never be mistaken for a codec 2 trait",
-            trait_def.name
-        );
-    }
-    Ok(id)
+    })
 }
 
 fn method_entry(trait_def: &TraitDef, trait_id: u8, method: &MethodDef) -> Result<MethodEntry> {

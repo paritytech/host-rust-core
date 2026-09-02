@@ -135,8 +135,9 @@ function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Ar
 
 /**
  * The fixed frame `transport.ts` sends to decline a host-initiated render:
- * `[version=V1, direction=Interrupt, Option::None]`. The host only reads the
- * direction byte for this flow, so one constant frame covers every method.
+ * `[version=V1, direction=Interrupt, Some(CallError::HostFailure{reason:
+ * "unavailable"})]`. `HostFailure`'s payload doesn't depend on the method's
+ * own domain error type, so one constant frame covers every method.
  */
 function rendererInterrupt(requestId: string): Uint8Array {
     return unwrap(
@@ -145,7 +146,9 @@ function rendererInterrupt(requestId: string): Uint8Array {
             payload: {
                 traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
                 methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.method,
-                value: new Uint8Array([0, 2, 0]),
+                value: new Uint8Array([
+                    0, 2, 1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101,
+                ]),
             },
         }),
         "encode renderer interrupt",
@@ -216,7 +219,7 @@ describe("generated client transport", () => {
         });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 194; // account trait
+        expectedFrame[str.enc("p:1").length] = 2; // account trait
         expectedFrame[str.enc("p:1").length + 1] = 1; // get_account
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
@@ -236,7 +239,7 @@ describe("generated client transport", () => {
         });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 193; // system trait
+        expectedFrame[str.enc("p:1").length] = 1; // system trait
         expectedFrame[str.enc("p:1").length + 1] = 0; // handshake
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
@@ -706,16 +709,17 @@ describe("generated client transport", () => {
         expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
     });
 
-    it("refuses a codec 1 handshake ping and stays usable", () => {
+    it("answers a codec 1 handshake ping with a protocol error and stays usable", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
         const client = createClient(transport);
 
         // A codec 1 host frames its ping as [requestId][u8 id=0][V1][codec=1].
         // Read against the two-byte discriminant that is trait 0, method 0 --
-        // and trait 0 is below the codec 2 floor, so it can never name a real
-        // trait. The ping is refused rather than answered on a wire the peer
-        // cannot parse anyway.
+        // trait 0 is unassigned (real traits start at 1), so this is an
+        // ordinary unknown pair, answered with a protocol error like any
+        // other, rather than silently dropped on a guess about the sender's
+        // codec version.
         const legacyFrame = new Uint8Array([
             ...str.enc("h:1"),
             0x00, // old flat discriminant, read as the trait byte
@@ -724,12 +728,13 @@ describe("generated client transport", () => {
         ]);
         fixture.receive(legacyFrame);
 
-        expect(fixture.sent.length).toBe(0);
+        expect(fixture.sent.length).toBe(1);
+        expect(toHex(fixture.sent[0])).toBe(toHex(unsupportedMessage("h:1", 0, 0)));
 
         // The transport must survive: a ping it cannot parse is a peer
         // problem, not grounds for tearing down every pending call.
         void client.account.getAccount({ productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Index", value: 0 } } });
-        expect(fixture.sent.length).toBe(1);
+        expect(fixture.sent.length).toBe(2);
     });
 
     it("ignores a response whose trait does not match the pending request", async () => {
@@ -983,6 +988,47 @@ describe("generated client transport", () => {
         fixture.receive(frame);
 
         expect(completions).toEqual([[]]);
+    });
+
+    it("surfaces a framework-level interrupt as an observable error on a plain subscription", () => {
+        // `chat.listSubscribe` has no domain error of its own (unlike
+        // `payment.balanceSubscribe` below): its Interrupt carries a bare
+        // `CallErrorValue<GenericError>`. A worker-only subscription like this
+        // one denied to an app connection, or a malformed start frame, both
+        // arrive this way and must surface as a real error, not a silent
+        // `.complete()`.
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const completions: unknown[][] = [];
+        const errors: Error[] = [];
+
+        const sub = client.chat.listSubscribe().subscribe({
+            complete: (...args) => completions.push(args),
+            error: (error) => errors.push(error),
+        });
+
+        const callError: CallErrorValue<never> = { tag: "Denied" };
+        const frame = unwrap(
+            encodeWireMessage({
+                requestId: sub.subscriptionId,
+                payload: {
+                    traitId: W.CHAT_LIST_SUBSCRIBE.trait,
+                    methodId: W.CHAT_LIST_SUBSCRIBE.method,
+                    value: T.HostChatListSubscribeVersion.enc({
+                        tag: "V1",
+                        value: { tag: "Interrupt", value: callError },
+                    }),
+                },
+            }),
+            "encode denied interrupt",
+        );
+        fixture.receive(frame);
+
+        expect(completions).toEqual([]);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBeInstanceOf(SubscriptionError);
+        expect((errors[0] as SubscriptionError).reason).toEqual(callError);
     });
 
     it("surfaces a typed payment interrupt as an observable error", () => {

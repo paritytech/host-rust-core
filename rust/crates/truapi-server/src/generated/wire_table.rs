@@ -40,433 +40,433 @@ pub enum WireKind {
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
-    trait_id: 193,
+    trait_id: 1,
     method_id: 0,
 };
 
 /// Wire discriminants for `system_feature_supported`.
 pub const SYSTEM_FEATURE_SUPPORTED: MethodIds = MethodIds {
-    trait_id: 193,
+    trait_id: 1,
     method_id: 1,
 };
 
 /// Wire discriminants for `system_navigate_to`.
 pub const SYSTEM_NAVIGATE_TO: MethodIds = MethodIds {
-    trait_id: 193,
+    trait_id: 1,
     method_id: 2,
 };
 
 /// Wire discriminants for `system_host_info`.
 pub const SYSTEM_HOST_INFO: MethodIds = MethodIds {
-    trait_id: 193,
+    trait_id: 1,
     method_id: 3,
 };
 
 /// Wire discriminants for `system_get_product_context`.
 pub const SYSTEM_GET_PRODUCT_CONTEXT: MethodIds = MethodIds {
-    trait_id: 193,
+    trait_id: 1,
     method_id: 4,
 };
 
 /// Wire discriminants for `account_connection_status_subscribe`.
 pub const ACCOUNT_CONNECTION_STATUS_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 0,
 };
 
 /// Wire discriminants for `account_get_account`.
 pub const ACCOUNT_GET_ACCOUNT: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 1,
 };
 
 /// Wire discriminants for `account_get_account_alias`.
 pub const ACCOUNT_GET_ACCOUNT_ALIAS: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 2,
 };
 
 /// Wire discriminants for `account_create_account_proof`.
 pub const ACCOUNT_CREATE_ACCOUNT_PROOF: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 3,
 };
 
 /// Wire discriminants for `account_get_legacy_accounts`.
 pub const ACCOUNT_GET_LEGACY_ACCOUNTS: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 4,
 };
 
 /// Wire discriminants for `account_get_user_id`.
 pub const ACCOUNT_GET_USER_ID: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 5,
 };
 
 /// Wire discriminants for `account_request_login`.
 pub const ACCOUNT_REQUEST_LOGIN: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 6,
 };
 
 /// Wire discriminants for `account_sign_vrf`.
 pub const ACCOUNT_SIGN_VRF: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 7,
 };
 
 /// Wire discriminants for `account_register_ring_vrf_key`.
 pub const ACCOUNT_REGISTER_RING_VRF_KEY: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 8,
 };
 
 /// Wire discriminants for `account_list_ring_vrf_keys`.
 pub const ACCOUNT_LIST_RING_VRF_KEYS: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 9,
 };
 
 /// Wire discriminants for `account_ring_vrf_sign`.
 pub const ACCOUNT_RING_VRF_SIGN: MethodIds = MethodIds {
-    trait_id: 194,
+    trait_id: 2,
     method_id: 10,
 };
 
 /// Wire discriminants for `chain_follow_head_subscribe`.
 pub const CHAIN_FOLLOW_HEAD_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 0,
 };
 
 /// Wire discriminants for `chain_get_head_header`.
 pub const CHAIN_GET_HEAD_HEADER: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 1,
 };
 
 /// Wire discriminants for `chain_get_head_body`.
 pub const CHAIN_GET_HEAD_BODY: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 2,
 };
 
 /// Wire discriminants for `chain_get_head_storage`.
 pub const CHAIN_GET_HEAD_STORAGE: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 3,
 };
 
 /// Wire discriminants for `chain_call_head`.
 pub const CHAIN_CALL_HEAD: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 4,
 };
 
 /// Wire discriminants for `chain_unpin_head`.
 pub const CHAIN_UNPIN_HEAD: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 5,
 };
 
 /// Wire discriminants for `chain_continue_head`.
 pub const CHAIN_CONTINUE_HEAD: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 6,
 };
 
 /// Wire discriminants for `chain_stop_head_operation`.
 pub const CHAIN_STOP_HEAD_OPERATION: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 7,
 };
 
 /// Wire discriminants for `chain_get_spec_genesis_hash`.
 pub const CHAIN_GET_SPEC_GENESIS_HASH: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 8,
 };
 
 /// Wire discriminants for `chain_get_spec_chain_name`.
 pub const CHAIN_GET_SPEC_CHAIN_NAME: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 9,
 };
 
 /// Wire discriminants for `chain_get_spec_properties`.
 pub const CHAIN_GET_SPEC_PROPERTIES: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 10,
 };
 
 /// Wire discriminants for `chain_broadcast_transaction`.
 pub const CHAIN_BROADCAST_TRANSACTION: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 11,
 };
 
 /// Wire discriminants for `chain_stop_transaction`.
 pub const CHAIN_STOP_TRANSACTION: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 12,
 };
 
 /// Wire discriminants for `chain_get_chain_info`.
 pub const CHAIN_GET_CHAIN_INFO: MethodIds = MethodIds {
-    trait_id: 195,
+    trait_id: 3,
     method_id: 13,
 };
 
 /// Wire discriminants for `chat_create_room`.
 pub const CHAT_CREATE_ROOM: MethodIds = MethodIds {
-    trait_id: 196,
+    trait_id: 4,
     method_id: 0,
 };
 
 /// Wire discriminants for `chat_register_bot`.
 pub const CHAT_REGISTER_BOT: MethodIds = MethodIds {
-    trait_id: 196,
+    trait_id: 4,
     method_id: 1,
 };
 
 /// Wire discriminants for `chat_list_subscribe`.
 pub const CHAT_LIST_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 196,
+    trait_id: 4,
     method_id: 2,
 };
 
 /// Wire discriminants for `chat_post_message`.
 pub const CHAT_POST_MESSAGE: MethodIds = MethodIds {
-    trait_id: 196,
+    trait_id: 4,
     method_id: 3,
 };
 
 /// Wire discriminants for `chat_action_subscribe`.
 pub const CHAT_ACTION_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 196,
+    trait_id: 4,
     method_id: 4,
 };
 
 /// Wire discriminants for `chat_custom_message_render`.
 pub const CHAT_CUSTOM_MESSAGE_RENDER: MethodIds = MethodIds {
-    trait_id: 196,
+    trait_id: 4,
     method_id: 5,
 };
 
 /// Wire discriminants for `coin_payment_create_purse`.
 pub const COIN_PAYMENT_CREATE_PURSE: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 0,
 };
 
 /// Wire discriminants for `coin_payment_query_purse`.
 pub const COIN_PAYMENT_QUERY_PURSE: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 1,
 };
 
 /// Wire discriminants for `coin_payment_rebalance_purse`.
 pub const COIN_PAYMENT_REBALANCE_PURSE: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 2,
 };
 
 /// Wire discriminants for `coin_payment_delete_purse`.
 pub const COIN_PAYMENT_DELETE_PURSE: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 3,
 };
 
 /// Wire discriminants for `coin_payment_create_receivable`.
 pub const COIN_PAYMENT_CREATE_RECEIVABLE: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 4,
 };
 
 /// Wire discriminants for `coin_payment_create_cheque`.
 pub const COIN_PAYMENT_CREATE_CHEQUE: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 5,
 };
 
 /// Wire discriminants for `coin_payment_deposit`.
 pub const COIN_PAYMENT_DEPOSIT: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 6,
 };
 
 /// Wire discriminants for `coin_payment_refund`.
 pub const COIN_PAYMENT_REFUND: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 7,
 };
 
 /// Wire discriminants for `coin_payment_listen_for_payment`.
 pub const COIN_PAYMENT_LISTEN_FOR_PAYMENT: MethodIds = MethodIds {
-    trait_id: 197,
+    trait_id: 5,
     method_id: 8,
 };
 
 /// Wire discriminants for `entropy_derive`.
 pub const ENTROPY_DERIVE: MethodIds = MethodIds {
-    trait_id: 198,
+    trait_id: 6,
     method_id: 0,
 };
 
 /// Wire discriminants for `local_storage_read`.
 pub const LOCAL_STORAGE_READ: MethodIds = MethodIds {
-    trait_id: 199,
+    trait_id: 7,
     method_id: 0,
 };
 
 /// Wire discriminants for `local_storage_write`.
 pub const LOCAL_STORAGE_WRITE: MethodIds = MethodIds {
-    trait_id: 199,
+    trait_id: 7,
     method_id: 1,
 };
 
 /// Wire discriminants for `local_storage_clear`.
 pub const LOCAL_STORAGE_CLEAR: MethodIds = MethodIds {
-    trait_id: 199,
+    trait_id: 7,
     method_id: 2,
 };
 
 /// Wire discriminants for `notifications_send_push_notification`.
 pub const NOTIFICATIONS_SEND_PUSH_NOTIFICATION: MethodIds = MethodIds {
-    trait_id: 200,
+    trait_id: 8,
     method_id: 0,
 };
 
 /// Wire discriminants for `notifications_cancel_push_notification`.
 pub const NOTIFICATIONS_CANCEL_PUSH_NOTIFICATION: MethodIds = MethodIds {
-    trait_id: 200,
+    trait_id: 8,
     method_id: 1,
 };
 
 /// Wire discriminants for `payment_balance_subscribe`.
 pub const PAYMENT_BALANCE_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 201,
+    trait_id: 9,
     method_id: 0,
 };
 
 /// Wire discriminants for `payment_top_up`.
 pub const PAYMENT_TOP_UP: MethodIds = MethodIds {
-    trait_id: 201,
+    trait_id: 9,
     method_id: 1,
 };
 
 /// Wire discriminants for `payment_request`.
 pub const PAYMENT_REQUEST: MethodIds = MethodIds {
-    trait_id: 201,
+    trait_id: 9,
     method_id: 2,
 };
 
 /// Wire discriminants for `payment_status_subscribe`.
 pub const PAYMENT_STATUS_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 201,
+    trait_id: 9,
     method_id: 3,
 };
 
 /// Wire discriminants for `permissions_request_device_permission`.
 pub const PERMISSIONS_REQUEST_DEVICE_PERMISSION: MethodIds = MethodIds {
-    trait_id: 202,
+    trait_id: 10,
     method_id: 0,
 };
 
 /// Wire discriminants for `permissions_request_remote_permission`.
 pub const PERMISSIONS_REQUEST_REMOTE_PERMISSION: MethodIds = MethodIds {
-    trait_id: 202,
+    trait_id: 10,
     method_id: 1,
 };
 
 /// Wire discriminants for `preimage_lookup_subscribe`.
 pub const PREIMAGE_LOOKUP_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 203,
+    trait_id: 11,
     method_id: 0,
 };
 
 /// Wire discriminants for `preimage_submit`.
 pub const PREIMAGE_SUBMIT: MethodIds = MethodIds {
-    trait_id: 203,
+    trait_id: 11,
     method_id: 1,
 };
 
 /// Wire discriminants for `resource_allocation_request`.
 pub const RESOURCE_ALLOCATION_REQUEST: MethodIds = MethodIds {
-    trait_id: 204,
+    trait_id: 12,
     method_id: 0,
 };
 
 /// Wire discriminants for `signing_create_transaction`.
 pub const SIGNING_CREATE_TRANSACTION: MethodIds = MethodIds {
-    trait_id: 205,
+    trait_id: 13,
     method_id: 0,
 };
 
 /// Wire discriminants for `signing_create_transaction_with_legacy_account`.
 pub const SIGNING_CREATE_TRANSACTION_WITH_LEGACY_ACCOUNT: MethodIds = MethodIds {
-    trait_id: 205,
+    trait_id: 13,
     method_id: 1,
 };
 
 /// Wire discriminants for `signing_sign_raw_with_legacy_account`.
 pub const SIGNING_SIGN_RAW_WITH_LEGACY_ACCOUNT: MethodIds = MethodIds {
-    trait_id: 205,
+    trait_id: 13,
     method_id: 2,
 };
 
 /// Wire discriminants for `signing_sign_payload_with_legacy_account`.
 pub const SIGNING_SIGN_PAYLOAD_WITH_LEGACY_ACCOUNT: MethodIds = MethodIds {
-    trait_id: 205,
+    trait_id: 13,
     method_id: 3,
 };
 
 /// Wire discriminants for `signing_sign_raw`.
 pub const SIGNING_SIGN_RAW: MethodIds = MethodIds {
-    trait_id: 205,
+    trait_id: 13,
     method_id: 4,
 };
 
 /// Wire discriminants for `signing_sign_payload`.
 pub const SIGNING_SIGN_PAYLOAD: MethodIds = MethodIds {
-    trait_id: 205,
+    trait_id: 13,
     method_id: 5,
 };
 
 /// Wire discriminants for `statement_store_subscribe`.
 pub const STATEMENT_STORE_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 206,
+    trait_id: 14,
     method_id: 0,
 };
 
 /// Wire discriminants for `statement_store_create_proof`.
 pub const STATEMENT_STORE_CREATE_PROOF: MethodIds = MethodIds {
-    trait_id: 206,
+    trait_id: 14,
     method_id: 1,
 };
 
 /// Wire discriminants for `statement_store_submit`.
 pub const STATEMENT_STORE_SUBMIT: MethodIds = MethodIds {
-    trait_id: 206,
+    trait_id: 14,
     method_id: 2,
 };
 
 /// Wire discriminants for `statement_store_create_proof_authorized`.
 pub const STATEMENT_STORE_CREATE_PROOF_AUTHORIZED: MethodIds = MethodIds {
-    trait_id: 206,
+    trait_id: 14,
     method_id: 3,
 };
 
 /// Wire discriminants for `theme_subscribe`.
 pub const THEME_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 207,
+    trait_id: 15,
     method_id: 0,
 };
 
 /// Wire discriminants for `locale_subscribe`.
 pub const LOCALE_SUBSCRIBE: MethodIds = MethodIds {
-    trait_id: 208,
+    trait_id: 16,
     method_id: 0,
 };
 

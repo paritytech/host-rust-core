@@ -23,7 +23,7 @@ use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 
 /// Chain interaction methods.
-#[wire_trait(id = 195)]
+#[wire_trait(id = 3)]
 #[crate::async_trait]
 pub trait Chain: Send + Sync {
     /// Follow the chain head and receive block events.

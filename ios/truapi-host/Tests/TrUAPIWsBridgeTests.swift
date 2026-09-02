@@ -83,13 +83,13 @@ private extension TrUAPIWsBridgeTests {
         )
     }
 
-    // wire_table.rs: SYSTEM_FEATURE_SUPPORTED { trait_id: 193, method_id: 1 }.
+    // wire_table.rs: SYSTEM_FEATURE_SUPPORTED { trait_id: 1, method_id: 1 }.
     // Both bytes are load-bearing: a lone method byte is read as the trait and
     // routes into a different trait's method 0 rather than failing.
-    static let featureSupportedDiscriminant = Data([0xC1, 0x01])
+    static let featureSupportedDiscriminant = Data([0x01, 0x01])
 
-    // wire_table.rs: SYSTEM_HOST_INFO { trait_id: 193, method_id: 3 }.
-    static let hostInfoDiscriminant = Data([0xC1, 0x03])
+    // wire_table.rs: SYSTEM_HOST_INFO { trait_id: 1, method_id: 3 }.
+    static let hostInfoDiscriminant = Data([0x01, 0x03])
 
     static func hostInfoRequestFrame() -> Data {
         var frame = Data()

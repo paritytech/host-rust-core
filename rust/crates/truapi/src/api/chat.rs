@@ -11,7 +11,7 @@ use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 
 /// Chat room, bot, and message APIs.
-#[wire_trait(id = 196)]
+#[wire_trait(id = 4)]
 #[crate::service(required_execution = Worker)]
 #[crate::async_trait]
 pub trait Chat: Send + Sync {

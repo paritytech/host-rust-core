@@ -268,25 +268,42 @@ mod tests {
     /// `preimage_submit`).
     #[test]
     fn collision_safe_when_two_traits_share_method_name() {
+        let mut statement_store_submit = make_request_method("submit", 62);
+        statement_store_submit.params[0].type_ref = TypeRef::Named {
+            name: "StatementStoreSubmitRequest".to_string(),
+            args: vec![],
+        };
+        let mut preimage_submit = make_request_method("submit", 68);
+        preimage_submit.params[0].type_ref = TypeRef::Named {
+            name: "PreimageSubmitRequest".to_string(),
+            args: vec![],
+        };
         let api = ApiDefinition {
             traits: vec![
                 TraitDef {
                     name: "StatementStore".to_string(),
                     module_path: Vec::new(),
                     wire_trait_id: Some(193),
-                    methods: vec![make_request_method("submit", 62)],
+                    methods: vec![statement_store_submit],
                     docs: None,
                 },
                 TraitDef {
                     name: "Preimage".to_string(),
                     module_path: Vec::new(),
                     wire_trait_id: Some(194),
-                    methods: vec![make_request_method("submit", 68)],
+                    methods: vec![preimage_submit],
                     docs: None,
                 },
             ],
             public_trait_order: vec!["StatementStore".to_string(), "Preimage".to_string()],
-            types: versioned_request_test_types(),
+            types: {
+                let mut types = versioned_request_test_types();
+                types.push(versioned_test_type("StatementStoreSubmitRequest"));
+                types.push(versioned_test_type("StatementStoreSubmitVersion"));
+                types.push(versioned_test_type("PreimageSubmitRequest"));
+                types.push(versioned_test_type("PreimageSubmitVersion"));
+                types
+            },
         };
 
         let dispatcher = generate_dispatcher(&api).expect("dispatcher");
@@ -359,16 +376,26 @@ mod tests {
     /// same API produces byte-identical output.
     #[test]
     fn idempotent_emission() {
+        let mut method = make_request_method("request_device_permission", 8);
+        method.params[0].type_ref = TypeRef::Named {
+            name: "RequestDevicePermissionRequest".to_string(),
+            args: vec![],
+        };
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
                 wire_trait_id: Some(197),
-                methods: vec![make_request_method("request_device_permission", 8)],
+                methods: vec![method],
                 docs: None,
             }],
             public_trait_order: vec!["Permissions".to_string()],
-            types: versioned_request_test_types(),
+            types: {
+                let mut types = versioned_request_test_types();
+                types.push(versioned_test_type("RequestDevicePermissionRequest"));
+                types.push(versioned_test_type("RequestDevicePermissionVersion"));
+                types
+            },
         };
 
         let dispatcher_a = generate_dispatcher(&api).expect("dispatcher a");
@@ -527,32 +554,6 @@ mod tests {
         );
     }
 
-    /// A trait id inside the range codec 1 could address must be refused.
-    /// Codec 2 reads that byte as the trait, so a low id would let a codec 1
-    /// frame decode into a registered trait and execute the wrong method
-    /// instead of being reported as unroutable.
-    #[test]
-    fn wire_table_rejects_trait_id_below_the_codec_1_floor() {
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Permissions".to_string(),
-                module_path: Vec::new(),
-                wire_trait_id: Some(MIN_TRAIT_ID - 1),
-                methods: vec![make_request_method("request_device_permission", 8)],
-                docs: None,
-            }],
-            public_trait_order: vec!["Permissions".to_string()],
-            types: vec![],
-        };
-
-        let err = generate_wire_table(&api).expect_err("a below-floor trait id must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("below the minimum"),
-            "unexpected error message: {msg}",
-        );
-    }
-
     /// The other half of the reservation: it must not have grown. A method id of
     /// 255 inside an ordinary trait is a legal address under a two-byte
     /// envelope, and refusing it would silently cost every trait its last slot.
@@ -563,7 +564,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(MIN_TRAIT_ID),
+                wire_trait_id: Some(1),
                 methods: vec![method],
                 docs: None,
             }],
@@ -571,7 +572,7 @@ mod tests {
             types: vec![],
         };
 
-        generate_wire_table(&api).expect("(MIN_TRAIT_ID, 255) is an ordinary address");
+        generate_wire_table(&api).expect("(1, 255) is an ordinary address");
     }
 
     /// Pin `wire_const_name`'s `convert_case::Case::UpperSnake` behavior:
@@ -692,112 +693,6 @@ mod tests {
         let msg = format!("{err}");
         assert!(
             msg.contains("response is not a versioned wrapper"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    #[test]
-    fn dispatcher_versioned_request_with_raw_error_errors() {
-        let mut method = make_request_method("alpha", 10);
-        method.return_type = ReturnType::Result {
-            ok: TypeRef::Named {
-                name: "RespWrapper".to_string(),
-                args: vec![],
-            },
-            err: TypeRef::Named {
-                name: "CallError".to_string(),
-                args: vec![TypeRef::Named {
-                    name: "RawError".to_string(),
-                    args: vec![],
-                }],
-            },
-        };
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Permissions".to_string(),
-                module_path: Vec::new(),
-                wire_trait_id: Some(197),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Permissions".to_string()],
-            types: vec![
-                versioned_test_type("ReqWrapper"),
-                versioned_test_type("RespWrapper"),
-            ],
-        };
-
-        let err = generate_dispatcher(&api).expect_err("raw error wrapper must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("versioned request methods must use versioned errors"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    #[test]
-    fn dispatcher_raw_request_with_versioned_response_errors() {
-        let mut method = make_request_method("alpha", 10);
-        method.params[0].type_ref = TypeRef::Named {
-            name: "RawRequest".to_string(),
-            args: vec![],
-        };
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Permissions".to_string(),
-                module_path: Vec::new(),
-                wire_trait_id: Some(197),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Permissions".to_string()],
-            types: vec![
-                versioned_test_type("RespWrapper"),
-                versioned_test_type("ErrWrapper"),
-            ],
-        };
-
-        let err = generate_dispatcher(&api).expect_err("missing target version must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("versioned responses require a target version"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    #[test]
-    fn dispatcher_result_subscription_with_raw_error_errors() {
-        let mut method = make_subscription_method("alpha_subscribe", 20);
-        method.kind = MethodKind::ResultSubscription;
-        method.return_type = ReturnType::ResultSubscription {
-            item: TypeRef::Named {
-                name: "ItemWrapper".to_string(),
-                args: vec![],
-            },
-            err: TypeRef::Named {
-                name: "CallError".to_string(),
-                args: vec![TypeRef::Named {
-                    name: "RawError".to_string(),
-                    args: vec![],
-                }],
-            },
-        };
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Account".to_string(),
-                module_path: Vec::new(),
-                wire_trait_id: Some(192),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Account".to_string()],
-            types: vec![versioned_test_type("ItemWrapper")],
-        };
-
-        let err = generate_dispatcher(&api).expect_err("raw result subscription error must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("result subscription methods must have an error wrapper"),
             "unexpected error message: {msg}",
         );
     }

@@ -12,7 +12,7 @@ use crate::{wire, wire_trait};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
 /// navigation, and runtime information.
-#[wire_trait(id = 193)]
+#[wire_trait(id = 1)]
 #[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.

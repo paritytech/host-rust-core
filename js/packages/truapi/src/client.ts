@@ -3,7 +3,6 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
-  MIN_TRAIT_ID,
   PROTOCOL_ERROR_METHOD_ID,
   PROTOCOL_ERROR_TRAIT_ID,
   type HostInitiatedSubscriptionHandler,
@@ -474,15 +473,6 @@ export function createTransport(
     reportProtocolViolation(
       `unsupported frame with discriminant (${payload.traitId}, ${payload.methodId}): request ${requestId} is not pending and has no subscription`,
     );
-    // Answer only a peer that could read the answer. A trait byte below the
-    // floor is not a trait at all - it is a codec 1 peer's flat method id - and
-    // such a peer would read our `(255, 255)` reply as codec 1 discriminant 255
-    // with a payload it cannot decode, and tear its own transport down over a
-    // malformed-protocol-error that says nothing about the real problem. The
-    // log above is the diagnostic for that case.
-    if (payload.traitId < MIN_TRAIT_ID) {
-      return;
-    }
     try {
       send({
         requestId,

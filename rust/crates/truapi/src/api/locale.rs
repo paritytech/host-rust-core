@@ -5,7 +5,7 @@ use crate::{CallContext, Subscription};
 use crate::{wire, wire_trait};
 
 /// Host locale subscription.
-#[wire_trait(id = 208)]
+#[wire_trait(id = 16)]
 #[crate::async_trait]
 pub trait Locale: Send + Sync {
     /// Subscribe to the host's selected locale.
