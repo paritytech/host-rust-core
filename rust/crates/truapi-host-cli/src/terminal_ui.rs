@@ -3054,6 +3054,20 @@ mod tests {
     use ratatui::layout::Position;
     use tracing_subscriber::layer::SubscriberExt;
 
+    /// Serializes the tests that install their own sender into the active UI
+    /// slot, so one test's install cannot displace a sender another test is
+    /// still reading from.
+    static ACTIVE_UI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Claim the active UI slot for the duration of a test. A test that panics
+    /// while holding the slot poisons the lock; recover so the panic stays
+    /// local to that test instead of cascading into the next one.
+    fn lock_active_ui() -> std::sync::MutexGuard<'static, ()> {
+        ACTIVE_UI_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn test_app() -> App {
         App::new(
             "testnet".to_string(),
@@ -3570,6 +3584,7 @@ mod tests {
     /// Dropping a UI leaves another UI's installed sender in place.
     #[test]
     fn dropping_a_foreign_ui_leaves_the_installed_sender_in_place() {
+        let _slot = lock_active_ui();
         let (installed, mut receiver) = mpsc::unbounded_channel();
         let restore = active_ui()
             .lock()
@@ -3604,6 +3619,7 @@ mod tests {
 
     #[test]
     fn sso_summary_bypasses_the_adjustable_log_filter() {
+        let _slot = lock_active_ui();
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let restore = active_ui()
             .lock()
