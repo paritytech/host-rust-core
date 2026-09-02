@@ -81,7 +81,7 @@ fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> Ne
 
 const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
+        "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
     ),
     ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
     required_for_host: true,
@@ -89,7 +89,7 @@ const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
 
 const PASEO_PEOPLE: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
+        "4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
     ),
     ws: "wss://paseo-people-next-system-rpc.polkadot.io",
     required_for_host: true,
@@ -105,7 +105,7 @@ const PASEO_BULLETIN: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659",
+        "c27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe",
     ),
     ws: "wss://previewnet.substrate.dev/asset-hub",
     required_for_host: true,
@@ -113,7 +113,7 @@ const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220",
+        "f720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218",
     ),
     ws: "wss://previewnet.substrate.dev/people",
     required_for_host: true,
@@ -121,7 +121,7 @@ const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_BULLETIN: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89",
+        "ea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d",
     ),
     ws: "wss://previewnet.substrate.dev/bulletin",
     required_for_host: true,
