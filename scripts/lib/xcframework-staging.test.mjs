@@ -33,12 +33,18 @@ function writeXcframework(root) {
 
 async function withStaging(
   body,
-  { writeSource = true, sourceName = "truapi_provider.xcframework" } = {},
+  {
+    writeSource = true,
+    sourceName = "truapi_provider.xcframework",
+    sourceIsDestination = false,
+  } = {},
 ) {
   const workspace = mkdtempSync(join(tmpdir(), "truapi-provider-staging-"));
   try {
-    const source = join(workspace, "target", sourceName);
     const packageRoot = join(workspace, "package");
+    const source = sourceIsDestination
+      ? join(packageRoot, "Binaries", sourceName)
+      : join(workspace, "target", sourceName);
     if (writeSource) writeXcframework(source);
     mkdirSync(packageRoot, { recursive: true });
 
@@ -113,5 +119,21 @@ test("staging refuses when the framework has not been built", async () => {
       assert.match(result.stderr, /rebuild\.sh/);
     },
     { writeSource: false },
+  );
+});
+
+test("staging refuses to stage a framework onto itself", async () => {
+  await withStaging(
+    ({ result, staged }) => {
+      assert.equal(result.status, 64, result.stderr);
+      assert.match(result.stderr, /staging destination/);
+
+      const entries = readdirSync(staged, { recursive: true });
+      assert.ok(
+        entries.includes(join(slices[0], "Headers/truapi_providerFFI.h")),
+        "refusing must not delete the framework it was pointed at",
+      );
+    },
+    { sourceIsDestination: true },
   );
 });
