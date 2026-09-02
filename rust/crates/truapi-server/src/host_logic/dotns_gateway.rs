@@ -601,8 +601,24 @@ pub trait DotnsTransport {
     async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError>;
 }
 
-/// Resolves the `DotnsPopController` address: `DotnsGateway.DispatcherAddress`
-/// names the `RootGatewayDispatcher`, whose `TARGET()` is the controller.
+/// Resolves the `DotnsPopController` address from `DotnsGateway.DispatcherAddress`.
+///
+/// The stored address is either the controller itself or a `RootGatewayDispatcher`
+/// whose `TARGET()` is the controller. Both are in service: a chain keeps its dispatcher
+/// until the gateway pallet is repointed.
+///
+/// `protocolRegistry()` decides which. Only the controller answers it: the dispatcher has
+/// no such function, and its fallback is Root-gated, so a dry-run view reverts there
+/// instead of being forwarded. A revert therefore means the address is not the
+/// controller, and `TARGET()` resolves it as a dispatcher. A contract answering neither
+/// is reported by address rather than mistaken for either.
+///
+/// The order is deliberate: keying on a function the controller has, rather than one it
+/// lacks, keeps discovery correct even if the controller later grows a `TARGET()`.
+///
+/// A transport failure is never read as an answer: it propagates, so an unreachable node
+/// cannot masquerade as a repointed chain.
+///
 /// `None` when the gateway is not deployed on the chain at all.
 pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
     transport: &mut T,
@@ -610,16 +626,39 @@ pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
     let Some(value) = transport.storage(dispatcher_address_key()).await? else {
         return Ok(None);
     };
-    let dispatcher: [u8; 20] = value.try_into().map_err(|value: Vec<u8>| {
+    let stored: [u8; 20] = value.try_into().map_err(|value: Vec<u8>| {
         format!("DotnsGateway.DispatcherAddress is {} bytes", value.len())
     })?;
-    let output = transport
-        .view(&dispatcher, call_no_args("TARGET()"))
+    match transport
+        .view(&stored, call_no_args("protocolRegistry()"))
         .await
-        .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}"))?;
-    decode_address(&output)
-        .map(Some)
-        .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}"))
+    {
+        Ok(output) => {
+            decode_address(&output)
+                .map_err(|err| format!("DotnsPopController.protocolRegistry(): {err}"))?;
+            Ok(Some(stored))
+        }
+        // A chain still storing its dispatcher pays this second view; a repointed one
+        // answers on the first. Both hops go once no chain stores a dispatcher.
+        Err(DotnsViewError::Reverted(_)) => {
+            match transport.view(&stored, call_no_args("TARGET()")).await {
+                Ok(output) => decode_address(&output)
+                    .map(Some)
+                    .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}")),
+                Err(DotnsViewError::Reverted(_)) => Err(format!(
+                    "DotnsGateway.DispatcherAddress {} has neither protocolRegistry() nor \
+                     TARGET()",
+                    hex::encode(stored)
+                )),
+                Err(DotnsViewError::Failed(reason)) => {
+                    Err(format!("RootGatewayDispatcher.TARGET(): {reason}"))
+                }
+            }
+        }
+        Err(err @ DotnsViewError::Failed(_)) => {
+            Err(format!("DotnsPopController.protocolRegistry(): {err}"))
+        }
+    }
 }
 
 /// Resolves the bare contract labels `account` holds.
@@ -914,8 +953,9 @@ async fn chain_time_secs<T: DotnsTransport + ?Sized>(transport: &mut T) -> Resul
 }
 
 /// `DotnsGateway.DispatcherAddress` storage key.
-/// The entry holds the `RootGatewayDispatcher`, whose `TARGET()` is the
-/// `DotnsPopController`.
+/// The entry holds either a `RootGatewayDispatcher`, whose `TARGET()` is the
+/// `DotnsPopController`, or that controller directly. See
+/// [`discover_pop_controller`], which tells them apart.
 pub fn dispatcher_address_key() -> Vec<u8> {
     plain_key(b"DotnsGateway", b"DispatcherAddress")
 }
@@ -1412,6 +1452,116 @@ mod tests {
         assert!(!is_dotted_lite_username("a.lice.01"));
         assert!(!is_dotted_lite_username(".01"));
         assert!(!is_dotted_lite_username(&format!("{}.01", "a".repeat(31))));
+    }
+
+    /// A transport for controller discovery: `DispatcherAddress` holds `stored`,
+    /// and `TARGET()` / `protocolRegistry()` answer with scripted results.
+    struct ScriptedDiscovery {
+        stored: [u8; 20],
+        target: fn() -> Result<Vec<u8>, DotnsViewError>,
+        protocol_registry: fn() -> Result<Vec<u8>, DotnsViewError>,
+    }
+
+    #[truapi_platform::async_trait]
+    impl DotnsTransport for ScriptedDiscovery {
+        async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            Ok(Some(self.stored.to_vec()))
+        }
+
+        async fn view(
+            &mut self,
+            _dest: &[u8; 20],
+            input: Vec<u8>,
+        ) -> Result<Vec<u8>, DotnsViewError> {
+            let sel: [u8; 4] = input[..4].try_into().expect("selector prefix; qed");
+            if sel == selector("TARGET()") {
+                (self.target)()
+            } else if sel == selector("protocolRegistry()") {
+                (self.protocol_registry)()
+            } else {
+                panic!("unscripted view {}", hex::encode(sel));
+            }
+        }
+    }
+
+    fn address_word(byte: u8) -> Vec<u8> {
+        let mut word = [0u8; 32];
+        word[12..].copy_from_slice(&[byte; 20]);
+        word.to_vec()
+    }
+
+    fn view_reverted() -> Result<Vec<u8>, DotnsViewError> {
+        Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+            detail: "(empty)".to_string(),
+        }))
+    }
+
+    #[test]
+    fn discovery_follows_target_when_the_stored_address_is_a_dispatcher() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xdd; 20],
+            target: || Ok(address_word(0xcc)),
+            protocol_registry: view_reverted,
+        };
+        let found = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect("discovery");
+        assert_eq!(found, Some([0xcc; 20]), "TARGET() names the controller");
+    }
+
+    #[test]
+    fn discovery_uses_the_stored_address_once_the_pallet_points_at_the_controller() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xcc; 20],
+            target: || panic!("must not probe the dispatcher view"),
+            protocol_registry: || Ok(address_word(0x9e)),
+        };
+        let found = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect("discovery");
+        assert_eq!(
+            found,
+            Some([0xcc; 20]),
+            "protocolRegistry() answers, so the stored address is the controller"
+        );
+    }
+
+    #[test]
+    fn discovery_reports_an_address_that_is_neither() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xab; 20],
+            target: view_reverted,
+            protocol_registry: view_reverted,
+        };
+        let err = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect_err("neither");
+        assert!(err.contains("neither protocolRegistry() nor"), "{err}");
+    }
+
+    #[test]
+    fn discovery_separates_a_failed_confirmation_from_a_wrong_contract() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xdd; 20],
+            target: || Err(DotnsViewError::Failed("node unreachable".into())),
+            protocol_registry: view_reverted,
+        };
+        let err = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect_err("failure");
+        assert!(err.contains("TARGET(): node unreachable"), "{err}");
+        assert!(
+            !err.contains("neither"),
+            "a node failure is not a wrong contract: {err}"
+        );
+    }
+
+    #[test]
+    fn discovery_propagates_a_transport_failure_instead_of_guessing() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xcc; 20],
+            target: || panic!("must not fall back on a transport failure"),
+            protocol_registry: || Err(DotnsViewError::Failed("node unreachable".into())),
+        };
+        let err = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect_err("failure");
+        assert!(err.contains("node unreachable"), "{err}");
     }
 
     /// A transport answering views by selector: `tld()` with a scripted
