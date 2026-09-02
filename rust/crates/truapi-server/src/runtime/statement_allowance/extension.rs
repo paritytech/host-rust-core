@@ -464,6 +464,17 @@ impl Metadata {
             .copied()
     }
 
+    #[cfg(test)]
+    pub(super) fn insert_view_function(
+        &mut self,
+        pallet: &str,
+        function: &str,
+        definition: ViewFunctionDef,
+    ) {
+        self.view_functions
+            .insert((pallet.to_string(), function.to_string()), definition);
+    }
+
     pub(super) fn cached_view_u32(&self, id: &[u8; 32]) -> Option<u32> {
         self.view_values
             .lock()

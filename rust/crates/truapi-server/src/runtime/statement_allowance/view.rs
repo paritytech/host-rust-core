@@ -234,6 +234,7 @@ fn view_error(error: ViewFunctionFailure) -> StatementAllowanceError {
 mod tests {
     use subxt_rpcs::RpcClient as HostRpcClient;
 
+    use super::super::extension::ViewFunctionDef;
     use super::super::rpc::testing::ScriptedRpc;
     use super::*;
 
@@ -290,7 +291,11 @@ mod tests {
 
     #[test]
     fn successful_reads_are_cached() {
-        let metadata = Metadata::decode(FIXTURE_V16).unwrap();
+        let mut metadata = Metadata::decode(FIXTURE_V16).unwrap();
+        let definition = metadata
+            .view_function("Resources", "current_stmt_store_period")
+            .unwrap();
+        metadata.insert_view_function("Resources", "get_stmt_store_slots_per_period", definition);
         let success = response(Ok(7u32.encode()));
         let scripted = ScriptedRpc::new([success.as_str()]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
@@ -299,14 +304,14 @@ mod tests {
             &rpc,
             &metadata,
             "Resources",
-            "current_stmt_store_period",
+            "get_stmt_store_slots_per_period",
         ))
         .unwrap();
         let second = futures::executor::block_on(read_u32(
             &rpc,
             &metadata,
             "Resources",
-            "current_stmt_store_period",
+            "get_stmt_store_slots_per_period",
         ))
         .unwrap();
 
@@ -316,7 +321,15 @@ mod tests {
 
     #[test]
     fn failed_reads_are_not_cached() {
-        let metadata = Metadata::decode(FIXTURE_V16).unwrap();
+        let mut metadata = Metadata::decode(FIXTURE_V16).unwrap();
+        let definition = metadata
+            .view_function("Resources", "current_stmt_store_period")
+            .unwrap();
+        metadata.insert_view_function(
+            "Resources",
+            "get_stmt_store_replacement_cooldown",
+            definition,
+        );
         let failure = response(Err(ViewFunctionDispatchError::NotImplemented));
         let success = response(Ok(8u32.encode()));
         let scripted = ScriptedRpc::new([failure.as_str(), success.as_str()]);
@@ -327,7 +340,7 @@ mod tests {
                 &rpc,
                 &metadata,
                 "Resources",
-                "current_stmt_store_period",
+                "get_stmt_store_replacement_cooldown",
             ))
             .is_err()
         );
@@ -335,7 +348,7 @@ mod tests {
             &rpc,
             &metadata,
             "Resources",
-            "current_stmt_store_period",
+            "get_stmt_store_replacement_cooldown",
         ))
         .unwrap();
 
