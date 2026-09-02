@@ -871,7 +871,7 @@ async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
             warn!(
                 user = %hex::encode(user),
                 read = CLAIM_PAGE_MAX * CLAIM_PAGE_LIMIT,
-                "pending-claim queue holds more entries than the pages read; a name past this point is not resolved"
+                "pending-claim page cap reached; later entries, if any, are not resolved"
             );
         }
     }
@@ -1092,12 +1092,11 @@ mod tests {
             &paged_call[..4],
             &selector("pendingClaims(address,uint256,uint256)")
         );
-        assert!(paged_call[4..16].iter().all(|b| *b == 0));
-        assert_eq!(&paged_call[16..36], &[0xBB; 20]);
-        assert!(paged_call[36..67].iter().all(|b| *b == 0));
-        assert_eq!(paged_call[67], 32);
-        assert!(paged_call[68..99].iter().all(|b| *b == 0));
-        assert_eq!(paged_call[99], 16);
+        let mut expected_args = vec![0u8; 96];
+        expected_args[12..32].fill(0xBB);
+        expected_args[63] = 32;
+        expected_args[95] = 16;
+        assert_eq!(&paged_call[4..], expected_args.as_slice());
 
         let key_call = call_bytes32("get(bytes32)", &registry_key("storeFactory"));
         assert_eq!(&key_call[4..16], b"storeFactory");
