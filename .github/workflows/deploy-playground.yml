@@ -65,7 +65,7 @@ jobs:
         run: yarn build
 
       - name: Install bulletin-deploy
-        run: npm install -g bulletin-deploy
+        run: npm install -g bulletin-deploy@0.16.1-rc.1
 
       - name: Resolve the dotNS name for this environment
         id: dotns
