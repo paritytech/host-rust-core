@@ -1,5 +1,29 @@
 # @parity/truapi-host
 
+## 0.10.0
+
+### Minor Changes
+
+- Rename the PreviewNet dotNS top-level domain from `.test` to `.testnet`.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @parity/truapi@0.13.0
+
+## 0.9.0
+
+### Minor Changes
+
+- 8983638: Support the development-only raw proof context used by `development_createAccountProof`.
+- 654c0cf: Expose the host's selected language through `locale.subscribe()`.
+
+### Patch Changes
+
+- Updated dependencies [654c0cf]
+  - @parity/truapi@0.12.0
+
 ## 0.8.0
 
 ### Minor Changes

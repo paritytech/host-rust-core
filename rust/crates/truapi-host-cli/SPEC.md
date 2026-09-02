@@ -119,6 +119,7 @@ as the paired path.
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
 - the terminal UI and plain output;
+- local pairing QR acquisition;
 - product-frame WebSocket listening;
 - session and product switching;
 - child editor and Bun processes; and
@@ -479,7 +480,7 @@ non-Unix platforms the CLI stops and reaps the direct child.
 
 Accepted product identifiers are:
 
-- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.test`);
+- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.testnet`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 
@@ -526,6 +527,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
+| `/pair` | no | yes | Wait for a pairing QR image from Ctrl-V, terminal paste, or drag-and-drop. TUI only. |
+| `/pair <image-path>` | no | yes | Decode a pairing QR from a PNG, JPEG, or WebP image. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
@@ -548,8 +551,9 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/quit` | yes | yes | Leave the command loop. |
 
 The shared parser recognizes every command, then the active role rejects
-commands it cannot execute. `/pair` performs a fast prefix check; the Rust core
-then fully decodes and validates the V2 handshake.
+commands it cannot execute. `/pair <url>` performs a fast prefix check; the
+Rust core then fully decodes and validates the V2 handshake. Any other single
+quoted or escaped `/pair` argument is treated as an image path.
 
 `/devices` and `/devices --list` are equivalent. They sort peers by statement
 account ID and print each ID with any available host and platform metadata.
@@ -560,6 +564,53 @@ describes that only the selected peer is affected. `exec` removal runs directly.
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
 produce explicit errors.
+
+### 8.1 Pairing QR image input
+
+Bare `/pair` is available only in the interactive signing-host TUI. It starts a
+terminal waiting state that accepts Control-V or the terminal's normal paste
+shortcut. In both cases the TUI reads RGBA pixels directly from the
+operating-system clipboard. A bracketed text paste triggers that clipboard read
+rather than carrying the pixels itself, so image paste continues to work through
+tmux without a terminal-specific image escape protocol.
+
+A dropped file is accepted as a raw, quoted, shell-escaped, or `file://` path.
+Bracketed path paste starts decoding immediately. A terminal that inserts the
+path as individual key events leaves it in the command bar for Enter to submit.
+Text that is neither backed by an image clipboard nor a readable file leaves
+`/pair` waiting with recovery instructions.
+
+`/pair <image-path>` reads a PNG, JPEG, or WebP file in either interactive or
+one-shot mode. Clipboard and file pixels remain in memory and are not written to
+a temporary file.
+
+Before decoding, the implementation enforces all of these boundaries:
+
+- nonzero dimensions of at most 8192 pixels per edge;
+- at most 24 million pixels and an exact four RGBA bytes per pixel;
+- at most 64 MiB for an encoded image file; and
+- at most 256 MiB of image-decoder allocation.
+
+Alpha is composited over white before conversion to grayscale. The normal QR
+detector runs against both polarities. A bounded fallback recognizes horizontal
+and vertical finder-pattern ratios, groups the three axis-aligned finder marks,
+samples module centers, and passes the sampled matrix through the same QR error
+correction and payload decoder. This fallback supports the circular finder marks
+and light-on-dark presentation used by Polkadot app screenshots without a native
+or platform-specific barcode library. Candidate lines, finder groups, dimensions,
+and QR versions are bounded before combinatorial work.
+
+The result distinguishes no QR code, an unrelated QR code, and multiple distinct
+valid pairing codes. Exactly one decoded value must begin with
+`polkadotapp://pair?handshake=` and pass the Rust core V2 handshake decoder. It is
+then passed directly to the same pairing responder used by `/pair <url>` and is
+never logged. QR decoding runs on the blocking-task pool rather than the
+asynchronous I/O executor.
+
+A clipboard access or conversion error leaves `/pair` waiting so the operator
+can copy another image and paste again. Ctrl-C cancels the waiting state and
+returns to the command bar. Non-interactive `exec '/pair'` fails with
+instructions to provide `/pair <image-path>` or `/pair <url>` instead.
 
 ## 9. Terminal UI
 

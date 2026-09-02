@@ -5,6 +5,35 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.13.0] - 2026-09-01
+
+### Added
+
+- rename PreviewNet dotNS TLD from .test to .testnet (#561)
+
+### Changed
+
+- Paste pairing QR images in the host CLI (#552)
+
+## [0.12.0] - 2026-08-31
+
+### Added
+
+- `development_createAccountProof` for raw proof contexts to unblock Humanity as a Product (#457)
+- open bump issues on consumer repos when a package is released (#529)
+
+### Changed
+
+- @parity/truapi 0.12.0, @parity/truapi-host 0.9.0, @parity/ios-host 0.12.0 (#555)
+- RFC: Host locale subscription (#526)
+- fix prebuilt script runner lookup (#532)
+
+### Fixed
+
+- reject unknown wire messages (#547)
+- declare the chat worker in the product manifest (#541)
+- downgrade response and error payloads to the caller's version (#525)
+
 ## [0.11.0] - 2026-08-27
 
 ### Added
@@ -19,11 +48,13 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.11.0, @parity/truapi-host 0.8.0 (#530)
 - remove legacy single-execution core (#508)
 - RFC: Host Identity and Version via `System.host_info` (#177)
 
 ### Fixed
 
+- make the CLI release pipeline work end to end (#531)
 - clear the sandbox client when the pipe closes (#509)
 - persist and restore paired SSO hosts (#501)
 - gate tags on a confirmed npm publish (#505)
@@ -414,7 +445,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 - Remove version field from RFC pseudocode CoinPaymentCheque
 - Fix codegen: collect error wrappers for ResultSubscription methods
 - Address review comments: remove version field, error aliases, and Resolvable type
-- Drop host_coin_payment_ prefix from CoinPayment trait methods
+- Drop host*coin_payment* prefix from CoinPayment trait methods
 - move notification methods from System to Notifications trait
 - implement RFC 0019 scheduled push notifications
 - Remove unused PaymentPurse alias and CoinPaymentInvoice type
@@ -497,7 +528,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 - truapi-codegen: emit HexString import in generated client.ts
 - add JsonRpc, Theme, ResourceAllocation traits + host_request_login
 - add remote_preimage_submit + statement_store_create_proof_authorized
-- add host_sign_*_with_legacy_account (wire 34–37)
+- add host*sign*\*\_with_legacy_account (wire 34–37)
 - rename remote_chain_head_follow → remote_chain_head_follow_subscribe
 - fix fmt
 - drop host_chat_create_simple_group entirely
@@ -590,4 +621,3 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 ### Fixed
 
 - clippy needless_borrow and stale type import
-

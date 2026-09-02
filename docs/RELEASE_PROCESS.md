@@ -13,17 +13,7 @@ publish, and only when they bump the package version.
 
 ## How to release
 
-### 1. Cut the protocol version
-
-Run `scripts/cut-version.sh` to crystallize wire types, take an explorer
-snapshot, and generate the root `CHANGELOG.md`:
-
-```bash
-scripts/cut-version.sh            # crystallize next/, snapshot, changelog
-scripts/cut-version.sh --dry-run  # preview without making changes
-```
-
-### 2. Bump the package version
+### 1. Bump the package version
 
 ```bash
 npm run changeset            # interactive: pick patch / minor / major + a short summary
@@ -40,6 +30,21 @@ refreshes `package-lock.json`. A protocol release should therefore include the
 `@parity/truapi` package, its changelog, the Cargo version, the host dependency,
 and the lockfile. A host-runtime-only release can bump
 `@parity/truapi-host` without changing the Rust crate version.
+
+### 2. Cut the protocol version
+
+Run `scripts/cut-version.sh` after the package bump to crystallize wire types,
+take an explorer snapshot under the new version, and generate the root
+`CHANGELOG.md`:
+
+```bash
+scripts/cut-version.sh            # crystallize next/, snapshot, changelog
+scripts/cut-version.sh --dry-run  # preview without making changes
+```
+
+The order matters. The script reads the version from
+`js/packages/truapi/package.json`; running it before `version-packages` would
+overwrite the previous release's explorer snapshot.
 
 ### 3. Open a release PR
 
@@ -91,6 +96,12 @@ On merge, CI runs as usual. When CI passes, the `Release` workflow:
 7. Opens a bump issue on each repository that
    [`.github/consumers.json`](../.github/consumers.json) lists under a confirmed
    package.
+
+An iOS release then uploads the XCFramework, creates a bare `<version>` tag from
+a commit whose `Package.swift` records the live asset URL and checksum, and
+builds that tag from a clean clone before pushing it. The workflow also opens a
+generated manifest PR to keep `main` current. It dispatches CI explicitly
+because a PR created with `GITHUB_TOKEN` does not start another workflow.
 
 The dispatch in step 4 returns as soon as GitHub accepts it, which is why step 5
 exists: the registry is the only proof a version landed. A green `Release` run

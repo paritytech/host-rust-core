@@ -1,5 +1,19 @@
 # @parity/truapi
 
+## 0.13.0
+
+### Minor Changes
+
+- Accept pasted pairing QR images in the `truapi-host` CLI terminal UI.
+- Rename the PreviewNet dotNS top-level domain from `.test` to `.testnet`.
+
+## 0.12.0
+
+### Minor Changes
+
+- 8983638: Add `development_createAccountProof`, a development-only helper for creating a proof with an exact 32-byte context.
+- 654c0cf: Expose the host's selected language through `locale.subscribe()`.
+
 ## 0.11.0
 
 ### Minor Changes
