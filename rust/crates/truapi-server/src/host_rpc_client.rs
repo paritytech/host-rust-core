@@ -246,21 +246,18 @@ impl HostRpcClientInner {
         let subscription_id = subscription_id_from_raw(raw_id.as_ref())?;
         let (tx, rx) = mpsc::unbounded();
         {
+            // Notification delivery takes these locks in the same order. Keep
+            // the buffered-items lock across activation and replay so a new
+            // live notification cannot overtake an older buffered one.
+            let mut buffered = self.buffered_subscription_items.lock().unwrap();
             let mut subscriptions = self.subscriptions.lock().unwrap();
             if self.closed.load(Ordering::Relaxed) {
                 return Err(client_error("json-rpc connection is closed"));
             }
             subscriptions.insert(subscription_id.clone(), SubscriptionSink { tx: tx.clone() });
-        }
-
-        let buffered = self
-            .buffered_subscription_items
-            .lock()
-            .unwrap()
-            .remove(&subscription_id)
-            .unwrap_or_default();
-        for item in buffered {
-            let _ = tx.unbounded_send(Ok(item));
+            for item in buffered.remove(&subscription_id).unwrap_or_default() {
+                let _ = tx.unbounded_send(Ok(item));
+            }
         }
 
         let stream = SubscriptionStream {
