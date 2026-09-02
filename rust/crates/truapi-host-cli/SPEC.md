@@ -1464,11 +1464,11 @@ registration fails.
 | --- | --- |
 | Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
-| People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
+| People genesis | `0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
-| Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
+| Asset Hub genesis | `0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a` |
 
 #### `previewnet`
 
@@ -1480,11 +1480,11 @@ on-chain testing.
 | --- | --- |
 | Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
+| People genesis | `0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
+| Bulletin genesis | `0xea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
+| Asset Hub genesis | `0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
@@ -1979,7 +1979,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
-| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress`, used directly when `protocolRegistry()` answers on it, otherwise resolved through `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |
