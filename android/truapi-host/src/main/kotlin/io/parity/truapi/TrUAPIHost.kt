@@ -839,11 +839,15 @@ class TrUAPIProductExecution internal constructor(
 ) : AutoCloseable {
     private val shutDown = AtomicBoolean(false)
 
-    /** Start this execution's independently authenticated localhost bridge. */
+    /**
+     * Register this execution against the host runtime's shared localhost
+     * bridge, minting an independent authentication token. Every execution
+     * under the same host runtime connects through the same port.
+     */
     @Throws(WsBridgeStartException::class)
     fun startWsBridge(bindPort: UShort = 0u): WsBridgeEndpoint = inner.startWsBridge(bindPort)
 
-    /** Stop the active bridge while leaving the execution reusable. */
+    /** Revoke this execution's bridge registration while leaving it reusable. */
     fun stopWsBridge() {
         inner.stopWsBridge()
     }
