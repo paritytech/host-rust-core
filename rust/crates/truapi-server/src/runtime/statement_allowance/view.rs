@@ -166,6 +166,28 @@ pub(super) async fn read_resource_u32(
     }
 }
 
+pub(super) fn supports_resource_u32(
+    metadata: &Metadata,
+    function: &'static str,
+    fallback_constant: &'static str,
+) -> bool {
+    let Some(definition) = metadata.view_function("Resources", function) else {
+        return metadata
+            .constant_u32("Resources", fallback_constant)
+            .is_ok();
+    };
+    definition.inputs == 0
+        && matches!(
+            metadata
+                .registry()
+                .resolve(definition.output_type)
+                .map(|ty| &ty.type_def),
+            Some(TypeDef::Primitive(
+                TypeDefPrimitive::U8 | TypeDefPrimitive::U16 | TypeDefPrimitive::U32
+            ))
+        )
+}
+
 async fn execute_no_args(
     rpc: &RpcClient,
     pallet: &'static str,
@@ -354,5 +376,32 @@ mod tests {
 
         assert_eq!(retried, 8);
         assert_eq!(scripted.calls().len(), 2);
+    }
+
+    #[test]
+    fn support_requires_a_no_argument_unsigned_view() {
+        let mut metadata = Metadata::decode(FIXTURE_V16).unwrap();
+        let definition = metadata
+            .view_function("Resources", "current_stmt_store_period")
+            .unwrap();
+        metadata.insert_view_function(
+            "Resources",
+            "get_stmt_store_slots_per_period",
+            ViewFunctionDef {
+                inputs: 1,
+                ..definition
+            },
+        );
+
+        assert!(!supports_resource_u32(
+            &metadata,
+            "get_stmt_store_slots_per_period",
+            "StmtStoreSlotsPerPeriod",
+        ));
+        assert!(supports_resource_u32(
+            &metadata,
+            "get_lite_stmt_store_slots_per_period",
+            "LiteStmtStoreSlotsPerPeriod",
+        ));
     }
 }

@@ -78,8 +78,11 @@ impl PersonhoodCollection {
 
     /// Whether this chain exposes a StatementStore slot budget for this collection.
     pub fn is_supported(self, metadata: &Metadata) -> bool {
-        metadata.has_view_function("Resources", self.slots_per_period_view())
-            || metadata.has_constant("Resources", self.slots_per_period_constant())
+        view::supports_resource_u32(
+            metadata,
+            self.slots_per_period_view(),
+            self.slots_per_period_constant(),
+        )
     }
 
     /// Max StatementStore slots per period for this collection.

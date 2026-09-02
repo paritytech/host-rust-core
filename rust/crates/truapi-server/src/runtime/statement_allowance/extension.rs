@@ -448,11 +448,6 @@ impl Metadata {
             .map(Vec::as_slice)
     }
 
-    pub(super) fn has_constant(&self, pallet: &str, name: &str) -> bool {
-        self.constants
-            .contains_key(&(pallet.to_string(), name.to_string()))
-    }
-
     pub(super) fn has_view_function(&self, pallet: &str, function: &str) -> bool {
         self.view_functions
             .contains_key(&(pallet.to_string(), function.to_string()))
