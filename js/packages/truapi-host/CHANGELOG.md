@@ -1,5 +1,16 @@
 # @parity/truapi-host
 
+## 0.10.1
+
+### Patch Changes
+
+- Preserve buffered subscription event order.
+- Resolve the dotNS controller whether the gateway stores a dispatcher or the controller.
+- Page dotNS `pendingClaims` through its `(address,uint256,uint256)` view, and retain claims from complete earlier pages when a later page reverts.
+- Read Resources parameters through runtime view functions.
+- Updated dependencies
+  - @parity/truapi@0.13.1
+
 ## 0.10.0
 
 ### Minor Changes
