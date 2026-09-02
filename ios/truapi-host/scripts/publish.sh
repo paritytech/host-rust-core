@@ -37,6 +37,12 @@ if [ ! -d "$XCFRAMEWORK" ]; then
     exit 66
 fi
 
+# Staging strips these, but Binaries/ is gitignored so an older tree gets here.
+if find "$XCFRAMEWORK" -path '*/Headers/module.modulemap' | grep -q .; then
+    echo "error: $XCFRAMEWORK still carries per-slice modulemaps, run scripts/rebuild.sh" >&2
+    exit 66
+fi
+
 if ! git -C "$TRUAPI_ROOT" diff --quiet -- Package.swift; then
     echo "error: Package.swift has uncommitted changes — commit or revert them first" >&2
     exit 65
