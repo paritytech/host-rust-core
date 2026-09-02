@@ -438,9 +438,14 @@ mod tests {
         let sel: [u8; 4] = input[..4].try_into().unwrap();
         let data = match (*dest, sel) {
             (DISPATCHER, s) if s == selector("TARGET()") => abi_address(&CONTROLLER),
-            (CONTROLLER, s) if s == selector("pendingClaims(address)") => {
-                // The user argument is the mapped H160 of the identity account.
+            (CONTROLLER, s) if s == selector("pendingClaims(address,uint256,uint256)") => {
+                // The user argument is the mapped H160 of the identity account,
+                // read from the first page with a non-empty limit under the
+                // contract's `MAX_PAGE_SIZE` of 200.
                 assert_eq!(&input[16..36], account_to_h160(&ACCOUNT));
+                assert!(input[36..68].iter().all(|b| *b == 0), "offset is zero");
+                assert!(input[68..99].iter().all(|b| *b == 0));
+                assert!((1..=200).contains(&input[99]), "limit fits one page");
                 // One live claim and one that lapsed a second ago.
                 abi_pending_claims(&[
                     ("alice01", NOW_SECS - 10),
