@@ -119,6 +119,7 @@ as the paired path.
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
 - the terminal UI and plain output;
+- local pairing QR acquisition;
 - product-frame WebSocket listening;
 - session and product switching;
 - child editor and Bun processes; and
@@ -479,7 +480,7 @@ non-Unix platforms the CLI stops and reaps the direct child.
 
 Accepted product identifiers are:
 
-- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.test`);
+- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.testnet`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 
@@ -526,6 +527,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
+| `/pair` | no | yes | Wait for a pairing QR image from Ctrl-V, terminal paste, or drag-and-drop. TUI only. |
+| `/pair <image-path>` | no | yes | Decode a pairing QR from a PNG, JPEG, or WebP image. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
@@ -548,8 +551,9 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/quit` | yes | yes | Leave the command loop. |
 
 The shared parser recognizes every command, then the active role rejects
-commands it cannot execute. `/pair` performs a fast prefix check; the Rust core
-then fully decodes and validates the V2 handshake.
+commands it cannot execute. `/pair <url>` performs a fast prefix check; the
+Rust core then fully decodes and validates the V2 handshake. Any other single
+quoted or escaped `/pair` argument is treated as an image path.
 
 `/devices` and `/devices --list` are equivalent. They sort peers by statement
 account ID and print each ID with any available host and platform metadata.
@@ -560,6 +564,53 @@ describes that only the selected peer is affected. `exec` removal runs directly.
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
 produce explicit errors.
+
+### 8.1 Pairing QR image input
+
+Bare `/pair` is available only in the interactive signing-host TUI. It starts a
+terminal waiting state that accepts Control-V or the terminal's normal paste
+shortcut. In both cases the TUI reads RGBA pixels directly from the
+operating-system clipboard. A bracketed text paste triggers that clipboard read
+rather than carrying the pixels itself, so image paste continues to work through
+tmux without a terminal-specific image escape protocol.
+
+A dropped file is accepted as a raw, quoted, shell-escaped, or `file://` path.
+Bracketed path paste starts decoding immediately. A terminal that inserts the
+path as individual key events leaves it in the command bar for Enter to submit.
+Text that is neither backed by an image clipboard nor a readable file leaves
+`/pair` waiting with recovery instructions.
+
+`/pair <image-path>` reads a PNG, JPEG, or WebP file in either interactive or
+one-shot mode. Clipboard and file pixels remain in memory and are not written to
+a temporary file.
+
+Before decoding, the implementation enforces all of these boundaries:
+
+- nonzero dimensions of at most 8192 pixels per edge;
+- at most 24 million pixels and an exact four RGBA bytes per pixel;
+- at most 64 MiB for an encoded image file; and
+- at most 256 MiB of image-decoder allocation.
+
+Alpha is composited over white before conversion to grayscale. The normal QR
+detector runs against both polarities. A bounded fallback recognizes horizontal
+and vertical finder-pattern ratios, groups the three axis-aligned finder marks,
+samples module centers, and passes the sampled matrix through the same QR error
+correction and payload decoder. This fallback supports the circular finder marks
+and light-on-dark presentation used by Polkadot app screenshots without a native
+or platform-specific barcode library. Candidate lines, finder groups, dimensions,
+and QR versions are bounded before combinatorial work.
+
+The result distinguishes no QR code, an unrelated QR code, and multiple distinct
+valid pairing codes. Exactly one decoded value must begin with
+`polkadotapp://pair?handshake=` and pass the Rust core V2 handshake decoder. It is
+then passed directly to the same pairing responder used by `/pair <url>` and is
+never logged. QR decoding runs on the blocking-task pool rather than the
+asynchronous I/O executor.
+
+A clipboard access or conversion error leaves `/pair` waiting so the operator
+can copy another image and paste again. Ctrl-C cancels the waiting state and
+returns to the command bar. Non-interactive `exec '/pair'` fails with
+instructions to provide `/pair <image-path>` or `/pair <url>` instead.
 
 ## 9. Terminal UI
 
@@ -1413,11 +1464,11 @@ registration fails.
 | --- | --- |
 | Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
-| People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
+| People genesis | `0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
-| Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
+| Asset Hub genesis | `0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a` |
 
 #### `previewnet`
 
@@ -1429,11 +1480,11 @@ on-chain testing.
 | --- | --- |
 | Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
+| People genesis | `0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
+| Bulletin genesis | `0xea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
+| Asset Hub genesis | `0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
@@ -1928,7 +1979,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
-| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress`, used directly when `protocolRegistry()` answers on it, otherwise resolved through `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |

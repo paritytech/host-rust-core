@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
@@ -31,6 +32,7 @@ use tracing_subscriber::layer::{Context as LayerContext, Layer};
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;
+use crate::qr_scanner::RgbaFrame;
 use crate::signing_shell::{CommandEditor, contains_mnemonic, mask_mnemonic, parse_approval};
 
 const TRANSCRIPT_LIMIT: usize = 10_000;
@@ -180,6 +182,12 @@ pub enum SystemEvent {
         reason: String,
     },
     SigningHostResponderStarted,
+    PairingImagePasteReady,
+    PairingImageRead,
+    PairingImagePasteFailed {
+        reason: String,
+    },
+    PairingImagePasteCancelled,
     AllowanceReady {
         target: String,
         sequence: u32,
@@ -676,6 +684,11 @@ pub enum DriveResult<T> {
     Cancelled,
 }
 
+pub(super) enum PairingImageInput {
+    Pixels(RgbaFrame),
+    Path(PathBuf),
+}
+
 /// Full-screen terminal owner used by the signing-host session loop.
 pub struct ActiveTerminalUi {
     terminal: Option<Renderer>,
@@ -768,6 +781,19 @@ impl ActiveTerminalUi {
             .expect("clipboard was initialized above")
             .set_text(text)
             .context(context)
+    }
+
+    fn read_clipboard_image(&mut self) -> Result<RgbaFrame> {
+        if self.clipboard.is_none() {
+            self.clipboard = Some(arboard::Clipboard::new().context("open system clipboard")?);
+        }
+        let image = self
+            .clipboard
+            .as_mut()
+            .expect("clipboard was initialized above")
+            .get_image()
+            .map_err(clipboard_image_error)?;
+        RgbaFrame::new(image.width, image.height, image.bytes.into_owned())
     }
 
     /// Update the displayed log level after `/log` succeeds.
@@ -878,6 +904,78 @@ impl ActiveTerminalUi {
         }
     }
 
+    /// Wait for a pasted or dropped pairing QR image.
+    pub async fn read_pairing_image(&mut self) -> Result<DriveResult<PairingImageInput>> {
+        self.app.busy = Some("/pair".to_string());
+        self.event(SystemEvent::PairingImagePasteReady);
+        loop {
+            self.draw()?;
+            tokio::select! {
+                event = self.receiver.recv() => {
+                    if let Some(event) = event {
+                        self.handle_ui_event(event);
+                        self.drain_pending_events();
+                    }
+                }
+                event = self.events.as_mut().expect("terminal events are active").next() => {
+                    let Some(event) = event else {
+                        self.app.busy = None;
+                        self.event(SystemEvent::PairingImagePasteCancelled);
+                        return Ok(DriveResult::Cancelled);
+                    };
+                    let event = event.context("read terminal event")?;
+                    match pairing_image_request(&event) {
+                        Some(PairingImageRequest::Clipboard) => {
+                            match self.read_clipboard_image() {
+                                Ok(image) => {
+                                    self.app.busy = None;
+                                    self.event(SystemEvent::PairingImageRead);
+                                    return Ok(DriveResult::Complete(PairingImageInput::Pixels(image)));
+                                }
+                                Err(error) => {
+                                    let reason = pairing_image_failure(
+                                        &error,
+                                        matches!(event, Event::Paste(_)),
+                                    );
+                                    self.event(SystemEvent::PairingImagePasteFailed { reason });
+                                }
+                            }
+                            continue;
+                        }
+                        Some(PairingImageRequest::Path(path)) => {
+                            self.app.busy = None;
+                            self.event(SystemEvent::PairingImageRead);
+                            return Ok(DriveResult::Complete(PairingImageInput::Path(path)));
+                        }
+                        Some(PairingImageRequest::SubmitPath) => {
+                            let text = self.app.editor.text();
+                            self.app.editor.clear();
+                            if text.trim().is_empty() {
+                                continue;
+                            }
+                            let Some(path) = pairing_image_path(&text) else {
+                                self.event(SystemEvent::PairingImagePasteFailed {
+                                    reason: "The submitted text is not a readable image file path. Copy an image or drag an image file here."
+                                        .to_string(),
+                                });
+                                continue;
+                            };
+                            self.app.busy = None;
+                            self.event(SystemEvent::PairingImageRead);
+                            return Ok(DriveResult::Complete(PairingImageInput::Path(path)));
+                        }
+                        None => {}
+                    }
+                    if self.app.handle_busy_event(event) {
+                        self.app.busy = None;
+                        self.event(SystemEvent::PairingImagePasteCancelled);
+                        return Ok(DriveResult::Cancelled);
+                    }
+                }
+            }
+        }
+    }
+
     /// Drive `/login` while copying the first typed pairing deeplink event.
     pub async fn drive_pairing_login<F, T>(
         &mut self,
@@ -945,9 +1043,91 @@ fn pairing_deeplink_to_copy(enabled: bool, event: &UiEvent) -> Option<&str> {
     }
 }
 
+fn clipboard_image_error(error: arboard::Error) -> anyhow::Error {
+    match error {
+        arboard::Error::ContentNotAvailable => {
+            anyhow::anyhow!("clipboard does not contain an image")
+        }
+        arboard::Error::ConversionFailure => {
+            anyhow::anyhow!("clipboard image could not be converted to RGBA pixels")
+        }
+        error => anyhow::anyhow!("read image from system clipboard: {error}"),
+    }
+}
+
+fn is_clipboard_image_paste(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('v' | 'V'))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PairingImageRequest {
+    Clipboard,
+    Path(PathBuf),
+    SubmitPath,
+}
+
+fn pairing_image_request(event: &Event) -> Option<PairingImageRequest> {
+    match event {
+        Event::Paste(text) => Some(
+            pairing_image_path(text)
+                .map_or(PairingImageRequest::Clipboard, PairingImageRequest::Path),
+        ),
+        Event::Key(key) if is_clipboard_image_paste(*key) => Some(PairingImageRequest::Clipboard),
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && key.modifiers.is_empty()
+                && key.code == KeyCode::Enter =>
+        {
+            Some(PairingImageRequest::SubmitPath)
+        }
+        _ => None,
+    }
+}
+
+fn pairing_image_path(text: &str) -> Option<PathBuf> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(url) = reqwest::Url::parse(text)
+        && url.scheme() == "file"
+        && let Ok(path) = url.to_file_path()
+        && path.is_file()
+    {
+        return Some(path);
+    }
+    let path = PathBuf::from(text);
+    if path.is_file() {
+        return Some(path);
+    }
+    let mut words = shlex::split(text)?;
+    if words.len() != 1 {
+        return None;
+    }
+    let path = PathBuf::from(words.remove(0));
+    path.is_file().then_some(path)
+}
+
+fn pairing_image_failure(error: &anyhow::Error, pasted_text: bool) -> String {
+    if pasted_text {
+        format!(
+            "{error}; pasted text is not a readable image file path. Copy an image or drag an image file here."
+        )
+    } else {
+        error.to_string()
+    }
+}
+
 impl Drop for ActiveTerminalUi {
     fn drop(&mut self) {
-        if let Ok(mut active) = active_ui().lock() {
+        // Only the UI that installed the active sender may clear it.
+        if let Ok(mut active) = active_ui().lock()
+            && active
+                .as_ref()
+                .is_some_and(|installed| installed.same_channel(&self.sender))
+        {
             *active = None;
         }
         if let Some(terminal) = self.terminal.take() {
@@ -1430,6 +1610,31 @@ impl App {
                 "Waiting for the pairing host".to_string(),
                 None,
                 ActivityState::Running,
+            ),
+            SystemEvent::PairingImagePasteReady => self.start_activity(
+                "pairing-image".to_string(),
+                "Waiting for a pairing QR image".to_string(),
+                Some(
+                    "Press Ctrl-V, use the terminal's paste shortcut, or drag an image file here."
+                        .to_string(),
+                ),
+            ),
+            SystemEvent::PairingImageRead => self.activity(
+                "pairing-image".to_string(),
+                "Pairing QR image received".to_string(),
+                None,
+                ActivityState::Succeeded,
+            ),
+            SystemEvent::PairingImagePasteFailed { reason } => self.notice(
+                NoticeTone::Warning,
+                "Could not paste pairing image".to_string(),
+                Some(reason),
+            ),
+            SystemEvent::PairingImagePasteCancelled => self.activity(
+                "pairing-image".to_string(),
+                "Pairing image paste cancelled".to_string(),
+                None,
+                ActivityState::Cancelled,
             ),
             SystemEvent::AllowanceReady {
                 target,
@@ -2707,10 +2912,8 @@ fn text_display_width(text: &str) -> usize {
 fn redact_command(command: &str) -> String {
     if contains_mnemonic(command) {
         "/session --mnemonic <redacted>".to_string()
-    } else if command.trim_start().starts_with("/pair ") {
-        "/pair <pairing link>".to_string()
     } else {
-        sanitize_terminal_text(command)
+        redact_pairing_link(&sanitize_terminal_text(command))
     }
 }
 
@@ -2851,6 +3054,20 @@ mod tests {
     use ratatui::layout::Position;
     use tracing_subscriber::layer::SubscriberExt;
 
+    /// Serializes the tests that install their own sender into the active UI
+    /// slot, so one test's install cannot displace a sender another test is
+    /// still reading from.
+    static ACTIVE_UI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Claim the active UI slot for the duration of a test. A test that panics
+    /// while holding the slot poisons the lock; recover so the panic stays
+    /// local to that test instead of cascading into the next one.
+    fn lock_active_ui() -> std::sync::MutexGuard<'static, ()> {
+        ACTIVE_UI_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn test_app() -> App {
         App::new(
             "testnet".to_string(),
@@ -2918,6 +3135,85 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_v_is_reserved_for_clipboard_images() {
+        assert!(is_clipboard_image_paste(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!is_clipboard_image_paste(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::NONE,
+        )));
+    }
+
+    #[test]
+    fn normal_paste_and_enter_request_pairing_image_input() {
+        assert_eq!(
+            (
+                pairing_image_request(&Event::Paste("clipboard text".to_string())),
+                pairing_image_request(&Event::Key(KeyEvent::new(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                ))),
+            ),
+            (
+                Some(PairingImageRequest::Clipboard),
+                Some(PairingImageRequest::SubmitPath),
+            )
+        );
+    }
+
+    #[test]
+    fn dragged_image_paths_accept_terminal_text_formats() {
+        let directory = tempfile::tempdir().expect("create temporary directory");
+        let path = directory.path().join("pairing code.png");
+        std::fs::write(&path, []).expect("create image path");
+        let raw = path.display().to_string();
+        let quoted = format!("'{raw}'");
+        let escaped = raw.replace(' ', "\\ ");
+        let file_url = reqwest::Url::from_file_path(&path)
+            .expect("convert path to file URL")
+            .to_string();
+
+        assert_eq!(
+            [raw, quoted, escaped, file_url]
+                .map(|text| { pairing_image_request(&Event::Paste(text)) }),
+            std::array::from_fn(|_| Some(PairingImageRequest::Path(path.clone())))
+        );
+    }
+
+    #[test]
+    fn invalid_text_paste_explains_clipboard_and_file_recovery() {
+        let error = anyhow::anyhow!("clipboard does not contain an image");
+
+        assert_eq!(
+            (
+                pairing_image_failure(&error, true),
+                pairing_image_failure(&error, false),
+            ),
+            (
+                "clipboard does not contain an image; pasted text is not a readable image file path. Copy an image or drag an image file here."
+                    .to_string(),
+                "clipboard does not contain an image".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn clipboard_image_errors_explain_empty_and_unreadable_contents() {
+        assert_eq!(
+            (
+                clipboard_image_error(arboard::Error::ContentNotAvailable).to_string(),
+                clipboard_image_error(arboard::Error::ConversionFailure).to_string(),
+            ),
+            (
+                "clipboard does not contain an image".to_string(),
+                "clipboard image could not be converted to RGBA pixels".to_string(),
+            )
+        );
+    }
+
+    #[test]
     fn mouse_wheel_and_end_navigate_while_an_approval_is_pending() {
         let mut app = test_app();
         app.transcript_height = 20;
@@ -2982,12 +3278,14 @@ mod tests {
         let mut app = test_app();
         app.handle_system_event(SystemEvent::SigningHostReady);
         app.push_command("/pair polkadotapp://pair?handshake=secret".to_string());
+        app.push_command("/pair \"/tmp/pairing QR.png\"".to_string());
         app.push_command("/session --mnemonic \"abandon abandon abandon about\"".to_string());
         app.stream(StreamKind::Stdout, "user id: alice.dot".to_string());
 
         let transcript = app.transcript_text();
         assert!(transcript.contains("✓ Signing host ready"));
         assert!(transcript.contains("─ /pair <pairing link>"));
+        assert!(transcript.contains("─ /pair \"/tmp/pairing QR.png\""));
         assert!(transcript.contains("─ /session --mnemonic <redacted>"));
         assert!(transcript.contains("  user id: alice.dot"));
         assert!(!transcript.contains("handshake=secret"));
@@ -3174,10 +3472,10 @@ mod tests {
         app.editor.set_text("/");
 
         let (screen, _) = render_app(&mut app, 80, 16)?;
-        let deeplink = screen
+        let pair = screen
             .lines()
-            .find(|line| line.contains("answer a Polkadot"))
-            .context("render deeplink completion")?;
+            .find(|line| line.contains("paste a pairing"))
+            .context("render pair completion")?;
         let script = screen
             .lines()
             .find(|line| line.contains("edit the last"))
@@ -3191,7 +3489,7 @@ mod tests {
             line.find(description)
                 .map(|index| text_display_width(&line[..index]))
         };
-        assert_eq!(column(deeplink, "answer"), column(script, "edit"));
+        assert_eq!(column(pair, "paste"), column(script, "edit"));
         assert_eq!(
             column(script, "edit"),
             column(renew, "renew statement-store")
@@ -3283,10 +3581,50 @@ mod tests {
         Ok(())
     }
 
+    /// Dropping a UI leaves another UI's installed sender in place.
+    #[test]
+    fn dropping_a_foreign_ui_leaves_the_installed_sender_in_place() {
+        let _slot = lock_active_ui();
+        let (installed, mut receiver) = mpsc::unbounded_channel();
+        let restore = active_ui()
+            .lock()
+            .expect("lock active test UI")
+            .replace(installed);
+
+        {
+            let (sender, foreign_receiver) = mpsc::unbounded_channel();
+            let _foreign = ActiveTerminalUi {
+                terminal: None,
+                events: None,
+                receiver: foreign_receiver,
+                sender,
+                app: test_app(),
+                clipboard: None,
+                copy_next_pairing_deeplink: false,
+            };
+        }
+
+        let delivered = send_to_active(UiEvent::Log("after a foreign drop".to_string()));
+        *active_ui().lock().expect("unlock active test UI") = restore;
+
+        assert!(
+            delivered,
+            "the installed sender was cleared by a foreign drop"
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(UiEvent::Log(line)) if line == "after a foreign drop"
+        ));
+    }
+
     #[test]
     fn sso_summary_bypasses_the_adjustable_log_filter() {
+        let _slot = lock_active_ui();
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        *active_ui().lock().expect("lock active test UI") = Some(sender);
+        let restore = active_ui()
+            .lock()
+            .expect("lock active test UI")
+            .replace(sender);
         let filtered_logs = tracing_subscriber::fmt::layer()
             .with_writer(io::sink)
             .with_filter(tracing_subscriber::EnvFilter::new("error"));
@@ -3307,7 +3645,7 @@ mod tests {
                 elapsed_ms = 84_u64,
             );
         });
-        *active_ui().lock().expect("unlock active test UI") = None;
+        *active_ui().lock().expect("unlock active test UI") = restore;
 
         let UiEvent::Sso(event) = receiver.try_recv().expect("summary transcript event") else {
             panic!("expected SSO transcript event");
@@ -3342,6 +3680,22 @@ mod tests {
         };
 
         assert!(event.human().contains("polkadotapp://pair?handshake=0123"));
+    }
+
+    #[test]
+    fn pairing_image_lifecycle_has_actionable_terminal_copy() {
+        let mut app = test_app();
+        app.handle_system_event(SystemEvent::PairingImagePasteReady);
+        let ready = app.transcript_text();
+        assert!(ready.contains("Waiting for a pairing QR image"));
+        assert!(ready.contains(
+            "Press Ctrl-V, use the terminal's paste shortcut, or drag an image file here"
+        ));
+        assert!(!ready.contains("http://"));
+
+        app.handle_system_event(SystemEvent::PairingImageRead);
+
+        assert!(app.transcript_text().contains("Pairing QR image received"));
     }
 
     #[test]

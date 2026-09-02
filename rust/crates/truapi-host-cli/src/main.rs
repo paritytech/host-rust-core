@@ -21,6 +21,7 @@ mod dotns_read;
 mod frame_server;
 mod network;
 mod platform;
+mod qr_scanner;
 mod register_name;
 mod script_runner;
 mod sessions;
@@ -65,15 +66,16 @@ use crate::sessions::{
     SessionProfile,
 };
 use crate::signing_shell::{
-    ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, ProductCommand, SessionCommand,
-    ShellCommand, parse_command,
+    ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, PairCommand, ProductCommand,
+    SessionCommand, ShellCommand, parse_command,
 };
 use crate::terminal_ui::{
-    ActiveTerminalUi, ActivityState, DriveResult, SystemEvent, TerminalUi, UiHandle,
+    ActiveTerminalUi, ActivityState, DriveResult, PairingImageInput, SystemEvent, TerminalUi,
+    UiHandle,
 };
 
 /// Default product served by the pairing host's frame endpoint. Product ids
-/// must be a dotNS name (`.dot`, `.paseo` or `.test`) or a `localhost`
+/// must be a dotNS name (`.dot`, `.paseo` or `.testnet`) or a `localhost`
 /// identifier (host-spec product id).
 const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 /// Deeplink scheme advertised by the pairing host.
@@ -858,7 +860,7 @@ async fn report_slot_scan(
         }
         Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
-            let cooldown = alloc::slot::replacement_cooldown(metadata)?;
+            let cooldown = alloc::slot::replacement_cooldown(rpc, metadata).await?;
             // The runtime judges ages against its own clock, which trails ours.
             let chain_now = alloc::slot::read_chain_now_seconds(rpc).await?;
             println!(
@@ -3028,7 +3030,7 @@ async fn signing_interactive_loop(
             session,
             &frame_url,
             &product_id,
-            ShellCommand::Pair(deeplink),
+            ShellCommand::Pair(PairCommand::Deeplink(deeplink)),
             input,
             &mut ui,
         )
@@ -3191,6 +3193,13 @@ async fn signing_interactive_loop(
                 }
             }
             ShellCommand::Quit => return Ok(None),
+            ShellCommand::Pair(PairCommand::Scan) => {
+                let input = match ui.read_pairing_image().await? {
+                    DriveResult::Complete(input) => input,
+                    DriveResult::Cancelled => continue,
+                };
+                run_interactive_pairing_image(session, input, &mut ui).await?;
+            }
             ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
                 Ok(script) => {
                     let product_id = product.current();
@@ -3251,6 +3260,39 @@ async fn run_interactive_operation(
     Ok(())
 }
 
+async fn run_interactive_pairing_image(
+    session: &mut SigningHostSession,
+    input: PairingImageInput,
+    ui: &mut ActiveTerminalUi,
+) -> Result<()> {
+    let activity_checkpoint = ui.activity_checkpoint();
+    let operation = async {
+        let deeplink = tokio::task::spawn_blocking(move || match input {
+            PairingImageInput::Pixels(image) => qr_scanner::decode(&image),
+            PairingImageInput::Path(path) => qr_scanner::decode_path(&path),
+        })
+        .await
+        .context("join QR image decoder")??;
+        start_deeplink_responder(session, deeplink).await
+    };
+    match ui.drive("/pair", operation).await? {
+        DriveResult::Complete(Ok(())) => {}
+        DriveResult::Complete(Err(error)) => {
+            ui.finish_activities_since(
+                activity_checkpoint,
+                ActivityState::Failed,
+                "Stopped after an error",
+            );
+            ui.error_with_causes(&error);
+        }
+        DriveResult::Cancelled => {
+            ui.finish_activities_since(activity_checkpoint, ActivityState::Cancelled, "Cancelled");
+            ui.error("command cancelled");
+        }
+    }
+    Ok(())
+}
+
 async fn execute_interactive_operation(
     session: &mut SigningHostSession,
     frame_url: &str,
@@ -3259,7 +3301,18 @@ async fn execute_interactive_operation(
     ui: UiHandle,
 ) -> Result<()> {
     match command {
-        ShellCommand::Pair(deeplink) => start_deeplink_responder(session, deeplink).await?,
+        ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
+            start_deeplink_responder(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Image(path)) => {
+            let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode_path(&path))
+                .await
+                .context("join QR image decoder")??;
+            start_deeplink_responder(session, deeplink).await?;
+        }
+        ShellCommand::Pair(PairCommand::Scan) => {
+            bail!("clipboard image paste must be handled by the terminal UI")
+        }
         ShellCommand::Script(Some(script)) => {
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
             let script =
@@ -3312,7 +3365,18 @@ async fn execute_non_interactive_command(
     log_controller: &LogController,
 ) -> Result<Option<SessionClearTarget>> {
     match command {
-        ShellCommand::Pair(deeplink) => respond_to_deeplink(session, deeplink).await?,
+        ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
+            respond_to_deeplink(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Image(path)) => {
+            let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode_path(&path))
+                .await
+                .context("join QR image decoder")??;
+            respond_to_deeplink(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Scan) => bail!(
+            "clipboard image paste needs an interactive signing host; use /pair <image-path> or /pair <polkadotapp://pair?...>"
+        ),
         ShellCommand::Script(script) => {
             let script = match script {
                 Some(script) => {

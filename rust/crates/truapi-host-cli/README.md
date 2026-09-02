@@ -20,7 +20,7 @@ One binary, `truapi-host`:
 | Command | Role |
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
-| `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
+| `signing-host` | Wallet-local host: owns signer identity, can run product scripts, decodes copied pairing QR images or accepts deeplinks, registers statement allowance on-chain, signs. |
 | `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
@@ -105,6 +105,13 @@ make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
 
+### Raw proof contexts (development only)
+
+A product can bind a ring-VRF proof to 32 bytes of its choosing instead of a
+product-namespaced context by calling `development_createAccountProof` from
+`@parity/truapi`; the signing host honours it as is. Yet to be removed before a
+production release.
+
 ### Browser products
 
 `truapi-host dev` is one command for "run this product as if it were inside a
@@ -175,9 +182,11 @@ Two players on one machine means two hosts, each with its own session and port
 pointed at the second port. Sessions isolate the signer, the storage and the
 permissions.
 
-The signing host opens an interactive terminal where you can paste a pairing
-link, type `/pair <link>`, run `/script`, or use `/help` to discover the
-available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
+The signing host opens an interactive terminal where you can type `/pair` and
+press Ctrl-V, use the terminal's paste shortcut, or drop an image file. You can
+also provide an image file or deeplink with `/pair <value>`, run `/script`, or
+use `/help` to discover the available commands. It uses `--mnemonic` /
+`HOST_CLI_SIGNER_MNEMONIC` if set.
 Otherwise it auto-selects or creates a stored account under `--base-path` (default
 `$XDG_STATE_HOME/truapi-host` or `~/.local/state/truapi-host`), attests it
 through the identity backend, waits for ring readiness, and rotates when the
@@ -197,6 +206,8 @@ Commands always start with `/`:
 
 | Command | Result |
 | --- | --- |
+| `/pair` | Wait for a pairing QR image from Ctrl-V, terminal paste, or drag-and-drop (signing host). |
+| `/pair <image-path>` | Decode a pairing QR from a PNG, JPEG, or WebP image (signing host). |
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
 | `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
 | `/devices --remove <statement-account-id>` | Remove one paired device by its 32-byte statement account ID. |
@@ -220,6 +231,31 @@ Commands always start with `/`:
 | `/clear` | Clear the visible transcript. |
 | `/copy` | Copy the retained transcript to the system clipboard. |
 | `/quit` | Shut down cleanly. |
+
+### Pasting a pairing QR image
+
+Copy the QR image shown by the app, run `/pair` in an interactive signing host,
+then press Ctrl-V or use the terminal's normal paste shortcut, such as Command-V
+on macOS. Both forms read image pixels from the operating-system clipboard, so
+the image is not converted to terminal text and the flow works inside tmux.
+
+While `/pair` is waiting, you can also drag an image file into the terminal. If
+the terminal inserts the path without submitting it, press Enter. Raw, quoted,
+shell-escaped, and `file://` paths are accepted. `/pair <image-path>` remains
+available for direct file input. PNG, JPEG, and WebP files are supported.
+One-shot `exec` mode accepts an image path or deeplink but cannot wait for a
+clipboard paste or drop.
+
+Clipboard and file images are decoded in memory and are never written to a
+temporary file. The decoder accepts regular and light-on-dark QR codes, including
+the circular finder styling used by Polkadot apps. It distinguishes an image
+without a QR code, an unrelated QR code, and multiple pairing codes. Copy another
+image and paste again after a clipboard error, or press Ctrl-C to cancel.
+
+Images are limited to 8192 pixels per edge and 24 million pixels. Image files are
+also limited to 64 MiB. The decoded value must be exactly one valid
+`polkadotapp://pair?handshake=...` proposal before it reaches the existing
+pairing responder.
 
 Typing `/` opens autocomplete. Up/Down selects a completion; with the menu
 closed it navigates process-local command history. Tab inserts a completion,
@@ -432,7 +468,7 @@ res.match(
 );
 ```
 
-`--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.test`, or a
+`--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.testnet`, or a
 `localhost` identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
@@ -607,9 +643,12 @@ one personhood collection, and may sit in an old ring, so the signing host scans
 back from the current ring index (slow, one-time per pairing).
 
 Each collection is a separate alias space with its own budget, so a signer with
-full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
-`LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
-same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
+full personhood has the slots returned by
+`Resources.get_stmt_store_slots_per_period` in `People` on top of
+`Resources.get_lite_stmt_store_slots_per_period` in `LitePeople`. These dynamic
+values and the replacement cooldown are read through runtime view functions and
+cached with the runtime metadata. Asset Hub budgets PGAS claims the same way,
+through `Pgas.MaxClaimsPerPeriodPerPerson` and
 `MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
 the collection it is proved against. A PGAS claim proves one collection rather
 than pooling across both, so it is bounded by that collection's budget alone.

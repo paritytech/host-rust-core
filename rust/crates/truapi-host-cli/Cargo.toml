@@ -1,6 +1,6 @@
 [package]
 name = "truapi-host-cli"
-version = "0.11.0"
+version = "0.13.1"
 edition.workspace = true
 description = "Headless TrUAPI hosts: a signing-host companion and a pairing host that pair over the real People-chain statement store, for end-to-end testing without an external signer service"
 license = "MIT"
@@ -20,7 +20,7 @@ truapi = { path = "../truapi" }
 truapi-platform = { path = "../truapi-platform" }
 truapi-server = { path = "../truapi-server" }
 anyhow = "1"
-arboard = { version = "3.6.1", default-features = false }
+arboard = { version = "3.6.1", default-features = false, features = ["image-data"] }
 async-trait = "0.1"
 base64 = "0.22"
 bip39 = { version = "2", features = ["rand"] }
@@ -31,10 +31,12 @@ futures = "0.3"
 futures-util = "0.3"
 fs2 = "0.4"
 hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 parity-scale-codec = { version = "3", features = ["derive"] }
 qrcode = { version = "0.14.1", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rqrr = { version = "0.10.1", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

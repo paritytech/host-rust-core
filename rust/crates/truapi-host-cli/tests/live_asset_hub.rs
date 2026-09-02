@@ -278,7 +278,8 @@ async fn live_asset_hub_declares_the_register_full_name_shape() {
 }
 
 /// End to end over the same resolution steps the CLI and the in-core runtime
-/// share: pallet storage → dispatcher `TARGET()` → controller → registry →
+/// share: pallet storage → controller (directly, or through a dispatcher's
+/// `TARGET()`) → registry →
 /// store factory → the owner's `LabelStore` → bare labels. The owner is found
 /// through the registrar, so this covers the warm path (a settled store, whose
 /// labels carry the network TLD) rather than only pending claims.
@@ -291,7 +292,7 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
     let controller = discover_pop_controller(&mut transport)
         .await
         .expect("discovery")
-        .expect("the gateway is deployed with a dispatcher");
+        .expect("the gateway names a controller");
     println!("live DotnsPopController: 0x{}", hex::encode(controller));
 
     // ownerOf(namehash) on the ERC721 registrar. Eth-derived owners map back
