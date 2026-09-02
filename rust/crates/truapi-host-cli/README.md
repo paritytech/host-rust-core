@@ -643,9 +643,12 @@ one personhood collection, and may sit in an old ring, so the signing host scans
 back from the current ring index (slow, one-time per pairing).
 
 Each collection is a separate alias space with its own budget, so a signer with
-full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
-`LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
-same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
+full personhood has the slots returned by
+`Resources.get_stmt_store_slots_per_period` in `People` on top of
+`Resources.get_lite_stmt_store_slots_per_period` in `LitePeople`. These dynamic
+values and the replacement cooldown are read through runtime view functions and
+cached with the runtime metadata. Asset Hub budgets PGAS claims the same way,
+through `Pgas.MaxClaimsPerPeriodPerPerson` and
 `MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
 the collection it is proved against. A PGAS claim proves one collection rather
 than pooling across both, so it is bounded by that collection's budget alone.

@@ -14,6 +14,7 @@
 //!   extensions with `AsResources` carrying `Some(AsResourcesInfo)`.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use frame_metadata::RuntimeMetadata;
 use frame_metadata::RuntimeMetadataPrefixed;
@@ -201,6 +202,15 @@ pub struct Metadata {
     storage_values: HashMap<(String, String), u32>,
     constants: HashMap<(String, String), Vec<u8>>,
     calls: HashMap<String, (u8, u32)>,
+    view_functions: HashMap<(String, String), ViewFunctionDef>,
+    view_values: Mutex<HashMap<[u8; 32], u32>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ViewFunctionDef {
+    pub(super) id: [u8; 32],
+    pub(super) inputs: usize,
+    pub(super) output_type: u32,
 }
 
 /// The transaction-extension version to encode with: the highest the runtime
@@ -276,7 +286,15 @@ macro_rules! collect_metadata {
                 storage_values.insert((pallet.name.clone(), entry.name.clone()), value_type);
             }
         }
-        (extensions, 0u8, $m.types, storage_values, constants, calls)
+        (
+            extensions,
+            0u8,
+            $m.types,
+            storage_values,
+            constants,
+            calls,
+            HashMap::new(),
+        )
     }};
 }
 
@@ -304,6 +322,7 @@ macro_rules! collect_metadata_v16 {
         let mut storage_values = HashMap::new();
         let mut constants = HashMap::new();
         let mut calls = HashMap::new();
+        let mut view_functions = HashMap::new();
         for pallet in &$m.pallets {
             if let Some(pallet_calls) = &pallet.calls {
                 calls.insert(pallet.name.clone(), (pallet.index, pallet_calls.ty.id));
@@ -312,6 +331,16 @@ macro_rules! collect_metadata_v16 {
                 constants.insert(
                     (pallet.name.clone(), constant.name.clone()),
                     constant.value.clone(),
+                );
+            }
+            for function in &pallet.view_functions {
+                view_functions.insert(
+                    (pallet.name.clone(), function.name.clone()),
+                    ViewFunctionDef {
+                        id: function.id,
+                        inputs: function.inputs.len(),
+                        output_type: function.output.id,
+                    },
                 );
             }
             let Some(storage) = &pallet.storage else {
@@ -333,6 +362,7 @@ macro_rules! collect_metadata_v16 {
             storage_values,
             constants,
             calls,
+            view_functions,
         )
     }};
 }
@@ -345,22 +375,29 @@ impl Metadata {
         let prefixed =
             RuntimeMetadataPrefixed::decode(&mut &bytes[..]).map_err(MetadataError::Decode)?;
         let metadata_version = prefixed.1.version();
-        let (extensions, extension_version, registry, storage_values, constants, calls) =
-            match prefixed.1 {
-                RuntimeMetadata::V14(m) => {
-                    collect_metadata!(m, frame_metadata::v14::StorageEntryType)
+        let (
+            extensions,
+            extension_version,
+            registry,
+            storage_values,
+            constants,
+            calls,
+            view_functions,
+        ) = match prefixed.1 {
+            RuntimeMetadata::V14(m) => {
+                collect_metadata!(m, frame_metadata::v14::StorageEntryType)
+            }
+            RuntimeMetadata::V15(m) => {
+                collect_metadata!(m, frame_metadata::v15::StorageEntryType)
+            }
+            RuntimeMetadata::V16(m) => collect_metadata_v16!(m),
+            other => {
+                return Err(MetadataError::UnsupportedVersion {
+                    version: other.version(),
                 }
-                RuntimeMetadata::V15(m) => {
-                    collect_metadata!(m, frame_metadata::v15::StorageEntryType)
-                }
-                RuntimeMetadata::V16(m) => collect_metadata_v16!(m),
-                other => {
-                    return Err(MetadataError::UnsupportedVersion {
-                        version: other.version(),
-                    }
-                    .into());
-                }
-            };
+                .into());
+            }
+        };
         Ok(Self {
             extensions,
             metadata_version,
@@ -369,6 +406,8 @@ impl Metadata {
             storage_values,
             constants,
             calls,
+            view_functions,
+            view_values: Mutex::new(HashMap::new()),
         })
     }
 
@@ -407,6 +446,43 @@ impl Metadata {
         self.constants
             .get(&(pallet.to_string(), name.to_string()))
             .map(Vec::as_slice)
+    }
+
+    pub(super) fn has_view_function(&self, pallet: &str, function: &str) -> bool {
+        self.view_functions
+            .contains_key(&(pallet.to_string(), function.to_string()))
+    }
+
+    pub(super) fn view_function(&self, pallet: &str, function: &str) -> Option<ViewFunctionDef> {
+        self.view_functions
+            .get(&(pallet.to_string(), function.to_string()))
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_view_function(
+        &mut self,
+        pallet: &str,
+        function: &str,
+        definition: ViewFunctionDef,
+    ) {
+        self.view_functions
+            .insert((pallet.to_string(), function.to_string()), definition);
+    }
+
+    pub(super) fn cached_view_u32(&self, id: &[u8; 32]) -> Option<u32> {
+        self.view_values
+            .lock()
+            .expect("view function cache mutex poisoned")
+            .get(id)
+            .copied()
+    }
+
+    pub(super) fn cache_view_u32(&self, id: [u8; 32], value: u32) {
+        self.view_values
+            .lock()
+            .expect("view function cache mutex poisoned")
+            .insert(id, value);
     }
 
     /// Resolve `pallet::call` by name to its `[pallet_index, call_index]`
