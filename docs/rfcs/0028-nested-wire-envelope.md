@@ -14,7 +14,7 @@ owner: "@decrypto21"
 
 ## Summary
 
-The codec 2 envelope (`[requestId][trait: u8][method: u8][payload]`) still spends its per-trait method-id budget on *direction*: a request/response method reserves two consecutive ids, a subscription reserves four. This RFC moves direction into the payload itself, one decode step past the `(trait, method)` routing pair: version selects a method's own `{Method}Version` enum, and that version wraps a `Request<Req, Res>` (or, for subscriptions, a `Subscription<Start, Item, Err>`) value whose own variant tag carries direction. The `(trait, method)` address stays exactly as flat as it is today (one `MethodIds` constant per method, unchanged as the dispatcher's routing key); only what a method's *payload* decodes into changes. Each method costs exactly one id, method ids run as a dense 0, 1, 2, ... sequence per trait, and a method's version history is the single place its shape (request/response today, subscription tomorrow) can change without touching its wire address.
+The `(trait, method)` pair that addresses every TrUAPI frame is the same shape as a Substrate extrinsic's `(pallet_index, call_index)`: one byte names the module, the other names the operation within it. Codec 2's envelope (`[requestId][trait: u8][method: u8][payload]`) still spends that per-trait operation budget on *direction*, not just the operation: a request/response method reserves two consecutive ids, a subscription reserves four. This RFC moves direction into the payload itself, one decode step past the `(trait, method)` routing pair, as a further SCALE Enum: the payload's own leading byte selects a method's `{Method}Version` variant, and that variant wraps a `Request<Req, Res>` enum (or, for subscriptions, a `Subscription<Start, Item, Err>` enum) whose own variant carries direction. The `(trait, method)` address stays exactly as flat as it is today (one `MethodIds` constant per method, unchanged as the dispatcher's routing key); only what a method's *payload* decodes into changes. Each method costs exactly one id, method ids run as a dense 0, 1, 2, ... sequence per trait, and a method's version history is the single place its shape (request/response today, subscription tomorrow) can change without touching its wire address.
 
 ## Motivation
 
@@ -35,7 +35,7 @@ This RFC folds those concerns into the same nested address, at the same moment c
 [requestId: SCALE str][trait: u8][method: u8][payload bytes]
 ```
 
-`method` is not one id per method: it is `n` for a request, `n+1` for its response; or `n..n+3` for a subscription's start/stop/interrupt/receive. `RequestFrameIds { trait_id, request_id, response_id }` and `SubscriptionFrameIds { trait_id, start_id, stop_id, interrupt_id, receive_id }` are the generated types that carry this today; the Rust dispatcher keys a `HashMap<(u8, u8), _>` on `(trait_id, request_id)` / `(trait_id, start_id)`, with `stop_id` tracked in a parallel `HashSet`. `payload bytes` already begins with a version tag and, for responses, an `Ok`/`Err` tag (`encode_versioned_ok_payload` / `encode_versioned_err_payload`), but that structure is invisible at the routing layer, because routing has already happened by the time those bytes are read.
+`method` is not one id per method: `n` for a request, `n+1` for its response, or `n..n+3` for a subscription's start/stop/interrupt/receive. Routing happens on those bytes alone; the payload's own version (and, for responses, an `Ok`/`Err`) tag is never visible at the routing layer.
 
 ### Proposed shape
 
@@ -43,25 +43,14 @@ This RFC folds those concerns into the same nested address, at the same moment c
 [requestId: SCALE str][trait: u8][method: u8][version: u8][direction: u8][inner payload bytes]
 ```
 
-Two bytes replace what request/response or subscription ids used to encode, and one method id now serves every version and every direction a method ever has:
+One method id now serves every version and direction a method has. Two hand-written generics, reused by every generated version enum, carry direction:
 
 ```rust
-// truapi::versioned: hand-written once, reused by every generated version enum.
-
-/// Direction tag for a request/response method: which half of the
-/// exchange this frame carries.
 pub enum Request<Req, Res> {
     Request(Req),
     Response(Res),
 }
 
-/// Direction tag for a subscription method: which half of the four-frame
-/// exchange this frame carries. `Stop` carries no payload (cancellation
-/// needs no data beyond "this subscription, now"), and `Interrupt` reuses
-/// the method's own error type rather than a bespoke shape. `Interrupt(None)`
-/// is natural stream completion; `Interrupt(Some(err))` is a failure. Today's
-/// implementation sends an empty frame for the former (no representable value
-/// otherwise), which this makes an explicit, decodable case instead.
 pub enum Subscription<Start, Item, Err> {
     Start(Start),
     Stop,
@@ -70,42 +59,13 @@ pub enum Subscription<Start, Item, Err> {
 }
 ```
 
-`Err` is a type parameter, not a fixed type, so `Subscription<Start, Item, Err>` is one shape shared by every subscription regardless of how specific that method's own error is: a shared `GenericError` fallback for most subscriptions, a domain-shared error for a family of methods that all fail the same way (every `CoinPayment` subscription reuses `CoinPaymentError`), or a method-specific error for one that needs its own (each `Payment` subscription gets its own). None of the three needs a bespoke wrapper shape.
+`Err` is a type parameter, not a fixed type: most subscriptions share a `GenericError` fallback, a family that fails alike shares one domain error, and a method that needs its own gets one. `Interrupt(None)` is natural completion; `Interrupt(Some(err))` is a failure, replacing today's silent empty-frame convention with an explicit, decodable case.
 
-The address space stays flat (one `MethodIds { trait_id, method_id }` `pub const` per method, exactly as it is today) because the version/direction structure lives entirely inside the payload type; no per-trait method enum sits between the address and it:
-
-```rust
-// Generated (rust/wire_table.rs): one MethodIds const per method, built
-// from the same #[wire_trait(id = N)] / #[wire(id = N)] annotations already
-// on the source traits, just no longer split into request_id/response_id/etc.
-pub const LOCALE_SUBSCRIBE: MethodIds = MethodIds { trait_id: 208, method_id: 0 };
-
-// Hand-written (truapi/src/versioned/locale.rs): the {Method}Version type
-// codegen names but does not itself emit; wraps the bare v01 item type
-// directly, and the error slot is the CallError<D> wrapper, not a bare D.
-pub enum HostLocaleSubscribeVersion {
-    V1(Subscription<(), v01::HostLocaleSubscribeItem, CallError<crate::latest::GenericError>>),
-}
-```
-
-A frame for `locale_subscribe`'s start half now reads: the `(trait_id, method_id)` pair addresses `LOCALE_SUBSCRIBE`, the version byte selects `V1`, the direction byte selects `Start`, and the remaining bytes are `()` (no start payload). The exact same leading bytes up through `method_id` route the matching `Stop`/`Interrupt`/`Receive` frames: the address never changes across a subscription's lifetime, only the version and direction tags inside the payload do.
+The `(trait, method)` address itself never changes: a subscription's start, stop, interrupt, and receive frames all address the same `MethodIds` constant, distinguished only by the version and direction bytes inside the payload.
 
 ### Routing is unchanged
 
-The dispatcher's routing key is unchanged: `(trait_id, method_id)`, one `HashMap` lookup, because only inbound-shaped frames (`Request::Request(..)` or `Subscription::Start(..)` / `Subscription::Stop`) ever arrive at a host's dispatcher. A `Request::Response(..)` or `Subscription::Receive(..)`/`Interrupt(..)` arriving inbound is not a routing miss to fall back on; it is a protocol violation, answered with `CallError::MalformedFrame` exactly as an undecodable payload is today. What disappears is the *separate ids*: `response_id`, `start_id`/`stop_id`/`interrupt_id`/`receive_id` stop being fields on the generated `RequestFrameIds`/`SubscriptionFrameIds` structs, replaced by a single `MethodIds { trait_id, method_id }`, and `stop_ids: HashSet<(u8, u8)>` in `Dispatcher` disappears. A `Stop` frame arrives at the same `(trait_id, method_id)` as `Start`, but `dispatch()` peeks the direction tag itself before invoking anything and routes `Stop` straight to `SubscriptionManager::handle_stop`; only `Start` ever reaches the registered handler.
-
-### Local surfaces this touches
-
-- **`truapi-macros`**: `#[wire(request_id = N, response_id = N, ...)]` collapses to `#[wire(id = N)]`: one id argument, no `response_id`/`start_id`/`stop_id`/`interrupt_id`/`receive_id` variants left to parse. `#[wire_trait(id = N)]` is unchanged: trait ids keep their own explicit numbering and the `MIN_TRAIT_ID` / `MAX_CODEC_1_METHOD_ID` codec-1 floor guarantee is untouched, since that guarantee is about the *first* byte only.
-- **`truapi-codegen/src/rustdoc.rs`**: extracts one `@wire_id=N` doc tag per method instead of up to four (`@wire_request_id`, `@wire_response_id`, `@wire_start_id`, ...).
-- **`truapi-codegen/src/rust/wire_table.rs`**: emits a flat `MethodIds { trait_id, method_id }` `pub const` per method, replacing `RequestFrameIds`/`SubscriptionFrameIds`; no per-trait method enum sits between the address and the `{Method}Version` type declarations, which live alongside it.
-- **`truapi-codegen/src/rust/dispatcher.rs`**: generated `register_*` functions keep registering `on_request`/`on_subscription` against the single `MethodIds` constant; the generated handler body gains one `match` arm to read the `Request`/`Subscription` tag before reaching the caller's trait method.
-- **`truapi-codegen/src/ts.rs`**: mirrors all of the above into the generated TS wire table and client stub.
-- **`truapi-server/src/frame.rs`**: `ProtocolMessage`'s hand-rolled `Decode` is unchanged in what it reads for routing (`trait_id`, `method_id`, both flat `u8`s); `encode_versioned_ok_payload`/`encode_versioned_err_payload` and friends go unused by every real method, which instead call `.encode()` directly on the derived `{Method}Version` enum to write `[version][direction][payload]` instead of `[version][Ok/Err][payload]`. The old functions stay in the tree only for `truapi-codegen`'s own synthetic-fixture legacy fallback and its unit tests.
-- **`truapi-server/src/dispatcher.rs`**: loses `stop_ids: HashSet<(u8, u8)>`; `dispatch()` peeks the direction tag itself and routes `Stop` straight to `SubscriptionManager::handle_stop`, one decode step above the registered handler; only `Start` ever reaches it.
-- **`truapi-server/src/subscription.rs`**: `Interrupt`/`Receive` frames sent to a product carry the `Subscription` direction tag instead of a distinct wire id.
-- **`js/packages/truapi/src/client.ts`**: the hand-symmetric client-side router (`createTransport`'s `provider.subscribe` callback, matching on `traitId`/`methodId`) mirrors the Rust dispatcher's change exactly: same `(traitId, methodId)` map, one more decode step for the direction tag.
-- **Golden and fixture tests** all need regeneration under the new shape: `truapi-codegen`'s own golden `wire_table.rs`/`dispatcher.rs`, `truapi-server`'s `golden-account-get.bin`, `wire_table_ts_parity.rs`, `wire_result_shape.rs`, `golden_frame.rs`.
+The dispatcher still keys on `(trait_id, method_id)`, one lookup. Only inbound-shaped frames (`Request::Request`, `Subscription::Start`/`Stop`) ever reach it; an outbound-shaped frame arriving inbound is a protocol violation, answered with `CallError::MalformedFrame`, exactly as an undecodable payload is today.
 
 ### Compatibility
 
