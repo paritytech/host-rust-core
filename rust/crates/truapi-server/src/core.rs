@@ -387,7 +387,7 @@ mod tests {
         let first = &sent[0];
         assert_eq!(first.payload.trait_id, sub_ids.trait_id);
         assert_eq!(first.payload.method_id, sub_ids.method_id);
-        // [version=0, direction=Receive=3][Disconnected discriminant=0x00]
-        assert_eq!(first.payload.value, vec![0x00, 0x03, 0x00]);
+        // [version=0, direction=Receive=1][Disconnected discriminant=0x00]
+        assert_eq!(first.payload.value, vec![0x00, 0x01, 0x00]);
     }
 }

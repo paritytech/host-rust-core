@@ -185,16 +185,17 @@ export function Request<Req, Res>(
  */
 export type Subscription<Start, Item, Err> =
   | { tag: "Start"; value: Start }
-  | { tag: "Stop"; value?: undefined }
+  | { tag: "Receive"; value: Item }
   | { tag: "Interrupt"; value: Err | undefined }
-  | { tag: "Receive"; value: Item };
+  | { tag: "Stop"; value?: undefined };
 
 /**
  * SCALE codec for `truapi::versioned::Subscription<Start, Item, Err>`: the
  * nested wire envelope's direction tag for a subscription method (RFC 0028).
- * `Start`=0, `Stop`=1, `Interrupt`=2 (wrapping `Option<Err>` — `undefined`
- * is a clean, error-free completion), `Receive`=3, fixed by the Rust enum's
- * declaration order.
+ * `Start`=0, `Receive`=1, `Interrupt`=2 (wrapping `Option<Err>` — `undefined`
+ * is a clean, error-free completion), `Stop`=3, fixed by the Rust enum's
+ * declaration order. `Start` and `Receive` lead, in the same position as
+ * {@link Request}'s own two variants.
  */
 export function Subscription<Start, Item, Err>(
   start: Codec<Start>,
@@ -203,9 +204,9 @@ export function Subscription<Start, Item, Err>(
 ): Codec<Subscription<Start, Item, Err>> {
   return indexedTaggedUnion({
     Start: [0, start],
-    Stop: [1, _void],
+    Receive: [1, item],
     Interrupt: [2, Option(err)],
-    Receive: [3, item],
+    Stop: [3, _void],
   } as const) as unknown as Codec<Subscription<Start, Item, Err>>;
 }
 

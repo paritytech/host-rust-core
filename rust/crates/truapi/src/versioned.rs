@@ -47,18 +47,21 @@ pub enum Request<Req, Res> {
 }
 
 /// Direction tag for a subscription method: which half of the four-frame
-/// exchange this frame carries. `Stop` carries no payload; `Interrupt` carries
-/// `None` for natural stream completion or `Some(err)` for a failure.
+/// exchange this frame carries. `Start` and `Receive` lead, in the same
+/// position as [`Request`]'s own two variants, so subscription decoding is
+/// partly shape-compatible with request decoding. `Stop` carries no payload;
+/// `Interrupt` carries `None` for natural stream completion or `Some(err)`
+/// for a failure.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum Subscription<Start, Item, Err> {
     /// Product-to-host subscription request.
     Start(Start),
-    /// Product-to-host cancellation.
-    Stop,
-    /// Host-to-product termination: `None` on clean completion, `Some` on failure.
-    Interrupt(Option<Err>),
     /// Host-to-product streamed item.
     Receive(Item),
+    /// Host-to-product termination: `None` on clean completion, `Some` on failure.
+    Interrupt(Option<Err>),
+    /// Product-to-host cancellation.
+    Stop,
 }
 
 pub mod account;
@@ -178,7 +181,7 @@ mod tests {
         );
 
         let stop = Subscription::<u32, String, String>::Stop;
-        assert_eq!(stop.encode()[0], 1, "Stop must encode discriminant 1");
+        assert_eq!(stop.encode()[0], 3, "Stop must encode discriminant 3");
         assert_eq!(
             Subscription::<u32, String, String>::decode(&mut &stop.encode()[..]).expect("decode"),
             stop
@@ -203,7 +206,7 @@ mod tests {
         );
 
         let item = Subscription::<u32, String, String>::Receive("hello".to_string());
-        assert_eq!(item.encode()[0], 3, "Receive must encode discriminant 3");
+        assert_eq!(item.encode()[0], 1, "Receive must encode discriminant 1");
         assert_eq!(
             Subscription::<u32, String, String>::decode(&mut &item.encode()[..]).expect("decode"),
             item

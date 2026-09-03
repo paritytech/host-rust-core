@@ -399,8 +399,8 @@ mod tests {
         });
         let transport = Arc::new(RecordingTransport::default());
         let transport_dyn: Arc<dyn Transport> = transport.clone();
-        // [version=0, direction=Stop=1], matching `frame::encode_envelope_stop`.
-        let frame = make_frame(7, 50, vec![0, 1]);
+        // [version=0, direction=Stop=3], matching `frame::encode_envelope_stop`.
+        let frame = make_frame(7, 50, vec![0, 3]);
         futures::executor::block_on(dispatcher.dispatch(frame, transport_dyn));
         assert!(
             !invoked.load(std::sync::atomic::Ordering::SeqCst),

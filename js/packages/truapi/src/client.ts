@@ -43,9 +43,9 @@ const KNOWN_WIRE_IDS = new Set<string>(
 /** Direction tag byte (right after the envelope's own version byte). **/
 const DIRECTION_REQUEST = 0;
 const DIRECTION_START = 0;
-const DIRECTION_STOP = 1;
+const DIRECTION_RECEIVE = 1;
 const DIRECTION_INTERRUPT = 2;
-const DIRECTION_RECEIVE = 3;
+const DIRECTION_STOP = 3;
 
 /**
  * Peek a nested wire envelope's direction tag (the second byte, right after

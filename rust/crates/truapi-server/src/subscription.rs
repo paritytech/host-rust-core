@@ -665,7 +665,7 @@ mod tests {
     }
 
     /// Product frame on [`host_ids`]'s address, tagged `direction`
-    /// (`Start`=0, `Stop`=1, `Interrupt`=2, `Receive`=3) with `inner` as the
+    /// (`Start`=0, `Receive`=1, `Interrupt`=2, `Stop`=3) with `inner` as the
     /// direction's own payload — matching `[version, direction, ...inner]`.
     fn host_frame(request_id: &str, direction: u8, inner: Vec<u8>) -> ProtocolMessage {
         let mut value = vec![0, direction];
@@ -694,7 +694,7 @@ mod tests {
 
         assert!(
             manager
-                .handle_message(host_frame("h:1", 3, 7_u32.encode()))
+                .handle_message(host_frame("h:1", 1, 7_u32.encode()))
                 .is_none()
         );
         assert_eq!(
@@ -727,14 +727,14 @@ mod tests {
         // One `Deeper` byte per level, terminated by `Leaf`.
         let mut bomb = vec![0x01; (MAX_SUBSCRIPTION_DECODE_DEPTH as usize) * 4];
         bomb.push(0x00);
-        manager.handle_message(host_frame("h:1", 3, bomb));
+        manager.handle_message(host_frame("h:1", 1, bomb));
         assert!(matches!(
             futures::executor::block_on(nested.next()),
             Some(Err(_))
         ));
 
         // A payload inside the bound still arrives, on its own subscription.
-        manager.handle_message(host_frame("h:2", 3, NestedItem::Leaf.encode()));
+        manager.handle_message(host_frame("h:2", 1, NestedItem::Leaf.encode()));
         assert_eq!(
             futures::executor::block_on(healthy.next()),
             Some(Ok(NestedItem::Leaf))
@@ -795,8 +795,8 @@ mod tests {
         let mut malformed = manager.start::<u32>(host_ids(), 1, vec![], transport.clone());
         let mut healthy = manager.start::<u32>(host_ids(), 1, vec![], transport);
 
-        manager.handle_message(host_frame("h:1", 3, vec![0xff]));
-        manager.handle_message(host_frame("h:2", 3, 9_u32.encode()));
+        manager.handle_message(host_frame("h:1", 1, vec![0xff]));
+        manager.handle_message(host_frame("h:2", 1, 9_u32.encode()));
 
         // A partial tree left on screen as final is the failure this prevents.
         assert!(matches!(
@@ -886,7 +886,7 @@ mod tests {
         }
         assert_eq!(render.next().now_or_never(), None);
 
-        manager.handle_message(host_frame("h:1", 3, 7_u32.encode()));
+        manager.handle_message(host_frame("h:1", 1, 7_u32.encode()));
         assert_eq!(futures::executor::block_on(render.next()), Some(Ok(7)));
     }
 
@@ -934,8 +934,8 @@ mod tests {
         assert_eq!(first_transport_typed.sent()[0].request_id, "h:1");
         assert_eq!(second_transport_typed.sent()[0].request_id, "h:1");
 
-        first.handle_message(host_frame("h:1", 3, 7_u32.encode()));
-        second.handle_message(host_frame("h:1", 3, 9_u32.encode()));
+        first.handle_message(host_frame("h:1", 1, 7_u32.encode()));
+        second.handle_message(host_frame("h:1", 1, 9_u32.encode()));
 
         assert_eq!(
             futures::executor::block_on(first_render.next()),

@@ -143,7 +143,7 @@ pub fn encode_versioned_interrupt_payload<T: Encode>(value: T, version: u8) -> V
 
 /// Every nested wire envelope shares this fixed shape once its own
 /// `[version]` byte is stripped: a `truapi::versioned::Subscription`
-/// direction tag (`Start`=0, `Stop`=1, `Interrupt`=2, `Receive`=3), declared
+/// direction tag (`Start`=0, `Receive`=1, `Interrupt`=2, `Stop`=3), declared
 /// in that order in `truapi::versioned` — followed by whatever bytes that
 /// direction carries. These constants and the helpers below let runtime code
 /// that has no concrete `{Method}Version` type in scope (the framework
@@ -151,9 +151,9 @@ pub fn encode_versioned_interrupt_payload<T: Encode>(value: T, version: u8) -> V
 /// inspect that structure. `Start` has no constant of its own: nothing needs
 /// to detect it by raw byte, since a `Start` frame is always decoded through
 /// the concrete `{Method}Version` type by the generated per-method handler.
-const SUBSCRIPTION_TAG_STOP: u8 = 1;
+const SUBSCRIPTION_TAG_RECEIVE: u8 = 1;
 const SUBSCRIPTION_TAG_INTERRUPT: u8 = 2;
-const SUBSCRIPTION_TAG_RECEIVE: u8 = 3;
+const SUBSCRIPTION_TAG_STOP: u8 = 3;
 
 /// Peek a subscription frame's direction tag (the second byte, right after
 /// the envelope's own version tag) without needing the concrete
@@ -453,9 +453,9 @@ mod tests {
     fn subscription_phases_round_trip_through_codec() {
         let cases: &[Vec<u8>] = &[
             vec![0x00, 0x00, 0xaa],             // start: [version, Start, item bytes]
-            vec![0x00, 0x01],                   // stop: [version, Stop]
+            vec![0x00, 0x01, 0x01, 0x02, 0x03], // receive: [version, Receive, item bytes]
             vec![0x00, 0x02, 0x00],             // interrupt: [version, Interrupt, None]
-            vec![0x00, 0x03, 0x01, 0x02, 0x03], // receive: [version, Receive, item bytes]
+            vec![0x00, 0x03],                   // stop: [version, Stop]
         ];
         for value in cases {
             let msg = build(2, 0, value.clone());
@@ -495,9 +495,9 @@ mod tests {
 
     #[test]
     fn subscription_direction_helpers_read_the_second_byte() {
-        assert!(is_subscription_stop(&[0, 1]));
+        assert!(is_subscription_stop(&[0, 3]));
         assert!(!is_subscription_stop(&[0, 0]));
-        assert!(is_subscription_receive(&[0, 3, 0xaa]));
+        assert!(is_subscription_receive(&[0, 1, 0xaa]));
         assert!(is_subscription_interrupt(&[0, 2, 0]));
         assert_eq!(subscription_direction_tag(&[5, 2]), Some(2));
         assert_eq!(subscription_direction_tag(&[5]), None);
@@ -525,8 +525,8 @@ mod tests {
 
     #[test]
     fn encode_envelope_stop_is_version_then_stop() {
-        assert_eq!(encode_envelope_stop(1), vec![0, 1]);
-        assert_eq!(encode_envelope_stop(2), vec![1, 1]);
+        assert_eq!(encode_envelope_stop(1), vec![0, 3]);
+        assert_eq!(encode_envelope_stop(2), vec![1, 3]);
     }
 
     /// Genuine zero-byte payload (e.g. unit-typed response). `Decode` must

@@ -162,7 +162,7 @@ function rendererStop(requestId: string): Uint8Array {
             payload: {
                 traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
                 methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.method,
-                value: new Uint8Array([0, 1]),
+                value: new Uint8Array([0, 3]),
             },
         }),
         "encode renderer stop",
@@ -622,9 +622,9 @@ describe("generated client transport", () => {
             onReceive: (payload) => received.push(payload),
         });
         subscription.unsubscribe();
-        // Receive (direction=3) and Interrupt(None) (direction=2) now share one
+        // Receive (direction=1) and Interrupt(None) (direction=2) now share one
         // address; both are distinguished by the direction byte in `value`.
-        for (const value of [new Uint8Array([0, 3]), new Uint8Array([0, 2, 0])]) {
+        for (const value of [new Uint8Array([0, 1]), new Uint8Array([0, 2, 0])]) {
             subscriptionFixture.receive(
                 unwrap(
                     encodeWireMessage({
@@ -1130,10 +1130,10 @@ describe("generated client transport", () => {
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
                     methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
-                    // [version=0, direction=Receive=3, item disc=0xff]: a
+                    // [version=0, direction=Receive=1, item disc=0xff]: a
                     // well-formed envelope prefix with an out-of-range item
                     // discriminant, so decoding fails past the direction tag.
-                    value: new Uint8Array([0, 3, 0xff]),
+                    value: new Uint8Array([0, 1, 0xff]),
                 },
             }),
             "encode malformed receive",
@@ -1152,7 +1152,7 @@ describe("generated client transport", () => {
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
                     methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
-                    value: new Uint8Array([0, 1]),
+                    value: new Uint8Array([0, 3]),
                 },
             }),
             "encode stop after malformed receive",
@@ -1197,7 +1197,7 @@ describe("generated client transport", () => {
                 payload: {
                     traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
                     methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
-                    value: new Uint8Array([0, 1]),
+                    value: new Uint8Array([0, 3]),
                 },
             }),
             "encode explicit unsubscribe stop",
