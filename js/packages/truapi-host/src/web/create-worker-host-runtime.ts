@@ -229,7 +229,12 @@ const DEV_DEBUGGER_URL_KEY = "truapi:debugger";
  */
 type DebuggerEnablement = {
   readonly url: string | null;
-  readonly reason: "enabled" | "production-build" | "no-key" | "no-storage";
+  readonly reason:
+    | "enabled"
+    | "production-build"
+    | "production-build-switch-set"
+    | "no-key"
+    | "no-storage";
 };
 
 function readPersistedDebuggerUrl(): DebuggerEnablement {
@@ -254,8 +259,24 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
   } catch {
     dev = false;
   }
-  if (!dev) return { url: null, reason: "production-build" };
   const storage = globalThis.localStorage;
+  if (!dev) {
+    // A switch set on a production build is someone actively trying to enable the
+    // debugger against a build that cannot carry one. Distinguish it from plain
+    // production so the reporter can say so: staying silent here is what makes a
+    // compiled-out dial read as a broken debugger (design doc §9).
+    let switchSet = false;
+    try {
+      const key = storage?.getItem(DEV_DEBUGGER_URL_KEY);
+      switchSet = key !== null && key !== undefined && key !== "";
+    } catch {
+      switchSet = false;
+    }
+    return {
+      url: null,
+      reason: switchSet ? "production-build-switch-set" : "production-build",
+    };
+  }
   if (storage === undefined) return { url: null, reason: "no-storage" };
   const url = storage.getItem(DEV_DEBUGGER_URL_KEY);
   if (url === null || url === "") return { url: null, reason: "no-key" };
@@ -272,6 +293,14 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
  */
 function reportDebuggerEnablement(e: DebuggerEnablement): void {
   if (e.reason === "production-build") return;
+  if (e.reason === "production-build-switch-set") {
+    console.info(
+      `[truapi] wire debugger: off (the "${DEV_DEBUGGER_URL_KEY}" switch is set, but ` +
+        "this is a production build and the dial is compiled out - rebuild the " +
+        "host with a dev-mode build to use it)",
+    );
+    return;
+  }
   const origin = globalThis.location?.origin ?? "(unknown origin)";
   if (e.reason === "enabled") {
     console.info(`[truapi] wire debugger: dialling ${e.url} (origin ${origin})`);
