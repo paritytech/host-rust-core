@@ -1067,10 +1067,8 @@ mod tests {
         assert_eq!(&key[52..], &alias, "alias follows its blake2_128 prefix");
     }
 
-    /// Both vectors are pinned against the mobile clients and the runtime. The
-    /// all-zero one is the offset check: every field of the suffix is already
-    /// zero there, so a field written at the wrong offset still hashes to this
-    /// answer only if the offsets agree.
+    /// The nonzero vector pins field order and endianness. The second separately
+    /// pins the period-zero, sequence-zero reference vector.
     #[test]
     fn statement_slot_context_matches_mobile_clients_and_runtime() {
         let vector = |hex: &str| -> [u8; 32] { hex::decode(hex).unwrap().try_into().unwrap() };
@@ -1103,11 +1101,19 @@ mod tests {
     #[test]
     fn network_suffix_is_read_from_chain_storage() {
         let scripted = ScriptedRpc::new(vec![r#""0x14706173656f""#]);
-        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+        let suffix = futures::executor::block_on(read_network_suffix(&rpc)).unwrap();
 
         assert_eq!(
-            futures::executor::block_on(read_network_suffix(&rpc)).unwrap(),
-            b"paseo",
+            (suffix, scripted.calls()),
+            (
+                b"paseo".to_vec(),
+                vec![(
+                    "state_getStorage".to_string(),
+                    r#"["0x63c2d4c355d2d188c234d0a0669dc90863c2d4c355d2d188c234d0a0669dc908"]"#
+                        .to_string(),
+                )],
+            ),
         );
     }
 

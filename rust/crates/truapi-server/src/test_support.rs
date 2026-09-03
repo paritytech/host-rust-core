@@ -1297,10 +1297,7 @@ impl JsonRpcConnection for RecordingConnection {
 
 /// Answer each request as it arrives, by method, echoing its id.
 ///
-/// Repeated entries for one method are answered in call order. Running past the
-/// last one panics rather than replaying it: a script that answers fewer calls
-/// than the code makes would otherwise hand a response meant for one read to a
-/// different one, which decodes to a plausible wrong value instead of failing.
+/// Exhausted method scripts panic so one read cannot reuse another's response.
 ///
 /// Waits indefinitely for the next request rather than giving up after a fixed
 /// number of polls, so work between requests cannot race the pump.
@@ -1358,6 +1355,25 @@ fn method_keyed_responses(
             }
         }
     }))
+}
+
+#[test]
+#[should_panic(
+    expected = "method `state_getStorage` was called 2 times, and the script has 1 response(s) for it"
+)]
+fn method_keyed_responses_do_not_replay_an_exhausted_answer() {
+    use futures::StreamExt;
+
+    let request =
+        |id| format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"state_getStorage","params":[]}}"#);
+    let sent = Arc::new(Mutex::new(vec![request(1), request(2)]));
+    let mut responses =
+        method_keyed_responses(sent, vec![("state_getStorage", "null".to_string())]);
+
+    futures::executor::block_on(async {
+        responses.next().await.expect("first scripted response");
+        responses.next().await.expect("second scripted response");
+    });
 }
 
 async fn wait_for_matching_request_id(sent: Arc<Mutex<Vec<String>>>, response: &str) {

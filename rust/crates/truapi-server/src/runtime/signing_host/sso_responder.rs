@@ -1841,7 +1841,6 @@ mod tests {
                 .any(|method| method.starts_with("author_submit")),
             "an extrinsic was submitted for an allowance already in place: {methods:?}"
         );
-        // The suffix and one slot read answered it; the scan stopped at the first match.
         assert_eq!(
             methods
                 .iter()
