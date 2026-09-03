@@ -35,3 +35,6 @@ strip = false
 opt-level = 0
 lto = false
 codegen-units = 16
+# Most core edits touch one crate, so reusing the previous compilation is the
+# largest remaining win on this path.
+incremental = true
