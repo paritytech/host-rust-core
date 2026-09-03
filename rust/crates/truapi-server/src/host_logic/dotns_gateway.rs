@@ -178,12 +178,29 @@ pub fn call_bytes32(signature: &str, word: &[u8; 32]) -> Vec<u8> {
 /// Calldata for a view function taking two `uint256` arguments.
 pub fn call_u256_pair(signature: &str, first: u64, second: u64) -> Vec<u8> {
     let mut data = call_no_args(signature);
+    push_u256_pair(&mut data, first, second);
+    data
+}
+
+/// Calldata for a view function taking an `address` followed by two `uint256`
+/// arguments (a paginated per-account view).
+pub fn call_address_u256_pair(
+    signature: &str,
+    address: &[u8; 20],
+    first: u64,
+    second: u64,
+) -> Vec<u8> {
+    let mut data = call_address(signature, address);
+    push_u256_pair(&mut data, first, second);
+    data
+}
+
+fn push_u256_pair(data: &mut Vec<u8>, first: u64, second: u64) {
     for value in [first, second] {
         let mut word = [0u8; 32];
         word[24..].copy_from_slice(&value.to_be_bytes());
         data.extend_from_slice(&word);
     }
-    data
 }
 
 /// Error decoding a dotNS contract round-trip.
@@ -366,8 +383,9 @@ pub fn decode_string_array(data: &[u8]) -> Result<Vec<String>, DotnsContractErro
         .collect()
 }
 
-/// Decodes `DotnsPopController.pendingClaims(address)`, an ABI
-/// `(string label, uint64 mintedAt)[]`, as `(label, minted_at)` pairs.
+/// Decodes one `DotnsPopController.pendingClaims(address,uint256,uint256)`
+/// page, an ABI `(string label, uint64 mintedAt)[]`, as `(label, minted_at)`
+/// pairs.
 pub fn decode_pending_claims_array(data: &[u8]) -> Result<Vec<(String, u64)>, DotnsContractError> {
     let array_at = word_usize(data, 0)?;
     let array = data.get(array_at..).ok_or(DotnsContractError::Abi {
@@ -533,6 +551,13 @@ const LABEL_PAGE_LIMIT: u64 = 16;
 /// grow well past the one lite and one full name a gateway user holds.
 const LABEL_PAGE_MAX: u64 = 16;
 
+/// Page size for `DotnsPopController.pendingClaims`. The contract clamps a page
+/// to `DotnsConstants.MAX_PAGE_SIZE` (200), so this stays well under it.
+const CLAIM_PAGE_LIMIT: u64 = 16;
+/// Upper bound on pages read from one account's pending-claim queue. A gateway
+/// user stages one lite and one full name, so one page is the normal case.
+const CLAIM_PAGE_MAX: u64 = 16;
+
 /// Why a contract view returned no data.
 ///
 /// A revert is an answer from the contract (the view refused, or the address
@@ -576,8 +601,24 @@ pub trait DotnsTransport {
     async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError>;
 }
 
-/// Resolves the `DotnsPopController` address: `DotnsGateway.DispatcherAddress`
-/// names the `RootGatewayDispatcher`, whose `TARGET()` is the controller.
+/// Resolves the `DotnsPopController` address from `DotnsGateway.DispatcherAddress`.
+///
+/// The stored address is either the controller itself or a `RootGatewayDispatcher`
+/// whose `TARGET()` is the controller. Both are in service: a chain keeps its dispatcher
+/// until the gateway pallet is repointed.
+///
+/// `protocolRegistry()` decides which. Only the controller answers it: the dispatcher has
+/// no such function, and its fallback is Root-gated, so a dry-run view reverts there
+/// instead of being forwarded. A revert therefore means the address is not the
+/// controller, and `TARGET()` resolves it as a dispatcher. A contract answering neither
+/// is reported by address rather than mistaken for either.
+///
+/// The order is deliberate: keying on a function the controller has, rather than one it
+/// lacks, keeps discovery correct even if the controller later grows a `TARGET()`.
+///
+/// A transport failure is never read as an answer: it propagates, so an unreachable node
+/// cannot masquerade as a repointed chain.
+///
 /// `None` when the gateway is not deployed on the chain at all.
 pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
     transport: &mut T,
@@ -585,16 +626,39 @@ pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
     let Some(value) = transport.storage(dispatcher_address_key()).await? else {
         return Ok(None);
     };
-    let dispatcher: [u8; 20] = value.try_into().map_err(|value: Vec<u8>| {
+    let stored: [u8; 20] = value.try_into().map_err(|value: Vec<u8>| {
         format!("DotnsGateway.DispatcherAddress is {} bytes", value.len())
     })?;
-    let output = transport
-        .view(&dispatcher, call_no_args("TARGET()"))
+    match transport
+        .view(&stored, call_no_args("protocolRegistry()"))
         .await
-        .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}"))?;
-    decode_address(&output)
-        .map(Some)
-        .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}"))
+    {
+        Ok(output) => {
+            decode_address(&output)
+                .map_err(|err| format!("DotnsPopController.protocolRegistry(): {err}"))?;
+            Ok(Some(stored))
+        }
+        // A chain still storing its dispatcher pays this second view; a repointed one
+        // answers on the first. Both hops go once no chain stores a dispatcher.
+        Err(DotnsViewError::Reverted(_)) => {
+            match transport.view(&stored, call_no_args("TARGET()")).await {
+                Ok(output) => decode_address(&output)
+                    .map(Some)
+                    .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}")),
+                Err(DotnsViewError::Reverted(_)) => Err(format!(
+                    "DotnsGateway.DispatcherAddress {} has neither protocolRegistry() nor \
+                     TARGET()",
+                    hex::encode(stored)
+                )),
+                Err(DotnsViewError::Failed(reason)) => {
+                    Err(format!("RootGatewayDispatcher.TARGET(): {reason}"))
+                }
+            }
+        }
+        Err(err @ DotnsViewError::Failed(_)) => {
+            Err(format!("DotnsPopController.protocolRegistry(): {err}"))
+        }
+    }
 }
 
 /// Resolves the bare contract labels `account` holds.
@@ -801,32 +865,57 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
         .map_err(|err| format!("DotnsRegistrar.exists({label}): {err}"))
 }
 
-/// Gateway-minted labels of `user` still waiting for `claimLabelStore`, from
-/// `DotnsPopController.pendingClaims(address)`, without the entries that have
-/// lapsed (`mintedAt + reservationDuration < now`, the controller's own
-/// `_isExpired`; `now` is `Timestamp.Now` at the pinned block).
+/// Gateway-minted labels of `user` still waiting for `claimLabelStore`, paged
+/// out of `DotnsPopController.pendingClaims(address,uint256,uint256)`, without
+/// the entries that have lapsed (`mintedAt + reservationDuration < now`, the
+/// controller's own `_isExpired`; `now` is `Timestamp.Now` at the pinned block).
 async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     controller: &[u8; 20],
     user: &[u8; 20],
 ) -> Result<Vec<String>, String> {
-    // A revert is the controller's answer: no readable pending claims. The
-    // store is a separate source, so it is still read.
-    let output = match transport
-        .view(controller, call_address("pendingClaims(address)", user))
-        .await
-    {
-        Ok(output) => output,
-        Err(DotnsViewError::Reverted(reason)) => {
-            warn!(%reason, "DotnsPopController.pendingClaims reverted; reading the store only");
-            return Ok(Vec::new());
+    let mut claims = Vec::new();
+    for page in 0..CLAIM_PAGE_MAX {
+        let output = match transport
+            .view(
+                controller,
+                call_address_u256_pair(
+                    "pendingClaims(address,uint256,uint256)",
+                    user,
+                    page * CLAIM_PAGE_LIMIT,
+                    CLAIM_PAGE_LIMIT,
+                ),
+            )
+            .await
+        {
+            Ok(output) => output,
+            Err(DotnsViewError::Reverted(reason)) => {
+                warn!(
+                    %reason,
+                    retained = claims.len(),
+                    "DotnsPopController.pendingClaims page reverted; retaining earlier pages"
+                );
+                break;
+            }
+            Err(DotnsViewError::Failed(reason)) => {
+                return Err(format!("DotnsPopController.pendingClaims: {reason}"));
+            }
+        };
+        let page_claims = decode_pending_claims_array(&output)
+            .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
+        let short_page = (page_claims.len() as u64) < CLAIM_PAGE_LIMIT;
+        claims.extend(page_claims);
+        if short_page {
+            break;
         }
-        Err(DotnsViewError::Failed(reason)) => {
-            return Err(format!("DotnsPopController.pendingClaims: {reason}"));
+        if page + 1 == CLAIM_PAGE_MAX {
+            warn!(
+                user = %hex::encode(user),
+                read = CLAIM_PAGE_MAX * CLAIM_PAGE_LIMIT,
+                "pending-claim page cap reached; later entries, if any, are not resolved"
+            );
         }
-    };
-    let claims = decode_pending_claims_array(&output)
-        .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
+    }
     if claims.is_empty() {
         return Ok(Vec::new());
     }
@@ -864,8 +953,9 @@ async fn chain_time_secs<T: DotnsTransport + ?Sized>(transport: &mut T) -> Resul
 }
 
 /// `DotnsGateway.DispatcherAddress` storage key.
-/// The entry holds the `RootGatewayDispatcher`, whose `TARGET()` is the
-/// `DotnsPopController`.
+/// The entry holds either a `RootGatewayDispatcher`, whose `TARGET()` is the
+/// `DotnsPopController`, or that controller directly. See
+/// [`discover_pop_controller`], which tells them apart.
 pub fn dispatcher_address_key() -> Vec<u8> {
     plain_key(b"DotnsGateway", b"DispatcherAddress")
 }
@@ -994,7 +1084,10 @@ mod tests {
         assert_eq!(hex::encode(selector("protocolRegistry()")), "7656419f");
         assert_eq!(hex::encode(selector("get(bytes32)")), "8eaa6ac0");
         assert_eq!(hex::encode(selector("TARGET()")), "cc1f2afa");
-        assert_eq!(hex::encode(selector("pendingClaims(address)")), "ca78533d");
+        assert_eq!(
+            hex::encode(selector("pendingClaims(address,uint256,uint256)")),
+            "76025b85"
+        );
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
         assert_eq!(hex::encode(selector("recordExists(bytes32)")), "f79fe538");
         assert_eq!(hex::encode(selector("ownerOf(uint256)")), "6352211e");
@@ -1029,6 +1122,23 @@ mod tests {
         assert_eq!(pair_call.len(), 4 + 64);
         assert_eq!(pair_call[35], 0);
         assert_eq!(pair_call[67], 16);
+
+        let paged_call = call_address_u256_pair(
+            "pendingClaims(address,uint256,uint256)",
+            &[0xBB; 20],
+            32,
+            16,
+        );
+        assert_eq!(paged_call.len(), 4 + 96);
+        assert_eq!(
+            &paged_call[..4],
+            &selector("pendingClaims(address,uint256,uint256)")
+        );
+        let mut expected_args = vec![0u8; 96];
+        expected_args[12..32].fill(0xBB);
+        expected_args[63] = 32;
+        expected_args[95] = 16;
+        assert_eq!(&paged_call[4..], expected_args.as_slice());
 
         let key_call = call_bytes32("get(bytes32)", &registry_key("storeFactory"));
         assert_eq!(&key_call[4..16], b"storeFactory");
@@ -1114,6 +1224,31 @@ mod tests {
         out
     }
 
+    fn abi_pending_claims(values: &[(String, u64)]) -> Vec<u8> {
+        let encoded = values
+            .iter()
+            .map(|(label, minted_at)| {
+                [
+                    abi_word(0x40).to_vec(),
+                    abi_word(*minted_at).to_vec(),
+                    abi_string(label),
+                ]
+                .concat()
+            })
+            .collect::<Vec<_>>();
+        let mut output = abi_word(0x20).to_vec();
+        output.extend_from_slice(&abi_word(encoded.len() as u64));
+        let mut offset = (encoded.len() * 32) as u64;
+        for value in &encoded {
+            output.extend_from_slice(&abi_word(offset));
+            offset += value.len() as u64;
+        }
+        for value in encoded {
+            output.extend_from_slice(&value);
+        }
+        output
+    }
+
     #[test]
     fn abi_decoders_handle_addresses_string_arrays_and_pending_claims() {
         let mut address = [0u8; 32];
@@ -1184,6 +1319,65 @@ mod tests {
         assert!(!claim_lapsed(1_000, 100, 1_100));
         assert!(claim_lapsed(1_000, 100, 1_101));
         assert!(!claim_lapsed(u64::MAX, 100, u64::MAX));
+    }
+
+    struct RevertingSecondClaimPage {
+        first_page: Vec<(String, u64)>,
+        pending_calls: usize,
+    }
+
+    #[truapi_platform::async_trait]
+    impl DotnsTransport for RevertingSecondClaimPage {
+        async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            assert_eq!(key, timestamp_now_key());
+            Ok(Some(100_000u64.to_le_bytes().to_vec()))
+        }
+
+        async fn view(
+            &mut self,
+            _dest: &[u8; 20],
+            input: Vec<u8>,
+        ) -> Result<Vec<u8>, DotnsViewError> {
+            let function: [u8; 4] = input[..4].try_into().expect("selector prefix");
+            if function == selector("pendingClaims(address,uint256,uint256)") {
+                self.pending_calls += 1;
+                let offset = decode_u64(&input[36..68]).expect("offset word");
+                let limit = decode_u64(&input[68..100]).expect("limit word");
+                assert_eq!(limit, CLAIM_PAGE_LIMIT);
+                if offset == 0 {
+                    return Ok(abi_pending_claims(&self.first_page));
+                }
+                assert_eq!(offset, CLAIM_PAGE_LIMIT);
+                return Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+                    detail: "offset past end".to_string(),
+                }));
+            }
+            if function == selector("reservationDuration()") {
+                return Ok(abi_word(100).to_vec());
+            }
+            panic!("unscripted view {}", hex::encode(function));
+        }
+    }
+
+    #[test]
+    fn a_later_pending_claim_page_revert_keeps_complete_earlier_pages() {
+        let expected = (0..CLAIM_PAGE_LIMIT)
+            .map(|index| format!("claim{index:02}"))
+            .collect::<Vec<_>>();
+        let mut transport = RevertingSecondClaimPage {
+            first_page: expected.iter().cloned().map(|label| (label, 50)).collect(),
+            pending_calls: 0,
+        };
+
+        let labels = futures::executor::block_on(pending_claim_labels(
+            &mut transport,
+            &[0xc0; 20],
+            &[0xaa; 20],
+        ))
+        .unwrap();
+
+        assert_eq!(labels, expected);
+        assert_eq!(transport.pending_calls, 2);
     }
 
     #[test]
@@ -1258,6 +1452,116 @@ mod tests {
         assert!(!is_dotted_lite_username("a.lice.01"));
         assert!(!is_dotted_lite_username(".01"));
         assert!(!is_dotted_lite_username(&format!("{}.01", "a".repeat(31))));
+    }
+
+    /// A transport for controller discovery: `DispatcherAddress` holds `stored`,
+    /// and `TARGET()` / `protocolRegistry()` answer with scripted results.
+    struct ScriptedDiscovery {
+        stored: [u8; 20],
+        target: fn() -> Result<Vec<u8>, DotnsViewError>,
+        protocol_registry: fn() -> Result<Vec<u8>, DotnsViewError>,
+    }
+
+    #[truapi_platform::async_trait]
+    impl DotnsTransport for ScriptedDiscovery {
+        async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            Ok(Some(self.stored.to_vec()))
+        }
+
+        async fn view(
+            &mut self,
+            _dest: &[u8; 20],
+            input: Vec<u8>,
+        ) -> Result<Vec<u8>, DotnsViewError> {
+            let sel: [u8; 4] = input[..4].try_into().expect("selector prefix; qed");
+            if sel == selector("TARGET()") {
+                (self.target)()
+            } else if sel == selector("protocolRegistry()") {
+                (self.protocol_registry)()
+            } else {
+                panic!("unscripted view {}", hex::encode(sel));
+            }
+        }
+    }
+
+    fn address_word(byte: u8) -> Vec<u8> {
+        let mut word = [0u8; 32];
+        word[12..].copy_from_slice(&[byte; 20]);
+        word.to_vec()
+    }
+
+    fn view_reverted() -> Result<Vec<u8>, DotnsViewError> {
+        Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+            detail: "(empty)".to_string(),
+        }))
+    }
+
+    #[test]
+    fn discovery_follows_target_when_the_stored_address_is_a_dispatcher() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xdd; 20],
+            target: || Ok(address_word(0xcc)),
+            protocol_registry: view_reverted,
+        };
+        let found = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect("discovery");
+        assert_eq!(found, Some([0xcc; 20]), "TARGET() names the controller");
+    }
+
+    #[test]
+    fn discovery_uses_the_stored_address_once_the_pallet_points_at_the_controller() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xcc; 20],
+            target: || panic!("must not probe the dispatcher view"),
+            protocol_registry: || Ok(address_word(0x9e)),
+        };
+        let found = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect("discovery");
+        assert_eq!(
+            found,
+            Some([0xcc; 20]),
+            "protocolRegistry() answers, so the stored address is the controller"
+        );
+    }
+
+    #[test]
+    fn discovery_reports_an_address_that_is_neither() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xab; 20],
+            target: view_reverted,
+            protocol_registry: view_reverted,
+        };
+        let err = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect_err("neither");
+        assert!(err.contains("neither protocolRegistry() nor"), "{err}");
+    }
+
+    #[test]
+    fn discovery_separates_a_failed_confirmation_from_a_wrong_contract() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xdd; 20],
+            target: || Err(DotnsViewError::Failed("node unreachable".into())),
+            protocol_registry: view_reverted,
+        };
+        let err = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect_err("failure");
+        assert!(err.contains("TARGET(): node unreachable"), "{err}");
+        assert!(
+            !err.contains("neither"),
+            "a node failure is not a wrong contract: {err}"
+        );
+    }
+
+    #[test]
+    fn discovery_propagates_a_transport_failure_instead_of_guessing() {
+        let mut transport = ScriptedDiscovery {
+            stored: [0xcc; 20],
+            target: || panic!("must not fall back on a transport failure"),
+            protocol_registry: || Err(DotnsViewError::Failed("node unreachable".into())),
+        };
+        let err = futures::executor::block_on(discover_pop_controller(&mut transport))
+            .expect_err("failure");
+        assert!(err.contains("node unreachable"), "{err}");
     }
 
     /// A transport answering views by selector: `tld()` with a scripted

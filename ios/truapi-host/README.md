@@ -1,6 +1,6 @@
 # TrUAPI iOS host adapter
 
-*Thin Swift shell over the Rust TrUAPI core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
+_Thin Swift shell over the Rust TrUAPI core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge._
 
 The package lives in the truapi repo next to the Rust core it wraps. `Package.swift` sits at the **repo root** (SPM requires that for git-URL dependencies), with all target paths pointing into `ios/truapi-host/`; the build scripts regenerate the committed outputs from this repo's workspace.
 
@@ -58,20 +58,25 @@ The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navig
 Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
 
 ```swift
-.package(url: "https://github.com/paritytech/host-rust-core.git", branch: "main")
+.package(url: "https://github.com/paritytech/host-rust-core.git", exact: "0.12.0")
 ```
 
 ```swift
 .product(name: "TrUAPIHost", package: "truapi")
 ```
 
-Release tags follow the repo-wide `@parity/ios-host@<version>` naming, which SPM's semver resolution does not consume — depend by `branch:` or `revision:` instead. SPM pins the resolved revision in the app's `Package.resolved`; update it (File > Packages > Update in Xcode, or `xcodebuild -resolvePackageDependencies`) after new commits land on the branch.
+The release workflow publishes the asset under `@parity/ios-host@<version>`,
+creates a bare `<version>` tag from a manifest containing its URL and checksum,
+and builds that tag from a clean clone before pushing it. It also opens a
+manifest PR to keep `main` current. SPM pins the resolved revision in the app's
+`Package.resolved`; update it with File > Packages > Update in Xcode or
+`xcodebuild -resolvePackageDependencies` after the tag is published.
 
 Run the package tests against an iOS simulator (the xcframework has no macOS slice):
 
 ```bash
 # from the repo root
-xcodebuild test -scheme TrUAPIHost -destination 'platform=iOS Simulator,name=iPhone 16'
+xcodebuild test -scheme TrUAPIHost-Package -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
 
 ## Chat
@@ -140,7 +145,7 @@ unverified. Contextual output escaping is the host's job.
 
 The id `postMessage` returns is the correlation key `ActionTrigger.messageId`
 carries back, so it must name that message for as long as the host stores it.
-Ids arriving *in* a `Reaction` or `ReactionRemoved` are product-chosen and
+Ids arriving _in_ a `Reaction` or `ReactionRemoved` are product-chosen and
 untrusted: they may name a message in another room, or one that never existed.
 
 On the execution: `publishChatAction` delivers a user's action back to the

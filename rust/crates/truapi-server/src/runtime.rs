@@ -3097,7 +3097,7 @@ mod tests {
         for (configured, expected) in [
             (" TrUAPI-Playground.DOT ", "truapi-playground.dot"),
             ("truapi-playground.paseo", "truapi-playground.paseo"),
-            ("truapi-playground.test", "truapi-playground.test"),
+            ("truapi-playground.testnet", "truapi-playground.testnet"),
             ("localhost", "localhost"),
             ("LOCALHOST:3000", "localhost:3000"),
         ] {

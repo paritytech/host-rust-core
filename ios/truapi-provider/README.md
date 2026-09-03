@@ -2,8 +2,6 @@
 
 *Swift shell over the `truapi-provider` crate (UniFFI). An embedded smoldot light client and the bundled chain-spec catalog stay in Rust; the host addresses a chain by genesis hash and exchanges JSON-RPC strings.*
 
-> **Status:** no `@parity/ios-provider` release exists yet, so `providerBinaryURL` and `providerBinaryChecksum` in the root `Package.swift` are placeholders and remote resolution of `TrUAPIProvider` fails on the checksum. Until the first `scripts/publish.sh` run, build against the local xcframework (`make provider-ios`, then `TRUAPI_PROVIDER_USE_LOCAL_BINARY=1`) or depend on the package by path. Everything below describes the target design.
-
 The package lives in the truapi repo next to the Rust crate it wraps. `Package.swift` sits at the **repo root** (SPM requires that for git-URL dependencies) and declares two products: [`TrUAPIHost`](../truapi-host) and `TrUAPIProvider`. They are independent — a host depends on whichever it needs — and release on separate tags, so each has its own local-binary toggle.
 
 ## What this package is for
@@ -13,16 +11,20 @@ The `TrUAPIProvider` SPM product an iOS host imports when it wants to serve chai
 - `Sources/TrUAPIProvider/truapi_provider.swift` and `Sources/truapi_providerFFI/include/` — the generated UniFFI bindings. There is no hand-written Swift shell: the crate's [`ffi.rs`](../../rust/crates/truapi-provider/src/ffi.rs) is the whole surface.
 - the crate as a binary target — a GitHub release asset by default (`providerBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_provider.xcframework` when `TRUAPI_PROVIDER_USE_LOCAL_BINARY=1`.
 
-The bindings are committed build outputs; the xcframework is **gitignored** and distributed as a GitHub release asset. Two scripts split the lifecycle:
+The bindings are committed build outputs; the xcframework is **gitignored** and distributed as a GitHub release asset. Three scripts split the lifecycle:
 
 ```bash
 ./scripts/rebuild.sh            # build the crate for device + simulator, regenerate
-                                # the bindings, and bundle Binaries/truapi_provider.xcframework
-./scripts/publish.sh <version>  # zip the built xcframework, upload it to the
+                                # the bindings, and stage Binaries/truapi_provider.xcframework
+./scripts/stage-xcframework.sh  # copy the built xcframework into Binaries/ and strip the
+                                # per-slice module.modulemap (rebuild.sh calls it for you)
+./scripts/publish.sh <version>  # zip the staged xcframework, upload it to the
                                 # "@parity/ios-provider <version>" GitHub release,
                                 # and point the root Package.swift at it
                                 # (URL + checksum)
 ```
+
+The strip matters because module resolution comes from the `systemLibrary` target; a slice copy collides with other xcframeworks in Xcode's flat include dir, which is what stops a host embedding both this and its own UniFFI framework.
 
 Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the `ChainProvider` methods, `ChainMessageListener`, `ChainProviderError`, `ChainCloseReason` — or after a chain-spec refresh, and commit the regenerated bindings together with the source change. Pass `--sim-only` (or `make provider-ios SIM_ONLY=1`) to skip the device slice while iterating; `publish.sh` refuses a simulator-only xcframework.
 
