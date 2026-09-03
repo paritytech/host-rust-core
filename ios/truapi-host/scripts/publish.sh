@@ -37,6 +37,16 @@ if [ ! -d "$XCFRAMEWORK" ]; then
     exit 66
 fi
 
+# Both slices are required for anything that ships. A framework missing either
+# cannot be linked by half its consumers, and Binaries/ is gitignored, so a
+# partial tree from an earlier build reaches this point.
+for slice in ios-arm64 ios-arm64-simulator; do
+    if [ ! -d "$XCFRAMEWORK/$slice" ]; then
+        echo "error: $XCFRAMEWORK has no $slice slice; rebuild with both slices before publishing" >&2
+        exit 66
+    fi
+done
+
 # Staging strips these, but Binaries/ is gitignored so an older tree gets here.
 if find "$XCFRAMEWORK" -path '*/Headers/module.modulemap' | grep -q .; then
     echo "error: $XCFRAMEWORK still carries per-slice modulemaps, run scripts/rebuild.sh" >&2
