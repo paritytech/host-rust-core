@@ -5329,6 +5329,7 @@ dependencies = [
  "bip39",
  "clap",
  "crossterm",
+ "derive_more 2.1.1",
  "flate2",
  "fs2",
  "futures",

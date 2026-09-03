@@ -97,12 +97,17 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, derive_more::Display)]
 enum LogLevel {
+    #[display("error")]
     Error,
+    #[display("warn")]
     Warn,
+    #[display("info")]
     Info,
+    #[display("debug")]
     Debug,
+    #[display("trace")]
     Trace,
 }
 
@@ -142,25 +147,12 @@ impl FromStr for LogLevel {
     }
 }
 
-impl fmt::Display for LogLevel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_filter())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
 enum LogMode {
+    #[display("{_0}")]
     Level(LogLevel),
-    Custom,
-}
-
-impl fmt::Display for LogMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Level(level) => level.fmt(formatter),
-            Self::Custom => formatter.write_str("custom"),
-        }
-    }
+    #[display("custom")]
+    RustLog,
 }
 
 fn resolve_log_level(selected: Option<LogLevel>, saved: Option<LogLevel>) -> LogLevel {
@@ -169,7 +161,7 @@ fn resolve_log_level(selected: Option<LogLevel>, saved: Option<LogLevel>) -> Log
 
 fn startup_log_mode(has_custom_filter: bool, log_level: LogLevel) -> LogMode {
     if has_custom_filter {
-        LogMode::Custom
+        LogMode::RustLog
     } else {
         LogMode::Level(log_level)
     }
@@ -4164,7 +4156,7 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
                 startup_log_mode(valid_filter.is_ok(), LogLevel::Debug),
                 startup_log_mode(invalid_filter.is_ok(), LogLevel::Debug),
             ],
-            [LogMode::Custom, LogMode::Level(LogLevel::Debug)]
+            [LogMode::RustLog, LogMode::Level(LogLevel::Debug)]
         );
     }
 

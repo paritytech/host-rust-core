@@ -3573,7 +3573,7 @@ mod tests {
             "playground.dot".to_string(),
             "default".to_string(),
             vec!["default".to_string()],
-            LogMode::Custom,
+            LogMode::RustLog,
         );
 
         assert!(line_text(header_line(&app, 120)).ends_with(" · log custom"));
@@ -3586,7 +3586,7 @@ mod tests {
             "playground.dot".to_string(),
             "default".to_string(),
             vec!["default".to_string()],
-            LogMode::Custom,
+            LogMode::RustLog,
         );
 
         assert_eq!(line_text(header_line(&app, 11)), " log custom");
