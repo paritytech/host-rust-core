@@ -31,9 +31,9 @@ use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context as LayerContext, Layer};
 use unicode_width::UnicodeWidthChar;
 
-use crate::LogLevel;
 use crate::qr_scanner::RgbaFrame;
 use crate::signing_shell::{CommandEditor, contains_mnemonic, mask_mnemonic, parse_approval};
+use crate::{LogLevel, LogMode};
 
 const TRANSCRIPT_LIMIT: usize = 10_000;
 const TRANSCRIPT_LINE_LIMIT: usize = 10_000;
@@ -260,7 +260,8 @@ pub enum SystemEvent {
 impl SystemEvent {
     /// Render the same sentence-case copy used by the interactive transcript.
     pub fn human(&self) -> String {
-        let mut app = App::new_pairing(String::new(), String::new(), LogLevel::Info);
+        let mut app =
+            App::new_pairing(String::new(), String::new(), LogMode::Level(LogLevel::Info));
         app.connection = "connected".to_string();
         app.handle_system_event(self.clone());
         let text = app.transcript_text();
@@ -349,7 +350,8 @@ pub fn output_success(title: impl Into<String>, detail: Option<String>) {
         title: title.clone(),
         detail: detail.clone(),
     }) {
-        let mut app = App::new_pairing(String::new(), String::new(), LogLevel::Info);
+        let mut app =
+            App::new_pairing(String::new(), String::new(), LogMode::Level(LogLevel::Info));
         app.notice(NoticeTone::Success, title, detail);
         write_human_stdout(&app.transcript_text());
     }
@@ -450,7 +452,7 @@ where
 }
 
 fn sso_event_text(event: SsoEvent) -> String {
-    let mut app = App::new_pairing(String::new(), String::new(), LogLevel::Info);
+    let mut app = App::new_pairing(String::new(), String::new(), LogMode::Level(LogLevel::Info));
     app.handle_sso_event(event);
     app.transcript_text()
 }
@@ -612,7 +614,7 @@ impl TerminalUi {
         product_id: impl Into<String>,
         session: impl Into<String>,
         session_names: Vec<String>,
-        log_level: LogLevel,
+        log_mode: LogMode,
     ) -> (Self, UiHandle) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let handle = UiHandle {
@@ -627,7 +629,7 @@ impl TerminalUi {
                     product_id.into(),
                     session.into(),
                     session_names,
-                    log_level,
+                    log_mode,
                 ),
             },
             handle,
@@ -638,7 +640,7 @@ impl TerminalUi {
     pub fn new_pairing(
         network: impl Into<String>,
         product_id: impl Into<String>,
-        log_level: LogLevel,
+        log_mode: LogMode,
     ) -> (Self, UiHandle) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let handle = UiHandle {
@@ -648,7 +650,7 @@ impl TerminalUi {
             Self {
                 sender,
                 receiver,
-                app: App::new_pairing(network.into(), product_id.into(), log_level),
+                app: App::new_pairing(network.into(), product_id.into(), log_mode),
             },
             handle,
         )
@@ -798,7 +800,7 @@ impl ActiveTerminalUi {
 
     /// Update the displayed log level after `/log` succeeds.
     pub fn set_log_level(&mut self, level: LogLevel) {
-        self.app.log_level = level;
+        self.app.log_mode = LogMode::Level(level);
     }
 
     /// Update the product shown in the host status bar.
@@ -1207,7 +1209,7 @@ struct App {
     product: String,
     session: String,
     connection: String,
-    log_level: LogLevel,
+    log_mode: LogMode,
     entries: VecDeque<FeedItem>,
     editor: CommandEditor,
     pending_approval: Option<PendingApproval>,
@@ -1227,7 +1229,7 @@ impl App {
         product_id: String,
         session: String,
         session_names: Vec<String>,
-        log_level: LogLevel,
+        log_mode: LogMode,
     ) -> Self {
         Self::with_role(
             HostRole::Signing,
@@ -1235,18 +1237,18 @@ impl App {
             product_id,
             session,
             session_names,
-            log_level,
+            log_mode,
         )
     }
 
-    fn new_pairing(network: String, product_id: String, log_level: LogLevel) -> Self {
+    fn new_pairing(network: String, product_id: String, log_mode: LogMode) -> Self {
         Self::with_role(
             HostRole::Pairing,
             network,
             product_id,
             String::new(),
             Vec::new(),
-            log_level,
+            log_mode,
         )
     }
 
@@ -1256,7 +1258,7 @@ impl App {
         product: String,
         session: String,
         session_names: Vec<String>,
-        log_level: LogLevel,
+        log_mode: LogMode,
     ) -> Self {
         let mut editor = match role {
             HostRole::Pairing => CommandEditor::pairing_host(),
@@ -1269,7 +1271,7 @@ impl App {
             product,
             session,
             connection: "disconnected".to_string(),
-            log_level,
+            log_mode,
             entries: VecDeque::new(),
             editor,
             pending_approval: None,
@@ -2481,16 +2483,18 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
     let user_prefix = " · 👤 ";
     let network_prefix = " · 🌐 ";
     let product_prefix = " · 📦 ";
+    let log_suffix = format!(" · log {}", app.log_mode);
     let width = usize::from(width);
-    let full_prefix_width = text_display_width(&title)
+    let fixed_width = text_display_width(&title)
         .saturating_add(text_display_width(user_prefix))
         .saturating_add(text_display_width(&app.connection))
         .saturating_add(text_display_width(network_prefix))
         .saturating_add(text_display_width(&app.network))
-        .saturating_add(text_display_width(product_prefix));
+        .saturating_add(text_display_width(product_prefix))
+        .saturating_add(text_display_width(&log_suffix));
 
-    if full_prefix_width < width {
-        let product = ellipsize_display_width(&app.product, width - full_prefix_width);
+    if fixed_width < width {
+        let product = ellipsize_display_width(&app.product, width - fixed_width);
         return Line::from(vec![
             Span::styled(
                 title,
@@ -2505,16 +2509,19 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
             ),
             Span::raw(product_prefix),
             Span::styled(product, semantic_style(Color::Cyan)),
+            Span::styled(log_suffix, Style::default().add_modifier(Modifier::DIM)),
         ]);
     }
 
     let fixed_width = text_display_width(" 👤 ")
         .saturating_add(text_display_width(network_prefix))
-        .saturating_add(text_display_width(product_prefix));
+        .saturating_add(text_display_width(product_prefix))
+        .saturating_add(text_display_width(&log_suffix));
     if fixed_width >= width {
+        let compact_log = format!(" log {}", app.log_mode);
         return Line::from(Span::styled(
-            ellipsize_display_width(&title, width),
-            semantic_style(Color::Cyan).add_modifier(Modifier::BOLD),
+            ellipsize_display_width(&compact_log, width),
+            Style::default().add_modifier(Modifier::DIM),
         ));
     }
     let mut remaining = width - fixed_width;
@@ -2540,6 +2547,7 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
             ellipsize_display_width(&app.product, product_budget),
             semantic_style(Color::Cyan),
         ),
+        Span::styled(log_suffix, Style::default().add_modifier(Modifier::DIM)),
     ])
 }
 
@@ -3074,7 +3082,7 @@ mod tests {
             "playground.dot".to_string(),
             "default".to_string(),
             vec!["default".to_string()],
-            LogLevel::Info,
+            LogMode::Level(LogLevel::Info),
         )
     }
 
@@ -3511,11 +3519,11 @@ mod tests {
     }
 
     #[test]
-    fn pairing_host_status_names_the_role_without_product_or_log_noise() -> Result<()> {
+    fn pairing_host_status_shows_the_selected_log_level() -> Result<()> {
         let mut app = App::new_pairing(
             "paseo-next-v2".to_string(),
             "playground.dot".to_string(),
-            LogLevel::Info,
+            LogMode::Level(LogLevel::Info),
         );
         app.editor.set_text("/");
 
@@ -3524,9 +3532,9 @@ mod tests {
 
         assert_eq!(
             status,
-            " TrUAPI pairing host · 👤 disconnected · 🌐 paseo-next-v2 · 📦 playground.dot"
+            " TrUAPI pairing host · 👤 disconnected · 🌐 paseo-next-v2 · 📦 playground.dot · log info"
         );
-        assert!(!screen.contains("log info"));
+        assert!(screen.contains("log info"));
         assert!(screen.contains("/script"));
         assert!(!screen.contains("/pair"));
         assert!(!screen.contains("/session"));
@@ -3534,7 +3542,7 @@ mod tests {
     }
 
     #[test]
-    fn signing_host_status_shows_user_network_and_product_without_labels() -> Result<()> {
+    fn signing_host_status_shows_user_network_product_and_log_level() -> Result<()> {
         let mut app = test_app();
         app.connection = "alice.dot".to_string();
 
@@ -3543,11 +3551,45 @@ mod tests {
 
         assert_eq!(
             status,
-            " TrUAPI signing host · 👤 alice.dot · 🌐 testnet · 📦 playground.dot"
+            " TrUAPI signing host · 👤 alice.dot · 🌐 testnet · 📦 playground.dot · log info"
         );
         assert!(!screen.contains("session default"));
-        assert!(!screen.contains("log info"));
         Ok(())
+    }
+
+    #[test]
+    fn changed_log_level_is_visible_in_the_status_bar() {
+        let mut app = test_app();
+
+        app.log_mode = LogMode::Level(LogLevel::Trace);
+
+        assert!(line_text(header_line(&app, 120)).ends_with(" · log trace"));
+    }
+
+    #[test]
+    fn custom_rust_log_filter_is_visible_in_the_status_bar() {
+        let app = App::new(
+            "testnet".to_string(),
+            "playground.dot".to_string(),
+            "default".to_string(),
+            vec!["default".to_string()],
+            LogMode::Custom,
+        );
+
+        assert!(line_text(header_line(&app, 120)).ends_with(" · log custom"));
+    }
+
+    #[test]
+    fn narrow_status_prioritizes_the_log_mode() {
+        let app = App::new(
+            "testnet".to_string(),
+            "playground.dot".to_string(),
+            "default".to_string(),
+            vec!["default".to_string()],
+            LogMode::Custom,
+        );
+
+        assert_eq!(line_text(header_line(&app, 11)), " log custom");
     }
 
     #[test]
@@ -3559,6 +3601,7 @@ mod tests {
 
         assert!(status.contains('…'));
         assert!(!status.contains(&app.product));
+        assert!(status.ends_with(" · log info"));
         assert!(text_display_width(&status) <= 80);
         for width in 1..=120 {
             let status = line_text(header_line(&app, width));
