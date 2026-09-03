@@ -16,10 +16,9 @@ use crate::runtime::login_failure::classify_login_failure;
 /// observed). The cancel channel for an in-flight login lives inside the
 /// in-flight login states, making its registration atomic with the transition.
 ///
-/// Session activation calls [`AuthStateMachine::announce_current`] when it is
-/// done, so an activation whose outcome changed nothing — a host that boots
-/// signed out, or one whose blob failed to decode — still reports an answer the
-/// host can tell apart from "no answer yet". Only the first emission can come
+/// The boot-time restore and explicit session activations call
+/// [`AuthStateMachine::announce_current`] when done, so the host gets an
+/// opening state even when nothing changed. Only the first emission can come
 /// from an announcement; everything after it is a real change.
 #[derive(Clone)]
 pub(crate) struct AuthStateMachine {
