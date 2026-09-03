@@ -1335,13 +1335,19 @@ ${INSPECTOR_LAYOUT_CSS}
       '</span><span class="k">' + escHtml(k) + "</span></div>";
   }
   // Neutral sibling of warnTile: a count worth showing that is not a fault.
+  // Both render NOTHING at zero. These are exception counters - "0 truncated,
+  // 0 evicted, 0 dropped" is the normal state, and a strip of ten zeros reads as
+  // unpopulated scaffolding rather than as reassurance. A tile appearing at all
+  // is therefore the signal; its absence means the count is genuinely zero.
   function infoTile(n, k) {
-    return '<div class="ins-stat' + (n === 0 ? " zero" : "") +
-      '"><span class="n">' + n + '</span><span class="k">' + escHtml(k) + "</span></div>";
+    if (!n) return "";
+    return '<div class="ins-stat"><span class="n">' + n +
+      '</span><span class="k">' + escHtml(k) + "</span></div>";
   }
   function warnTile(n, k) {
-    return '<div class="ins-stat warn' + (n === 0 ? " zero" : "") +
-      '"><span class="n">' + n + '</span><span class="k">' + escHtml(k) + "</span></div>";
+    if (!n) return "";
+    return '<div class="ins-stat warn"><span class="n">' + n +
+      '</span><span class="k">' + escHtml(k) + "</span></div>";
   }
   // Envelopes the server refused, plus sockets it lost: link-level loss that has
   // no op to hang off, so it is reported even when the op list is empty.
@@ -1370,7 +1376,9 @@ ${INSPECTOR_LAYOUT_CSS}
     var html = statTile(s.ops, "ops") +
       statTile(s.frames, "frames", s.out + "▶ " + s["in"] + "◀") +
       statTile(fmtBytes(s.bytes), "data") +
-      statTile(s.subscriptions, "subs", s.liveSubscriptions > 0 ? s.liveSubscriptions + " live" : "") +
+      (s.subscriptions
+        ? statTile(s.subscriptions, "subs", s.liveSubscriptions > 0 ? s.liveSubscriptions + " live" : "")
+        : "") +
       statTile(fmtMs(s.avgDurationMs), "avg op", "max " + fmtMs(s.maxDurationMs) + ", observed") +
       warnTile(s.malformed, "malformed") +
       warnTile(s.orphaned, "orphaned") +

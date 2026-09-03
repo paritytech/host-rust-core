@@ -397,6 +397,10 @@ describe("createInAppDebugger", () => {
     const dispose = dbg.mount(el);
     const html = el.querySelector(".ins-summary")?.innerHTML ?? "";
 
+    // Always-meaningful tiles, plus every exception counter that is NON-ZERO in
+    // this fixture. Zero-valued exception counters render nothing (same rule as
+    // the standalone's `warnTile`), so asserting their presence here would pin
+    // the opposite behaviour.
     for (const label of [
       "ops",
       "frames",
@@ -405,13 +409,18 @@ describe("createInAppDebugger", () => {
       "avg op",
       "malformed",
       "orphaned",
-      "retry storms",
       "truncated",
-      "evicted",
       "dropped",
     ]) {
       expect(html).toContain(`class="k">${label}</span>`);
     }
+    // Zero counters are omitted, not muted: `retryStorms`/`unpaired`/`evicted`
+    // are 0 in this fixture. This is the half that keeps the rule honest - a
+    // regression that re-rendered them would otherwise pass unnoticed.
+    expect(stats.retryStorms).toBe(0);
+    expect(html).not.toContain(`class="k">retry storms</span>`);
+    expect(html).not.toContain(`class="k">unpaired</span>`);
+    expect(html).not.toContain(`class="k">evicted</span>`);
     // The tallies the bespoke strip omitted entirely.
     expect(html).toContain(
       `<span class="n">${String(stats.malformed)}</span><span class="k">malformed</span>`,

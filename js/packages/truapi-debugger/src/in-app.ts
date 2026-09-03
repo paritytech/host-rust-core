@@ -180,14 +180,23 @@ function stat(n: string, k: string, sub = "", cls = ""): string {
   );
 }
 
-/** A tile that reads red when non-zero and muted at zero. */
+/**
+ * A tile that reads red when non-zero and RENDERS NOTHING at zero.
+ *
+ * These are exception counters: "0 truncated, 0 evicted, 0 dropped" is the
+ * normal state, and a strip of zeros reads as unpopulated scaffolding rather
+ * than as reassurance. A tile appearing is the signal; absence means zero.
+ * Kept identical to the standalone's `warnTile` - the two strips must agree.
+ */
 function warnStat(n: number, k: string): string {
-  return stat(String(n), k, "", n === 0 ? "warn zero" : "warn");
+  if (n === 0) return "";
+  return stat(String(n), k, "", "warn");
 }
 
 /** Neutral sibling of {@link warnStat}: a count worth showing that is not a fault. */
 function infoStat(n: number, k: string): string {
-  return stat(String(n), k, "", n === 0 ? "zero" : "");
+  if (n === 0) return "";
+  return stat(String(n), k, "", "");
 }
 
 /**
@@ -218,13 +227,15 @@ function renderSummary(stats: TraceStats): string {
       `${String(stats.out)}▶ ${String(stats.in)}◀`,
     ) +
     stat(formatStatBytes(stats.bytes), "data") +
-    stat(
-      String(stats.subscriptions),
-      "subs",
-      stats.liveSubscriptions > 0
-        ? `${String(stats.liveSubscriptions)} live`
-        : "",
-    ) +
+    (stats.subscriptions === 0
+      ? ""
+      : stat(
+          String(stats.subscriptions),
+          "subs",
+          stats.liveSubscriptions > 0
+            ? `${String(stats.liveSubscriptions)} live`
+            : "",
+        )) +
     stat(
       formatStatMs(stats.avgDurationMs),
       "avg op",
