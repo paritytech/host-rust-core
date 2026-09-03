@@ -245,14 +245,17 @@ const provider = await runtime.createProvider({ productId: "first.dot" });
 
 The worker can stream every product↔core wire frame to the wire debugger. It is
 off by default and enabled purely from the host page — the product needs no
-changes. Two conditions must **both** hold or nothing dials, the core installs no
-tap, and nothing is logged:
+changes. Two conditions must **both** hold or nothing dials and the core installs
+no tap:
 
-1. **The host page is a dev build.** The `localStorage` read sits behind a hard
+1. **The host page is a dev build.** The dial sits behind a hard
    `import.meta.env.DEV` gate, which bundlers replace with a boolean literal: in
    a production bundle it returns `null` unconditionally, so no stored key can
    turn the tap on. A production build that shows no frames is this gate, not a
-   broken debugger.
+   broken debugger — and it says so: with the key set but the gate closed, the
+   host logs once that the dial is compiled out, rather than staying silent and
+   reading as a broken tool. That matters for a host whose only local build is
+   production-mode; `NODE_ENV=development` is what opens the gate under Vite.
 2. **The host origin's `localStorage` carries a `ws://` loopback URL**, read on
    the host page at runtime boot and forwarded to the worker in its `init`
    message:

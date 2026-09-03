@@ -259,15 +259,21 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
   } catch {
     dev = false;
   }
-  const storage = globalThis.localStorage;
   if (!dev) {
     // A switch set on a production build is someone actively trying to enable the
     // debugger against a build that cannot carry one. Distinguish it from plain
     // production so the reporter can say so: staying silent here is what makes a
     // compiled-out dial read as a broken debugger (design doc §9).
+    //
+    // Both the property access and the read sit inside the try. Reading the
+    // `localStorage` PROPERTY is what throws (`SecurityError`) in a storage-denied
+    // realm - a sandboxed iframe without `allow-same-origin`, or blocked
+    // third-party storage - while `getItem` on an available store does not. This
+    // function runs inside `createWebWorkerPairingHostRuntime`'s promise executor,
+    // so an escaping throw rejects host creation over a debug-only lookup.
     let switchSet = false;
     try {
-      const key = storage?.getItem(DEV_DEBUGGER_URL_KEY);
+      const key = globalThis.localStorage?.getItem(DEV_DEBUGGER_URL_KEY);
       switchSet = key !== null && key !== undefined && key !== "";
     } catch {
       switchSet = false;
@@ -277,6 +283,7 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
       reason: switchSet ? "production-build-switch-set" : "production-build",
     };
   }
+  const storage = globalThis.localStorage;
   if (storage === undefined) return { url: null, reason: "no-storage" };
   const url = storage.getItem(DEV_DEBUGGER_URL_KEY);
   if (url === null || url === "") return { url: null, reason: "no-key" };
@@ -284,20 +291,30 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
 }
 
 /**
- * Say once, in a dev build, whether the debugger will dial - and from which
- * origin. Silence here used to be indistinguishable from a working tap: the
- * debugger's own socket count still moves (its UI holds one), so "connected but
- * no frames" reads as a debugger bug rather than a host that never dialled.
- * Never logs in a production build, where the gate is closed by construction and
- * the message would be noise.
+ * Say once whether the debugger will dial - and from which origin. Silence here
+ * used to be indistinguishable from a working tap: the debugger's own socket
+ * count still moves (its UI holds one), so "connected but no frames" reads as a
+ * debugger bug rather than a host that never dialled.
+ *
+ * Silent in a production build with the switch UNSET, where the message would be
+ * noise. With the switch SET it says so once even in production: someone is
+ * actively trying to enable a build that cannot carry the dial, and a host whose
+ * only local build is production-mode (dot.li ships `build` and `preview`, no dev
+ * server) otherwise gives them no signal at all. Design doc §9.
  */
 function reportDebuggerEnablement(e: DebuggerEnablement): void {
   if (e.reason === "production-build") return;
   if (e.reason === "production-build-switch-set") {
+    // Says "did not resolve true", not "this is a production build". The gate
+    // cannot tell a production build from a bundler that never substituted the
+    // token: both land on `dev === false`. Asserting production would tell a
+    // developer on a genuine dev build under webpack/rollup/plain tsc to rebuild
+    // in dev mode, which is the one configuration the comment above warns about.
     console.info(
       `[truapi] wire debugger: off (the "${DEV_DEBUGGER_URL_KEY}" switch is set, but ` +
-        "this is a production build and the dial is compiled out - rebuild the " +
-        "host with a dev-mode build to use it)",
+        "`import.meta.env.DEV` did not resolve true, so the dial is compiled out. " +
+        "Either this is a production build - rebuild the host in dev mode - or the " +
+        "bundler did not substitute that token.",
     );
     return;
   }
