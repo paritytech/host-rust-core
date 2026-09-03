@@ -49,6 +49,137 @@ pub trait FrameSink: Send + Sync {
     fn emit_frame(&self, frame: Vec<u8>);
 }
 
+/// Dev-only sink that observes host debug events at the core's two frame choke
+/// points. A host that does not enable the debugger leaves it unset and the tap
+/// is inert. Fire-and-forget by construction: [`DebugSink::emit`] must not block
+/// the frame path and must not fail the operation that produced the event, so a
+/// slow, absent, or crashed debugger only loses the trace, never a session.
+pub trait DebugSink: Send + Sync {
+    /// Hand one event to the sink.
+    ///
+    /// Must not block, and must not panic: `emit` is called from inside the
+    /// inbound and outbound frame paths, so a panic here would otherwise unwind
+    /// into a live dispatch. The core contains a panic at both tap sites
+    /// ([`emit_debug`]) rather than trusting the contract, because the trait is
+    /// public and implementable out-of-repo, and because the profiles that can
+    /// unwind are exactly the ones a developer runs: the workspace defines no
+    /// `[profile.dev]`, so `dev` keeps Cargo's default `panic = "unwind"`, and an
+    /// out-of-repo or test sink can be installed under it. (The only in-repo
+    /// installer is the wasm host, which cannot unwind at all; `truapi-host-cli`
+    /// installs no sink.) Serialize and enqueue only; never do fallible work
+    /// that can `unwrap`/panic on the caller's thread.
+    ///
+    /// The two halves of that contract are NOT equally enforced, and the asymmetry
+    /// is deliberate rather than an oversight. Panics are contained: both tap sites
+    /// go through [`emit_debug`], which wraps the call in `catch_unwind`. Blocking
+    /// is caller-enforced only - nothing here bounds how long `emit` may take.
+    ///
+    /// It is not enforced HERE, at the trait boundary, and that is a choice worth
+    /// stating precisely rather than dressing up. A bounded queue drained by a
+    /// spawned task does solve the realistic case: it bounds per-frame work to a
+    /// serialize-and-push and converts an overloaded debugger into counted trace
+    /// loss. `WsDebugSink` does exactly that, and `services.spawner` is in hand
+    /// where the sink transport is built, so the core could impose it.
+    ///
+    /// What it does not solve is a sink that never yields at all - on wasm32 the
+    /// drain needs the same single-threaded event loop the tap is blocking, so a
+    /// truly hung `emit` stalls regardless. The trait therefore requires the sink to
+    /// own that queue rather than wrapping every sink in one here, which would add a
+    /// hop to the frame path for every well-behaved implementation to defend against
+    /// a case it still cannot fix.
+    ///
+    /// So the cost is stated rather than papered over. Whatever thread installs a
+    /// sink is the thread a hung one blocks, and it blocks all of that thread's
+    /// work: every channel, and the outbound path too, which taps synchronously
+    /// inside `Transport::send` while a dispatch is live. Tap ordering buys nothing
+    /// against a hang; it only decides whether a corrupt frame is still observed.
+    ///
+    /// In practice the wasm sink is installed from a Web Worker entry point, so the
+    /// blast radius is that worker rather than the page - but that is CONVENTION,
+    /// not enforcement: nothing gates sink installation on worker scope, and the
+    /// raw wasm glue is publicly exported, so a main-thread consumer can install one
+    /// and hang the page. A sink that may be slow must own its own queue and return
+    /// immediately.
+    fn emit(&self, event: DebugEvent);
+}
+
+/// Hand one event to a sink, containing a panic rather than letting it unwind
+/// into the frame path that called it.
+///
+/// `catch_unwind` is a no-op under `panic = "abort"` (the shipping `release`
+/// profile, which `codegen` inherits, and `wasm32`, which cannot unwind at all).
+/// It is not dead code, because the profiles that *do* unwind are the ones the
+/// debugger is used from: the workspace defines no `[profile.dev]`, so `dev`
+/// keeps the default `panic = "unwind"`, and the Makefile builds
+/// `truapi-host-cli` without `--release`. It also protects any downstream crate
+/// that compiles this one under its own unwinding profile.
+///
+/// No in-process test can prove the protection - Cargo ignores the `panic`
+/// setting for test profiles, so a test asserting "the guard saved the dispatch"
+/// would pass even with the guard removed. The guard is kept because it costs
+/// nothing when nothing panics, not because a test can demonstrate it.
+fn emit_debug(sink: Arc<dyn DebugSink>, event: DebugEvent) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        sink.emit(event);
+        // Dropped INSIDE the guard, which is why this takes the `Arc` by value.
+        // The frame path holds its own clone, so when `set_debug_sink` has
+        // concurrently replaced the sink this binding is the last reference and
+        // the out-of-repo destructor runs here - not at the caller's scope end,
+        // where it would unwind into a live dispatch.
+        drop(sink);
+    }));
+    if result.is_err() {
+        tracing::warn!("debug sink panicked; frame dropped, dispatch unaffected");
+    }
+}
+
+/// Identifies which product channel on a host a debug event belongs to, so one
+/// debugger app can demultiplex several channels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelId(pub String);
+
+/// Direction of a tapped frame relative to the host core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameDirection {
+    /// Product to core (inbound to the host).
+    In,
+    /// Core to product (outbound from the host).
+    Out,
+}
+
+impl FrameDirection {
+    /// The wire direction string, from the **product's** vantage - the vantage
+    /// the debugger app and the design doc use: `"out"` = the frame left the
+    /// product, `"in"` = it arrived at the product. This is the inverse of the
+    /// enum's host-vantage variants (`In` = product to core, i.e. it *left* the
+    /// product), so every sink serializes the same product-vantage string
+    /// instead of re-deriving (and risking inverting) it.
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            FrameDirection::In => "out",
+            FrameDirection::Out => "in",
+        }
+    }
+}
+
+/// One observable host debug event. Frame bytes are the untouched
+/// `ProtocolMessage`; the debugger decodes them, so the core never does. The
+/// enum leaves room for host-internal events (e.g. SSO) that have no wire frame,
+/// so it is `#[non_exhaustive]`: adding a variant is not a breaking change.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum DebugEvent {
+    /// A SCALE wire frame crossing a product channel.
+    Frame {
+        /// Which product channel on this host.
+        channel_id: ChannelId,
+        /// Product to core, or core to product.
+        dir: FrameDirection,
+        /// Untouched encoded `ProtocolMessage` bytes.
+        bytes: Vec<u8>,
+    },
+}
+
 /// Errors returned while routing work through a product runtime.
 #[derive(Debug, Clone, Error)]
 #[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Error))]
@@ -1086,6 +1217,8 @@ impl ProductRuntime {
         let transport = Arc::new(SinkTransport {
             sink,
             disposed: disposed.clone(),
+            has_debug: AtomicBool::new(false),
+            debug: Mutex::new(None),
         });
         let host_subscriptions = Arc::new(HostInitiatedSubscriptionManager::new());
         Self {
@@ -1114,6 +1247,18 @@ impl ProductRuntime {
             return Ok(());
         }
 
+        // Tap inbound before decode, so a corrupt frame is still observed.
+        if let Some((channel_id, debug)) = self.transport.debug() {
+            emit_debug(
+                debug,
+                DebugEvent::Frame {
+                    channel_id,
+                    dir: FrameDirection::In,
+                    bytes: frame.clone(),
+                },
+            );
+        }
+
         let message = ProtocolMessage::decode(&mut frame.as_slice()).map_err(|err| {
             ProductRuntimeError::InvalidFrame {
                 reason: err.to_string(),
@@ -1124,9 +1269,16 @@ impl ProductRuntime {
         };
         let dispatch_id = self.next_dispatch_id.fetch_add(1, Ordering::Relaxed);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        // Same poison recovery as `self.debug`, and for a concrete reason rather than
+        // symmetry: `dispose` below holds THIS guard across its whole drain loop and
+        // calls `AbortHandle::abort()` inside it, which wakes the task's waker - i.e.
+        // arbitrary out-of-repo executor code, under the lock. One panicking waker
+        // would poison this mutex and every later `receive_frame` would then panic
+        // here, which is exactly the production-host-killing shape the debug tap
+        // above was fixed for.
         self.in_flight
             .lock()
-            .expect("host core in-flight dispatch mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(dispatch_id, abort_handle);
 
         let transport: Arc<dyn Transport> = self.transport.clone();
@@ -1134,7 +1286,7 @@ impl ProductRuntime {
 
         self.in_flight
             .lock()
-            .expect("host core in-flight dispatch mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&dispatch_id);
         if self.disposed.load(Ordering::Acquire) {
             self.core.cancel_subscriptions();
@@ -1199,6 +1351,19 @@ impl ProductRuntime {
             .await
     }
 
+    /// Install a dev-only [`DebugSink`] that observes every product frame in
+    /// both directions for `channel_id`. Absent by default and inert in
+    /// production.
+    ///
+    /// The sink cannot FAIL a dispatch - a panic is contained at both tap sites -
+    /// but it can STALL one: `emit` is called synchronously on the frame path, and
+    /// nothing here bounds how long it may take. Read [`DebugSink::emit`] before
+    /// implementing one; a sink that may be slow must own its own queue and return
+    /// immediately.
+    pub fn set_debug_sink(&self, channel_id: ChannelId, sink: Arc<dyn DebugSink>) {
+        self.transport.set_debug_sink(channel_id, sink);
+    }
+
     /// Dispose this host core. Idempotent.
     ///
     /// Disposal suppresses future outgoing frames, aborts in-flight dispatch
@@ -1211,7 +1376,7 @@ impl ProductRuntime {
         for (_, handle) in self
             .in_flight
             .lock()
-            .expect("host core in-flight dispatch mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .drain()
         {
             handle.abort();
@@ -1225,6 +1390,62 @@ impl ProductRuntime {
 struct SinkTransport {
     sink: Arc<dyn FrameSink>,
     disposed: Arc<AtomicBool>,
+    /// Fast-path flag: `false` (the production default) lets the per-frame
+    /// `debug()` return without touching the mutex. Set once when a sink is
+    /// installed; a reader that races the install just misses one frame.
+    has_debug: AtomicBool,
+    debug: Mutex<Option<(ChannelId, Arc<dyn DebugSink>)>>,
+}
+
+impl SinkTransport {
+    /// The installed debug sink and its channel, if any. Lock-free `None` on the
+    /// production path (no sink installed); only locks once one is.
+    fn debug(&self) -> Option<(ChannelId, Arc<dyn DebugSink>)> {
+        if !self.has_debug.load(Ordering::Relaxed) {
+            return None;
+        }
+        // Recover from poisoning rather than panicking. Of the fixes here, moving
+        // the previous sink's `drop` out of `set_debug_sink`'s critical section
+        // (below) is what removes the only reachable poisoner: nothing else run
+        // under this guard can unwind, the body being an
+        // `Option<(ChannelId, Arc<..>)>` clone.
+        //
+        // Two independent reasons that poisoner is already unreachable in what
+        // ships, neither of them the profile. `wasm.rs` is the ONLY non-test
+        // `set_debug_sink` caller in the repo (`truapi-host-cli` installs no sink
+        // at all): the wasm32 target cannot unwind, AND that call site builds a
+        // fresh `SinkTransport` per `product_runtime()` and installs at most once
+        // on it, so `previous` is always `None` and there is no destructor to run
+        // under the lock regardless of profile.
+        //
+        // The recovery is kept regardless, because this guard sits on the per-frame
+        // path in both directions and outside `emit_debug`'s `catch_unwind`, so any
+        // future in-guard work that can unwind would land in live dispatch.
+        self.debug
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_debug_sink(&self, channel_id: ChannelId, sink: Arc<dyn DebugSink>) {
+        // Take the previous sink out under the lock, then drop it AFTER releasing.
+        // `*guard = Some(..)` would drop the old `Arc` in place, running an
+        // out-of-repo destructor inside the critical section: a panic there
+        // poisoned the mutex, and every subsequent frame then panicked on the
+        // lock. Dropping outside keeps the destructor off the critical section.
+        // It is not containment - this drop is not wrapped in `catch_unwind` - and
+        // it is not necessarily the last reference either: a frame being tapped
+        // concurrently holds its own clone and may be the one that drops it. That
+        // is why `emit_debug` takes its clone by value and drops it inside the
+        // guard, so the frame path never runs the destructor uncontained.
+        let previous = self
+            .debug
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .replace((channel_id, sink));
+        self.has_debug.store(true, Ordering::Relaxed);
+        drop(previous);
+    }
 }
 
 impl Transport for SinkTransport {
@@ -1232,7 +1453,35 @@ impl Transport for SinkTransport {
         if self.disposed.load(Ordering::Acquire) {
             return;
         }
-        self.sink.emit_frame(message.encode());
+        let encoded = message.encode();
+        // Forward to the product first, then tap: the debugger is in the path
+        // but never in the critical path for LATENCY - the product already has the
+        // frame. That is not a claim about a hung sink: `emit_debug` runs
+        // synchronously here, so a sink that never returns stalls this dispatch.
+        // See `DebugSink::emit` for why that is caller-enforced.
+        // Take the sink handle only AFTER delivery. Holding the
+        // `Arc<dyn DebugSink>` clone across `emit_frame` - which is out-of-repo
+        // (a JS callback via `WasmFrameSink`, or `WsFrameSink`) - means an unwind
+        // there can drop the last reference and run an out-of-repo destructor
+        // DURING the unwind, outside `emit_debug`'s `catch_unwind`. A panic while
+        // panicking aborts. The window opens only if `set_debug_sink` replaced the
+        // sink concurrently, which is why the inbound tap (whose window is empty)
+        // did not need this shape.
+        if !self.has_debug.load(Ordering::Relaxed) {
+            self.sink.emit_frame(encoded);
+            return;
+        }
+        self.sink.emit_frame(encoded.clone());
+        if let Some((channel_id, debug)) = self.debug() {
+            emit_debug(
+                debug,
+                DebugEvent::Frame {
+                    channel_id,
+                    dir: FrameDirection::Out,
+                    bytes: encoded,
+                },
+            );
+        }
     }
 
     fn on_message(
@@ -1351,6 +1600,451 @@ mod tests {
         );
 
         assert_send(runtime.receive_frame(Vec::new()));
+    }
+
+    #[derive(Default)]
+    struct RecordingDebugSink {
+        events: Mutex<Vec<(ChannelId, FrameDirection, Vec<u8>)>>,
+    }
+
+    impl DebugSink for RecordingDebugSink {
+        fn emit(&self, event: DebugEvent) {
+            match event {
+                DebugEvent::Frame {
+                    channel_id,
+                    dir,
+                    bytes,
+                } => self
+                    .events
+                    .lock()
+                    .expect("debug events mutex poisoned")
+                    .push((channel_id, dir, bytes)),
+            }
+        }
+    }
+
+    #[test]
+    fn debug_sink_taps_frames_in_both_directions() {
+        let platform = Arc::new(StubPlatform::default());
+        let sink = Arc::new(RecordingSink::default());
+        let debug = Arc::new(RecordingDebugSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            sink.clone(),
+        );
+        runtime.set_debug_sink(ChannelId("myapp.dot".to_string()), debug.clone());
+
+        let ids = subscription_ids("theme_subscribe").expect("known subscription");
+        let frame = ProtocolMessage {
+            request_id: "theme:1".to_string(),
+            payload: Payload {
+                id: ids.start_id,
+                value: Vec::new(),
+            },
+        };
+        let raw = frame.encode();
+        futures::executor::block_on(runtime.receive_frame(raw.clone())).unwrap();
+
+        // The subscription's first item is emitted asynchronously; wait for it,
+        // then let the tap (which runs right after delivery in `send`) settle.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while sink
+            .frames
+            .lock()
+            .expect("recording sink mutex poisoned")
+            .is_empty()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Snapshot into owned vecs (never hold a lock across an assertion).
+        let (inbound, outbound, channels): (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<ChannelId>) = {
+            let events = debug.events.lock().expect("debug events mutex poisoned");
+            (
+                events
+                    .iter()
+                    .filter(|(_, dir, _)| *dir == FrameDirection::In)
+                    .map(|(_, _, bytes)| bytes.clone())
+                    .collect(),
+                events
+                    .iter()
+                    .filter(|(_, dir, _)| *dir == FrameDirection::Out)
+                    .map(|(_, _, bytes)| bytes.clone())
+                    .collect(),
+                events.iter().map(|(cid, _, _)| cid.clone()).collect(),
+            )
+        };
+        let delivered = sink
+            .frames
+            .lock()
+            .expect("recording sink mutex poisoned")
+            .clone();
+
+        // Every event carries the installed channel id.
+        assert!(
+            channels
+                .iter()
+                .all(|c| *c == ChannelId("myapp.dot".to_string())),
+            "every event carries its channel id"
+        );
+        // Inbound tapped once, untouched, before decode.
+        assert_eq!(
+            inbound,
+            vec![raw],
+            "inbound frame tapped exactly once, untouched"
+        );
+        // Both directions fire, and every delivered outbound frame is tapped in
+        // order: the tap is in the path, not a fabricated side channel.
+        assert!(
+            !outbound.is_empty(),
+            "at least one outbound frame is tapped"
+        );
+        assert_eq!(
+            outbound, delivered,
+            "every delivered outbound frame is tapped, in order"
+        );
+    }
+
+    /// A sink whose `Drop` panics. `emit` is a no-op: the point is the destructor,
+    /// which `set_debug_sink` runs when it replaces this sink.
+    struct PanicOnDropSink;
+
+    impl DebugSink for PanicOnDropSink {
+        fn emit(&self, _event: DebugEvent) {}
+    }
+
+    impl Drop for PanicOnDropSink {
+        fn drop(&mut self) {
+            panic!("out-of-repo sink destructor");
+        }
+    }
+
+    /// Records how many frames the transport had already delivered at the moment
+    /// each outbound tap fired, which is what pins the deliver-THEN-tap ordering.
+    struct DeliveryOrderSink {
+        transport: Arc<RecordingSink>,
+        delivered_at_tap: Mutex<Vec<usize>>,
+    }
+
+    impl DebugSink for DeliveryOrderSink {
+        fn emit(&self, event: DebugEvent) {
+            let DebugEvent::Frame { dir, .. } = event;
+            if dir != FrameDirection::Out {
+                return;
+            }
+            let delivered = self
+                .transport
+                .frames
+                .lock()
+                .expect("recording sink mutex poisoned")
+                .len();
+            self.delivered_at_tap
+                .lock()
+                .expect("delivery order mutex poisoned")
+                .push(delivered);
+        }
+    }
+
+    #[test]
+    fn a_panicking_sink_destructor_does_not_poison_the_tap_for_later_frames() {
+        // `set_debug_sink` takes the previous sink out under the lock and drops it
+        // after releasing. If it dropped in place instead, this destructor's unwind
+        // would poison the debug mutex and - before the recovery below it - every
+        // subsequent frame would panic on that lock, killing a live host over a
+        // third-party sink's `Drop`. Both properties are asserted: the unwind
+        // surfaces to whoever INSTALLS a sink, and the tap keeps working after.
+        //
+        // This pins the two fixes as a PAIR, not individually: reverting only the
+        // drop-outside-the-guard change leaves the poison recovery to absorb it, and
+        // reverting only the recovery leaves no poisoner to trip it. Restoring both
+        // (the original code) fails here on the poisoned lock, which is the
+        // production shape being guarded against.
+        let platform = Arc::new(StubPlatform::default());
+        let transport = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            transport,
+        );
+        let channel = ChannelId("myapp.dot".to_string());
+        runtime.set_debug_sink(channel.clone(), Arc::new(PanicOnDropSink));
+
+        // Replacing it drops the panicking sink. The unwind lands HERE, on the
+        // installer, not on a later frame.
+        let replaced = Arc::new(RecordingDebugSink::default());
+        let installed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.set_debug_sink(channel.clone(), replaced.clone());
+        }));
+        assert!(
+            installed.is_err(),
+            "the destructor's panic should surface to the installer"
+        );
+
+        // The mutex must not be poisoned: the new sink is reachable and taps.
+        let ids = subscription_ids("theme_subscribe").expect("known subscription");
+        let frame = ProtocolMessage {
+            request_id: "theme:1".to_string(),
+            payload: Payload {
+                id: ids.start_id,
+                value: Vec::new(),
+            },
+        };
+        futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
+        let tapped = replaced
+            .events
+            .lock()
+            .expect("debug events mutex poisoned")
+            .len();
+        assert!(
+            tapped > 0,
+            "the replacement sink should still receive frames after the panic"
+        );
+    }
+
+    /// The inbound tap runs BEFORE decode, so a frame the codec rejects is still
+    /// observed. Asserting a well-formed frame reaches the sink cannot see this -
+    /// it arrives either way. Only an undecodable frame can: the call must fail AND
+    /// the sink must still hold those exact bytes.
+    #[test]
+    fn a_corrupt_inbound_frame_is_tapped_even_though_decode_rejects_it() {
+        let platform = Arc::new(StubPlatform::default());
+        let transport = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            transport,
+        );
+        let debug = Arc::new(RecordingDebugSink::default());
+        runtime.set_debug_sink(ChannelId("myapp.dot".to_string()), debug.clone());
+
+        // Not a `ProtocolMessage`: the leading compact length claims far more
+        // bytes than follow, so decode fails before any field is read.
+        let corrupt = vec![0xff, 0xff, 0xff, 0xff];
+        let outcome = futures::executor::block_on(runtime.receive_frame(corrupt.clone()));
+        assert!(
+            matches!(outcome, Err(ProductRuntimeError::InvalidFrame { .. })),
+            "expected decode to reject the frame, got {outcome:?}"
+        );
+
+        let events = debug.events.lock().expect("debug events mutex poisoned");
+        assert_eq!(
+            events.len(),
+            1,
+            "a frame rejected by decode must still be tapped"
+        );
+        assert_eq!(events[0].1, FrameDirection::In);
+        assert_eq!(
+            events[0].2, corrupt,
+            "the tap must carry the original bytes, not a decoded form"
+        );
+    }
+
+    /// A sink whose destructor panics must not unwind the FRAME path.
+    ///
+    /// `set_debug_sink` drops the previous sink outside the lock, which covers the
+    /// case where the installer holds the last reference. It does not cover this
+    /// one: the frame path clones its own `Arc` before tapping, so if the sink is
+    /// replaced while that tap is in flight, the frame path holds the last
+    /// reference and runs the destructor itself. `emit_debug` takes the clone by
+    /// value so that drop lands inside its `catch_unwind`; with `&dyn DebugSink`
+    /// the clone instead dies at the caller's scope end, outside the guard, and
+    /// unwinds a live dispatch.
+    #[test]
+    fn a_panicking_sink_destructor_does_not_unwind_the_frame_path() {
+        /// Blocks inside `emit` until the installer has released its reference, so
+        /// the frame path is provably the one that drops this sink.
+        struct HandoffSink {
+            tapped: std::sync::mpsc::SyncSender<()>,
+            release: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl DebugSink for HandoffSink {
+            fn emit(&self, _event: DebugEvent) {
+                let _ = self.tapped.send(());
+                let _ = self
+                    .release
+                    .lock()
+                    .expect("release receiver poisoned")
+                    .recv();
+            }
+        }
+        impl Drop for HandoffSink {
+            fn drop(&mut self) {
+                panic!("out-of-repo sink destructor");
+            }
+        }
+
+        let platform = Arc::new(StubPlatform::default());
+        let transport = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = Arc::new(ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            transport,
+        ));
+        let channel = ChannelId("myapp.dot".to_string());
+
+        let (tapped_tx, tapped_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        runtime.set_debug_sink(
+            channel.clone(),
+            Arc::new(HandoffSink {
+                tapped: tapped_tx,
+                release: Mutex::new(release_rx),
+            }),
+        );
+
+        let ids = subscription_ids("theme_subscribe").expect("known subscription");
+        let frame = ProtocolMessage {
+            request_id: "theme:1".to_string(),
+            payload: Payload {
+                id: ids.start_id,
+                value: Vec::new(),
+            },
+        };
+        let encoded = frame.encode();
+        let frame_runtime = Arc::clone(&runtime);
+        let frame_thread = std::thread::spawn(move || {
+            futures::executor::block_on(frame_runtime.receive_frame(encoded))
+        });
+
+        // Wait until the tap is inside `emit`, holding its own clone.
+        tapped_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("tap never fired");
+        // Replace the sink: the installer's reference goes, leaving the frame
+        // path's clone as the last one.
+        runtime.set_debug_sink(channel, Arc::new(RecordingDebugSink::default()));
+        let _ = release_tx.send(());
+
+        let outcome = frame_thread.join();
+        assert!(
+            outcome.is_ok(),
+            "a panicking sink destructor unwound the frame path"
+        );
+    }
+
+    #[test]
+    fn outbound_frames_are_delivered_before_they_are_tapped() {
+        // `send` hands the frame to the transport and taps afterwards, so no sink can
+        // delay or drop THIS frame - it is already delivered. It says nothing about
+        // the next one: `send` returns only after the tap, so a slow sink delays
+        // every subsequent frame (see `DebugSink::emit`). Asserting the two lists
+        // match cannot see the ordering at all - they are order-identical either way.
+        // Counting deliveries AT TAP TIME can: tap N must observe N deliveries, and
+        // tapping first would make it N-1.
+        let platform = Arc::new(StubPlatform::default());
+        let transport = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            transport.clone(),
+        );
+        let debug = Arc::new(DeliveryOrderSink {
+            transport: transport.clone(),
+            delivered_at_tap: Mutex::new(Vec::new()),
+        });
+        runtime.set_debug_sink(ChannelId("myapp.dot".to_string()), debug.clone());
+
+        let ids = subscription_ids("theme_subscribe").expect("known subscription");
+        let frame = ProtocolMessage {
+            request_id: "theme:1".to_string(),
+            payload: Payload {
+                id: ids.start_id,
+                value: Vec::new(),
+            },
+        };
+        futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while debug
+            .delivered_at_tap
+            .lock()
+            .expect("delivery order mutex poisoned")
+            .is_empty()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let observed = debug
+            .delivered_at_tap
+            .lock()
+            .expect("delivery order mutex poisoned")
+            .clone();
+        assert!(!observed.is_empty(), "expected at least one outbound tap");
+        // Tap i (0-based) must see i+1 frames already delivered.
+        let expected: Vec<usize> = (1..=observed.len()).collect();
+        assert_eq!(
+            observed, expected,
+            "each outbound tap must run after its own frame was delivered"
+        );
+    }
+
+    /// Every profile that ships a host aborts on panic, so [`emit_debug`]'s
+    /// `catch_unwind` cannot fire in a shipping build - which is why
+    /// [`DebugSink::emit`] documents its no-panic rule as caller-enforced. The
+    /// guard still earns its keep everywhere else: `dev` inherits
+    /// `panic = "unwind"` (the workspace defines no `[profile.dev]`), the Makefile
+    /// builds `truapi-host-cli` without `--release`, and a downstream crate may
+    /// compile this one under its own unwinding profile.
+    ///
+    /// No unit test can demonstrate the guard itself - Cargo ignores the `panic`
+    /// setting for test profiles, so a "the guard protected dispatch" assertion
+    /// passes with the guard removed. The premise is what is checkable, and this
+    /// fails if a shipping profile stops aborting, at which point the reasoning on
+    /// `DebugSink::emit` needs revisiting.
+    #[test]
+    fn shipping_profiles_abort_on_panic() {
+        let workspace_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("crate lives at <workspace>/rust/crates/truapi-server")
+            .join("Cargo.toml");
+        let manifest = std::fs::read_to_string(&workspace_manifest)
+            .expect("workspace manifest is readable from the crate directory");
+        let release = manifest
+            .split("[profile.release]")
+            .nth(1)
+            .expect("workspace defines [profile.release]")
+            .split("\n[")
+            .next()
+            .expect("release profile section");
+        assert!(
+            release.contains("panic = \"abort\""),
+            "release no longer aborts on panic: revisit DebugSink::emit's contract docs"
+        );
+        assert!(
+            manifest.contains("[profile.codegen]") && manifest.contains("inherits = \"release\""),
+            "codegen no longer inherits release: recheck what the ws-bridge artifacts build with"
+        );
+    }
+
+    #[test]
+    fn frame_direction_wire_str_is_product_vantage() {
+        // The wire string is product-vantage (what the debugger and design doc
+        // use), the inverse of the enum's host-vantage names: a frame the host
+        // tapped as `In` (product to core) *left the product*, so it serializes
+        // as `"out"`. This pins the convention so a sink can't re-invert it.
+        assert_eq!(FrameDirection::In.wire_str(), "out");
+        assert_eq!(FrameDirection::Out.wire_str(), "in");
     }
 
     #[test]
