@@ -198,13 +198,16 @@ fn golden_dispatcher_and_wire_table() {
         String::from_utf8_lossy(&out.stderr),
     );
 
-    // Compare both emitted files against the goldens. We assert on
+    // Compare the emitted files against the goldens. We assert on
     // wire_table.rs first because it's small and the diff is easy to
-    // read when the wire ids drift.
+    // read when the wire ids drift. mod.rs is covered because
+    // truapi-server declares `pub mod generated;` unconditionally, so
+    // dropping it stops the crate parsing at all.
     let golden_dir = manifest_dir.join("tests/golden");
     let cases = [
         ("wire_table.rs", "wire_table.rs"),
         ("dispatcher.rs", "dispatcher.rs"),
+        ("mod.rs", "mod.rs"),
     ];
     for (golden_name, output_name) in cases {
         let golden = fs::read_to_string(golden_dir.join(golden_name))

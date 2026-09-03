@@ -2,7 +2,7 @@
 
 _Thin Swift shell over the Rust TrUAPI core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge._
 
-The package lives in the truapi repo next to the Rust core it wraps. `Package.swift` sits at the **repo root** (SPM requires that for git-URL dependencies), with all target paths pointing into `ios/truapi-host/`; the build scripts regenerate the committed outputs from this repo's workspace.
+The package lives in the truapi repo next to the Rust core it wraps. `Package.swift` sits at the **repo root** (SPM requires that for git-URL dependencies), with all target paths pointing into `ios/truapi-host/`; the build scripts regenerate those target paths from this repo's workspace, because none of them are committed.
 
 ## What this package is for
 
@@ -15,7 +15,7 @@ The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 - [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
 - `Tests/` — WS-bridge round-trip tests that boot the real Rust core.
 
-The generated bindings and the container bundle are committed build outputs; the xcframework is **gitignored** and distributed as a GitHub release asset. Two scripts split the lifecycle:
+The generated bindings, the container bundle and the xcframework are all **gitignored** build outputs, so a fresh checkout has no Swift sources for the package's targets. Run `rebuild.sh` before opening it. The xcframework is additionally distributed as a GitHub release asset. Two scripts split the lifecycle:
 
 ```bash
 ./scripts/rebuild.sh            # regenerate xcframework + bindings + container
@@ -24,7 +24,21 @@ The generated bindings and the container bundle are committed build outputs; the
                                 # "@parity/ios-host <version>" GitHub release,
                                 # and point the root Package.swift at it
                                 # (URL + checksum)
+./scripts/tag-release.sh <version>
+                                # commit the generated sources plus that
+                                # manifest and tag it <version>: the tag a
+                                # SwiftPM consumer resolves
 ```
+
+A consumer pins the plain semver tag, not the `@parity/ios-host@<version>` one,
+which SwiftPM cannot see:
+
+```swift
+.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.12.0")
+```
+
+`release-ios.yml` runs all three in order and clones and compiles the tag
+before pushing it. Run them by hand only as a fallback.
 
 When only the bindings need refreshing — a Rust surface change with no container
 or xcframework impact — skip the full rebuild, which needs Xcode and the iOS
@@ -35,21 +49,24 @@ targets:
 make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh
 ```
 
-CI's `iOS bindings (uniffi)` job runs the same two commands with
-`sync-bindings.sh --check`, which diffs the committed bindings against freshly
-generated ones and writes nothing. It runs on Linux, so it verifies the
-generated files only.
+CI's `iOS bindings (uniffi)` job runs the same two commands. With nothing
+committed to diff against, what it gates is that bindgen still produces a
+binding for every UniFFI-exposed type. It runs on Linux, so it never compiles
+Swift.
 
 The hand-written conformers in `TrUAPIHost.swift` and `Tests/` are covered by
 the `iOS package (swift compile)` job instead, which builds a simulator-only
 debug XCFramework from the pull request source and runs `xcodebuild
-build-for-testing`. It is path-filtered to pull requests touching `ios/`,
-`Package.swift`, the `Makefile` or `rust/crates/truapi-server/src/native*`.
+build-for-testing`. It is path-filtered to pull requests touching `ios/`, `Package.swift`, the
+`Makefile`, `js/container/`, or any of the crates the bindings are generated
+from (`truapi`, `truapi-platform`, `truapi-server`, `truapi-provider`); the
+filter has to name them explicitly, since a protocol change no longer shows up
+as an `ios/` diff.
 Nothing compiles `TrUAPIHost.kt` or the embedding apps.
 
-Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, and makes the `Package.swift` follow-up commit only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — to refresh your local build outputs. Nothing to commit: CI regenerates them. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, cuts the `<version>` tag, and opens the `Package.swift` follow-up pull request only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
-For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
+For local iteration without publishing, set `TRUAPI_USE_LOCAL_BINARY=1` so the root `Package.swift` builds against `Binaries/` directly.
 
 The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, feature support, and the served chain set. UI-decision callbacks are `async` and awaited by the Rust core. `HostCallbackAdapter` translates it to the UniFFI-generated `HostCallbacks` protocol; `TrUAPIHostRuntime` and each product execution retain their own adapter. Conform to `HostBridge` rather than to the generated protocol: its extension defaults the optional callbacks, so a newly added one does not break the build. Storage arrives as the `storage` and `coreStorage` sub-objects, which the adapter flattens.
 
@@ -414,5 +431,5 @@ The product page reads `window.__truapi_localhost.url` (set by the bootstrap scr
 `./scripts/rebuild.sh` orchestrates everything; the underlying pieces, should you need one in isolation:
 
 - **xcframework** — `make xcframework` (repo root) builds `truapi-server` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
-- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and CI's `--check` mode compares against it.
+- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and so does the `iOS package (swift compile)` job, which is what puts Swift sources into the package before `xcodebuild` runs.
 - **container** — `npm run build` in `js/container/` (repo root) bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.
