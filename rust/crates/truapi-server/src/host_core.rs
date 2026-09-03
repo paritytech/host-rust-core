@@ -1459,19 +1459,28 @@ impl Transport for SinkTransport {
         // frame. That is not a claim about a hung sink: `emit_debug` runs
         // synchronously here, so a sink that never returns stalls this dispatch.
         // See `DebugSink::emit` for why that is caller-enforced.
-        match self.debug() {
-            Some((channel_id, debug)) => {
-                self.sink.emit_frame(encoded.clone());
-                emit_debug(
-                    debug,
-                    DebugEvent::Frame {
-                        channel_id,
-                        dir: FrameDirection::Out,
-                        bytes: encoded,
-                    },
-                );
-            }
-            None => self.sink.emit_frame(encoded),
+        // Take the sink handle only AFTER delivery. Holding the
+        // `Arc<dyn DebugSink>` clone across `emit_frame` - which is out-of-repo
+        // (a JS callback via `WasmFrameSink`, or `WsFrameSink`) - means an unwind
+        // there can drop the last reference and run an out-of-repo destructor
+        // DURING the unwind, outside `emit_debug`'s `catch_unwind`. A panic while
+        // panicking aborts. The window opens only if `set_debug_sink` replaced the
+        // sink concurrently, which is why the inbound tap (whose window is empty)
+        // did not need this shape.
+        if !self.has_debug.load(Ordering::Relaxed) {
+            self.sink.emit_frame(encoded);
+            return;
+        }
+        self.sink.emit_frame(encoded.clone());
+        if let Some((channel_id, debug)) = self.debug() {
+            emit_debug(
+                debug,
+                DebugEvent::Frame {
+                    channel_id,
+                    dir: FrameDirection::Out,
+                    bytes: encoded,
+                },
+            );
         }
     }
 
