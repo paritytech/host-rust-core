@@ -431,11 +431,14 @@ XCFRAMEWORK_HEADERS := target/xcframework-headers
 # Slices and cargo profile the xcframework is assembled from. The defaults are
 # what a release needs; a compile-only consumer overrides both for speed. The
 # profile name doubles as cargo's output directory.
-XCFRAMEWORK_TARGETS ?= $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
+# SIM_ONLY=1 drops the device slice while iterating, which halves the target
+# builds. publish.sh refuses a simulator-only framework, so this cannot reach a
+# release asset. XCFRAMEWORK_TARGETS still overrides both.
+XCFRAMEWORK_TARGETS ?= $(if $(SIM_ONLY),$(IOS_SIM_TARGET),$(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET))
 XCFRAMEWORK_PROFILE ?= release
 XCFRAMEWORK_CARGO_FLAGS := $(if $(filter release,$(XCFRAMEWORK_PROFILE)),--release,)
 
-xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator.
+xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator (SIM_ONLY=1 for simulator only).
 	rustup target add $(XCFRAMEWORK_TARGETS)
 	for target in $(XCFRAMEWORK_TARGETS); do \
 		IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \
