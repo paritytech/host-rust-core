@@ -427,7 +427,8 @@ use `exec '/script <path>'` instead. `/copy` and `/approval` are unavailable.
 `exec '/devices'` and `exec '/devices --list'` inspect the selected session's
 saved pairings without starting their responders. `exec '/devices --remove
 <statement-account-id>'` is an explicit removal and does not ask for another
-confirmation.
+confirmation. It submits `Disconnected` directly and removes local state only
+after the statement is accepted.
 
 ### 6.5 `--serve`
 
@@ -532,7 +533,7 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
-| `/devices --remove <statement-account-id>` | no | yes | Remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id>` | no | yes | Disconnect and remove one paired device by its 32-byte statement account ID. |
 | `/approval` | no | yes | Print the current manual or automatic approval mode. TUI only. |
 | `/approval manual` | no | yes | Prompt for every future confirmation. TUI only. |
 | `/approval automatic` | no | yes | Approve every future confirmation automatically. TUI only. |
@@ -560,6 +561,8 @@ account ID and print each ID with any available host and platform metadata.
 `/devices --remove` accepts exactly one 32-byte hexadecimal statement account ID
 with an optional `0x` prefix. Interactive removal uses the `[y/N]` approval and
 describes that only the selected peer is affected. `exec` removal runs directly.
+Both modes submit one `Disconnected` message before local cleanup. If submission
+fails, the saved pairing, responder, and allowance-renewal target remain intact.
 
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands

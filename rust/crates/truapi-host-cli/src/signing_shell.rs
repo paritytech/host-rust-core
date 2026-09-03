@@ -805,7 +805,7 @@ pub const HELP_TEXT: &str = "\
 /pair <image-path>      read a pairing QR image file
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
-/devices --remove <id>  remove one paired device by statement account ID
+/devices --remove <id>  disconnect and remove one paired device by statement account ID
 /approval               show the current confirmation approval mode
 /approval manual        prompt for every future confirmation
 /approval automatic     approve every future confirmation automatically
