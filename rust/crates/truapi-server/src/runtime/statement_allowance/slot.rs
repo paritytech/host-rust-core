@@ -1,13 +1,13 @@
 //! StatementStore allowance slot selection.
 //!
 //! An allowance is claimed at `(period, seq)`. The slot is bound to a 32-byte
-//! `SSS_SLOT` context; occupancy is read from
+//! product context; occupancy is read from
 //! `Resources.StatementStoreAllowances[period][alias]`, where the alias is
 //! derived from OUR bandersnatch entropy in that slot context. Mirrors
 //! signing-bot `allowance.ts` / `allowance-slots.ts`.
 
-use parity_scale_codec::{Decode, Encode};
-use sp_crypto_hashing::twox_128;
+use parity_scale_codec::{Decode, DecodeAll, Encode};
+use sp_crypto_hashing::{blake2_256, twox_128};
 use thiserror::Error;
 use verifiable::Error as VerifiableError;
 use verifiable::GenerateVerifiable;
@@ -22,6 +22,10 @@ use super::view;
 
 /// StatementStore allowance period: one UTC day, in seconds.
 pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;
+const PRODUCT_CONTEXT_PREFIX: &[u8] = b"product/peopl.";
+const STATEMENT_STORE_CONTEXT_PREFIX: &[u8] = b"sys/";
+const STATEMENT_STORE_CONTEXT_FAMILY: u32 = 2;
+const MAX_NETWORK_SUFFIX_LENGTH: usize = 16;
 /// Bulletin long-term-storage claim context prefix.
 const LONG_TERM_STORAGE_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/rsc-lts";
 /// Ring-VRF alias context prefix for an Asset Hub PGAS claim.
@@ -104,6 +108,18 @@ pub enum SlotError {
     /// `Timestamp.Now` was absent or undecodable, so slot ages cannot be judged.
     #[error("Timestamp.Now missing from chain state")]
     MissingChainTimestamp,
+    /// The runtime-wide product context suffix was absent from chain storage.
+    #[error("NetworkSuffix.NetworkSuffix missing from chain state")]
+    MissingNetworkSuffix,
+    /// The runtime-wide product context suffix did not have its declared SCALE shape.
+    #[error("NetworkSuffix.NetworkSuffix is not a valid SCALE byte vector: {0}")]
+    NetworkSuffixDecode(#[source] parity_scale_codec::Error),
+    /// The runtime-wide product context suffix was outside its declared bounds.
+    #[error("NetworkSuffix.NetworkSuffix length {len}, expected 1..={MAX_NETWORK_SUFFIX_LENGTH}")]
+    InvalidNetworkSuffixLength {
+        /// Actual suffix length.
+        len: usize,
+    },
     /// Registration reached a block but the slot was not held by the target.
     #[error(
         "registration reached block {block_hash} but slot (period {period}, seq {seq}) is not held by the target account"
@@ -152,22 +168,29 @@ pub fn current_long_term_storage_period(
     Ok((now_seconds / u64::from(period_duration)) as u32)
 }
 
-/// Derive the 32-byte StatementStore slot context:
-/// `"SSS_SLOT:" ‖ u32be(period) ‖ u32be(seq) ‖ 0x20 fill`.
-pub fn derive_slot_context(period: u32, seq: u32) -> [u8; 32] {
-    let mut ctx = [0x20u8; 32];
-    ctx[..9].copy_from_slice(b"SSS_SLOT:");
-    ctx[9..13].copy_from_slice(&period.to_be_bytes());
-    ctx[13..17].copy_from_slice(&seq.to_be_bytes());
-    ctx
+/// Derive the network-scoped 32-byte StatementStore slot context.
+pub fn derive_slot_context(network_suffix: &[u8], period: u32, seq: u32) -> [u8; 32] {
+    let mut suffix = [0u8; 32];
+    suffix[..4].copy_from_slice(STATEMENT_STORE_CONTEXT_PREFIX);
+    suffix[4..8].copy_from_slice(&STATEMENT_STORE_CONTEXT_FAMILY.to_le_bytes());
+    suffix[8..12].copy_from_slice(&period.to_le_bytes());
+    suffix[12..16].copy_from_slice(&seq.to_le_bytes());
+
+    let mut preimage = Vec::with_capacity(
+        PRODUCT_CONTEXT_PREFIX.len() + network_suffix.len() + b"/".len() + suffix.len(),
+    );
+    preimage.extend_from_slice(PRODUCT_CONTEXT_PREFIX);
+    preimage.extend_from_slice(network_suffix);
+    preimage.push(b'/');
+    preimage.extend_from_slice(&suffix);
+    blake2_256(&preimage)
 }
 
 /// Derive the 32-byte Asset Hub PGAS claim context:
 /// `"pop:gas:" ‖ u32le(day) ‖ u32le(slot_index) ‖ zero fill`.
 ///
-/// The two integers are little-endian here, unlike the big-endian statement-store
-/// and long-term-storage contexts. The mobile wallet writes them this way and the
-/// runtime verifies against the same bytes, so the layout is not ours to tidy.
+/// The mobile wallet writes the integers in little-endian order and the runtime
+/// verifies against the same bytes, so the layout is not ours to tidy.
 pub fn derive_pgas_context(day: u32, slot_index: u32) -> [u8; 32] {
     let mut ctx = [0u8; 32];
     ctx[..PGAS_CONTEXT_PREFIX.len()].copy_from_slice(PGAS_CONTEXT_PREFIX);
@@ -191,11 +214,12 @@ pub fn derive_long_term_storage_context(period: u32, counter: u8) -> [u8; 32] {
 /// The slot alias for our `entropy` at `(period, seq)`.
 pub fn slot_alias(
     entropy: [u8; 32],
+    network_suffix: &[u8],
     period: u32,
     seq: u32,
 ) -> Result<[u8; 32], StatementAllowanceError> {
     let secret = BandersnatchVrfVerifiable::new_secret(entropy);
-    let context = derive_slot_context(period, seq);
+    let context = derive_slot_context(network_suffix, period, seq);
     BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
         SlotError::AliasInContext {
             context: "statement-store slot",
@@ -366,6 +390,27 @@ fn timestamp_now_key() -> Vec<u8> {
     .concat()
 }
 
+fn network_suffix_key() -> Vec<u8> {
+    [
+        twox_128(b"NetworkSuffix").as_slice(),
+        twox_128(b"NetworkSuffix").as_slice(),
+    ]
+    .concat()
+}
+
+/// Read the runtime-wide suffix used for product-scoped proof contexts.
+pub async fn read_network_suffix(rpc: &RpcClient) -> Result<Vec<u8>, StatementAllowanceError> {
+    let bytes = rpc
+        .get_storage(&network_suffix_key())
+        .await?
+        .ok_or(SlotError::MissingNetworkSuffix)?;
+    let suffix = Vec::<u8>::decode_all(&mut &bytes[..]).map_err(SlotError::NetworkSuffixDecode)?;
+    if suffix.is_empty() || suffix.len() > MAX_NETWORK_SUFFIX_LENGTH {
+        return Err(SlotError::InvalidNetworkSuffixLength { len: suffix.len() }.into());
+    }
+    Ok(suffix)
+}
+
 /// The chain's clock in unix seconds, decoded from `Timestamp.Now` milliseconds.
 ///
 /// Slot ages are judged against this rather than the host clock, which runs up to
@@ -399,11 +444,12 @@ pub async fn replacement_cooldown(
 pub async fn read_slot_account_at(
     rpc: &RpcClient,
     entropy: [u8; 32],
+    network_suffix: &[u8],
     period: u32,
     seq: u32,
     block_hash: &str,
 ) -> Result<Option<[u8; 32]>, StatementAllowanceError> {
-    let alias = slot_alias(entropy, period, seq)?;
+    let alias = slot_alias(entropy, network_suffix, period, seq)?;
     let key = statement_store_allowance_key(period, &alias);
     Ok(rpc
         .get_storage_at(&key, block_hash)
@@ -441,6 +487,8 @@ pub struct SlotScan<'a> {
     pub collection: PersonhoodCollection,
     /// Our bandersnatch entropy for `collection`.
     pub entropy: [u8; 32],
+    /// Runtime-wide suffix used for product-scoped aliases.
+    pub network_suffix: &'a [u8],
     /// Statement-store period to scan.
     pub period: u32,
     /// Account whose existing slot, if any, should be reported.
@@ -461,6 +509,7 @@ pub async fn scan_slot_excluding(
     let SlotScan {
         collection,
         entropy,
+        network_suffix,
         period,
         target,
         excluded,
@@ -471,7 +520,7 @@ pub async fn scan_slot_excluding(
     let mut excluded_free = false;
     let mut occupied = Vec::new();
     for seq in 0..max {
-        let alias = slot_alias(entropy, period, seq)?;
+        let alias = slot_alias(entropy, network_suffix, period, seq)?;
         let key = statement_store_allowance_key(period, &alias);
         match rpc.get_storage(&key).await? {
             None => {
@@ -619,6 +668,7 @@ mod tests {
     /// `LiteStmtStoreSlotsPerPeriod` is 10.
     const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
     const SLOTS: usize = 10;
+    const NETWORK_SUFFIX: &[u8] = b"paseo";
 
     /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
     /// JSON storage result.
@@ -657,6 +707,7 @@ mod tests {
             SlotScan {
                 collection: PersonhoodCollection::LitePeople,
                 entropy: [0x11; 32],
+                network_suffix: NETWORK_SUFFIX,
                 period: 7,
                 target: &[0x22; 32],
                 excluded: &[],
@@ -730,6 +781,7 @@ mod tests {
                 SlotScan {
                     collection: PersonhoodCollection::LitePeople,
                     entropy: [0x11; 32],
+                    network_suffix: NETWORK_SUFFIX,
                     period: 7,
                     target: &[0x22; 32],
                     excluded: &[],
@@ -901,6 +953,7 @@ mod tests {
             SlotScan {
                 collection: PersonhoodCollection::LitePeople,
                 entropy: [0x11; 32],
+                network_suffix: NETWORK_SUFFIX,
                 period: 7,
                 target: &[0x22; 32],
                 excluded: &[(SLOTS - 1) as u32],
@@ -1004,12 +1057,86 @@ mod tests {
     }
 
     #[test]
-    fn slot_context_layout() {
-        let ctx = derive_slot_context(7, 3);
-        assert_eq!(&ctx[..9], b"SSS_SLOT:");
-        assert_eq!(&ctx[9..13], &7u32.to_be_bytes());
-        assert_eq!(&ctx[13..17], &3u32.to_be_bytes());
-        assert!(ctx[17..].iter().all(|&b| b == 0x20));
+    fn statement_slot_context_matches_mobile_clients_and_runtime() {
+        let expected: [u8; 32] =
+            hex::decode("b6c21225dcf4c2aeeca32b6db1fc93b6942ca0e8ff5c3cb1b2c5d8f0b4647ee3")
+                .unwrap()
+                .try_into()
+                .unwrap();
+
+        assert_eq!(derive_slot_context(NETWORK_SUFFIX, 100, 3), expected);
+    }
+
+    #[test]
+    fn statement_slot_context_is_scoped_to_the_network() {
+        assert_ne!(
+            derive_slot_context(b"paseo", 100, 3),
+            derive_slot_context(b"polkadot", 100, 3),
+        );
+    }
+
+    #[test]
+    fn network_suffix_is_read_from_chain_storage() {
+        let scripted = ScriptedRpc::new(vec![r#""0x14706173656f""#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        assert_eq!(
+            futures::executor::block_on(read_network_suffix(&rpc)).unwrap(),
+            b"paseo",
+        );
+    }
+
+    #[test]
+    fn missing_network_suffix_is_rejected() {
+        let scripted = ScriptedRpc::new(vec!["null"]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        assert!(matches!(
+            futures::executor::block_on(read_network_suffix(&rpc)),
+            Err(StatementAllowanceError::Slot(
+                SlotError::MissingNetworkSuffix
+            )),
+        ));
+    }
+
+    #[test]
+    fn malformed_network_suffix_is_rejected() {
+        let malformed = ScriptedRpc::new(vec![r#""0x14""#]);
+        let malformed_rpc = RpcClient::new(HostRpcClient::new(malformed));
+
+        assert!(matches!(
+            futures::executor::block_on(read_network_suffix(&malformed_rpc)),
+            Err(StatementAllowanceError::Slot(
+                SlotError::NetworkSuffixDecode(_)
+            )),
+        ));
+    }
+
+    #[test]
+    fn empty_network_suffix_is_rejected() {
+        let empty = ScriptedRpc::new(vec![r#""0x00""#]);
+        let empty_rpc = RpcClient::new(HostRpcClient::new(empty));
+
+        assert!(matches!(
+            futures::executor::block_on(read_network_suffix(&empty_rpc)),
+            Err(StatementAllowanceError::Slot(
+                SlotError::InvalidNetworkSuffixLength { len: 0 }
+            )),
+        ));
+    }
+
+    #[test]
+    fn oversized_network_suffix_is_rejected() {
+        let oversized_response = format!(r#""0x{}""#, hex::encode(vec![0x44; 18]));
+        let oversized = ScriptedRpc::new([oversized_response.as_str()]);
+        let oversized_rpc = RpcClient::new(HostRpcClient::new(oversized));
+
+        assert!(matches!(
+            futures::executor::block_on(read_network_suffix(&oversized_rpc)),
+            Err(StatementAllowanceError::Slot(
+                SlotError::InvalidNetworkSuffixLength { len: 17 }
+            )),
+        ));
     }
 
     #[test]

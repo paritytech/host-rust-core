@@ -411,6 +411,8 @@ pub struct RegistrationParams<'a> {
     pub target: &'a [u8; 32],
     /// Statement-store period for which the registration is requested.
     pub period: u32,
+    /// Runtime-wide suffix used for product-scoped aliases and proofs.
+    pub network_suffix: &'a [u8],
     /// Ring parameters used to build the membership proof.
     pub ring: &'a RingParams,
     /// Whether an existing registration for this period may be reused.
@@ -612,6 +614,7 @@ pub async fn register_statement_account(
                 slot::SlotScan {
                     collection,
                     entropy,
+                    network_suffix: params.network_suffix,
                     period: params.period,
                     target: params.target,
                     excluded: &skipped_duplicate_slots,
@@ -668,7 +671,7 @@ pub async fn register_statement_account(
             },
         };
 
-        let context = slot::derive_slot_context(params.period, seq);
+        let context = slot::derive_slot_context(params.network_suffix, params.period, seq);
         let call = extrinsic::build_set_statement_store_account_call(
             metadata,
             params.period,
@@ -691,7 +694,15 @@ pub async fn register_statement_account(
 
         match rpc.submit_and_watch(&extrinsic).await {
             Ok(block_hash) => {
-                if slot::read_slot_account_at(rpc, entropy, params.period, seq, &block_hash).await?
+                if slot::read_slot_account_at(
+                    rpc,
+                    entropy,
+                    params.network_suffix,
+                    params.period,
+                    seq,
+                    &block_hash,
+                )
+                .await?
                     != Some(*params.target)
                 {
                     return Err(SlotError::RegistrationVerificationMismatch {
@@ -753,6 +764,7 @@ pub async fn scan_collections(
     rpc: &RpcClient,
     metadata: &Metadata,
     candidates: &[CollectionCandidate],
+    network_suffix: &[u8],
     period: u32,
     target: &[u8; 32],
     reuse_existing: bool,
@@ -770,6 +782,7 @@ pub async fn scan_collections(
             slot::SlotScan {
                 collection,
                 entropy: candidate.entropy,
+                network_suffix,
                 period,
                 target,
                 excluded: &[],
@@ -816,6 +829,8 @@ pub struct PooledRegistrationParams<'a> {
     pub target: &'a [u8; 32],
     /// Statement-store period for which the registration is requested.
     pub period: u32,
+    /// Runtime-wide suffix used for product-scoped aliases and proofs.
+    pub network_suffix: &'a [u8],
     /// Whether an existing registration for this period may be reused.
     pub reuse_existing: bool,
     /// Whether a live slot may be replaced once every collection is full.
@@ -964,6 +979,7 @@ pub async fn register_statement_account_pooled(
         RegistrationParams {
             target: params.target,
             period: params.period,
+            network_suffix: params.network_suffix,
             ring: &membership.ring,
             reuse_existing: params.reuse_existing,
             preselected: Some(choice),
@@ -1628,6 +1644,7 @@ mod tests {
             RegistrationParams {
                 target: &[0x22; 32],
                 period: 7,
+                network_suffix: b"paseo",
                 ring: &ring,
                 reuse_existing: true,
                 preselected,
@@ -1695,7 +1712,8 @@ mod tests {
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
         let outcome = futures::executor::block_on(async {
-            let scans = scan_collections(&rpc, &metadata, &candidates, 7, &target, true).await?;
+            let scans =
+                scan_collections(&rpc, &metadata, &candidates, b"paseo", 7, &target, true).await?;
             register_statement_account_pooled(
                 &rpc,
                 &metadata,
@@ -1705,6 +1723,7 @@ mod tests {
                 PooledRegistrationParams {
                     target: &target,
                     period: 7,
+                    network_suffix: b"paseo",
                     reuse_existing: true,
                     allow_eviction,
                     protected,
@@ -1736,7 +1755,8 @@ mod tests {
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
 
         futures::executor::block_on(async {
-            let scans = scan_collections(&rpc, &metadata, &candidates, 7, &target, true).await?;
+            let scans =
+                scan_collections(&rpc, &metadata, &candidates, b"paseo", 7, &target, true).await?;
             register_statement_account_pooled(
                 &rpc,
                 &metadata,
@@ -1746,6 +1766,7 @@ mod tests {
                 PooledRegistrationParams {
                     target: &target,
                     period: 7,
+                    network_suffix: b"paseo",
                     reuse_existing: true,
                     allow_eviction: true,
                     protected: &[],
@@ -2199,6 +2220,7 @@ mod tests {
             &rpc,
             &metadata,
             &candidates,
+            b"paseo",
             7,
             &target,
             true,
@@ -2263,6 +2285,7 @@ mod tests {
             RegistrationParams {
                 target: &[0x22; 32],
                 period: 7,
+                network_suffix: b"paseo",
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
@@ -2322,6 +2345,7 @@ mod tests {
             RegistrationParams {
                 target: &[0x22; 32],
                 period: 7,
+                network_suffix: b"paseo",
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
@@ -2373,6 +2397,7 @@ mod tests {
             RegistrationParams {
                 target: &[0x22; 32],
                 period: 7,
+                network_suffix: b"paseo",
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
@@ -2422,6 +2447,7 @@ mod tests {
             RegistrationParams {
                 target: &[0x22; 32],
                 period: 7,
+                network_suffix: b"paseo",
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,

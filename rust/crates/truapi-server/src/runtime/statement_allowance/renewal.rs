@@ -149,6 +149,8 @@ pub struct RenewalChainContext<'a> {
     pub metadata: &'a Metadata,
     /// Signed-extension chain state.
     pub chain_state: &'a ChainState,
+    /// Runtime-wide suffix used for product-scoped aliases and proofs.
+    pub network_suffix: &'a [u8],
     /// Every collection the host can derive aliases for, so an allowance already
     /// held in a collection whose ring cannot currently be proved is still seen.
     pub candidates: &'a [CollectionCandidate],
@@ -186,6 +188,7 @@ pub async fn renew_targets(
                 context.rpc,
                 context.metadata,
                 context.candidates,
+                context.network_suffix,
                 period,
                 &target.account_id,
                 true,
@@ -218,6 +221,7 @@ pub async fn renew_targets(
                     context.rpc,
                     context.metadata,
                     context.candidates,
+                    context.network_suffix,
                     period,
                     &target.account_id,
                     true,
@@ -235,6 +239,7 @@ pub async fn renew_targets(
                     PooledRegistrationParams {
                         target: &target.account_id,
                         period,
+                        network_suffix: context.network_suffix,
                         reuse_existing: true,
                         // Renewal exists to keep the ledger's targets alive across a
                         // period boundary, so it may reclaim space when full.
@@ -446,6 +451,7 @@ mod tests {
             rpc: &rpc,
             metadata: &metadata,
             chain_state: &chain_state,
+            network_suffix: b"paseo",
             candidates: &candidates,
             memberships: &memberships,
         };
@@ -534,6 +540,7 @@ mod tests {
             rpc: &rpc,
             metadata: &metadata,
             chain_state: &chain_state,
+            network_suffix: b"paseo",
             candidates: &candidates,
             memberships: &memberships,
         };
@@ -633,6 +640,7 @@ mod tests {
             rpc: &rpc,
             metadata: &metadata,
             chain_state: &chain_state,
+            network_suffix: b"paseo",
             candidates: &candidates,
             memberships: &memberships,
         };
