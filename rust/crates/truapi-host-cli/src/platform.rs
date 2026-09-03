@@ -1207,7 +1207,7 @@ fn save_string_map(path: &Path, values: &HashMap<String, Vec<u8>>) -> Result<(),
     atomic_write(path, text.as_bytes())
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("storage path has no parent: {}", path.display()))?;
