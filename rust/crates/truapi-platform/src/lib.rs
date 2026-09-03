@@ -2883,8 +2883,8 @@ pub enum HostContactPick {
     Unsupported,
 }
 
-/// Host-owned contact picker, drawn from the chat lists the host's
-/// Chat-modality workers hold.
+/// Host-owned contact picker, drawn from the chat lists the host's chat
+/// extensions hold.
 ///
 /// Optional, and listed on [`OptionalPlatform`] as [`ChatPlatform`] is.
 ///

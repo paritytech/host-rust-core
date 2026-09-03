@@ -9,7 +9,7 @@ use crate::{CallContext, CallError};
 /// User-mediated access to the user's contacts.
 ///
 /// A product never reads the contact list. It opens the host's picker; the host
-/// renders an overlay from the chat lists its Chat-modality workers hold, and
+/// renders an overlay from the chat lists its chat extensions hold, and
 /// returns only the person the user selected. Names, accounts, and every other
 /// contact the user did not pick stay host-side.
 ///

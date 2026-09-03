@@ -22,7 +22,7 @@ not the address book — so this exposes the interaction rather than the list.
 
 ## Approach
 
-Contacts come from the chat lists the Host's Chat-modality workers hold; Hosts keep their own schema
+Contacts come from the chat lists the Host's chat extensions hold; Hosts keep their own schema
 and no new address book is imposed. A Host exposes them through one method and **renders the picker
 itself**, so names never cross to the product — which matters because a Host's only name for a contact
 is often a globally correlatable People-chain username.
