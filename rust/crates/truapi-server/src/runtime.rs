@@ -2964,14 +2964,6 @@ mod tests {
     use std::sync::atomic::Ordering;
     use truapi_platform::{AuthState, CoreStorageKey, PermissionAuthorizationRequest};
 
-    fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !condition() {
-            assert!(std::time::Instant::now() < deadline, "{message}");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    }
-
     fn test_product_subtree(product_id: &str) -> [u8; 32] {
         let root =
             crate::host_logic::product_account::derive_root_keypair_from_entropy(&[0xAB; 16])
