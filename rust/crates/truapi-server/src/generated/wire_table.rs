@@ -502,6 +502,14 @@ pub const SYSTEM_HOST_INFO: RequestFrameIds = RequestFrameIds {
     response_id: 193,
 };
 
+/// Wire discriminants for `locale_subscribe`.
+pub const LOCALE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 194,
+    stop_id: 195,
+    interrupt_id: 196,
+    receive_id: 197,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -788,5 +796,9 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "system_host_info",
         kind: WireKind::Request(SYSTEM_HOST_INFO),
+    },
+    WireEntry {
+        method: "locale_subscribe",
+        kind: WireKind::Subscription(LOCALE_SUBSCRIBE),
     },
 ];

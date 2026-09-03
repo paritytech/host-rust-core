@@ -18,8 +18,9 @@ use truapi_server::host_logic::dotns_gateway::{
 /// Env var overriding the `DotnsPopController` H160 (hex), skipping on-chain
 /// discovery.
 ///
-/// Discovery reads `DotnsGateway.DispatcherAddress` and asks the dispatcher
-/// for its `TARGET()`; the override is for networks where that fails. The
+/// Discovery reads `DotnsGateway.DispatcherAddress`, which holds either a
+/// dispatcher or the controller itself, and resolves whichever it is; the
+/// override is for networks where that fails. The
 /// controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2
 /// and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per
 /// network.
@@ -92,8 +93,7 @@ impl AssetHubReader {
     }
 
     /// `DotnsPopController` address, resolved once per reader. The env override
-    /// wins, otherwise on-chain discovery through the dispatcher's `TARGET()`
-    /// getter.
+    /// wins, otherwise on-chain discovery from `DotnsGateway.DispatcherAddress`.
     async fn pop_controller(&mut self) -> Result<[u8; 20]> {
         if let Some(controller) = self.pop_controller {
             return Ok(controller);

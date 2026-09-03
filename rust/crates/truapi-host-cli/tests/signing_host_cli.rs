@@ -73,6 +73,24 @@ fn exec_rejects_process_local_approval_changes() {
 }
 
 #[test]
+fn exec_explains_how_to_pair_when_clipboard_paste_has_no_terminal_ui() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let output = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["exec", "/pair"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("reject clipboard image paste outside the terminal UI");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "clipboard image paste needs an interactive signing host; use /pair <image-path> or /pair <polkadotapp://pair?...>"
+    ));
+}
+
+#[test]
 fn exec_product_reports_the_normalized_selected_product() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
     let output = command()

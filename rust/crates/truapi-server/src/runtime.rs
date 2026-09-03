@@ -86,8 +86,8 @@ use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
 use truapi::api::{
-    Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Notifications, Payment, Permissions,
-    Preimage, ResourceAllocation, Signing, System, Theme,
+    Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
+    Permissions, Preimage, ResourceAllocation, Signing, System, Theme,
 };
 use truapi::v02;
 use truapi::versioned::IntoLatest;
@@ -152,6 +152,7 @@ use truapi::versioned::local_storage::{
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
+use truapi::versioned::locale::HostLocaleSubscribeItem;
 use truapi::versioned::notifications::{
     HostPushNotificationCancelError, HostPushNotificationCancelRequest,
     HostPushNotificationCancelResponse, HostPushNotificationError, HostPushNotificationRequest,
@@ -2914,6 +2915,27 @@ impl Theme for ProductRuntimeHost {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Locale
+// ---------------------------------------------------------------------------
+
+#[truapi::async_trait]
+impl Locale for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "locale.subscribe"))]
+    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
+        let stream = self.platform.subscribe_locale().filter_map(|item| async {
+            match item {
+                Ok(item) => Some(HostLocaleSubscribeItem::V1(item)),
+                Err(error) => {
+                    warn!(reason = %error.reason, "locale platform stream failed");
+                    None
+                }
+            }
+        });
+        Subscription::new(Box::pin(stream))
+    }
+}
+
 // `Notifications` delegates to the platform so hosts can own scheduling and
 // cancellation while the core preserves the typed TrUAPI wire shape.
 #[truapi::async_trait]
@@ -3058,7 +3080,7 @@ mod tests {
         for (configured, expected) in [
             (" TrUAPI-Playground.DOT ", "truapi-playground.dot"),
             ("truapi-playground.paseo", "truapi-playground.paseo"),
-            ("truapi-playground.test", "truapi-playground.test"),
+            ("truapi-playground.testnet", "truapi-playground.testnet"),
             ("localhost", "localhost"),
             ("LOCALHOST:3000", "localhost:3000"),
         ] {

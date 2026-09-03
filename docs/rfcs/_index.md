@@ -10,7 +10,7 @@ created: 2026-03-13
 
 | Number | Title                                                                                                    | Status   | Author            | PR                                                              |
 | ------ | -------------------------------------------------------------------------------------------------------- | -------- | ----------------- | --------------------------------------------------------------- |
-| 0001   | [RFC Title](0001-template.md)                                                                            | accepted | @ownerhandle      | —                                                               |
+| 0001   | [Title](0001-template.md)                                                                                | draft    | @handle           | —                                                               |
 | 0002   | [Permission Model for Host API](0002-permission-model.md)                                                | accepted | @johnthecat       | [#66](https://github.com/paritytech/triangle-js-sdks/pull/66)   |
 | 0004   | [Redesign `host_account_create_proof`](0004-ringlocation-redesign.md)                                    | draft    | Valentin Sergeev  | [#18](https://github.com/paritytech/host-rust-core/pull/18)             |
 | 0006   | [Payment Host API](0006-payments.md)                                                                     | accepted | Valentin Sergeev  | [#94](https://github.com/paritytech/triangle-js-sdks/pull/94)   |

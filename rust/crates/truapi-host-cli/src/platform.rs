@@ -24,8 +24,8 @@ use truapi::latest as api;
 use truapi::v01;
 use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
-    JsonRpcConnection, Navigation, Notifications, PermissionStatusHost, Permissions, PreimageHost,
-    ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
+    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionStatusHost, Permissions,
+    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
     UserConfirmationReview,
 };
 
@@ -896,6 +896,18 @@ impl ThemeHost for CliPlatform {
     }
 }
 
+impl LocaleHost for CliPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<api::HostLocaleSubscribeItem, api::GenericError>> {
+        Box::pin(stream::once(async {
+            Ok(api::HostLocaleSubscribeItem {
+                language_tag: "en".to_string(),
+            })
+        }))
+    }
+}
+
 impl PreimageHost for CliPlatform {
     fn lookup_preimage(
         &self,
@@ -1196,7 +1208,7 @@ fn save_string_map(path: &Path, values: &HashMap<String, Vec<u8>>) -> Result<(),
     atomic_write(path, text.as_bytes())
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("storage path has no parent: {}", path.display()))?;

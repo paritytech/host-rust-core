@@ -15,9 +15,10 @@ use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use super::StatementAllowanceError;
 use super::collection::PersonhoodCollection;
-use super::extension::{Metadata, MetadataError};
+use super::extension::Metadata;
 use super::ring::blake2_128_concat;
 use super::rpc::RpcClient;
+use super::view;
 
 /// StatementStore allowance period: one UTC day, in seconds.
 pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;
@@ -40,6 +41,12 @@ pub enum SlotError {
     /// Long-term storage period duration constant was zero.
     #[error("Resources.LongTermStoragePeriodDuration is zero")]
     LongTermStoragePeriodDurationZero,
+    /// Long-term-storage claim count does not fit the `u8` counter.
+    #[error("Resources long-term-storage claim count {value} exceeds u8")]
+    LongTermStorageClaimsOverflow {
+        /// Value returned by the runtime.
+        value: u32,
+    },
     /// Bandersnatch alias derivation failed.
     #[error("{context} alias_in_context failed: {error:?}")]
     AliasInContext {
@@ -270,26 +277,27 @@ fn spent_long_term_storage_alias_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
 }
 
 /// Max StatementStore slots per period for `collection`.
-fn max_slots(
+async fn max_slots(
+    rpc: &RpcClient,
     metadata: &Metadata,
     collection: PersonhoodCollection,
 ) -> Result<u32, StatementAllowanceError> {
-    collection.slots_per_period(metadata)
+    collection.slots_per_period(rpc, metadata).await
 }
 
-/// Max long-term-storage claims per period from
-/// `Resources.LongTermStorageClaimsPerPeriod`.
-fn long_term_storage_claims_per_period(metadata: &Metadata) -> Result<u8, StatementAllowanceError> {
-    metadata
-        .constant("Resources", "LongTermStorageClaimsPerPeriod")
-        .and_then(|bytes| bytes.first().copied())
-        .ok_or_else(|| {
-            MetadataError::MissingConstant {
-                pallet: "Resources",
-                constant: "LongTermStorageClaimsPerPeriod",
-            }
-            .into()
-        })
+/// Max long-term-storage claims per period.
+pub async fn long_term_storage_claims_per_period(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+) -> Result<u8, StatementAllowanceError> {
+    let value = view::read_resource_u32(
+        rpc,
+        metadata,
+        "get_long_term_storage_claims_per_period",
+        "LongTermStorageClaimsPerPeriod",
+    )
+    .await?;
+    u8::try_from(value).map_err(|_| SlotError::LongTermStorageClaimsOverflow { value }.into())
 }
 
 /// Long-term-storage period duration in seconds from
@@ -298,6 +306,20 @@ pub fn long_term_storage_period_duration(
     metadata: &Metadata,
 ) -> Result<u32, StatementAllowanceError> {
     metadata.constant_u32("Resources", "LongTermStoragePeriodDuration")
+}
+
+/// Seconds that statement-store allowances remain active after their period.
+pub async fn statement_store_grace_window(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+) -> Result<u32, StatementAllowanceError> {
+    view::read_resource_u32(
+        rpc,
+        metadata,
+        "get_stmt_store_grace_window",
+        "StmtStoreGraceWindow",
+    )
+    .await
 }
 
 /// Decode a slot entry: `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
@@ -358,10 +380,18 @@ pub async fn read_chain_now_seconds(rpc: &RpcClient) -> Result<u64, StatementAll
 }
 
 /// Seconds an occupied slot must age before the runtime allows replacing it.
-pub fn replacement_cooldown(metadata: &Metadata) -> Result<u64, StatementAllowanceError> {
-    metadata
-        .constant_u32("Resources", "StmtStoreReplacementCooldown")
-        .map(u64::from)
+pub async fn replacement_cooldown(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+) -> Result<u64, StatementAllowanceError> {
+    view::read_resource_u32(
+        rpc,
+        metadata,
+        "get_stmt_store_replacement_cooldown",
+        "StmtStoreReplacementCooldown",
+    )
+    .await
+    .map(u64::from)
 }
 
 /// The account holding our alias slot `(period, seq)`, read pinned to
@@ -436,7 +466,7 @@ pub async fn scan_slot_excluding(
         excluded,
         reuse_existing,
     } = scan;
-    let max = max_slots(metadata, collection)?;
+    let max = max_slots(rpc, metadata, collection).await?;
     let mut first_free: Option<u32> = None;
     let mut excluded_free = false;
     let mut occupied = Vec::new();
@@ -563,7 +593,7 @@ pub async fn scan_long_term_storage_counter_excluding(
     period: u32,
     excluded: &[u8],
 ) -> Result<u8, StatementAllowanceError> {
-    let max = long_term_storage_claims_per_period(metadata)?;
+    let max = long_term_storage_claims_per_period(rpc, metadata).await?;
     for counter in 0..max {
         if excluded.contains(&counter) {
             continue;
@@ -842,10 +872,15 @@ mod tests {
     }
 
     #[test]
-    fn the_replacement_cooldown_comes_from_the_runtime() {
+    fn metadata_without_views_supplies_the_replacement_cooldown_constant() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
+        let scripted = ScriptedRpc::new(std::iter::empty::<&str>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
 
-        assert_eq!(replacement_cooldown(&metadata).unwrap(), 60);
+        assert_eq!(
+            futures::executor::block_on(replacement_cooldown(&rpc, &metadata)).unwrap(),
+            60
+        );
     }
 
     /// Excluding a slot because a submission for it is in flight must not read as

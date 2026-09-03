@@ -419,6 +419,16 @@ mod tests {
 
     /// `ReviveApi_call` output carrying successful return `data`.
     fn contract_result(data: &[u8]) -> Vec<u8> {
+        contract_result_with_flags(0, data)
+    }
+
+    /// `ReviveApi_call` output for a call that reverted.
+    fn reverted_contract_result() -> Vec<u8> {
+        contract_result_with_flags(1, &[])
+    }
+
+    /// `flags` is `ReturnFlags`; bit 0 marks a revert.
+    fn contract_result_with_flags(flags: u32, data: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         for _ in 0..4 {
             Compact(7u64).encode_to(&mut out);
@@ -428,7 +438,7 @@ mod tests {
         }
         0u128.encode_to(&mut out);
         out.push(0x00);
-        0u32.encode_to(&mut out);
+        flags.encode_to(&mut out);
         data.encode_to(&mut out);
         out
     }
@@ -436,11 +446,21 @@ mod tests {
     /// The scripted contract side: `(dest, selector)` → return data.
     fn view_output(dest: &[u8; 20], input: &[u8]) -> Vec<u8> {
         let sel: [u8; 4] = input[..4].try_into().unwrap();
+        // Discovery probes `protocolRegistry()` first and the dispatcher reverts it; that
+        // revert is how the two contracts are told apart, so the mock reproduces it.
+        if *dest == DISPATCHER && sel == selector("protocolRegistry()") {
+            return reverted_contract_result();
+        }
         let data = match (*dest, sel) {
             (DISPATCHER, s) if s == selector("TARGET()") => abi_address(&CONTROLLER),
-            (CONTROLLER, s) if s == selector("pendingClaims(address)") => {
-                // The user argument is the mapped H160 of the identity account.
-                assert_eq!(&input[16..36], account_to_h160(&ACCOUNT));
+            (CONTROLLER, s) if s == selector("pendingClaims(address,uint256,uint256)") => {
+                // First page for the mapped identity account.
+                assert_eq!(
+                    &input[4..36],
+                    abi_address(&account_to_h160(&ACCOUNT)).as_slice()
+                );
+                assert_eq!(&input[36..68], &abi_word(0));
+                assert_eq!(&input[68..100], &abi_word(16));
                 // One live claim and one that lapsed a second ago.
                 abi_pending_claims(&[
                     ("alice01", NOW_SECS - 10),
@@ -673,11 +693,13 @@ mod tests {
             .iter()
             .filter(|request| request.contains("chainHead_v1_call"))
             .count();
-        // TARGET, pendingClaims, reservationDuration, protocolRegistry,
-        // get(storeFactory), getLabelStore, tld, one short getLabels page.
+        // protocolRegistry (reverts on the dispatcher), TARGET, pendingClaims,
+        // reservationDuration, protocolRegistry, get(storeFactory), getLabelStore, tld,
+        // one short getLabels page. A repointed chain resolves on the first probe and
+        // needs eight.
         assert_eq!(
-            calls, 8,
-            "the discovery and label chain is exactly eight views"
+            calls, 9,
+            "the discovery and label chain is exactly nine views on a dispatcher chain"
         );
     }
 }

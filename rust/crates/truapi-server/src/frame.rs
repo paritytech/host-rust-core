@@ -30,6 +30,39 @@ pub struct ProtocolMessage {
     pub payload: Payload,
 }
 
+/// Reserved discriminant for method-independent protocol errors.
+pub const PROTOCOL_ERROR_ID: u8 = 255;
+
+/// Versioned payload carried by [`PROTOCOL_ERROR_ID`] frames.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum VersionedProtocolError {
+    /// Initial protocol error shape.
+    #[codec(index = 0)]
+    V1(ProtocolErrorV1),
+}
+
+/// Protocol errors supported by codec version 1.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum ProtocolErrorV1 {
+    /// The receiver does not support the incoming message discriminant.
+    #[codec(index = 0)]
+    UnsupportedMessage {
+        /// Unsupported wire discriminant from the incoming frame.
+        discriminant: u8,
+    },
+}
+
+pub(crate) fn decode_protocol_error_payload(
+    payload: &[u8],
+) -> Result<VersionedProtocolError, CodecError> {
+    let mut input = payload;
+    let error = VersionedProtocolError::decode(&mut input)?;
+    if !input.is_empty() {
+        return Err("protocol error payload has trailing bytes".into());
+    }
+    Ok(error)
+}
+
 /// Encode `Versioned<Result<Ok, _>>` from a versioned success wrapper.
 ///
 /// TODO(shared-core-wire): once all hosts use the shared Rust core/generated
@@ -113,13 +146,15 @@ impl Decode for ProtocolMessage {
     fn decode<I: Input>(input: &mut I) -> Result<Self, CodecError> {
         let request_id = String::decode(input)?;
         let id = u8::decode(input)?;
-        // Unknown ids are accepted here; routing is deferred to dispatch,
-        // which drops frames with no registered handler.
+        // Unknown ids are accepted here; routing is deferred to dispatch.
         let remaining = input
             .remaining_len()?
             .ok_or_else(|| CodecError::from("frame input must report remaining length"))?;
         let mut value = vec![0u8; remaining];
         input.read(&mut value)?;
+        if id == PROTOCOL_ERROR_ID {
+            decode_protocol_error_payload(&value)?;
+        }
         Ok(ProtocolMessage {
             request_id,
             payload: Payload { id, value },
@@ -254,7 +289,7 @@ mod tests {
     }
 
     /// An unknown discriminant is no longer rejected at decode; routing is
-    /// deferred to dispatch (which drops frames with no registered handler).
+    /// deferred to dispatch.
     #[test]
     fn unknown_discriminant_decodes_ok() {
         let mut bytes = Vec::new();
@@ -264,6 +299,34 @@ mod tests {
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("unknown id must decode");
         assert_eq!(decoded.payload.id, 250);
         assert_eq!(decoded.payload.value, vec![0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn protocol_error_payload_has_stable_versioned_shape() {
+        let error =
+            VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage { discriminant: 250 });
+        let encoded = error.encode();
+        let decoded = VersionedProtocolError::decode(&mut &encoded[..]).expect("decode");
+        assert_eq!((encoded, decoded), (vec![0, 0, 250], error));
+    }
+
+    #[test]
+    fn malformed_protocol_error_payloads_fail_frame_decoding() {
+        for payload in [
+            vec![0, 0],
+            vec![0, 0, 250, 0],
+            vec![1, 0, 250],
+            vec![0, 1, 250],
+        ] {
+            let message = ProtocolMessage {
+                request_id: "p:1".into(),
+                payload: Payload {
+                    id: PROTOCOL_ERROR_ID,
+                    value: payload,
+                },
+            };
+            assert!(ProtocolMessage::decode(&mut message.encode().as_slice()).is_err());
+        }
     }
 
     /// All four subscription phases round-trip through the codec. Catches a

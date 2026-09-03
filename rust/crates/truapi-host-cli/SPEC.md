@@ -119,6 +119,7 @@ as the paired path.
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
 - the terminal UI and plain output;
+- local pairing QR acquisition;
 - product-frame WebSocket listening;
 - session and product switching;
 - child editor and Bun processes; and
@@ -282,12 +283,16 @@ Commands:
 - `debug`
 - `trace`
 
-The default is `info`. `TRUAPI_HOST_LOG` supplies an environment default. The
-option is global and is accepted before or after a subcommand.
+The option is global and is accepted before or after a subcommand.
+`TRUAPI_HOST_LOG` supplies the same per-process override. Without either, the
+CLI restores the level saved by `/log` under the selected base path, then falls
+back to `info`. Command-line and environment overrides do not rewrite the saved
+level.
 
-If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup.
-The interactive `/log` command later replaces the active filter with the
-selected CLI level.
+If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
+and the status bar shows its trimmed value. The interactive `/log` command
+atomically saves the selected CLI level, replaces the active filter, and
+updates the status bar to that level.
 
 ## 5. `pairing-host`
 
@@ -479,7 +484,7 @@ non-Unix platforms the CLI stops and reaps the direct child.
 
 Accepted product identifiers are:
 
-- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.test`);
+- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.testnet`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 
@@ -526,6 +531,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
+| `/pair` | no | yes | Wait for a pairing QR image from Ctrl-V, terminal paste, or drag-and-drop. TUI only. |
+| `/pair <image-path>` | no | yes | Decode a pairing QR from a PNG, JPEG, or WebP image. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
@@ -541,15 +548,16 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
 | `/session --clear <name>` | no | yes | Permanently clear one network-scoped signing session. |
 | `/session --clear-all` | no | yes | Permanently clear all signing sessions for the current network. |
-| `/log <level>` | yes | yes | Replace the runtime log filter. |
+| `/log <level>` | yes | yes | Save and replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
 | `/clear` | yes | yes | Clear the retained visible transcript. |
 | `/copy` | yes | yes | Copy the retained, redacted transcript. TUI only. |
 | `/quit` | yes | yes | Leave the command loop. |
 
 The shared parser recognizes every command, then the active role rejects
-commands it cannot execute. `/pair` performs a fast prefix check; the Rust core
-then fully decodes and validates the V2 handshake.
+commands it cannot execute. `/pair <url>` performs a fast prefix check; the
+Rust core then fully decodes and validates the V2 handshake. Any other single
+quoted or escaped `/pair` argument is treated as an image path.
 
 `/devices` and `/devices --list` are equivalent. They sort peers by statement
 account ID and print each ID with any available host and platform metadata.
@@ -560,6 +568,53 @@ describes that only the selected peer is affected. `exec` removal runs directly.
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
 produce explicit errors.
+
+### 8.1 Pairing QR image input
+
+Bare `/pair` is available only in the interactive signing-host TUI. It starts a
+terminal waiting state that accepts Control-V or the terminal's normal paste
+shortcut. In both cases the TUI reads RGBA pixels directly from the
+operating-system clipboard. A bracketed text paste triggers that clipboard read
+rather than carrying the pixels itself, so image paste continues to work through
+tmux without a terminal-specific image escape protocol.
+
+A dropped file is accepted as a raw, quoted, shell-escaped, or `file://` path.
+Bracketed path paste starts decoding immediately. A terminal that inserts the
+path as individual key events leaves it in the command bar for Enter to submit.
+Text that is neither backed by an image clipboard nor a readable file leaves
+`/pair` waiting with recovery instructions.
+
+`/pair <image-path>` reads a PNG, JPEG, or WebP file in either interactive or
+one-shot mode. Clipboard and file pixels remain in memory and are not written to
+a temporary file.
+
+Before decoding, the implementation enforces all of these boundaries:
+
+- nonzero dimensions of at most 8192 pixels per edge;
+- at most 24 million pixels and an exact four RGBA bytes per pixel;
+- at most 64 MiB for an encoded image file; and
+- at most 256 MiB of image-decoder allocation.
+
+Alpha is composited over white before conversion to grayscale. The normal QR
+detector runs against both polarities. A bounded fallback recognizes horizontal
+and vertical finder-pattern ratios, groups the three axis-aligned finder marks,
+samples module centers, and passes the sampled matrix through the same QR error
+correction and payload decoder. This fallback supports the circular finder marks
+and light-on-dark presentation used by Polkadot app screenshots without a native
+or platform-specific barcode library. Candidate lines, finder groups, dimensions,
+and QR versions are bounded before combinatorial work.
+
+The result distinguishes no QR code, an unrelated QR code, and multiple distinct
+valid pairing codes. Exactly one decoded value must begin with
+`polkadotapp://pair?handshake=` and pass the Rust core V2 handshake decoder. It is
+then passed directly to the same pairing responder used by `/pair <url>` and is
+never logged. QR decoding runs on the blocking-task pool rather than the
+asynchronous I/O executor.
+
+A clipboard access or conversion error leaves `/pair` waiting so the operator
+can copy another image and paste again. Ctrl-C cancels the waiting state and
+returns to the command bar. Non-interactive `exec '/pair'` fails with
+instructions to provide `/pair <image-path>` or `/pair <url>` instead.
 
 ## 9. Terminal UI
 
@@ -572,16 +627,16 @@ scrollable transcript
 
 command completion list, when open
 › command input or idle placeholder
-TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product>
+TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product> · log <value>
 ```
 
 The role label is omitted at narrow widths so user, network, and product remain
 visible. Values are ellipsized to fit, with the product consuming the remaining
-space after the user and network. Session and log level are not shown. Idle
-command guidance appears as a dim placeholder inside the empty prompt instead
-of consuming status-bar space. Operational hints temporarily use the right side
-of the status line while a command, approval, completion menu, or scroll is
-active.
+space after the user, network, and fixed log value. The session name is not shown
+separately from the resolved user. Idle command guidance appears as a dim
+placeholder inside the empty prompt instead of consuming status-bar space.
+Operational hints temporarily use the right side of the status line while a
+command, approval, completion menu, or scroll is active.
 
 The composer:
 
@@ -1192,6 +1247,7 @@ The layout may contain compatibility paths as well as identity-owned paths:
 <base-path>/
   accounts.json
   accounts.json.lock
+  log-level
 
   <network>/
     signing-host/
@@ -1384,11 +1440,12 @@ Product and core storage writes:
 
 Session metadata, paired-host records, and current-user/session pointers use
 temporary-file rename but do not apply the account file's explicit secret
-permissions.
+permissions. The saved log level also uses temporary-file rename.
 
 Malformed account, session, or paired-host JSON is a startup or command error
 when that data is loaded. Malformed core JSON is warned about and loaded as
-empty. Malformed product files are warned about and skipped.
+empty. Malformed product files are warned about and skipped. A malformed saved
+log level produces a warning and falls back to the selected override or `info`.
 
 There is no session-wide process lock. Account and paired-host mutations use
 separate lock files, but simultaneous processes can still race on session,
@@ -1413,11 +1470,11 @@ registration fails.
 | --- | --- |
 | Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
-| People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
+| People genesis | `0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
-| Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
+| Asset Hub genesis | `0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a` |
 
 #### `previewnet`
 
@@ -1429,11 +1486,11 @@ on-chain testing.
 | --- | --- |
 | Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
+| People genesis | `0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
+| Bulletin genesis | `0xea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
+| Asset Hub genesis | `0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
@@ -1761,6 +1818,12 @@ Fallback SSO summary text is still shown when structured fields are absent.
 
 ### 18.4 Log filtering
 
+Startup selects an explicit `--log-level` or `TRUAPI_HOST_LOG` value first,
+then the level saved by `/log`, then `info`. A valid `RUST_LOG` replaces that
+scoped startup filter, and its trimmed value replaces the selected level in the
+status bar. `/log` replaces the startup filter and status value with the
+selected level, then saves it for later launches using the same base path.
+
 Without `RUST_LOG`, the selected CLI level applies to:
 
 - `truapi`
@@ -1917,7 +1980,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 
 | Variable | Scope |
 | --- | --- |
-| `TRUAPI_HOST_LOG` | Default `--log-level`. |
+| `TRUAPI_HOST_LOG` | Per-process `--log-level` override. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |
@@ -1928,7 +1991,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
-| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress`, used directly when `protocolRegistry()` answers on it, otherwise resolved through `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |

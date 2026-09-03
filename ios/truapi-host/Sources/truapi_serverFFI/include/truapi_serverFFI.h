@@ -378,34 +378,41 @@ typedef void (*UniffiCallbackInterfaceHostCallbacksMethod16)(uint64_t, RustBuffe
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD17
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD17
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod17)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod17)(uint64_t, RustBuffer* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD18
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD18
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod18)(uint64_t, RustBuffer* _Nonnull,
-        RustCallStatus *_Nonnull uniffiCallStatus
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod18)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD19
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD19
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod19)(uint64_t, RustBuffer, RustBuffer* _Nonnull,
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod19)(uint64_t, RustBuffer* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD20
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD20
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod20)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod20)(uint64_t, RustBuffer, RustBuffer* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD21
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD21
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod21)(uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod21)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD22
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD22
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod22)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -471,11 +478,12 @@ typedef struct UniffiVTableCallbackInterfaceHostCallbacks {
     UniffiCallbackInterfaceHostCallbacksMethod14 _Nonnull confirmUserAction;
     UniffiCallbackInterfaceHostCallbacksMethod15 _Nonnull lookupPreimage;
     UniffiCallbackInterfaceHostCallbacksMethod16 _Nonnull currentTheme;
-    UniffiCallbackInterfaceHostCallbacksMethod17 _Nonnull featureSupported;
-    UniffiCallbackInterfaceHostCallbacksMethod18 _Nonnull supportedChains;
-    UniffiCallbackInterfaceHostCallbacksMethod19 _Nonnull localStorageRead;
-    UniffiCallbackInterfaceHostCallbacksMethod20 _Nonnull localStorageWrite;
-    UniffiCallbackInterfaceHostCallbacksMethod21 _Nonnull localStorageClear;
+    UniffiCallbackInterfaceHostCallbacksMethod17 _Nonnull currentLocale;
+    UniffiCallbackInterfaceHostCallbacksMethod18 _Nonnull featureSupported;
+    UniffiCallbackInterfaceHostCallbacksMethod19 _Nonnull supportedChains;
+    UniffiCallbackInterfaceHostCallbacksMethod20 _Nonnull localStorageRead;
+    UniffiCallbackInterfaceHostCallbacksMethod21 _Nonnull localStorageWrite;
+    UniffiCallbackInterfaceHostCallbacksMethod22 _Nonnull localStorageClear;
 } UniffiVTableCallbackInterfaceHostCallbacks;
 
 #endif
@@ -591,6 +599,11 @@ uint64_t uniffi_truapi_server_fn_method_hostcallbacks_lookup_preimage(uint64_t p
 RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_current_theme(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CURRENT_LOCALE
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CURRENT_LOCALE
+RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_current_locale(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_FEATURE_SUPPORTED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_FEATURE_SUPPORTED
 uint64_t uniffi_truapi_server_fn_method_hostcallbacks_feature_supported(uint64_t ptr, RustBuffer request
@@ -679,6 +692,11 @@ void uniffi_truapi_server_fn_method_nativeproductexecution_notify_chain_response
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_CHAT_ROOMS_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_CHAT_ROOMS_CHANGED
 void uniffi_truapi_server_fn_method_nativeproductexecution_notify_chat_rooms_changed(uint64_t ptr, RustBuffer rooms, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_LOCALE_CHANGED
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_LOCALE_CHANGED
+void uniffi_truapi_server_fn_method_nativeproductexecution_notify_locale_changed(uint64_t ptr, RustBuffer locale, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_PREIMAGE_CHANGED
@@ -1215,6 +1233,12 @@ uint16_t uniffi_truapi_server_checksum_method_hostcallbacks_current_theme(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_HOSTCALLBACKS_CURRENT_LOCALE
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_HOSTCALLBACKS_CURRENT_LOCALE
+uint16_t uniffi_truapi_server_checksum_method_hostcallbacks_current_locale(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_HOSTCALLBACKS_FEATURE_SUPPORTED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_HOSTCALLBACKS_FEATURE_SUPPORTED
 uint16_t uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported(void
@@ -1290,6 +1314,12 @@ uint16_t uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chai
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_CHAT_ROOMS_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_CHAT_ROOMS_CHANGED
 uint16_t uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chat_rooms_changed(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_LOCALE_CHANGED
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVEPRODUCTEXECUTION_NOTIFY_LOCALE_CHANGED
+uint16_t uniffi_truapi_server_checksum_method_nativeproductexecution_notify_locale_changed(void
 
 );
 #endif
