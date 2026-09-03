@@ -920,6 +920,140 @@ public func FfiConverterTypeHostChainSet_lower(_ value: HostChainSet) -> RustBuf
 
 
 /**
+ * One contact in the host's list.
+ *
+ * Nothing here reaches a product: the core mints a handle from `account`, and
+ * `display_name` exists for host and core UI only.
+ */
+public struct HostContact: Equatable, Hashable {
+    /**
+     * The contact's account as the host's own store knows it.
+     */
+    public var account: Bytes32
+    /**
+     * What the user calls this person, when the host has a name for them.
+     */
+    public var displayName: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The contact's account as the host's own store knows it.
+         */account: Bytes32,
+        /**
+         * What the user calls this person, when the host has a name for them.
+         */displayName: String?) {
+        self.account = account
+        self.displayName = displayName
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostContact: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostContact: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostContact {
+        return
+            try HostContact(
+                account: FfiConverterTypeBytes32.read(from: &buf),
+                displayName: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostContact, into buf: inout [UInt8]) {
+        FfiConverterTypeBytes32.write(value.account, into: &buf)
+        FfiConverterOptionString.write(value.displayName, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostContact_lift(_ buf: RustBuffer) throws -> HostContact {
+    return try FfiConverterTypeHostContact.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostContact_lower(_ value: HostContact) -> RustBuffer {
+    return FfiConverterTypeHostContact.lower(value)
+}
+
+
+/**
+ * The user's contacts.
+ *
+ * A named wrapper because the callback emitter cannot return a bare `Vec`;
+ * `HostChatListSubscribeItem` wraps its room list for the same reason.
+ */
+public struct HostContactBook: Equatable, Hashable {
+    /**
+     * The contacts, in the host's own order. Empty when there are none.
+     */
+    public var contacts: [HostContact]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The contacts, in the host's own order. Empty when there are none.
+         */contacts: [HostContact]) {
+        self.contacts = contacts
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostContactBook: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostContactBook: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostContactBook {
+        return
+            try HostContactBook(
+                contacts: FfiConverterSequenceTypeHostContact.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostContactBook, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeHostContact.write(value.contacts, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostContactBook_lift(_ buf: RustBuffer) throws -> HostContactBook {
+    return try FfiConverterTypeHostContactBook.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostContactBook_lower(_ value: HostContactBook) -> RustBuffer {
+    return FfiConverterTypeHostContactBook.lower(value)
+}
+
+
+/**
  * Review shown before a product learns the user's primary identity.
  */
 public struct IdentityDisclosureReview: Equatable, Hashable {
@@ -1757,6 +1891,103 @@ public func FfiConverterTypeDevicePermissionStatus_lower(_ value: DevicePermissi
 
 
 /**
+ * How a host's contact picker ended.
+ */
+
+public enum HostContactPick: Equatable, Hashable {
+
+    /**
+     * The user chose this account.
+     *
+     * Consumed by the core to mint the product-facing handle and never
+     * forwarded to a product: it is the person's real account, and the handle
+     * exists precisely so a product does not receive it.
+     */
+    case picked(
+        /**
+         * The chosen contact's account.
+         */account: Bytes32
+    )
+    /**
+     * The user closed the picker without choosing.
+     */
+    case dismissed
+    /**
+     * This host lists contacts but cannot present a picker. The core answers
+     * the product `Unsupported`, so it can tell "try again later" apart from
+     * "this host will never pick".
+     */
+    case unsupported
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostContactPick: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostContactPick: FfiConverterRustBuffer {
+    typealias SwiftType = HostContactPick
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostContactPick {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .picked(account: try FfiConverterTypeBytes32.read(from: &buf)
+        )
+
+        case 2: return .dismissed
+
+        case 3: return .unsupported
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: HostContactPick, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .picked(account):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeBytes32.write(account, into: &buf)
+
+
+        case .dismissed:
+            writeInt(&buf, Int32(2))
+
+
+        case .unsupported:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostContactPick_lift(_ buf: RustBuffer) throws -> HostContactPick {
+    return try FfiConverterTypeHostContactPick.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostContactPick_lower(_ value: HostContactPick) -> RustBuffer {
+    return FfiConverterTypeHostContactPick.lower(value)
+}
+
+
+
+/**
  * Why a login attempt failed, for hosts that need to act on the cause rather
  * than only display it.
  */
@@ -2565,6 +2796,31 @@ fileprivate struct FfiConverterSequenceTypeHostChainEntry: FfiConverterRustBuffe
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeHostChainEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeHostContact: FfiConverterRustBuffer {
+    typealias SwiftType = [HostContact]
+
+    public static func write(_ value: [HostContact], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHostContact.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [HostContact] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [HostContact]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHostContact.read(from: &buf))
         }
         return seq
     }

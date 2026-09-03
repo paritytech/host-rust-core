@@ -30,6 +30,8 @@ import {
   CoreStorageKey,
   DevicePermissionStatus,
   HostChainSet,
+  HostContactBook,
+  HostContactPick,
   ProductContext,
   UserConfirmationReview,
 } from "./host-callbacks.js";
@@ -63,6 +65,8 @@ export interface RawCallbacks {
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  contacts?(): Promise<Uint8Array>;
+  pickContact?(product: Uint8Array): Promise<Uint8Array>;
   readCoreStorage(key: Uint8Array): Promise<Uint8Array | null | undefined>;
   writeCoreStorage(key: Uint8Array, value: Uint8Array): Promise<void>;
   clearCoreStorage(key: Uint8Array): Promise<void>;
@@ -98,6 +102,7 @@ export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
   const chat = callbacks.chat;
+  const contacts = callbacks.contacts;
   const permissionStatus = callbacks.permissionStatus;
   return {
     authStateChanged: async (state) =>
@@ -131,6 +136,15 @@ export function createWasmRawCallbacks(
               chat.subscribeChatRooms(ProductContext.dec(product)),
               (item) => sendItem(HostChatListSubscribeItem.enc(item)),
               sendError,
+            ),
+        }
+      : {}),
+    ...(contacts
+      ? {
+          contacts: async () => HostContactBook.enc(await contacts.contacts()),
+          pickContact: async (product) =>
+            HostContactPick.enc(
+              await contacts.pickContact(ProductContext.dec(product)),
             ),
         }
       : {}),

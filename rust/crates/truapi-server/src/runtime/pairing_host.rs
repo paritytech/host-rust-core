@@ -2368,6 +2368,24 @@ impl PairingHost {
             },
         )
     }
+
+    /// Contact-handle key from the wallet-provided root entropy source.
+    ///
+    /// Unlike `derive_entropy` this does not require a live SSO channel: it
+    /// needs the key material the session already carries, not a round trip to
+    /// the wallet.
+    fn contacts_handle_key(&self, session: &AuthoritySession) -> Result<[u8; 32], AuthorityError> {
+        let session = self.current_private_session(session)?;
+        let root_entropy_source =
+            session
+                .root_entropy_source
+                .ok_or_else(|| AuthorityError::Unavailable {
+                    reason: "Session secret missing".to_string(),
+                })?;
+        Ok(crate::runtime::contacts::handle_key_from_root_source(
+            &root_entropy_source,
+        ))
+    }
 }
 
 fn apply_ring_vrf_disclosure(
@@ -2588,5 +2606,9 @@ impl ProductAuthority for PairingHost {
         context: &[u8],
     ) -> Result<[u8; 32], AuthorityError> {
         PairingHost::derive_entropy(self, session, product_id, context)
+    }
+
+    fn contacts_handle_key(&self, session: &AuthoritySession) -> Result<[u8; 32], AuthorityError> {
+        PairingHost::contacts_handle_key(self, session)
     }
 }

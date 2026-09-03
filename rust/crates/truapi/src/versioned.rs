@@ -34,6 +34,7 @@ pub mod account;
 pub mod chain;
 pub mod chat;
 pub mod coin_payment;
+pub mod contacts;
 pub mod entropy;
 pub mod local_storage;
 pub mod locale;
@@ -92,6 +93,34 @@ mod tests {
             crate::v01::HostDevicePermissionRequest::Camera,
         );
         assert_eq!(v1.encode()[0], 0, "V1 must encode discriminant 0");
+    }
+
+    #[test]
+    fn device_permission_discriminants_are_append_only() {
+        // Every grant the user has ever given is persisted under this
+        // discriminant. Inserting a variant rather than appending one silently
+        // repoints all of them, on every device, with nothing to notice it.
+        use crate::v01::HostDevicePermissionRequest::*;
+        for (index, permission) in [
+            Notifications,
+            Camera,
+            Microphone,
+            Bluetooth,
+            NFC,
+            Location,
+            Clipboard,
+            OpenUrl,
+            Biometrics,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                permission.encode(),
+                vec![index as u8],
+                "{permission} must keep discriminant {index}"
+            );
+        }
     }
 
     #[test]

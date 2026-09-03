@@ -58,6 +58,7 @@ pub use host_logic::session::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::StatementRenewalTarget;
+pub use runtime::contacts::resolve_handle as resolve_contact_handle;
 pub use runtime::login_failure::reports_exhausted_period;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;

@@ -17,6 +17,7 @@ use truapi::api::{
     Chain,
     Chat,
     CoinPayment,
+    Contacts,
     Entropy,
     LocalStorage,
     Locale,
@@ -52,6 +53,7 @@ where
     register_chain(dispatcher, host.clone());
     register_chat(dispatcher, host.clone());
     register_coin_payment(dispatcher, host.clone());
+    register_contacts(dispatcher, host.clone());
     register_entropy(dispatcher, host.clone());
     register_local_storage(dispatcher, host.clone());
     register_locale(dispatcher, host.clone());
@@ -1493,6 +1495,51 @@ where
                     }
                 };
                 Ok(subscription_stream::<versioned::coin_payment::HostCoinPaymentListenForItem, _>(stream))
+            })
+        });
+    }
+}
+
+fn register_contacts<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Contacts + Send + Sync + 'static,
+{
+    {
+        let host = host;
+        dispatcher.on_request(wire_table::CONTACTS_PICK, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::contacts::HostContactsPickRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::contacts::HostContactsPickError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::contacts::HostContactsPickError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::contacts::HostContactsPickResponse = match host.pick(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(
+                            downgrade_call_error(err, target_version),
+                            target_version,
+                        ));
+                    }
+                };
+                // Downgraded to the caller's version: a handler answers in
+                // latest terms, and a peer that asked in an older version
+                // cannot decode a newer variant.
+                Ok(encode_versioned_ok_payload(
+                    <versioned::contacts::HostContactsPickResponse as truapi::versioned::FromLatest>::from_latest(
+                        truapi::versioned::IntoLatest::into_latest(response),
+                        target_version,
+                    ),
+                ))
             })
         });
     }
