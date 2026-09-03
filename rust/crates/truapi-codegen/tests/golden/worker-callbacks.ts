@@ -37,6 +37,7 @@ export type CallbackName = (typeof CALLBACK_NAMES)[number];
 
 export const SUBSCRIPTION_NAMES = [
   "subscribeChatRooms",
+  "subscribeLocale",
   "lookupPreimage",
   "subscribeTheme",
 ] as const;
@@ -142,8 +143,12 @@ function rawCallbacks(
 
 function subscriptionRawCallbacks(
   bridge: WorkerCallbackBridge,
-): Required<Pick<RawCallbacks, "lookupPreimage" | "subscribeTheme">> {
+): Required<
+  Pick<RawCallbacks, "subscribeLocale" | "lookupPreimage" | "subscribeTheme">
+> {
   return {
+    subscribeLocale: (sendItem, sendError) =>
+      bridge.startSubscription("subscribeLocale", null, sendItem, sendError),
     lookupPreimage: (key, sendItem, sendError) =>
       bridge.startSubscription("lookupPreimage", key, sendItem, sendError),
     subscribeTheme: (sendItem, sendError) =>
@@ -259,6 +264,8 @@ export function startRawSubscription(
         return undefined;
       }
       return callbacks.subscribeChatRooms?.(payload, sendItem, sendError);
+    case "subscribeLocale":
+      return callbacks.subscribeLocale(sendItem, sendError);
     case "lookupPreimage":
       if (payload === null) {
         console.warn(`[truapi worker] ${name} requires payload`);

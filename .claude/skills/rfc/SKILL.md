@@ -12,16 +12,18 @@ details are the implementer's call and need no prior approval here.
 
 ## Mechanics
 
-- File `docs/rfcs/<kebab-title>.md` from [template.md](template.md). **Do not number it**
+- File `docs/rfcs/<kebab-title>.md` from
+  [docs/rfcs/0001-template.md](../../../docs/rfcs/0001-template.md). **Do not number it**
   and **do not touch `_index.md`** — `number-rfc.yml` assigns the number on merge to
   `main` and rebuilds the index from the files on disk.
 - Keep the H1 as `# RFC — Title`, em dash included; the numbering step rewrites that
   exact form to inject the number.
 - Set `status: draft` in the frontmatter. Omitting it makes CI index the RFC as
   `accepted`.
-- `check-rfc.yml` fails any PR touching `docs/rfcs/**` that does not also change
-  `rust/crates/truapi/`. A host-side proposal cannot satisfy that and belongs in
-  `docs/features/` instead.
+- `check-rfc.yml` reads the document: a new RFC needs `title` and `owner` in its
+  frontmatter, a `## Summary`, a `## Motivation`, and a section covering the
+  approach, and no draft may keep unedited template text or a `TODO`. Rust
+  changes are not required in the same PR.
 
 ## Writing it
 

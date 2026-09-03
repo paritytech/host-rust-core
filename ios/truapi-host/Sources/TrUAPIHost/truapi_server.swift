@@ -766,6 +766,12 @@ public protocol HostCallbacks: AnyObject, Sendable {
     func currentTheme() throws  -> HostThemeSubscribeItem
 
     /**
+     * Locale the host currently presents its interface in. The native shim
+     * emits this as the current item in its subscription stream.
+     */
+    func currentLocale() throws  -> HostLocaleSubscribeItem
+
+    /**
      * Answer a feature-support query.
      */
     func featureSupported(request: HostFeatureSupportedRequest) async throws  -> Bool
@@ -1142,6 +1148,19 @@ open func currentTheme()throws  -> HostThemeSubscribeItem  {
     return try  FfiConverterTypeHostThemeSubscribeItem_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_hostcallbacks_current_theme(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Locale the host currently presents its interface in. The native shim
+     * emits this as the current item in its subscription stream.
+     */
+open func currentLocale()throws  -> HostLocaleSubscribeItem  {
+    return try  FfiConverterTypeHostLocaleSubscribeItem_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_current_locale(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1790,6 +1809,29 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
 
 
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostThemeSubscribeItem_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        currentLocale: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> HostLocaleSubscribeItem in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.currentLocale(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostLocaleSubscribeItem_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -2547,6 +2589,11 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func notifyChatRoomsChanged(rooms: [ChatRoom])
 
     /**
+     * Push a host locale replacement to this execution's subscriptions.
+     */
+    func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
+
+    /**
      * Push a preimage lookup replacement to this execution's subscriptions.
      */
     func notifyPreimageChanged(key: Data, value: Data?)
@@ -2718,6 +2765,18 @@ open func notifyChatRoomsChanged(rooms: [ChatRoom])  {try! rustCall() {
     uniffi_truapi_server_fn_method_nativeproductexecution_notify_chat_rooms_changed(
             self.uniffiCloneHandle(),
         FfiConverterSequenceTypeChatRoom.lower(rooms),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Push a host locale replacement to this execution's subscriptions.
+     */
+open func notifyLocaleChanged(locale: HostLocaleSubscribeItem)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_locale_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeHostLocaleSubscribeItem_lower(locale),uniffiCallStatus
     )
 }
 }
@@ -5871,19 +5930,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 24427) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 28665) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_locale() != 50200) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 45374) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 65446) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 18981) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 46660) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 7579) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 43612) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 22643) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 39736) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 64902) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
@@ -5908,6 +5970,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chat_rooms_changed() != 13112) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_locale_changed() != 43759) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_preimage_changed() != 21769) {

@@ -37,11 +37,12 @@ use truapi::latest::{
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostNavigateToError, HostPlatform, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
-    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
-    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
+    HostLocaleSubscribeItem, HostNavigateToError, HostPlatform, HostPushNotificationRequest,
+    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
+    LegacyAccountTxPayload, NotificationId, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RemotePermission, RemotePermissionRequest, RemotePermissionResponse,
+    RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -268,7 +269,7 @@ pub fn is_product_identifier(identifier: &str) -> bool {
 /// Top-level domains that dotNS deployments register product names under.
 /// Each network declares its own, so the set spans every network a host can
 /// be pointed at rather than just the production one.
-pub const DOTNS_TLDS: &[&str] = &["dot", "paseo", "test"];
+pub const DOTNS_TLDS: &[&str] = &["dot", "paseo", "testnet"];
 
 /// Whether `normalized` ends in one of [`DOTNS_TLDS`]. Expects an
 /// already-lowercased host with no trailing root dot.
@@ -2086,7 +2087,7 @@ mod tests {
         for product_id in [
             "peopl.dot",
             "peopl.paseo",
-            "peopl.test",
+            "peopl.testnet",
             "dim2.dot",
             "stash.dot",
         ] {
@@ -2725,6 +2726,13 @@ pub trait ThemeHost: Send + Sync {
     fn subscribe_theme(&self) -> BoxStream<'static, Result<HostThemeSubscribeItem, GenericError>>;
 }
 
+/// Host locale source.
+pub trait LocaleHost: Send + Sync {
+    /// Emits the currently selected locale immediately, then future changes.
+    fn subscribe_locale(&self)
+    -> BoxStream<'static, Result<HostLocaleSubscribeItem, GenericError>>;
+}
+
 /// Host preimage backend. The core builds, signs, and submits the Bulletin
 /// `TransactionStorage.store` transaction itself; the host only owns preimage
 /// content retrieval (P2P/IPFS lookup).
@@ -2940,6 +2948,7 @@ pub trait Platform:
     + AuthPresenter
     + UserConfirmation
     + ThemeHost
+    + LocaleHost
     + PreimageHost
 {
 }
@@ -2955,6 +2964,7 @@ impl<T> Platform for T where
         + AuthPresenter
         + UserConfirmation
         + ThemeHost
+        + LocaleHost
         + PreimageHost
 {
 }

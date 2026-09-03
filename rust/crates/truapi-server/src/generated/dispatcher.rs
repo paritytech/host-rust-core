@@ -13,8 +13,8 @@ use parity_scale_codec::Decode;
 
 use truapi::CallContext;
 use truapi::api::{
-    Account, Chain, Chat, CoinPayment, Contacts, Entropy, LocalStorage, Notifications, Payment,
-    Permissions, Preimage, ResourceAllocation, Signing, StatementStore, System, Theme,
+    Account, Chain, Chat, CoinPayment, Contacts, Entropy, LocalStorage, Locale, Notifications,
+    Payment, Permissions, Preimage, ResourceAllocation, Signing, StatementStore, System, Theme,
 };
 use truapi::versioned::{self, Versioned};
 use truapi_platform::ProductExecutionKind;
@@ -41,6 +41,7 @@ where
     register_contacts(dispatcher, host.clone());
     register_entropy(dispatcher, host.clone());
     register_local_storage(dispatcher, host.clone());
+    register_locale(dispatcher, host.clone());
     register_notifications(dispatcher, host.clone());
     register_payment(dispatcher, host.clone());
     register_permissions(dispatcher, host.clone());
@@ -1723,6 +1724,30 @@ where
                 ))
             })
         });
+    }
+}
+
+fn register_locale<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Locale + Send + Sync + 'static,
+{
+    {
+        let host = host;
+        dispatcher.on_subscription(
+            wire_table::LOCALE_SUBSCRIBE,
+            move |request_id: String, bytes: Vec<u8>| {
+                let host = host.clone();
+                Box::pin(async move {
+                    let _ = bytes;
+                    let cx = CallContext::with_request_id(request_id.clone());
+                    let stream = host.subscribe(&cx).await;
+                    Ok(subscription_stream::<
+                        versioned::locale::HostLocaleSubscribeItem,
+                        _,
+                    >(stream))
+                })
+            },
+        );
     }
 }
 

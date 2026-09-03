@@ -12,6 +12,8 @@ mod rust;
 mod rustdoc;
 mod ts;
 
+const RESERVED_PROTOCOL_ERROR_ID: u8 = u8::MAX;
+
 #[derive(Parser)]
 #[command(
     name = "truapi-codegen",

@@ -3,6 +3,7 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
+  PROTOCOL_ERROR_ID,
   type HostInitiatedSubscriptionHandler,
   type ObservableSource,
   type ProtocolMessage,
@@ -13,6 +14,8 @@ import {
   type SubscribeRawParams,
   type Subscription,
   type TrUApiTransport,
+  type UnsupportedCallError,
+  UnsupportedMessageError,
   type WireProvider,
 } from "./transport.js";
 import {
@@ -29,6 +32,12 @@ import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 
 export type { Subscription, TrUApiTransport };
+
+const UNANSWERED_WIRE_IDS = new Set<number>(
+  Object.values(W).flatMap((ids) =>
+    "response" in ids ? [ids.response] : [ids.stop, ids.interrupt, ids.receive],
+  ),
+);
 
 /**
  * Version overrides used when constructing a transport.
@@ -145,6 +154,25 @@ function unwrapVersionedWireValue(value: unknown): unknown {
   return isVersionedWireValue(value) ? value.value : value;
 }
 
+function decodeUnsupportedMessage(payload: Uint8Array): number {
+  if (payload.length !== 3) {
+    throw new Error(
+      `Malformed protocol error payload: expected 3 bytes, received ${payload.length}`,
+    );
+  }
+  if (payload[0] !== 0) {
+    throw new Error(
+      `Malformed protocol error payload: unsupported version ${payload[0]}`,
+    );
+  }
+  if (payload[1] !== 0) {
+    throw new Error(
+      `Malformed protocol error payload: unknown error discriminant ${payload[1]}`,
+    );
+  }
+  return payload[2];
+}
+
 /**
  * Build a `TrUApiTransport` on top of a `WireProvider`, adding request/response
  * correlation and subscription start/receive/stop lifecycle handling.
@@ -161,6 +189,7 @@ export function createTransport(
     {
       ids: RequestFrameIds;
       resolve: (value: Uint8Array) => void;
+      resolveUnsupported: () => void;
       reject: (error: Error) => void;
     }
   >();
@@ -238,6 +267,30 @@ export function createTransport(
     }
     const { requestId, payload } = decoded.value;
 
+    if (payload.id === PROTOCOL_ERROR_ID) {
+      let discriminant: number;
+      try {
+        discriminant = decodeUnsupportedMessage(payload.value);
+      } catch (error) {
+        closeWithError(error);
+        return;
+      }
+
+      const request = pending.get(requestId);
+      if (request?.ids.request === discriminant) {
+        pending.delete(requestId);
+        request.resolveUnsupported();
+        return;
+      }
+
+      const subscription = subscriptions.get(requestId);
+      if (subscription?.ids.start === discriminant) {
+        subscriptions.delete(requestId);
+        subscription.onClose?.(new UnsupportedMessageError(discriminant));
+      }
+      return;
+    }
+
     if (payload.id === W.SYSTEM_HANDSHAKE.request) {
       // Auto-respond to inbound `host_handshake_request` frames.
       //
@@ -298,10 +351,7 @@ export function createTransport(
     }
 
     const p = pending.get(requestId);
-    if (p) {
-      if (payload.id !== p.ids.response) {
-        return;
-      }
+    if (p && payload.id === p.ids.response) {
       pending.delete(requestId);
       try {
         p.resolve(payload.value);
@@ -324,10 +374,28 @@ export function createTransport(
           subscriptions.delete(requestId);
           subscription.onClose?.(toError(error));
         }
+        return;
       } else if (payload.id === subscription.ids.interrupt) {
         subscriptions.delete(requestId);
         subscription.onInterrupt?.(payload.value);
+        return;
       }
+    }
+
+    if (UNANSWERED_WIRE_IDS.has(payload.id)) {
+      return;
+    }
+
+    try {
+      send({
+        requestId,
+        payload: {
+          id: PROTOCOL_ERROR_ID,
+          value: new Uint8Array([0, 0, payload.id]),
+        },
+      });
+    } catch {
+      // provider already closed
     }
   });
 
@@ -447,8 +515,10 @@ export function createTransport(
       ids,
       payload,
       decodeResponse,
-    }: RequestParams<Ok, Err>): ResultAsync<Ok, Err> {
-      const promise = new Promise<ResultPayload<Ok, Err>>((resolve, reject) => {
+    }: RequestParams<Ok, Err>): ResultAsync<Ok, Err | UnsupportedCallError> {
+      const promise = new Promise<
+        ResultPayload<Ok, Err | UnsupportedCallError>
+      >((resolve, reject) => {
         if (closedError) {
           reject(closedError);
           return;
@@ -458,6 +528,11 @@ export function createTransport(
         pending.set(requestId, {
           ids,
           resolve: (response) => resolve(decodeResponse(response)),
+          resolveUnsupported: () =>
+            resolve({
+              success: false,
+              value: { tag: "Unsupported" },
+            }),
           reject,
         });
         try {
@@ -474,7 +549,7 @@ export function createTransport(
         }
       });
       return ResultAsync.fromSafePromise(promise).andThen(
-        (result): ResultAsync<Ok, Err> =>
+        (result): ResultAsync<Ok, Err | UnsupportedCallError> =>
           result.success ? okAsync(result.value) : errAsync(result.value),
       );
     },

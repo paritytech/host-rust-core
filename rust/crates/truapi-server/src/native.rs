@@ -28,10 +28,11 @@ use parity_scale_codec::Encode;
 use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
-    HostInfo, JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
-    PermissionAuthorizationStatus, Permissions, PlatformInfo, PreimageHost, ProductContext,
-    ProductExecutionKind, ProductStorage, RuntimeConfigValidationError, SigningHostConfig,
-    ThemeHost, UserConfirmation, UserConfirmationReview, async_trait, normalize_product_identifier,
+    HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
+    PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
+    RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
+    UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
 use crate::SigningHostRuntime;
@@ -493,6 +494,10 @@ pub trait HostCallbacks: Send + Sync {
     /// Current host theme, named variant included. The native shim emits this
     /// as the current item in its subscription stream.
     fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection>;
+
+    /// Locale the host currently presents its interface in. The native shim
+    /// emits this as the current item in its subscription stream.
+    fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection>;
 
     /// Answer a feature-support query.
     async fn feature_supported(
@@ -1037,6 +1042,11 @@ impl NativeProductExecution {
         self.events.notify_theme_changed(theme);
     }
 
+    /// Push a host locale replacement to this execution's subscriptions.
+    pub fn notify_locale_changed(&self, locale: v01::HostLocaleSubscribeItem) {
+        self.events.notify_locale_changed(locale);
+    }
+
     /// Push a preimage lookup replacement to this execution's subscriptions.
     pub fn notify_preimage_changed(&self, key: Vec<u8>, value: Option<Vec<u8>>) {
         self.events.notify_preimage_changed(&key, value);
@@ -1212,6 +1222,8 @@ struct CallbackPlatform {
 struct NativeEventBus {
     theme_changes:
         Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostThemeSubscribeItem, v01::GenericError>>>>,
+    locale_changes:
+        Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostLocaleSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
     chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
@@ -1240,6 +1252,25 @@ impl NativeEventBus {
             .lock()
             .expect("native theme subscribers mutex poisoned")
             .retain(|tx| tx.unbounded_send(Ok(theme.clone())).is_ok());
+    }
+
+    fn subscribe_locale(
+        &self,
+        current: Result<v01::HostLocaleSubscribeItem, v01::GenericError>,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        let (tx, rx) = mpsc::unbounded();
+        self.locale_changes
+            .lock()
+            .expect("native locale subscribers mutex poisoned")
+            .push(tx);
+        stream::once(async move { current }).chain(rx).boxed()
+    }
+
+    fn notify_locale_changed(&self, locale: v01::HostLocaleSubscribeItem) {
+        self.locale_changes
+            .lock()
+            .expect("native locale subscribers mutex poisoned")
+            .retain(|tx| tx.unbounded_send(Ok(locale.clone())).is_ok());
     }
 
     fn subscribe_preimage_changes(
@@ -1613,6 +1644,18 @@ impl ThemeHost for CallbackPlatform {
     }
 }
 
+impl LocaleHost for CallbackPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        let current = self
+            .callbacks
+            .current_locale()
+            .map_err(v01::GenericError::from);
+        self.events.subscribe_locale(current)
+    }
+}
+
 impl PreimageHost for CallbackPlatform {
     fn lookup_preimage(
         &self,
@@ -1856,6 +1899,7 @@ mod tests {
         chat_post_rejection: Mutex<Option<String>>,
         chat_posted: Mutex<Vec<(String, v01::ChatMessageContent)>>,
         theme: Mutex<v01::HostThemeSubscribeItem>,
+        locale: Mutex<v01::HostLocaleSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
@@ -1887,6 +1931,9 @@ mod tests {
                 theme: Mutex::new(v01::HostThemeSubscribeItem {
                     name: v01::ThemeName::Default,
                     variant: v01::ThemeVariant::Light,
+                }),
+                locale: Mutex::new(v01::HostLocaleSubscribeItem {
+                    language_tag: "en".to_string(),
                 }),
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
@@ -1989,6 +2036,9 @@ mod tests {
         }
         fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
             Ok(self.theme.lock().expect("theme mutex poisoned").clone())
+        }
+        fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
+            Ok(self.locale.lock().expect("locale mutex poisoned").clone())
         }
         async fn feature_supported(
             &self,
@@ -2310,6 +2360,28 @@ mod tests {
                 AuthState::Disconnected,
             ]
         );
+    }
+
+    #[test]
+    fn native_locale_subscription_emits_current_then_notified_changes() {
+        let (callbacks, events, platform) = event_platform();
+        let mut stream = platform.subscribe_locale();
+        let switched = v01::HostLocaleSubscribeItem {
+            language_tag: "zh-Hans".to_string(),
+        };
+
+        let first = futures::executor::block_on(stream.next()).unwrap();
+        *callbacks.locale.lock().expect("locale mutex poisoned") = switched.clone();
+        events.notify_locale_changed(switched.clone());
+        let second = futures::executor::block_on(stream.next()).unwrap();
+
+        assert_eq!(
+            first.unwrap(),
+            v01::HostLocaleSubscribeItem {
+                language_tag: "en".to_string(),
+            }
+        );
+        assert_eq!(second.unwrap(), switched);
     }
 
     #[test]
@@ -3048,6 +3120,11 @@ mod tests {
                     variant: v01::ThemeVariant::Light,
                 })
             }
+            fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
+                Ok(v01::HostLocaleSubscribeItem {
+                    language_tag: "en".to_string(),
+                })
+            }
             async fn feature_supported(
                 &self,
                 _request: v01::HostFeatureSupportedRequest,
@@ -3195,6 +3272,11 @@ mod tests {
                 Ok(v01::HostThemeSubscribeItem {
                     name: v01::ThemeName::Default,
                     variant: v01::ThemeVariant::Light,
+                })
+            }
+            fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
+                Ok(v01::HostLocaleSubscribeItem {
+                    language_tag: "en".to_string(),
                 })
             }
             async fn feature_supported(

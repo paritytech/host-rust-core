@@ -17,6 +17,7 @@ import {
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocaleSubscribeItem,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
@@ -71,6 +72,10 @@ export interface RawCallbacks {
   clearCoreStorage(key: Uint8Array): Promise<void>;
   featureSupported(request: Uint8Array): Promise<Uint8Array>;
   supportedChains(): Promise<Uint8Array>;
+  subscribeLocale(
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
   navigateTo(url: string): Promise<void>;
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
   cancelNotification(id: NotificationId): Promise<void>;
@@ -160,6 +165,12 @@ export function createWasmRawCallbacks(
       ),
     supportedChains: async () =>
       HostChainSet.enc(await callbacks.features.supportedChains()),
+    subscribeLocale: (sendItem, sendError) =>
+      driveResultStream(
+        callbacks.locale.subscribeLocale(),
+        (item) => sendItem(HostLocaleSubscribeItem.enc(item)),
+        sendError,
+      ),
     navigateTo: async (url) => await callbacks.navigation.navigateTo(url),
     pushNotification: async (notification) =>
       HostPushNotificationResponse.enc(

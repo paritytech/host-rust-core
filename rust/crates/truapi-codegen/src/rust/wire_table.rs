@@ -17,6 +17,7 @@ use indoc::{formatdoc, writedoc};
 use crate::rustdoc::*;
 
 use super::{const_name, wire_method_name};
+use crate::RESERVED_PROTOCOL_ERROR_ID;
 
 #[derive(Debug, Clone, Copy)]
 struct WireEntry {
@@ -41,7 +42,10 @@ enum MethodEntry {
 /// Emit the contents of `wire_table.rs`.
 pub fn generate_wire_table(api: &ApiDefinition) -> Result<String> {
     let mut method_entries: Vec<(String, MethodEntry)> = Vec::new();
-    let mut seen: BTreeMap<u8, String> = BTreeMap::new();
+    let mut seen = BTreeMap::from([(
+        RESERVED_PROTOCOL_ERROR_ID,
+        "reserved for protocol errors".to_string(),
+    )]);
     let mut seen_methods: BTreeMap<String, String> = BTreeMap::new();
 
     for trait_def in &api.traits {

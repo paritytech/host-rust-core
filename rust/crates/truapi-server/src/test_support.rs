@@ -27,11 +27,11 @@ use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest
 use truapi_platform::{
     AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
-    JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
-    PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
-    ProductContext, ProductStorage as PlatformProductStorage, ProductSubtreeReview,
-    ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
-    UserConfirmation, UserConfirmationReview,
+    JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
+    Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
+    ProductSubtreeReview, ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview,
+    ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -1521,6 +1521,18 @@ impl ThemeHost for StubPlatform {
             Ok(v01::HostThemeSubscribeItem {
                 name: v01::ThemeName::Custom("midnight".to_string()),
                 variant: v01::ThemeVariant::Dark,
+            })
+        }))
+    }
+}
+
+impl LocaleHost for StubPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        Box::pin(stream::once(async {
+            Ok(v01::HostLocaleSubscribeItem {
+                language_tag: "zh-Hans".to_string(),
             })
         }))
     }
