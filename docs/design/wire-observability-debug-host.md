@@ -1,11 +1,11 @@
 # Wire Observability and Debug Host
 
-|                    |                     |
-| ------------------ | ------------------- |
-| **Start Date**     | 2026-07-25          |
-| **Authors**        | Nidish Ramakrishnan |
-| **Implementation** | truapi#295          |
-| **Tracking**       | sdk-team#26         |
+|                    |                                  |
+| ------------------ | -------------------------------- |
+| **Start Date**     | 2026-07-25                       |
+| **Authors**        | Nidish Ramakrishnan              |
+| **Implementation** | #295 (Rust tap), #536 (debugger) |
+| **Tracking**       | sdk-team#26                      |
 
 ## Scope
 
@@ -75,8 +75,13 @@ pub enum DebugEvent {
 - `emit` **MUST NOT** block the frame path and **MUST NOT** fail the operation
   that produced the event. A slow, absent, or crashed debugger loses a trace; it
   **MUST NOT** lose a session.
-- Both in-path call sites **MUST** contain a panicking sink (`catch_unwind`). A
-  sink may be out-of-repo, and a panic there unwinds into a live dispatch.
+- `emit` **MUST NOT** panic. A sink may be out-of-repo, and a panic there unwinds
+  into a live dispatch. Both in-path call sites **SHOULD** contain one
+  (`catch_unwind`), which holds only where unwinding is enabled: the workspace
+  release profile sets `panic = "abort"`, so in the release and xcframework
+  artifacts that carry the `ws-bridge` sink a panicking sink aborts the process
+  and no call-site guard can contain it. Containment is a dev-and-test
+  protection; the contract on the sink is what holds in a shipped host.
 - The core **MUST** pass frame bytes through untouched, and **MUST NOT** decode,
   inspect, or redact them.
 - A sink that owns a socket **MUST** bound its backlog by both count and bytes,
@@ -88,7 +93,7 @@ Each tapped frame becomes one envelope. The identity fields are flat siblings of
 the payload fields, not a nested block:
 
 ```
-{ v, codec, schema, channelId, dir, observedAt, frame, dropped? }
+{ v, codec, schema, channelId, dir, observedAt?, frame, dropped? }
 ```
 
 `frame` is the untouched SCALE `ProtocolMessage`, base64 over a text transport.
@@ -226,7 +231,7 @@ The **tap** is not absent. `DebugSink`, both call sites, and `set_debug_sink`
 compile into every build of the core, including release and wasm32, and the
 native sink ships under the `ws-bridge` feature that the release and xcframework
 artifacts enable. What holds in production is that the tap is **inert**: no host
-installs a sink, so the frame path costs one relaxed atomic load. An
+installs a sink, so the frame path costs an unset-sink check. An
 implementation **MUST NOT** describe the tap as absent from a shipped host, and
 **MUST NOT** rely on its absence for any safety property - only on no sink being
 installed, which §9's enablement rules govern.
@@ -238,6 +243,12 @@ installed, which §9's enablement rules govern.
   (`import.meta.env.DEV`) — no alias, no optional chaining. A bundler replaces
   that exact token and nothing else; an aliased read survives into the bundle,
   reads `undefined`, and disables the tap in every build.
+- The switch's **presence** and the URL it holds are two separate reads, and only
+  the second is DEV-gated. A production build **MUST** still be able to observe
+  that the switch is set, because that is what §9's one production message keys
+  on; it **MUST NOT** read a URL from it, dial, or install a sink. Collapsing the
+  two into one DEV-gated read makes that message unreachable in the only build
+  that needs it.
 - An in-host embed **MUST** be gated on a build-time flag, not a runtime toggle.
 - An embedding host **MUST** take the debugger package as a development
   dependency behind that flag, so a production build drops the module and its
@@ -323,6 +334,10 @@ parameter.
 The browser store is read in the realm that creates the host runtime — the shell
 page in one embedding, an iframe realm in another — and is per-origin, so a value
 set on any other origin is invisible.
+
+Reading whether the switch is set is distinct from reading what it holds (§7).
+The production message below depends on the first surviving into a production
+build; the dial depends on the second, which does not.
 
 A host with a dial path **MUST** report it: one that does not dial says so once,
 one that does says where, each naming the source it read. Today only the web host
