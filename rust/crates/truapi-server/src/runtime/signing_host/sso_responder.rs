@@ -1732,7 +1732,7 @@ mod tests {
     /// Metadata for the People chain the signing fixture is configured for.
     #[cfg(not(target_arch = "wasm32"))]
     const PEOPLE_METADATA: &[u8] =
-        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
 
     /// An existing statement-store allowance must be served without resolving a
     /// ring or submitting anything. The cache and the scan are covered on their
@@ -1766,12 +1766,20 @@ mod tests {
                     "chain_getBlockHash",
                     format!(r#""0x{}""#, hex::encode([0u8; 32])),
                 ),
-                // `Metadata_metadata_at_version(16)` answering absent, so the
-                // legacy fetch below is what serves the metadata.
-                ("state_call", r#""0x00""#.to_string()),
                 (
-                    "state_getMetadata",
-                    format!(r#""0x{}""#, hex::encode(PEOPLE_METADATA)),
+                    "Metadata_metadata_at_version",
+                    format!(
+                        r#""0x{}""#,
+                        hex::encode(Some(PEOPLE_METADATA.to_vec()).encode()),
+                    ),
+                ),
+                // The scan bound, read through the `Resources` view functions.
+                (
+                    "RuntimeViewFunction_execute_view_function",
+                    format!(
+                        r#""0x{}""#,
+                        hex::encode(Ok::<Vec<u8>, ()>(20u32.encode()).encode()),
+                    ),
                 ),
                 (
                     "state_getStorage",

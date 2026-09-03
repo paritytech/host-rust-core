@@ -373,14 +373,13 @@ mod tests {
         use subxt_rpcs::RpcClient as HostRpcClient;
 
         use crate::runtime::statement_allowance::CollectionMembership;
-        use crate::runtime::statement_allowance::extension::{ChainState, Metadata};
+        use crate::runtime::statement_allowance::extension::ChainState;
         use crate::runtime::statement_allowance::proof;
         use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
         use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
+        use crate::runtime::statement_allowance::test_fixtures;
 
-        const FIXTURE: &[u8] =
-            include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
         const NOW: u64 = 10_000_000;
 
         /// One occupied slot entry, oldest first by `seq`.
@@ -391,7 +390,7 @@ mod tests {
             format!(r#""0x{}""#, hex::encode((NOW * 1_000).encode()))
         }
 
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -444,7 +443,7 @@ mod tests {
         }];
         let context = RenewalChainContext {
             rpc: &rpc,
-            metadata: &metadata,
+            metadata: metadata,
             chain_state: &chain_state,
             candidates: &candidates,
             memberships: &memberships,
@@ -475,21 +474,20 @@ mod tests {
         use subxt_rpcs::RpcClient as HostRpcClient;
 
         use crate::runtime::statement_allowance::CollectionMembership;
-        use crate::runtime::statement_allowance::extension::{ChainState, Metadata};
+        use crate::runtime::statement_allowance::extension::ChainState;
         use crate::runtime::statement_allowance::proof;
         use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
         use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
+        use crate::runtime::statement_allowance::test_fixtures;
 
-        const FIXTURE: &[u8] =
-            include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
         const NOW: u64 = 10_000_000;
 
         fn entry(account: [u8; 32]) -> String {
             format!(r#""0x{}""#, hex::encode((account, 0u32, NOW).encode()))
         }
 
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -532,7 +530,7 @@ mod tests {
         }];
         let context = RenewalChainContext {
             rpc: &rpc,
-            metadata: &metadata,
+            metadata: metadata,
             chain_state: &chain_state,
             candidates: &candidates,
             memberships: &memberships,
@@ -572,14 +570,13 @@ mod tests {
         use subxt_rpcs::RpcClient as HostRpcClient;
 
         use crate::runtime::statement_allowance::CollectionMembership;
-        use crate::runtime::statement_allowance::extension::{ChainState, Metadata};
+        use crate::runtime::statement_allowance::extension::ChainState;
         use crate::runtime::statement_allowance::proof;
         use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
         use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
+        use crate::runtime::statement_allowance::test_fixtures;
 
-        const FIXTURE: &[u8] =
-            include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
         const NOW: u64 = 10_000_000;
 
         fn entry(account: [u8; 32], since: u64) -> String {
@@ -589,7 +586,7 @@ mod tests {
             format!(r#""0x{}""#, hex::encode((NOW * 1_000).encode()))
         }
 
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -631,7 +628,7 @@ mod tests {
         }];
         let context = RenewalChainContext {
             rpc: &rpc,
-            metadata: &metadata,
+            metadata: metadata,
             chain_state: &chain_state,
             candidates: &candidates,
             memberships: &memberships,

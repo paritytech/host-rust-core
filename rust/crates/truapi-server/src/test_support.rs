@@ -128,7 +128,8 @@ pub(crate) struct StubPlatform {
     pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
     pub(crate) rpc_responses: Vec<String>,
     /// Responses keyed by JSON-RPC method, answered as each request arrives with
-    /// that request's own id echoed back.
+    /// that request's own id echoed back. A `state_call` is keyed by the runtime
+    /// API it names instead, so metadata and view-function reads stay separable.
     ///
     /// Unlike `rpc_responses` this assumes nothing about request order and waits
     /// indefinitely for the next request, so a slow step between two requests
@@ -1297,6 +1298,9 @@ impl JsonRpcConnection for RecordingConnection {
 
 /// Answer each request as it arrives, by method, echoing its id.
 ///
+/// A `state_call` is keyed by the runtime API in its first parameter, because a
+/// path that reads both metadata and a view function issues both through it.
+///
 /// Waits indefinitely for the next request rather than giving up after a fixed
 /// number of polls, so work between requests cannot race the pump.
 fn method_keyed_responses(
@@ -1318,11 +1322,16 @@ fn method_keyed_responses(
                         serde_json::from_str(&request).expect("request is valid JSON");
                     let id = value["id"].as_str().expect("request carries a string id");
                     let method = value["method"].as_str().expect("request carries a method");
+                    let key = if method == "state_call" {
+                        value["params"][0].as_str().unwrap_or(method)
+                    } else {
+                        method
+                    };
                     let result = answers
                         .iter()
-                        .find(|(candidate, _)| *candidate == method)
+                        .find(|(candidate, _)| *candidate == key)
                         .map(|(_, body)| body.clone())
-                        .unwrap_or_else(|| panic!("no scripted response for method `{method}`"));
+                        .unwrap_or_else(|| panic!("no scripted response for `{key}`"));
                     return Some((
                         format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{result}}}"#),
                         answered + 1,

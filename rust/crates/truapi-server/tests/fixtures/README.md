@@ -12,7 +12,7 @@ expects.
 | File | Chain | Metadata | Spec | Captured | Declares |
 |---|---|---|---|---|---|
 | `paseo-next-v2-metadata.scale` | Paseo Next v2 | V14 | | | `AsResources`, three-field allowance info |
-| `paseo-next-v2-metadata-v16.scale` | Paseo Next v2 | V16 | 1000032 | | `AsResources`, four-field allowance info |
+| `paseo-next-v2-metadata-v16.scale` | Paseo Next v2 | V16 | 3000000 | 2026-09-03 | `AsResources`, four-field allowance info; `Resources` slot budgets as view functions |
 | `paseo-next-asset-hub-metadata.scale` | Paseo Asset Hub Next | V16 | 2000036 | 2026-08-17 | `AsPgas`, `Pgas`, `MembersSubscriber` |
 | `bulletin_paseo_metadata.scale` | Polkadot Bulletin (Paseo) | V14 | 1000020 | | preimage and storage calls |
 

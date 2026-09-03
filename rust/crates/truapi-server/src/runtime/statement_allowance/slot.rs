@@ -290,13 +290,8 @@ pub async fn long_term_storage_claims_per_period(
     rpc: &RpcClient,
     metadata: &Metadata,
 ) -> Result<u8, StatementAllowanceError> {
-    let value = view::read_resource_u32(
-        rpc,
-        metadata,
-        "get_long_term_storage_claims_per_period",
-        "LongTermStorageClaimsPerPeriod",
-    )
-    .await?;
+    let value =
+        view::read_resource_u32(rpc, metadata, "get_long_term_storage_claims_per_period").await?;
     u8::try_from(value).map_err(|_| SlotError::LongTermStorageClaimsOverflow { value }.into())
 }
 
@@ -313,13 +308,7 @@ pub async fn statement_store_grace_window(
     rpc: &RpcClient,
     metadata: &Metadata,
 ) -> Result<u32, StatementAllowanceError> {
-    view::read_resource_u32(
-        rpc,
-        metadata,
-        "get_stmt_store_grace_window",
-        "StmtStoreGraceWindow",
-    )
-    .await
+    view::read_resource_u32(rpc, metadata, "get_stmt_store_grace_window").await
 }
 
 /// Decode a slot entry: `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
@@ -384,14 +373,9 @@ pub async fn replacement_cooldown(
     rpc: &RpcClient,
     metadata: &Metadata,
 ) -> Result<u64, StatementAllowanceError> {
-    view::read_resource_u32(
-        rpc,
-        metadata,
-        "get_stmt_store_replacement_cooldown",
-        "StmtStoreReplacementCooldown",
-    )
-    .await
-    .map(u64::from)
+    view::read_resource_u32(rpc, metadata, "get_stmt_store_replacement_cooldown")
+        .await
+        .map(u64::from)
 }
 
 /// The account holding our alias slot `(period, seq)`, read pinned to
@@ -617,7 +601,6 @@ mod tests {
 
     /// Fixture metadata captured from paseo-next-v2; its
     /// `LiteStmtStoreSlotsPerPeriod` is 10.
-    const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
     const SLOTS: usize = 10;
 
     /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
@@ -643,7 +626,7 @@ mod tests {
     /// Run `scan_slot_excluding` for `[0x22; 32]` against a scripted period
     /// whose slot occupancy is `slots`.
     fn scripted_find(slots: &[Option<[u8; 32]>]) -> SlotSelection {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let entries: Vec<String> = slots
             .iter()
             .map(|slot| slot.map_or_else(|| "null".to_string(), slot_entry))
@@ -653,7 +636,7 @@ mod tests {
 
         futures::executor::block_on(scan_slot_excluding(
             &rpc,
-            &metadata,
+            metadata,
             SlotScan {
                 collection: PersonhoodCollection::LitePeople,
                 entropy: [0x11; 32],
@@ -716,7 +699,7 @@ mod tests {
     /// carry them through rather than discard them.
     #[test]
     fn the_scan_reports_each_occupied_slots_age() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let entries: Vec<String> = (0..SLOTS)
             .map(|seq| entry_with_since([0x99; 32], 1_000 + seq as u64))
             .collect();
@@ -726,7 +709,7 @@ mod tests {
         let SlotSelection::Full { occupied, .. } =
             futures::executor::block_on(scan_slot_excluding(
                 &rpc,
-                &metadata,
+                metadata,
                 SlotScan {
                     collection: PersonhoodCollection::LitePeople,
                     entropy: [0x11; 32],
@@ -871,24 +854,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn metadata_without_views_supplies_the_replacement_cooldown_constant() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
-        let scripted = ScriptedRpc::new(std::iter::empty::<&str>());
-        let rpc = RpcClient::new(HostRpcClient::new(scripted));
-
-        assert_eq!(
-            futures::executor::block_on(replacement_cooldown(&rpc, &metadata)).unwrap(),
-            60
-        );
-    }
-
     /// Excluding a slot because a submission for it is in flight must not read as
     /// "the period is full": the free slot is coming back, and a caller that
     /// treats this as full would replace a live slot for nothing.
     #[test]
     fn an_excluded_free_slot_is_not_reported_as_a_full_period() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         // Only seq 9 is free, and the caller already excluded it.
         let mut entries: Vec<String> = (0..SLOTS - 1).map(|_| slot_entry([0x99; 32])).collect();
         entries.push("null".to_string());
@@ -897,7 +868,7 @@ mod tests {
 
         let selection = futures::executor::block_on(scan_slot_excluding(
             &rpc,
-            &metadata,
+            metadata,
             SlotScan {
                 collection: PersonhoodCollection::LitePeople,
                 entropy: [0x11; 32],
