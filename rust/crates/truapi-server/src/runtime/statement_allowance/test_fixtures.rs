@@ -14,9 +14,10 @@ use super::extension::Metadata;
 pub(crate) const ASSET_HUB_RING_5_ROOTS: &[u8] =
     include_bytes!("../../../tests/fixtures/paseo-next-asset-hub-ring-5-roots.scale");
 
-/// Asset Hub metadata captured from paseo Asset Hub Next at spec 2000036.
+/// Asset Hub metadata captured from paseo Asset Hub Next at spec 3000000.
 ///
-/// The only fixture declaring `AsPgas`, `Pgas` and `MembersSubscriber`.
+/// The only fixture declaring `AsPgas`, `Pgas` and `MembersSubscriber`, so it is
+/// also the only one that can exercise the ring-root generation.
 static ASSET_HUB: LazyLock<Metadata> = LazyLock::new(|| {
     Metadata::decode(include_bytes!(
         "../../../tests/fixtures/paseo-next-asset-hub-metadata.scale"

@@ -448,7 +448,7 @@ mod tests {
         }];
         let context = RenewalChainContext {
             rpc: &rpc,
-            metadata: metadata,
+            metadata,
             chain_state: &chain_state,
             network_suffix: b"paseo",
             candidates: &candidates,
@@ -536,7 +536,7 @@ mod tests {
         }];
         let context = RenewalChainContext {
             rpc: &rpc,
-            metadata: metadata,
+            metadata,
             chain_state: &chain_state,
             network_suffix: b"paseo",
             candidates: &candidates,
@@ -635,7 +635,7 @@ mod tests {
         }];
         let context = RenewalChainContext {
             rpc: &rpc,
-            metadata: metadata,
+            metadata,
             chain_state: &chain_state,
             network_suffix: b"paseo",
             candidates: &candidates,

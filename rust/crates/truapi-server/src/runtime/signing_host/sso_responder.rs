@@ -1790,6 +1790,7 @@ mod tests {
                         hex::encode(Ok::<Vec<u8>, ()>(20u32.encode()).encode()),
                     ),
                 ),
+                // The network suffix, read once before the scan.
                 (
                     "state_getStorage",
                     format!(r#""0x{}""#, hex::encode(b"paseo".to_vec().encode())),

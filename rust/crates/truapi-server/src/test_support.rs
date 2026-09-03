@@ -1312,9 +1312,10 @@ fn response_key(request: &serde_json::Value) -> Option<&str> {
 
 /// Answer each request as it arrives, keyed by [`response_key`], echoing its id.
 ///
-/// Repeated entries for one key are answered in order, and once they run out the
-/// last one answers every further request, so a script spells out only the reads
-/// that differ.
+/// Repeated entries for one key are answered in call order. Running past the
+/// last one panics rather than replaying it: a script that answers fewer calls
+/// than the code makes would otherwise hand a response meant for one read to a
+/// different one, which decodes to a plausible wrong value instead of failing.
 ///
 /// Waits indefinitely for the next request rather than giving up after a fixed
 /// number of polls, so work between requests cannot race the pump.
@@ -1349,18 +1350,20 @@ fn method_keyed_responses(
                                 .is_some_and(|candidate| candidate == key)
                         })
                         .count();
-                    let result = answers
+                    let scripted = answers
                         .iter()
                         .filter(|(candidate, _)| *candidate == key)
-                        .nth(occurrence)
-                        .or_else(|| {
-                            answers
-                                .iter()
-                                .rev()
-                                .find(|(candidate, _)| *candidate == key)
-                        })
+                        .collect::<Vec<_>>();
+                    let result = scripted
+                        .get(occurrence)
                         .map(|(_, body)| body.clone())
-                        .unwrap_or_else(|| panic!("no scripted response for `{key}`"));
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "`{key}` was called {} times, and the script has {} response(s) for it",
+                                occurrence + 1,
+                                scripted.len(),
+                            )
+                        });
                     return Some((
                         format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{result}}}"#),
                         answered + 1,

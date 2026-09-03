@@ -13,7 +13,7 @@ expects.
 |---|---|---|---|---|---|
 | `paseo-next-v2-metadata.scale` | Paseo Next v2 | V14 | | | `AsResources`, three-field allowance info |
 | `paseo-next-v2-metadata-v16.scale` | Paseo Next v2 | V16 | 3000000 | 2026-09-03 | `AsResources`, four-field allowance info; `Resources` slot budgets as view functions |
-| `paseo-next-asset-hub-metadata.scale` | Paseo Asset Hub Next | V16 | 2000036 | 2026-08-17 | `AsPgas`, `Pgas`, `MembersSubscriber` |
+| `paseo-next-asset-hub-metadata.scale` | Paseo Asset Hub Next | V16 | 3000000 | 2026-09-03 | `AsPgas`, `Pgas`, `MembersSubscriber` incl. `CurrentGeneration` |
 | `bulletin_paseo_metadata.scale` | Polkadot Bulletin (Paseo) | V14 | 1000020 | | preimage and storage calls |
 
 The two paseo-next-v2 fixtures deliberately disagree about arity: V14 predates the
@@ -35,14 +35,22 @@ fixture and the metadata beside it are a matched pair. Capture both from the sam
 and replace both together. Re-capturing metadata alone will fail
 `captured_ring_roots_project_to_their_revisions` if the record layout changed.
 
-| File | Storage | Chain | Block | Captured |
-|---|---|---|---|---|
-| `paseo-next-asset-hub-ring-5-roots.scale` | `MembersSubscriber.RingRoots[(generation, LitePeople, 5)]` | Paseo Asset Hub Next | `0xf25d4e330ade1ce230695976f019df50cdaf97c96b6996838af93b68550654f3` | 2026-08-17 |
+| File | Storage | Chain | Generation | Block | Captured |
+|---|---|---|---|---|---|
+| `paseo-next-asset-hub-ring-5-roots.scale` | `MembersSubscriber.RingRoots[(generation, LitePeople, 5)]` | Paseo Asset Hub Next | 0 | `0xf25d4e330ade1ce230695976f019df50cdaf97c96b6996838af93b68550654f3` | 2026-08-17 |
 
 Ring 5 holds `[105, 106, 108]`. The skipped 107 is the case that distinguishes testing the
 newest held root from testing the oldest, and freezing it makes that case permanent
 instead of dependent on a chain window that moves. Of the fourteen lite-people rings
 holding roots at that block, it was the only one that was not contiguous.
+
+The generation column is what the key's first term has to be to address this value.
+It is 0 because the block predates the generation term, so at that block the entry was
+addressed by the two remaining keys, and `MembersSubscriber.CurrentGeneration` is still
+unset on paseo Asset Hub Next, which reads as 0 through its `ValueQuery` default. A
+capture taken after the first rebuild has to record the generation it was read under, or
+the key recipe below will not reach it. The offline tests build the key from a synthetic
+generation and assert it separately, so they do not depend on this value.
 
 There is no CLI for a storage read by raw key. Build the key the way `pgas::ring_roots_key`
 does, then call `state_getStorageAt`:
