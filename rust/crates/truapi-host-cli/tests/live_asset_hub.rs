@@ -22,8 +22,8 @@ fn asset_hub_ws() -> String {
 }
 const PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";
 
-/// The ring our onboarded test identity sits in.
-const RING_INDEX: u32 = 2;
+/// An active lite-person ring mirrored to Asset Hub.
+const RING_INDEX: u32 = 1;
 /// The ring this fixture's index belongs to.
 const COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
 
@@ -35,6 +35,20 @@ async fn asset_hub() -> (alloc::rpc::RpcClient, alloc::extension::Metadata) {
         .await
         .expect("Asset Hub metadata");
     (rpc, metadata)
+}
+
+#[tokio::test]
+#[ignore = "needs network access to a live Asset Hub"]
+async fn live_asset_hub_reports_the_product_context_suffix() {
+    let (rpc, _metadata) = asset_hub().await;
+    let expected = std::env::var("LIVE_TLD").unwrap_or_else(|_| "paseo".to_string());
+
+    assert_eq!(
+        alloc::slot::read_network_suffix(&rpc)
+            .await
+            .expect("read Asset Hub NetworkSuffix"),
+        expected.as_bytes(),
+    );
 }
 
 /// The claim encodes five fields for `AsPgas::Claim`. A short payload is accepted

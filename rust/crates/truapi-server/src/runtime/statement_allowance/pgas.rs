@@ -21,7 +21,7 @@ use thiserror::Error;
 
 use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, Metadata, MetadataError};
-use super::ring::{self, RingParams, blake2_128_concat};
+use super::ring::{self, RingParams, blake2_128_concat, twox_64_concat};
 use super::rpc::RpcClient;
 use super::{
     ChainContext, StatementAllowanceError, duplicate_submit_error, extension, extrinsic, proof,
@@ -55,6 +55,9 @@ pub enum PgasError {
         /// Revision the proof was built against.
         revision: u32,
     },
+    /// `MembersSubscriber.CurrentGeneration` was not a SCALE-encoded `u32`.
+    #[error("MembersSubscriber.CurrentGeneration: {0}")]
+    GenerationDecode(#[source] parity_scale_codec::Error),
     /// The asset account's leading balance failed to decode.
     #[error("PGAS balance: {0}")]
     BalanceDecode(#[source] parity_scale_codec::Error),
@@ -92,15 +95,30 @@ pub struct PgasClaimOutcome {
     pub ring_index: u32,
 }
 
-/// `MembersSubscriber.RingRoots[(identifier, ring_index)]` storage key on Asset
-/// Hub.
-///
-/// Both map keys are `Blake2_128Concat` here, unlike the People chain's
-/// `Members` maps which take the collection identifier verbatim.
-fn ring_roots_key(collection: PersonhoodCollection, ring_index: u32) -> Vec<u8> {
+fn current_generation_key() -> Vec<u8> {
+    [
+        twox_128(b"MembersSubscriber").as_slice(),
+        twox_128(b"CurrentGeneration").as_slice(),
+    ]
+    .concat()
+}
+
+async fn read_current_generation(rpc: &RpcClient) -> Result<u32, StatementAllowanceError> {
+    match rpc.get_storage(&current_generation_key()).await? {
+        Some(bytes) => u32::decode(&mut &bytes[..])
+            .map_err(PgasError::GenerationDecode)
+            .map_err(Into::into),
+        None => Ok(0),
+    }
+}
+
+/// `MembersSubscriber.RingRoots[(generation, identifier, ring_index)]` storage
+/// key on Asset Hub.
+fn ring_roots_key(generation: u32, collection: PersonhoodCollection, ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"MembersSubscriber").as_slice(),
         twox_128(b"RingRoots").as_slice(),
+        &twox_64_concat(&generation.to_le_bytes()),
         &blake2_128_concat(collection.identifier()),
         &blake2_128_concat(&ring_index.to_le_bytes()),
     ]
@@ -120,6 +138,8 @@ pub struct PgasClaim<'a> {
     pub people_metadata: &'a Metadata,
     /// Our ring-VRF entropy for the collection `ring` names.
     pub entropy: [u8; 32],
+    /// Asset Hub suffix used for the product-scoped alias and proof.
+    pub network_suffix: &'a [u8],
     /// Account the claim credits.
     pub target: &'a [u8; 32],
     /// Ring the membership proof is built against, already located on People.
@@ -174,6 +194,7 @@ pub async fn claim_pgas(
         people_rpc,
         people_metadata,
         entropy,
+        network_suffix,
         target,
         ring,
     } = params;
@@ -206,11 +227,12 @@ pub async fn claim_pgas(
             asset_hub_metadata,
             ring.collection,
             entropy,
+            network_suffix,
             day,
             &skipped_duplicate_slots,
         )
         .await?;
-        let context = slot::derive_pgas_context(day, slot_index);
+        let context = slot::derive_pgas_context(network_suffix, day, slot_index);
         let call = extrinsic::build_claim_pgas_call(asset_hub_metadata, slot_index, target)?;
         let message = extension::build_proof_message_after_extension(
             asset_hub_metadata,
@@ -245,6 +267,7 @@ pub async fn claim_pgas(
                 if !slot::pgas_slot_is_claimed_at(
                     asset_hub_rpc,
                     entropy,
+                    network_suffix,
                     day,
                     slot_index,
                     &block_hash,
@@ -322,10 +345,11 @@ pub async fn await_ring_revision(
             pallet: "MembersSubscriber",
             entry: "RingRoots",
         })?;
+    let generation = read_current_generation(rpc).await?;
     let started = Instant::now();
     loop {
         if let Some(bytes) = rpc
-            .get_storage(&ring_roots_key(collection, ring_index))
+            .get_storage(&ring_roots_key(generation, collection, ring_index))
             .await?
         {
             let mut input = bytes.as_slice();
@@ -380,9 +404,10 @@ mod tests {
     use super::super::test_fixtures;
     use super::*;
 
-    /// The collection the captured roots were read from. `RingRoots` is keyed by
-    /// collection, so the fixture only means anything paired with this one.
+    /// The collection the captured roots were read from. The fixture only means
+    /// anything paired with this identifier.
     const CAPTURED_COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
+    const TEST_GENERATION: u32 = 7;
 
     /// The captured ring-5 roots as a scripted `state_getStorage` result, with the
     /// transport handle so the key that was read can be checked.
@@ -391,7 +416,8 @@ mod tests {
             r#""0x{}""#,
             hex::encode(test_fixtures::ASSET_HUB_RING_5_ROOTS)
         );
-        let scripted = ScriptedRpc::new([value.as_str()]);
+        let generation = format!(r#""0x{}""#, hex::encode(TEST_GENERATION.to_le_bytes()));
+        let scripted = ScriptedRpc::new([generation.as_str(), value.as_str()]);
         (
             RpcClient::new(HostRpcClient::new(scripted.clone())),
             scripted,
@@ -413,12 +439,24 @@ mod tests {
             CAPTURED_UNDER,
             "the committed blob was read under the lite-people identifier",
         );
-        let expected = format!(
+        let current_generation = format!(
+            r#"["0x{}"]"#,
+            hex::encode(
+                [
+                    twox_128(b"MembersSubscriber").as_slice(),
+                    twox_128(b"CurrentGeneration").as_slice(),
+                ]
+                .concat()
+            )
+        );
+        let generation = twox_64_concat(&TEST_GENERATION.to_le_bytes());
+        let ring_roots = format!(
             r#"["0x{}"]"#,
             hex::encode(
                 [
                     twox_128(b"MembersSubscriber").as_slice(),
                     twox_128(b"RingRoots").as_slice(),
+                    &generation,
                     &blake2_128_concat(CAPTURED_UNDER),
                     &blake2_128_concat(&5u32.to_le_bytes()),
                 ]
@@ -433,8 +471,8 @@ mod tests {
             .collect();
         assert_eq!(
             reads,
-            vec![expected],
-            "the captured blob has to be paired with the collection it was read for"
+            vec![current_generation, ring_roots],
+            "the roots read must use the current generation and the fixture collection"
         );
     }
 
@@ -507,22 +545,47 @@ mod tests {
         assert_read_ring_5_of(&scripted);
     }
 
-    /// Both map keys are hashed here, unlike the People chain's `Members` maps.
+    /// The generation uses `Twox64Concat`; the remaining two keys use
+    /// `Blake2_128Concat`.
     #[test]
-    fn subscriber_ring_key_hashes_both_map_keys() {
+    fn subscriber_ring_key_hashes_all_three_map_keys() {
         let collection = PersonhoodCollection::LitePeople;
-        let key = ring_roots_key(collection, 136);
+        let key = ring_roots_key(7, collection, 136);
 
-        assert_eq!(key.len(), 16 + 16 + 16 + 32 + 16 + 4);
+        assert_eq!(key.len(), 16 + 16 + 8 + 4 + 16 + 32 + 16 + 4);
         assert_eq!(
-            &key[48..80],
+            &key[40..44],
+            &7u32.to_le_bytes(),
+            "generation follows its hash"
+        );
+        assert_eq!(
+            &key[60..92],
             collection.identifier(),
             "identifier follows its hash"
         );
         assert_eq!(
-            &key[96..],
+            &key[108..],
             &136u32.to_le_bytes(),
             "ring index is little-endian"
+        );
+    }
+
+    #[test]
+    fn missing_current_generation_uses_the_runtime_default() {
+        let scripted = ScriptedRpc::new(["null"]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        assert_eq!(
+            futures::executor::block_on(read_current_generation(&rpc)).unwrap(),
+            0
+        );
+        assert_eq!(
+            scripted.calls(),
+            vec![(
+                "state_getStorage".to_string(),
+                r#"["0xc8d053ab324196afc756c5ae3fbd2917c2dbc4fc2f665a39ada06f0965cccf86"]"#
+                    .to_string(),
+            )]
         );
     }
 

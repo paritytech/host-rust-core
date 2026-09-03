@@ -441,6 +441,26 @@ pub enum LongTermStorageOutcome {
     },
 }
 
+/// Everything one long-term-storage claim needs.
+pub struct LongTermStorageClaim<'a> {
+    /// People connection the claim is submitted on.
+    pub rpc: &'a RpcClient,
+    /// People runtime metadata.
+    pub metadata: &'a Metadata,
+    /// People signed-extension state.
+    pub chain_state: &'a ChainState,
+    /// Our ring-VRF entropy for the collection `ring` names.
+    pub entropy: [u8; 32],
+    /// People suffix used for the product-scoped alias and proof.
+    pub network_suffix: &'a [u8],
+    /// Account whose Bulletin allowance is authorized.
+    pub target: &'a [u8; 32],
+    /// People long-term-storage period.
+    pub period: u32,
+    /// Ring the membership proof is built against.
+    pub ring: &'a RingParams,
+}
+
 /// Bulletin authorization state for one account.
 #[derive(Debug, Clone, Copy)]
 pub struct BulletinAllowanceInfo {
@@ -1004,14 +1024,18 @@ pub async fn register_statement_account_pooled(
 /// Claim long-term Bulletin storage authorization for `target`, proving
 /// membership in the already-located `ring`, at People-chain `period`.
 pub async fn claim_long_term_storage(
-    rpc: &RpcClient,
-    metadata: &Metadata,
-    chain_state: &ChainState,
-    entropy: [u8; 32],
-    target: &[u8; 32],
-    period: u32,
-    ring: &RingParams,
+    params: LongTermStorageClaim<'_>,
 ) -> Result<LongTermStorageOutcome, StatementAllowanceError> {
+    let LongTermStorageClaim {
+        rpc,
+        metadata,
+        chain_state,
+        entropy,
+        network_suffix,
+        target,
+        period,
+        ring,
+    } = params;
     let revision = ring::read_ring_revision(
         rpc,
         metadata,
@@ -1026,12 +1050,13 @@ pub async fn claim_long_term_storage(
             rpc,
             metadata,
             entropy,
+            network_suffix,
             period,
             &skipped_duplicate_counters,
         )
         .await?;
 
-        let context = slot::derive_long_term_storage_context(period, counter);
+        let context = slot::derive_long_term_storage_context(network_suffix, period, counter);
         let call =
             extrinsic::build_claim_long_term_storage_call(metadata, period, counter, target)?;
         let message = extension::build_proof_message(metadata, &call, chain_state)?;

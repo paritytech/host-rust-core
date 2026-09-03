@@ -1210,6 +1210,7 @@ pub(super) async fn allocate_bulletin_allowance(
         .await?;
     let people_rpc = people_client.rpc();
     let chain = services.chain_context.get(&people_client).await?;
+    let network_suffix = statement_allowance::slot::read_network_suffix(people_rpc).await?;
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
@@ -1237,15 +1238,16 @@ pub(super) async fn allocate_bulletin_allowance(
         current_unix_secs()?,
         period_duration,
     )?;
-    let outcome = claim_long_term_storage(
-        people_rpc,
-        &chain.metadata,
-        &chain.state,
-        membership.entropy,
-        &target,
+    let outcome = claim_long_term_storage(statement_allowance::LongTermStorageClaim {
+        rpc: people_rpc,
+        metadata: &chain.metadata,
+        chain_state: &chain.state,
+        entropy: membership.entropy,
+        network_suffix: &network_suffix,
+        target: &target,
         period,
-        &membership.ring,
-    )
+        ring: &membership.ring,
+    })
     .await?;
     let statement_allowance::LongTermStorageOutcome::Claimed {
         block_hash,
@@ -1353,6 +1355,8 @@ pub(super) async fn allocate_smart_contract_allowance(
         debug!(%product_id, "PGAS allowance already funded; leaving it alone");
         return Ok(());
     }
+    let network_suffix =
+        statement_allowance::slot::read_network_suffix(asset_hub_client.rpc()).await?;
 
     let people_client = services
         .statement_store
@@ -1376,6 +1380,7 @@ pub(super) async fn allocate_smart_contract_allowance(
         people_rpc,
         people_metadata: &people.metadata,
         entropy: membership.entropy,
+        network_suffix: &network_suffix,
         target: &target,
         ring: &membership.ring,
     })
