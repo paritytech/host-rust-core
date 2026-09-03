@@ -37,6 +37,14 @@ if [ ! -d "$XCFRAMEWORK" ]; then
     exit 66
 fi
 
+# A device slice is required for anything that ships; a simulator-only build is
+# for local iteration and must not become a release asset. The provider's
+# publish script has always refused one; this one did not.
+if [ ! -d "$XCFRAMEWORK/ios-arm64" ]; then
+    echo "error: $XCFRAMEWORK has no device slice — rebuild without SIM_ONLY" >&2
+    exit 66
+fi
+
 # Staging strips these, but Binaries/ is gitignored so an older tree gets here.
 if find "$XCFRAMEWORK" -path '*/Headers/module.modulemap' | grep -q .; then
     echo "error: $XCFRAMEWORK still carries per-slice modulemaps, run scripts/rebuild.sh" >&2
