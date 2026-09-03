@@ -63,3 +63,10 @@ directly usable.
 ## Open questions
 
 How a handle is named in a payload and substituted at signing.
+
+How a product shows the user which contact they picked. A product holds 32 bytes and no name, so it
+renders a neutral chip. Two parts close that, and neither is specified here: the Host redraws the name
+in its own signing confirmation, which knows the account and is where consent is given, so a product
+never needs the name for the flow to be safe; and a product labels the handle itself, letting the user
+name those 32 bytes once. A user-supplied label keeps the Host from handing back the correlator that
+ruled out `display_name`.
