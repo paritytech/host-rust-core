@@ -68,6 +68,9 @@ pub enum StatementAllowanceError {
     /// Bulletin allowance polling timed out.
     #[error("timed out waiting for Bulletin authorization")]
     BulletinAuthorizationTimeout,
+    /// The runtime does not serve the metadata version allowance signing needs.
+    #[error("runtime does not serve metadata version {0}")]
+    MetadataVersionUnavailable(u32),
 }
 
 /// Error while decoding generic chain state used by allowance registration.
@@ -108,44 +111,28 @@ pub enum ChainStateError {
     HeaderNumberParse(#[source] std::num::ParseIntError),
 }
 
-/// Metadata version to ask the runtime for: the first that carries a
-/// transaction-extension version map.
-const PREFERRED_METADATA_VERSION: u32 = 16;
+/// The only metadata version carrying the transaction-extension version map the
+/// allowance extrinsics are signed against.
+const REQUIRED_METADATA_VERSION: u32 = 16;
 
-/// Fetch and decode the runtime metadata, preferring V16.
+/// Fetch and decode the runtime metadata through `Metadata_metadata_at_version`.
 ///
-/// The legacy `state_getMetadata` RPC answers with whatever version the node
-/// serves — V14 on paseo-next-v2 — and V14 declares no transaction-extension
-/// version map at all, so the pipeline version cannot be resolved from it. V16 is
-/// only reachable through the `Metadata_metadata_at_version` runtime API, so ask
-/// for it first and fall back for runtimes that do not offer it.
+/// A runtime that does not serve [`REQUIRED_METADATA_VERSION`] is rejected
+/// rather than signed for with an unresolvable pipeline.
 pub async fn fetch_metadata(rpc: &RpcClient) -> Result<Metadata, StatementAllowanceError> {
-    match fetch_metadata_at_version(rpc, PREFERRED_METADATA_VERSION).await {
-        Ok(Some(metadata)) => return Ok(metadata),
-        Ok(None) => {
-            debug!(
-                version = PREFERRED_METADATA_VERSION,
-                "runtime does not offer this metadata version; using state_getMetadata"
-            );
-        }
-        Err(reason) => {
-            debug!(
-                version = PREFERRED_METADATA_VERSION,
-                %reason,
-                "metadata runtime call failed; using state_getMetadata"
-            );
-        }
-    }
-    fetch_legacy_metadata(rpc).await
+    fetch_required_metadata(rpc)
+        .await?
+        .ok_or(StatementAllowanceError::MetadataVersionUnavailable(
+            REQUIRED_METADATA_VERSION,
+        ))
 }
 
-/// Ask the runtime for one metadata version through
+/// Ask the runtime for [`REQUIRED_METADATA_VERSION`] through
 /// `Metadata_metadata_at_version`, which answers `Option<OpaqueMetadata>`.
-async fn fetch_metadata_at_version(
+async fn fetch_required_metadata(
     rpc: &RpcClient,
-    version: u32,
 ) -> Result<Option<Metadata>, StatementAllowanceError> {
-    let argument = format!("0x{}", hex::encode(version.encode()));
+    let argument = format!("0x{}", hex::encode(REQUIRED_METADATA_VERSION.encode()));
     let value = rpc
         .call(
             "state_call",
@@ -163,26 +150,6 @@ async fn fetch_metadata_at_version(
         return Ok(None);
     };
     Metadata::decode(&opaque).map(Some)
-}
-
-/// Fetch and decode the runtime metadata through the legacy `state_getMetadata`.
-async fn fetch_legacy_metadata(rpc: &RpcClient) -> Result<Metadata, StatementAllowanceError> {
-    let value = rpc.call("state_getMetadata", json!([])).await?;
-    let hex_str = value
-        .as_str()
-        .ok_or(MetadataError::MetadataResultNotString)?;
-    let bytes = hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str))
-        .map_err(MetadataError::MetadataHex)?;
-    // `state_getMetadata` may return either the raw `RuntimeMetadataPrefixed`
-    // (starts with the `meta` magic) or an OpaqueMetadata wrapper
-    // (`Vec<u8>` = compact(len) ‖ bytes). Strip the wrapper only when present.
-    const META_MAGIC: [u8; 4] = *b"meta";
-    if bytes.get(..4) == Some(&META_MAGIC) {
-        Metadata::decode(&bytes)
-    } else {
-        let inner = Vec::<u8>::decode(&mut &bytes[..]).map_err(MetadataError::OpaqueMetadata)?;
-        Metadata::decode(&inner)
-    }
 }
 
 /// Read the chain's runtime `(specVersion, transactionVersion)`.
@@ -258,10 +225,10 @@ pub struct ChainContext {
 
 /// Runtime metadata and chain state cached per chain.
 ///
-/// Both are fixed for a given runtime, and a full `state_getMetadata` response
-/// is large, so entries are keyed by genesis hash and revalidated with a
-/// concurrent `state_getRuntimeVersion` + `chain_getBlockHash(0)` — two small
-/// requests in place of a metadata download on every allowance call.
+/// Both are fixed for a given runtime, and a full metadata response is large, so
+/// entries are keyed by genesis hash and revalidated with a concurrent
+/// `state_getRuntimeVersion` + `chain_getBlockHash(0)` — two small requests in
+/// place of a metadata download on every allowance call.
 ///
 /// One entry per chain the host is configured for, so the map needs no eviction
 /// policy: it is bounded by that chain set, not by call volume.
@@ -1213,9 +1180,6 @@ mod tests {
     use super::rpc::testing::ScriptedRpc;
     use super::*;
 
-    /// Fixture metadata captured from paseo-next-v2 (raw `RuntimeMetadataPrefixed`).
-    const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/paseo-next-v2-metadata.scale");
-
     fn allowance(
         remained_size: u64,
         remained_transactions: u32,
@@ -1283,21 +1247,37 @@ mod tests {
         );
     }
 
+    /// A runtime that does not serve V16 declares no transaction-extension
+    /// version map, so the pipeline version cannot be resolved from what it does
+    /// serve. The fetch has to fail loudly instead of yielding metadata that
+    /// signs pipeline 0 and looks indistinguishable from a correct signature.
+    #[test]
+    fn a_runtime_without_v16_metadata_is_rejected() {
+        let scripted = ScriptedRpc::new([r#""0x00""#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let Err(error) = futures::executor::block_on(fetch_metadata(&rpc)) else {
+            panic!("a runtime without V16 metadata cannot be signed for");
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "runtime does not serve metadata version 16"
+        );
+    }
+
     /// A `state_getRuntimeVersion` result for `spec_version`.
     fn runtime_version(spec_version: u32) -> String {
         format!(r#"{{"specVersion":{spec_version},"transactionVersion":1}}"#)
     }
 
-    /// The fixture metadata as a `state_getMetadata` hex result.
+    /// The fixture metadata as a `Metadata_metadata_at_version` hex result: the
+    /// `Option<OpaqueMetadata>` the runtime call answers with.
     fn metadata_result() -> String {
-        format!(r#""0x{}""#, hex::encode(FIXTURE))
-    }
-
-    /// `Metadata_metadata_at_version(16)` answering `None`, so the caller falls
-    /// back to `state_getMetadata`. These tests are about caching, not about
-    /// which metadata version a runtime serves.
-    fn metadata_version_unavailable() -> String {
-        r#""0x00""#.to_string()
+        format!(
+            r#""0x{}""#,
+            hex::encode(Some(test_fixtures::PEOPLE_METADATA.to_vec()).encode())
+        )
     }
 
     /// A `chain_getBlockHash(0)` result for `genesis_hash`.
@@ -1316,13 +1296,10 @@ mod tests {
 
     /// The requests one cache miss makes, in order. The two validation reads
     /// are issued together, so both happen whether or not the entry is reused.
-    const MISS: [&str; 4] = [
+    const MISS: [&str; 3] = [
         "state_getRuntimeVersion",
         "chain_getBlockHash",
-        // The V16 runtime call is tried first; these scripts answer it as absent,
-        // so the legacy fetch follows.
         "state_call",
-        "state_getMetadata",
     ];
     /// The requests one cache hit makes: validation only, no metadata download.
     const HIT: [&str; 2] = ["state_getRuntimeVersion", "chain_getBlockHash"];
@@ -1332,7 +1309,6 @@ mod tests {
     fn call_script(spec_version: u32, reported: [u8; 32], downloads: bool) -> Vec<String> {
         let mut script = vec![runtime_version(spec_version), genesis_result(reported)];
         if downloads {
-            script.push(metadata_version_unavailable());
             script.push(metadata_result());
         }
         script
@@ -1387,8 +1363,7 @@ mod tests {
             let body = match method {
                 "state_getRuntimeVersion" => runtime_version(1_000_000),
                 "chain_getBlockHash" => genesis_result([0xaa; 32]),
-                "state_call" => metadata_version_unavailable(),
-                "state_getMetadata" => {
+                "state_call" => {
                     self.0
                         .metadata_downloads
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

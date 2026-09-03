@@ -1,8 +1,9 @@
 //! Signed-extension encoding for the unsigned General (v5) `AsResources`
 //! extrinsic, driven by live chain metadata.
 //!
-//! The extension **order** and per-extension type ids come from the runtime
-//! metadata (`state_getMetadata`, V14/V15/V16); the per-extension `extra` /
+//! The extension **order** and per-extension type ids come from live V16
+//! metadata read through `Metadata_metadata_at_version`; the V14 and V15 decode
+//! arms serve frozen fixtures only. The per-extension `extra` /
 //! `additional_signed` bytes come from a name-keyed encoder mirroring
 //! signing-bot `src/core/create-transaction.ts` `encodeSignedExtensions`, with a
 //! generic default for the personhood extensions (all `Option`/void).
@@ -40,8 +41,8 @@ pub const AS_DOTNS_GATEWAY: &str = "AsDotnsGateway";
 /// metadata entries.
 #[derive(Debug, Error)]
 pub enum MetadataError {
-    /// `state_getMetadata` did not return a hex string.
-    #[error("state_getMetadata returned non-string")]
+    /// The metadata runtime call did not return a hex string.
+    #[error("Metadata_metadata_at_version returned non-string")]
     MetadataResultNotString,
     /// Metadata hex payload was invalid.
     #[error("metadata hex: {0}")]
@@ -368,9 +369,9 @@ macro_rules! collect_metadata_v16 {
 }
 
 impl Metadata {
-    /// Decode `state_getMetadata` bytes (a `RuntimeMetadataPrefixed`, V14
-    /// through V16) into the ordered signed-extension defs, type registry,
-    /// storage value types, constants, and call enums.
+    /// Decode a raw `RuntimeMetadataPrefixed` (V14 through V16) into the ordered
+    /// signed-extension defs, type registry, storage value types, constants, and
+    /// call enums.
     pub fn decode(bytes: &[u8]) -> Result<Self, StatementAllowanceError> {
         let prefixed =
             RuntimeMetadataPrefixed::decode(&mut &bytes[..]).map_err(MetadataError::Decode)?;
@@ -929,14 +930,14 @@ mod tests {
         call
     }
 
-    /// V16 metadata captured from paseo-next-v2 (spec 3000000), the version the
-    /// runtime API serves. Distinct from `FIXTURE`, which is the V14 the legacy
-    /// RPC answers with and predates the `revision` field.
+    /// V16 metadata captured from paseo-next-v2 (spec 3000000), the only version
+    /// the fetch accepts. Distinct from `FIXTURE`, the older V14 capture, which
+    /// predates the `revision` field.
     const FIXTURE_V16: &[u8] =
         include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
 
-    /// Preferring V16 makes this decode path load-bearing, so cover it: it has to
-    /// yield a usable `Metadata`, not merely decode.
+    /// This is the only metadata the fetch accepts, so the decode path is
+    /// load-bearing: it has to yield a usable `Metadata`, not merely decode.
     #[test]
     fn v16_metadata_decodes_into_a_usable_metadata() {
         let metadata = Metadata::decode(FIXTURE_V16).unwrap();

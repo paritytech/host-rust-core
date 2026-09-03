@@ -1729,11 +1729,6 @@ mod tests {
         (services, signing_host)
     }
 
-    /// Metadata for the People chain the signing fixture is configured for.
-    #[cfg(not(target_arch = "wasm32"))]
-    const PEOPLE_METADATA: &[u8] =
-        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
-
     /// An existing statement-store allowance must be served without resolving a
     /// ring or submitting anything. The cache and the scan are covered on their
     /// own; this pins the composition, so removing the early return fails here
@@ -1770,7 +1765,13 @@ mod tests {
                     "Metadata_metadata_at_version",
                     format!(
                         r#""0x{}""#,
-                        hex::encode(Some(PEOPLE_METADATA.to_vec()).encode()),
+                        hex::encode(
+                            Some(
+                                crate::runtime::statement_allowance::test_fixtures::PEOPLE_METADATA
+                                    .to_vec()
+                            )
+                            .encode(),
+                        ),
                     ),
                 ),
                 // The scan bound, read through the `Resources` view functions.

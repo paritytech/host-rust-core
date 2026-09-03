@@ -43,12 +43,14 @@ const PEOPLE_RESOURCE_BUDGETS: [(&str, u32); 5] = [
     ("get_long_term_storage_claims_per_period", 10),
 ];
 
+/// People-chain V16 metadata captured from paseo-next-v2, raw
+/// `RuntimeMetadataPrefixed` as `Metadata_metadata_at_version` answers with.
+pub(crate) const PEOPLE_METADATA: &[u8] =
+    include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
+
 /// People-chain V16 metadata with [`PEOPLE_RESOURCE_BUDGETS`] already resolved.
 static PEOPLE: LazyLock<Metadata> = LazyLock::new(|| {
-    let metadata = Metadata::decode(include_bytes!(
-        "../../../tests/fixtures/paseo-next-v2-metadata-v16.scale"
-    ))
-    .expect("the committed People fixture decodes");
+    let metadata = Metadata::decode(PEOPLE_METADATA).expect("the committed People fixture decodes");
     for (function, value) in PEOPLE_RESOURCE_BUDGETS {
         let definition = metadata
             .view_function("Resources", function)
