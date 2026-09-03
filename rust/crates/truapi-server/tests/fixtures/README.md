@@ -37,7 +37,7 @@ and replace both together. Re-capturing metadata alone will fail
 
 | File | Storage | Chain | Block | Captured |
 |---|---|---|---|---|
-| `paseo-next-asset-hub-ring-5-roots.scale` | `MembersSubscriber.RingRoots[(LitePeople, 5)]` | Paseo Asset Hub Next | `0xf25d4e330ade1ce230695976f019df50cdaf97c96b6996838af93b68550654f3` | 2026-08-17 |
+| `paseo-next-asset-hub-ring-5-roots.scale` | `MembersSubscriber.RingRoots[(generation, LitePeople, 5)]` | Paseo Asset Hub Next | `0xf25d4e330ade1ce230695976f019df50cdaf97c96b6996838af93b68550654f3` | 2026-08-17 |
 
 Ring 5 holds `[105, 106, 108]`. The skipped 107 is the case that distinguishes testing the
 newest held root from testing the oldest, and freezing it makes that case permanent
@@ -50,6 +50,7 @@ does, then call `state_getStorageAt`:
 ```
 twox_128("MembersSubscriber")
   ‖ twox_128("RingRoots")
+  ‖ twox_64_concat(current_generation_u32_le)
   ‖ blake2_128_concat(b"pop:polkadot.network/people-lite")
   ‖ blake2_128_concat(ring_index_u32_le)
 ```
@@ -60,8 +61,8 @@ curl -s -H 'Content-Type: application/json' \
   https://paseo-asset-hub-next-rpc.polkadot.io
 ```
 
-Both map keys are hashed here, unlike the People chain's `Members` maps, which take the
-collection identifier verbatim.
+Read `MembersSubscriber.CurrentGeneration` first. The generation uses `Twox64Concat`; the
+collection and ring index use `Blake2_128Concat`.
 
 ## Recapturing
 

@@ -23,13 +23,11 @@ use super::view;
 /// StatementStore allowance period: one UTC day, in seconds.
 pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;
 const PRODUCT_CONTEXT_PREFIX: &[u8] = b"product/peopl.";
-const STATEMENT_STORE_CONTEXT_PREFIX: &[u8] = b"sys/";
+const SYSTEM_CONTEXT_PREFIX: &[u8] = b"sys/";
 const STATEMENT_STORE_CONTEXT_FAMILY: u32 = 2;
+const LONG_TERM_STORAGE_CONTEXT_FAMILY: u32 = 3;
+const PGAS_CONTEXT_FAMILY: u32 = 4;
 const MAX_NETWORK_SUFFIX_LENGTH: usize = 16;
-/// Bulletin long-term-storage claim context prefix.
-const LONG_TERM_STORAGE_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/rsc-lts";
-/// Ring-VRF alias context prefix for an Asset Hub PGAS claim.
-const PGAS_CONTEXT_PREFIX: &[u8] = b"pop:gas:";
 /// Slots probed per batched storage read while scanning for a free PGAS slot.
 ///
 /// Reading every slot in one request would cost a round trip flat, but each slot's
@@ -168,13 +166,12 @@ pub fn current_long_term_storage_period(
     Ok((now_seconds / u64::from(period_duration)) as u32)
 }
 
-/// Derive the network-scoped 32-byte StatementStore slot context.
-pub fn derive_slot_context(network_suffix: &[u8], period: u32, seq: u32) -> [u8; 32] {
+fn derive_product_context(network_suffix: &[u8], family: u32, first: u32, second: u32) -> [u8; 32] {
     let mut suffix = [0u8; 32];
-    suffix[..4].copy_from_slice(STATEMENT_STORE_CONTEXT_PREFIX);
-    suffix[4..8].copy_from_slice(&STATEMENT_STORE_CONTEXT_FAMILY.to_le_bytes());
-    suffix[8..12].copy_from_slice(&period.to_le_bytes());
-    suffix[12..16].copy_from_slice(&seq.to_le_bytes());
+    suffix[..4].copy_from_slice(SYSTEM_CONTEXT_PREFIX);
+    suffix[4..8].copy_from_slice(&family.to_le_bytes());
+    suffix[8..12].copy_from_slice(&first.to_le_bytes());
+    suffix[12..16].copy_from_slice(&second.to_le_bytes());
 
     let mut preimage = Vec::with_capacity(
         PRODUCT_CONTEXT_PREFIX.len() + network_suffix.len() + b"/".len() + suffix.len(),
@@ -186,29 +183,28 @@ pub fn derive_slot_context(network_suffix: &[u8], period: u32, seq: u32) -> [u8;
     blake2_256(&preimage)
 }
 
-/// Derive the 32-byte Asset Hub PGAS claim context:
-/// `"pop:gas:" ‖ u32le(day) ‖ u32le(slot_index) ‖ zero fill`.
-///
-/// The mobile wallet writes the integers in little-endian order and the runtime
-/// verifies against the same bytes, so the layout is not ours to tidy.
-pub fn derive_pgas_context(day: u32, slot_index: u32) -> [u8; 32] {
-    let mut ctx = [0u8; 32];
-    ctx[..PGAS_CONTEXT_PREFIX.len()].copy_from_slice(PGAS_CONTEXT_PREFIX);
-    let offset = PGAS_CONTEXT_PREFIX.len();
-    ctx[offset..offset + 4].copy_from_slice(&day.to_le_bytes());
-    ctx[offset + 4..offset + 8].copy_from_slice(&slot_index.to_le_bytes());
-    ctx
+/// Derive the network-scoped 32-byte StatementStore slot context.
+pub fn derive_slot_context(network_suffix: &[u8], period: u32, seq: u32) -> [u8; 32] {
+    derive_product_context(network_suffix, STATEMENT_STORE_CONTEXT_FAMILY, period, seq)
 }
 
-/// Derive the 32-byte Bulletin long-term-storage slot context:
-/// `"pop:polkadot.net/rsc-lts" ‖ u32be(period) ‖ counter ‖ zero fill`.
-pub fn derive_long_term_storage_context(period: u32, counter: u8) -> [u8; 32] {
-    let mut ctx = [0u8; 32];
-    ctx[..LONG_TERM_STORAGE_CONTEXT_PREFIX.len()].copy_from_slice(LONG_TERM_STORAGE_CONTEXT_PREFIX);
-    let offset = LONG_TERM_STORAGE_CONTEXT_PREFIX.len();
-    ctx[offset..offset + 4].copy_from_slice(&period.to_be_bytes());
-    ctx[offset + 4] = counter;
-    ctx
+/// Derive the network-scoped 32-byte Asset Hub PGAS claim context.
+pub fn derive_pgas_context(network_suffix: &[u8], day: u32, slot_index: u32) -> [u8; 32] {
+    derive_product_context(network_suffix, PGAS_CONTEXT_FAMILY, day, slot_index)
+}
+
+/// Derive the network-scoped 32-byte Bulletin long-term-storage context.
+pub fn derive_long_term_storage_context(
+    network_suffix: &[u8],
+    period: u32,
+    counter: u8,
+) -> [u8; 32] {
+    derive_product_context(
+        network_suffix,
+        LONG_TERM_STORAGE_CONTEXT_FAMILY,
+        period,
+        u32::from(counter),
+    )
 }
 
 /// The slot alias for our `entropy` at `(period, seq)`.
@@ -232,11 +228,12 @@ pub fn slot_alias(
 /// The PGAS claim alias for our `entropy` at `(day, slot_index)`.
 pub fn pgas_alias(
     entropy: [u8; 32],
+    network_suffix: &[u8],
     day: u32,
     slot_index: u32,
 ) -> Result<[u8; 32], StatementAllowanceError> {
     let secret = BandersnatchVrfVerifiable::new_secret(entropy);
-    let context = derive_pgas_context(day, slot_index);
+    let context = derive_pgas_context(network_suffix, day, slot_index);
     BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
         SlotError::AliasInContext {
             context: "PGAS claim slot",
@@ -249,11 +246,12 @@ pub fn pgas_alias(
 /// The long-term-storage slot alias for our `entropy` at `(period, counter)`.
 pub fn long_term_storage_alias(
     entropy: [u8; 32],
+    network_suffix: &[u8],
     period: u32,
     counter: u8,
 ) -> Result<[u8; 32], StatementAllowanceError> {
     let secret = BandersnatchVrfVerifiable::new_secret(entropy);
-    let context = derive_long_term_storage_context(period, counter);
+    let context = derive_long_term_storage_context(network_suffix, period, counter);
     BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
         SlotError::AliasInContext {
             context: "long-term-storage slot",
@@ -571,11 +569,12 @@ pub async fn scan_pgas_slot_excluding(
     metadata: &Metadata,
     collection: PersonhoodCollection,
     entropy: [u8; 32],
+    network_suffix: &[u8],
     day: u32,
     excluded: &[u32],
 ) -> Result<u32, StatementAllowanceError> {
     let max = max_pgas_claims(metadata, collection)?;
-    scan_pgas_slot_in(rpc, entropy, day, max, excluded).await
+    scan_pgas_slot_in(rpc, entropy, network_suffix, day, max, excluded).await
 }
 
 /// The scan itself, over a known slot count.
@@ -584,6 +583,7 @@ pub async fn scan_pgas_slot_excluding(
 async fn scan_pgas_slot_in(
     rpc: &RpcClient,
     entropy: [u8; 32],
+    network_suffix: &[u8],
     day: u32,
     max: u32,
     excluded: &[u32],
@@ -600,7 +600,8 @@ async fn scan_pgas_slot_in(
         let keys = batch
             .iter()
             .map(|&slot_index| {
-                pgas_alias(entropy, day, slot_index).map(|alias| claimed_gas_alias_key(day, &alias))
+                pgas_alias(entropy, network_suffix, day, slot_index)
+                    .map(|alias| claimed_gas_alias_key(day, &alias))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let claimed = rpc.get_storage_many(&keys).await?;
@@ -624,11 +625,12 @@ async fn scan_pgas_slot_in(
 pub async fn pgas_slot_is_claimed_at(
     rpc: &RpcClient,
     entropy: [u8; 32],
+    network_suffix: &[u8],
     day: u32,
     slot_index: u32,
     block_hash: &str,
 ) -> Result<bool, StatementAllowanceError> {
-    let alias = pgas_alias(entropy, day, slot_index)?;
+    let alias = pgas_alias(entropy, network_suffix, day, slot_index)?;
     let key = claimed_gas_alias_key(day, &alias);
     Ok(rpc.get_storage_at(&key, block_hash).await?.is_some())
 }
@@ -639,6 +641,7 @@ pub async fn scan_long_term_storage_counter_excluding(
     rpc: &RpcClient,
     metadata: &Metadata,
     entropy: [u8; 32],
+    network_suffix: &[u8],
     period: u32,
     excluded: &[u8],
 ) -> Result<u8, StatementAllowanceError> {
@@ -647,7 +650,7 @@ pub async fn scan_long_term_storage_counter_excluding(
         if excluded.contains(&counter) {
             continue;
         }
-        let alias = long_term_storage_alias(entropy, period, counter)?;
+        let alias = long_term_storage_alias(entropy, network_suffix, period, counter)?;
         let key = spent_long_term_storage_alias_key(period, &alias);
         if rpc.get_storage(&key).await?.is_none() {
             return Ok(counter);
@@ -977,7 +980,7 @@ mod tests {
         // keys that exist, so the absent ones are simply missing from `changes`.
         let claimed: Vec<String> = (0..3u32)
             .map(|slot_index| {
-                let alias = pgas_alias(ENTROPY, DAY, slot_index).unwrap();
+                let alias = pgas_alias(ENTROPY, NETWORK_SUFFIX, DAY, slot_index).unwrap();
                 format!(
                     r#"["0x{}","0x"]"#,
                     hex::encode(claimed_gas_alias_key(DAY, &alias))
@@ -991,8 +994,15 @@ mod tests {
         let scripted = ScriptedRpc::new(vec![response.as_str()]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
-        let chosen =
-            futures::executor::block_on(scan_pgas_slot_in(&rpc, ENTROPY, DAY, 40, &[])).unwrap();
+        let chosen = futures::executor::block_on(scan_pgas_slot_in(
+            &rpc,
+            ENTROPY,
+            NETWORK_SUFFIX,
+            DAY,
+            40,
+            &[],
+        ))
+        .unwrap();
 
         assert_eq!(chosen, 3, "the first free slot, in order");
         let calls = scripted.calls();
@@ -1015,6 +1025,7 @@ mod tests {
             futures::executor::block_on(pgas_slot_is_claimed_at(
                 &RpcClient::new(HostRpcClient::new(spent)),
                 ENTROPY,
+                NETWORK_SUFFIX,
                 DAY,
                 0,
                 "0xb10c",
@@ -1025,6 +1036,7 @@ mod tests {
             !futures::executor::block_on(pgas_slot_is_claimed_at(
                 &RpcClient::new(HostRpcClient::new(absent)),
                 ENTROPY,
+                NETWORK_SUFFIX,
                 DAY,
                 0,
                 "0xb10c",
@@ -1033,16 +1045,15 @@ mod tests {
         );
     }
 
-    /// The PGAS context is little-endian where the other two are big-endian, and
-    /// the runtime verifies the proof against these exact bytes.
     #[test]
-    fn pgas_context_layout_is_little_endian() {
-        let ctx = derive_pgas_context(0x0102_0304, 0x0506_0708);
+    fn pgas_context_matches_mobile_clients_and_runtime() {
+        let expected: [u8; 32] =
+            hex::decode("e47ba2c7eae3b97beabaeef8df599afd53e44ba9c2b851cd80850d3ed95a685b")
+                .unwrap()
+                .try_into()
+                .unwrap();
 
-        assert_eq!(&ctx[..8], b"pop:gas:");
-        assert_eq!(&ctx[8..12], &[0x04, 0x03, 0x02, 0x01]);
-        assert_eq!(&ctx[12..16], &[0x08, 0x07, 0x06, 0x05]);
-        assert_eq!(&ctx[16..], &[0u8; 16]);
+        assert_eq!(derive_pgas_context(NETWORK_SUFFIX, 100, 3), expected);
     }
 
     /// `ClaimedGasAliases` is `Identity(u32be day) ‖ Blake2_128Concat(alias)`.
@@ -1068,10 +1079,15 @@ mod tests {
     }
 
     #[test]
-    fn statement_slot_context_is_scoped_to_the_network() {
-        assert_ne!(
-            derive_slot_context(b"paseo", 100, 3),
-            derive_slot_context(b"polkadot", 100, 3),
+    fn product_contexts_are_scoped_to_the_network() {
+        assert_eq!(
+            [
+                derive_slot_context(b"paseo", 100, 3) != derive_slot_context(b"polkadot", 100, 3),
+                derive_long_term_storage_context(b"paseo", 100, 3)
+                    != derive_long_term_storage_context(b"polkadot", 100, 3),
+                derive_pgas_context(b"paseo", 100, 3) != derive_pgas_context(b"polkadot", 100, 3),
+            ],
+            [true; 3],
         );
     }
 
@@ -1140,12 +1156,52 @@ mod tests {
     }
 
     #[test]
-    fn long_term_storage_context_layout() {
-        let ctx = derive_long_term_storage_context(7, 3);
-        assert_eq!(&ctx[..24], b"pop:polkadot.net/rsc-lts");
-        assert_eq!(&ctx[24..28], &7u32.to_be_bytes());
-        assert_eq!(ctx[28], 3);
-        assert!(ctx[29..].iter().all(|&b| b == 0));
+    fn long_term_storage_context_matches_mobile_clients_and_runtime() {
+        let expected: [u8; 32] =
+            hex::decode("1b3fbe4dd813ea1e349878c9228c6823db8345207690ca4df656acb7fee81bd1")
+                .unwrap()
+                .try_into()
+                .unwrap();
+
+        assert_eq!(
+            derive_long_term_storage_context(NETWORK_SUFFIX, 100, 3),
+            expected,
+        );
+    }
+
+    #[test]
+    fn long_term_storage_scan_uses_the_requested_network_suffix() {
+        const ENTROPY: [u8; 32] = [0x11; 32];
+        const PERIOD: u32 = 7;
+        const SUFFIX: &[u8] = b"previewnet";
+
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let scripted = ScriptedRpc::new([r#""0x""#, "null"]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        let counter = futures::executor::block_on(scan_long_term_storage_counter_excluding(
+            &rpc,
+            &metadata,
+            ENTROPY,
+            SUFFIX,
+            PERIOD,
+            &[],
+        ))
+        .unwrap();
+        let calls = (0..=1)
+            .map(|counter| {
+                let alias = long_term_storage_alias(ENTROPY, SUFFIX, PERIOD, counter).unwrap();
+                (
+                    "state_getStorage".to_string(),
+                    format!(
+                        r#"["0x{}"]"#,
+                        hex::encode(spent_long_term_storage_alias_key(PERIOD, &alias))
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!((counter, scripted.calls()), (1, calls));
     }
 
     #[test]
