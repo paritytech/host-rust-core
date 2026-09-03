@@ -86,8 +86,8 @@ use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
 use truapi::api::{
-    Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Notifications, Payment, Permissions,
-    Preimage, ResourceAllocation, Signing, System, Theme,
+    Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
+    Permissions, Preimage, ResourceAllocation, Signing, System, Theme,
 };
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
@@ -150,6 +150,7 @@ use truapi::versioned::local_storage::{
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
+use truapi::versioned::locale::HostLocaleSubscribeItem;
 use truapi::versioned::notifications::{
     HostPushNotificationCancelError, HostPushNotificationCancelRequest,
     HostPushNotificationCancelResponse, HostPushNotificationError, HostPushNotificationRequest,
@@ -185,7 +186,9 @@ use truapi::versioned::signing::{
 };
 use truapi::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
-    HostNavigateToError, HostNavigateToRequest, HostNavigateToResponse,
+    HostGetProductContextError, HostGetProductContextRequest, HostGetProductContextResponse,
+    HostInfoError, HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
+    HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
 use truapi::{CallContext, CallError, CancellationReason, Subscription};
@@ -343,6 +346,8 @@ pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// Live OS permission state for this connection, when the host serves it.
+    permission_status: Option<Arc<dyn truapi_platform::PermissionStatusHost>>,
     authority: Arc<dyn ProductAuthority>,
     product: ProductContext,
     /// Stable per-product-runtime id used to scope long-lived chain follow
@@ -365,6 +370,7 @@ impl ProductRuntimeHost {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
+            permission_status: adapters.permission_status,
             authority,
             product,
             core_instance,
@@ -375,6 +381,20 @@ impl ProductRuntimeHost {
     /// Role-neutral services shared with the owning host runtime.
     pub(crate) fn services(&self) -> &Arc<RuntimeServices> {
         &self.services
+    }
+
+    /// Permission service for this product.
+    ///
+    /// Every device-reaching path is built here so a request and a status read
+    /// resolve the same two gates. Remote, identity-disclosure and
+    /// account-access decisions have no OS gate and are unaffected by the
+    /// status adapter.
+    fn permissions_service<'a>(
+        &'a self,
+        product_id: &'a str,
+    ) -> PermissionsService<'a, dyn Platform, dyn Platform> {
+        PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), product_id)
+            .with_status_host(self.permission_status.as_deref())
     }
 
     /// Trusted executable kind attached to this product connection.
@@ -411,6 +431,7 @@ impl ProductRuntimeHost {
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://example.invalid/dotli.png".to_string()),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             truapi_platform::PlatformInfo::default(),
             [0; 32],
@@ -458,6 +479,7 @@ impl ProductRuntimeHost {
     ) -> (Self, Arc<PairingHost>) {
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -469,6 +491,7 @@ impl ProductRuntimeHost {
             services,
             platform,
             chat_platform: None,
+            permission_status: None,
             authority: pairing_host.clone(),
             product,
             core_instance,
@@ -584,26 +607,32 @@ impl ProductRuntimeHost {
 
 impl ProductRuntimeHost {
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_status"))]
     pub(crate) async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.authorization_status(&request).await
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_statuses"))]
     pub(crate) async fn permission_authorization_statuses(
         &self,
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.authorization_statuses(&requests).await
     }
 
@@ -616,8 +645,7 @@ impl ProductRuntimeHost {
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.set_authorization_status(&request, status).await
     }
 
@@ -627,8 +655,7 @@ impl ProductRuntimeHost {
         permission: v01::RemotePermission,
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service
             .check_or_prompt_remote(v01::RemotePermissionRequest { permission })
             .await
@@ -663,8 +690,7 @@ impl ProductRuntimeHost {
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         let cached = service
             .authorization_status(&request)
             .await
@@ -817,6 +843,21 @@ impl System for ProductRuntimeHost {
             .map_err(|err| CallError::Domain(HostFeatureSupportedError::V1(err)))
     }
 
+    #[instrument(skip_all, fields(runtime.method = "system.host_info"))]
+    async fn host_info(
+        &self,
+        _cx: &CallContext,
+        request: HostInfoRequest,
+    ) -> Result<HostInfoResponse, CallError<HostInfoError>> {
+        let HostInfoRequest::V1 = request;
+        let info = &self.services.host_info;
+        Ok(HostInfoResponse::V1(v01::HostInfo {
+            platform: info.platform.clone(),
+            name: info.name.clone(),
+            version: info.version.clone().unwrap_or_default(),
+        }))
+    }
+
     #[instrument(skip_all, fields(runtime.method = "system.navigate_to"))]
     async fn navigate_to(
         &self,
@@ -859,6 +900,19 @@ impl System for ProductRuntimeHost {
             .map(|()| HostNavigateToResponse::V1)
             .map_err(|err| CallError::Domain(HostNavigateToError::V1(err)))
     }
+
+    #[instrument(skip_all, fields(runtime.method = "system.get_product_context"))]
+    async fn get_product_context(
+        &self,
+        _cx: &CallContext,
+        _request: HostGetProductContextRequest,
+    ) -> Result<HostGetProductContextResponse, CallError<HostGetProductContextError>> {
+        Ok(HostGetProductContextResponse::V1(
+            v01::HostGetProductContextResponse {
+                product_id: self.product.product_id.clone(),
+            },
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -875,8 +929,7 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
         let HostDevicePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         match service.check_or_prompt_device(inner).await {
             Ok(decision) => Ok(HostDevicePermissionResponse::V1(
                 v01::HostDevicePermissionResponse {
@@ -897,8 +950,7 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
         let RemotePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         match service.check_or_prompt_remote(inner).await {
             Ok(decision) => Ok(RemotePermissionResponse::V1(
                 v01::RemotePermissionResponse {
@@ -2837,6 +2889,27 @@ impl Theme for ProductRuntimeHost {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Locale
+// ---------------------------------------------------------------------------
+
+#[truapi::async_trait]
+impl Locale for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "locale.subscribe"))]
+    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
+        let stream = self.platform.subscribe_locale().filter_map(|item| async {
+            match item {
+                Ok(item) => Some(HostLocaleSubscribeItem::V1(item)),
+                Err(error) => {
+                    warn!(reason = %error.reason, "locale platform stream failed");
+                    None
+                }
+            }
+        });
+        Subscription::new(Box::pin(stream))
+    }
+}
+
 // `Notifications` delegates to the platform so hosts can own scheduling and
 // cancellation while the core preserves the typed TrUAPI wire shape.
 #[truapi::async_trait]
@@ -2890,14 +2963,6 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::Ordering;
     use truapi_platform::{AuthState, CoreStorageKey, PermissionAuthorizationRequest};
-
-    fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !condition() {
-            assert!(std::time::Instant::now() < deadline, "{message}");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    }
 
     fn test_product_subtree(product_id: &str) -> [u8; 32] {
         let root =
@@ -2974,6 +3039,36 @@ mod tests {
         let response = futures::executor::block_on(host.feature_supported(&cx, request)).unwrap();
         let HostFeatureSupportedResponse::V1(inner) = response;
         assert!(inner.supported);
+    }
+
+    #[test]
+    fn get_product_context_returns_the_runtime_canonical_product_id() {
+        for (configured, expected) in [
+            (" TrUAPI-Playground.DOT ", "truapi-playground.dot"),
+            ("truapi-playground.paseo", "truapi-playground.paseo"),
+            ("truapi-playground.testnet", "truapi-playground.testnet"),
+            ("localhost", "localhost"),
+            ("LOCALHOST:3000", "localhost:3000"),
+        ] {
+            let host = ProductRuntimeHost::new(
+                stub_platform(),
+                runtime_config(configured),
+                test_spawner(),
+            );
+            let response = futures::executor::block_on(
+                host.get_product_context(&CallContext::default(), HostGetProductContextRequest::V1),
+            )
+            .unwrap();
+            let HostGetProductContextResponse::V1(context) = response;
+
+            assert_eq!(
+                context,
+                v01::HostGetProductContextResponse {
+                    product_id: expected.to_string(),
+                },
+                "configured product id {configured:?}",
+            );
+        }
     }
 
     #[test]
@@ -3095,6 +3190,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3237,6 +3333,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3320,6 +3417,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3404,6 +3502,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3450,6 +3549,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -6924,6 +7024,115 @@ mod tests {
     }
 
     #[test]
+    fn session_store_sync_announces_a_signed_out_boot() {
+        let platform = Arc::new(StubPlatform::default());
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        pairing_host
+            .clone()
+            .start_session_store_sync_for_tests(test_spawner());
+
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the signed-out state",
+        );
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected]
+        );
+    }
+
+    #[test]
+    fn session_store_sync_announces_a_restored_boot_once() {
+        let stored = sso_session_info();
+        let platform = Arc::new(StubPlatform {
+            session_blob: Some(crate::host_logic::session::encode_persisted_session(
+                &stored,
+            )),
+            ..Default::default()
+        });
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        pairing_host
+            .clone()
+            .start_session_store_sync_for_tests(test_spawner());
+
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the restored session",
+        );
+        futures::executor::block_on(pairing_host.activate_stored_session())
+            .expect("valid stored session activates");
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(connected_session_ui_info(&stored))]
+        );
+    }
+
+    #[test]
+    fn session_store_sync_stays_silent_on_an_unchanged_tick() {
+        let stored = sso_session_info();
+        let platform = Arc::new(StubPlatform {
+            session_blob: Some(crate::host_logic::session::encode_persisted_session(
+                &stored,
+            )),
+            ..Default::default()
+        });
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        pairing_host
+            .clone()
+            .start_session_store_sync_for_tests(test_spawner());
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the restored session",
+        );
+
+        pairing_host.notify_session_store_changed();
+        wait_until(
+            || pairing_host.session_store_change_ticks_for_tests() == 1,
+            "session store sync did not process the change tick",
+        );
+
+        // The store still holds the same session, so the tick is not a
+        // transition and must not repeat the opening state.
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(connected_session_ui_info(&stored))]
+        );
+    }
+
+    #[test]
     fn session_store_sync_replaces_valid_blob_and_broadcasts_connected() {
         let mut replacement = sso_session_info();
         replacement.public_key = [0x44; 32];
@@ -6972,16 +7181,24 @@ mod tests {
         );
 
         assert!(host.test_session_state().current().is_none());
-        // `set_session` bypasses the auth state cell, so the cell never left
-        // `Disconnected` and clearing the invalid blob emits nothing. Only a
-        // session activation announces an unchanged state; a store-sync tick
-        // that finds nothing must not flash signed out at a signed-in host.
-        assert!(
-            platform
+        // `set_session` bypasses the auth state cell, so the clear is not a
+        // transition; the boot tick's announcement is the only emission.
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "boot reconcile did not report the cleared session",
+        );
+        assert_eq!(
+            *platform
                 .auth_states
                 .lock()
-                .expect("auth state list mutex poisoned")
-                .is_empty()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected]
         );
     }
 
@@ -7010,8 +7227,8 @@ mod tests {
         assert_eq!(*session_clears.lock().unwrap(), 1);
     }
 
-    /// A persistently failing read clears the backing store once for the
-    /// initial sync tick. Further clears require explicit host notifications.
+    /// A persistently failing read clears the backing store once at boot.
+    /// Further clears require explicit host notifications.
     #[test]
     fn session_store_sync_clears_once_on_initial_persistent_read_error() {
         let session_clears = Arc::new(Mutex::new(0));

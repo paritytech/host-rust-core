@@ -28,6 +28,17 @@ pub enum DeviceCommand {
     Remove([u8; 32]),
 }
 
+/// Operation selected through `/approval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalCommand {
+    /// Print the current approval mode.
+    Current,
+    /// Prompt for every confirmation.
+    Manual,
+    /// Approve every confirmation without prompting.
+    Automatic,
+}
+
 /// Operation selected through `/session`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionCommand {
@@ -41,6 +52,17 @@ pub enum SessionCommand {
     Clear(sessions::SessionClearTarget),
     /// Import an existing signer and initialize its username-owned session.
     ImportMnemonic(SecretMnemonic),
+}
+
+/// Pairing input selected through `/pair`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairCommand {
+    /// Acquire a pairing deeplink from a copied QR image.
+    Scan,
+    /// Decode a pairing deeplink from an image file.
+    Image(PathBuf),
+    /// Answer the supplied Polkadot Mobile pairing deeplink.
+    Deeplink(String),
 }
 
 /// A mnemonic accepted by the command parser without exposing it through
@@ -108,10 +130,12 @@ pub fn mask_mnemonic(command: &str) -> Option<String> {
 /// A command accepted by the signing-host command bar or `exec` mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellCommand {
-    /// Answer a Polkadot Mobile pairing deeplink.
-    Pair(String),
+    /// Scan or answer a Polkadot Mobile pairing request.
+    Pair(PairCommand),
     /// Inspect or remove paired devices for the active managed session.
     Devices(DeviceCommand),
+    /// Inspect or change how future confirmations are approved.
+    Approval(ApprovalCommand),
     /// Edit the remembered product script, or run an explicit one, through the
     /// public frame endpoint.
     Script(Option<PathBuf>),
@@ -153,12 +177,21 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
     match name {
         "/pair" => {
             if argument.is_empty() {
-                return Err("usage: /pair <polkadotapp://pair?...>".to_string());
+                return Ok(ShellCommand::Pair(PairCommand::Scan));
             }
-            if !argument.starts_with("polkadotapp://pair?") {
-                return Err("/pair expects a polkadotapp://pair?... URL".to_string());
+            if argument.starts_with("polkadotapp://pair?") {
+                return Ok(ShellCommand::Pair(PairCommand::Deeplink(
+                    argument.to_string(),
+                )));
             }
-            Ok(ShellCommand::Pair(argument.to_string()))
+            let arguments = shlex::split(argument)
+                .ok_or_else(|| "invalid /pair image path quoting".to_string())?;
+            if arguments.len() != 1 || argument.contains("://") {
+                return Err("usage: /pair [<image-path> | <polkadotapp://pair?...>]".to_string());
+            }
+            Ok(ShellCommand::Pair(PairCommand::Image(PathBuf::from(
+                &arguments[0],
+            ))))
         }
         "/devices" => {
             if argument.is_empty() || argument == "--list" {
@@ -176,6 +209,12 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             }
             Err("usage: /devices [--list | --remove <statement-account-id>]".to_string())
         }
+        "/approval" => match argument {
+            "" => Ok(ShellCommand::Approval(ApprovalCommand::Current)),
+            "manual" => Ok(ShellCommand::Approval(ApprovalCommand::Manual)),
+            "automatic" => Ok(ShellCommand::Approval(ApprovalCommand::Automatic)),
+            _ => Err("usage: /approval [manual|automatic]".to_string()),
+        },
         "/script" => {
             if argument.is_empty() {
                 return Ok(ShellCommand::Script(None));
@@ -290,8 +329,9 @@ pub struct Completion {
 }
 
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
-    ("/pair", "answer a Polkadot Mobile pairing URL"),
+    ("/pair", "paste a pairing QR image or provide a file or URL"),
     ("/devices", "list or remove paired devices"),
+    ("/approval", "show or change confirmation approval"),
     ("/script", "edit the last or run an existing product script"),
     ("/log", "set error, warn, info, debug, or trace"),
     ("/product", "show or switch the active product"),
@@ -323,6 +363,11 @@ const LOG_ARGUMENTS: &[(&str, &str)] = &[
     ("trace", "show all host and protocol activity"),
 ];
 
+const APPROVAL_ARGUMENTS: &[(&str, &str)] = &[
+    ("manual", "prompt for every confirmation"),
+    ("automatic", "approve confirmations automatically"),
+];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum CommandScope {
     PairingHost,
@@ -340,6 +385,11 @@ fn completions_for_scope(
     }
     if let Some(prefix) = input.strip_prefix("/log ") {
         return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
+    }
+    if scope == CommandScope::SigningHost
+        && let Some(prefix) = input.strip_prefix("/approval ")
+    {
+        return fixed_argument_completions("/approval", prefix, APPROVAL_ARGUMENTS);
     }
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/devices ")
@@ -751,9 +801,14 @@ pub fn parse_approval(input: &str) -> Option<bool> {
 
 /// Text displayed by `/help` in either presentation mode.
 pub const HELP_TEXT: &str = "\
+/pair                   paste or drop a pairing QR image
+/pair <image-path>      read a pairing QR image file
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
 /devices --remove <id>  remove one paired device by statement account ID
+/approval               show the current confirmation approval mode
+/approval manual        prompt for every future confirmation
+/approval automatic     approve every future confirmation automatically
 /script                 edit and run the session's last Bun TypeScript script
 /script <path>          run an existing JS/TS product script with Bun
 /log <level>            set error, warn, info, debug, or trace
@@ -771,7 +826,7 @@ pub const HELP_TEXT: &str = "\
 /copy                   copy the transcript to the clipboard
 /quit                   shut down the signing host
 
-Keys: Up/Down completion or history, Tab complete, Ctrl-U/Ctrl-D scroll,
+Keys: Ctrl-V or terminal paste for a pairing image, Up/Down completion or history, Tab complete, Ctrl-U/Ctrl-D scroll,
 Esc close completion or reject approval, Ctrl-C clear/cancel/quit";
 
 /// Help shown by the pairing-host command bar.
@@ -801,10 +856,20 @@ mod tests {
     #[test]
     fn parses_all_operational_commands() {
         assert_eq!(
+            parse_command("/pair"),
+            Ok(ShellCommand::Pair(PairCommand::Scan))
+        );
+        assert_eq!(
             parse_command("/pair polkadotapp://pair?handshake=01"),
-            Ok(ShellCommand::Pair(
+            Ok(ShellCommand::Pair(PairCommand::Deeplink(
                 "polkadotapp://pair?handshake=01".to_string()
-            ))
+            )))
+        );
+        assert_eq!(
+            parse_command(r#"/pair "/tmp/pairing QR.png""#),
+            Ok(ShellCommand::Pair(PairCommand::Image(PathBuf::from(
+                "/tmp/pairing QR.png"
+            ))))
         );
         assert_eq!(
             parse_command("/script scripts/my smoke.ts"),
@@ -871,6 +936,26 @@ mod tests {
             panic!("unexpected mnemonic command")
         };
         assert_eq!(mnemonic.expose_secret(), MNEMONIC);
+    }
+
+    #[test]
+    fn parses_runtime_approval_commands() {
+        assert_eq!(
+            parse_command("/approval"),
+            Ok(ShellCommand::Approval(ApprovalCommand::Current))
+        );
+        assert_eq!(
+            parse_command("/approval manual"),
+            Ok(ShellCommand::Approval(ApprovalCommand::Manual))
+        );
+        assert_eq!(
+            parse_command("/approval automatic"),
+            Ok(ShellCommand::Approval(ApprovalCommand::Automatic))
+        );
+        assert_eq!(
+            parse_command("/approval sometimes").unwrap_err(),
+            "usage: /approval [manual|automatic]"
+        );
     }
 
     #[test]
@@ -976,6 +1061,22 @@ mod tests {
     }
 
     #[test]
+    fn pair_command_advertises_image_paste_file_and_deeplink_inputs() {
+        assert_eq!(
+            completions_for_scope("/pair", &[], CommandScope::SigningHost),
+            vec![Completion {
+                value: "/pair".to_string(),
+                description: "paste a pairing QR image or provide a file or URL",
+            }]
+        );
+        assert!(HELP_TEXT.starts_with(
+            "/pair                   paste or drop a pairing QR image\n\
+             /pair <image-path>      read a pairing QR image file\n\
+             /pair <url>             answer a Polkadot Mobile pairing URL"
+        ));
+    }
+
+    #[test]
     fn script_completion_lists_matching_filesystem_paths() {
         let command = completions_for_scope("/script", &[], CommandScope::SigningHost);
         assert_eq!(command.len(), 1);
@@ -1025,6 +1126,24 @@ mod tests {
             ]
         );
         assert!(completions_for_scope("/devices", &[], CommandScope::PairingHost).is_empty());
+    }
+
+    #[test]
+    fn approval_completion_is_signing_host_only() {
+        assert_eq!(
+            completions_for_scope("/approval ", &[], CommandScope::SigningHost),
+            vec![
+                Completion {
+                    value: "/approval manual".to_string(),
+                    description: "prompt for every confirmation",
+                },
+                Completion {
+                    value: "/approval automatic".to_string(),
+                    description: "approve confirmations automatically",
+                },
+            ]
+        );
+        assert!(completions_for_scope("/appro", &[], CommandScope::PairingHost).is_empty());
     }
 
     #[test]

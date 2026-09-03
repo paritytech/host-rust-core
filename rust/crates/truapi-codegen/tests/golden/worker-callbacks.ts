@@ -23,6 +23,7 @@ export const CALLBACK_NAMES = [
   "navigateTo",
   "pushNotification",
   "cancelNotification",
+  "devicePermissionStatus",
   "devicePermission",
   "remotePermission",
   "read",
@@ -34,6 +35,7 @@ export type CallbackName = (typeof CALLBACK_NAMES)[number];
 
 export const SUBSCRIPTION_NAMES = [
   "subscribeChatRooms",
+  "subscribeLocale",
   "lookupPreimage",
   "subscribeTheme",
 ] as const;
@@ -139,8 +141,12 @@ function rawCallbacks(
 
 function subscriptionRawCallbacks(
   bridge: WorkerCallbackBridge,
-): Required<Pick<RawCallbacks, "lookupPreimage" | "subscribeTheme">> {
+): Required<
+  Pick<RawCallbacks, "subscribeLocale" | "lookupPreimage" | "subscribeTheme">
+> {
   return {
+    subscribeLocale: (sendItem, sendError) =>
+      bridge.startSubscription("subscribeLocale", null, sendItem, sendError),
     lookupPreimage: (key, sendItem, sendError) =>
       bridge.startSubscription("lookupPreimage", key, sendItem, sendError),
     subscribeTheme: (sendItem, sendError) =>
@@ -185,6 +191,17 @@ function chatRawCallbacks(
   };
 }
 
+function permissionStatusRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "devicePermissionStatus">> {
+  return {
+    devicePermissionStatus: (request) =>
+      bridge.callbackRequest("devicePermissionStatus", [request]) as ReturnType<
+        Required<RawCallbacks>["devicePermissionStatus"]
+      >,
+  };
+}
+
 /**
  * Optional capabilities the main-thread host actually serves. A
  * capability left out here is not proxied into the worker, so the
@@ -193,6 +210,8 @@ function chatRawCallbacks(
 export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   chat?: boolean;
+  /** Whether the host serves this capability. */
+  permissionStatus?: boolean;
 }
 
 export function createWorkerRawCallbacks(
@@ -205,6 +224,8 @@ export function createWorkerRawCallbacks(
     chainConnect: bridge.chainConnect,
   };
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
+  if (capabilities.permissionStatus)
+    Object.assign(callbacks, permissionStatusRawCallbacks(bridge));
   return callbacks;
 }
 
@@ -222,6 +243,8 @@ export function startRawSubscription(
         return undefined;
       }
       return callbacks.subscribeChatRooms?.(payload, sendItem, sendError);
+    case "subscribeLocale":
+      return callbacks.subscribeLocale(sendItem, sendError);
     case "lookupPreimage":
       if (payload === null) {
         console.warn(`[truapi worker] ${name} requires payload`);

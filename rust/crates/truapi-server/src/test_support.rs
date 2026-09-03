@@ -27,13 +27,24 @@ use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest
 use truapi_platform::{
     AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
-    JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
-    PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
-    ProductContext, ProductStorage as PlatformProductStorage, ProductSubtreeReview,
-    ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
-    UserConfirmation, UserConfirmationReview,
+    JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
+    Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
+    ProductSubtreeReview, ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview,
+    ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
+
+/// Block until `condition` holds, failing with `message` after two seconds.
+/// Background runtime tasks run on their own threads, so a test that observes
+/// their effects polls for them instead of assuming an ordering.
+pub(crate) fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "{message}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
 
 /// Test spawner that matches the current target.
 pub(crate) fn test_spawner() -> Spawner {
@@ -208,6 +219,7 @@ pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductCon
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://example.invalid/dotli.png".to_string()),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             PlatformInfo::default(),
             [0; 32],
@@ -1508,6 +1520,18 @@ impl ThemeHost for StubPlatform {
             Ok(v01::HostThemeSubscribeItem {
                 name: v01::ThemeName::Custom("midnight".to_string()),
                 variant: v01::ThemeVariant::Dark,
+            })
+        }))
+    }
+}
+
+impl LocaleHost for StubPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        Box::pin(stream::once(async {
+            Ok(v01::HostLocaleSubscribeItem {
+                language_tag: "zh-Hans".to_string(),
             })
         }))
     }

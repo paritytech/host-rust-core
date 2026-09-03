@@ -16,6 +16,8 @@
 //! reconstruct string action tags on every frame.
 
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
+use truapi::CallError;
+use truapi::versioned::{FromLatest, IntoLatest, Versioned};
 
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds, WIRE_TABLE, WireKind};
 
@@ -26,6 +28,39 @@ pub struct ProtocolMessage {
     pub request_id: String,
     /// Tagged payload describing the frame kind and SCALE bytes.
     pub payload: Payload,
+}
+
+/// Reserved discriminant for method-independent protocol errors.
+pub const PROTOCOL_ERROR_ID: u8 = 255;
+
+/// Versioned payload carried by [`PROTOCOL_ERROR_ID`] frames.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum VersionedProtocolError {
+    /// Initial protocol error shape.
+    #[codec(index = 0)]
+    V1(ProtocolErrorV1),
+}
+
+/// Protocol errors supported by codec version 1.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum ProtocolErrorV1 {
+    /// The receiver does not support the incoming message discriminant.
+    #[codec(index = 0)]
+    UnsupportedMessage {
+        /// Unsupported wire discriminant from the incoming frame.
+        discriminant: u8,
+    },
+}
+
+pub(crate) fn decode_protocol_error_payload(
+    payload: &[u8],
+) -> Result<VersionedProtocolError, CodecError> {
+    let mut input = payload;
+    let error = VersionedProtocolError::decode(&mut input)?;
+    if !input.is_empty() {
+        return Err("protocol error payload has trailing bytes".into());
+    }
+    Ok(error)
 }
 
 /// Encode `Versioned<Result<Ok, _>>` from a versioned success wrapper.
@@ -40,6 +75,27 @@ pub fn encode_versioned_ok_payload<T: Encode>(value: T) -> Vec<u8> {
 /// Encode `Versioned<Result<(), _>>` for methods whose success type is unit.
 pub fn encode_versioned_unit_ok_payload(version: u8) -> Vec<u8> {
     vec![version_index(version), 0]
+}
+
+/// Downgrade a call error's domain payload to the version its caller speaks.
+///
+/// A handler answers in latest terms. The frame's version byte alone is not
+/// enough: the domain payload carries its own variant tag, so without this a
+/// peer that asked in v0.1 receives a v0.2-tagged error it cannot decode. The
+/// framework variants carry no version and pass through.
+pub fn downgrade_call_error<E>(error: CallError<E>, version: u8) -> CallError<E>
+where
+    E: Versioned + IntoLatest + FromLatest,
+{
+    match error {
+        CallError::Domain(domain) => {
+            CallError::Domain(E::from_latest(domain.into_latest(), version))
+        }
+        CallError::Denied => CallError::Denied,
+        CallError::Unsupported => CallError::Unsupported,
+        CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
+        CallError::HostFailure { reason } => CallError::HostFailure { reason },
+    }
 }
 
 /// Encode `Versioned<Result<_, Err>>` from an ordinary error value.
@@ -90,13 +146,15 @@ impl Decode for ProtocolMessage {
     fn decode<I: Input>(input: &mut I) -> Result<Self, CodecError> {
         let request_id = String::decode(input)?;
         let id = u8::decode(input)?;
-        // Unknown ids are accepted here; routing is deferred to dispatch,
-        // which drops frames with no registered handler.
+        // Unknown ids are accepted here; routing is deferred to dispatch.
         let remaining = input
             .remaining_len()?
             .ok_or_else(|| CodecError::from("frame input must report remaining length"))?;
         let mut value = vec![0u8; remaining];
         input.read(&mut value)?;
+        if id == PROTOCOL_ERROR_ID {
+            decode_protocol_error_payload(&value)?;
+        }
         Ok(ProtocolMessage {
             request_id,
             payload: Payload { id, value },
@@ -231,7 +289,7 @@ mod tests {
     }
 
     /// An unknown discriminant is no longer rejected at decode; routing is
-    /// deferred to dispatch (which drops frames with no registered handler).
+    /// deferred to dispatch.
     #[test]
     fn unknown_discriminant_decodes_ok() {
         let mut bytes = Vec::new();
@@ -241,6 +299,34 @@ mod tests {
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("unknown id must decode");
         assert_eq!(decoded.payload.id, 250);
         assert_eq!(decoded.payload.value, vec![0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn protocol_error_payload_has_stable_versioned_shape() {
+        let error =
+            VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage { discriminant: 250 });
+        let encoded = error.encode();
+        let decoded = VersionedProtocolError::decode(&mut &encoded[..]).expect("decode");
+        assert_eq!((encoded, decoded), (vec![0, 0, 250], error));
+    }
+
+    #[test]
+    fn malformed_protocol_error_payloads_fail_frame_decoding() {
+        for payload in [
+            vec![0, 0],
+            vec![0, 0, 250, 0],
+            vec![1, 0, 250],
+            vec![0, 1, 250],
+        ] {
+            let message = ProtocolMessage {
+                request_id: "p:1".into(),
+                payload: Payload {
+                    id: PROTOCOL_ERROR_ID,
+                    value: payload,
+                },
+            };
+            assert!(ProtocolMessage::decode(&mut message.encode().as_slice()).is_err());
+        }
     }
 
     /// All four subscription phases round-trip through the codec. Catches a
@@ -393,6 +479,110 @@ mod tests {
             encode_versioned_ok_payload(TestVersioned::V1(7u32)),
             expected
         );
+    }
+
+    /// A two-version error envelope, standing in for any real one. `V2` adds a
+    /// variant `V1` has no room for, which is the case the downgrade exists for.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode)]
+    enum ProbeError {
+        V1(ProbeErrorV1),
+        V2(ProbeErrorV2),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Encode)]
+    enum ProbeErrorV1 {
+        Full,
+        Unknown,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Encode)]
+    enum ProbeErrorV2 {
+        Full,
+        Refused,
+        Unknown,
+    }
+
+    impl Versioned for ProbeError {
+        type Latest = ProbeErrorV2;
+        const LATEST: u8 = 2;
+        fn version(&self) -> u8 {
+            match self {
+                Self::V1(_) => 1,
+                Self::V2(_) => 2,
+            }
+        }
+    }
+
+    impl IntoLatest for ProbeError {
+        fn into_latest(self) -> Self::Latest {
+            match self {
+                Self::V1(ProbeErrorV1::Full) => ProbeErrorV2::Full,
+                Self::V1(ProbeErrorV1::Unknown) => ProbeErrorV2::Unknown,
+                Self::V2(latest) => latest,
+            }
+        }
+    }
+
+    impl FromLatest for ProbeError {
+        fn from_latest(latest: Self::Latest, target: u8) -> Self {
+            if target >= 2 {
+                return Self::V2(latest);
+            }
+            Self::V1(match latest {
+                ProbeErrorV2::Full => ProbeErrorV1::Full,
+                ProbeErrorV2::Refused | ProbeErrorV2::Unknown => ProbeErrorV1::Unknown,
+            })
+        }
+    }
+
+    #[test]
+    fn a_domain_error_is_downgraded_to_the_callers_version() {
+        // Without this the frame says v0.1 while the payload inside is still
+        // v0.2-tagged, and the caller cannot decode its own response.
+        assert_eq!(
+            downgrade_call_error(CallError::Domain(ProbeError::V2(ProbeErrorV2::Full)), 1),
+            CallError::Domain(ProbeError::V1(ProbeErrorV1::Full))
+        );
+        assert_eq!(
+            downgrade_call_error(CallError::Domain(ProbeError::V2(ProbeErrorV2::Full)), 2),
+            CallError::Domain(ProbeError::V2(ProbeErrorV2::Full))
+        );
+    }
+
+    #[test]
+    fn a_variant_the_caller_has_no_room_for_collapses_rather_than_leaking() {
+        // `Refused` exists only in v0.2. A v0.1 caller must get something it can
+        // decode, not a variant index past the end of its enum.
+        assert_eq!(
+            downgrade_call_error(CallError::Domain(ProbeError::V2(ProbeErrorV2::Refused)), 1),
+            CallError::Domain(ProbeError::V1(ProbeErrorV1::Unknown))
+        );
+    }
+
+    #[test]
+    fn framework_variants_pass_through_every_version() {
+        // They carry no payload, so there is nothing to downgrade.
+        for version in [1u8, 2u8] {
+            assert_eq!(
+                downgrade_call_error::<ProbeError>(CallError::Denied, version),
+                CallError::Denied
+            );
+            assert_eq!(
+                downgrade_call_error::<ProbeError>(CallError::Unsupported, version),
+                CallError::Unsupported
+            );
+            assert_eq!(
+                downgrade_call_error::<ProbeError>(
+                    CallError::HostFailure {
+                        reason: "boom".to_string()
+                    },
+                    version
+                ),
+                CallError::HostFailure {
+                    reason: "boom".to_string()
+                }
+            );
+        }
     }
 
     #[test]

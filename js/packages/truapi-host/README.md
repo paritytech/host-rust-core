@@ -92,8 +92,14 @@ const callbacks: HostCallbacks = {
   notifications,
   // ...required groups...
   chat, // optional: leave it out and chat products get `Unsupported`
+  permissionStatus, // optional: reports live OS permission state
 };
 ```
+
+`permissionStatus.devicePermissionStatus` must answer from the OS without
+prompting. Supply it and the core revalidates a stored device grant against it
+before answering the product, so a capability the OS has since revoked or reset
+stops reading as usable. Omit it and a stored grant answers on its own.
 
 Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
 reported to the worker in its `init` message, so the core sees the same
@@ -206,14 +212,15 @@ and then opens one provider per product id.
 
 ## Session lifecycle
 
-The core owns the session; the host owns persistence and drives the transitions
-below. Every one of them reports the resulting `AuthState` through the `auth`
-callback, including when nothing changed — so a host may await an answer at boot
-rather than treating silence as "signed out".
+The core owns the session; the host owns persistence. At boot the core restores
+the `AuthSession` slot on its own and reports the outcome through the `auth`
+callback, `Disconnected` included, so a host waits for the first
+`authStateChanged` instead of treating silence as "signed out". Every
+transition below reports the resulting `AuthState` the same way.
 
 | Runtime method                  | Use it to                                                                    |
 | ------------------------------- | ---------------------------------------------------------------------------- |
-| `activateStoredSession()`       | Restore the session in the core's `AuthSession` slot. Await before routing.  |
+| `activateStoredSession()`       | Await the restore of the `AuthSession` slot before opening providers.        |
 | `activateExternalSession(blob)` | Install a session the host holds itself, without writing it to core storage. |
 | `notifySessionStoreChanged()`   | Tell the core the persisted blob may have changed; it re-reads it.           |
 | `disconnectSession()`           | Log out: clears the session and notifies the peer.                           |

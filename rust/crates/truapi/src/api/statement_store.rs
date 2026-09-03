@@ -57,7 +57,7 @@ pub trait StatementStore: Send + Sync {
     /// const page = await waitForStatement();
     /// console.log("subscribe received", page);
     /// ```
-    #[wire(start_id = 56)]
+    #[wire(start_id = 56, sensitive)]
     async fn subscribe(
         &self,
         _cx: &CallContext,
@@ -77,6 +77,9 @@ pub trait StatementStore: Send + Sync {
     /// when their signing channel cannot sign statement proof payloads exactly.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// // Expiry packs a Unix-seconds timestamp in the high 32 bits; a day out
     /// // keeps the statement unexpired when it is submitted.
     /// const expiry = BigInt(Math.floor(Date.now() / 1000) + 86400) << 32n;
@@ -85,7 +88,7 @@ pub trait StatementStore: Send + Sync {
     /// const statement = { expiry, topics: [topic] };
     /// const result = await truapi.statementStore.createProof({
     ///   productAccountId: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   statement,
@@ -96,7 +99,7 @@ pub trait StatementStore: Send + Sync {
     ///   console.log("proof created:", result.value);
     /// }
     /// ```
-    #[wire(request_id = 60)]
+    #[wire(request_id = 60, sensitive)]
     async fn create_proof(
         &self,
         _cx: &CallContext,
@@ -123,7 +126,7 @@ pub trait StatementStore: Send + Sync {
     /// assert(result.isOk(), "createProof failed:", result);
     /// console.log("proof created:", result.value);
     /// ```
-    #[wire(request_id = 132)]
+    #[wire(request_id = 132, sensitive)]
     async fn create_proof_authorized(
         &self,
         _cx: &CallContext,
@@ -155,7 +158,7 @@ pub trait StatementStore: Send + Sync {
     /// assert(result.isOk(), "submit failed:", result);
     /// console.log("statement submitted");
     /// ```
-    #[wire(request_id = 62)]
+    #[wire(request_id = 62, sensitive)]
     async fn submit(
         &self,
         _cx: &CallContext,

@@ -4,13 +4,9 @@
 // the sibling `truapi_server.swift` file) owns wire decoding, request
 // routing, subscription lifecycle, and platform trait dispatch.
 //
-// This file exposes:
-//
-//   * `TrUAPIHostCore` - owning wrapper around the UniFFI-generated
-//     `NativeTrUApiCore`. Takes `HostCallbacks` directly and exposes
-//     session + WS-bridge controls.
-//   * `LocalhostBridgeBootstrap` - small JS snippet that publishes the WS
-//     bridge endpoint to the product page so it can dial back in.
+// This file exposes the process-owned `TrUAPIHostRuntime`, its independently
+// scoped `TrUAPIProductExecution` connections, and the
+// `LocalhostBridgeBootstrap` helper used to publish an execution's WS endpoint.
 //
 // Products running inside a `WKWebView` connect to the Rust core via the
 // localhost WebSocket bridge. The bootstrap script publishes the URL
@@ -22,88 +18,6 @@ import Foundation
 /// Package metadata.
 public enum TrUAPIHost {
     public static let version = "0.1.0"
-}
-
-/// Deeplink scheme used when the Rust core builds SSO pairing payloads.
-public enum PairingDeeplinkScheme: Sendable {
-    case polkadotApp
-    case polkadotAppDev
-
-    fileprivate var native: NativePairingDeeplinkScheme {
-        switch self {
-        case .polkadotApp:
-            return .polkadotApp
-        case .polkadotAppDev:
-            return .polkadotAppDev
-        }
-    }
-}
-
-/// Static product and pairing config supplied before the Rust core handles
-/// product calls. One core instance represents one product identity.
-///
-/// `hostName`, `hostIcon`, `hostVersion`, `platformType`, and
-/// `platformVersion` describe the host to the wallet during SSO pairing.
-/// `peopleChainGenesisHash` and `bulletinChainGenesisHash` must each be
-/// exactly 32 bytes.
-public struct RuntimeConfig: Sendable {
-    public let productId: String
-    public let executionKind: ProductExecutionKind
-    public let hostName: String
-    public let hostIcon: String?
-    public let hostVersion: String?
-    public let platformType: String?
-    public let platformVersion: String?
-    public let peopleChainGenesisHash: Data
-    public let bulletinChainGenesisHash: Data
-    public let localSessionSecret: Data?
-    public let localSessionLiteUsername: String?
-    public let pairingDeeplinkScheme: PairingDeeplinkScheme
-
-    public init(
-        productId: String,
-        executionKind: ProductExecutionKind = .app,
-        hostName: String,
-        hostIcon: String? = nil,
-        hostVersion: String? = nil,
-        platformType: String? = nil,
-        platformVersion: String? = nil,
-        peopleChainGenesisHash: Data,
-        bulletinChainGenesisHash: Data,
-        localSessionSecret: Data? = nil,
-        localSessionLiteUsername: String? = nil,
-        pairingDeeplinkScheme: PairingDeeplinkScheme = .polkadotApp
-    ) {
-        self.productId = productId
-        self.executionKind = executionKind
-        self.hostName = hostName
-        self.hostIcon = hostIcon
-        self.hostVersion = hostVersion
-        self.platformType = platformType
-        self.platformVersion = platformVersion
-        self.peopleChainGenesisHash = peopleChainGenesisHash
-        self.bulletinChainGenesisHash = bulletinChainGenesisHash
-        self.localSessionSecret = localSessionSecret
-        self.localSessionLiteUsername = localSessionLiteUsername
-        self.pairingDeeplinkScheme = pairingDeeplinkScheme
-    }
-
-    fileprivate var native: NativeRuntimeConfig {
-        NativeRuntimeConfig(
-            productId: productId,
-            executionKind: executionKind,
-            hostName: hostName,
-            hostIcon: hostIcon,
-            hostVersion: hostVersion,
-            platformType: platformType,
-            platformVersion: platformVersion,
-            peopleChainGenesisHash: peopleChainGenesisHash,
-            bulletinChainGenesisHash: bulletinChainGenesisHash,
-            localSessionSecret: localSessionSecret,
-            localSessionLiteUsername: localSessionLiteUsername,
-            pairingDeeplinkScheme: pairingDeeplinkScheme.native
-        )
-    }
 }
 
 /// Immutable process-wide configuration shared by all product executions.
@@ -145,6 +59,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             hostName: hostName,
             hostIcon: hostIcon,
             hostVersion: hostVersion,
+            hostPlatform: .ios,
             platformType: platformType,
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,
@@ -173,9 +88,8 @@ public struct ProductExecutionConfig: Sendable, Equatable {
     }
 }
 
-/// Bootstrap helper for the native localhost WebSocket bridge that the Rust
-/// core stands up via `NativeTrUApiCore.startWsBridge(bindPort:)` when the
-/// cdylib is built with the `ws-bridge` feature.
+/// Bootstrap helper for the native localhost WebSocket bridge that a product
+/// execution starts when the cdylib is built with the `ws-bridge` feature.
 public enum LocalhostBridgeBootstrap {
     /// Returns a `<script>`-injectable snippet that publishes the endpoint
     /// metadata on `window.__truapi_localhost`, the pre-resolved permission
@@ -293,33 +207,6 @@ public enum LocalhostBridgeBootstrap {
     }
 }
 
-/// Session + WS-bridge controls of the Rust core, abstracted so hosts and
-/// runtimes can depend on the interface (and tests can mock it) without
-/// booting the Rust cdylib.
-public protocol TrUAPIHostCoreProtocol: AnyObject {
-    func startWsBridge(bindPort: UInt16) throws -> WsBridgeEndpoint
-    func stopWsBridge()
-    func disconnect()
-    func cancelLogin()
-    func activateLocalSession(secret: Data, liteUsername: String?) throws
-    func permissionAuthorizationStatus(
-        request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus
-    func setPermissionAuthorizationStatus(
-        request: PermissionAuthorizationRequest,
-        status: PermissionAuthorizationStatus
-    ) throws
-    func notifyThemeChanged(theme: HostThemeSubscribeItem)
-    func notifyPreimageChanged(key: Data, value: Data?)
-    func notifyChainResponse(connectionId: UInt32, json: String)
-    func notifyChainClosed(connectionId: UInt32)
-    func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws
-    func renewStatementAllowances() throws -> StatementRenewalReport
-    func startStatementAllowanceRenewal()
-    func nextStatementRenewalDelay() -> TimeInterval
-    func lastStatementRenewalReport() -> StatementRenewalReport?
-}
-
 /// Product-scoped key-value storage provided by the embedding host.
 public protocol HostStorageBackend: AnyObject, Sendable {
     func read(key: String) throws -> Data?
@@ -382,6 +269,19 @@ public protocol HostBridge: AnyObject, Sendable {
     /// not stall other TrUAPI traffic.
     func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool
 
+    /// Report the OS status of a device capability without prompting. Answer
+    /// from the platform's authorization APIs, for example
+    /// `AVCaptureDevice.authorizationStatus(for:)` or
+    /// `UNUserNotificationCenter.getNotificationSettings`.
+    ///
+    /// The core calls this before every device-permission request and status
+    /// read, so it must not show UI. A capability your app has no OS gate for
+    /// answers `.notApplicable`, which leaves the stored product decision
+    /// governing. Defaults to `.notApplicable`, so an app that does not
+    /// implement it keeps today's behaviour.
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
+        -> NativeDevicePermissionStatus
+
     /// Prompt for a remote (product-scoped) permission bundle. Invoked on a
     /// blocking-pool thread; present the prompt on the main thread and block
     /// the calling thread until the user decides. Blocking here does not
@@ -397,8 +297,7 @@ public protocol HostBridge: AnyObject, Sendable {
     /// when it is the default `.disconnected`, so a host that awaits activation
     /// before routing never has to read silence as "signed out"; every other
     /// emission, and every emission on a host role that has no session
-    /// activation, happens only when the state actually changes. Report a user
-    /// dismissal of the pairing UI through ``TrUAPIHostCore/cancelLogin()``.
+    /// activation, happens only when the state actually changes.
     /// Invoked on the dispatcher thread; hand the state to the main thread and
     /// return promptly.
     func authStateChanged(state: AuthState)
@@ -421,6 +320,10 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Return the current host theme. Hosts with no named themes report
     /// `ThemeName.default`.
     func currentTheme() throws -> HostThemeSubscribeItem
+
+    /// Return the language this host presents its interface in, as a BCP 47
+    /// tag. Hosts with no in-app language picker report the system language.
+    func currentLocale() throws -> HostLocaleSubscribeItem
 
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
@@ -493,7 +396,14 @@ public extension HostBridge {
     func currentTheme() throws -> HostThemeSubscribeItem {
         HostThemeSubscribeItem(name: .default, variant: .dark)
     }
+    func currentLocale() throws -> HostLocaleSubscribeItem {
+        HostLocaleSubscribeItem(
+            languageTag: Locale.current.language.languageCode?.identifier ?? "en"
+        )
+    }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
+        -> NativeDevicePermissionStatus { .notApplicable }
 }
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
@@ -584,6 +494,14 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
+        -> NativeDevicePermissionStatus
+    {
+        try await withHostRejection {
+            try await bridge.devicePermissionStatus(request: request)
+        }
+    }
+
     func remotePermission(request: RemotePermission) async throws -> Bool {
         try await withHostRejection {
             try await bridge.remotePermission(request: request)
@@ -645,6 +563,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func currentTheme() throws -> HostThemeSubscribeItem {
         try withHostRejection {
             try bridge.currentTheme()
+        }
+    }
+
+    func currentLocale() throws -> HostLocaleSubscribeItem {
+        try withHostRejection {
+            try bridge.currentLocale()
         }
     }
 
@@ -888,12 +812,13 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     ) throws -> AsyncThrowingStream<CustomRendererNode, Error>
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus
+    ) async throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
     ) throws
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
+    func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -954,8 +879,8 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(request: request)
+    ) async throws -> PermissionAuthorizationStatus {
+        try await inner.permissionAuthorizationStatus(request: request)
     }
 
     public func setPermissionAuthorizationStatus(
@@ -967,6 +892,10 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme: theme)
+    }
+
+    public func notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
+        inner.notifyLocaleChanged(locale: locale)
     }
 
     public func notifyPreimageChanged(key: Data, value: Data?) {
@@ -990,154 +919,6 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     }
 }
 
-/// Owning wrapper around the Rust-backed `NativeTrUApiCore`. Holds the callback
-/// bridge alive for the lifetime of the core and exposes session +
-/// WS-bridge controls.
-///
-/// Hosts integrating with a `WKWebView`-based product call `startWsBridge`
-/// and pass the resulting `ws://127.0.0.1:<port>/?t=<token>` URL to the
-/// product via `LocalhostBridgeBootstrap.script(...)`. The product wires
-/// that URL into `@parity/truapi`'s `createWebSocketProvider`.
-public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
-    let inner: NativeTrUApiCore
-
-    // Rust holds the callback handle; this retainer pins the Swift side for
-    // the core's lifetime.
-    private let callbackRetainer: HostCallbacks
-
-    /// Boot the Rust core against the host callbacks.
-    public init(callbacks: HostCallbacks, runtimeConfig: RuntimeConfig) throws {
-        callbackRetainer = callbacks
-        inner = try NativeTrUApiCore.withRuntimeConfig(
-            callbacks: callbacks,
-            runtimeConfig: runtimeConfig.native
-        )
-    }
-
-    /// Boot the Rust core against a ``HostBridge``, mirroring
-    /// ``TrUAPIHostRuntime/init(bridge:runtimeConfig:)``. Prefer this over
-    /// ``init(callbacks:runtimeConfig:)``, which takes the generated protocol
-    /// and so carries none of the ``HostBridge`` defaults.
-    public convenience init(bridge: HostBridge, runtimeConfig: RuntimeConfig) throws {
-        try self.init(
-            callbacks: HostCallbackAdapter(bridge: bridge),
-            runtimeConfig: runtimeConfig
-        )
-    }
-
-    /// Start the localhost WebSocket bridge. Requires the `ws-bridge`
-    /// feature in the cdylib. Pair the returned `WsBridgeEndpoint` with
-    /// `LocalhostBridgeBootstrap.script(...)` to hand the URL to the
-    /// product page.
-    public func startWsBridge(bindPort: UInt16 = 0) throws -> WsBridgeEndpoint {
-        try inner.startWsBridge(bindPort: bindPort)
-    }
-
-    /// Stop the localhost WebSocket bridge (if running).
-    public func stopWsBridge() {
-        inner.stopWsBridge()
-    }
-
-    /// Core-owned logout/disconnect path. Best-effort notifies the SSO peer,
-    /// clears in-memory session state, clears the persisted session via
-    /// core storage, and broadcasts `Disconnected` to active
-    /// account-status subscribers.
-    public func disconnect() {
-        inner.disconnect()
-    }
-
-    /// Notify the core after its host-private session storage changes.
-    public func notifySessionStoreChanged() {
-        inner.notifySessionStoreChanged()
-    }
-
-    /// Cancel an in-flight pairing login.
-    ///
-    /// Inert on a native host: the core is a signing host with no pairing flow
-    /// to cancel, so calling this emits no auth state and changes nothing.
-    public func cancelLogin() {
-        inner.cancelLogin()
-    }
-
-    /// Activate or replace the local signing-host session from host-held raw
-    /// BIP-39 entropy.
-    public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
-        try inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
-    }
-
-    /// Record the accounts renewal should keep allowed on the Statement Store.
-    /// See ``TrUAPIHostRuntime/trackStatementRenewalTargets(_:)``.
-    public func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws {
-        try inner.trackStatementRenewalTargets(targets: targets.map(\.native))
-    }
-
-    /// Run one renewal pass now. Blocks until the extrinsics are included, so
-    /// call it off the main thread. See
-    /// ``TrUAPIHostRuntime/renewStatementAllowances()``.
-    public func renewStatementAllowances() throws -> StatementRenewalReport {
-        try inner.renewStatementAllowances()
-    }
-
-    /// Start the in-process renewal loop. See
-    /// ``TrUAPIHostRuntime/startStatementAllowanceRenewal()``.
-    public func startStatementAllowanceRenewal() {
-        inner.startStatementAllowanceRenewal()
-    }
-
-    /// The in-process loop's cadence, capped at an hour. See
-    /// ``TrUAPIHostRuntime/nextStatementRenewalDelay()``.
-    public func nextStatementRenewalDelay() -> TimeInterval {
-        inner.nextStatementRenewalDelay()
-    }
-
-    /// The most recent pass the in-process renewal loop ran.
-    ///
-    /// `nil` until a pass has run, which is "not yet" rather than healthy.
-    /// ``startStatementAllowanceRenewal()`` returns nothing, so a host driving the
-    /// loop reads its result here. `slotsExhausted` on the last pass means a
-    /// period filled up and an allowance went unrenewed, which retrying cannot
-    /// fix and a person may need telling about.
-    public func lastStatementRenewalReport() -> StatementRenewalReport? {
-        inner.lastStatementRenewalReport()
-    }
-
-    /// Read a stored permission authorization status without prompting.
-    public func permissionAuthorizationStatus(
-        request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(request: request)
-    }
-
-    /// Update a stored permission authorization status. `.notDetermined`
-    /// clears the stored value so the next product request prompts again.
-    public func setPermissionAuthorizationStatus(
-        request: PermissionAuthorizationRequest,
-        status: PermissionAuthorizationStatus
-    ) throws {
-        try inner.setPermissionAuthorizationStatus(request: request, status: status)
-    }
-
-    /// Push a host theme update to active TrUAPI theme subscriptions.
-    public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
-        inner.notifyThemeChanged(theme: theme)
-    }
-
-    /// Push a preimage lookup update to active subscriptions for `key`.
-    public func notifyPreimageChanged(key: Data, value: Data?) {
-        inner.notifyPreimageChanged(key: key, value: value)
-    }
-
-    /// Push a JSON-RPC response from a native chain connection into the core.
-    public func notifyChainResponse(connectionId: UInt32, json: String) {
-        inner.notifyChainResponse(connectionId: connectionId, json: json)
-    }
-
-    /// Notify the core that a native chain connection closed externally.
-    public func notifyChainClosed(connectionId: UInt32) {
-        inner.notifyChainClosed(connectionId: connectionId)
-    }
-
-}
 /// Reason text for an error a host threw from a callback.
 ///
 /// A value that is not a `LocalizedError` has no author-written description,

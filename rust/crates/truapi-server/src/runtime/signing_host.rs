@@ -65,8 +65,8 @@ use crate::runtime::statement_allowance::CollectionCandidate;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
-    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
-    create_proof, member_from_entropy, sign_from_entropy,
+    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
+    development_context_bytes, member_from_entropy, sign_from_entropy,
 };
 use sso_replay::SsoReplayLocks;
 
@@ -154,6 +154,12 @@ impl SigningHost {
     ) -> Arc<Self> {
         let services = RuntimeServices::new(
             platform.clone(),
+            truapi_platform::HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
             [0; 32],
             [0xbb; 32],
             crate::test_support::test_spawner(),
@@ -833,7 +839,7 @@ impl ProductAuthority for SigningHost {
             .resolve_ring_vrf_key_for_ring(session, &request.key_handle, &request.ring_location)
             .await?;
         self.ring_resolver.validate(&request.ring_location).await?;
-        let context = context_bytes(&request.context);
+        let context = development_context_bytes(&request.context);
         let alias = alias_from_entropy(&entropy, &context)?;
         Ok(v01::ContextualAlias {
             context,
@@ -860,7 +866,7 @@ impl ProductAuthority for SigningHost {
         // Reject a stale request if the local session disconnected or changed
         // while its chain snapshot was being resolved.
         self.require_current_session(session)?;
-        let context = context_bytes(&request.context);
+        let context = development_context_bytes(&request.context);
         let (proof, alias) = create_proof(&entropy, &resolved, &context, &request.message)?;
         Ok(v01::HostAccountCreateProofResponse {
             proof,
@@ -1330,6 +1336,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Ios,
             },
             PlatformInfo::default(),
             [0; 32],
@@ -1338,6 +1345,7 @@ mod tests {
         .expect("signing host config is valid");
         let services = RuntimeServices::new(
             platform.clone(),
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             test_spawner(),

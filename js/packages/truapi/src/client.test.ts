@@ -2,12 +2,19 @@ import type { Result } from "neverthrow";
 import { describe, expect, it } from "bun:test";
 
 import { createTransport } from "./client.js";
-import { CallError, indexedTaggedUnion, Result as ScaleResult, str, _void } from "./scale.js";
+import {
+    CallError,
+    indexedTaggedUnion,
+    Result as ScaleResult,
+    str,
+    _void,
+    type CallErrorValue,
+} from "./scale.js";
 import type { Codec } from "./scale.js";
 import { createClient, SubscriptionError } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
-import { encodeWireMessage } from "./transport.js";
+import { encodeWireMessage, PROTOCOL_ERROR_ID, UnsupportedMessageError } from "./transport.js";
 
 /** Wrap a codec in the `{ V1: [0, codec] }` indexed-tagged-union envelope. */
 const versionedV1 = <T>(codec: Codec<T>) => indexedTaggedUnion({ V1: [0, codec] });
@@ -143,6 +150,20 @@ function rendererStop(requestId: string): Uint8Array {
     );
 }
 
+function protocolError(requestId: string, payload: Uint8Array): Uint8Array {
+    return unwrap(
+        encodeWireMessage({
+            requestId,
+            payload: { id: PROTOCOL_ERROR_ID, value: payload },
+        }),
+        "encode protocol error",
+    );
+}
+
+function unsupportedMessage(requestId: string, discriminant: number): Uint8Array {
+    return protocolError(requestId, new Uint8Array([0, 0, discriminant]));
+}
+
 describe("generated client transport", () => {
     it("encodes unit-only enums as a single-byte SCALE discriminant", () => {
         // Unit-only enums expose a string union on the public API while
@@ -214,6 +235,39 @@ describe("generated client transport", () => {
         expect(result.isOk()).toBe(true);
     });
 
+    it("returns the current product context without request arguments", async () => {
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+
+        const response = client.system.getProductContext();
+        const frame = unwrap(
+            encodeWireMessage({
+                requestId: "p:1",
+                payload: {
+                    id: W.SYSTEM_GET_PRODUCT_CONTEXT.response,
+                    value: versionedV1(
+                        ScaleResult(
+                            T.HostGetProductContextResponse,
+                            CallError(T.VersionedHostGetProductContextError),
+                        ),
+                    ).enc({
+                        tag: "V1",
+                        value: {
+                            success: true,
+                            value: { productId: "truapi-playground.paseo" },
+                        },
+                    }),
+                },
+            }),
+            "encode getProductContext response",
+        );
+        fixture.receive(frame);
+
+        expect((await response)._unsafeUnwrap()).toEqual({
+            productId: "truapi-playground.paseo",
+        });
+    });
+
     it("decodes request domain errors from the versioned response envelope", async () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
@@ -244,6 +298,267 @@ describe("generated client transport", () => {
         const result = await response;
         expect(result.isErr()).toBe(true);
         expect(result._unsafeUnwrapErr()).toEqual({ tag: "Domain", value: reason });
+    });
+
+    it("settles an unknown API request as unsupported from a correlated protocol error", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const response = transport.request<undefined, CallErrorValue<never>>({
+            ids: { request: 194, response: 195 },
+            payload: new Uint8Array(),
+            decodeResponse: () => {
+                throw new Error("protocol errors must bypass the method response decoder");
+            },
+        });
+        fixture.receive(unsupportedMessage("p:1", 194));
+
+        expect((await response)._unsafeUnwrapErr()).toEqual({ tag: "Unsupported" });
+
+        const followup = transport.request<string, CallErrorValue<never>>({
+            ids: W.LOCAL_STORAGE_READ,
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: true, value: "still connected" }),
+        });
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "p:2",
+                    payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+                }),
+                "encode follow-up response",
+            ),
+        );
+
+        expect((await followup)._unsafeUnwrap()).toBe("still connected");
+        expect(fixture.sent).toHaveLength(2);
+    });
+
+    it("does not settle a request from an unmatched or mismatched protocol error", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const response = transport.request<string, CallErrorValue<never>>({
+            ids: { request: 194, response: 195 },
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: true, value: "supported" }),
+        });
+        for (const [requestId, discriminant] of [
+            ["p:99", 194],
+            ["p:1", 196],
+        ] as const) {
+            fixture.receive(unsupportedMessage(requestId, discriminant));
+        }
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "p:1",
+                    payload: { id: 195, value: new Uint8Array() },
+                }),
+                "encode supported response",
+            ),
+        );
+
+        expect((await response)._unsafeUnwrap()).toBe("supported");
+        expect(fixture.sent).toHaveLength(1);
+    });
+
+    it("reports an unsupported raw subscription only for its matching start", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const errors: Error[] = [];
+        const subscription = transport.subscribeRaw({
+            ids: { start: 194, stop: 195, interrupt: 196, receive: 197 },
+            payload: new Uint8Array(),
+            onReceive: () => {},
+            onClose: (error) => errors.push(error),
+        });
+        fixture.receive(unsupportedMessage(subscription.subscriptionId, 195));
+        fixture.receive(unsupportedMessage(subscription.subscriptionId, 194));
+        subscription.unsubscribe();
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBeInstanceOf(UnsupportedMessageError);
+        const unsupported = errors[0] as UnsupportedMessageError;
+        expect({
+            name: unsupported.name,
+            message: unsupported.message,
+            discriminant: unsupported.discriminant,
+        }).toEqual({
+            name: "UnsupportedMessageError",
+            message: "Peer does not support wire message 194",
+            discriminant: 194,
+        });
+        expect(fixture.sent).toHaveLength(1);
+    });
+
+    it("terminates a generated subscription when its API is unsupported", () => {
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+        const errors: SubscriptionError[] = [];
+        const subscription = client.account
+            .connectionStatusSubscribe()
+            .subscribe({ error: (error) => errors.push(error) });
+
+        fixture.receive(
+            unsupportedMessage(
+                subscription.subscriptionId,
+                W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start,
+            ),
+        );
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBeInstanceOf(SubscriptionError);
+        expect(errors[0].reason).toBeUndefined();
+        expect(errors[0].cause).toBeInstanceOf(UnsupportedMessageError);
+        expect((errors[0].cause as UnsupportedMessageError).discriminant).toBe(
+            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start,
+        );
+        expect(fixture.sent).toHaveLength(1);
+    });
+
+    it("closes the transport for every malformed protocol error shape", async () => {
+        const malformedPayloads = [
+            [new Uint8Array([0, 0]), "expected 3 bytes, received 2"],
+            [new Uint8Array([0, 0, 194, 0]), "expected 3 bytes, received 4"],
+            [new Uint8Array([1, 0, 194]), "unsupported version 1"],
+            [new Uint8Array([0, 1, 194]), "unknown error discriminant 1"],
+        ] as const;
+
+        for (const [payload, message] of malformedPayloads) {
+            const fixture = providerFixture();
+            const transport = createTransport(fixture.provider);
+            const response = transport.request<undefined, CallErrorValue<never>>({
+                ids: { request: 194, response: 195 },
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true, value: undefined }),
+            });
+            const outcome = Promise.resolve(response);
+            fixture.receive(protocolError("p:1", payload));
+
+            await expect(outcome).rejects.toThrow(`Malformed protocol error payload: ${message}`);
+            expect(fixture.sent).toHaveLength(1);
+        }
+    });
+
+    it("rejects an unknown host-initiated message without starting an error loop", () => {
+        const fixture = providerFixture();
+        createTransport(fixture.provider);
+        const incoming = unwrap(
+            encodeWireMessage({
+                requestId: "h:future",
+                payload: { id: 194, value: new Uint8Array() },
+            }),
+            "encode unknown host request",
+        );
+
+        fixture.receive(incoming);
+
+        expect(fixture.sent.map(toHex)).toEqual([toHex(unsupportedMessage("h:future", 194))]);
+
+        fixture.receive(unsupportedMessage("h:future", 194));
+        expect(fixture.sent).toHaveLength(1);
+    });
+
+    it("rejects a known host-initiated start when no handler is registered", () => {
+        const fixture = providerFixture();
+        createTransport(fixture.provider);
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "h:known",
+                    payload: {
+                        id: W.CHAT_CUSTOM_MESSAGE_RENDER.start,
+                        value: new Uint8Array(),
+                    },
+                }),
+                "encode known unhandled host start",
+            ),
+        );
+
+        expect(fixture.sent.map(toHex)).toEqual([
+            toHex(unsupportedMessage("h:known", W.CHAT_CUSTOM_MESSAGE_RENDER.start)),
+        ]);
+    });
+
+    it("rejects an unknown message without disturbing its correlated request", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const response = transport.request<string, CallErrorValue<never>>({
+            ids: W.LOCAL_STORAGE_READ,
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: true, value: "supported" }),
+        });
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "p:1",
+                    payload: { id: 194, value: new Uint8Array() },
+                }),
+                "encode unknown correlated message",
+            ),
+        );
+
+        expect(fixture.sent.map(toHex)).toEqual([
+            toHex(fixture.sent[0]),
+            toHex(unsupportedMessage("p:1", 194)),
+        ]);
+
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "p:1",
+                    payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+                }),
+                "encode request response",
+            ),
+        );
+        expect((await response)._unsafeUnwrap()).toBe("supported");
+    });
+
+    it("ignores stale frames whose discriminants are known locally", async () => {
+        const requestFixture = providerFixture();
+        const requestTransport = createTransport(requestFixture.provider);
+        const response = requestTransport.request<string, CallErrorValue<never>>({
+            ids: W.LOCAL_STORAGE_READ,
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: true, value: "done" }),
+        });
+        const responseFrame = unwrap(
+            encodeWireMessage({
+                requestId: "p:1",
+                payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+            }),
+            "encode response",
+        );
+        requestFixture.receive(responseFrame);
+        expect((await response)._unsafeUnwrap()).toBe("done");
+        requestFixture.receive(responseFrame);
+        expect(requestFixture.sent).toHaveLength(1);
+
+        const subscriptionFixture = providerFixture();
+        const subscriptionTransport = createTransport(subscriptionFixture.provider);
+        const received: Uint8Array[] = [];
+        const subscription = subscriptionTransport.subscribeRaw({
+            ids: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE,
+            payload: new Uint8Array(),
+            onReceive: (payload) => received.push(payload),
+        });
+        subscription.unsubscribe();
+        for (const id of [
+            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
+            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt,
+        ]) {
+            subscriptionFixture.receive(
+                unwrap(
+                    encodeWireMessage({
+                        requestId: subscription.subscriptionId,
+                        payload: { id, value: new Uint8Array() },
+                    }),
+                    "encode stale subscription frame",
+                ),
+            );
+        }
+        expect(received).toEqual([]);
+        expect(subscriptionFixture.sent).toHaveLength(2);
     });
 
     it("auto-responds to an inbound handshake with the versioned-result shape", () => {

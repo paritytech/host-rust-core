@@ -33,6 +33,9 @@ jobs:
       attestations: write
     outputs:
       ios_version: ${{ steps.version.outputs.ios_version }}
+      android_version: ${{ steps.version.outputs.android_version }}
+      cli_version: ${{ steps.version.outputs.cli_version }}
+      published: ${{ steps.confirm.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +60,8 @@ jobs:
           release="${subject#release: }"
           packages=""
           ios_version=""
+          android_version=""
+          cli_version=""
           seen_names="|"
 
           IFS=',' read -ra targets <<< "${release}"
@@ -68,7 +73,7 @@ jobs:
             # Trim whitespace around comma-separated targets.
             target="${target#"${target%%[![:space:]]*}"}"
             target="${target%"${target##*[![:space:]]}"}"
-            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/ios-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/ios-host|@parity/android-host)[[:space:]]+([^[:space:]]+)$ ]]; then
               echo "::error::Unsupported release target '${target}' in subject: ${subject}"
               exit 1
             fi
@@ -82,7 +87,12 @@ jobs:
             seen_names+="${name}|"
 
             case "${name}" in
-              @parity/truapi) path="js/packages/truapi" ;;
+              # The truapi-host CLI crate tracks the protocol version, so a
+              # protocol release also publishes its prebuilt binaries.
+              @parity/truapi)
+                path="js/packages/truapi"
+                cli_version="${declared_version}"
+                ;;
               @parity/truapi-host) path="js/packages/truapi-host" ;;
               @parity/ios-host)
                 if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
@@ -90,6 +100,14 @@ jobs:
                   exit 1
                 fi
                 ios_version="${declared_version}"
+                continue
+                ;;
+              @parity/android-host)
+                if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+                  echo "::error::Invalid Android host version '${declared_version}'."
+                  exit 1
+                fi
+                android_version="${declared_version}"
                 continue
                 ;;
             esac
@@ -113,6 +131,8 @@ jobs:
           done
 
           echo "ios_version=${ios_version}" >> "$GITHUB_OUTPUT"
+          echo "android_version=${android_version}" >> "$GITHUB_OUTPUT"
+          echo "cli_version=${cli_version}" >> "$GITHUB_OUTPUT"
 
           if [ -z "${packages}" ]; then
             echo "No requested npm packages need publishing."
@@ -263,13 +283,57 @@ jobs:
         if: steps.confirm.outcome == 'failure'
         run: exit 1
 
+  # Downstream hosts learn about a release from an issue on their own
+  # repository. Announcing only the confirmed subset keeps a consumer from
+  # being pointed at a version npm never accepted.
+  notify-consumers:
+    name: Notify consumer repositories
+    needs: release
+    if: needs.release.outputs.published != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/notify-consumers.yml
+    with:
+      published: ${{ needs.release.outputs.published }}
+      ref: ${{ github.event.workflow_run.head_sha }}
+    secrets:
+      CONSUMER_APP_ID: ${{ secrets.CONSUMER_APP_ID }}
+      CONSUMER_APP_KEY: ${{ secrets.CONSUMER_APP_KEY }}
+
+  publish-android:
+    name: Publish Android host
+    needs: release
+    if: needs.release.outputs.android_version != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/release-android.yml
+    with:
+      version: ${{ needs.release.outputs.android_version }}
+      ref: ${{ github.event.workflow_run.head_sha }}
+
+  publish-cli:
+    name: Publish truapi-host binaries
+    needs: release
+    if: needs.release.outputs.cli_version != ''
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-cli.yml
+    with:
+      version: ${{ needs.release.outputs.cli_version }}
+      ref: ${{ github.event.workflow_run.head_sha }}
+
   publish-ios:
     name: Publish iOS host
     needs: release
     if: needs.release.outputs.ios_version != ''
     runs-on: macos-15
     permissions:
+      actions: write
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -304,7 +368,7 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild test \
-            -scheme TrUAPIHost \
+            -scheme TrUAPIHost-Package \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
@@ -335,7 +399,66 @@ jobs:
             echo "published_checksum=${published_checksum}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Commit published manifest
+      - name: Build SwiftPM consumer tag
+        id: ios_tag
+        env:
+          IOS_VERSION: ${{ needs.release.outputs.ios_version }}
+          PUBLISHED_URL: ${{ steps.ios_publish.outputs.published_url }}
+          PUBLISHED_CHECKSUM: ${{ steps.ios_publish.outputs.published_checksum }}
+        run: |
+          set -euo pipefail
+
+          read_tag_manifest_value() {
+            git show "refs/tags/${IOS_VERSION}:Package.swift" \
+              | sed -n -E "s/^let $1 = \"([^\"]+)\"$/\1/p"
+          }
+
+          git fetch --tags origin
+          if git rev-parse -q --verify "refs/tags/${IOS_VERSION}" >/dev/null 2>&1; then
+            if [ "$(read_tag_manifest_value publishedBinaryURL)" != "${PUBLISHED_URL}" ] \
+              || [ "$(read_tag_manifest_value publishedBinaryChecksum)" != "${PUBLISHED_CHECKSUM}" ]; then
+              echo "::error::Tag ${IOS_VERSION} already exists with a different iOS manifest."
+              exit 1
+            fi
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          grep -q '^let useLocalBinary = ProcessInfo' Package.swift
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "release(ios): TrUAPIHost ${IOS_VERSION}"
+          git tag "${IOS_VERSION}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tag resolves as a consumer
+        env:
+          IOS_VERSION: ${{ needs.release.outputs.ios_version }}
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/tag-probe"
+          rm -rf "$probe"
+          git clone --quiet --branch "${IOS_VERSION}" "file://$PWD" "$probe"
+
+          cd "$probe"
+          xcodebuild build \
+            -scheme TrUAPIHost \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/TagProbeDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Push SwiftPM tag
+        if: steps.ios_tag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IOS_VERSION: ${{ needs.release.outputs.ios_version }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git push origin "refs/tags/${IOS_VERSION}"
+
+      - name: Open published manifest pull request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IOS_VERSION: ${{ needs.release.outputs.ios_version }}
@@ -368,7 +491,7 @@ jobs:
 
           sed -i '' -E "s|^let publishedBinaryURL = .*|let publishedBinaryURL = \"${PUBLISHED_URL}\"|" Package.swift
           sed -i '' -E "s|^let publishedBinaryChecksum = .*|let publishedBinaryChecksum = \"${PUBLISHED_CHECKSUM}\"|" Package.swift
-          grep -q '^let useLocalBinary = false$' Package.swift
+          grep -q '^let useLocalBinary = ProcessInfo' Package.swift
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -376,18 +499,34 @@ jobs:
           git commit -m "build(ios): publish host XCFramework ${IOS_VERSION}"
 
           gh auth setup-git
-          attempt=1
-          until git push origin "HEAD:${RELEASE_BRANCH}"
-          do
-            if [ "${attempt}" -ge 3 ]; then
-              echo "::error::Could not push the Package.swift follow-up commit."
+          manifest_branch="release/ios-host-${IOS_VERSION}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${manifest_branch}" >/dev/null 2>&1; then
+            git fetch origin "refs/heads/${manifest_branch}:refs/remotes/origin/${manifest_branch}"
+            if ! git show "origin/${manifest_branch}:Package.swift" | cmp - Package.swift; then
+              echo "::error::${manifest_branch} already exists with a different Package.swift."
               exit 1
             fi
-            attempt=$((attempt + 1))
-            git fetch origin "${RELEASE_BRANCH}"
-            if ! git rebase "origin/${RELEASE_BRANCH}"; then
-              git rebase --abort
-              echo "::error::Package.swift changed while publishing; resolve the manifest update manually."
-              exit 1
-            fi
-          done
+          else
+            git push origin "HEAD:refs/heads/${manifest_branch}"
+          fi
+
+          pr_number="$(gh pr list \
+            --base "${RELEASE_BRANCH}" \
+            --head "${manifest_branch}" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "${pr_number}" ]; then
+            gh pr create \
+              --base "${RELEASE_BRANCH}" \
+              --head "${manifest_branch}" \
+              --title "build(ios): publish host XCFramework ${IOS_VERSION}" \
+              --body "Updates Package.swift with the published @parity/ios-host@${IOS_VERSION} XCFramework URL and verified checksum." \
+              --reviewer paritytech/host-sdk-team
+          else
+            echo "Manifest PR #${pr_number} is already open."
+          fi
+
+          # Events created by GITHUB_TOKEN do not start another workflow, so
+          # dispatch CI explicitly for the generated branch.
+          gh workflow run ci.yml --ref "${manifest_branch}"

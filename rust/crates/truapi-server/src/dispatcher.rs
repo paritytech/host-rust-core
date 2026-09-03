@@ -10,9 +10,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
+use parity_scale_codec::Encode;
 use tracing::instrument;
 
-use crate::frame::{Payload, ProtocolMessage};
+use crate::frame::{
+    PROTOCOL_ERROR_ID, Payload, ProtocolErrorV1, ProtocolMessage, VersionedProtocolError,
+};
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds};
 use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
 use crate::transport::Transport;
@@ -132,11 +135,14 @@ impl Dispatcher {
     }
 
     /// Process an incoming protocol message, sending any responses or
-    /// subscription frames through `transport`. A discriminant with no
-    /// registered handler is dropped.
+    /// subscription frames through `transport`.
     #[instrument(skip_all, fields(runtime.method = "dispatcher.dispatch"))]
     pub async fn dispatch(&self, message: ProtocolMessage, transport: Arc<dyn Transport>) {
         let id = message.payload.id;
+
+        if id == PROTOCOL_ERROR_ID {
+            return;
+        }
 
         if let Some(entry) = self.by_request.get(&id) {
             let request_id = message.request_id.clone();
@@ -180,9 +186,18 @@ impl Dispatcher {
             }
         } else if self.stop_ids.contains(&id) {
             self.subscriptions.handle_stop(&message.request_id);
+        } else {
+            transport.send(ProtocolMessage {
+                request_id: message.request_id,
+                payload: Payload {
+                    id: PROTOCOL_ERROR_ID,
+                    value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                        discriminant: id,
+                    })
+                    .encode(),
+                },
+            });
         }
-        // Unknown discriminant: drop. Response / receive / interrupt frames are
-        // handled by the client side and never registered here.
     }
 
     /// Cancel every subscription currently owned by this dispatcher.
@@ -237,20 +252,39 @@ mod tests {
         }
     }
 
-    /// A frame whose discriminant has no registered handler is dropped: no
-    /// response, no interrupt. (In production `register` registers every wire
-    /// method, so this only happens for malformed or client-bound ids.)
     #[test]
-    fn dispatch_unregistered_id_sends_nothing() {
+    fn dispatch_unknown_id_sends_correlated_protocol_error() {
         let dispatcher = Dispatcher::new(test_spawner());
         let transport = Arc::new(RecordingTransport::default());
         let transport_dyn: Arc<dyn Transport> = transport.clone();
         let frame = make_frame(250, Vec::new());
         futures::executor::block_on(dispatcher.dispatch(frame, transport_dyn));
-        assert!(
-            transport.sent().is_empty(),
-            "an unregistered discriminant must produce no frame"
+        assert_eq!(
+            transport.sent(),
+            vec![ProtocolMessage {
+                request_id: "p:1".into(),
+                payload: Payload {
+                    id: PROTOCOL_ERROR_ID,
+                    value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                        discriminant: 250
+                    },)
+                    .encode(),
+                },
+            }]
         );
+    }
+
+    #[test]
+    fn dispatch_protocol_error_does_not_send_another_error() {
+        let dispatcher = Dispatcher::new(test_spawner());
+        let transport = Arc::new(RecordingTransport::default());
+        let frame = make_frame(
+            PROTOCOL_ERROR_ID,
+            VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage { discriminant: 250 })
+                .encode(),
+        );
+        futures::executor::block_on(dispatcher.dispatch(frame, transport.clone()));
+        assert_eq!(transport.sent(), Vec::<ProtocolMessage>::new());
     }
 
     /// A handler error already owns the complete response payload. The

@@ -25,11 +25,12 @@ For larger changes that need cross-team discussion, use the RFC process:
 4. The PR will be auto-added to the project board for tracking and review
 5. When the PR is approved and merged, CI automatically assigns the next sequential number, renames the file, and appends it to `docs/rfcs/_index.md`
 
-**Important:** RFC PRs must include corresponding changes to the TrUAPI Rust
-interfaces in `rust/crates/truapi/`. A CI check (`check-rfc.yml`) enforces
-this — PRs that touch `docs/rfcs/` without also modifying `rust/crates/truapi/`
-will fail. This ensures every RFC ships with a concrete API change, not just
-prose.
+A CI check (`check-rfc.yml`) reads the RFC documents a PR touches. A new RFC
+needs frontmatter with a `title` and an `owner`, a `## Summary`, a
+`## Motivation`, and a section describing the approach. Any RFC the PR touches
+must also be free of unedited template text and of `TODO`, `TBD` or `FIXME`.
+Implementation is not required in the same PR: it is tracked on the RFC's issue,
+which carries a task per host alongside the Rust one.
 
 If you use Claude Code, the [`rfc`](.claude/skills/rfc/SKILL.md) skill is highly recommended for drafting RFCs — invoke it with `/rfc` to turn your notes into a well-structured document that follows the template above.
 
@@ -99,4 +100,4 @@ Use an appropriate commit type. Be especially careful with breaking changes.
 
 ## Releasing
 
-See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for the `@parity/truapi` npm publishing flow.
+See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for the release flow, covering the npm packages and the iOS and Android host artifacts.

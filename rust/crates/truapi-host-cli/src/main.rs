@@ -14,26 +14,30 @@
 
 mod accounts;
 mod attestation;
+mod bootstrap;
 mod chain;
 mod chat;
 mod dotns_read;
 mod frame_server;
 mod network;
 mod platform;
+mod qr_scanner;
 mod register_name;
 mod script_runner;
 mod sessions;
 mod signing_shell;
 mod terminal_ui;
+mod update;
 
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -41,7 +45,9 @@ use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use truapi_platform::{ChatPlatform, HostInfo, PlatformInfo, ProductExecutionKind};
+use truapi_platform::{
+    ChatPlatform, HostInfo, PermissionStatusHost, PlatformInfo, ProductExecutionKind,
+};
 use truapi_server::host_logic::dotns_gateway::{
     MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
 };
@@ -60,37 +66,39 @@ use crate::sessions::{
     SessionProfile,
 };
 use crate::signing_shell::{
-    DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, ProductCommand, SessionCommand, ShellCommand,
-    parse_command,
+    ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, PairCommand, ProductCommand,
+    SessionCommand, ShellCommand, parse_command,
 };
 use crate::terminal_ui::{
-    ActiveTerminalUi, ActivityState, DriveResult, SystemEvent, TerminalUi, UiHandle,
+    ActiveTerminalUi, ActivityState, DriveResult, PairingImageInput, SystemEvent, TerminalUi,
+    UiHandle,
 };
 
 /// Default product served by the pairing host's frame endpoint. Product ids
-/// must be a dotNS name (`.dot`, `.paseo` or `.test`) or a `localhost`
+/// must be a dotNS name (`.dot`, `.paseo` or `.testnet`) or a `localhost`
 /// identifier (host-spec product id).
 const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 /// Deeplink scheme advertised by the pairing host.
 const DEEPLINK_SCHEME: &str = "polkadotapp";
+const LOG_LEVEL_FILE: &str = "log-level";
 
 #[derive(Parser)]
-#[command(name = "truapi-host", about = "Headless TrUAPI hosts for e2e testing")]
+#[command(
+    name = "truapi-host",
+    about = "Headless TrUAPI hosts for e2e testing",
+    version = update::CURRENT_VERSION
+)]
 struct Cli {
-    /// Log verbosity. `RUST_LOG` takes precedence when set.
-    #[arg(
-        long,
-        global = true,
-        value_enum,
-        env = "TRUAPI_HOST_LOG",
-        default_value = "info"
-    )]
-    log_level: LogLevel,
+    /// Log verbosity. Defaults to the saved `/log` level, then `info`.
+    /// `RUST_LOG` takes precedence when set.
+    #[arg(long, global = true, value_enum, env = "TRUAPI_HOST_LOG")]
+    log_level: Option<LogLevel>,
     #[command(subcommand)]
     command: Command,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, derive_more::Display)]
+#[display(rename_all = "lowercase")]
 enum LogLevel {
     Error,
     Warn,
@@ -135,19 +143,56 @@ impl FromStr for LogLevel {
     }
 }
 
-impl fmt::Display for LogLevel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_filter())
+fn resolve_log_level(selected: Option<LogLevel>, saved: Option<LogLevel>) -> LogLevel {
+    selected.or(saved).unwrap_or(LogLevel::Info)
+}
+
+fn startup_filter(
+    rust_log: Option<&str>,
+    log_level: LogLevel,
+) -> (tracing_subscriber::EnvFilter, String) {
+    if let Some(value) = rust_log.map(str::trim).filter(|value| !value.is_empty())
+        && let Ok(filter) = tracing_subscriber::EnvFilter::try_new(value)
+    {
+        return (filter, value.to_string());
     }
+    (
+        tracing_subscriber::EnvFilter::new(log_level.scoped_filter()),
+        log_level.to_string(),
+    )
+}
+
+fn load_log_level(base_path: &Path) -> Result<Option<LogLevel>> {
+    let path = base_path.join(LOG_LEVEL_FILE);
+    let value = match std::fs::read_to_string(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    value
+        .trim()
+        .parse()
+        .map(Some)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("read saved log level from {}", path.display()))
+}
+
+fn store_log_level(base_path: &Path, level: LogLevel) -> Result<()> {
+    let path = base_path.join(LOG_LEVEL_FILE);
+    platform::atomic_write(&path, format!("{level}\n").as_bytes())
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("persist saved log level {}", path.display()))
 }
 
 #[derive(Clone)]
 struct LogController {
     reload: Arc<dyn Fn(LogLevel) -> Result<(), String> + Send + Sync>,
+    base_path: PathBuf,
 }
 
 impl LogController {
     fn set(&self, level: LogLevel) -> Result<()> {
+        store_log_level(&self.base_path, level)?;
         (self.reload)(level).map_err(anyhow::Error::msg)
     }
 }
@@ -159,6 +204,13 @@ enum Command {
     /// With `--script`, exits with the script's status. Without it, stays in an
     /// interactive terminal UI where scripts can be run repeatedly.
     PairingHost(PairingHostArgs),
+    /// Run a product against a local signing host, with one command.
+    ///
+    /// Starts a host on loopback, waits for its signer, then runs the wrapped
+    /// development command with the host already live. The product reaches it
+    /// through a development-only `<script>` tag pointing at the bridge URL
+    /// this prints.
+    Dev(DevArgs),
     /// Run a wallet-local signing host for scripts or pairing deeplinks.
     ///
     /// Owns signer identity, auto-manages accounts when no mnemonic/account is
@@ -238,13 +290,19 @@ enum Command {
         #[arg(long)]
         submit: bool,
     },
+    /// Install the current stable release over this one.
+    ///
+    /// Only works for a binary the installer put in place; a `cargo install`
+    /// copy or a source build is reported and left alone.
+    Update,
 }
 
 /// Execution kind the CLI serves a product as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum ExecutionKind {
     /// Ordinary full-page product. Chat requests answer `Denied`, as they do
     /// on any host that does not serve chat.
+    #[default]
     App,
     /// Headless executable served by the CLI's in-memory chat host.
     Worker,
@@ -291,7 +349,44 @@ struct PairingHostArgs {
     auto_accept: bool,
 }
 
+/// Default loopback port for the frame socket and the bridge script.
+///
+/// Products name it in a development `<script>` tag, so it is part of their
+/// source and stays fixed unless both sides change together.
+const DEFAULT_DEV_PORT: u16 = 9955;
+
 #[derive(Args)]
+struct DevArgs {
+    /// Port the wrapped development server listens on. Names the product id.
+    #[arg(long = "app-port", default_value_t = 3000)]
+    app_port: u16,
+    /// Loopback port serving product frames and the bridge script.
+    #[arg(long, default_value_t = DEFAULT_DEV_PORT)]
+    port: u16,
+    /// Product id the host serves. Defaults to the development server's own
+    /// origin, which is what a product derives for itself locally.
+    #[arg(long = "product-id")]
+    product_id: Option<String>,
+    /// Network preset that supplies all RPC/backend/genesis config.
+    #[arg(long, value_enum, default_value = "paseo-next-v2")]
+    network: Network,
+    /// Persistent signing-host session to restore or create.
+    #[arg(long)]
+    session: Option<String>,
+    /// BIP-39 mnemonic for the wallet root, to sign as an existing identity
+    /// instead of the auto-managed one. Confirmations are auto-approved here,
+    /// so the connected product can sign anything: testnet keys only.
+    #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
+    mnemonic: Option<String>,
+    /// Root directory for CLI-managed account and host state.
+    #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
+    base_path: Option<PathBuf>,
+    /// Development command to run once the host is ready, after `--`.
+    #[arg(last = true)]
+    command: Vec<String>,
+}
+
+#[derive(Args, Default)]
 struct SigningHostArgs {
     /// Execution kind the served product runs as. `worker` installs the CLI's
     /// in-memory chat host; `app` leaves Chat unserved.
@@ -360,6 +455,16 @@ enum SigningHostAction {
     },
 }
 
+fn command_base_path(command: &Command) -> PathBuf {
+    match command {
+        Command::PairingHost(args) => args.base_path.clone(),
+        Command::Dev(args) => args.base_path.clone(),
+        Command::SigningHost(args) => args.base_path.clone(),
+        _ => None,
+    }
+    .unwrap_or_else(default_base_path)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install a rustls crypto provider so `wss://` chain connections work;
@@ -367,8 +472,14 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cli = Cli::parse();
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli.log_level.scoped_filter()));
+    let base_path = command_base_path(&cli.command);
+    let (saved_log_level, saved_log_level_error) = match load_log_level(&base_path) {
+        Ok(level) => (level, None),
+        Err(error) => (None, Some(error)),
+    };
+    let log_level = resolve_log_level(cli.log_level, saved_log_level);
+    let rust_log = std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).ok();
+    let (filter, log_filter) = startup_filter(rust_log.as_deref(), log_level);
     let (filter, reload) = tracing_subscriber::reload::Layer::new(filter);
     let log_controller = LogController {
         reload: Arc::new(move |level| {
@@ -376,6 +487,7 @@ async fn main() -> Result<()> {
                 .reload(tracing_subscriber::EnvFilter::new(level.scoped_filter()))
                 .map_err(|error| error.to_string())
         }),
+        base_path,
     };
     let log_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
@@ -392,9 +504,43 @@ async fn main() -> Result<()> {
         .with(log_layer)
         .init();
 
-    match cli.command {
-        Command::PairingHost(args) => run_pairing_host(args, cli.log_level, log_controller).await,
-        Command::SigningHost(args) => run_signing_host(args, cli.log_level, log_controller).await,
+    if let Some(error) = saved_log_level_error {
+        tracing::warn!(%error, "could not restore saved log level; using fallback");
+    }
+
+    // A background check runs alongside the command rather than delaying it, and
+    // reports through `tracing`, which the terminal UI renders in its transcript
+    // so it cannot corrupt the full-screen display. The command then waits for
+    // it at exit, so even a short one completes the download it started.
+    let check = (!matches!(cli.command, Command::Update)).then(|| {
+        update::report_install();
+        tokio::spawn(update::run_background_check())
+    });
+
+    let outcome = dispatch(cli.command, log_filter, log_controller).await;
+
+    if let Some(check) = check {
+        update::finish_background_check(check).await;
+    }
+    outcome
+}
+
+/// Run the requested command.
+///
+/// Separate from `main` so that the `?` several arms use returns here, leaving
+/// `main` free to always wait for the update check it started.
+async fn dispatch(
+    command: Command,
+    log_filter: String,
+    log_controller: LogController,
+) -> Result<()> {
+    match command {
+        Command::Update => update::run_update_command().await,
+        Command::PairingHost(args) => run_pairing_host(args, log_filter, log_controller).await,
+        Command::Dev(args) => run_dev(args, log_filter, log_controller).await,
+        Command::SigningHost(args) => {
+            run_signing_host(args, log_filter, log_controller, None).await
+        }
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
@@ -771,7 +917,7 @@ async fn report_slot_scan(
         }
         Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
-            let cooldown = alloc::slot::replacement_cooldown(metadata)?;
+            let cooldown = alloc::slot::replacement_cooldown(rpc, metadata).await?;
             // The runtime judges ages against its own clock, which trails ours.
             let chain_now = alloc::slot::read_chain_now_seconds(rpc).await?;
             println!(
@@ -829,6 +975,7 @@ fn host_info(name: &str) -> HostInfo {
         name: name.to_string(),
         icon: None,
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        platform: truapi::latest::HostPlatform::Cli,
     }
 }
 
@@ -841,7 +988,7 @@ fn platform_info() -> PlatformInfo {
 
 async fn run_pairing_host(
     args: PairingHostArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
     let interactive = args.script.is_none();
@@ -858,7 +1005,7 @@ async fn run_pairing_host(
     let storage_paths = CliStoragePaths::pairing(base_path.join(network.id));
     let (terminal_ui, ui_handle) = if interactive {
         let (ui, handle) =
-            TerminalUi::new_pairing(network.id, product_id.clone(), initial_log_level);
+            TerminalUi::new_pairing(network.id, product_id.clone(), initial_log_filter);
         (Some(ui.enter()?), Some(handle))
     } else {
         (None, None)
@@ -882,12 +1029,14 @@ async fn run_pairing_host(
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
     let chat_host = args.execution_kind.chat_host();
+    let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
     let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
         platform,
         config,
         tokio_spawner(),
         chat_host.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
+    pairing_runtime.set_permission_status_host(status_host);
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -936,8 +1085,9 @@ async fn run_pairing_host(
 
 async fn run_signing_host(
     args: SigningHostArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
+    dev_command: Option<Vec<String>>,
 ) -> Result<()> {
     if let Err(error) = validate_signing_args(&args) {
         invalid_invocation(error);
@@ -974,7 +1124,7 @@ async fn run_signing_host(
             product_id,
             initial_session_name.clone(),
             initial_session_names,
-            initial_log_level,
+            initial_log_filter,
         );
         (Some(ui.enter()?), Some(handle))
     } else {
@@ -993,6 +1143,9 @@ async fn run_signing_host(
     terminal_ui::output_event(SystemEvent::FramesListening {
         url: frame_url.clone(),
     });
+    if let Some(url) = bootstrap::bridge_url(&frame_url) {
+        terminal_ui::output_event(SystemEvent::BridgeReady { url });
+    }
     let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> =
         session.runtime_factory.clone();
 
@@ -1040,12 +1193,19 @@ async fn run_signing_host(
                     url: serve_frame_url,
                     auto_accept,
                 });
-                wait_for_shutdown().await;
+                let code = match dev_command {
+                    Some(command) => run_dev_command(command).await?,
+                    None => {
+                        wait_for_shutdown().await;
+                        0
+                    }
+                };
                 session.responders.stop_all();
-                Ok(())
+                Ok(code)
             },
         )
-        .await;
+        .await
+        .map(|code| std::process::exit(code));
     }
 
     let initial_deeplink = args.deeplink.clone();
@@ -1106,6 +1266,7 @@ async fn run_signing_host(
 
 struct SigningHostSession {
     runtime: Arc<SigningHostRuntime>,
+    platform: Arc<CliPlatform>,
     runtime_factory: Arc<frame_server::SwitchableSigningRuntime>,
     responders: ResponderManager,
     signer: Option<ResolvedSigner>,
@@ -1118,7 +1279,6 @@ struct SigningHostSession {
     default_account: Option<String>,
     lite_username_prefix: Option<String>,
     reserved_username: Option<String>,
-    approval: ApprovalPolicy,
     ui: Option<UiHandle>,
     /// Set when this host serves a chat product. Held across runtime rebuilds
     /// so switching session keeps the rooms and messages already posted.
@@ -1251,7 +1411,7 @@ async fn start_signing_host(
     }
     let approval = approval_policy(args.auto_accept);
     let chat = args.execution_kind.chat_host();
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         network,
         storage_profile.path,
         storage_profile.product_storage_dir,
@@ -1305,6 +1465,7 @@ async fn start_signing_host(
 
     Ok(SigningHostSession {
         runtime,
+        platform,
         runtime_factory,
         responders: ResponderManager::default(),
         signer,
@@ -1317,7 +1478,6 @@ async fn start_signing_host(
         default_account,
         lite_username_prefix: normalized(args.lite_username_prefix.clone()),
         reserved_username: normalized(args.reserved_username.clone()),
-        approval,
         ui,
         chat,
     })
@@ -1330,7 +1490,7 @@ fn build_signing_runtime(
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
     chat: Option<Arc<chat::CliChatHost>>,
-) -> Result<Arc<SigningHostRuntime>> {
+) -> Result<(Arc<SigningHostRuntime>, Arc<CliPlatform>)> {
     let platform = CliPlatform::new(
         network,
         Some(CliStoragePaths::new(storage_path, product_storage_dir)),
@@ -1344,14 +1504,16 @@ fn build_signing_runtime(
         network.bulletin_genesis,
     )
     .context("invalid signing host config")?;
+    let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
     let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
-        platform,
+        platform.clone(),
         config,
         tokio_spawner(),
         chat.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
+    runtime.set_permission_status_host(status_host);
     runtime.start_statement_allowance_renewal();
-    Ok(runtime)
+    Ok((runtime, platform))
 }
 
 impl Drop for SigningHostSession {
@@ -1617,9 +1779,172 @@ async fn restore_paired_responders(session: &mut SigningHostSession) {
     }
 }
 
-/// Park until the operator stops the process. Ctrl-C is awaited so the host owns
-/// its own shutdown; SIGTERM keeps its default action and ends the process.
+/// How long the wrapped development command has to exit after termination is
+/// requested before it is killed.
+const DEV_COMMAND_GRACE: Duration = Duration::from_secs(5);
+
+/// Conventional exit code for a process stopped by an interrupt.
+const INTERRUPTED_EXIT_CODE: i32 = 130;
+
+/// Run a product against a local signing host with one command.
+///
+/// Everything the host and the product need to agree on is derived here, so
+/// they cannot disagree: the product id names the development server's own
+/// origin, and the bridge script the product loads is generated by this
+/// process from the endpoint it just bound.
+async fn run_dev(
+    args: DevArgs,
+    initial_log_filter: String,
+    log_controller: LogController,
+) -> Result<()> {
+    let product_id = args
+        .product_id
+        .unwrap_or_else(|| format!("localhost:{}", args.app_port));
+    let signing = SigningHostArgs {
+        product_id,
+        network: args.network,
+        session: args.session,
+        mnemonic: args.mnemonic,
+        base_path: args.base_path,
+        frame_listen: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, args.port))),
+        // A process with no terminal cannot prompt, which is why this pairs
+        // with a testnet-only network preset.
+        serve: true,
+        auto_accept: true,
+        ..Default::default()
+    };
+    let command = (!args.command.is_empty()).then_some(args.command);
+    run_signing_host(signing, initial_log_filter, log_controller, command).await
+}
+
+/// Run the wrapped development command, returning the code to exit with.
+///
+/// The command owns a process group whose id is retained after its direct child
+/// exits, because package managers can leave the actual development server
+/// running two or three intermediate processes away.
+async fn run_dev_command(command: Vec<String>) -> Result<i32> {
+    let (program, arguments) = command
+        .split_first()
+        .expect("an empty dev command is never supervised");
+    let mut command = DevCommand::spawn(program, arguments)?;
+
+    tokio::select! {
+        status = command.child.wait() => {
+            let exit_code = status?.code().unwrap_or(1);
+            stop_dev_command(&mut command).await;
+            Ok(exit_code)
+        }
+        _ = wait_for_shutdown() => {
+            stop_dev_command(&mut command).await;
+            let _ = command.child.wait().await;
+            // The command was interrupted, not failed. Report the interrupt
+            // rather than whatever a terminated package manager last said.
+            Ok(INTERRUPTED_EXIT_CODE)
+        }
+    }
+}
+
+struct DevCommand {
+    child: tokio::process::Child,
+    #[cfg(unix)]
+    process_group: rustix::process::Pid,
+}
+
+impl DevCommand {
+    fn spawn(program: &str, arguments: &[String]) -> Result<Self> {
+        let mut command = tokio::process::Command::new(program);
+        command.args(arguments);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+
+            command.as_std_mut().process_group(0);
+        }
+        let child = command
+            .spawn()
+            .with_context(|| format!("failed to start {program}"))?;
+        #[cfg(unix)]
+        let process_group = child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .context("development command has no process group id")?;
+        Ok(Self {
+            child,
+            #[cfg(unix)]
+            process_group,
+        })
+    }
+}
+
+/// Terminate the development command and everything it spawned.
+#[cfg(unix)]
+async fn stop_dev_command(command: &mut DevCommand) {
+    use rustix::process::{Signal, kill_process_group};
+
+    let _ = kill_process_group(command.process_group, Signal::TERM);
+    if wait_for_dev_process_group_exit(command).await {
+        return;
+    }
+    let _ = kill_process_group(command.process_group, Signal::KILL);
+    let _ = wait_for_dev_process_group_exit(command).await;
+}
+
+#[cfg(unix)]
+async fn wait_for_dev_process_group_exit(command: &mut DevCommand) -> bool {
+    let exited = async {
+        loop {
+            let _ = command.child.try_wait();
+            if matches!(
+                rustix::process::test_kill_process_group(command.process_group),
+                Err(rustix::io::Errno::SRCH)
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(DEV_COMMAND_GRACE, exited)
+        .await
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+async fn stop_dev_command(command: &mut DevCommand) {
+    let _ = command.child.start_kill();
+}
+
+/// Resolve once the process is asked to stop.
+///
+/// Termination counts alongside interruption: a supervisor stopping this
+/// process (a test runner, systemd, a container) sends `SIGTERM`, and the
+/// shutdown path is what releases responders and stops the development command,
+/// which runs in its own process group and so never sees the signal itself.
 async fn wait_for_shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = wait_for_interrupt() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(error) => {
+                terminal_ui::output_event(SystemEvent::SigningHostError {
+                    reason: format!("SIGTERM handling unavailable: {error}"),
+                });
+                wait_for_interrupt().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    wait_for_interrupt().await;
+}
+
+async fn wait_for_interrupt() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         // Nothing to await without a signal handler, so stay up and serve until
         // the process is killed rather than exiting as soon as it starts.
@@ -1681,16 +2006,17 @@ fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
     }
     let promoted = session.catalog.promote_to_user(current, &user_id)?;
     let last_script = session.catalog.last_script(&promoted)?;
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         session.network,
         promoted.path.clone(),
         promoted.product_storage_dir.clone(),
-        session.approval,
+        session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
     )?;
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
+    session.platform = platform;
     session.last_script = last_script;
     session.profile = Some(promoted);
     session.catalog.set_current(&user_id)?;
@@ -2386,11 +2712,11 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         provisional_profile
     };
     let last_script = session.catalog.last_script(&profile)?;
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         session.network,
         profile.path.clone(),
         profile.product_storage_dir.clone(),
-        session.approval,
+        session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
     )?;
@@ -2412,6 +2738,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
     session.responders.stop_all();
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
+    session.platform = platform;
     session.cached_user_id = signer.lite_username.clone();
     session.signer = Some(signer);
     session.last_script = last_script;
@@ -2474,11 +2801,11 @@ async fn import_mnemonic_session(
 
     let profile = session.catalog.ensure_profile(&session_name)?;
     let last_script = session.catalog.last_script(&profile)?;
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         session.network,
         profile.path.clone(),
         profile.product_storage_dir.clone(),
-        session.approval,
+        session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
     )?;
@@ -2516,6 +2843,7 @@ async fn import_mnemonic_session(
     session.responders.stop_all();
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
+    session.platform = platform;
     session.cached_user_id = username.clone();
     session.signer = Some(signer);
     session.last_script = last_script;
@@ -2657,6 +2985,7 @@ async fn pairing_interactive_loop(
             }
             ShellCommand::Pair(_)
             | ShellCommand::Devices(_)
+            | ShellCommand::Approval(_)
             | ShellCommand::Session(_)
             | ShellCommand::Renew => {
                 ui.error("command is only available on the signing host");
@@ -2758,7 +3087,7 @@ async fn signing_interactive_loop(
             session,
             &frame_url,
             &product_id,
-            ShellCommand::Pair(deeplink),
+            ShellCommand::Pair(PairCommand::Deeplink(deeplink)),
             input,
             &mut ui,
         )
@@ -2791,6 +3120,31 @@ async fn signing_interactive_loop(
                     ui.set_log_level(level);
                     ui.event(SystemEvent::LogLevelChanged { level });
                 }
+            }
+            ShellCommand::Approval(ApprovalCommand::Current) => {
+                let mode = match session.platform.approval_policy() {
+                    ApprovalPolicy::Prompt => "manual",
+                    ApprovalPolicy::AutoAccept => "automatic",
+                };
+                ui.system(format!("Approval mode: {mode}"));
+            }
+            ShellCommand::Approval(ApprovalCommand::Manual) => {
+                session.platform.set_approval_policy(ApprovalPolicy::Prompt);
+                ui.success(
+                    "Approval mode set to manual",
+                    Some("Future product confirmations will require approval.".to_string()),
+                );
+            }
+            ShellCommand::Approval(ApprovalCommand::Automatic) => {
+                session
+                    .platform
+                    .set_approval_policy(ApprovalPolicy::AutoAccept);
+                ui.success(
+                    "Approval mode set to automatic",
+                    Some(
+                        "Future product confirmations will be approved automatically.".to_string(),
+                    ),
+                );
             }
             ShellCommand::Product(ProductCommand::Current) => ui.system(product.current()),
             ShellCommand::Product(ProductCommand::Switch(product_id)) => {
@@ -2896,6 +3250,13 @@ async fn signing_interactive_loop(
                 }
             }
             ShellCommand::Quit => return Ok(None),
+            ShellCommand::Pair(PairCommand::Scan) => {
+                let input = match ui.read_pairing_image().await? {
+                    DriveResult::Complete(input) => input,
+                    DriveResult::Cancelled => continue,
+                };
+                run_interactive_pairing_image(session, input, &mut ui).await?;
+            }
             ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
                 Ok(script) => {
                     let product_id = product.current();
@@ -2956,6 +3317,39 @@ async fn run_interactive_operation(
     Ok(())
 }
 
+async fn run_interactive_pairing_image(
+    session: &mut SigningHostSession,
+    input: PairingImageInput,
+    ui: &mut ActiveTerminalUi,
+) -> Result<()> {
+    let activity_checkpoint = ui.activity_checkpoint();
+    let operation = async {
+        let deeplink = tokio::task::spawn_blocking(move || match input {
+            PairingImageInput::Pixels(image) => qr_scanner::decode(&image),
+            PairingImageInput::Path(path) => qr_scanner::decode_path(&path),
+        })
+        .await
+        .context("join QR image decoder")??;
+        start_deeplink_responder(session, deeplink).await
+    };
+    match ui.drive("/pair", operation).await? {
+        DriveResult::Complete(Ok(())) => {}
+        DriveResult::Complete(Err(error)) => {
+            ui.finish_activities_since(
+                activity_checkpoint,
+                ActivityState::Failed,
+                "Stopped after an error",
+            );
+            ui.error_with_causes(&error);
+        }
+        DriveResult::Cancelled => {
+            ui.finish_activities_since(activity_checkpoint, ActivityState::Cancelled, "Cancelled");
+            ui.error("command cancelled");
+        }
+    }
+    Ok(())
+}
+
 async fn execute_interactive_operation(
     session: &mut SigningHostSession,
     frame_url: &str,
@@ -2964,7 +3358,18 @@ async fn execute_interactive_operation(
     ui: UiHandle,
 ) -> Result<()> {
     match command {
-        ShellCommand::Pair(deeplink) => start_deeplink_responder(session, deeplink).await?,
+        ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
+            start_deeplink_responder(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Image(path)) => {
+            let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode_path(&path))
+                .await
+                .context("join QR image decoder")??;
+            start_deeplink_responder(session, deeplink).await?;
+        }
+        ShellCommand::Pair(PairCommand::Scan) => {
+            bail!("clipboard image paste must be handled by the terminal UI")
+        }
         ShellCommand::Script(Some(script)) => {
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
             let script =
@@ -2992,7 +3397,7 @@ async fn execute_interactive_operation(
         ShellCommand::Renew => run_renew(session).await?,
         ShellCommand::Login => bail!("/login is only available on the pairing host"),
         ShellCommand::Logout => bail!("/logout is only available on the pairing host"),
-        ShellCommand::Product(_) | ShellCommand::Devices(_) => {
+        ShellCommand::Product(_) | ShellCommand::Devices(_) | ShellCommand::Approval(_) => {
             bail!("command must be handled by the terminal UI")
         }
         ShellCommand::Help
@@ -3017,7 +3422,18 @@ async fn execute_non_interactive_command(
     log_controller: &LogController,
 ) -> Result<Option<SessionClearTarget>> {
     match command {
-        ShellCommand::Pair(deeplink) => respond_to_deeplink(session, deeplink).await?,
+        ShellCommand::Pair(PairCommand::Deeplink(deeplink)) => {
+            respond_to_deeplink(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Image(path)) => {
+            let deeplink = tokio::task::spawn_blocking(move || qr_scanner::decode_path(&path))
+                .await
+                .context("join QR image decoder")??;
+            respond_to_deeplink(session, deeplink).await?
+        }
+        ShellCommand::Pair(PairCommand::Scan) => bail!(
+            "clipboard image paste needs an interactive signing host; use /pair <image-path> or /pair <polkadotapp://pair?...>"
+        ),
         ShellCommand::Script(script) => {
             let script = match script {
                 Some(script) => {
@@ -3044,6 +3460,9 @@ async fn execute_non_interactive_command(
         ShellCommand::Help => println!("{HELP_TEXT}"),
         ShellCommand::Clear | ShellCommand::Quit => {}
         ShellCommand::Copy => bail!("/copy is only available in the terminal UI"),
+        ShellCommand::Approval(_) => {
+            bail!("/approval is only available in the terminal UI")
+        }
         ShellCommand::Login => bail!("/login is only available on the pairing host"),
         ShellCommand::Logout => bail!("/logout is only available on the pairing host"),
         ShellCommand::Log(level) => {
@@ -3353,8 +3772,8 @@ mod cli_tests {
         let after = Cli::try_parse_from(["truapi-host", "signing-host", "--log-level", "trace"])
             .expect("global log level after subcommand should parse");
 
-        assert_eq!(before.log_level, LogLevel::Trace);
-        assert_eq!(after.log_level, LogLevel::Trace);
+        assert_eq!(before.log_level, Some(LogLevel::Trace));
+        assert_eq!(after.log_level, Some(LogLevel::Trace));
         assert_eq!(LogLevel::Trace.as_filter(), "trace");
         assert_eq!(
             LogLevel::Trace.scoped_filter(),
@@ -3393,6 +3812,110 @@ mod cli_tests {
         };
         assert_eq!(command, "/help");
         assert_eq!(args.frame_listen, None);
+    }
+
+    /// The product id and the frame port are the two values the host and the
+    /// product must agree on, and `dev` derives both so they cannot drift.
+    #[test]
+    fn dev_derives_the_product_id_from_the_app_port_and_wraps_a_command() {
+        let cli = Cli::try_parse_from([
+            "truapi-host",
+            "dev",
+            "--app-port",
+            "5173",
+            "--",
+            "pnpm",
+            "dev",
+            "--host",
+        ])
+        .expect("dev should parse a wrapped command");
+        let Command::Dev(args) = cli.command else {
+            panic!("expected dev command");
+        };
+
+        assert_eq!(args.app_port, 5173);
+        assert_eq!(args.port, DEFAULT_DEV_PORT);
+        assert_eq!(args.product_id, None);
+        assert_eq!(args.command, ["pnpm", "dev", "--host"]);
+    }
+
+    #[test]
+    fn dev_runs_a_bare_host_when_no_command_is_wrapped() {
+        let cli = Cli::try_parse_from(["truapi-host", "dev", "--product-id", "playground.paseo"])
+            .expect("dev should parse without a wrapped command");
+        let Command::Dev(args) = cli.command else {
+            panic!("expected dev command");
+        };
+
+        assert_eq!(args.product_id.as_deref(), Some("playground.paseo"));
+        assert_eq!(args.app_port, 3000);
+        assert!(args.command.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dev_force_kills_a_term_ignoring_descendant_after_its_launcher_exits() -> Result<()> {
+        const READY_PATH_ENV: &str = "TRUAPI_DEV_COMMAND_TEST_READY_PATH";
+
+        if let Some(ready_path) = std::env::var_os(READY_PATH_ENV) {
+            let _terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            let _listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+            std::fs::write(
+                ready_path,
+                format!("{} {}", _listener.local_addr()?, std::process::id()),
+            )?;
+            return std::future::pending().await;
+        }
+
+        let temporary = tempfile::tempdir()?;
+        let ready_path = temporary.path().join("descendant-ready");
+        let executable = std::env::current_exe()?.to_string_lossy().into_owned();
+        let launcher = r#"
+"$1" --exact cli_tests::dev_force_kills_a_term_ignoring_descendant_after_its_launcher_exits --nocapture &
+attempts=0
+while [ ! -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH" ] && [ "$attempts" -lt 500 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.01
+done
+test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
+"#;
+        let started = std::time::Instant::now();
+        let exit_code = run_dev_command(vec![
+            "env".to_string(),
+            format!("{READY_PATH_ENV}={}", ready_path.display()),
+            "sh".to_string(),
+            "-c".to_string(),
+            launcher.to_string(),
+            "sh".to_string(),
+            executable,
+        ])
+        .await?;
+        let ready = std::fs::read_to_string(&ready_path)?;
+        let (address, pid) = ready
+            .split_once(' ')
+            .context("descendant readiness record is incomplete")?;
+        let address = address.parse::<SocketAddr>()?;
+        let port_was_released = std::net::TcpListener::bind(address).is_ok();
+        if !port_was_released {
+            let pid = pid
+                .trim()
+                .parse::<i32>()
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+                .context("descendant pid is invalid")?;
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        }
+
+        assert_eq!(
+            (
+                exit_code,
+                port_was_released,
+                started.elapsed() >= DEV_COMMAND_GRACE,
+            ),
+            (0, true, true)
+        );
+        Ok(())
     }
 
     #[test]
@@ -3604,5 +4127,133 @@ mod cli_tests {
             validate_signing_args(&args).unwrap_err().to_string(),
             "paired-device management is unavailable when launched with --mnemonic"
         );
+    }
+
+    #[test]
+    fn saved_log_level_is_the_default_but_explicit_selection_wins() {
+        assert_eq!(
+            [
+                resolve_log_level(None, None),
+                resolve_log_level(None, Some(LogLevel::Debug)),
+                resolve_log_level(Some(LogLevel::Trace), Some(LogLevel::Debug)),
+            ],
+            [LogLevel::Info, LogLevel::Debug, LogLevel::Trace]
+        );
+    }
+
+    #[test]
+    fn log_levels_display_in_lowercase() {
+        assert_eq!(
+            [
+                LogLevel::Error,
+                LogLevel::Warn,
+                LogLevel::Info,
+                LogLevel::Debug,
+                LogLevel::Trace,
+            ]
+            .map(|level| level.to_string()),
+            ["error", "warn", "info", "debug", "trace"]
+        );
+    }
+
+    #[test]
+    fn valid_rust_log_value_replaces_the_resolved_level() {
+        let (filter, displayed) = startup_filter(Some(" warn,truapi=trace "), LogLevel::Info);
+        let (_, fallback) = startup_filter(Some("truapi=verbose"), LogLevel::Debug);
+
+        assert_eq!(
+            (filter.to_string(), displayed, fallback),
+            (
+                "truapi=trace,warn".to_string(),
+                "warn,truapi=trace".to_string(),
+                "debug".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn log_preference_uses_the_selected_host_base_path() {
+        for arguments in [
+            vec!["truapi-host", "pairing-host", "--base-path", "custom-state"],
+            vec!["truapi-host", "signing-host", "--base-path", "custom-state"],
+            vec!["truapi-host", "dev", "--base-path", "custom-state"],
+        ] {
+            let cli = Cli::try_parse_from(arguments).expect("host command should parse");
+
+            assert_eq!(
+                command_base_path(&cli.command),
+                PathBuf::from("custom-state")
+            );
+        }
+    }
+
+    #[test]
+    fn log_level_preference_round_trips() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+
+        assert_eq!(load_log_level(temporary.path())?, None);
+        store_log_level(temporary.path(), LogLevel::Debug)?;
+        store_log_level(temporary.path(), LogLevel::Trace)?;
+
+        assert_eq!(load_log_level(temporary.path())?, Some(LogLevel::Trace));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_saved_log_level_is_reported() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join(LOG_LEVEL_FILE), "verbose\n")?;
+
+        let error = format!("{:#}", load_log_level(temporary.path()).unwrap_err());
+
+        assert!(error.contains("invalid log level `verbose`"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn log_controller_persists_successful_updates() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let reloaded = Arc::new(std::sync::Mutex::new(None));
+        let observed = reloaded.clone();
+        let controller = LogController {
+            reload: Arc::new(move |level| {
+                *observed.lock().expect("reload observation lock") = Some(level);
+                Ok(())
+            }),
+            base_path: temporary.path().to_path_buf(),
+        };
+
+        controller.set(LogLevel::Debug)?;
+
+        assert_eq!(
+            (
+                *reloaded.lock().expect("reload observation lock"),
+                load_log_level(temporary.path())?,
+            ),
+            (Some(LogLevel::Debug), Some(LogLevel::Debug))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn log_controller_does_not_reload_when_persistence_fails() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let base_path = temporary.path().join("not-a-directory");
+        std::fs::write(&base_path, "occupied")?;
+        let reloaded = Arc::new(std::sync::Mutex::new(None));
+        let observed = reloaded.clone();
+        let controller = LogController {
+            reload: Arc::new(move |level| {
+                *observed.lock().expect("reload observation lock") = Some(level);
+                Ok(())
+            }),
+            base_path,
+        };
+
+        let error = controller.set(LogLevel::Debug).unwrap_err().to_string();
+
+        assert!(error.contains("persist saved log level"), "{error}");
+        assert_eq!(*reloaded.lock().expect("reload observation lock"), None);
+        Ok(())
     }
 }

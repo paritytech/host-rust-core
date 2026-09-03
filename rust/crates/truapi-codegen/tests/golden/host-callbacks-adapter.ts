@@ -17,6 +17,7 @@ import {
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocaleSubscribeItem,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
@@ -27,6 +28,7 @@ import type { GenericError, NotificationId } from "@parity/truapi";
 import {
   AuthState,
   CoreStorageKey,
+  DevicePermissionStatus,
   HostChainSet,
   ProductContext,
   UserConfirmationReview,
@@ -66,9 +68,14 @@ export interface RawCallbacks {
   clearCoreStorage(key: Uint8Array): Promise<void>;
   featureSupported(request: Uint8Array): Promise<Uint8Array>;
   supportedChains(): Promise<Uint8Array>;
+  subscribeLocale(
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
   navigateTo(url: string): Promise<void>;
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
   cancelNotification(id: NotificationId): Promise<void>;
+  devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
   devicePermission(request: Uint8Array): Promise<Uint8Array>;
   remotePermission(request: Uint8Array): Promise<Uint8Array>;
   lookupPreimage(
@@ -91,6 +98,7 @@ export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
   const chat = callbacks.chat;
+  const permissionStatus = callbacks.permissionStatus;
   return {
     authStateChanged: async (state) =>
       await callbacks.auth.authStateChanged(AuthState.dec(state)),
@@ -143,6 +151,12 @@ export function createWasmRawCallbacks(
       ),
     supportedChains: async () =>
       HostChainSet.enc(await callbacks.features.supportedChains()),
+    subscribeLocale: (sendItem, sendError) =>
+      driveResultStream(
+        callbacks.locale.subscribeLocale(),
+        (item) => sendItem(HostLocaleSubscribeItem.enc(item)),
+        sendError,
+      ),
     navigateTo: async (url) => await callbacks.navigation.navigateTo(url),
     pushNotification: async (notification) =>
       HostPushNotificationResponse.enc(
@@ -152,6 +166,16 @@ export function createWasmRawCallbacks(
       ),
     cancelNotification: async (id) =>
       await callbacks.notifications.cancelNotification(id),
+    ...(permissionStatus
+      ? {
+          devicePermissionStatus: async (request) =>
+            DevicePermissionStatus.enc(
+              await permissionStatus.devicePermissionStatus(
+                HostDevicePermissionRequest.dec(request),
+              ),
+            ),
+        }
+      : {}),
     devicePermission: async (request) =>
       HostDevicePermissionResponse.enc(
         await callbacks.permissions.devicePermission(

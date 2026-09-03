@@ -26,12 +26,15 @@ pub trait Signing: Send + Sync {
     /// returns an unsigned transaction.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   genesisHash: people.value.genesisHash,
@@ -58,7 +61,7 @@ pub trait Signing: Send + Sync {
     ///   console.log(`${version} transaction created:`, result.value);
     /// }
     /// ```
-    #[wire(request_id = 30)]
+    #[wire(request_id = 30, sensitive)]
     async fn create_transaction(
         &self,
         _cx: &CallContext,
@@ -74,12 +77,15 @@ pub trait Signing: Send + Sync {
     /// the given bytes are used with no host signature.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     /// });
@@ -87,7 +93,7 @@ pub trait Signing: Send + Sync {
     ///
     /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   genesisHash: people.value.genesisHash,
@@ -112,7 +118,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
     /// console.log("transaction created:", result.value);
     /// ```
-    #[wire(request_id = 32)]
+    #[wire(request_id = 32, sensitive)]
     async fn create_transaction_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -144,7 +150,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRawWithLegacyAccount failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 34)]
+    #[wire(request_id = 34, sensitive)]
     async fn sign_raw_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -157,12 +163,15 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload with a non-product account.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
     /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     /// });
@@ -187,7 +196,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayloadWithLegacyAccount failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 36)]
+    #[wire(request_id = 36, sensitive)]
     async fn sign_payload_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -202,8 +211,11 @@ pub trait Signing: Send + Sync {
     /// Sign raw bytes or a message.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const result = await truapi.signing.signRaw({
-    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Index", value: 0 } },
+    ///   account: { dotNsIdentifier: productContext.value.productId, derivationIndex: { tag: "Index", value: 0 } },
     ///   payload: {
     ///     tag: "Bytes",
     ///     value: {
@@ -214,7 +226,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRaw failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 114)]
+    #[wire(request_id = 114, sensitive)]
     async fn sign_raw(
         &self,
         _cx: &CallContext,
@@ -226,11 +238,14 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
     /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.signing.signPayload({
-    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Index", value: 0 } },
+    ///   account: { dotNsIdentifier: productContext.value.productId, derivationIndex: { tag: "Index", value: 0 } },
     ///   payload: {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
@@ -248,7 +263,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayload failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 116)]
+    #[wire(request_id = 116, sensitive)]
     async fn sign_payload(
         &self,
         _cx: &CallContext,

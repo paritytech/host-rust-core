@@ -1,5 +1,6 @@
-//! UniFFI-facing native bridge. Exposes [`NativeTrUApiCore`] and the
-//! [`HostCallbacks`] callback interface that iOS and Android call into.
+//! UniFFI-facing native bridge. Exposes [`NativeTrUApiHostRuntime`],
+//! [`NativeProductExecution`], and the [`HostCallbacks`] callback interface
+//! that iOS and Android call into.
 //!
 //! The native side builds a `CallbackPlatform` that adapts every
 //! [`truapi_platform::Platform`] trait to a corresponding callback. The
@@ -18,13 +19,14 @@ use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
-use truapi::{Bytes32, v01};
+use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
-    HostInfo, JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
-    PermissionAuthorizationStatus, Permissions, PlatformInfo, PreimageHost, ProductContext,
-    ProductExecutionKind, ProductStorage, RuntimeConfigValidationError, SigningHostConfig,
-    ThemeHost, UserConfirmation, UserConfirmationReview, async_trait, normalize_product_identifier,
+    HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
+    PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
+    RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
+    UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
 use crate::SigningHostRuntime;
@@ -144,15 +146,6 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for HostNavigateRejection {
     }
 }
 
-/// Native-friendly SSO deeplink scheme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativePairingDeeplinkScheme {
-    /// Production Polkadot app.
-    PolkadotApp,
-    /// Development Polkadot app.
-    PolkadotAppDev,
-}
-
 /// FFI projection of the canonical
 /// [`SsoRequestOutcome`](crate::host_logic::sso::messages::SsoRequestOutcome),
 /// concrete because UniFFI cannot export generics.
@@ -175,35 +168,6 @@ pub enum SsoRequestOutcome {
     Ignored,
 }
 
-/// Native runtime configuration supplied before product calls are handled.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct NativeRuntimeConfig {
-    /// Canonical product identifier used for account derivation.
-    pub product_id: String,
-    /// Trusted executable kind derived by the native host before loading it.
-    pub execution_kind: ProductExecutionKind,
-    /// Host name shown by the wallet during SSO pairing.
-    pub host_name: String,
-    /// Optional host icon URL shown by the wallet during SSO pairing.
-    pub host_icon: Option<String>,
-    /// Optional host version shown by the wallet during SSO pairing.
-    pub host_version: Option<String>,
-    /// Optional platform/browser name shown by the wallet during SSO pairing.
-    pub platform_type: Option<String>,
-    /// Optional platform/browser version shown by the wallet during SSO pairing.
-    pub platform_version: Option<String>,
-    /// People-chain genesis hash. Must be exactly 32 bytes.
-    pub people_chain_genesis_hash: Vec<u8>,
-    /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
-    pub bulletin_chain_genesis_hash: Vec<u8>,
-    /// Optional local signing-host secret material (raw BIP-39 entropy).
-    pub local_session_secret: Option<Vec<u8>>,
-    /// Optional lite username attached to the local signing-host session.
-    pub local_session_lite_username: Option<String>,
-    /// Deeplink scheme used in pairing QR payloads.
-    pub pairing_deeplink_scheme: NativePairingDeeplinkScheme,
-}
-
 /// Process-owned native host configuration shared by every product execution.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NativeHostRuntimeConfig {
@@ -213,6 +177,9 @@ pub struct NativeHostRuntimeConfig {
     pub host_icon: Option<String>,
     /// Optional host version shown by the wallet during SSO pairing.
     pub host_version: Option<String>,
+    /// Platform category this host runs on, reported to products via
+    /// `System::host_info`.
+    pub host_platform: HostPlatform,
     /// Optional platform/browser name shown by the wallet during SSO pairing.
     pub platform_type: Option<String>,
     /// Optional platform/browser version shown by the wallet during SSO pairing.
@@ -241,12 +208,6 @@ struct NativeResolvedHostRuntimeConfig {
     signing: SigningHostConfig,
     local_session_secret: Option<Vec<u8>>,
     local_session_lite_username: Option<String>,
-}
-
-#[derive(Debug)]
-struct NativeResolvedRuntimeConfig {
-    host: NativeResolvedHostRuntimeConfig,
-    product: ProductContext,
 }
 
 /// Native runtime config validation error.
@@ -302,45 +263,6 @@ pub enum NativeRuntimeConfigError {
     },
 }
 
-impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
-    type Error = NativeRuntimeConfigError;
-
-    fn try_from(config: NativeRuntimeConfig) -> Result<Self, Self::Error> {
-        let NativeRuntimeConfig {
-            product_id,
-            execution_kind,
-            host_name,
-            host_icon,
-            host_version,
-            platform_type,
-            platform_version,
-            people_chain_genesis_hash,
-            bulletin_chain_genesis_hash,
-            local_session_secret,
-            local_session_lite_username,
-            pairing_deeplink_scheme: _,
-        } = config;
-        let host: NativeResolvedHostRuntimeConfig = NativeHostRuntimeConfig {
-            host_name,
-            host_icon,
-            host_version,
-            platform_type,
-            platform_version,
-            people_chain_genesis_hash,
-            bulletin_chain_genesis_hash,
-            local_session_secret,
-            local_session_lite_username,
-        }
-        .try_into()?;
-        let product = NativeProductExecutionConfig {
-            product_id,
-            execution_kind,
-        }
-        .try_into()?;
-        Ok(Self { host, product })
-    }
-}
-
 impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     type Error = NativeRuntimeConfigError;
 
@@ -362,6 +284,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                 name: config.host_name,
                 icon: config.host_icon,
                 version: config.host_version,
+                platform: config.host_platform,
             },
             PlatformInfo {
                 kind: config.platform_type,
@@ -427,6 +350,35 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
+/// OS status of a device capability, as a native host reports it.
+///
+/// Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
+/// directly: an async callback method returning a type from another UniFFI
+/// namespace lowers into that namespace's `RustBuffer`, and the generated
+/// Kotlin then fails to compile. The conversion is total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeDevicePermissionStatus {
+    /// The OS grants this capability to the host application.
+    Granted,
+    /// The OS refuses it; only system settings can change that.
+    Denied,
+    /// The OS has not been asked, or reset its own answer.
+    NotDetermined,
+    /// This platform has no OS gate for the capability.
+    NotApplicable,
+}
+
+impl From<NativeDevicePermissionStatus> for truapi_platform::DevicePermissionStatus {
+    fn from(status: NativeDevicePermissionStatus) -> Self {
+        match status {
+            NativeDevicePermissionStatus::Granted => Self::Granted,
+            NativeDevicePermissionStatus::Denied => Self::Denied,
+            NativeDevicePermissionStatus::NotDetermined => Self::NotDetermined,
+            NativeDevicePermissionStatus::NotApplicable => Self::NotApplicable,
+        }
+    }
+}
+
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
@@ -468,6 +420,21 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::HostDevicePermissionRequest,
     ) -> Result<bool, HostRejection>;
 
+    /// Report the OS status of a device capability without prompting.
+    ///
+    /// Answer from the platform's own authorization APIs. This must not show
+    /// UI: the core calls it before every device-permission request and status
+    /// read, and prompting here would re-ask a question the user has already
+    /// answered. A host with no OS gate for the capability answers
+    /// `NotApplicable`, which leaves the stored product decision governing.
+    ///
+    /// It is async because reading notification authorization on iOS is
+    /// `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<NativeDevicePermissionStatus, HostRejection>;
+
     /// Prompt the user for a remote (product-scoped) permission.
     async fn remote_permission(
         &self,
@@ -478,14 +445,10 @@ pub trait HostCallbacks: Send + Sync {
     /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
     /// `LoginFailed` as a retryable error unless its `kind` is
     /// `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
-    /// rolls over, so retry should not be the primary action. A pairing host's
-    /// session activation reports its outcome even
-    /// when it is the default `Disconnected`, so a host that awaits activation
-    /// before routing never has to read silence as "signed out". Every other
-    /// emission, and every emission on a host role that has no session
-    /// activation, happens only when the state actually changes. User
-    /// cancellation is reported through
-    /// `NativeTrUApiCore.cancel_login()`.
+    /// rolls over, so retry should not be the primary action. A pairing host
+    /// always receives an opening state once the core has restored the
+    /// persisted session, `Disconnected` included; later emissions happen
+    /// only when the state changes.
     fn auth_state_changed(&self, state: AuthState);
 
     /// Read a core-owned host-private storage slot. `key` is a SCALE-encoded
@@ -523,6 +486,10 @@ pub trait HostCallbacks: Send + Sync {
     /// Current host theme, named variant included. The native shim emits this
     /// as the current item in its subscription stream.
     fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection>;
+
+    /// Locale the host currently presents its interface in. The native shim
+    /// emits this as the current item in its subscription stream.
+    fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection>;
 
     /// Answer a feature-support query.
     async fn feature_supported(
@@ -638,10 +605,13 @@ impl NativeTrUApiHostRuntime {
         product: ProductContext,
     ) -> Arc<NativeProductExecution> {
         let events = Arc::new(NativeEventBus::default());
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(CallbackPlatform {
+        let callback_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
         });
+        let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
+            callback_platform.clone();
+        let platform: Arc<dyn truapi_platform::Platform> = callback_platform;
         let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> =
             chat_callbacks.map(|chat| -> Arc<dyn truapi_platform::ChatPlatform> {
                 Arc::new(ChatCallbackPlatform {
@@ -654,6 +624,7 @@ impl NativeTrUApiHostRuntime {
             product: product.clone(),
             platform,
             chat,
+            permission_status,
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -930,6 +901,9 @@ pub struct NativeProductExecution {
     product: ProductContext,
     platform: Arc<dyn truapi_platform::Platform>,
     chat: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// The same `CallbackPlatform` as `platform`, kept separately because
+    /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
+    permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -954,6 +928,7 @@ impl NativeProductExecution {
         crate::host_core::ConnectionAdapters {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
+            permission_status: Some(self.permission_status.clone()),
             chat: self.chat_connection.clone(),
         }
     }
@@ -995,13 +970,19 @@ impl NativeProductExecution {
 #[uniffi::export]
 impl NativeProductExecution {
     /// Read a product-scoped permission authorization without prompting.
-    pub fn permission_authorization_status(
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, which means calling `device_permission_status` on the host. It
+    /// is async for that reason: blocking a thread on a host callback
+    /// deadlocks any implementation that hops to the same thread to answer.
+    pub async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin().permission_authorization_status(request),
-        )?)
+        Ok(self
+            .admin()
+            .permission_authorization_status(request)
+            .await?)
     }
 
     /// Update a product-scoped permission authorization.
@@ -1051,6 +1032,11 @@ impl NativeProductExecution {
     /// Push a host theme replacement to this execution's subscriptions.
     pub fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.events.notify_theme_changed(theme);
+    }
+
+    /// Push a host locale replacement to this execution's subscriptions.
+    pub fn notify_locale_changed(&self, locale: v01::HostLocaleSubscribeItem) {
+        self.events.notify_locale_changed(locale);
     }
 
     /// Push a preimage lookup replacement to this execution's subscriptions.
@@ -1159,15 +1145,8 @@ impl NativeProductExecution {
         let adapters = self.adapters();
         let product_control = self.product_control.clone();
         let runtime_factory = Arc::new(move |sink| {
-            let product_runtime = runtime.product_runtime_with(
-                product.clone(),
-                crate::host_core::ConnectionAdapters {
-                    platform: adapters.platform.clone(),
-                    chat_platform: adapters.chat_platform.clone(),
-                    chat: adapters.chat.clone(),
-                },
-                sink,
-            );
+            let product_runtime =
+                runtime.product_runtime_with(product.clone(), adapters.clone(), sink);
             *product_control
                 .lock()
                 .expect("native product control mutex poisoned") = Some(product_runtime.control());
@@ -1190,222 +1169,6 @@ impl Drop for NativeProductExecution {
     }
 }
 
-/// Legacy single-execution UniFFI object retained for existing embedders.
-/// New native integrations should use [`NativeTrUApiHostRuntime`] and
-/// [`NativeProductExecution`].
-#[derive(uniffi::Object)]
-pub struct NativeTrUApiCore {
-    host: Arc<NativeTrUApiHostRuntime>,
-    execution: Arc<NativeProductExecution>,
-}
-
-#[uniffi::export]
-impl NativeTrUApiCore {
-    /// Construct the core with explicit product and pairing runtime config.
-    ///
-    /// When `runtime_config` carries `local_session_secret`, the session is
-    /// activated before this returns, so construction blocks the calling thread
-    /// on the same key derivation as [`Self::activate_local_session`]. Prefer
-    /// constructing off the host's main/UI thread.
-    #[uniffi::constructor]
-    pub fn with_runtime_config(
-        callbacks: Arc<dyn HostCallbacks>,
-        runtime_config: NativeRuntimeConfig,
-    ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
-        native_core_from_platform_config(callbacks, runtime_config.try_into()?)
-    }
-
-    /// Core-owned logout/disconnect. Best-effort notifies the SSO peer when
-    /// the session has channel material, then clears in-memory and persisted
-    /// session state.
-    ///
-    /// Blocks the calling thread until the disconnect completes, so call it off
-    /// the host's main/UI thread.
-    pub fn disconnect(&self) {
-        self.host.disconnect();
-    }
-
-    /// Notify this core that host-global session storage changed outside a
-    /// direct core write/clear.
-    ///
-    /// **Inert on a native host.** A signing host owns the active session in
-    /// memory, so there is no session-store sync loop to wake. Retained so
-    /// hosts written against the pairing-host surface still link.
-    pub fn notify_session_store_changed(&self) {}
-
-    /// Cancel an in-flight pairing login.
-    ///
-    /// **Inert on a native host.** The native bridge runs a signing host, which
-    /// has no pairing flow to cancel: `request_login` resolves against the
-    /// locally activated session instead. Calling this emits no auth state and
-    /// changes nothing. Retained so hosts written against the pairing-host
-    /// surface still link.
-    pub fn cancel_login(&self) {}
-
-    /// Read a stored permission authorization status without prompting.
-    ///
-    /// Blocks the calling thread on the storage read, so call it off the host's
-    /// main/UI thread.
-    pub fn permission_authorization_status(
-        &self,
-        request: PermissionAuthorizationRequest,
-    ) -> Result<PermissionAuthorizationStatus, HostRejection> {
-        self.execution.permission_authorization_status(request)
-    }
-
-    /// Update a stored permission authorization status. Passing
-    /// `.notDetermined` clears the stored value so the next product request
-    /// prompts again.
-    ///
-    /// Blocks the calling thread on the storage write, so call it off the host's
-    /// main/UI thread.
-    pub fn set_permission_authorization_status(
-        &self,
-        request: PermissionAuthorizationRequest,
-        status: PermissionAuthorizationStatus,
-    ) -> Result<(), HostRejection> {
-        self.execution
-            .set_permission_authorization_status(request, status)
-    }
-
-    /// Activate or replace the local signing-host session from host-held
-    /// secret material (raw BIP-39 entropy).
-    ///
-    /// Blocks the calling thread while the session is derived (PBKDF2, 2048
-    /// rounds), so call it off the host's main/UI thread.
-    pub fn activate_local_session(
-        &self,
-        secret: Vec<u8>,
-        lite_username: Option<String>,
-    ) -> Result<(), HostRejection> {
-        self.host.activate_local_session(secret, lite_username)
-    }
-
-    /// Record the accounts renewal should keep allowed. The ledger persists, so
-    /// this only has to be called when the set changes, not on every launch.
-    /// Renewal has nothing to do until at least one target is tracked.
-    ///
-    /// Needs an active session, so call it after
-    /// [`Self::activate_local_session`] or after pairing, not at construction.
-    ///
-    /// The ledger is append-only. There is no untrack, and an entry is dropped
-    /// only when the identity that promised it changes, which keeps derivation
-    /// recipes and discards raw account ids. Re-tracking is idempotent, so
-    /// re-track the full set after an identity change.
-    pub fn track_statement_renewal_targets(
-        &self,
-        targets: Vec<NativeStatementRenewalTarget>,
-    ) -> Result<(), NativeRenewalTargetError> {
-        self.host.track_statement_renewal_targets(targets)
-    }
-
-    /// The most recent pass the in-process renewal loop ran.
-    ///
-    /// `None` until a pass has run, which is "not yet" rather than healthy.
-    /// [`Self::start_statement_allowance_renewal`] has no return value, so a host
-    /// driving the loop reads its result here: `slots_exhausted` on the last pass
-    /// means a period filled up and an allowance went unrenewed, which is the one
-    /// outcome retrying cannot fix and a person may need telling about.
-    pub fn last_statement_renewal_report(
-        &self,
-    ) -> Option<crate::statement_allowance::renewal::StatementRenewalReport> {
-        self.host.last_statement_renewal_report()
-    }
-
-    /// Run one renewal pass now and report what each tracked target got.
-    ///
-    /// For hosts whose process cannot stay alive between periods: drive it from
-    /// WorkManager or BGTaskScheduler rather than
-    /// [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
-    /// blocks until they are included, so call it from a background thread.
-    ///
-    /// Needs an active session, which is the whole difficulty of the scheduled
-    /// case: an OS-woken cold start has none until the host restores one, and
-    /// the pass then fails with the bare reason `Disconnected`. Restore the
-    /// session before calling, and treat that reason as "not ready" rather than
-    /// as a renewal failure.
-    pub fn renew_statement_allowances(
-        &self,
-    ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
-        self.host.renew_statement_allowances()
-    }
-
-    /// Start the in-process renewal loop, for a host that stays resident. A
-    /// suspended app stops ticking, so prefer scheduling
-    /// [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
-    /// call it tolerates having no session: a tick without one is skipped and
-    /// retried.
-    pub fn start_statement_allowance_renewal(&self) {
-        self.host.start_statement_allowance_renewal();
-    }
-
-    /// The in-process loop's own cadence, capped at an hour. An allowance stays
-    /// usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
-    /// on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
-    /// slack and should read a value under an hour as the boundary approaching.
-    pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
-        self.host.next_statement_renewal_delay()
-    }
-
-    /// List registered providers for a ring so host UI can present the RFC-0024
-    /// personhood-provider setting.
-    pub fn ring_vrf_providers(
-        &self,
-        ring: v01::RingLocation,
-    ) -> Result<Vec<v01::ProductAccountId>, HostRejection> {
-        futures::executor::block_on(self.host.runtime.ring_vrf_providers(&ring)).map_err(Into::into)
-    }
-
-    /// Return the currently selected provider for a ring.
-    pub fn selected_ring_vrf_provider(
-        &self,
-        ring: v01::RingLocation,
-    ) -> Result<Option<v01::ProductAccountId>, HostRejection> {
-        futures::executor::block_on(self.host.runtime.selected_ring_vrf_provider(&ring))
-            .map_err(Into::into)
-    }
-
-    /// Persist a user-selected provider after checking that the handle is
-    /// registered for the exact ring.
-    pub fn select_ring_vrf_provider(
-        &self,
-        ring: v01::RingLocation,
-        mut handle: v01::ProductAccountId,
-    ) -> Result<(), HostRejection> {
-        handle.dot_ns_identifier = normalize_product_identifier(&handle.dot_ns_identifier)
-            .map_err(|error| native_ring_vrf_input_error(error.to_string()))?;
-        futures::executor::block_on(self.host.runtime.select_ring_vrf_provider(ring, handle))
-            .map_err(Into::into)
-    }
-
-    /// Push a host theme update to active TrUAPI theme subscriptions.
-    pub fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
-        self.execution.notify_theme_changed(theme);
-    }
-
-    /// Push a preimage lookup update to active subscriptions for `key`.
-    ///
-    /// `value == None` represents a known miss; `Some(bytes)` represents the
-    /// current preimage value.
-    pub fn notify_preimage_changed(&self, key: Vec<u8>, value: Option<Vec<u8>>) {
-        self.execution.notify_preimage_changed(key, value);
-    }
-
-    /// Push a JSON-RPC response from a native chain connection into the core.
-    pub fn notify_chain_response(&self, connection_id: u32, json: String) {
-        self.execution.notify_chain_response(connection_id, json);
-    }
-
-    /// Notify the core that a native chain connection closed externally.
-    pub fn notify_chain_closed(&self, connection_id: u32) {
-        self.execution.notify_chain_closed(connection_id);
-    }
-}
-
-fn native_ring_vrf_input_error(reason: String) -> HostRejection {
-    HostRejection::Rejected { reason }
-}
-
 /// Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`) for
 /// the `tracing` output, which on native routes to stderr (system logs on
 /// iOS/Android). Most native diagnostics flow through `on_core_log` instead;
@@ -1413,36 +1176,6 @@ fn native_ring_vrf_input_error(reason: String) -> HostRejection {
 #[uniffi::export]
 pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
-}
-
-fn native_core_from_platform_config(
-    callbacks: Arc<dyn HostCallbacks>,
-    runtime_config: NativeResolvedRuntimeConfig,
-) -> Result<Arc<NativeTrUApiCore>, NativeRuntimeConfigError> {
-    let host = NativeTrUApiHostRuntime::from_resolved(
-        callbacks.clone(),
-        runtime_config.host,
-        "truapi.native.core.boot",
-        "core ready",
-    )?;
-    let execution =
-        host.open_product_execution_with_callbacks(callbacks, None, runtime_config.product);
-    Ok(Arc::new(NativeTrUApiCore { host, execution }))
-}
-
-#[cfg(feature = "ws-bridge")]
-#[uniffi::export]
-impl NativeTrUApiCore {
-    /// Start the localhost WebSocket bridge. Returns the descriptor the
-    /// host hands to the product so it can dial back in.
-    pub fn start_ws_bridge(&self, bind_port: u16) -> Result<WsBridgeEndpoint, WsBridgeStartError> {
-        self.execution.start_ws_bridge(bind_port)
-    }
-
-    /// Stop the localhost WebSocket bridge (if running).
-    pub fn stop_ws_bridge(&self) {
-        self.execution.stop_ws_bridge();
-    }
 }
 
 /// Build a [`Spawner`] backed by a shared `futures::executor::ThreadPool`.
@@ -1481,6 +1214,8 @@ struct CallbackPlatform {
 struct NativeEventBus {
     theme_changes:
         Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostThemeSubscribeItem, v01::GenericError>>>>,
+    locale_changes:
+        Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostLocaleSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
     chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
@@ -1509,6 +1244,25 @@ impl NativeEventBus {
             .lock()
             .expect("native theme subscribers mutex poisoned")
             .retain(|tx| tx.unbounded_send(Ok(theme.clone())).is_ok());
+    }
+
+    fn subscribe_locale(
+        &self,
+        current: Result<v01::HostLocaleSubscribeItem, v01::GenericError>,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        let (tx, rx) = mpsc::unbounded();
+        self.locale_changes
+            .lock()
+            .expect("native locale subscribers mutex poisoned")
+            .push(tx);
+        stream::once(async move { current }).chain(rx).boxed()
+    }
+
+    fn notify_locale_changed(&self, locale: v01::HostLocaleSubscribeItem) {
+        self.locale_changes
+            .lock()
+            .expect("native locale subscribers mutex poisoned")
+            .retain(|tx| tx.unbounded_send(Ok(locale.clone())).is_ok());
     }
 
     fn subscribe_preimage_changes(
@@ -1622,6 +1376,25 @@ impl Notifications for CallbackPlatform {
         );
         self.callbacks
             .cancel_notification(id)
+            .map_err(v01::GenericError::from)
+    }
+}
+
+#[async_trait]
+impl truapi_platform::PermissionStatusHost for CallbackPlatform {
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::DevicePermissionStatus, v01::GenericError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.device_permission_status".to_string(),
+            format!("{request}"),
+        );
+
+        self.callbacks
+            .device_permission_status(request)
+            .await
+            .map(Into::into)
             .map_err(v01::GenericError::from)
     }
 }
@@ -1860,6 +1633,18 @@ impl ThemeHost for CallbackPlatform {
             .current_theme()
             .map_err(v01::GenericError::from);
         self.events.subscribe_theme(current)
+    }
+}
+
+impl LocaleHost for CallbackPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        let current = self
+            .callbacks
+            .current_locale()
+            .map_err(v01::GenericError::from);
+        self.events.subscribe_locale(current)
     }
 }
 
@@ -2106,15 +1891,26 @@ mod tests {
         chat_post_rejection: Mutex<Option<String>>,
         chat_posted: Mutex<Vec<(String, v01::ChatMessageContent)>>,
         theme: Mutex<v01::HostThemeSubscribeItem>,
+        locale: Mutex<v01::HostLocaleSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
         chain_connects: Mutex<Vec<Vec<u8>>>,
         chain_sends: Mutex<Vec<(u32, String)>>,
         chain_closes: Mutex<Vec<u32>>,
+        /// Capability this host reports as refused by the OS, if any.
+        os_refused: Option<v01::HostDevicePermissionRequest>,
     }
 
     impl EventCallbacks {
+        /// Same as [`Self::new`], reporting `capability` as refused by the OS.
+        fn refusing(capability: v01::HostDevicePermissionRequest) -> Self {
+            Self {
+                os_refused: Some(capability),
+                ..Self::new()
+            }
+        }
+
         fn new() -> Self {
             Self {
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
@@ -2128,12 +1924,16 @@ mod tests {
                     name: v01::ThemeName::Default,
                     variant: v01::ThemeVariant::Light,
                 }),
+                locale: Mutex::new(v01::HostLocaleSubscribeItem {
+                    language_tag: "en".to_string(),
+                }),
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
+                os_refused: None,
             }
         }
     }
@@ -2158,6 +1958,16 @@ mod tests {
             _request: v01::HostDevicePermissionRequest,
         ) -> Result<bool, HostRejection> {
             Ok(false)
+        }
+        async fn device_permission_status(
+            &self,
+            request: v01::HostDevicePermissionRequest,
+        ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+            Ok(if self.os_refused == Some(request) {
+                NativeDevicePermissionStatus::Denied
+            } else {
+                NativeDevicePermissionStatus::NotApplicable
+            })
         }
         async fn remote_permission(
             &self,
@@ -2218,6 +2028,9 @@ mod tests {
         }
         fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
             Ok(self.theme.lock().expect("theme mutex poisoned").clone())
+        }
+        fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
+            Ok(self.locale.lock().expect("locale mutex poisoned").clone())
         }
         async fn feature_supported(
             &self,
@@ -2340,28 +2153,12 @@ mod tests {
         (callbacks, events, platform)
     }
 
-    fn native_runtime_config(product_id: &str) -> NativeRuntimeConfig {
-        NativeRuntimeConfig {
-            product_id: product_id.to_string(),
-            execution_kind: ProductExecutionKind::App,
-            host_name: "Polkadot Web".to_string(),
-            host_icon: Some("https://example.invalid/dotli.png".to_string()),
-            host_version: None,
-            platform_type: None,
-            platform_version: None,
-            people_chain_genesis_hash: vec![0xa2; 32],
-            bulletin_chain_genesis_hash: vec![0xbb; 32],
-            local_session_secret: None,
-            local_session_lite_username: None,
-            pairing_deeplink_scheme: NativePairingDeeplinkScheme::PolkadotApp,
-        }
-    }
-
     fn native_host_runtime_config() -> NativeHostRuntimeConfig {
         NativeHostRuntimeConfig {
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
+            host_platform: HostPlatform::Unknown,
             platform_type: None,
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
@@ -2379,6 +2176,24 @@ mod tests {
             product_id: product_id.to_string(),
             execution_kind,
         }
+    }
+
+    #[cfg(feature = "ws-bridge")]
+    fn native_product_execution(
+        callbacks: Arc<dyn HostCallbacks>,
+        product_id: &str,
+    ) -> Arc<NativeProductExecution> {
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+            .expect("host runtime config should be valid");
+        host.open_product_execution(
+            callbacks,
+            None,
+            native_execution_config(product_id, ProductExecutionKind::App),
+        )
+        .expect("product execution config should be valid")
     }
 
     #[test]
@@ -2537,6 +2352,28 @@ mod tests {
                 AuthState::Disconnected,
             ]
         );
+    }
+
+    #[test]
+    fn native_locale_subscription_emits_current_then_notified_changes() {
+        let (callbacks, events, platform) = event_platform();
+        let mut stream = platform.subscribe_locale();
+        let switched = v01::HostLocaleSubscribeItem {
+            language_tag: "zh-Hans".to_string(),
+        };
+
+        let first = futures::executor::block_on(stream.next()).unwrap();
+        *callbacks.locale.lock().expect("locale mutex poisoned") = switched.clone();
+        events.notify_locale_changed(switched.clone());
+        let second = futures::executor::block_on(stream.next()).unwrap();
+
+        assert_eq!(
+            first.unwrap(),
+            v01::HostLocaleSubscribeItem {
+                language_tag: "en".to_string(),
+            }
+        );
+        assert_eq!(second.unwrap(), switched);
     }
 
     #[test]
@@ -3123,10 +2960,21 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_reports_the_declared_host_platform() {
+        let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            host_platform: HostPlatform::Ios,
+            ..native_host_runtime_config()
+        })
+        .expect("config is valid");
+
+        assert_eq!(resolved.signing.host.host_info.platform, HostPlatform::Ios);
+    }
+
+    #[test]
     fn runtime_config_rejects_wrong_size_genesis_hash() {
-        let err = NativeResolvedRuntimeConfig::try_from(NativeRuntimeConfig {
+        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
             people_chain_genesis_hash: vec![0; 31],
-            ..native_runtime_config("app.dot")
+            ..native_host_runtime_config()
         })
         .unwrap_err();
 
@@ -3137,10 +2985,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_rejects_empty_required_fields() {
-        let err = NativeResolvedRuntimeConfig::try_from(NativeRuntimeConfig {
+    fn product_execution_config_rejects_empty_product_id() {
+        let err = ProductContext::try_from(NativeProductExecutionConfig {
             product_id: " ".to_string(),
-            ..native_runtime_config("app.dot")
+            ..native_execution_config("app.dot", ProductExecutionKind::App)
         })
         .unwrap_err();
 
@@ -3152,9 +3000,9 @@ mod tests {
 
     #[test]
     fn runtime_config_rejects_relative_host_icon() {
-        let err = NativeResolvedRuntimeConfig::try_from(NativeRuntimeConfig {
+        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
             host_icon: Some("/dotli.png".to_string()),
-            ..native_runtime_config("app.dot")
+            ..native_host_runtime_config()
         })
         .unwrap_err();
 
@@ -3166,9 +3014,9 @@ mod tests {
 
     #[test]
     fn runtime_config_rejects_non_https_host_icon() {
-        let err = NativeResolvedRuntimeConfig::try_from(NativeRuntimeConfig {
+        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
             host_icon: Some("http://localhost:3000/dotli.png".to_string()),
-            ..native_runtime_config("app.dot")
+            ..native_host_runtime_config()
         })
         .unwrap_err();
 
@@ -3178,9 +3026,9 @@ mod tests {
         ));
     }
 
-    /// Calling `start_ws_bridge` twice on the same `NativeTrUApiCore`
+    /// Calling `start_ws_bridge` twice on the same product execution
     /// without an intervening `stop_ws_bridge` is a hard error. The bridge
-    /// is single-instance per core, so the second start must surface
+    /// is single-instance per execution, so the second start must surface
     /// `AlreadyRunning` rather than silently leaking a worker thread.
     #[cfg(feature = "ws-bridge")]
     #[test]
@@ -3206,6 +3054,12 @@ mod tests {
                 _request: v01::HostDevicePermissionRequest,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
+            }
+            async fn device_permission_status(
+                &self,
+                _request: v01::HostDevicePermissionRequest,
+            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+                Ok(NativeDevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,
@@ -3258,6 +3112,11 @@ mod tests {
                     variant: v01::ThemeVariant::Light,
                 })
             }
+            fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
+                Ok(v01::HostLocaleSubscribeItem {
+                    language_tag: "en".to_string(),
+                })
+            }
             async fn feature_supported(
                 &self,
                 _request: v01::HostFeatureSupportedRequest,
@@ -3288,20 +3147,15 @@ mod tests {
             }
         }
 
-        let core = NativeTrUApiCore::with_runtime_config(
-            Arc::new(Noop),
-            NativeRuntimeConfig {
-                host_icon: Some("https://dot.li/dotli.png".to_string()),
-                ..native_runtime_config("dotli.dot")
-            },
-        )
-        .expect("runtime config should be valid");
-        let _first = core.start_ws_bridge(0).expect("first start must succeed");
-        let err = core
+        let execution = native_product_execution(Arc::new(Noop), "dotli.dot");
+        let _first = execution
+            .start_ws_bridge(0)
+            .expect("first start must succeed");
+        let err = execution
             .start_ws_bridge(0)
             .expect_err("second start must error");
         assert!(matches!(err, WsBridgeStartError::AlreadyRunning));
-        core.stop_ws_bridge();
+        execution.stop_ws_bridge();
     }
 
     /// A permission callback suspends while awaiting the user's decision and
@@ -3355,6 +3209,12 @@ mod tests {
                     .expect("release signal");
                 Ok(true)
             }
+            async fn device_permission_status(
+                &self,
+                _request: v01::HostDevicePermissionRequest,
+            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+                Ok(NativeDevicePermissionStatus::NotApplicable)
+            }
             async fn remote_permission(
                 &self,
                 _request: v01::RemotePermission,
@@ -3406,6 +3266,11 @@ mod tests {
                     variant: v01::ThemeVariant::Light,
                 })
             }
+            fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
+                Ok(v01::HostLocaleSubscribeItem {
+                    language_tag: "en".to_string(),
+                })
+            }
             async fn feature_supported(
                 &self,
                 _request: v01::HostFeatureSupportedRequest,
@@ -3438,18 +3303,14 @@ mod tests {
 
         let (release_tx, release_rx) = tokio::sync::mpsc::channel::<()>(1);
         let permission_entered = Arc::new(AtomicBool::new(false));
-        let core = NativeTrUApiCore::with_runtime_config(
+        let execution = native_product_execution(
             Arc::new(GatedPermissionCallbacks {
                 permission_entered: permission_entered.clone(),
                 release: tokio::sync::Mutex::new(release_rx),
             }),
-            NativeRuntimeConfig {
-                host_icon: Some("https://dot.li/dotli.png".to_string()),
-                ..native_runtime_config("dotli.dot")
-            },
-        )
-        .expect("runtime config should be valid");
-        let endpoint = core.start_ws_bridge(0).expect("start bridge");
+            "dotli.dot",
+        );
+        let endpoint = execution.start_ws_bridge(0).expect("start bridge");
         let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -3554,7 +3415,7 @@ mod tests {
         // [Ok 0x00][V1 0x00][granted=1]
         assert_eq!(permission_response.payload.value, vec![0x00, 0x00, 0x01]);
 
-        core.stop_ws_bridge();
+        execution.stop_ws_bridge();
     }
 
     fn native_host_runtime_no_session() -> Arc<NativeTrUApiHostRuntime> {
@@ -3685,5 +3546,47 @@ mod tests {
         )
         .expect("review must lift back");
         assert_eq!(lifted, review);
+    }
+
+    /// Drives the whole native chain for a status read: foreign callback,
+    /// `CallbackPlatform`, the per-execution connection adapters, and the
+    /// permission service. Nothing else covers that path, and the adapter is
+    /// per execution rather than per host runtime, so a host-level installer
+    /// would silently answer from the wrong object.
+    #[test]
+    fn a_native_status_read_follows_the_os_gate() {
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::refusing(
+                    v01::HostDevicePermissionRequest::Camera,
+                )),
+                None,
+                native_execution_config("gated.dot", ProductExecutionKind::App),
+            )
+            .expect("execution should open");
+
+        let camera = futures::executor::block_on(execution.permission_authorization_status(
+            PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Camera),
+        ))
+        .expect("status read");
+        let microphone = futures::executor::block_on(execution.permission_authorization_status(
+            PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Microphone),
+        ))
+        .expect("status read");
+
+        // Camera is refused by the OS; the microphone has no OS gate and no
+        // stored decision, so its question is still open.
+        assert_eq!(
+            (camera, microphone),
+            (
+                PermissionAuthorizationStatus::Denied,
+                PermissionAuthorizationStatus::NotDetermined,
+            )
+        );
     }
 }

@@ -25,6 +25,16 @@ The interactive playground lets you browse every method, edit request payloads, 
 
 **Live:** [truapi-playground.paseo.li](https://truapi-playground.paseo.li/) (open from inside the Polkadot Desktop Browser)
 
+## Install the CLI
+
+`truapi-host` runs a TrUAPI host on your machine, so you can develop and test a product without a phone or a desktop host build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
+```
+
+Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for the commands, the terminal UI, and product scripts.
+
 ## Usage
 
 `@parity/truapi` is the low-level generated protocol client. Product apps should normally use a higher-level product SDK, such as [`paritytech/product-sdk`](https://github.com/paritytech/product-sdk), while SDK and host-integration layers can depend on this package directly.
@@ -70,7 +80,8 @@ js/packages/
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
-                           compiled by no CI job, so run `make android-check` after changing it
+                           published to GitHub Packages as io.parity:truapi-host-android
+                           (AAR with per-ABI cdylibs; see android/truapi-host/README.md)
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
@@ -132,7 +143,7 @@ dependency on the crate:
 3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
-Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions.
+Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions. Discriminant 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
 
 ## Develop
 
@@ -149,13 +160,10 @@ make wasm     # rebuild truapi-server WASM artifacts under js/packages/truapi-ho
 CI regenerates the shared bindings before building and testing both npm
 packages, so generated client and host callback changes are checked together.
 
-The native `truapi-host` utility can run pairing and signing hosts against the
-real SSO transport for local end-to-end work. Both roles provide a
-transcript-based terminal UI with commands such as `/product` and `/script`;
-the signing host also provides `/pair` and a non-interactive `exec` form for
-automation. See the
-[`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup,
-controls, and examples.
+The native `truapi-host` utility runs pairing and signing hosts against the real
+SSO transport for local end-to-end work. See [Install the CLI](#install-the-cli)
+to get it, and the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md)
+for its commands and controls.
 
 `scripts/battery.sh` drives that CLI from source over every code-generated
 example and writes both committed compatibility reports:
@@ -172,14 +180,48 @@ make e2e-pairing-cli                # same paired pairing-host phase
 make e2e-chat-cli                   # chat content screening against a chat signing-host
 ```
 
-To run the playground locally:
+To run the playground locally in a plain browser tab, against a signing host on
+your own machine:
 
 ```bash
 cd playground
-yarn dev
+truapi-host dev -- yarn dev
 ```
 
-Open `https://dot.li/localhost:3000` inside the Polkadot Desktop Host. See [`playground/README.md`](playground/README.md) for deployment.
+`truapi-host dev` starts a signing host on `127.0.0.1:9955`, waits for its
+signer, then runs the wrapped command with the host already live. The product
+reaches it through a development-only `<script>` tag:
+
+```jsx
+{process.env.NODE_ENV === "development" && (
+  <script src="http://127.0.0.1:9955/bootstrap.js" />
+)}
+```
+
+The host serves that script itself, so the page needs no package, no imports,
+and no environment variables. It installs the same `window.__HOST_API_PORT__`
+that native webview hosts inject, and the SDK adopts it unchanged. TCP frame
+connections are accepted only from loopback peers, and browser WebSocket
+origins must also name localhost or a loopback IP. WebSocket is not subject to
+CORS, and confirmations here are auto-approved.
+
+The CLI owns the wrapped command's process group on Unix. On shutdown it sends
+SIGTERM to the group, waits up to five seconds, then sends SIGKILL if a
+descendant still remains. This prevents a package-manager child from keeping a
+development port open. A natural child exit keeps its status, while SIGINT or
+SIGTERM cleanup exits with status 130.
+
+A host that should outlive the dev server, or one whose confirmations you want
+to approve by hand in its terminal UI, is the existing command with your dev
+server started separately:
+
+```bash
+truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id localhost:3000
+```
+
+To run the playground inside a real host instead, start it with `yarn dev` and
+open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
+[`playground/README.md`](playground/README.md) for deployment.
 
 To build the iOS host and open the playground in Simulator:
 
@@ -274,7 +316,10 @@ Pushes to `main` build and deploy:
 ## Release
 
 See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
-`@parity/truapi`, `@parity/truapi-host`, or both packages to npm.
+`@parity/truapi` and `@parity/truapi-host` to npm, and the iOS host and
+Android host artifacts alongside them. A release also opens a bump issue on each
+repository listed in [`.github/consumers.json`](.github/consumers.json) that pins
+one of the published packages.
 
 ## Contributing
 

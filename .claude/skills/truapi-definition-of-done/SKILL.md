@@ -32,7 +32,8 @@ git submodule update --init --recursive
       `regen-codegen` skill, then commit
       `js/packages/truapi/src/{generated,playground}/`.
 - [ ] **iOS bindings** — only if UniFFI-exposed types changed
-      (`HostCallbacks`, `NativeTrUApiCore`, the native mirror types in
+      (`HostCallbacks`, `NativeTrUApiHostRuntime`, `NativeProductExecution`,
+      the native mirror types in
       `rust/crates/truapi-server/src/native*`). Run
       `make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh`, then
       commit `ios/truapi-host/Sources/`. Also update every hand-written

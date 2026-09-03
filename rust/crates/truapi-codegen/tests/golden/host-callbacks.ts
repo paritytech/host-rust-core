@@ -36,6 +36,7 @@ import type {
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocaleSubscribeItem,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
@@ -231,6 +232,20 @@ export type CreateTransactionReview =
    * Legacy-account transaction request.
    */
   | { tag: "LegacyAccount"; value: LegacyAccountTxPayload };
+
+/**
+ * What the operating system currently says about a device capability.
+ *
+ * Distinct from `PermissionAuthorizationStatus`, which is the product-scoped
+ * decision the user made through TrUAPI. The two answer different questions
+ * and are combined rather than substituted: a capability is usable only when
+ * the product holds a grant *and* the OS still allows it.
+ */
+export type DevicePermissionStatus =
+  | "Granted"
+  | "Denied"
+  | "NotDetermined"
+  | "NotApplicable";
 
 /**
  * One chain a host serves: a protocol chain role mapped to the concrete
@@ -656,6 +671,19 @@ export const CreateTransactionReview: S.Codec<CreateTransactionReview> = S.lazy(
 );
 
 /**
+ * What the operating system currently says about a device capability.
+ *
+ * Distinct from `PermissionAuthorizationStatus`, which is the product-scoped
+ * decision the user made through TrUAPI. The two answer different questions
+ * and are combined rather than substituted: a capability is usable only when
+ * the product holds a grant *and* the OS still allows it.
+ */
+export const DevicePermissionStatus: S.Codec<DevicePermissionStatus> = S.lazy(
+  (): S.Codec<DevicePermissionStatus> =>
+    S.Status("Granted", "Denied", "NotDetermined", "NotApplicable"),
+);
+
+/**
  * One chain a host serves: a protocol chain role mapped to the concrete
  * chain of the host's configured environment.
  */
@@ -873,13 +901,11 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
  */
 export interface AuthPresenter {
   /**
-   * Observe an auth state change, in transition order. A pairing host's
-   * session activation reports its outcome even when it is the default
-   * `Disconnected`, so a host that awaits activation before routing never
-   * has to read silence as "signed out". Every other emission, and every
-   * emission on a host role that has no session activation, happens only
-   * when the state actually changes. Default is a no-op for hosts that
-   * render no auth UI.
+   * Observe an auth state change, in transition order. A pairing host
+   * always receives an opening state once the core has restored the
+   * persisted session, `Disconnected` included; later emissions happen
+   * only when the state changes. Default is a no-op for hosts that render
+   * no auth UI.
    */
   authStateChanged?(state: AuthState): void;
 }
@@ -977,6 +1003,10 @@ export interface CoreAdmin {
 
   /**
    * Read a stored permission authorization status without prompting.
+   *
+   * A device capability also resolves the host application's OS gate, so an
+   * OS refusal reads as `Denied` whatever is stored. Remote,
+   * identity-disclosure and account-access decisions have no OS gate.
    */
   getPermissionAuthorizationStatus(
     request: PermissionAuthorizationRequest,
@@ -984,6 +1014,10 @@ export interface CoreAdmin {
 
   /**
    * Read stored permission authorization statuses without prompting.
+   *
+   * A device capability also resolves the host application's OS gate, so an
+   * OS refusal reads as `Denied` whatever is stored. Remote,
+   * identity-disclosure and account-access decisions have no OS gate.
    *
    * Results are returned in the same order as `requests`.
    */
@@ -1124,6 +1158,18 @@ export interface JsonRpcConnection {
 }
 
 /**
+ * Host locale source.
+ */
+export interface LocaleHost {
+  /**
+   * Emits the currently selected locale immediately, then future changes.
+   */
+  subscribeLocale(): AsyncIterable<
+    Result<HostLocaleSubscribeItem, GenericError>
+  >;
+}
+
+/**
  * Open URLs in the system browser. Input is already trimmed, categorized,
  * and (where needed) normalized by the core; the host implementation only
  * needs to hand the URL to the OS URL handler.
@@ -1170,6 +1216,29 @@ export interface PairingHostAdmin {
    * decoding that blob into live `SessionState` / `AuthState`.
    */
   notifySessionStoreChanged(): void;
+}
+
+/**
+ * Live OS permission state, read without prompting.
+ *
+ * A product-scoped grant is persisted once and never expires, but the OS
+ * grant behind it can be revoked in system settings, suspended by device
+ * policy, or reset by the platform — Android auto-resets runtime permissions
+ * for apps that go unused. Without this capability the core keeps answering
+ * from the stored grant alone and tells a product `granted` for a capability
+ * the OS has since taken away.
+ *
+ * This is deliberately separate from `Permissions::device_permission`: that
+ * call may show UI, so it cannot be used to re-check a decision the user has
+ * already made without prompting them again on every request.
+ */
+export interface PermissionStatusHost {
+  /**
+   * Current OS status of a device capability. Must not prompt.
+   */
+  devicePermissionStatus(
+    request: HostDevicePermissionRequest,
+  ): Promise<DevicePermissionStatus>;
 }
 
 /**
@@ -1268,8 +1337,10 @@ export interface HostCallbacks {
   auth: AuthPresenter;
   userConfirmation: UserConfirmation;
   theme: ThemeHost;
+  locale: LocaleHost;
   preimage: PreimageHost;
   chat?: ChatPlatform;
+  permissionStatus?: PermissionStatusHost;
 }
 
 export interface RequiredHostCallbacks {
@@ -1283,6 +1354,8 @@ export interface RequiredHostCallbacks {
   auth: Required<AuthPresenter>;
   userConfirmation: Required<UserConfirmation>;
   theme: Required<ThemeHost>;
+  locale: Required<LocaleHost>;
   preimage: Required<PreimageHost>;
   chat?: Required<ChatPlatform>;
+  permissionStatus?: Required<PermissionStatusHost>;
 }

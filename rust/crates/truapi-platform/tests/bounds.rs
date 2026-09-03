@@ -59,6 +59,7 @@ fn runtime_config_validation_cases() {
                 name: case.host_name.to_string(),
                 icon: case.host_icon.map(str::to_string),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             PlatformInfo::default(),
         )
@@ -93,6 +94,7 @@ fn pairing_config_validation_cases() {
                 name: case.host_name.to_string(),
                 icon: case.host_icon.map(str::to_string),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             PlatformInfo::default(),
             [0xa2; 32],
@@ -128,8 +130,8 @@ fn product_context_validation_cases() {
         Ok("host-playground44.paseo".to_string())
     );
     assert_eq!(
-        ProductContext::new("Browse.TEST".to_string()).map(|context| context.product_id),
-        Ok("browse.test".to_string())
+        ProductContext::new("Browse.TESTNET".to_string()).map(|context| context.product_id),
+        Ok("browse.testnet".to_string())
     );
     for domain in ["example.com", "example.org", "dotli.dotty"] {
         assert_eq!(

@@ -67,14 +67,32 @@ jobs:
       - name: Install bulletin-deploy
         run: npm install -g bulletin-deploy
 
+      - name: Resolve the dotNS name for this environment
+        id: dotns
+        env:
+          BULLETIN_ENV: ${{ inputs.environment || 'paseo-next-v2' }}
+        run: |
+          # A bare label was enough while this was a content-only deploy, but
+          # publishing the product manifest compares the name passed here
+          # against `domain` in playground/bulletin-deploy.config.ts byte for
+          # byte, so both have to carry the environment's TLD. Source of truth
+          # is bulletin-deploy's assets/environments.json: only `preview` and
+          # `paseo-next-v2` declare one, the rest fall back to dotNS's `dot`.
+          case "$BULLETIN_ENV" in
+            paseo-next-v2) tld=paseo ;;
+            preview)       tld=test ;;
+            *)             tld=dot ;;
+          esac
+          echo "name=truapi-playground.$tld" >> "$GITHUB_OUTPUT"
+
       - name: Deploy to DotNS
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         env:
-          # Bare label: dotNS attaches the environment's own top-level domain
-          # and rejects a name that arrives carrying one.
-          BULLETIN_LABEL: truapi-playground
+          # Read both as the CLI argument and, by the config file, as the
+          # `domain` it declares, so the two can never drift apart.
+          PLAYGROUND_DOTNS_NAME: ${{ steps.dotns.outputs.name }}
           BULLETIN_ENV: ${{ inputs.environment || 'paseo-next-v2' }}
         with:
           timeout_minutes: 10
           max_attempts: 3
-          command: cd playground && bulletin-deploy ./out "$BULLETIN_LABEL" --js-merkle --env "$BULLETIN_ENV"
+          command: cd playground && bulletin-deploy ./out "$PLAYGROUND_DOTNS_NAME" --js-merkle --env "$BULLETIN_ENV"

@@ -37,9 +37,11 @@ pub(super) struct JsBridge {
     pub(super) clear_core_storage: Function,
     pub(super) feature_supported: Function,
     pub(super) supported_chains: Function,
+    pub(super) subscribe_locale: Function,
     pub(super) navigate_to: Function,
     pub(super) push_notification: Function,
     pub(super) cancel_notification: Function,
+    pub(super) device_permission_status: Function,
     pub(super) device_permission: Function,
     pub(super) remote_permission: Function,
     pub(super) lookup_preimage: Function,
@@ -49,6 +51,7 @@ pub(super) struct JsBridge {
     pub(super) subscribe_theme: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
+    pub(super) permission_status_present: bool,
 }
 
 impl JsBridge {
@@ -69,9 +72,12 @@ impl JsBridge {
             clear_core_storage: get_function(callbacks, "clearCoreStorage")?,
             feature_supported: get_function(callbacks, "featureSupported")?,
             supported_chains: get_function(callbacks, "supportedChains")?,
+            subscribe_locale: get_function(callbacks, "subscribeLocale")?,
             navigate_to: get_function(callbacks, "navigateTo")?,
             push_notification: get_function(callbacks, "pushNotification")?,
             cancel_notification: get_function(callbacks, "cancelNotification")?,
+            device_permission_status: get_optional_function(callbacks, "devicePermissionStatus")?
+                .unwrap_or_else(|| missing_callback("devicePermissionStatus")),
             device_permission: get_function(callbacks, "devicePermission")?,
             remote_permission: get_function(callbacks, "remotePermission")?,
             lookup_preimage: get_function(callbacks, "lookupPreimage")?,
@@ -84,12 +90,19 @@ impl JsBridge {
                 && get_optional_function(callbacks, "registerChatBot")?.is_some()
                 && get_optional_function(callbacks, "postChatMessage")?.is_some()
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
+            permission_status_present: get_optional_function(callbacks, "devicePermissionStatus")?
+                .is_some(),
         })
     }
 
     /// Whether the host supplied every `chat` callback.
     pub(super) fn has_chat(&self) -> bool {
         self.chat_present
+    }
+
+    /// Whether the host supplied every `permission_status` callback.
+    pub(super) fn has_permission_status(&self) -> bool {
+        self.permission_status_present
     }
 }
 
@@ -256,6 +269,18 @@ impl truapi_platform::Features for WasmPlatform {
     }
 }
 
+impl truapi_platform::LocaleHost for WasmPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        invoke_js_subscription(
+            &self.bridge.subscribe_locale,
+            None,
+            parse_host_locale_subscribe_item_item,
+        )
+    }
+}
+
 #[truapi_platform::async_trait]
 impl truapi_platform::Navigation for WasmPlatform {
     async fn navigate_to(&self, url: String) -> Result<(), v01::HostNavigateToError> {
@@ -290,6 +315,26 @@ impl truapi_platform::Notifications for WasmPlatform {
             vec![JsValue::from_f64(f64::from(id))],
         )
         .await
+        .map_err(generic)
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::PermissionStatusHost for WasmPlatform {
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::DevicePermissionStatus, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.device_permission_status,
+            vec![Uint8Array::from(request.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::DevicePermissionStatus>(
+            bytes,
+            "devicePermissionStatus response did not decode",
+        )
         .map_err(generic)
     }
 }
@@ -410,6 +455,12 @@ fn parse_host_chat_list_subscribe_item_item(
     value: JsValue,
 ) -> Result<v01::HostChatListSubscribeItem, String> {
     decode_js_item::<v01::HostChatListSubscribeItem>(value, "HostChatListSubscribeItem")
+}
+
+fn parse_host_locale_subscribe_item_item(
+    value: JsValue,
+) -> Result<v01::HostLocaleSubscribeItem, String> {
+    decode_js_item::<v01::HostLocaleSubscribeItem>(value, "HostLocaleSubscribeItem")
 }
 
 fn parse_host_theme_subscribe_item_item(

@@ -682,6 +682,20 @@ public protocol HostCallbacks: AnyObject, Sendable {
     func devicePermission(request: HostDevicePermissionRequest) async throws  -> Bool
 
     /**
+     * Report the OS status of a device capability without prompting.
+     *
+     * Answer from the platform's own authorization APIs. This must not show
+     * UI: the core calls it before every device-permission request and status
+     * read, and prompting here would re-ask a question the user has already
+     * answered. A host with no OS gate for the capability answers
+     * `NotApplicable`, which leaves the stored product decision governing.
+     *
+     * It is async because reading notification authorization on iOS is
+     * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+     */
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws  -> NativeDevicePermissionStatus
+
+    /**
      * Prompt the user for a remote (product-scoped) permission.
      */
     func remotePermission(request: RemotePermission) async throws  -> Bool
@@ -691,14 +705,10 @@ public protocol HostCallbacks: AnyObject, Sendable {
      * the pairing QR UI, `Connected`/`Disconnected` as the account badge,
      * `LoginFailed` as a retryable error unless its `kind` is
      * `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
-     * rolls over, so retry should not be the primary action. A pairing host's
-     * session activation reports its outcome even
-     * when it is the default `Disconnected`, so a host that awaits activation
-     * before routing never has to read silence as "signed out". Every other
-     * emission, and every emission on a host role that has no session
-     * activation, happens only when the state actually changes. User
-     * cancellation is reported through
-     * `NativeTrUApiCore.cancel_login()`.
+     * rolls over, so retry should not be the primary action. A pairing host
+     * always receives an opening state once the core has restored the
+     * persisted session, `Disconnected` included; later emissions happen
+     * only when the state changes.
      */
     func authStateChanged(state: AuthState)
 
@@ -752,6 +762,12 @@ public protocol HostCallbacks: AnyObject, Sendable {
      * as the current item in its subscription stream.
      */
     func currentTheme() throws  -> HostThemeSubscribeItem
+
+    /**
+     * Locale the host currently presents its interface in. The native shim
+     * emits this as the current item in its subscription stream.
+     */
+    func currentLocale() throws  -> HostLocaleSubscribeItem
 
     /**
      * Answer a feature-support query.
@@ -936,6 +952,34 @@ open func devicePermission(request: HostDevicePermissionRequest)async throws  ->
 }
 
     /**
+     * Report the OS status of a device capability without prompting.
+     *
+     * Answer from the platform's own authorization APIs. This must not show
+     * UI: the core calls it before every device-permission request and status
+     * read, and prompting here would re-ask a question the user has already
+     * answered. A host with no OS gate for the capability answers
+     * `NotApplicable`, which leaves the stored product decision governing.
+     *
+     * It is async because reading notification authorization on iOS is
+     * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+     */
+open func devicePermissionStatus(request: HostDevicePermissionRequest)async throws  -> NativeDevicePermissionStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_hostcallbacks_device_permission_status(
+                        self.uniffiCloneHandle(),FfiConverterTypeHostDevicePermissionRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeNativeDevicePermissionStatus_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
+}
+
+    /**
      * Prompt the user for a remote (product-scoped) permission.
      */
 open func remotePermission(request: RemotePermission)async throws  -> Bool  {
@@ -959,14 +1003,10 @@ open func remotePermission(request: RemotePermission)async throws  -> Bool  {
      * the pairing QR UI, `Connected`/`Disconnected` as the account badge,
      * `LoginFailed` as a retryable error unless its `kind` is
      * `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
-     * rolls over, so retry should not be the primary action. A pairing host's
-     * session activation reports its outcome even
-     * when it is the default `Disconnected`, so a host that awaits activation
-     * before routing never has to read silence as "signed out". Every other
-     * emission, and every emission on a host role that has no session
-     * activation, happens only when the state actually changes. User
-     * cancellation is reported through
-     * `NativeTrUApiCore.cancel_login()`.
+     * rolls over, so retry should not be the primary action. A pairing host
+     * always receives an opening state once the core has restored the
+     * persisted session, `Disconnected` included; later emissions happen
+     * only when the state changes.
      */
 open func authStateChanged(state: AuthState)  {try! rustCall() {
         uniffiCallStatus in
@@ -1104,6 +1144,19 @@ open func currentTheme()throws  -> HostThemeSubscribeItem  {
     return try  FfiConverterTypeHostThemeSubscribeItem_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_hostcallbacks_current_theme(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Locale the host currently presents its interface in. The native shim
+     * emits this as the current item in its subscription stream.
+     */
+open func currentLocale()throws  -> HostLocaleSubscribeItem  {
+    return try  FfiConverterTypeHostLocaleSubscribeItem_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_current_locale(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1374,6 +1427,49 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     uniffiCallbackData,
                     UniffiForeignFutureResultI8(
                         returnValue: 0,
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        devicePermissionStatus: { (
+            uniffiHandle: UInt64,
+            request: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> NativeDevicePermissionStatus in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.devicePermissionStatus(
+                     request: try FfiConverterTypeHostDevicePermissionRequest_lift(request)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: NativeDevicePermissionStatus) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: FfiConverterTypeNativeDevicePermissionStatus_lower(returnValue),
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: RustBuffer.empty(),
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
@@ -1709,6 +1805,29 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
 
 
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostThemeSubscribeItem_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        currentLocale: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> HostLocaleSubscribeItem in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.currentLocale(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostLocaleSubscribeItem_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -2466,6 +2585,11 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func notifyChatRoomsChanged(rooms: [ChatRoom])
 
     /**
+     * Push a host locale replacement to this execution's subscriptions.
+     */
+    func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
+
+    /**
      * Push a preimage lookup replacement to this execution's subscriptions.
      */
     func notifyPreimageChanged(key: Data, value: Data?)
@@ -2477,8 +2601,13 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
 
     /**
      * Read a product-scoped permission authorization without prompting.
+     *
+     * A device capability resolves the host application's OS gate as well as
+     * storage, which means calling `device_permission_status` on the host. It
+     * is async for that reason: blocking a thread on a host callback
+     * deadlocks any implementation that hops to the same thread to answer.
      */
-    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) async throws  -> PermissionAuthorizationStatus
 
     /**
      * Resolve a product's hard-subtree public key for hosts naming the account
@@ -2637,6 +2766,18 @@ open func notifyChatRoomsChanged(rooms: [ChatRoom])  {try! rustCall() {
 }
 
     /**
+     * Push a host locale replacement to this execution's subscriptions.
+     */
+open func notifyLocaleChanged(locale: HostLocaleSubscribeItem)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_locale_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeHostLocaleSubscribeItem_lower(locale),uniffiCallStatus
+    )
+}
+}
+
+    /**
      * Push a preimage lookup replacement to this execution's subscriptions.
      */
 open func notifyPreimageChanged(key: Data, value: Data?)  {try! rustCall() {
@@ -2663,15 +2804,26 @@ open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
 
     /**
      * Read a product-scoped permission authorization without prompting.
+     *
+     * A device capability resolves the host application's OS gate as well as
+     * storage, which means calling `device_permission_status` on the host. It
+     * is async for that reason: blocking a thread on a host callback
+     * deadlocks any implementation that hops to the same thread to answer.
      */
-open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
-    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
-    )
-})
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)async throws  -> PermissionAuthorizationStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
+                        self.uniffiCloneHandle(),FfiConverterTypePermissionAuthorizationRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePermissionAuthorizationStatus_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
 }
 
     /**
@@ -2828,620 +2980,6 @@ public func FfiConverterTypeNativeProductExecution_lift(_ handle: UInt64) throws
 #endif
 public func FfiConverterTypeNativeProductExecution_lower(_ value: NativeProductExecution) -> UInt64 {
     return FfiConverterTypeNativeProductExecution.lower(value)
-}
-
-
-
-
-
-
-/**
- * Legacy single-execution UniFFI object retained for existing embedders.
- * New native integrations should use [`NativeTrUApiHostRuntime`] and
- * [`NativeProductExecution`].
- */
-public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
-
-    /**
-     * Activate or replace the local signing-host session from host-held
-     * secret material (raw BIP-39 entropy).
-     *
-     * Blocks the calling thread while the session is derived (PBKDF2, 2048
-     * rounds), so call it off the host's main/UI thread.
-     */
-    func activateLocalSession(secret: Data, liteUsername: String?) throws
-
-    /**
-     * Cancel an in-flight pairing login.
-     *
-     * **Inert on a native host.** The native bridge runs a signing host, which
-     * has no pairing flow to cancel: `request_login` resolves against the
-     * locally activated session instead. Calling this emits no auth state and
-     * changes nothing. Retained so hosts written against the pairing-host
-     * surface still link.
-     */
-    func cancelLogin()
-
-    /**
-     * Core-owned logout/disconnect. Best-effort notifies the SSO peer when
-     * the session has channel material, then clears in-memory and persisted
-     * session state.
-     *
-     * Blocks the calling thread until the disconnect completes, so call it off
-     * the host's main/UI thread.
-     */
-    func disconnect()
-
-    /**
-     * The most recent pass the in-process renewal loop ran.
-     *
-     * `None` until a pass has run, which is "not yet" rather than healthy.
-     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
-     * driving the loop reads its result here: `slots_exhausted` on the last pass
-     * means a period filled up and an allowance went unrenewed, which is the one
-     * outcome retrying cannot fix and a person may need telling about.
-     */
-    func lastStatementRenewalReport()  -> StatementRenewalReport?
-
-    /**
-     * The in-process loop's own cadence, capped at an hour. An allowance stays
-     * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
-     * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
-     * slack and should read a value under an hour as the boundary approaching.
-     */
-    func nextStatementRenewalDelay()  -> TimeInterval
-
-    /**
-     * Notify the core that a native chain connection closed externally.
-     */
-    func notifyChainClosed(connectionId: UInt32)
-
-    /**
-     * Push a JSON-RPC response from a native chain connection into the core.
-     */
-    func notifyChainResponse(connectionId: UInt32, json: String)
-
-    /**
-     * Push a preimage lookup update to active subscriptions for `key`.
-     *
-     * `value == None` represents a known miss; `Some(bytes)` represents the
-     * current preimage value.
-     */
-    func notifyPreimageChanged(key: Data, value: Data?)
-
-    /**
-     * Notify this core that host-global session storage changed outside a
-     * direct core write/clear.
-     *
-     * **Inert on a native host.** A signing host owns the active session in
-     * memory, so there is no session-store sync loop to wake. Retained so
-     * hosts written against the pairing-host surface still link.
-     */
-    func notifySessionStoreChanged()
-
-    /**
-     * Push a host theme update to active TrUAPI theme subscriptions.
-     */
-    func notifyThemeChanged(theme: HostThemeSubscribeItem)
-
-    /**
-     * Read a stored permission authorization status without prompting.
-     *
-     * Blocks the calling thread on the storage read, so call it off the host's
-     * main/UI thread.
-     */
-    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
-
-    /**
-     * Run one renewal pass now and report what each tracked target got.
-     *
-     * For hosts whose process cannot stay alive between periods: drive it from
-     * WorkManager or BGTaskScheduler rather than
-     * [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
-     * blocks until they are included, so call it from a background thread.
-     *
-     * Needs an active session, which is the whole difficulty of the scheduled
-     * case: an OS-woken cold start has none until the host restores one, and
-     * the pass then fails with the bare reason `Disconnected`. Restore the
-     * session before calling, and treat that reason as "not ready" rather than
-     * as a renewal failure.
-     */
-    func renewStatementAllowances() throws  -> StatementRenewalReport
-
-    /**
-     * List registered providers for a ring so host UI can present the RFC-0024
-     * personhood-provider setting.
-     */
-    func ringVrfProviders(ring: RingLocation) throws  -> [ProductAccountId]
-
-    /**
-     * Persist a user-selected provider after checking that the handle is
-     * registered for the exact ring.
-     */
-    func selectRingVrfProvider(ring: RingLocation, handle: ProductAccountId) throws
-
-    /**
-     * Return the currently selected provider for a ring.
-     */
-    func selectedRingVrfProvider(ring: RingLocation) throws  -> ProductAccountId?
-
-    /**
-     * Update a stored permission authorization status. Passing
-     * `.notDetermined` clears the stored value so the next product request
-     * prompts again.
-     *
-     * Blocks the calling thread on the storage write, so call it off the host's
-     * main/UI thread.
-     */
-    func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws
-
-    /**
-     * Start the in-process renewal loop, for a host that stays resident. A
-     * suspended app stops ticking, so prefer scheduling
-     * [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
-     * call it tolerates having no session: a tick without one is skipped and
-     * retried.
-     */
-    func startStatementAllowanceRenewal()
-
-    /**
-     * Start the localhost WebSocket bridge. Returns the descriptor the
-     * host hands to the product so it can dial back in.
-     */
-    func startWsBridge(bindPort: UInt16) throws  -> WsBridgeEndpoint
-
-    /**
-     * Stop the localhost WebSocket bridge (if running).
-     */
-    func stopWsBridge()
-
-    /**
-     * Record the accounts renewal should keep allowed. The ledger persists, so
-     * this only has to be called when the set changes, not on every launch.
-     * Renewal has nothing to do until at least one target is tracked.
-     *
-     * Needs an active session, so call it after
-     * [`Self::activate_local_session`] or after pairing, not at construction.
-     *
-     * The ledger is append-only. There is no untrack, and an entry is dropped
-     * only when the identity that promised it changes, which keeps derivation
-     * recipes and discards raw account ids. Re-tracking is idempotent, so
-     * re-track the full set after an identity change.
-     */
-    func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget]) throws
-
-}
-/**
- * Legacy single-execution UniFFI object retained for existing embedders.
- * New native integrations should use [`NativeTrUApiHostRuntime`] and
- * [`NativeProductExecution`].
- */
-open class NativeTrUApiCore: NativeTrUApiCoreProtocol, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_truapi_server_fn_clone_nativetruapicore(self.handle, $0) }
-    }
-    // No primary constructor declared for this class.
-
-    deinit {
-        if handle == 0 {
-            // Mock objects have handle=0 don't try to free them
-            return
-        }
-
-        try! rustCall { uniffi_truapi_server_fn_free_nativetruapicore(handle, $0) }
-    }
-
-
-    /**
-     * Construct the core with explicit product and pairing runtime config.
-     *
-     * When `runtime_config` carries `local_session_secret`, the session is
-     * activated before this returns, so construction blocks the calling thread
-     * on the same key derivation as [`Self::activate_local_session`]. Prefer
-     * constructing off the host's main/UI thread.
-     */
-public static func withRuntimeConfig(callbacks: HostCallbacks, runtimeConfig: NativeRuntimeConfig)throws  -> NativeTrUApiCore  {
-    return try  FfiConverterTypeNativeTrUApiCore_lift(try rustCallWithError(FfiConverterTypeNativeRuntimeConfigError_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_constructor_nativetruapicore_with_runtime_config(
-        FfiConverterTypeHostCallbacks_lower(callbacks),
-        FfiConverterTypeNativeRuntimeConfig_lower(runtimeConfig),uniffiCallStatus
-    )
-})
-}
-
-
-
-    /**
-     * Activate or replace the local signing-host session from host-held
-     * secret material (raw BIP-39 entropy).
-     *
-     * Blocks the calling thread while the session is derived (PBKDF2, 2048
-     * rounds), so call it off the host's main/UI thread.
-     */
-open func activateLocalSession(secret: Data, liteUsername: String?)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_activate_local_session(
-            self.uniffiCloneHandle(),
-        FfiConverterData.lower(secret),
-        FfiConverterOptionString.lower(liteUsername),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Cancel an in-flight pairing login.
-     *
-     * **Inert on a native host.** The native bridge runs a signing host, which
-     * has no pairing flow to cancel: `request_login` resolves against the
-     * locally activated session instead. Calling this emits no auth state and
-     * changes nothing. Retained so hosts written against the pairing-host
-     * surface still link.
-     */
-open func cancelLogin()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_cancel_login(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Core-owned logout/disconnect. Best-effort notifies the SSO peer when
-     * the session has channel material, then clears in-memory and persisted
-     * session state.
-     *
-     * Blocks the calling thread until the disconnect completes, so call it off
-     * the host's main/UI thread.
-     */
-open func disconnect()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_disconnect(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * The most recent pass the in-process renewal loop ran.
-     *
-     * `None` until a pass has run, which is "not yet" rather than healthy.
-     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
-     * driving the loop reads its result here: `slots_exhausted` on the last pass
-     * means a period filled up and an allowance went unrenewed, which is the one
-     * outcome retrying cannot fix and a person may need telling about.
-     */
-open func lastStatementRenewalReport() -> StatementRenewalReport?  {
-    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_last_statement_renewal_report(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * The in-process loop's own cadence, capped at an hour. An allowance stays
-     * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
-     * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
-     * slack and should read a value under an hour as the boundary approaching.
-     */
-open func nextStatementRenewalDelay() -> TimeInterval  {
-    return try!  FfiConverterDuration.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_next_statement_renewal_delay(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Notify the core that a native chain connection closed externally.
-     */
-open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_closed(
-            self.uniffiCloneHandle(),
-        FfiConverterUInt32.lower(connectionId),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Push a JSON-RPC response from a native chain connection into the core.
-     */
-open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_response(
-            self.uniffiCloneHandle(),
-        FfiConverterUInt32.lower(connectionId),
-        FfiConverterString.lower(json),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Push a preimage lookup update to active subscriptions for `key`.
-     *
-     * `value == None` represents a known miss; `Some(bytes)` represents the
-     * current preimage value.
-     */
-open func notifyPreimageChanged(key: Data, value: Data?)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_preimage_changed(
-            self.uniffiCloneHandle(),
-        FfiConverterData.lower(key),
-        FfiConverterOptionData.lower(value),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Notify this core that host-global session storage changed outside a
-     * direct core write/clear.
-     *
-     * **Inert on a native host.** A signing host owns the active session in
-     * memory, so there is no session-store sync loop to wake. Retained so
-     * hosts written against the pairing-host surface still link.
-     */
-open func notifySessionStoreChanged()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_session_store_changed(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Push a host theme update to active TrUAPI theme subscriptions.
-     */
-open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_theme_changed(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeHostThemeSubscribeItem_lower(theme),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Read a stored permission authorization status without prompting.
-     *
-     * Blocks the calling thread on the storage read, so call it off the host's
-     * main/UI thread.
-     */
-open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
-    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Run one renewal pass now and report what each tracked target got.
-     *
-     * For hosts whose process cannot stay alive between periods: drive it from
-     * WorkManager or BGTaskScheduler rather than
-     * [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
-     * blocks until they are included, so call it from a background thread.
-     *
-     * Needs an active session, which is the whole difficulty of the scheduled
-     * case: an OS-woken cold start has none until the host restores one, and
-     * the pass then fails with the bare reason `Disconnected`. Restore the
-     * session before calling, and treat that reason as "not ready" rather than
-     * as a renewal failure.
-     */
-open func renewStatementAllowances()throws  -> StatementRenewalReport  {
-    return try  FfiConverterTypeStatementRenewalReport_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_renew_statement_allowances(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * List registered providers for a ring so host UI can present the RFC-0024
-     * personhood-provider setting.
-     */
-open func ringVrfProviders(ring: RingLocation)throws  -> [ProductAccountId]  {
-    return try  FfiConverterSequenceTypeProductAccountId.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_ring_vrf_providers(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeRingLocation_lower(ring),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Persist a user-selected provider after checking that the handle is
-     * registered for the exact ring.
-     */
-open func selectRingVrfProvider(ring: RingLocation, handle: ProductAccountId)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_select_ring_vrf_provider(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeRingLocation_lower(ring),
-        FfiConverterTypeProductAccountId_lower(handle),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Return the currently selected provider for a ring.
-     */
-open func selectedRingVrfProvider(ring: RingLocation)throws  -> ProductAccountId?  {
-    return try  FfiConverterOptionTypeProductAccountId.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_selected_ring_vrf_provider(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeRingLocation_lower(ring),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Update a stored permission authorization status. Passing
-     * `.notDetermined` clears the stored value so the next product request
-     * prompts again.
-     *
-     * Blocks the calling thread on the storage write, so call it off the host's
-     * main/UI thread.
-     */
-open func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_set_permission_authorization_status(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePermissionAuthorizationRequest_lower(request),
-        FfiConverterTypePermissionAuthorizationStatus_lower(status),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Start the in-process renewal loop, for a host that stays resident. A
-     * suspended app stops ticking, so prefer scheduling
-     * [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
-     * call it tolerates having no session: a tick without one is skipped and
-     * retried.
-     */
-open func startStatementAllowanceRenewal()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_start_statement_allowance_renewal(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Start the localhost WebSocket bridge. Returns the descriptor the
-     * host hands to the product so it can dial back in.
-     */
-open func startWsBridge(bindPort: UInt16)throws  -> WsBridgeEndpoint  {
-    return try  FfiConverterTypeWsBridgeEndpoint_lift(try rustCallWithError(FfiConverterTypeWsBridgeStartError_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_start_ws_bridge(
-            self.uniffiCloneHandle(),
-        FfiConverterUInt16.lower(bindPort),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Stop the localhost WebSocket bridge (if running).
-     */
-open func stopWsBridge()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Record the accounts renewal should keep allowed. The ledger persists, so
-     * this only has to be called when the set changes, not on every launch.
-     * Renewal has nothing to do until at least one target is tracked.
-     *
-     * Needs an active session, so call it after
-     * [`Self::activate_local_session`] or after pairing, not at construction.
-     *
-     * The ledger is append-only. There is no untrack, and an entry is dropped
-     * only when the identity that promised it changes, which keeps derivation
-     * recipes and discards raw account ids. Re-tracking is idempotent, so
-     * re-track the full set after an identity change.
-     */
-open func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget])throws   {try rustCallWithError(FfiConverterTypeNativeRenewalTargetError_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_track_statement_renewal_targets(
-            self.uniffiCloneHandle(),
-        FfiConverterSequenceTypeNativeStatementRenewalTarget.lower(targets),uniffiCallStatus
-    )
-}
-}
-
-
-
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeTrUApiCore: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = NativeTrUApiCore
-
-    public static func lift(_ handle: UInt64) throws -> NativeTrUApiCore {
-        return NativeTrUApiCore(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: NativeTrUApiCore) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeTrUApiCore {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: NativeTrUApiCore, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeTrUApiCore_lift(_ handle: UInt64) throws -> NativeTrUApiCore {
-    return try FfiConverterTypeNativeTrUApiCore.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeTrUApiCore_lower(_ value: NativeTrUApiCore) -> UInt64 {
-    return FfiConverterTypeNativeTrUApiCore.lower(value)
 }
 
 
@@ -3895,6 +3433,11 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
      */
     public var hostVersion: String?
     /**
+     * Platform category this host runs on, reported to products via
+     * `System::host_info`.
+     */
+    public var hostPlatform: HostPlatform
+    /**
      * Optional platform/browser name shown by the wallet during SSO pairing.
      */
     public var platformType: String?
@@ -3932,6 +3475,10 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
          * Optional host version shown by the wallet during SSO pairing.
          */hostVersion: String?,
         /**
+         * Platform category this host runs on, reported to products via
+         * `System::host_info`.
+         */hostPlatform: HostPlatform,
+        /**
          * Optional platform/browser name shown by the wallet during SSO pairing.
          */platformType: String?,
         /**
@@ -3952,6 +3499,7 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
+        self.hostPlatform = hostPlatform
         self.platformType = platformType
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
@@ -3979,6 +3527,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
                 hostVersion: FfiConverterOptionString.read(from: &buf),
+                hostPlatform: FfiConverterTypeHostPlatform.read(from: &buf),
                 platformType: FfiConverterOptionString.read(from: &buf),
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
@@ -3992,6 +3541,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
         FfiConverterOptionString.write(value.hostVersion, into: &buf)
+        FfiConverterTypeHostPlatform.write(value.hostPlatform, into: &buf)
         FfiConverterOptionString.write(value.platformType, into: &buf)
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
@@ -4083,175 +3633,6 @@ public func FfiConverterTypeNativeProductExecutionConfig_lift(_ buf: RustBuffer)
 #endif
 public func FfiConverterTypeNativeProductExecutionConfig_lower(_ value: NativeProductExecutionConfig) -> RustBuffer {
     return FfiConverterTypeNativeProductExecutionConfig.lower(value)
-}
-
-
-/**
- * Native runtime configuration supplied before product calls are handled.
- */
-public struct NativeRuntimeConfig: Equatable, Hashable {
-    /**
-     * Canonical product identifier used for account derivation.
-     */
-    public var productId: String
-    /**
-     * Trusted executable kind derived by the native host before loading it.
-     */
-    public var executionKind: ProductExecutionKind
-    /**
-     * Host name shown by the wallet during SSO pairing.
-     */
-    public var hostName: String
-    /**
-     * Optional host icon URL shown by the wallet during SSO pairing.
-     */
-    public var hostIcon: String?
-    /**
-     * Optional host version shown by the wallet during SSO pairing.
-     */
-    public var hostVersion: String?
-    /**
-     * Optional platform/browser name shown by the wallet during SSO pairing.
-     */
-    public var platformType: String?
-    /**
-     * Optional platform/browser version shown by the wallet during SSO pairing.
-     */
-    public var platformVersion: String?
-    /**
-     * People-chain genesis hash. Must be exactly 32 bytes.
-     */
-    public var peopleChainGenesisHash: Data
-    /**
-     * Bulletin-chain genesis hash. Must be exactly 32 bytes.
-     */
-    public var bulletinChainGenesisHash: Data
-    /**
-     * Optional local signing-host secret material (raw BIP-39 entropy).
-     */
-    public var localSessionSecret: Data?
-    /**
-     * Optional lite username attached to the local signing-host session.
-     */
-    public var localSessionLiteUsername: String?
-    /**
-     * Deeplink scheme used in pairing QR payloads.
-     */
-    public var pairingDeeplinkScheme: NativePairingDeeplinkScheme
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Canonical product identifier used for account derivation.
-         */productId: String,
-        /**
-         * Trusted executable kind derived by the native host before loading it.
-         */executionKind: ProductExecutionKind,
-        /**
-         * Host name shown by the wallet during SSO pairing.
-         */hostName: String,
-        /**
-         * Optional host icon URL shown by the wallet during SSO pairing.
-         */hostIcon: String?,
-        /**
-         * Optional host version shown by the wallet during SSO pairing.
-         */hostVersion: String?,
-        /**
-         * Optional platform/browser name shown by the wallet during SSO pairing.
-         */platformType: String?,
-        /**
-         * Optional platform/browser version shown by the wallet during SSO pairing.
-         */platformVersion: String?,
-        /**
-         * People-chain genesis hash. Must be exactly 32 bytes.
-         */peopleChainGenesisHash: Data,
-        /**
-         * Bulletin-chain genesis hash. Must be exactly 32 bytes.
-         */bulletinChainGenesisHash: Data,
-        /**
-         * Optional local signing-host secret material (raw BIP-39 entropy).
-         */localSessionSecret: Data?,
-        /**
-         * Optional lite username attached to the local signing-host session.
-         */localSessionLiteUsername: String?,
-        /**
-         * Deeplink scheme used in pairing QR payloads.
-         */pairingDeeplinkScheme: NativePairingDeeplinkScheme) {
-        self.productId = productId
-        self.executionKind = executionKind
-        self.hostName = hostName
-        self.hostIcon = hostIcon
-        self.hostVersion = hostVersion
-        self.platformType = platformType
-        self.platformVersion = platformVersion
-        self.peopleChainGenesisHash = peopleChainGenesisHash
-        self.bulletinChainGenesisHash = bulletinChainGenesisHash
-        self.localSessionSecret = localSessionSecret
-        self.localSessionLiteUsername = localSessionLiteUsername
-        self.pairingDeeplinkScheme = pairingDeeplinkScheme
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeRuntimeConfig: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeRuntimeConfig {
-        return
-            try NativeRuntimeConfig(
-                productId: FfiConverterString.read(from: &buf),
-                executionKind: FfiConverterTypeProductExecutionKind.read(from: &buf),
-                hostName: FfiConverterString.read(from: &buf),
-                hostIcon: FfiConverterOptionString.read(from: &buf),
-                hostVersion: FfiConverterOptionString.read(from: &buf),
-                platformType: FfiConverterOptionString.read(from: &buf),
-                platformVersion: FfiConverterOptionString.read(from: &buf),
-                peopleChainGenesisHash: FfiConverterData.read(from: &buf),
-                bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
-                localSessionSecret: FfiConverterOptionData.read(from: &buf),
-                localSessionLiteUsername: FfiConverterOptionString.read(from: &buf),
-                pairingDeeplinkScheme: FfiConverterTypeNativePairingDeeplinkScheme.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: NativeRuntimeConfig, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.productId, into: &buf)
-        FfiConverterTypeProductExecutionKind.write(value.executionKind, into: &buf)
-        FfiConverterString.write(value.hostName, into: &buf)
-        FfiConverterOptionString.write(value.hostIcon, into: &buf)
-        FfiConverterOptionString.write(value.hostVersion, into: &buf)
-        FfiConverterOptionString.write(value.platformType, into: &buf)
-        FfiConverterOptionString.write(value.platformVersion, into: &buf)
-        FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
-        FfiConverterData.write(value.bulletinChainGenesisHash, into: &buf)
-        FfiConverterOptionData.write(value.localSessionSecret, into: &buf)
-        FfiConverterOptionString.write(value.localSessionLiteUsername, into: &buf)
-        FfiConverterTypeNativePairingDeeplinkScheme.write(value.pairingDeeplinkScheme, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRuntimeConfig_lift(_ buf: RustBuffer) throws -> NativeRuntimeConfig {
-    return try FfiConverterTypeNativeRuntimeConfig.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRuntimeConfig_lower(_ value: NativeRuntimeConfig) -> RustBuffer {
-    return FfiConverterTypeNativeRuntimeConfig.lower(value)
 }
 
 
@@ -4772,19 +4153,32 @@ public func FfiConverterTypeHostStorageError_lower(_ value: HostStorageError) ->
 
 
 /**
- * Native-friendly SSO deeplink scheme.
+ * OS status of a device capability, as a native host reports it.
+ *
+ * Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
+ * directly: an async callback method returning a type from another UniFFI
+ * namespace lowers into that namespace's `RustBuffer`, and the generated
+ * Kotlin then fails to compile. The conversion is total.
  */
 
-public enum NativePairingDeeplinkScheme: Equatable, Hashable {
+public enum NativeDevicePermissionStatus: Equatable, Hashable {
 
     /**
-     * Production Polkadot app.
+     * The OS grants this capability to the host application.
      */
-    case polkadotApp
+    case granted
     /**
-     * Development Polkadot app.
+     * The OS refuses it; only system settings can change that.
      */
-    case polkadotAppDev
+    case denied
+    /**
+     * The OS has not been asked, or reset its own answer.
+     */
+    case notDetermined
+    /**
+     * This platform has no OS gate for the capability.
+     */
+    case notApplicable
 
 
 
@@ -4793,37 +4187,49 @@ public enum NativePairingDeeplinkScheme: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension NativePairingDeeplinkScheme: Sendable {}
+extension NativeDevicePermissionStatus: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeNativePairingDeeplinkScheme: FfiConverterRustBuffer {
-    typealias SwiftType = NativePairingDeeplinkScheme
+public struct FfiConverterTypeNativeDevicePermissionStatus: FfiConverterRustBuffer {
+    typealias SwiftType = NativeDevicePermissionStatus
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePairingDeeplinkScheme {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeDevicePermissionStatus {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .polkadotApp
+        case 1: return .granted
 
-        case 2: return .polkadotAppDev
+        case 2: return .denied
+
+        case 3: return .notDetermined
+
+        case 4: return .notApplicable
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
-    public static func write(_ value: NativePairingDeeplinkScheme, into buf: inout [UInt8]) {
+    public static func write(_ value: NativeDevicePermissionStatus, into buf: inout [UInt8]) {
         switch value {
 
 
-        case .polkadotApp:
+        case .granted:
             writeInt(&buf, Int32(1))
 
 
-        case .polkadotAppDev:
+        case .denied:
             writeInt(&buf, Int32(2))
+
+
+        case .notDetermined:
+            writeInt(&buf, Int32(3))
+
+
+        case .notApplicable:
+            writeInt(&buf, Int32(4))
 
         }
     }
@@ -4833,15 +4239,15 @@ public struct FfiConverterTypeNativePairingDeeplinkScheme: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeNativePairingDeeplinkScheme_lift(_ buf: RustBuffer) throws -> NativePairingDeeplinkScheme {
-    return try FfiConverterTypeNativePairingDeeplinkScheme.lift(buf)
+public func FfiConverterTypeNativeDevicePermissionStatus_lift(_ buf: RustBuffer) throws -> NativeDevicePermissionStatus {
+    return try FfiConverterTypeNativeDevicePermissionStatus.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeNativePairingDeeplinkScheme_lower(_ value: NativePairingDeeplinkScheme) -> RustBuffer {
-    return FfiConverterTypeNativePairingDeeplinkScheme.lower(value)
+public func FfiConverterTypeNativeDevicePermissionStatus_lower(_ value: NativeDevicePermissionStatus) -> RustBuffer {
+    return FfiConverterTypeNativeDevicePermissionStatus.lower(value)
 }
 
 
@@ -6138,30 +5544,6 @@ fileprivate struct FfiConverterOptionTypeNativeChatCallbacks: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffer {
-    typealias SwiftType = ProductAccountId?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeProductAccountId.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeProductAccountId.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionTypeStatementRenewalReport: FfiConverterRustBuffer {
     typealias SwiftType = StatementRenewalReport?
 
@@ -6252,31 +5634,6 @@ fileprivate struct FfiConverterSequenceTypeChatRoom: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeChatRoom.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeProductAccountId: FfiConverterRustBuffer {
-    typealias SwiftType = [ProductAccountId]
-
-    public static func write(_ value: [ProductAccountId], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeProductAccountId.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ProductAccountId] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [ProductAccountId]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeProductAccountId.read(from: &buf))
         }
         return seq
     }
@@ -6533,52 +5890,58 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 19880) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 25245) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission_status() != 21303) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 41678) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 12868) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 59238) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 35488) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 35684) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 61703) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 61002) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 4428) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 36320) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 43717) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 10194) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 30923) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 54867) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 6042) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 23589) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 51970) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 33694) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 20260) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 64982) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 59647) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 24427) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 54534) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_locale() != 50200) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 65446) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 62222) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 46660) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 61208) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 43612) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 39736) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 64902) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
@@ -6605,13 +5968,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chat_rooms_changed() != 13112) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_locale_changed() != 43759) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_preimage_changed() != 21769) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_theme_changed() != 3284) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 27339) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_product_subtree_public_key() != 63238) {
@@ -6636,66 +6002,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_stop_ws_bridge() != 6101) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_activate_local_session() != 19215) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_cancel_login() != 26024) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_last_statement_renewal_report() != 25210) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 13069) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_closed() != 25320) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_response() != 43518) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_preimage_changed() != 45611) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_session_store_changed() != 10667) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 49601) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 57273) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_ring_vrf_providers() != 44875) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_select_ring_vrf_provider() != 24121) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_selected_ring_vrf_provider() != 49670) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 37317) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_statement_allowance_renewal() != 20540) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 34234) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_stop_ws_bridge() != 13438) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_track_statement_renewal_targets() != 64109) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_activate_local_session() != 40075) {
@@ -6735,9 +6041,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativecustomrenderersubscription_cancel() != 26593) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_constructor_nativetruapicore_with_runtime_config() != 54861) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_constructor_nativetruapihostruntime_with_runtime_config() != 39293) {

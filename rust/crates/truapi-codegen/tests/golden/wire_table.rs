@@ -45,6 +45,12 @@ pub enum WireKind {
     /// Subscription method.
     Subscription(SubscriptionFrameIds),
 }
+/// Fingerprint of this build's wire contract: frame ids, method legs,
+/// sensitivity, and codec version, identical to the TS client's
+/// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
+/// the debugger refuses to decode a frame whose contract differs from
+/// its own, even when the coarse handshake codec version is unchanged.
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "0449982638d57658";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: RequestFrameIds = RequestFrameIds {
@@ -490,6 +496,26 @@ pub const ACCOUNT_RING_VRF_SIGN: RequestFrameIds = RequestFrameIds {
     response_id: 173,
 };
 
+/// Wire discriminants for `system_get_product_context`.
+pub const SYSTEM_GET_PRODUCT_CONTEXT: RequestFrameIds = RequestFrameIds {
+    request_id: 190,
+    response_id: 191,
+};
+
+/// Wire discriminants for `system_host_info`.
+pub const SYSTEM_HOST_INFO: RequestFrameIds = RequestFrameIds {
+    request_id: 192,
+    response_id: 193,
+};
+
+/// Wire discriminants for `locale_subscribe`.
+pub const LOCALE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 194,
+    stop_id: 195,
+    interrupt_id: 196,
+    receive_id: 197,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -768,5 +794,17 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "account_ring_vrf_sign",
         kind: WireKind::Request(ACCOUNT_RING_VRF_SIGN),
+    },
+    WireEntry {
+        method: "system_get_product_context",
+        kind: WireKind::Request(SYSTEM_GET_PRODUCT_CONTEXT),
+    },
+    WireEntry {
+        method: "system_host_info",
+        kind: WireKind::Request(SYSTEM_HOST_INFO),
+    },
+    WireEntry {
+        method: "locale_subscribe",
+        kind: WireKind::Subscription(LOCALE_SUBSCRIBE),
     },
 ];

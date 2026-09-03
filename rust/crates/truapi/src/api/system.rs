@@ -2,14 +2,16 @@
 
 use crate::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
-    HostHandshakeError, HostHandshakeRequest, HostHandshakeResponse, HostNavigateToError,
-    HostNavigateToRequest, HostNavigateToResponse,
+    HostGetProductContextError, HostGetProductContextRequest, HostGetProductContextResponse,
+    HostHandshakeError, HostHandshakeRequest, HostHandshakeResponse, HostInfoError,
+    HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
+    HostNavigateToResponse,
 };
 use crate::wire;
 use crate::{CallContext, CallError};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
-/// and navigation.
+/// navigation, and runtime information.
 #[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.
@@ -79,4 +81,40 @@ pub trait System: Send + Sync {
         cx: &CallContext,
         request: HostNavigateToRequest,
     ) -> Result<HostNavigateToResponse, CallError<HostNavigateToError>>;
+
+    /// Report the host's identity and version.
+    ///
+    /// Returns the host's platform, name, and version so a product knows
+    /// exactly which host — and which build of it — is running it: for
+    /// adapting to the host, telemetry, and attributing behaviour to a
+    /// concrete build in diagnostics and bug reports.
+    ///
+    /// ```ts
+    /// const result = await truapi.system.info();
+    /// assert(result.isOk(), "info failed:", result);
+    /// const info = result.value;
+    /// console.log(`${info.name} ${info.version} on ${info.platform}`);
+    /// ```
+    #[wire(request_id = 192)]
+    async fn host_info(
+        &self,
+        cx: &CallContext,
+        request: HostInfoRequest,
+    ) -> Result<HostInfoResponse, CallError<HostInfoError>>;
+
+    /// Return the product context bound to the current host runtime.
+    ///
+    /// ```ts
+    /// const context = await truapi.system.getProductContext();
+    /// assert(context.isOk(), "getProductContext failed:", context);
+    /// console.log("product id:", context.value.productId);
+    /// ```
+    #[wire(request_id = 190)]
+    async fn get_product_context(
+        &self,
+        _cx: &CallContext,
+        _request: HostGetProductContextRequest,
+    ) -> Result<HostGetProductContextResponse, CallError<HostGetProductContextError>> {
+        Err(CallError::unavailable())
+    }
 }
