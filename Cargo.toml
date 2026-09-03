@@ -28,3 +28,10 @@ debug = false
 [profile.codegen]
 inherits = "release"
 strip = false
+# This dylib is never shipped: uniffi-bindgen only reads its exported metadata
+# symbols. Size optimisation, whole-program LTO and a single codegen unit buy
+# nothing here and cost the whole wait on every core edit, so the profile
+# optimises for build speed instead. The bindings it produces are unchanged.
+opt-level = 0
+lto = false
+codegen-units = 16
