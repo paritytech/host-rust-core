@@ -679,7 +679,20 @@ type WireIdRow = (u8, String, bool, bool, String);
 fn wire_id_rows(api: &ApiDefinition, target_version: u32) -> Result<Vec<WireIdRow>> {
     let wrappers = collect_versioned_wrappers(api);
     let types = types_by_name(api);
-    let mut seen: BTreeMap<u8, (String, bool, bool, String)> = BTreeMap::new();
+    // Seed the reserved discriminant so the fingerprint moves if it ever moves.
+    // `generate_wire_table` reserves it in its own collision map, but that map is
+    // not what the hash folds over, so without this row the reserved id could be
+    // reassigned and every already-built debugger would keep confirming the table.
+    // It carries no payload and no method, so its facts are fixed.
+    let mut seen: BTreeMap<u8, (String, bool, bool, String)> = BTreeMap::from([(
+        RESERVED_PROTOCOL_ERROR_ID,
+        (
+            "reserved::protocol_error".to_string(),
+            false,
+            false,
+            String::new(),
+        ),
+    )]);
     for trait_def in &api.traits {
         for method in &trait_def.methods {
             if !method_is_included(trait_def, method, &wrappers, target_version)? {
@@ -687,7 +700,16 @@ fn wire_id_rows(api: &ApiDefinition, target_version: u32) -> Result<Vec<WireIdRo
             }
             let wire_ids = wire_ids_for_method(trait_def, method)?;
             let payload = method_payload_signature(method, &types);
-            for (id, tag) in wire_ids.entries(&method.name) {
+            // Qualify the tag with the trait. The tag is what the schema hash folds
+            // in, and the debugger's method label is derived from the generated
+            // const name (`LOCAL_STORAGE_WRITE` -> `localStorage.write`), which is
+            // trait-qualified. Hashing the bare method name lets a trait rename, or
+            // a method moving between traits, keep the same fingerprint: the host
+            // then stamps a hash the debugger affirmatively confirms and decode
+            // proceeds under the wrong label, which is the exact failure this hash
+            // exists to refuse.
+            let qualified = format!("{}::{}", trait_def.name, method.name);
+            for (id, tag) in wire_ids.entries(&qualified) {
                 if let Some((existing, _, _, _)) = seen.insert(
                     id,
                     (
@@ -3188,6 +3210,47 @@ mod tests {
         assert_ne!(
             wire_schema_hash(&build(["Allow", "Deny"]), 1, 1).unwrap(),
             wire_schema_hash(&build(["Deny", "Allow"]), 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn schema_hash_moves_when_a_method_changes_trait() {
+        // The debugger derives its displayed method label from the generated const
+        // name, which is trait-qualified (`LOCAL_STORAGE_WRITE` -> the label
+        // `localStorage.write`). Hashing the bare method name therefore let a trait
+        // rename, or a method moving between traits, keep the same fingerprint: the
+        // host stamped a hash the debugger affirmatively confirmed, decode ran, and
+        // every surface showed a confident wrong label - the exact failure the
+        // fingerprint exists to refuse.
+        let build = |trait_name: &str| {
+            let method = MethodDef {
+                name: "write".to_string(),
+                kind: MethodKind::Request,
+                params: Vec::new(),
+                return_type: ReturnType::Result {
+                    ok: TypeRef::Unit,
+                    err: TypeRef::Unit,
+                },
+                wire: request_wire(Some(7)),
+                docs: None,
+            };
+            ApiDefinition {
+                traits: vec![TraitDef {
+                    name: trait_name.to_string(),
+                    module_path: Vec::new(),
+                    methods: vec![method],
+                    docs: None,
+                }],
+                public_trait_order: vec![trait_name.to_string()],
+                types: Vec::new(),
+                framework_types: Vec::new(),
+            }
+        };
+
+        // Same id, same method name, same payload shape; only the trait differs.
+        assert_ne!(
+            wire_schema_hash(&build("LocalStorage"), 1, 1).unwrap(),
+            wire_schema_hash(&build("Statement"), 1, 1).unwrap(),
         );
     }
 
