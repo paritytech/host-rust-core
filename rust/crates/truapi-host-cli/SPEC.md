@@ -290,9 +290,9 @@ back to `info`. Command-line and environment overrides do not rewrite the saved
 level.
 
 If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
-and the status bar shows `log custom`. The interactive `/log` command atomically
-saves the selected CLI level, replaces the active filter, and updates the
-status bar.
+while the status bar continues to show the selected CLI level. The interactive
+`/log` command atomically saves that level, replaces the active filter, and
+updates the status bar.
 
 ## 5. `pairing-host`
 
@@ -627,12 +627,12 @@ scrollable transcript
 
 command completion list, when open
 › command input or idle placeholder
-TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product> · log <level-or-custom>
+TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product> · log <level>
 ```
 
 The role label is omitted at narrow widths so user, network, and product remain
 visible. Values are ellipsized to fit, with the product consuming the remaining
-space after the user, network, and fixed log mode. The session name is not shown
+space after the user, network, and fixed log level. The session name is not shown
 separately from the resolved user. Idle command guidance appears as a dim
 placeholder inside the empty prompt instead of consuming status-bar space.
 Operational hints temporarily use the right side of the status line while a

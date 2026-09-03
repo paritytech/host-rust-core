@@ -31,9 +31,9 @@ use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context as LayerContext, Layer};
 use unicode_width::UnicodeWidthChar;
 
+use crate::LogLevel;
 use crate::qr_scanner::RgbaFrame;
 use crate::signing_shell::{CommandEditor, contains_mnemonic, mask_mnemonic, parse_approval};
-use crate::{LogLevel, LogMode};
 
 const TRANSCRIPT_LIMIT: usize = 10_000;
 const TRANSCRIPT_LINE_LIMIT: usize = 10_000;
@@ -260,8 +260,7 @@ pub enum SystemEvent {
 impl SystemEvent {
     /// Render the same sentence-case copy used by the interactive transcript.
     pub fn human(&self) -> String {
-        let mut app =
-            App::new_pairing(String::new(), String::new(), LogMode::Level(LogLevel::Info));
+        let mut app = App::new_pairing(String::new(), String::new(), LogLevel::Info);
         app.connection = "connected".to_string();
         app.handle_system_event(self.clone());
         let text = app.transcript_text();
@@ -350,8 +349,7 @@ pub fn output_success(title: impl Into<String>, detail: Option<String>) {
         title: title.clone(),
         detail: detail.clone(),
     }) {
-        let mut app =
-            App::new_pairing(String::new(), String::new(), LogMode::Level(LogLevel::Info));
+        let mut app = App::new_pairing(String::new(), String::new(), LogLevel::Info);
         app.notice(NoticeTone::Success, title, detail);
         write_human_stdout(&app.transcript_text());
     }
@@ -452,7 +450,7 @@ where
 }
 
 fn sso_event_text(event: SsoEvent) -> String {
-    let mut app = App::new_pairing(String::new(), String::new(), LogMode::Level(LogLevel::Info));
+    let mut app = App::new_pairing(String::new(), String::new(), LogLevel::Info);
     app.handle_sso_event(event);
     app.transcript_text()
 }
@@ -614,7 +612,7 @@ impl TerminalUi {
         product_id: impl Into<String>,
         session: impl Into<String>,
         session_names: Vec<String>,
-        log_mode: LogMode,
+        log_level: LogLevel,
     ) -> (Self, UiHandle) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let handle = UiHandle {
@@ -629,7 +627,7 @@ impl TerminalUi {
                     product_id.into(),
                     session.into(),
                     session_names,
-                    log_mode,
+                    log_level,
                 ),
             },
             handle,
@@ -640,7 +638,7 @@ impl TerminalUi {
     pub fn new_pairing(
         network: impl Into<String>,
         product_id: impl Into<String>,
-        log_mode: LogMode,
+        log_level: LogLevel,
     ) -> (Self, UiHandle) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let handle = UiHandle {
@@ -650,7 +648,7 @@ impl TerminalUi {
             Self {
                 sender,
                 receiver,
-                app: App::new_pairing(network.into(), product_id.into(), log_mode),
+                app: App::new_pairing(network.into(), product_id.into(), log_level),
             },
             handle,
         )
@@ -800,7 +798,7 @@ impl ActiveTerminalUi {
 
     /// Update the displayed log level after `/log` succeeds.
     pub fn set_log_level(&mut self, level: LogLevel) {
-        self.app.log_mode = LogMode::Level(level);
+        self.app.log_level = level;
     }
 
     /// Update the product shown in the host status bar.
@@ -1209,7 +1207,7 @@ struct App {
     product: String,
     session: String,
     connection: String,
-    log_mode: LogMode,
+    log_level: LogLevel,
     entries: VecDeque<FeedItem>,
     editor: CommandEditor,
     pending_approval: Option<PendingApproval>,
@@ -1229,7 +1227,7 @@ impl App {
         product_id: String,
         session: String,
         session_names: Vec<String>,
-        log_mode: LogMode,
+        log_level: LogLevel,
     ) -> Self {
         Self::with_role(
             HostRole::Signing,
@@ -1237,18 +1235,18 @@ impl App {
             product_id,
             session,
             session_names,
-            log_mode,
+            log_level,
         )
     }
 
-    fn new_pairing(network: String, product_id: String, log_mode: LogMode) -> Self {
+    fn new_pairing(network: String, product_id: String, log_level: LogLevel) -> Self {
         Self::with_role(
             HostRole::Pairing,
             network,
             product_id,
             String::new(),
             Vec::new(),
-            log_mode,
+            log_level,
         )
     }
 
@@ -1258,7 +1256,7 @@ impl App {
         product: String,
         session: String,
         session_names: Vec<String>,
-        log_mode: LogMode,
+        log_level: LogLevel,
     ) -> Self {
         let mut editor = match role {
             HostRole::Pairing => CommandEditor::pairing_host(),
@@ -1271,7 +1269,7 @@ impl App {
             product,
             session,
             connection: "disconnected".to_string(),
-            log_mode,
+            log_level,
             entries: VecDeque::new(),
             editor,
             pending_approval: None,
@@ -2483,7 +2481,7 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
     let user_prefix = " · 👤 ";
     let network_prefix = " · 🌐 ";
     let product_prefix = " · 📦 ";
-    let log_suffix = format!(" · log {}", app.log_mode);
+    let log_suffix = format!(" · log {}", app.log_level);
     let width = usize::from(width);
     let fixed_width = text_display_width(&title)
         .saturating_add(text_display_width(user_prefix))
@@ -2518,7 +2516,7 @@ fn header_line(app: &App, width: u16) -> Line<'static> {
         .saturating_add(text_display_width(product_prefix))
         .saturating_add(text_display_width(&log_suffix));
     if fixed_width >= width {
-        let compact_log = format!(" log {}", app.log_mode);
+        let compact_log = format!(" log {}", app.log_level);
         return Line::from(Span::styled(
             ellipsize_display_width(&compact_log, width),
             Style::default().add_modifier(Modifier::DIM),
@@ -3082,7 +3080,7 @@ mod tests {
             "playground.dot".to_string(),
             "default".to_string(),
             vec!["default".to_string()],
-            LogMode::Level(LogLevel::Info),
+            LogLevel::Info,
         )
     }
 
@@ -3523,7 +3521,7 @@ mod tests {
         let mut app = App::new_pairing(
             "paseo-next-v2".to_string(),
             "playground.dot".to_string(),
-            LogMode::Level(LogLevel::Info),
+            LogLevel::Info,
         );
         app.editor.set_text("/");
 
@@ -3561,35 +3559,22 @@ mod tests {
     fn changed_log_level_is_visible_in_the_status_bar() {
         let mut app = test_app();
 
-        app.log_mode = LogMode::Level(LogLevel::Trace);
+        app.log_level = LogLevel::Trace;
 
         assert!(line_text(header_line(&app, 120)).ends_with(" · log trace"));
     }
 
     #[test]
-    fn custom_rust_log_filter_is_visible_in_the_status_bar() {
+    fn narrow_status_prioritizes_the_log_level() {
         let app = App::new(
             "testnet".to_string(),
             "playground.dot".to_string(),
             "default".to_string(),
             vec!["default".to_string()],
-            LogMode::RustLog,
+            LogLevel::Debug,
         );
 
-        assert!(line_text(header_line(&app, 120)).ends_with(" · log custom"));
-    }
-
-    #[test]
-    fn narrow_status_prioritizes_the_log_mode() {
-        let app = App::new(
-            "testnet".to_string(),
-            "playground.dot".to_string(),
-            "default".to_string(),
-            vec!["default".to_string()],
-            LogMode::RustLog,
-        );
-
-        assert_eq!(line_text(header_line(&app, 11)), " log custom");
+        assert_eq!(line_text(header_line(&app, 10)), " log debug");
     }
 
     #[test]
