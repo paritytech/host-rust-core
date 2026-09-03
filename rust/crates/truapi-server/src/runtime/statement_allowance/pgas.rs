@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, DecodeAll};
 use scale_decode::DecodeAsType;
 use sp_crypto_hashing::twox_128;
 use thiserror::Error;
@@ -103,9 +103,31 @@ fn current_generation_key() -> Vec<u8> {
     .concat()
 }
 
-async fn read_current_generation(rpc: &RpcClient) -> Result<u32, StatementAllowanceError> {
+/// The generation `RingRoots` is currently keyed under.
+///
+/// An absent value is the `ValueQuery` default, so it only means generation 0
+/// once the runtime is known to declare the entry. Checking the metadata first
+/// keeps a renamed pallet or item from reading as generation 0 and silently
+/// building keys nothing will ever answer.
+///
+/// Decoded with `decode_all`, so an entry that stops being a bare `u32` fails by
+/// name here instead of yielding the first four bytes of some other layout.
+async fn read_current_generation(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+) -> Result<u32, StatementAllowanceError> {
+    if metadata
+        .storage_value_type("MembersSubscriber", "CurrentGeneration")
+        .is_none()
+    {
+        return Err(MetadataError::MissingStorageType {
+            pallet: "MembersSubscriber",
+            entry: "CurrentGeneration",
+        }
+        .into());
+    }
     match rpc.get_storage(&current_generation_key()).await? {
-        Some(bytes) => u32::decode(&mut &bytes[..])
+        Some(bytes) => u32::decode_all(&mut &bytes[..])
             .map_err(PgasError::GenerationDecode)
             .map_err(Into::into),
         None => Ok(0),
@@ -345,9 +367,13 @@ pub async fn await_ring_revision(
             pallet: "MembersSubscriber",
             entry: "RingRoots",
         })?;
-    let generation = read_current_generation(rpc).await?;
     let started = Instant::now();
     loop {
+        // Re-read per poll rather than once up front: a rebuild landing while we
+        // wait is exactly what this loop is waiting through, and a generation
+        // read from before it would key every remaining poll at a generation the
+        // roots have left, so the wait could only ever time out.
+        let generation = read_current_generation(rpc, metadata).await?;
         if let Some(bytes) = rpc
             .get_storage(&ring_roots_key(generation, collection, ring_index))
             .await?
@@ -408,6 +434,12 @@ mod tests {
     /// anything paired with this identifier.
     const CAPTURED_COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
     const TEST_GENERATION: u32 = 7;
+
+    /// A real runtime that declares no `MembersSubscriber` at all, for the
+    /// metadata gate below. Preferred over a synthetic `Metadata` because the
+    /// gate is about a runtime not carrying the pallet, which is what this is.
+    const PEOPLE_METADATA: &[u8] =
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
 
     /// The captured ring-5 roots as a scripted `state_getStorage` result, with the
     /// transport handle so the key that was read can be checked.
@@ -576,7 +608,8 @@ mod tests {
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
         assert_eq!(
-            futures::executor::block_on(read_current_generation(&rpc)).unwrap(),
+            futures::executor::block_on(read_current_generation(&rpc, test_fixtures::asset_hub()))
+                .unwrap(),
             0
         );
         assert_eq!(
@@ -586,6 +619,48 @@ mod tests {
                 r#"["0xc8d053ab324196afc756c5ae3fbd2917c2dbc4fc2f665a39ada06f0965cccf86"]"#
                     .to_string(),
             )]
+        );
+    }
+
+    /// A trailing byte means the entry is no longer a bare `u32`, which is the
+    /// same layout drift the three-key ring-root key exists to track. Taking the
+    /// first four bytes would build keys for a generation nothing answers, and
+    /// the wait would read as "the ring never arrived".
+    #[test]
+    fn a_current_generation_that_is_not_a_bare_u32_is_rejected() {
+        let overlong = format!(r#""0x{}""#, hex::encode([7u8, 0, 0, 0, 0]));
+        let scripted = ScriptedRpc::new([overlong.as_str()]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let err =
+            futures::executor::block_on(read_current_generation(&rpc, test_fixtures::asset_hub()))
+                .expect_err("a five-byte value is not a u32");
+
+        assert_eq!(
+            err.to_string(),
+            "MembersSubscriber.CurrentGeneration: Input buffer has still data left after decoding!"
+        );
+    }
+
+    /// An absent value is only the `ValueQuery` default if the runtime declares
+    /// the entry at all. A renamed pallet or item reads as absent too, and
+    /// defaulting there would key every ring-root read at generation 0.
+    #[test]
+    fn a_runtime_without_current_generation_is_named_rather_than_defaulted() {
+        let people = Metadata::decode(PEOPLE_METADATA).unwrap();
+        let scripted = ScriptedRpc::new(["null"]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        let err = futures::executor::block_on(read_current_generation(&rpc, &people))
+            .expect_err("the People runtime declares no MembersSubscriber");
+
+        assert_eq!(
+            (err.to_string(), scripted.calls()),
+            (
+                "MembersSubscriber.CurrentGeneration type not in metadata".to_string(),
+                vec![],
+            ),
+            "the metadata check comes before the read, so nothing is asked of the chain",
         );
     }
 

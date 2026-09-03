@@ -1067,15 +1067,24 @@ mod tests {
         assert_eq!(&key[52..], &alias, "alias follows its blake2_128 prefix");
     }
 
+    /// Both vectors are pinned against the mobile clients and the runtime. The
+    /// all-zero one is the offset check: every field of the suffix is already
+    /// zero there, so a field written at the wrong offset still hashes to this
+    /// answer only if the offsets agree.
     #[test]
     fn statement_slot_context_matches_mobile_clients_and_runtime() {
-        let expected: [u8; 32] =
-            hex::decode("b6c21225dcf4c2aeeca32b6db1fc93b6942ca0e8ff5c3cb1b2c5d8f0b4647ee3")
-                .unwrap()
-                .try_into()
-                .unwrap();
+        let vector = |hex: &str| -> [u8; 32] { hex::decode(hex).unwrap().try_into().unwrap() };
 
-        assert_eq!(derive_slot_context(NETWORK_SUFFIX, 100, 3), expected);
+        assert_eq!(
+            (
+                derive_slot_context(NETWORK_SUFFIX, 100, 3),
+                derive_slot_context(NETWORK_SUFFIX, 0, 0),
+            ),
+            (
+                vector("b6c21225dcf4c2aeeca32b6db1fc93b6942ca0e8ff5c3cb1b2c5d8f0b4647ee3"),
+                vector("deee1c90cf0d31093d318ac6629b4c4ab08650d4a4164511cc2496205f20f067"),
+            ),
+        );
     }
 
     #[test]
