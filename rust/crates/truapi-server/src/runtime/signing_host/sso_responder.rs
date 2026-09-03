@@ -1071,6 +1071,7 @@ pub(super) async fn allocate_statement_store_allowance(
         .await?;
     let rpc = client.rpc();
     let chain = services.chain_context.get(&client).await?;
+    let network_suffix = statement_allowance::slot::read_network_suffix(rpc).await?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
 
@@ -1087,6 +1088,7 @@ pub(super) async fn allocate_statement_store_allowance(
         rpc,
         &chain.metadata,
         &candidates,
+        &network_suffix,
         period,
         &target,
         reuse_existing,
@@ -1120,6 +1122,7 @@ pub(super) async fn allocate_statement_store_allowance(
         PooledRegistrationParams {
             target: &target,
             period,
+            network_suffix: &network_suffix,
             reuse_existing,
             // Connecting a product must not revoke another product's allowance.
             // A full period is reported as exhaustion; reclaiming space is the
@@ -1775,6 +1778,10 @@ mod tests {
                 ),
                 (
                     "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(b"paseo".to_vec().encode())),
+                ),
+                (
+                    "state_getStorage",
                     format!(r#""0x{}""#, hex::encode(&slot_entry)),
                 ),
             ],
@@ -1829,14 +1836,14 @@ mod tests {
                 .any(|method| method.starts_with("author_submit")),
             "an extrinsic was submitted for an allowance already in place: {methods:?}"
         );
-        // One slot read answered it; the scan stopped at the first match.
+        // The suffix and one slot read answered it; the scan stopped at the first match.
         assert_eq!(
             methods
                 .iter()
                 .filter(|method| *method == "state_getStorage")
                 .count(),
-            1,
-            "expected a single slot read: {methods:?}"
+            2,
+            "expected one suffix and one slot read: {methods:?}"
         );
     }
 

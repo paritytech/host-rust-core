@@ -795,6 +795,9 @@ async fn run_alloc_check(
     let chain_state = alloc::fetch_chain_state(&rpc)
         .await
         .map_err(anyhow::Error::msg)?;
+    let network_suffix = alloc::slot::read_network_suffix(&rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
     println!(
         "chain: specVersion={} txVersion={} genesis=0x{}",
         chain_state.spec_version,
@@ -841,16 +844,33 @@ async fn run_alloc_check(
             continue;
         }
         print!("{}: ", candidate.collection);
-        report_slot_scan(&rpc, &metadata, *candidate, period, &target, now).await?;
+        report_slot_scan(
+            &rpc,
+            &metadata,
+            *candidate,
+            &network_suffix,
+            period,
+            &target,
+            now,
+        )
+        .await?;
     }
 
     if submit {
         if memberships.is_empty() {
             bail!("cannot submit: member not in any ring");
         }
-        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
-            .await
-            .map_err(anyhow::Error::msg)?;
+        let scans = alloc::scan_collections(
+            &rpc,
+            &metadata,
+            &candidates,
+            &network_suffix,
+            period,
+            &target,
+            true,
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
         match alloc::register_statement_account_pooled(
             &rpc,
             &metadata,
@@ -860,6 +880,7 @@ async fn run_alloc_check(
             alloc::PooledRegistrationParams {
                 target: &target,
                 period,
+                network_suffix: &network_suffix,
                 reuse_existing: true,
                 // A diagnostic that submits behaves as it did before pooling,
                 // where a full table was replaced rather than reported.
@@ -893,6 +914,7 @@ async fn report_slot_scan(
     rpc: &alloc::rpc::RpcClient,
     metadata: &alloc::extension::Metadata,
     candidate: alloc::CollectionCandidate,
+    network_suffix: &[u8],
     period: u32,
     target: &[u8; 32],
     now: u64,
@@ -903,6 +925,7 @@ async fn report_slot_scan(
         alloc::slot::SlotScan {
             collection: candidate.collection,
             entropy: candidate.entropy,
+            network_suffix,
             period,
             target,
             excluded: &[],

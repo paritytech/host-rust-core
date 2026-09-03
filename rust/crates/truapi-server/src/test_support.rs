@@ -1318,9 +1318,28 @@ fn method_keyed_responses(
                         serde_json::from_str(&request).expect("request is valid JSON");
                     let id = value["id"].as_str().expect("request carries a string id");
                     let method = value["method"].as_str().expect("request carries a method");
+                    let occurrence = sent
+                        .lock()
+                        .expect("rpc list mutex poisoned")
+                        .iter()
+                        .take(answered)
+                        .filter(|request| {
+                            serde_json::from_str::<serde_json::Value>(request)
+                                .ok()
+                                .and_then(|value| value["method"].as_str().map(str::to_owned))
+                                .is_some_and(|candidate| candidate == method)
+                        })
+                        .count();
                     let result = answers
                         .iter()
-                        .find(|(candidate, _)| *candidate == method)
+                        .filter(|(candidate, _)| *candidate == method)
+                        .nth(occurrence)
+                        .or_else(|| {
+                            answers
+                                .iter()
+                                .rev()
+                                .find(|(candidate, _)| *candidate == method)
+                        })
                         .map(|(_, body)| body.clone())
                         .unwrap_or_else(|| panic!("no scripted response for method `{method}`"));
                     return Some((
