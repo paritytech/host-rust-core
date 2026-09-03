@@ -124,7 +124,8 @@ impl StatementStore for ProductRuntimeHost {
         CallError<RemoteStatementStoreCreateProofError>,
     > {
         let RemoteStatementStoreCreateProofRequest::V1(mut inner) = request;
-        inner.product_account_id = Self::normalize_product_account_id(inner.product_account_id)
+        inner.product_account_id = self
+            .normalize_product_account_id(inner.product_account_id)
             .map_err(|()| {
                 CallError::Domain(RemoteStatementStoreCreateProofError::V1(
                     latest::RemoteStatementStoreCreateProofError::UnknownAccount,
