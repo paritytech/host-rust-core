@@ -199,8 +199,8 @@ replacement cooldown, so rotation only happens when no slot is replaceable.
 In a TTY, both hosts open the same scrollable transcript above a single command
 bar. Host lifecycle events, tracing logs, every incoming SSO request, script
 stdout/stderr, commands, and approval prompts all use that transcript, so
-background output cannot overwrite input. The status bar shows the selected
-log level. On
+background output cannot overwrite input. The status bar shows the active log
+value. On
 `signing-host`, `--deeplink URL` opens the UI and starts the pairing response
 after initialization.
 
@@ -632,7 +632,8 @@ Debug and trace output may contain product signing payloads. `RUST_LOG` takes
 precedence at startup and remains available for module-specific filters, except
 that the noisy `rustls` and `tungstenite::protocol` tracing targets are always
 excluded from CLI log output. The status bar continues to show the selected CLI
-level; `/log` replaces the startup filter with that level. Without `RUST_LOG`,
+level when `RUST_LOG` is absent; otherwise it shows the exact `RUST_LOG` value.
+`/log` replaces the startup filter with the selected level. Without `RUST_LOG`,
 `--log-level` and `/log` apply to TrUAPI targets while other third-party
 dependencies remain at `warn`.
 

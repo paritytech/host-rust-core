@@ -290,9 +290,9 @@ back to `info`. Command-line and environment overrides do not rewrite the saved
 level.
 
 If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
-while the status bar continues to show the selected CLI level. The interactive
-`/log` command atomically saves that level, replaces the active filter, and
-updates the status bar.
+and the status bar shows its trimmed value. The interactive `/log` command
+atomically saves the selected CLI level, replaces the active filter, and
+updates the status bar to that level.
 
 ## 5. `pairing-host`
 
@@ -627,12 +627,12 @@ scrollable transcript
 
 command completion list, when open
 › command input or idle placeholder
-TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product> · log <level>
+TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product> · log <value>
 ```
 
 The role label is omitted at narrow widths so user, network, and product remain
 visible. Values are ellipsized to fit, with the product consuming the remaining
-space after the user, network, and fixed log level. The session name is not shown
+space after the user, network, and fixed log value. The session name is not shown
 separately from the resolved user. Idle command guidance appears as a dim
 placeholder inside the empty prompt instead of consuming status-bar space.
 Operational hints temporarily use the right side of the status line while a
@@ -1820,9 +1820,9 @@ Fallback SSO summary text is still shown when structured fields are absent.
 
 Startup selects an explicit `--log-level` or `TRUAPI_HOST_LOG` value first,
 then the level saved by `/log`, then `info`. A valid `RUST_LOG` replaces that
-scoped startup filter and is displayed as `custom`. `/log` always replaces a
-custom filter with the selected level and saves it for later launches using the
-same base path.
+scoped startup filter, and its trimmed value replaces the selected level in the
+status bar. `/log` replaces the startup filter and status value with the
+selected level, then saves it for later launches using the same base path.
 
 Without `RUST_LOG`, the selected CLI level applies to:
 

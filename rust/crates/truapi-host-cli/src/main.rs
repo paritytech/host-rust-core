@@ -147,6 +147,21 @@ fn resolve_log_level(selected: Option<LogLevel>, saved: Option<LogLevel>) -> Log
     selected.or(saved).unwrap_or(LogLevel::Info)
 }
 
+fn startup_filter(
+    rust_log: Option<&str>,
+    log_level: LogLevel,
+) -> (tracing_subscriber::EnvFilter, String) {
+    if let Some(value) = rust_log.map(str::trim).filter(|value| !value.is_empty())
+        && let Ok(filter) = tracing_subscriber::EnvFilter::try_new(value)
+    {
+        return (filter, value.to_string());
+    }
+    (
+        tracing_subscriber::EnvFilter::new(log_level.scoped_filter()),
+        log_level.to_string(),
+    )
+}
+
 fn load_log_level(base_path: &Path) -> Result<Option<LogLevel>> {
     let path = base_path.join(LOG_LEVEL_FILE);
     let value = match std::fs::read_to_string(&path) {
@@ -463,8 +478,8 @@ async fn main() -> Result<()> {
         Err(error) => (None, Some(error)),
     };
     let log_level = resolve_log_level(cli.log_level, saved_log_level);
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level.scoped_filter()));
+    let rust_log = std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).ok();
+    let (filter, log_filter) = startup_filter(rust_log.as_deref(), log_level);
     let (filter, reload) = tracing_subscriber::reload::Layer::new(filter);
     let log_controller = LogController {
         reload: Arc::new(move |level| {
@@ -502,7 +517,7 @@ async fn main() -> Result<()> {
         tokio::spawn(update::run_background_check())
     });
 
-    let outcome = dispatch(cli.command, log_level, log_controller).await;
+    let outcome = dispatch(cli.command, log_filter, log_controller).await;
 
     if let Some(check) = check {
         update::finish_background_check(check).await;
@@ -516,14 +531,16 @@ async fn main() -> Result<()> {
 /// `main` free to always wait for the update check it started.
 async fn dispatch(
     command: Command,
-    log_level: LogLevel,
+    log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
     match command {
         Command::Update => update::run_update_command().await,
-        Command::PairingHost(args) => run_pairing_host(args, log_level, log_controller).await,
-        Command::Dev(args) => run_dev(args, log_level, log_controller).await,
-        Command::SigningHost(args) => run_signing_host(args, log_level, log_controller, None).await,
+        Command::PairingHost(args) => run_pairing_host(args, log_filter, log_controller).await,
+        Command::Dev(args) => run_dev(args, log_filter, log_controller).await,
+        Command::SigningHost(args) => {
+            run_signing_host(args, log_filter, log_controller, None).await
+        }
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
@@ -971,7 +988,7 @@ fn platform_info() -> PlatformInfo {
 
 async fn run_pairing_host(
     args: PairingHostArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
     let interactive = args.script.is_none();
@@ -988,7 +1005,7 @@ async fn run_pairing_host(
     let storage_paths = CliStoragePaths::pairing(base_path.join(network.id));
     let (terminal_ui, ui_handle) = if interactive {
         let (ui, handle) =
-            TerminalUi::new_pairing(network.id, product_id.clone(), initial_log_level);
+            TerminalUi::new_pairing(network.id, product_id.clone(), initial_log_filter);
         (Some(ui.enter()?), Some(handle))
     } else {
         (None, None)
@@ -1068,7 +1085,7 @@ async fn run_pairing_host(
 
 async fn run_signing_host(
     args: SigningHostArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
     dev_command: Option<Vec<String>>,
 ) -> Result<()> {
@@ -1107,7 +1124,7 @@ async fn run_signing_host(
             product_id,
             initial_session_name.clone(),
             initial_session_names,
-            initial_log_level,
+            initial_log_filter,
         );
         (Some(ui.enter()?), Some(handle))
     } else {
@@ -1777,7 +1794,7 @@ const INTERRUPTED_EXIT_CODE: i32 = 130;
 /// process from the endpoint it just bound.
 async fn run_dev(
     args: DevArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
     let product_id = args
@@ -1797,7 +1814,7 @@ async fn run_dev(
         ..Default::default()
     };
     let command = (!args.command.is_empty()).then_some(args.command);
-    run_signing_host(signing, initial_log_level, log_controller, command).await
+    run_signing_host(signing, initial_log_filter, log_controller, command).await
 }
 
 /// Run the wrapped development command, returning the code to exit with.
@@ -4136,6 +4153,21 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
             ]
             .map(|level| level.to_string()),
             ["error", "warn", "info", "debug", "trace"]
+        );
+    }
+
+    #[test]
+    fn valid_rust_log_value_replaces_the_resolved_level() {
+        let (filter, displayed) = startup_filter(Some(" warn,truapi=trace "), LogLevel::Info);
+        let (_, fallback) = startup_filter(Some("truapi=verbose"), LogLevel::Debug);
+
+        assert_eq!(
+            (filter.to_string(), displayed, fallback),
+            (
+                "truapi=trace,warn".to_string(),
+                "warn,truapi=trace".to_string(),
+                "debug".to_string()
+            )
         );
     }
 
