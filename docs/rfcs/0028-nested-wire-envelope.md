@@ -53,11 +53,13 @@ pub enum Request<Req, Res> {
 
 pub enum Subscription<Start, Item, Err> {
     Start(Start),
-    Stop,
-    Interrupt(Option<Err>),
     Receive(Item),
+    Interrupt(Option<Err>),
+    Stop,
 }
 ```
+
+`Start` and `Receive` lead, in the same position as `Request`'s own two variants, so a subscription's first two directions share `Request`'s discriminants and partly decode the same way.
 
 `Err` is a type parameter, not a fixed type: most subscriptions share a `GenericError` fallback, a family that fails alike shares one domain error, and a method that needs its own gets one. `Interrupt(None)` is natural completion; `Interrupt(Some(err))` is a failure, replacing today's silent empty-frame convention with an explicit, decodable case.
 
