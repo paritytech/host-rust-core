@@ -1296,10 +1296,25 @@ impl JsonRpcConnection for RecordingConnection {
     fn close(&self) {}
 }
 
-/// Answer each request as it arrives, by method, echoing its id.
+/// The scripting key for one request: a `state_call` is keyed by the runtime API
+/// it names, every other method by its own name.
 ///
-/// A `state_call` is keyed by the runtime API in its first parameter, because a
-/// path that reads both metadata and a view function issues both through it.
+/// A path that reads both metadata and a view function issues both through
+/// `state_call`, so keying those two apart is what lets a script answer them
+/// differently.
+fn response_key(request: &serde_json::Value) -> Option<&str> {
+    let method = request["method"].as_str()?;
+    if method == "state_call" {
+        return Some(request["params"][0].as_str().unwrap_or(method));
+    }
+    Some(method)
+}
+
+/// Answer each request as it arrives, keyed by [`response_key`], echoing its id.
+///
+/// Repeated entries for one key are answered in order, and once they run out the
+/// last one answers every further request, so a script spells out only the reads
+/// that differ.
 ///
 /// Waits indefinitely for the next request rather than giving up after a fixed
 /// number of polls, so work between requests cannot race the pump.
@@ -1321,15 +1336,29 @@ fn method_keyed_responses(
                     let value: serde_json::Value =
                         serde_json::from_str(&request).expect("request is valid JSON");
                     let id = value["id"].as_str().expect("request carries a string id");
-                    let method = value["method"].as_str().expect("request carries a method");
-                    let key = if method == "state_call" {
-                        value["params"][0].as_str().unwrap_or(method)
-                    } else {
-                        method
-                    };
+                    let key = response_key(&value).expect("request carries a method");
+                    let occurrence = sent
+                        .lock()
+                        .expect("rpc list mutex poisoned")
+                        .iter()
+                        .take(answered)
+                        .filter(|earlier| {
+                            serde_json::from_str::<serde_json::Value>(earlier)
+                                .ok()
+                                .and_then(|earlier| response_key(&earlier).map(str::to_owned))
+                                .is_some_and(|candidate| candidate == key)
+                        })
+                        .count();
                     let result = answers
                         .iter()
-                        .find(|(candidate, _)| *candidate == key)
+                        .filter(|(candidate, _)| *candidate == key)
+                        .nth(occurrence)
+                        .or_else(|| {
+                            answers
+                                .iter()
+                                .rev()
+                                .find(|(candidate, _)| *candidate == key)
+                        })
                         .map(|(_, body)| body.clone())
                         .unwrap_or_else(|| panic!("no scripted response for `{key}`"));
                     return Some((

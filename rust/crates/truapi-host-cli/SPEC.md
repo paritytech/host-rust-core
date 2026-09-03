@@ -283,12 +283,16 @@ Commands:
 - `debug`
 - `trace`
 
-The default is `info`. `TRUAPI_HOST_LOG` supplies an environment default. The
-option is global and is accepted before or after a subcommand.
+The option is global and is accepted before or after a subcommand.
+`TRUAPI_HOST_LOG` supplies the same per-process override. Without either, the
+CLI restores the level saved by `/log` under the selected base path, then falls
+back to `info`. Command-line and environment overrides do not rewrite the saved
+level.
 
-If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup.
-The interactive `/log` command later replaces the active filter with the
-selected CLI level.
+If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
+and the status bar shows its trimmed value. The interactive `/log` command
+atomically saves the selected CLI level, replaces the active filter, and
+updates the status bar to that level.
 
 ## 5. `pairing-host`
 
@@ -544,7 +548,7 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
 | `/session --clear <name>` | no | yes | Permanently clear one network-scoped signing session. |
 | `/session --clear-all` | no | yes | Permanently clear all signing sessions for the current network. |
-| `/log <level>` | yes | yes | Replace the runtime log filter. |
+| `/log <level>` | yes | yes | Save and replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
 | `/clear` | yes | yes | Clear the retained visible transcript. |
 | `/copy` | yes | yes | Copy the retained, redacted transcript. TUI only. |
@@ -623,16 +627,16 @@ scrollable transcript
 
 command completion list, when open
 › command input or idle placeholder
-TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product>
+TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product> · log <value>
 ```
 
 The role label is omitted at narrow widths so user, network, and product remain
 visible. Values are ellipsized to fit, with the product consuming the remaining
-space after the user and network. Session and log level are not shown. Idle
-command guidance appears as a dim placeholder inside the empty prompt instead
-of consuming status-bar space. Operational hints temporarily use the right side
-of the status line while a command, approval, completion menu, or scroll is
-active.
+space after the user, network, and fixed log value. The session name is not shown
+separately from the resolved user. Idle command guidance appears as a dim
+placeholder inside the empty prompt instead of consuming status-bar space.
+Operational hints temporarily use the right side of the status line while a
+command, approval, completion menu, or scroll is active.
 
 The composer:
 
@@ -1238,6 +1242,7 @@ The layout may contain compatibility paths as well as identity-owned paths:
 <base-path>/
   accounts.json
   accounts.json.lock
+  log-level
 
   <network>/
     signing-host/
@@ -1424,11 +1429,12 @@ Product and core storage writes:
 
 Session metadata, paired-host records, and current-user/session pointers use
 temporary-file rename but do not apply the account file's explicit secret
-permissions.
+permissions. The saved log level also uses temporary-file rename.
 
 Malformed account, session, or paired-host JSON is a startup or command error
 when that data is loaded. Malformed core JSON is warned about and loaded as
-empty. Malformed product files are warned about and skipped.
+empty. Malformed product files are warned about and skipped. A malformed saved
+log level produces a warning and falls back to the selected override or `info`.
 
 There is no session-wide process lock. Account and paired-host mutations use
 separate lock files, but simultaneous processes can still race on session,
@@ -1801,6 +1807,12 @@ Fallback SSO summary text is still shown when structured fields are absent.
 
 ### 18.4 Log filtering
 
+Startup selects an explicit `--log-level` or `TRUAPI_HOST_LOG` value first,
+then the level saved by `/log`, then `info`. A valid `RUST_LOG` replaces that
+scoped startup filter, and its trimmed value replaces the selected level in the
+status bar. `/log` replaces the startup filter and status value with the
+selected level, then saves it for later launches using the same base path.
+
 Without `RUST_LOG`, the selected CLI level applies to:
 
 - `truapi`
@@ -1957,7 +1969,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 
 | Variable | Scope |
 | --- | --- |
-| `TRUAPI_HOST_LOG` | Default `--log-level`. |
+| `TRUAPI_HOST_LOG` | Per-process `--log-level` override. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |

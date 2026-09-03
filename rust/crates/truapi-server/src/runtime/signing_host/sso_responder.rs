@@ -1071,6 +1071,7 @@ pub(super) async fn allocate_statement_store_allowance(
         .await?;
     let rpc = client.rpc();
     let chain = services.chain_context.get(&client).await?;
+    let network_suffix = statement_allowance::slot::read_network_suffix(rpc).await?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
 
@@ -1087,6 +1088,7 @@ pub(super) async fn allocate_statement_store_allowance(
         rpc,
         &chain.metadata,
         &candidates,
+        &network_suffix,
         period,
         &target,
         reuse_existing,
@@ -1120,6 +1122,7 @@ pub(super) async fn allocate_statement_store_allowance(
         PooledRegistrationParams {
             target: &target,
             period,
+            network_suffix: &network_suffix,
             reuse_existing,
             // Connecting a product must not revoke another product's allowance.
             // A full period is reported as exhaustion; reclaiming space is the
@@ -1207,6 +1210,7 @@ pub(super) async fn allocate_bulletin_allowance(
         .await?;
     let people_rpc = people_client.rpc();
     let chain = services.chain_context.get(&people_client).await?;
+    let network_suffix = statement_allowance::slot::read_network_suffix(people_rpc).await?;
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
@@ -1234,15 +1238,16 @@ pub(super) async fn allocate_bulletin_allowance(
         current_unix_secs()?,
         period_duration,
     )?;
-    let outcome = claim_long_term_storage(
-        people_rpc,
-        &chain.metadata,
-        &chain.state,
-        membership.entropy,
-        &target,
+    let outcome = claim_long_term_storage(statement_allowance::LongTermStorageClaim {
+        rpc: people_rpc,
+        metadata: &chain.metadata,
+        chain_state: &chain.state,
+        entropy: membership.entropy,
+        network_suffix: &network_suffix,
+        target: &target,
         period,
-        &membership.ring,
-    )
+        ring: &membership.ring,
+    })
     .await?;
     let statement_allowance::LongTermStorageOutcome::Claimed {
         block_hash,
@@ -1350,6 +1355,8 @@ pub(super) async fn allocate_smart_contract_allowance(
         debug!(%product_id, "PGAS allowance already funded; leaving it alone");
         return Ok(());
     }
+    let network_suffix =
+        statement_allowance::slot::read_network_suffix(asset_hub_client.rpc()).await?;
 
     let people_client = services
         .statement_store
@@ -1373,6 +1380,7 @@ pub(super) async fn allocate_smart_contract_allowance(
         people_rpc,
         people_metadata: &people.metadata,
         entropy: membership.entropy,
+        network_suffix: &network_suffix,
         target: &target,
         ring: &membership.ring,
     })
@@ -1784,6 +1792,10 @@ mod tests {
                 ),
                 (
                     "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(b"paseo".to_vec().encode())),
+                ),
+                (
+                    "state_getStorage",
                     format!(r#""0x{}""#, hex::encode(&slot_entry)),
                 ),
             ],
@@ -1838,14 +1850,14 @@ mod tests {
                 .any(|method| method.starts_with("author_submit")),
             "an extrinsic was submitted for an allowance already in place: {methods:?}"
         );
-        // One slot read answered it; the scan stopped at the first match.
+        // The suffix and one slot read answered it; the scan stopped at the first match.
         assert_eq!(
             methods
                 .iter()
                 .filter(|method| *method == "state_getStorage")
                 .count(),
-            1,
-            "expected a single slot read: {methods:?}"
+            2,
+            "expected one suffix and one slot read: {methods:?}"
         );
     }
 
