@@ -145,6 +145,33 @@ describe("createWireDebugger grouping", () => {
     expect(wd.trace("p:5", "app.dot")?.frames[0].frameId).toBe(22);
   });
 
+  test("a recycled requestId rotates even when the tap only saw a closer", () => {
+    // Every mount attaches mid-session, so the first frame seen for an id is often
+    // the tail of an op that predates the tap. A closer with no opener PROVES that
+    // op is over, so the next op's opener must start a new generation rather than
+    // join it. Merging them reported one operation that never existed, with a
+    // duration spanning both, and put `unpaired` - "the debugger attached late" -
+    // on an op that was fully observed.
+    const methodNames = new Map<number, WireMethodInfo>([
+      [22, { method: "account.getAccount", kind: "request" }],
+      [23, { method: "account.getAccount", kind: "response" }],
+    ]);
+    const wd = createWireDebugger({ sink: () => {}, methodNames });
+    wd.observe(frame("app.dot", "p:1", 23, 1_000)); // tail of a pre-tap op
+    wd.observe(frame("app.dot", "p:1", 22, 5_000)); // a whole new op reuses p:1
+    wd.observe(frame("app.dot", "p:1", 23, 5_100));
+
+    const traces = wd.traces();
+    expect(traces).toHaveLength(2);
+    expect(traces.map((t) => t.frames.map((f) => f.frameId))).toEqual([
+      [23],
+      [22, 23],
+    ]);
+    expect(traces.map((t) => t.generation)).toEqual([0, 1]);
+    // The new op owns its own duration, not the 4.1s gap since the stale closer.
+    expect(traces[1].lastAt - traces[1].startedAt).toBe(100);
+  });
+
   test("the frame cap evicts from index 1, keeping the opener (frames[0])", () => {
     // Regression: evicting the oldest frame drops the subscription's `start`, so
     // pairing would falsely flag the live sub `orphaned`. The opener must survive.
@@ -161,26 +188,29 @@ describe("createWireDebugger grouping", () => {
     expect(trace.truncated).toBe(true);
   });
 
-  test("the frame cap keeps the opener even when it is not frames[0]", () => {
-    // The cold start of every mount: the tap attaches mid-session, so the first
-    // frame observed for an id is a closer for a request that predates it. The
-    // real opener then lands at index 1 - exactly where a bulk splice(1, excess)
-    // evicts from - so protecting index 0 protected a stray response and dropped
-    // the opener it existed to save, falsely orphaning the op and blinding the
-    // storm detector (which keys on the opener's frame id).
+  test("the frame cap keeps the opener wherever it sits, not just frames[0]", () => {
+    // Retention locates the opener BY ROLE, so a bulk splice(1, excess) cannot
+    // drop it: protecting index 0 alone protected whatever arrived first and
+    // evicted the opener it existed to save, falsely orphaning the op and blinding
+    // the storm detector (which keys on the opener's frame id).
+    //
+    // A stale closer no longer shares a trace with a later opener - that rotates
+    // generation now, so an opener normally lands at index 0. This keeps the rule
+    // covered for the cases that still put it elsewhere: an interrupt observed
+    // before the start it belongs to, or any future producer that does not deliver
+    // an opener first. The rule is defensive rather than load-bearing, and cheap.
     const wd = createWireDebugger({ sink: () => {}, maxFramesPerTrace: 3 });
-    wd.observe(frame("app.dot", "s:7", 19, 1, "response")); // stale closer, arrives first
-    wd.observe(frame("app.dot", "s:7", 18, 2, "start")); // the REAL opener, index 1
+    wd.observe(frame("app.dot", "s:7", 20, 1, "interrupt")); // non-opener, arrives first
+    wd.observe(frame("app.dot", "s:7", 18, 2, "start")); // the opener, index 1
     for (let i = 0; i < 10; i++) {
       wd.observe(frame("app.dot", "s:7", 21, 3 + i, "receive"));
     }
-    const [trace] = wd.traces();
-    expect(trace.frames).toHaveLength(3);
+    const trace = wd.trace("s:7", "app.dot");
+    expect(trace?.frames).toHaveLength(3);
     // The opener survived, wherever it sat.
-    const roles = trace.frames.map((f) => f.role);
-    expect(roles).toContain("start");
-    expect(trace.frames.find((f) => f.role === "start")?.frameId).toBe(18);
-    expect(trace.truncated).toBe(true);
+    expect(trace?.frames.map((f) => f.role)).toContain("start");
+    expect(trace?.frames.find((f) => f.role === "start")?.frameId).toBe(18);
+    expect(trace?.truncated).toBe(true);
   });
 
   test("an un-truncated trace is not marked truncated", () => {

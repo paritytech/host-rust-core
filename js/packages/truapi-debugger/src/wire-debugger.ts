@@ -345,12 +345,30 @@ export function createWireDebugger(
     const curKey = current.get(baseKey);
     const cur = curKey !== undefined ? traces.get(curKey) : undefined;
 
-    // A fresh opener for an id whose current op already opened means the product
-    // recycled the requestId: rotate to a new generation so the two never merge.
-    const rotate =
-      cur !== undefined &&
-      isOpener(frame) &&
-      cur.frames.some((f) => isOpener(f));
+    // A fresh opener for an id whose current trace already holds ANY frame means
+    // the product recycled the requestId: rotate to a new generation so the two
+    // never merge.
+    //
+    // Rotating only when the current trace already OPENED merged two unrelated
+    // ops. A tap attaching mid-session sees the tail of an op that predates it, so
+    // the current trace often holds a closer and no opener - and a closer with no
+    // opener PROVES that op is over. Appending the next op's request to it reported
+    // one operation that never existed, with a duration spanning both (4.1s for a
+    // 100ms call) folded into `avgDurationMs` for the whole session, and put the
+    // `unpaired` badge - which means "the debugger attached late" - on an op that
+    // was fully observed.
+    //
+    // That is the failure this engine separates `orphaned` from `unpaired` to
+    // avoid: attributing the debugger's own blind spot to the host, here by
+    // fabricating a number rather than merely mislabelling one. Rotating instead
+    // yields a gen-0 trace holding the unpairable tail and a gen-1 trace that is
+    // honest about itself - two claims about the debugger's view, both visible.
+    //
+    // The inverse risk - a closer arriving before its OWN opener, splitting one op
+    // in two - needs a producer that reorders frames within a channel. The host's
+    // replay queue is FIFO (`queue.push` / `queue.splice(0)` in
+    // `@parity/truapi-host`'s worker runtime), so no shipped path can do it.
+    const rotate = cur !== undefined && isOpener(frame) && cur.frames.length > 0;
 
     let trace: WireTrace;
     let key: string;
