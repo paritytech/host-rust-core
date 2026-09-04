@@ -1,5 +1,16 @@
 # @parity/truapi-host
 
+## 0.11.0
+
+### Minor Changes
+
+- Add `createWorkerHostRuntime` for hosting the runtime in a Web Worker, and forward the Rust core's wire tap to the debugger. The dial is off unless the host page is a dev build and the host origin's `localStorage` carries a `ws://` loopback URL under `truapi:debugger`; anything else is rejected as an inert link. At boot the core now restores the `AuthSession` slot itself and reports the outcome through the `auth` callback, `Disconnected` included, so a host waits for the first `authStateChanged` instead of reading silence as signed out.
+
+### Patch Changes
+
+- Updated dependencies
+  - @parity/truapi@0.14.0
+
 ## 0.10.1
 
 ### Patch Changes

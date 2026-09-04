@@ -15,6 +15,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
     }
   },
   "files": [
@@ -33,6 +37,25 @@
     "typescript": "^6.0"
   },
   "dependencies": {
-    "@parity/truapi": "^0.13.1"
-  }
+    "@parity/truapi": "^0.14.0"
+  },
+  "bin": {
+    "truapi-debugger": "dist/server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paritytech/host-rust-core.git",
+    "directory": "js/packages/truapi-debugger"
+  },
+  "homepage": "https://github.com/paritytech/host-rust-core/tree/main/js/packages/truapi-debugger",
+  "bugs": {
+    "url": "https://github.com/paritytech/host-rust-core/issues"
+  },
+  "keywords": [
+    "truapi",
+    "polkadot",
+    "debugger",
+    "wire",
+    "devtools"
+  ]
 }

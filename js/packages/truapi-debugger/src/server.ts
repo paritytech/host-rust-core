@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * The runnable debugger app: the WS server a host dials into, plus a minimal
  * trace view.
