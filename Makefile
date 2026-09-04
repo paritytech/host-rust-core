@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap debugger dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -25,6 +25,8 @@ DOTLI_TRUAPI_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi
 DOTLI_HOST_WASM_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi-host
 DOTLI_UI_TRUAPI_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi
 DOTLI_UI_HOST_WASM_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi-host
+DEBUGGER_PKG := $(JS_PACKAGES)/truapi-debugger
+DEBUGGER_PORT ?= 9231
 VITE_NETWORKS ?= paseo-next-v2,previewnet
 export VITE_NETWORKS
 
@@ -391,6 +393,24 @@ dev: dev-bootstrap ## Start dotli host (:5173) + playground (:3000) together; op
 	( cd $(DOTLI) && bun run $(DOTLI_PREVIEW) ) & \
 	( cd $(PLAYGROUND) && yarn dev ) & \
 	( until curl -fsS http://localhost:3000/ >/dev/null 2>&1; do sleep 1; done; curl -fsS http://localhost:3000/diagnostics >/dev/null 2>&1 || true ) & \
+	wait
+
+debugger: dev-bootstrap ## Wire debugger (:9231) + a DEV-MODE dotli host (:5173) + playground (:3000). Open http://127.0.0.1:9231
+	# `make dev` cannot drive the debugger: dotli ships only `build` and `preview`,
+	# both production builds, and the dial sits behind `import.meta.env.DEV`, which
+	# a production bundle replaces with `false`. The host then never dials and the
+	# board stays empty with no error - so build the host in dev mode here.
+	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true bunx --bun vite build
+	@printf '\n  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'
+	@printf '  Host:      http://localhost:5173/localhost:3000\n\n'
+	@printf '  One-time, in the browser console on http://localhost:5173 (the realm that\n'
+	@printf '  creates the host runtime - localStorage is per-origin AND per browser profile):\n\n'
+	@printf '    localStorage.setItem("truapi:debugger", "ws://127.0.0.1:$(DEBUGGER_PORT)"); location.reload()\n\n'
+	@printf '  The host logs `wire debugger: dialling ...` once it connects.\n\n'
+	@trap 'kill 0' EXIT; \
+	( cd $(DEBUGGER_PKG) && TRUAPI_DEBUGGER_PORT=$(DEBUGGER_PORT) bun run src/server.ts ) & \
+	( cd $(DOTLI) && bun scripts/preview-server.ts ) & \
+	( cd $(PLAYGROUND) && yarn dev ) & \
 	wait
 
 e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local signing-host CLI.
