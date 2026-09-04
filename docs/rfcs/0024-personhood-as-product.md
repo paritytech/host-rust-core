@@ -18,7 +18,7 @@ RFC-0004 makes the Host pick a ring VRF member key on the caller's behalf, with 
 
 With an `onLoad` executable modality for global lifetime and the Accounts Protocol companions, personhood's **key management and client-side surface** move into a product whose key index no consumer — including the Host — has to know. Rings, membership, onboarding, and suspension remain on chain and are untouched by this RFC; "personhood as a product" means the client side of it, not the protocol.
 
-A proof is a bearer token for its context's alias and a signature is a bearer token for the key, and neither can be constrained by inspecting an opaque message. Cross-product use of a foreign key is therefore gated on the owning product having allowlisted the caller in its manifest, with no user-prompt fallback — an interim position, with a more expressive scheme left to follow-up work. The RFC also resolves RFC-0022's deferral of well-known alias accounts: every context is product-owned and built with TrUAPI's product-scoped context function, so there is no second context scheme.
+A proof is a bearer token for its context's alias and a signature is a bearer token for the key, and neither can be constrained by inspecting an opaque message. Cross-product use of a foreign key is therefore gated on the owning product having allowlisted the caller in its manifest. No manifest carries that field yet, so the interim gate is a per-call prompt that is never persisted — a weaker gate, accepted so the flow works at all, with a more expressive scheme left to follow-up work. The RFC also resolves RFC-0022's deferral of well-known alias accounts: every context is product-owned and built with TrUAPI's product-scoped context function, so there is no second context scheme.
 
 ## Motivation
 
@@ -48,7 +48,7 @@ Both are specified here because the app-internal flows need both, but a reviewer
 
 - **Personhood product developers** — the first consumer; owns the registry entries for the full and light personhood rings.
 - **Product developers building on personhood** — score / identity / mobrule / game; consume foreign handles, foreign contexts, and alias origins.
-- **Host developers** — implement the registry, drop the compiled-in member-key selection, enforce the owner allowlist on proofs and signatures, add the `onLoad` modality.
+- **Host developers** — implement the registry, drop the compiled-in member-key selection, gate foreign-key proofs and signatures on the owner's allowlist and, until a manifest carries one, on a per-call prompt that is not persisted, add the `onLoad` modality.
 - **Account Holder developers (Mobile App)** — become the authoritative registry, implement the new message pairs, extend the AutoSigning payload, answer registrations from the background.
 - **Chain / individuality developers** — on-chain contexts must be derived with TrUAPI's product-scoped context function rather than a parallel namespace. `score`, `resources`, and `mob-rule` are named here as examples, **not as a complete list**: coinage has its own contexts, including ones constructed at runtime from a base plus period and counter, and there is a dotNS gateway context. Every such context has to be migrated to the product-scoped construction, and enumerating them is part of that work rather than of this RFC.
 
@@ -168,7 +168,8 @@ enum HostAccountCreateProofError {
     KeyNotRegistered,
     /// `key_handle` is registered, but not for the requested `ring`.
     KeyNotInRing,
-    /// `key_handle` is foreign and its owner has not allowlisted the caller.
+    /// `key_handle` is foreign and its owner's allowlist refuses the caller. A
+    /// request the user declines is `Rejected`, not this.
     NotAllowlisted,
     Rejected,
     Unknown { reason: String },
@@ -177,7 +178,8 @@ enum HostAccountCreateProofError {
 enum RingVrfSignErr {
     NotConnected,
     KeyNotRegistered,
-    /// `key_handle` is foreign and its owner has not allowlisted the caller.
+    /// `key_handle` is foreign and its owner's allowlist refuses the caller. A
+    /// request the user declines is `Rejected`, not this.
     NotAllowlisted,
     Rejected,
     Unknown { reason: String },
@@ -235,9 +237,11 @@ The concrete consequence, worth stating because it is not obvious: a product hol
 
 There is no way to bound this by structure at the call site. So it is bounded by **whom the owner trusts**:
 
-> A Host MUST reject `account_create_account_proof` and `account_ring_vrf_sign` with a foreign `key_handle` unless the key's owning product has allowlisted the calling product in its manifest, with `NotAllowlisted`.
+> A Host MUST NOT let `account_create_account_proof` or `account_ring_vrf_sign` use a foreign `key_handle` unless the key's owning product has allowlisted the calling product in its manifest, returning `NotAllowlisted` when the allowlist refuses. Until a manifest carries that field, a Host MUST put the request to the user, per call, and MUST NOT persist the answer; a declined request is `Rejected`.
 
-The allowlist is the _only_ authorization for these two calls. A user prompt is not a substitute and MUST NOT be offered as a fallback: consenting to an opaque message is not meaningful consent, and the risk being accepted is one only the key's owner is positioned to evaluate. This is a deliberate departure from the general permission model, where the allowlist merely avoids a prompt.
+The allowlist is the durable authorization for these two calls, and the per-call prompt is an interim stand-in for it, not a parallel path: the moment an owner's manifest can express the allowlist, the allowlist decides and no prompt is shown.
+
+**The prompt is a weaker gate than the allowlist, deliberately accepted.** Consenting to an opaque `message` is not meaningful consent, and the risk is one only the key's owner is positioned to evaluate — a user cannot tell a personhood proof for an airdrop from one that rebinds an alias. What the prompt does buy is that the use is *visible* and *deliberate* rather than silent, and that the interim state is a working cross-product flow instead of a dead one. Two properties keep it honest: the answer is never persisted, so every use is a fresh decision; and the review names the calling product, the owning product, and which of the two outputs is being produced, so the linkable-signature case is not presented as the narrower proof case.
 
 Foreign `account_get_account_alias` and foreign `account_get_account` are unaffected — reading an alias or an account id authorizes nothing — and `signing_create_transaction` is unchanged, keeping its `signer: ProductAccountId` and accepting a foreign one under an ordinary grant.
 
@@ -293,13 +297,15 @@ The calls this RFC touches fall into **two regimes with different rules**, and t
 
 Here the model is **user-approval driven**: an unapproved foreign access produces a one-time prompt with the persist-once lifecycle, and the owner's allowlist merely avoids that prompt. **Until the manifest RFC lands, these calls fall back to a one-time prompt per (caller, owner, call) triple**, persisted per RFC-0002.
 
-**Regime B — producing a proof or a signature. Allowlist only.**
+**Regime B — producing a proof or a signature. Allowlist, with a per-call prompt until one exists.**
 
-| Call                                                    | Own key        | Foreign                                    |
-| ------------------------------------------------------- | -------------- | ------------------------------------------ |
-| `account_create_account_proof`, `account_ring_vrf_sign` | permissionless | **owner's manifest allowlist, or refused** |
+| Call                                                    | Own key        | Foreign                                                       |
+| ------------------------------------------------------- | -------------- | ------------------------------------------------------------- |
+| `account_create_account_proof`, `account_ring_vrf_sign` | permissionless | **owner's manifest allowlist; until then a per-call prompt**   |
 
-For these two the allowlist is not an optimization but the whole gate, per the rule above: a prompt is not a substitute and MUST NOT be offered, because consenting to an opaque message is not meaningful consent. **The interim fallback of the previous paragraph does not apply here** — the consequence is that foreign proofs and foreign signatures are simply **unavailable until the manifest RFC lands**, since there is nowhere yet to express the allowlist. Own-key use is unaffected and needs nothing.
+For these two the allowlist is the whole gate rather than an optimization, so the interim prompt differs from Regime A's in one way that matters: it is **never persisted**. Regime A's prompt establishes a standing relationship between two products; this one authorizes a single message, because that is the granularity at which the risk exists. A host that persisted it would convert one decision into a standing grant over every later use of the owner's key.
+
+Own-key use is unaffected and needs nothing.
 
 The allowlist belongs to the product manifest, specified separately ([RFC: Product Manifest Format](https://github.com/paritytech/host-rust-core/pull/206)), with two requirements from here: it must be **structurally extensible**, so a richer scheme (per-method grants, attestation thresholds) can replace a flat product-id list without a wire break; and it should be expressible **per method or category**, so "read my key handles" and "produce a proof with my key" need not be one grant.
 

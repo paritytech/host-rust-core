@@ -2619,6 +2619,42 @@ pub struct CreateProofReview {
     pub message: Vec<u8>,
 }
 
+/// What a foreign registered ring-VRF key would produce.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum ForeignRingVrfUse {
+    /// A ring-VRF proof, scoped to a context and a ring.
+    Proof {
+        /// Product-scoped context the proof's alias is bound to.
+        context: ProductProofContext,
+        /// Ring the proof is generated against.
+        ring_location: RingLocation,
+    },
+    /// A member-key signature. Linkable to every other use of the key, with no
+    /// context or ring bounding what it authorizes.
+    Signature,
+}
+
+/// Review shown before a product uses another product's registered ring-VRF key
+/// (RFC-0024).
+///
+/// Both outputs are bearer tokens the caller can spend without the Host: a proof
+/// for its context's alias, a signature for the key itself. `message` is opaque,
+/// so nothing here establishes what the result will authorize — the decision is
+/// whether the calling product is trusted with the owner's key at all.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct ForeignRingVrfKeyReview {
+    /// Product making the request.
+    pub calling_product_id: String,
+    /// Registered key the request would use, owned by another product.
+    pub key_handle: ProductAccountId,
+    /// What the key would produce.
+    pub key_use: ForeignRingVrfUse,
+    /// Opaque message bound into the proof or signature.
+    pub message: Vec<u8>,
+}
+
 /// Review shown before signing an RFC-0023 VRF transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -2701,6 +2737,8 @@ pub enum UserConfirmationReview {
     PreimageSubmit(PreimageSubmitReview),
     /// Allow a product to access another product account.
     AccountAccess(AccountAccessReview),
+    /// Allow a product to use another product's registered ring-VRF key.
+    ForeignRingVrfKey(ForeignRingVrfKeyReview),
     /// Sign an RFC-0023 VRF transcript with a product account.
     SignVrf(SignVrfReview),
     /// Resolve a product's own account subtree over SSO.

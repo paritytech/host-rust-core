@@ -195,12 +195,12 @@ use truapi::{CallContext, CallError, CancellationReason, Subscription};
 use truapi::{latest, v01};
 use truapi_platform::Platform;
 use truapi_platform::{
-    AccountAccessReview, ChatFieldError, CreateTransactionReview, IdentityDisclosureReview,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
-    ProductContext, ProductStorageKey, ProductSubtreeReview, ResourceAllocationReview,
-    SessionUiInfo, SignPayloadReview, SignRawReview, UserConfirmationReview,
-    normalize_chat_identifier, normalize_product_identifier, validate_chat_icon,
-    validate_chat_message_content, validate_chat_name,
+    AccountAccessReview, ChatFieldError, CreateTransactionReview, ForeignRingVrfKeyReview,
+    ForeignRingVrfUse, IdentityDisclosureReview, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, PreimageSubmitReview, ProductContext, ProductStorageKey,
+    ProductSubtreeReview, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
+    SignRawReview, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    validate_chat_icon, validate_chat_message_content, validate_chat_name,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -807,6 +807,60 @@ enum AccountAccessAuthorizationError {
     Confirmation(v01::GenericError),
 }
 
+/// Authorize a request that would use another product's registered ring-VRF key.
+///
+/// RFC-0024 assigns this decision to the key owner, expressed as an allowlist in
+/// its manifest. No manifest carries that field yet, so the core asks the user
+/// per call. The answer is deliberately **not** persisted: the risk is specific to
+/// the message being signed, and a stored grant would authorize every later use of
+/// the key. Requests for the caller's own key are authorized without a prompt.
+pub(crate) async fn foreign_ring_vrf_key_authorization(
+    platform: &dyn Platform,
+    calling_product_id: &str,
+    key_handle: &v01::ProductAccountId,
+    key_use: ForeignRingVrfUse,
+    message: &[u8],
+) -> Result<(), RingVrfError> {
+    let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
+        RingVrfError::Unknown {
+            reason: error.to_string(),
+        }
+    })?;
+    // Both sides are normalized before comparison. A request arriving over a
+    // pairing session carries a handle the peer supplied, so an unnormalized owner
+    // id would otherwise ask the user about a key the caller already owns.
+    let owner = normalize_product_identifier(&key_handle.dot_ns_identifier).map_err(|error| {
+        RingVrfError::Unknown {
+            reason: error.to_string(),
+        }
+    })?;
+    if caller == owner {
+        return Ok(());
+    }
+
+    let confirmed = platform
+        .confirm_user_action(UserConfirmationReview::ForeignRingVrfKey(
+            ForeignRingVrfKeyReview {
+                calling_product_id: caller,
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: owner,
+                    derivation_index: key_handle.derivation_index.clone(),
+                },
+                key_use,
+                message: message.to_vec(),
+            },
+        ))
+        .await
+        .map_err(|error| RingVrfError::Unknown {
+            reason: format!("foreign ring-VRF key confirmation failed: {error:?}"),
+        })?;
+    if confirmed {
+        Ok(())
+    } else {
+        Err(RingVrfError::Rejected)
+    }
+}
+
 fn parse_legacy_signer_hex(signer: &str) -> Option<[u8; 32]> {
     let raw = signer
         .strip_prefix("0x")
@@ -1170,12 +1224,6 @@ impl Account for ProductRuntimeHost {
                 },
             ))
         })?;
-        if key_handle.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::NotAllowlisted,
-            )));
-        }
-
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::Rejected,
@@ -1310,11 +1358,6 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if request.key_handle.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
-                v01::HostAccountRingVrfSignError::NotAllowlisted,
-            )));
-        }
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
         remote_authority_call(

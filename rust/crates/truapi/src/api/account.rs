@@ -141,15 +141,21 @@ pub trait Account: Send + Sync {
     ///   },
     ///   message: "0x48656c6c6f",
     /// });
-    /// assert(result.isErr(), "foreign createAccountProof unexpectedly succeeded:", result);
-    /// assert(
-    ///   result.error.tag === "Domain" &&
-    ///     result.error.value.tag === "V1" &&
-    ///     result.error.value.value.tag === "NotAllowlisted",
-    ///   "foreign createAccountProof did not return NotAllowlisted:",
-    ///   result,
-    /// );
-    /// console.log("foreign account proof refused without prompting");
+    /// // `peopl.dot` owns this key, so the Host asks the user. Approving yields a
+    /// // proof; declining is `Rejected`. Both conform, so this accepts either and
+    /// // fails only on an outcome that means the gate is missing or misreported.
+    /// if (result.isErr()) {
+    ///   assert(
+    ///     result.error.tag === "Domain" &&
+    ///       result.error.value.tag === "V1" &&
+    ///       result.error.value.value.tag === "Rejected",
+    ///     "a declined foreign createAccountProof must be Rejected:",
+    ///     result,
+    ///   );
+    ///   console.log("foreign account proof declined by the user");
+    /// } else {
+    ///   console.log("foreign account proof approved:", result.value.contextualAlias.alias);
+    /// }
     /// ```
     #[wire(request_id = 26, sensitive)]
     async fn create_account_proof(

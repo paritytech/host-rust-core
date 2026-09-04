@@ -19,6 +19,7 @@ const PEOPLE_LITE_COLLECTION_ID =
   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
 const ACCOUNT_ACCESS_ACTION = "access another product account";
 const PROOF_ACTION = "create account proof";
+const FOREIGN_KEY_ACTION = "use another product's ring-VRF key";
 
 // These locate the real People collections while intentionally omitting the
 // optional pallet junction. They therefore exercise ring operations without
@@ -365,29 +366,35 @@ export async function runRingVrfRegistryE2e(
       keyHandle: foreignHandle,
       context,
       ringLocation: TEST_PEOPLE_LITE_RING,
-      message: "0x6e6f2070726f6d7074",
+      message: "0x70726f6d7074",
     });
+    // Past the gate on this auto-approving host, so the refusal now comes from
+    // the registry: the foreign handle has no entry.
     expectDomainError(
       foreignProof,
-      "NotAllowlisted",
-      "foreign create_account_proof",
+      "KeyNotRegistered",
+      "approved foreign create_account_proof",
     );
     const foreignSignature = await client.account.ringVrfSign({
       keyHandle: foreignHandle,
-      message: "0x6e6f2070726f6d7074",
+      message: "0x70726f6d7074",
     });
     expectDomainError(
       foreignSignature,
-      "NotAllowlisted",
-      "foreign ring_vrf_sign",
+      "KeyNotRegistered",
+      "approved foreign ring_vrf_sign",
     );
     const bearerWindow = newLinesSince(beforeBearerCalls, readTranscript());
-    if (
-      actionLines(bearerWindow, PROOF_ACTION).length !== 0 ||
-      actionLines(bearerWindow, ACCOUNT_ACCESS_ACTION).length !== 0
-    ) {
+    const bearerPrompts = actionLines(bearerWindow, FOREIGN_KEY_ACTION);
+    // One per call: the answer is never persisted, so the second call asks again.
+    if (bearerPrompts.length !== 2) {
       throw new Error(
-        `foreign bearer-token calls consulted a prompt: ${bearerWindow.join("; ")}`,
+        `expected both foreign bearer-token calls to ask, saw ${bearerPrompts.length}: ${bearerWindow.join("; ")}`,
+      );
+    }
+    if (actionLines(bearerWindow, ACCOUNT_ACCESS_ACTION).length !== 0) {
+      throw new Error(
+        `foreign key use consulted the account-access grant: ${bearerWindow.join("; ")}`,
       );
     }
 

@@ -240,7 +240,7 @@ fn version_index(version: u8) -> u8 {
 }
 
 #[test]
-fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
+fn a_foreign_account_proof_the_user_declines_comes_back_rejected() {
     let core = make_core();
     let request = account::HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
         key_handle: v01::ProductAccountId {
@@ -271,9 +271,12 @@ fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
     );
     assert_eq!(response.request_id, "p:account-proof");
     assert_eq!(response.payload.id, ids.response_id);
-    // RFC-0024 forbids a prompt fallback for bearer proofs made with a foreign key.
+    // A foreign key handle reaches the user as a confirmation. This host declines
+    // it, and a declined confirmation is `Rejected` rather than `NotAllowlisted`:
+    // the latter is reserved for an owner's manifest allowlist refusing the caller
+    // outright, which no manifest expresses yet.
     let expected = versioned_result_err_payload(account::HostAccountCreateProofError::V1(
-        v01::HostAccountCreateProofError::NotAllowlisted,
+        v01::HostAccountCreateProofError::Rejected,
     ));
     assert_eq!(response.payload.value, expected);
 }

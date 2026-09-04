@@ -51,7 +51,7 @@ use tracing::{instrument, warn};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
 use truapi_platform::{
-    CoreStorageKey, PairingHostConfig, Platform, ProductContext, SignVrfReview,
+    CoreStorageKey, ForeignRingVrfUse, PairingHostConfig, Platform, ProductContext, SignVrfReview,
     UserConfirmationReview, normalize_product_identifier,
 };
 use zeroize::Zeroizing;
@@ -1960,19 +1960,23 @@ impl PairingHost {
         subtrees.retain(|(key, _), _| *key != session_key);
     }
 
-    fn require_owned_ring_vrf_key(
+    /// Authorize use of a locally held `handle`, prompting the user when it
+    /// belongs to another product.
+    async fn authorize_ring_vrf_key_use(
+        &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
+        key_use: ForeignRingVrfUse,
+        message: &[u8],
     ) -> Result<(), RingVrfError> {
-        let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
-            RingVrfError::Unknown {
-                reason: error.to_string(),
-            }
-        })?;
-        if caller != handle.dot_ns_identifier {
-            return Err(RingVrfError::NotAllowlisted);
-        }
-        Ok(())
+        super::foreign_ring_vrf_key_authorization(
+            self.platform.as_ref(),
+            calling_product_id,
+            handle,
+            key_use,
+            message,
+        )
+        .await
     }
 
     async fn local_ring_vrf_entropy(
@@ -2171,7 +2175,6 @@ impl PairingHost {
         session: &AuthoritySession,
         request: CreateProofAuthorityRequest,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy_for_ring(
@@ -2181,6 +2184,19 @@ impl PairingHost {
             )
             .await?
         {
+            // The key is held here, so this is where the user decides. A remote
+            // key is authorized by the host that holds it, on the far side of
+            // `remote_create_proof`.
+            self.authorize_ring_vrf_key_use(
+                &request.calling_product_id,
+                &request.key_handle,
+                ForeignRingVrfUse::Proof {
+                    context: request.context.clone(),
+                    ring_location: request.ring_location.clone(),
+                },
+                &request.message,
+            )
+            .await?;
             let member = member_from_entropy(&entropy)?;
             let resolved = self
                 .ring_resolver
@@ -2300,12 +2316,18 @@ impl PairingHost {
         session: &AuthoritySession,
         request: RingVrfSignAuthorityRequest,
     ) -> Result<Vec<u8>, RingVrfError> {
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy(&private_session, &request.key_handle)
             .await?
         {
+            self.authorize_ring_vrf_key_use(
+                &request.calling_product_id,
+                &request.key_handle,
+                ForeignRingVrfUse::Signature,
+                &request.message,
+            )
+            .await?;
             self.current_private_session(session)?;
             return sign_from_entropy(&entropy, &request.message);
         }

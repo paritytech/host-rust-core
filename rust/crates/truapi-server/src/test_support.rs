@@ -26,12 +26,13 @@ use truapi::versioned::account::{HostAccountCreateProofRequest, HostAccountGetAl
 use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest;
 use truapi_platform::{
     AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
-    CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
-    JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
-    Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
-    PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
-    ProductSubtreeReview, ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures,
+    ForeignRingVrfKeyReview, HostInfo, JsonRpcConnection, LocaleHost,
+    Navigation as PlatformNavigation, Notifications as PlatformNotifications, PairingHostConfig,
+    Permissions as PlatformPermissions, PlatformInfo, PreimageHost, ProductContext,
+    ProductStorage as PlatformProductStorage, ProductSubtreeReview, ResourceAllocationReview,
+    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -92,6 +93,9 @@ pub(crate) struct StubPlatform {
     /// pre-consent behavior where a cold own-account resolve was not gated.
     pub(crate) product_subtree_denied: bool,
     pub(crate) product_subtree_reviews: Arc<Mutex<Vec<ProductSubtreeReview>>>,
+    pub(crate) foreign_ring_vrf_key_confirmed: bool,
+    pub(crate) foreign_ring_vrf_key_error: Option<&'static str>,
+    pub(crate) foreign_ring_vrf_key_reviews: Arc<Mutex<Vec<ForeignRingVrfKeyReview>>>,
     pub(crate) identity_disclosure_confirmed: bool,
     pub(crate) identity_disclosure_error: Option<&'static str>,
     pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
@@ -1510,6 +1514,16 @@ impl UserConfirmation for StubPlatform {
                     .expect("account access review list mutex poisoned")
                     .push(review);
                 (self.account_access_error, self.account_access_confirmed)
+            }
+            UserConfirmationReview::ForeignRingVrfKey(review) => {
+                self.foreign_ring_vrf_key_reviews
+                    .lock()
+                    .expect("foreign ring-VRF key review list mutex poisoned")
+                    .push(review);
+                (
+                    self.foreign_ring_vrf_key_error,
+                    self.foreign_ring_vrf_key_confirmed,
+                )
             }
             UserConfirmationReview::IdentityDisclosure(_) => {
                 self.identity_disclosure_calls
