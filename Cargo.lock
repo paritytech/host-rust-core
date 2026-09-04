@@ -3863,18 +3863,18 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "pvm-gpu-wire"
-version = "0.1.8"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762#530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762"
+version = "0.1.10"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=5d7b86b46842a31c6ca8de2d23c2c7926b12f14e#5d7b86b46842a31c6ca8de2d23c2c7926b12f14e"
 
 [[package]]
 name = "pvm-motion-wire"
-version = "0.1.8"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762#530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762"
+version = "0.1.10"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=5d7b86b46842a31c6ca8de2d23c2c7926b12f14e#5d7b86b46842a31c6ca8de2d23c2c7926b12f14e"
 
 [[package]]
 name = "pvm-runtime"
-version = "0.1.8"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762#530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762"
+version = "0.1.10"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=5d7b86b46842a31c6ca8de2d23c2c7926b12f14e#5d7b86b46842a31c6ca8de2d23c2c7926b12f14e"
 dependencies = [
  "anyhow",
  "log",
@@ -3883,6 +3883,7 @@ dependencies = [
  "pollster",
  "pvm-gpu-wire",
  "pvm-motion-wire",
+ "pvm-ui-wire",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3893,8 +3894,13 @@ dependencies = [
 
 [[package]]
 name = "pvm-runtime-assets"
-version = "0.1.8"
-source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762#530885a9d6dbf5a2742d4f2ff9f5c71b05f2a762"
+version = "0.1.10"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=5d7b86b46842a31c6ca8de2d23c2c7926b12f14e#5d7b86b46842a31c6ca8de2d23c2c7926b12f14e"
+
+[[package]]
+name = "pvm-ui-wire"
+version = "0.1.10"
+source = "git+https://github.com/paritytech/pvm-host-runtime.git?rev=5d7b86b46842a31c6ca8de2d23c2c7926b12f14e#5d7b86b46842a31c6ca8de2d23c2c7926b12f14e"
 
 [[package]]
 name = "pxfm"
