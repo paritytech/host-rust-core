@@ -9,44 +9,25 @@
 //! All reads run over one `chainHead_v1` follow via `ReviveApi_call` dry-runs.
 //! No chain metadata is needed.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use web_time::Duration;
 
-use crate::chain_runtime::{
-    ChainHeadStorageValue, ChainHeadStorageValueLookup, ChainRuntime,
-    wait_for_chain_head_best_hash, wait_for_chain_head_call_output,
-    wait_for_chain_head_storage_value,
-};
+use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::dotns_gateway::{
-    DotnsIdentity, DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, classify_labels,
-    discover_pop_controller, encode_revive_call, resolve_labels, view_output,
+    DotnsIdentity, classify_labels, discover_pop_controller, resolve_labels,
 };
 use crate::host_logic::session::SessionInfo;
+use crate::runtime::dotns_lookup::DotnsLookup;
 
-use futures::stream::BoxStream;
 use futures::{FutureExt, pin_mut};
 use tracing::{debug, instrument, warn};
-use truapi::latest::{
-    OperationStartedResult, RemoteChainHeadCallRequest, RemoteChainHeadFollowItem,
-    RemoteChainHeadFollowRequest, RemoteChainHeadStorageRequest, StorageQueryItem,
-    StorageQueryType,
-};
 
 /// Budget for the whole username resolution of one session: every attempt for
 /// the identity account plus the root-key fallback share it, so a slow or dead
 /// endpoint delays session installation by at most this long.
 const LOOKUP_BUDGET: Duration = Duration::from_secs(45);
-/// Budget for one step of it: opening the follow, one storage read, one
-/// contract view. A step that stalls this long is not going to answer.
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
-const BEST_BLOCK_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Monotonic salt for local identity lookup follow ids. It keeps concurrent
-/// dotNS identity lookups from colliding.
-static IDENTITY_LOOKUP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Fills in missing usernames by querying the dotNS contracts on Asset Hub.
 /// Returns the session unchanged when it already carries a username. Also
@@ -171,9 +152,12 @@ async fn lookup_dotns_identity(
     account_id: [u8; 32],
 ) -> Result<Option<DotnsIdentity>, String> {
     let lookup = async {
-        let mut lookup =
-            DotnsLookup::pinned_to_best_block(chain, asset_hub_chain_genesis_hash, account_id)
-                .await?;
+        let mut lookup = DotnsLookup::pinned_to_best_block(
+            chain,
+            asset_hub_chain_genesis_hash,
+            &format!("identity:{}", hex::encode(account_id)),
+        )
+        .await?;
         let Some(controller) = discover_pop_controller(&mut lookup).await? else {
             return Ok(None);
         };
@@ -188,132 +172,6 @@ async fn lookup_dotns_identity(
     lookup.await
 }
 
-/// One pinned-block context for the dotNS lookup steps. It owns the
-/// `chainHead_v1` follow every read and view runs over.
-struct DotnsLookup<'a> {
-    chain: &'a ChainRuntime,
-    follow: BoxStream<'static, RemoteChainHeadFollowItem>,
-    genesis_hash: Vec<u8>,
-    follow_id: String,
-    hash: Vec<u8>,
-}
-
-impl<'a> DotnsLookup<'a> {
-    /// Opens a follow on Asset Hub and pins it to the current best block.
-    async fn pinned_to_best_block(
-        chain: &'a ChainRuntime,
-        asset_hub_chain_genesis_hash: [u8; 32],
-        account_id: [u8; 32],
-    ) -> Result<Self, String> {
-        let genesis_hash = asset_hub_chain_genesis_hash.to_vec();
-        let lookup_id = IDENTITY_LOOKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let follow_id = format!("truapi:identity:{lookup_id}:{}", hex::encode(account_id));
-        let mut follow = chain.remote_chain_head_follow(
-            follow_id.clone(),
-            RemoteChainHeadFollowRequest {
-                genesis_hash: genesis_hash.clone(),
-                with_runtime: true,
-            },
-        );
-        let hash = wait_for_chain_head_best_hash(
-            &mut follow,
-            "Asset Hub",
-            OPERATION_TIMEOUT,
-            BEST_BLOCK_TIMEOUT,
-        )
-        .await?;
-        Ok(Self {
-            chain,
-            follow,
-            genesis_hash,
-            follow_id,
-            hash,
-        })
-    }
-}
-
-#[truapi_platform::async_trait]
-impl DotnsTransport for DotnsLookup<'_> {
-    /// Reads one storage value at the pinned block. `Ok(None)` when absent.
-    async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
-        let response = self
-            .chain
-            .remote_chain_head_storage(RemoteChainHeadStorageRequest {
-                genesis_hash: self.genesis_hash.clone(),
-                follow_subscription_id: self.follow_id.clone(),
-                hash: self.hash.clone(),
-                items: vec![StorageQueryItem {
-                    key: key.clone(),
-                    query_type: StorageQueryType::Value,
-                }],
-                child_trie: None,
-            })
-            .await
-            .map_err(|failure| failure.reason())?;
-        let operation_id = started_operation_id(response.operation)?;
-        let value = wait_for_chain_head_storage_value(
-            &mut self.follow,
-            ChainHeadStorageValueLookup {
-                chain: self.chain,
-                genesis_hash: &self.genesis_hash,
-                follow_subscription_id: &self.follow_id,
-                operation_id: &operation_id,
-                key: &key,
-                label: "Asset Hub",
-                timeout: OPERATION_TIMEOUT,
-            },
-        )
-        .await?;
-        match value {
-            ChainHeadStorageValue::Found(value) => Ok(Some(value)),
-            ChainHeadStorageValue::Missing => Ok(None),
-            ChainHeadStorageValue::Inaccessible => {
-                Err("Asset Hub storage was inaccessible".to_string())
-            }
-        }
-    }
-
-    /// Dry-runs a contract view via `ReviveApi_call` at the pinned block and
-    /// returns its data.
-    ///
-    /// Views originate from the synthetic always-mapped account. They work
-    /// regardless of the queried account's revive mapping.
-    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError> {
-        let response = self
-            .chain
-            .remote_chain_head_call(RemoteChainHeadCallRequest {
-                genesis_hash: self.genesis_hash.clone(),
-                follow_subscription_id: self.follow_id.clone(),
-                hash: self.hash.clone(),
-                function: "ReviveApi_call".to_string(),
-                call_parameters: encode_revive_call(&VIEW_CALL_ORIGIN, dest, &input),
-            })
-            .await
-            .map_err(|failure| DotnsViewError::Failed(failure.reason()))?;
-        let operation_id =
-            started_operation_id(response.operation).map_err(DotnsViewError::Failed)?;
-        let output = wait_for_chain_head_call_output(
-            &mut self.follow,
-            &operation_id,
-            "Asset Hub",
-            OPERATION_TIMEOUT,
-        )
-        .await
-        .map_err(DotnsViewError::Failed)?;
-        view_output(&output)
-    }
-}
-
-/// Unwraps a started operation id. `LimitReached` maps to an error.
-fn started_operation_id(operation: OperationStartedResult) -> Result<String, String> {
-    match operation {
-        OperationStartedResult::Started { operation_id } => Ok(operation_id),
-        OperationStartedResult::LimitReached => {
-            Err("Asset Hub operation limit reached".to_string())
-        }
-    }
-}
-
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! The in-core lookup drives every dotNS read over one `chainHead_v1`
@@ -325,12 +183,13 @@ mod tests {
     use super::*;
     use crate::chain_runtime::{RuntimeChainProvider, RuntimeFailure};
     use crate::host_logic::dotns_gateway::{
-        account_to_h160, dispatcher_address_key, selector, timestamp_now_key,
+        VIEW_CALL_ORIGIN, account_to_h160, dispatcher_address_key, selector, timestamp_now_key,
     };
     use crate::subscription::thread_per_subscription_spawner;
     use async_trait::async_trait;
     use futures::StreamExt;
     use futures::channel::mpsc;
+    use futures::stream::BoxStream;
     use parity_scale_codec::{Compact, Decode, Encode};
     use serde_json::{Value as JsonValue, json};
     use std::sync::{Arc, Mutex};
