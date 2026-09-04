@@ -199,7 +199,7 @@ pub(super) fn blake2_128_concat(x: &[u8]) -> Vec<u8> {
 }
 
 /// `Twox64Concat(x)` = `twox_64(x) ‖ x`.
-fn twox_64_concat(x: &[u8]) -> Vec<u8> {
+pub(super) fn twox_64_concat(x: &[u8]) -> Vec<u8> {
     [twox_64(x).as_slice(), x].concat()
 }
 
