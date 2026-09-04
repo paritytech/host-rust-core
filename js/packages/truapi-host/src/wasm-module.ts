@@ -77,4 +77,12 @@ export interface WasmModuleShape {
   ) => Uint8Array;
   /** SS58 address for a product account public key, at the core's prefix. */
   productAccountAddress: (publicKey: Uint8Array) => string;
+  /**
+   * The core's own `TRUAPI_WIRE_SCHEMA_HASH`, exported by `truapi-server`'s wasm
+   * bridge. Optional because `dist/wasm/web/` is gitignored and built by hand, so
+   * a stale bundle predating the export is a normal state to find at runtime; a
+   * core that cannot vouch for its table streams frames without a `schema` stamp
+   * and the debugger groups them without decoding.
+   */
+  wireSchemaHash?: () => string;
 }

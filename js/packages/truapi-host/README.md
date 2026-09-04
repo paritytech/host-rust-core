@@ -212,14 +212,15 @@ and then opens one provider per product id.
 
 ## Session lifecycle
 
-The core owns the session; the host owns persistence and drives the transitions
-below. Every one of them reports the resulting `AuthState` through the `auth`
-callback, including when nothing changed — so a host may await an answer at boot
-rather than treating silence as "signed out".
+The core owns the session; the host owns persistence. At boot the core restores
+the `AuthSession` slot on its own and reports the outcome through the `auth`
+callback, `Disconnected` included, so a host waits for the first
+`authStateChanged` instead of treating silence as "signed out". Every
+transition below reports the resulting `AuthState` the same way.
 
 | Runtime method                  | Use it to                                                                    |
 | ------------------------------- | ---------------------------------------------------------------------------- |
-| `activateStoredSession()`       | Restore the session in the core's `AuthSession` slot. Await before routing.  |
+| `activateStoredSession()`       | Await the restore of the `AuthSession` slot before opening providers.        |
 | `activateExternalSession(blob)` | Install a session the host holds itself, without writing it to core storage. |
 | `notifySessionStoreChanged()`   | Tell the core the persisted blob may have changed; it re-reads it.           |
 | `disconnectSession()`           | Log out: clears the session and notifies the peer.                           |
@@ -240,6 +241,46 @@ await runtime.activateStoredSession().catch(() => {});
 
 const provider = await runtime.createProvider({ productId: "first.dot" });
 ```
+
+## Debugging (dev-only)
+
+The worker can stream every product↔core wire frame to the wire debugger. It is
+off by default and enabled purely from the host page — the product needs no
+changes. Two conditions must **both** hold or nothing dials and the core installs
+no tap:
+
+1. **The host page is a dev build.** The dial sits behind a hard
+   `import.meta.env.DEV` gate, which bundlers replace with a boolean literal: in
+   a production bundle it returns `null` unconditionally, so no stored key can
+   turn the tap on. A production build that shows no frames is this gate, not a
+   broken debugger — and it says so: with the key set but the gate closed, the
+   host logs once that the dial is compiled out, rather than staying silent and
+   reading as a broken tool. That matters for a host whose only local build is
+   production-mode; `NODE_ENV=development` is what opens the gate under Vite.
+2. **The host origin's `localStorage` carries a `ws://` loopback URL**, read on
+   the host page at runtime boot and forwarded to the worker in its `init`
+   message:
+
+   ```js
+   localStorage.setItem("truapi:debugger", "ws://127.0.0.1:9231");
+   ```
+
+Run the debugger at the other end (`@parity/truapi-debugger`, `npm run serve`,
+`127.0.0.1:9231`). On the next runtime boot the worker dials that URL and (via
+the Rust core's `DebugSink` tap) sends each frame as `{ channelId, dir, frame }`.
+
+The URL must be `ws://` on a loopback host. Anything else — `wss://`, `http://`,
+a LAN or public address, a non-loopback hostname — yields an inert link and a
+`wire debugger URL rejected` console warning; there is no certificate or `wss`
+path. Prefer the literal `127.0.0.1` over `localhost`: `localhost` passes the
+gate, but it resolves `::1` first on macOS while the debugger binds `127.0.0.1`
+alone, so the same URL handed to a native host (`truapi-server`'s `WsDebugSink`
+dials the first resolved address) silently never connects.
+
+The debugger owns all decoding and decodes every frame it can, including signing
+and payment payloads; its safety is the dev-build gate above, not redaction. See
+`js/packages/truapi-debugger/README.md` for the tap, the envelope, and the
+host-dials-debugger topology.
 
 ## Publishing
 
