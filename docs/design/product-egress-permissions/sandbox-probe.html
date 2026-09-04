@@ -1,0 +1,239 @@
+<!--
+  Product sandbox conformance probe.
+
+  Loads as a product inside any TrUAPI host and reports, from the product's own
+  point of view, which egress and capability surfaces are reachable. Reports
+  facts only — the design doc interprets them.
+
+  Two ways to run it:
+
+    1. Serve it and open it as a product:
+         python3 -m http.server 8099
+       then point the host at http://<lan-ip>:8099/sandbox-probe.html
+       (an emulator reaches the host machine at 10.0.2.2)
+
+    2. Paste the probe into a JS console attached to the product WebView
+       (Android: chrome://inspect, or CDP over `adb forward`) and call:
+         await __sandboxProbe()
+
+  Set PROBE_ORIGIN to a domain the product has NOT been granted, and which is
+  not in the host's hardcoded bypass list.
+
+  This is the manual variant, for hosts with no instrumented harness — iOS and
+  dotli. On Android the authority is SandboxEgressConformanceTest, which
+  corroborates every result against a server it controls. A page-only probe
+  cannot do that, so it reports queued-but-undelivered egress as reachable:
+  navigator.sendBeacon returns true even when the host blocked the request.
+  Read a `reachable` here as "not blocked in the page", not as "it got out".
+-->
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Product sandbox probe</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, monospace; margin: 1rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #8884; vertical-align: top; }
+  th { font-weight: 600; }
+  .reachable { color: #c0392b; font-weight: 600; }
+  .blocked   { color: #1e8449; font-weight: 600; }
+  .absent    { color: #1e8449; }
+  .unknown   { color: #b9770e; }
+  pre { white-space: pre-wrap; word-break: break-all; margin: 0; }
+</style>
+
+<h1>Product sandbox probe</h1>
+<p id="target"></p>
+<table id="out"><thead><tr><th>Surface</th><th>Result</th><th>Evidence</th></tr></thead><tbody></tbody></table>
+<h2>Raw</h2>
+<pre id="raw"></pre>
+
+<script>
+// A domain the product has not been granted. Override with ?origin=…
+const PROBE_ORIGIN =
+  new URLSearchParams(location.search).get("origin") || "https://httpbin.org";
+const WS_ORIGIN =
+  new URLSearchParams(location.search).get("ws") || "wss://echo.websocket.events";
+const TIMEOUT_MS = 6000;
+
+/** Resolve to `timeout` if the promise has not settled in time. */
+function withTimeout(promise) {
+  return Promise.race([
+    promise,
+    new Promise((r) => setTimeout(() => r({ status: "timeout" }), TIMEOUT_MS)),
+  ]);
+}
+
+/** REACHABLE means the product got out. Not a verdict, just what happened. */
+const REACHABLE = "reachable";
+const BLOCKED = "blocked";
+const ABSENT = "absent";
+
+async function probeFetch() {
+  try {
+    const res = await fetch(`${PROBE_ORIGIN}/get`, { cache: "no-store" });
+    return { status: res.ok ? REACHABLE : BLOCKED, evidence: `HTTP ${res.status}` };
+  } catch (err) {
+    return { status: BLOCKED, evidence: `threw: ${err && err.message}` };
+  }
+}
+
+function probeXhr() {
+  return new Promise((resolve) => {
+    let xhr;
+    try {
+      xhr = new XMLHttpRequest();
+    } catch (err) {
+      resolve({ status: ABSENT, evidence: `constructor threw: ${err && err.message}` });
+      return;
+    }
+    xhr.onload = () => resolve({ status: xhr.status >= 200 && xhr.status < 300 ? REACHABLE : BLOCKED, evidence: `HTTP ${xhr.status}` });
+    xhr.onerror = () => resolve({ status: BLOCKED, evidence: "onerror" });
+    try {
+      xhr.open("GET", `${PROBE_ORIGIN}/get`);
+      xhr.send();
+    } catch (err) {
+      resolve({ status: BLOCKED, evidence: `send threw: ${err && err.message}` });
+    }
+  });
+}
+
+function probeWebSocket() {
+  return new Promise((resolve) => {
+    let ws;
+    try {
+      ws = new WebSocket(WS_ORIGIN);
+    } catch (err) {
+      resolve({ status: ABSENT, evidence: `constructor threw: ${err && err.message}` });
+      return;
+    }
+    ws.onopen = () => { resolve({ status: REACHABLE, evidence: `open to ${WS_ORIGIN}` }); ws.close(); };
+    ws.onerror = () => resolve({ status: BLOCKED, evidence: "onerror before open" });
+    ws.onclose = (e) => resolve({ status: BLOCKED, evidence: `closed code=${e.code} before open` });
+  });
+}
+
+function probeEventSource() {
+  return new Promise((resolve) => {
+    if (typeof EventSource === "undefined") {
+      resolve({ status: ABSENT, evidence: "window.EventSource is undefined" });
+      return;
+    }
+    let es;
+    try {
+      es = new EventSource(`${PROBE_ORIGIN}/stream/1`);
+    } catch (err) {
+      resolve({ status: ABSENT, evidence: `constructor threw: ${err && err.message}` });
+      return;
+    }
+    es.onopen = () => { resolve({ status: REACHABLE, evidence: "open" }); es.close(); };
+    es.onmessage = () => { resolve({ status: REACHABLE, evidence: "message received" }); es.close(); };
+    es.onerror = () => { resolve({ status: BLOCKED, evidence: "onerror" }); es.close(); };
+  });
+}
+
+async function probeSendBeacon() {
+  if (typeof navigator.sendBeacon !== "function") {
+    return { status: ABSENT, evidence: "navigator.sendBeacon is not a function" };
+  }
+  // A stubbed sendBeacon returns false; the real one returns true when queued.
+  // Queued is not delivered, so this reports the API's own answer only.
+  const queued = navigator.sendBeacon(`${PROBE_ORIGIN}/post`, "probe");
+  return {
+    status: queued ? REACHABLE : BLOCKED,
+    evidence: `sendBeacon() returned ${queued} (queued, not confirmed delivered)`,
+  };
+}
+
+function probeGlobal(name, obj = window) {
+  const present = typeof obj[name] !== "undefined";
+  return {
+    status: present ? REACHABLE : ABSENT,
+    evidence: present ? `typeof = ${typeof obj[name]}` : `${name} is undefined`,
+  };
+}
+
+function probeCookie() {
+  document.cookie = "__probe__=ok; path=/";
+  const persisted = document.cookie.indexOf("__probe__=ok") !== -1;
+  return {
+    status: persisted ? REACHABLE : BLOCKED,
+    evidence: persisted ? "cookie persisted" : "cookie not persisted",
+  };
+}
+
+function probeIframe() {
+  try {
+    const f = document.createElement("iframe");
+    // A fresh realm is the classic escape from any JS-level global patching.
+    document.body.appendChild(f);
+    const realmHasWs = typeof f.contentWindow.WebSocket !== "undefined";
+    f.remove();
+    return {
+      status: REACHABLE,
+      evidence: `created; fresh realm exposes WebSocket: ${realmHasWs}`,
+    };
+  } catch (err) {
+    return { status: BLOCKED, evidence: `threw: ${err && err.message}` };
+  }
+}
+
+function probeRtc() {
+  if (typeof RTCPeerConnection === "undefined") {
+    return { status: ABSENT, evidence: "RTCPeerConnection is undefined" };
+  }
+  // A JS-level gate has to replace the binding with a scripted class, which does
+  // not stringify as native code. The prototype chain cannot be used for this:
+  // the ungated class already extends EventTarget, so a parent function proves
+  // nothing.
+  const native = /\[native code\]/.test(
+    Function.prototype.toString.call(RTCPeerConnection)
+  );
+  return {
+    status: REACHABLE,
+    evidence: native
+      ? "present as the native binding — no JS gate installed"
+      : "present but replaced by a scripted class; parent reachable via Object.getPrototypeOf",
+  };
+}
+
+async function __sandboxProbe() {
+  const probes = [
+    ["fetch", probeFetch()],
+    ["XMLHttpRequest", probeXhr()],
+    ["WebSocket", probeWebSocket()],
+    ["EventSource", probeEventSource()],
+    ["navigator.sendBeacon", probeSendBeacon()],
+    ["indexedDB", Promise.resolve(probeGlobal("indexedDB"))],
+    ["caches", Promise.resolve(probeGlobal("caches"))],
+    ["SharedWorker", Promise.resolve(probeGlobal("SharedWorker"))],
+    ["document.cookie", Promise.resolve(probeCookie())],
+    ["iframe creation", Promise.resolve(probeIframe())],
+    ["RTCPeerConnection", Promise.resolve(probeRtc())],
+  ];
+  const results = {};
+  for (const [name, p] of probes) {
+    results[name] = await withTimeout(Promise.resolve(p).catch((err) => ({
+      status: "error",
+      evidence: String(err && err.message),
+    })));
+  }
+  return { target: PROBE_ORIGIN, ws: WS_ORIGIN, userAgent: navigator.userAgent, results };
+}
+window.__sandboxProbe = __sandboxProbe;
+
+// Render when loaded as a page. Harmless when driven over CDP.
+(async () => {
+  const el = document.getElementById("out");
+  if (!el) return;
+  document.getElementById("target").textContent =
+    `probing ${PROBE_ORIGIN} and ${WS_ORIGIN} — must be domains this product was NOT granted`;
+  const report = await __sandboxProbe();
+  const body = el.querySelector("tbody");
+  for (const [surface, r] of Object.entries(report.results)) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${surface}</td><td class="${r.status}">${r.status}</td><td>${r.evidence || ""}</td>`;
+    body.appendChild(tr);
+  }
+  document.getElementById("raw").textContent = JSON.stringify(report, null, 2);
+})();
+</script>
