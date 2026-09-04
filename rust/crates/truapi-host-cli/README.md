@@ -199,8 +199,10 @@ replacement cooldown, so rotation only happens when no slot is replaceable.
 In a TTY, both hosts open the same scrollable transcript above a single command
 bar. Host lifecycle events, tracing logs, every incoming SSO request, script
 stdout/stderr, commands, and approval prompts all use that transcript, so
-background output cannot overwrite input. On `signing-host`, `--deeplink URL`
-opens the UI and starts the pairing response after initialization.
+background output cannot overwrite input. The status bar shows the active log
+value. On
+`signing-host`, `--deeplink URL` opens the UI and starts the pairing response
+after initialization.
 
 Commands always start with `/`:
 
@@ -218,7 +220,7 @@ Commands always start with `/`:
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
 | `/login` | Start pairing for the selected product, show its QR code, and copy its deeplink to the clipboard. |
 | `/logout` | Disconnect the pairing host and discard its old pairing keypair. |
-| `/log <level>` | Change tracing to `error`, `warn`, `info`, `debug`, or `trace`. |
+| `/log <level>` | Save tracing as `error`, `warn`, `info`, `debug`, or `trace`, and apply it now. |
 | `/product` | Show the currently selected product. |
 | `/product <id>` | Switch the product used by future scripts and frame connections. |
 | `/session` | Show the current session name, path, and user id (signing host). |
@@ -618,6 +620,10 @@ are unavailable on the pairing host and in one-shot `exec` mode.
 
 Use the global `--log-level` option (`error`, `warn`, `info`, `debug`, or
 `trace`) before or after the subcommand, or `/log <level>` in the terminal UI.
+`/log` saves the level under `--base-path`, so pairing and signing hosts restore
+it after restart. A one-off `--log-level` or `TRUAPI_HOST_LOG` value overrides
+the saved level for that process without changing it; otherwise the fallback is
+`info`.
 Every decoded inbound SSO request and every published response is visible
 regardless of the selected level. Stable response entries include the request
 name, statement and remote message ids, protocol outcome, and elapsed time;
@@ -634,8 +640,11 @@ truapi-host signing-host --log-level trace --deeplink '<deeplink>' --auto-accept
 Debug and trace output may contain product signing payloads. `RUST_LOG` takes
 precedence at startup and remains available for module-specific filters, except
 that the noisy `rustls` and `tungstenite::protocol` tracing targets are always
-excluded from CLI log output. Without `RUST_LOG`, `--log-level` and `/log`
-apply to TrUAPI targets while other third-party dependencies remain at `warn`.
+excluded from CLI log output. The status bar continues to show the selected CLI
+level when `RUST_LOG` is absent; otherwise it shows the exact `RUST_LOG` value.
+`/log` replaces the startup filter with the selected level. Without `RUST_LOG`,
+`--log-level` and `/log` apply to TrUAPI targets while other third-party
+dependencies remain at `warn`.
 
 ## Statement-store allowance
 

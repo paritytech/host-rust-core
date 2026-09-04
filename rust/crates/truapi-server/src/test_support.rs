@@ -35,6 +35,17 @@ use truapi_platform::{
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
+/// Block until `condition` holds, failing with `message` after two seconds.
+/// Background runtime tasks run on their own threads, so a test that observes
+/// their effects polls for them instead of assuming an ordering.
+pub(crate) fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "{message}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// Test spawner that matches the current target.
 pub(crate) fn test_spawner() -> Spawner {
     #[cfg(not(target_arch = "wasm32"))]
@@ -1297,6 +1308,8 @@ impl JsonRpcConnection for RecordingConnection {
 
 /// Answer each request as it arrives, by method, echoing its id.
 ///
+/// Exhausted method scripts panic so one read cannot reuse another's response.
+///
 /// Waits indefinitely for the next request rather than giving up after a fixed
 /// number of polls, so work between requests cannot race the pump.
 fn method_keyed_responses(
@@ -1318,11 +1331,32 @@ fn method_keyed_responses(
                         serde_json::from_str(&request).expect("request is valid JSON");
                     let id = value["id"].as_str().expect("request carries a string id");
                     let method = value["method"].as_str().expect("request carries a method");
-                    let result = answers
+                    let occurrence = sent
+                        .lock()
+                        .expect("rpc list mutex poisoned")
                         .iter()
-                        .find(|(candidate, _)| *candidate == method)
+                        .take(answered)
+                        .filter(|request| {
+                            serde_json::from_str::<serde_json::Value>(request)
+                                .ok()
+                                .and_then(|value| value["method"].as_str().map(str::to_owned))
+                                .is_some_and(|candidate| candidate == method)
+                        })
+                        .count();
+                    let scripted = answers
+                        .iter()
+                        .filter(|(candidate, _)| *candidate == method)
+                        .collect::<Vec<_>>();
+                    let result = scripted
+                        .get(occurrence)
                         .map(|(_, body)| body.clone())
-                        .unwrap_or_else(|| panic!("no scripted response for method `{method}`"));
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "method `{method}` was called {} times, and the script has {} response(s) for it",
+                                occurrence + 1,
+                                scripted.len(),
+                            )
+                        });
                     return Some((
                         format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{result}}}"#),
                         answered + 1,
@@ -1332,6 +1366,25 @@ fn method_keyed_responses(
             }
         }
     }))
+}
+
+#[test]
+#[should_panic(
+    expected = "method `state_getStorage` was called 2 times, and the script has 1 response(s) for it"
+)]
+fn method_keyed_responses_do_not_replay_an_exhausted_answer() {
+    use futures::StreamExt;
+
+    let request =
+        |id| format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"state_getStorage","params":[]}}"#);
+    let sent = Arc::new(Mutex::new(vec![request(1), request(2)]));
+    let mut responses =
+        method_keyed_responses(sent, vec![("state_getStorage", "null".to_string())]);
+
+    futures::executor::block_on(async {
+        responses.next().await.expect("first scripted response");
+        responses.next().await.expect("second scripted response");
+    });
 }
 
 async fn wait_for_matching_request_id(sent: Arc<Mutex<Vec<String>>>, response: &str) {
