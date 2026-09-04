@@ -51,17 +51,20 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
-        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
-        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
-        ContextualAlias, DerivationIndex, GenericError, HostPlatform, HostSignPayloadData,
-        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
-        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
-        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension,
+        AccountId, AllocatableResource, AllocationOutcome, Arrangement, Background, BorderStyle,
+        BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction, ChatActionLayout,
+        ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile, ChatMedia,
+        ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus, ColorToken,
+        ColumnProps, ContentAlignment, ContextualAlias, CustomRendererNode, DerivationIndex,
+        Dimensions, GenericError, HorizontalAlignment, HostPlatform, HostSignPayloadData, Modifier,
+        NotificationId, OperationStartedResult, OptionalBool, PocketCard, ProductAccountId,
+        ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
+        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
+        RemoteStatementStoreSubscribeRequest, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey,
+        RowProps, RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
+        StatementProof, StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps,
+        TextProps, ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -137,6 +140,20 @@ pub mod latest {
     pub type HostLocaleSubscribeItem = LatestOf<versioned::locale::HostLocaleSubscribeItem>;
     /// Navigation request error.
     pub type HostNavigateToError = LatestOf<versioned::system::HostNavigateToError>;
+    /// Face action delivered from the host to a product worker.
+    pub type HostPocketActionSubscribeItem =
+        LatestOf<versioned::pocket::HostPocketActionSubscribeItem>;
+    /// The calling product's Pocket cards.
+    pub type HostPocketListSubscribeItem = LatestOf<versioned::pocket::HostPocketListSubscribeItem>;
+    /// Pocket card removal request.
+    pub type HostPocketRemoveCardRequest = LatestOf<versioned::pocket::HostPocketRemoveCardRequest>;
+    /// Pocket card removal failure.
+    pub type HostPocketRemoveCardError = LatestOf<versioned::pocket::HostPocketRemoveCardError>;
+    /// Pocket face render work sent by the host.
+    pub type ProductPocketCardRenderRequest =
+        LatestOf<versioned::pocket::ProductPocketCardRenderRequest>;
+    /// Pocket face tree streamed by a product worker.
+    pub type ProductPocketCardRenderItem = LatestOf<versioned::pocket::ProductPocketCardRenderItem>;
     /// Push notification scheduling request.
     pub type HostPushNotificationRequest =
         LatestOf<versioned::notifications::HostPushNotificationRequest>;

@@ -50,7 +50,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "0449982638d57658";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "f3821ba92cb40583";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: RequestFrameIds = RequestFrameIds {
@@ -516,6 +516,36 @@ pub const LOCALE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
     receive_id: 197,
 };
 
+/// Wire discriminants for `pocket_list_subscribe`.
+pub const POCKET_LIST_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 198,
+    stop_id: 199,
+    interrupt_id: 200,
+    receive_id: 201,
+};
+
+/// Wire discriminants for `pocket_remove_card`.
+pub const POCKET_REMOVE_CARD: RequestFrameIds = RequestFrameIds {
+    request_id: 202,
+    response_id: 203,
+};
+
+/// Wire discriminants for `pocket_action_subscribe`.
+pub const POCKET_ACTION_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 204,
+    stop_id: 205,
+    interrupt_id: 206,
+    receive_id: 207,
+};
+
+/// Wire discriminants for `pocket_card_render`.
+pub const POCKET_CARD_RENDER: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 208,
+    stop_id: 209,
+    interrupt_id: 210,
+    receive_id: 211,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -806,5 +836,21 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "locale_subscribe",
         kind: WireKind::Subscription(LOCALE_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "pocket_list_subscribe",
+        kind: WireKind::Subscription(POCKET_LIST_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "pocket_remove_card",
+        kind: WireKind::Request(POCKET_REMOVE_CARD),
+    },
+    WireEntry {
+        method: "pocket_action_subscribe",
+        kind: WireKind::Subscription(POCKET_ACTION_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "pocket_card_render",
+        kind: WireKind::Subscription(POCKET_CARD_RENDER),
     },
 ];
