@@ -58,8 +58,8 @@ use zeroize::Zeroizing;
 
 use super::ring_vrf_registry::{RingVrfRegistryStore, validate_owner_listing};
 use super::signing_host::ring_vrf::{
-    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
-    development_context_bytes, member_from_entropy, sign_from_entropy,
+    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
+    create_proof, member_from_entropy, sign_from_entropy,
 };
 
 /// Distinguishes all remote authority request entrypoints by wire label.
@@ -2154,7 +2154,7 @@ impl PairingHost {
         {
             self.ring_resolver.validate(&request.ring_location).await?;
             self.current_private_session(session)?;
-            let context = development_context_bytes(&request.context);
+            let context = context_bytes(&request.context);
             let alias = alias_from_entropy(&entropy, &context)?;
             return Ok(v01::ContextualAlias {
                 context,
@@ -2187,7 +2187,7 @@ impl PairingHost {
                 .resolve(&request.ring_location, &[MemberCandidate { member }])
                 .await?;
             self.current_private_session(session)?;
-            let context = development_context_bytes(&request.context);
+            let context = context_bytes(&request.context);
             let (proof, alias) = create_proof(&entropy, &resolved, &context, &request.message)?;
             return Ok(v01::HostAccountCreateProofResponse {
                 proof,
