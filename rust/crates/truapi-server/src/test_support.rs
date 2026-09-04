@@ -18,7 +18,7 @@ use crate::subscription::Spawner;
 use crate::subscription::thread_per_subscription_spawner;
 
 use futures::Stream;
-use futures::stream::{self, BoxStream};
+use futures::stream::{self, BoxStream, StreamExt};
 use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey};
 use truapi::v01;
@@ -158,8 +158,43 @@ pub(crate) struct StubPlatform {
     /// forged value to exercise the in-core integrity check.
     pub(crate) preimage_lookup_value: Option<Vec<u8>>,
     pub(crate) local_storage: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    /// Every product storage write that reached the platform, in order, so a
+    /// test can see which writes the core skipped.
+    pub(crate) local_storage_writes: Arc<Mutex<Vec<StorageWrite>>>,
+    /// Open `subscribe_storage` streams by namespaced key; `write` and
+    /// `clear` push each change to the matching ones.
+    pub(crate) storage_subscribers: Arc<Mutex<Vec<(String, StorageChangeSender)>>>,
+    /// Every `begin_operation` as `(product_id, label)`, in order. The
+    /// returned id is the call's 1-based position.
+    pub(crate) begun_operations: Arc<Mutex<Vec<(String, String)>>>,
+    /// Every `end_operation` as `(product_id, id)`, in order.
+    pub(crate) ended_operations: Arc<Mutex<Vec<(String, u32)>>>,
     /// When set, product/core storage reads fail with this reason.
     pub(crate) local_storage_error: Option<&'static str>,
+}
+
+/// One product storage write as the platform saw it: namespaced key and bytes.
+pub(crate) type StorageWrite = (String, Vec<u8>);
+
+/// Sender side of one stubbed storage subscription.
+pub(crate) type StorageChangeSender = futures::channel::mpsc::UnboundedSender<
+    Result<v01::HostLocalStorageChangeItem, v01::GenericError>,
+>;
+
+impl StubPlatform {
+    fn push_storage_change(&self, key: &str, value: Option<Vec<u8>>) {
+        self.storage_subscribers
+            .lock()
+            .expect("storage subscribers mutex poisoned")
+            .retain(|(subscribed, tx)| {
+                subscribed != key
+                    || tx
+                        .unbounded_send(Ok(v01::HostLocalStorageChangeItem {
+                            value: value.clone(),
+                        }))
+                        .is_ok()
+            });
+    }
 }
 
 /// Scripted peer behavior for the recording connection's SSO exchange.
@@ -776,10 +811,15 @@ impl PlatformProductStorage for StubPlatform {
                 reason: reason.to_string(),
             });
         }
+        self.local_storage_writes
+            .lock()
+            .expect("local storage writes mutex poisoned")
+            .push((key.clone(), value.clone()));
         self.local_storage
             .lock()
             .expect("local storage mutex poisoned")
-            .insert(key, value);
+            .insert(key.clone(), value.clone());
+        self.push_storage_change(&key, Some(value));
         Ok(())
     }
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
@@ -792,6 +832,7 @@ impl PlatformProductStorage for StubPlatform {
             .lock()
             .expect("local storage mutex poisoned")
             .remove(&key);
+        self.push_storage_change(&key, None);
         Ok(())
     }
 
@@ -800,15 +841,20 @@ impl PlatformProductStorage for StubPlatform {
         key: Vec<u8>,
     ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
         let key = String::from_utf8_lossy(&key).into_owned();
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        self.storage_subscribers
+            .lock()
+            .expect("storage subscribers mutex poisoned")
+            .push((key.clone(), tx));
         let value = self
             .local_storage
             .lock()
             .expect("local storage mutex poisoned")
             .get(&key)
             .cloned();
-        Box::pin(stream::once(async move {
-            Ok(v01::HostLocalStorageChangeItem { value })
-        }))
+        Box::pin(
+            stream::once(async move { Ok(v01::HostLocalStorageChangeItem { value }) }).chain(rx),
+        )
     }
 }
 
@@ -816,18 +862,30 @@ impl PlatformProductStorage for StubPlatform {
 impl PlatformProductOperations for StubPlatform {
     async fn begin_operation(
         &self,
-        _product: &ProductContext,
-        _label: String,
+        product: &ProductContext,
+        label: String,
     ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
-        // The stub has no worker lifecycle to keep alive; a fixed id suffices.
-        Ok(v01::HostWorkerBeginOperationResponse { id: 1 })
+        // The stub has no worker lifecycle to keep alive; it only records the
+        // call and hands back its position as the id.
+        let mut begun = self
+            .begun_operations
+            .lock()
+            .expect("begun operations mutex poisoned");
+        begun.push((product.product_id.clone(), label));
+        Ok(v01::HostWorkerBeginOperationResponse {
+            id: begun.len() as u32,
+        })
     }
 
     async fn end_operation(
         &self,
-        _product: &ProductContext,
-        _id: u32,
+        product: &ProductContext,
+        id: u32,
     ) -> Result<(), v01::HostWorkerOperationError> {
+        self.ended_operations
+            .lock()
+            .expect("ended operations mutex poisoned")
+            .push((product.product_id.clone(), id));
         Ok(())
     }
 }
