@@ -1018,14 +1018,17 @@ export function startDebugServer(
               // host stamping the right hash with a wrong `v`/`codec` is
               // "confirmed AND mismatched".
               //
-              // The `!identityMismatch` half is DEFENSIVE ONLY and no test pins
-              // it. Reaching it needs a channel whose record says trusted while
-              // a retained frame says mismatched, and that cannot happen today:
-              // MAX_CHANNELS and the engine's `maxTraces` are both 256 and every
-              // channel costs at least one trace, so a channel record cannot be
-              // evicted and re-registered clean while its own frames survive. It
-              // guards the invariant, not a reachable path - `decodeTrusted` is
-              // what actually refuses these.
+              // The `!identityMismatch` half is DEFENSIVE and no test pins it.
+              // Reaching it needs a channel whose record says trusted while a
+              // retained frame says mismatched, which needs a channel record
+              // evicted and re-registered clean while its own frames survive.
+              // On THIS surface that cannot happen: `startDebugServer` takes no
+              // retention options, so `maxTraces` is the engine default 256,
+              // MAX_CHANNELS is 256, and every channel costs at least one trace.
+              // The in-app mount forwards `maxTraces` from its caller, so the
+              // same reasoning does not carry there and this half is load-bearing
+              // rather than redundant. `decodeTrusted` is the gate that actually
+              // refuses these on both surfaces.
               identityConfirmed:
                 parsed.value.identityConfirmed &&
                 !parsed.value.identityMismatch,
