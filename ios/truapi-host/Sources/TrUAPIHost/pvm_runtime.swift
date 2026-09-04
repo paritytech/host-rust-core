@@ -677,6 +677,8 @@ public protocol NativePvmRuntimeProtocol: AnyObject, Sendable {
 
     func takeTri2d() throws  -> NativePvmTri2dFrame?
 
+    func takeUiOutput() throws  -> NativePvmUiOutputFrame?
+
     func takeUiSemantics() throws  -> NativePvmUiSemanticsFrame?
 
     func update() throws
@@ -939,6 +941,15 @@ open func takeTri2d()throws  -> NativePvmTri2dFrame?  {
     return try  FfiConverterOptionTypeNativePvmTri2dFrame.lift(try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
         uniffiCallStatus in
     uniffi_pvm_runtime_fn_method_nativepvmruntime_take_tri2d(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+open func takeUiOutput()throws  -> NativePvmUiOutputFrame?  {
+    return try  FfiConverterOptionTypeNativePvmUiOutputFrame.lift(try rustCallWithError(FfiConverterTypeNativePvmError_lift) {
+        uniffiCallStatus in
+    uniffi_pvm_runtime_fn_method_nativepvmruntime_take_ui_output(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1363,6 +1374,56 @@ public func FfiConverterTypeNativePvmTri2dFrame_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeNativePvmTri2dFrame_lower(_ value: NativePvmTri2dFrame) -> RustBuffer {
     return FfiConverterTypeNativePvmTri2dFrame.lower(value)
+}
+
+
+public struct NativePvmUiOutputFrame: Equatable, Hashable {
+    public var bytes: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(bytes: Data) {
+        self.bytes = bytes
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativePvmUiOutputFrame: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativePvmUiOutputFrame: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePvmUiOutputFrame {
+        return
+            try NativePvmUiOutputFrame(
+                bytes: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NativePvmUiOutputFrame, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.bytes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePvmUiOutputFrame_lift(_ buf: RustBuffer) throws -> NativePvmUiOutputFrame {
+    return try FfiConverterTypeNativePvmUiOutputFrame.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativePvmUiOutputFrame_lower(_ value: NativePvmUiOutputFrame) -> RustBuffer {
+    return FfiConverterTypeNativePvmUiOutputFrame.lower(value)
 }
 
 
@@ -1997,6 +2058,30 @@ fileprivate struct FfiConverterOptionTypeNativePvmTri2dFrame: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeNativePvmUiOutputFrame: FfiConverterRustBuffer {
+    typealias SwiftType = NativePvmUiOutputFrame?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNativePvmUiOutputFrame.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNativePvmUiOutputFrame.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeNativePvmUiSemanticsFrame: FfiConverterRustBuffer {
     typealias SwiftType = NativePvmUiSemanticsFrame?
 
@@ -2144,6 +2229,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_take_tri2d() != 20193) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_take_ui_output() != 44263) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_pvm_runtime_checksum_method_nativepvmruntime_take_ui_semantics() != 2159) {
