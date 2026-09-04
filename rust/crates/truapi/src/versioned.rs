@@ -37,15 +37,19 @@ pub trait FromLatest: Versioned {
 
 /// Direction tag for a request/response method: which half of the exchange
 /// this frame carries. Wrapped inside a method's version enum, so a method's
-/// version history is the one place its shape can change.
+/// version history is the one place its shape can change. Each variant's
+/// index is pinned explicitly so a later addition can't silently shift an
+/// existing one's wire value.
 // Not yet referenced outside this module's own tests: the generated code that
 // wraps every method's version enum in this lands in a separate stacked PR.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub(crate) enum Request<Req, Res> {
     /// Product-to-host call.
+    #[codec(index = 0)]
     Request(Req),
     /// Host-to-product reply.
+    #[codec(index = 1)]
     Response(Res),
 }
 
@@ -54,17 +58,22 @@ pub(crate) enum Request<Req, Res> {
 /// position as [`Request`]'s own two variants, so subscription decoding is
 /// partly shape-compatible with request decoding. `Stop` carries no payload;
 /// `Interrupt` carries `None` for natural stream completion or `Some(err)`
-/// for a failure.
+/// for a failure. Each variant's index is pinned explicitly so a later
+/// addition can't silently shift an existing one's wire value.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub(crate) enum Subscription<Start, Item, Err> {
     /// Product-to-host subscription request.
+    #[codec(index = 0)]
     Start(Start),
     /// Host-to-product streamed item.
+    #[codec(index = 1)]
     Receive(Item),
     /// Host-to-product termination: `None` on clean completion, `Some` on failure.
+    #[codec(index = 2)]
     Interrupt(Option<Err>),
     /// Product-to-host cancellation.
+    #[codec(index = 3)]
     Stop,
 }
 
