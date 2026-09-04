@@ -197,7 +197,6 @@ wait_for_signing_pattern 'TrUAPI signing host'
 send_signing_command "/pair $deeplink"
 wait_for_pairing_pattern '^DEVICE_REMOVE_CONNECTED$'
 wait_for_persisted_auth_session
-pairing_ended_before_removal="$(grep -c 'Pairing ended' "$PAIRING_LOG" || true)"
 
 send_signing_command '/devices'
 wait_for_signing_pattern 'Paired devices for session'
@@ -212,10 +211,16 @@ fi
 
 send_signing_command "/devices --remove ${device_ids[0]}"
 wait_for_signing_pattern 'Remove paired device'
+disconnect_marker_before_removal="$(grep -cE '^DEVICE_REMOVE_DISCONNECT_OK$' "$PAIRING_LOG" || true)"
+pairing_ended_before_removal="$(grep -c 'Pairing ended' "$PAIRING_LOG" || true)"
+if [ "$disconnect_marker_before_removal" -ne 0 ]; then
+  echo "pairing host disconnected before removal was confirmed" >&2
+  exit 1
+fi
 tmux send-keys -t "$TMUX_SESSION" y
 wait_for_signing_pattern 'Paired device removed'
 
-wait_for_pairing_pattern '^DEVICE_REMOVE_DISCONNECT_OK$'
+wait_for_new_pairing_pattern '^DEVICE_REMOVE_DISCONNECT_OK$' "$disconnect_marker_before_removal"
 wait_for_new_pairing_pattern 'Pairing ended' "$pairing_ended_before_removal"
 wait_for_auth_session_clear
 
