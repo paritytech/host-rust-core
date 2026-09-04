@@ -1496,7 +1496,7 @@ impl Transport for SinkTransport {
 mod tests {
     use super::*;
     use crate::frame::{Payload, ProtocolMessage, subscription_ids};
-    use crate::test_support::{StubPlatform, runtime_config, test_spawner};
+    use crate::test_support::{StubPlatform, runtime_config, test_spawner, wait_until};
     use parity_scale_codec::Encode;
     use std::sync::atomic::Ordering;
 
@@ -1514,6 +1514,26 @@ mod tests {
         }
     }
 
+    /// Install `session` once the boot reconcile has reported the empty
+    /// session store, so its clear cannot land on top of the session.
+    fn install_session_after_boot(
+        runtime: &PairingHostRuntime,
+        platform: &StubPlatform,
+        session: crate::host_logic::session::SessionInfo,
+    ) {
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "the boot reconcile did not report the empty session store",
+        );
+        runtime.pairing_host.session_state().set_session(session);
+    }
+
     fn assert_send<T: Send>(_: T) {}
 
     fn assert_send_sync<T: Send + Sync>() {}
@@ -1524,10 +1544,7 @@ mod tests {
         let (host_config, _) = runtime_config("myapp.dot");
         let runtime = PairingHostRuntime::new(platform.clone(), host_config, test_spawner());
         let session = crate::test_support::sso_session_info();
-        runtime
-            .pairing_host
-            .session_state()
-            .set_session(session.clone());
+        install_session_after_boot(&runtime, &platform, session.clone());
         runtime
             .pairing_host
             .cache_product_subtree_for_test(&session, "myapp.dot", [9; 32]);
@@ -1551,16 +1568,10 @@ mod tests {
 
     #[test]
     fn a_timeout_bounds_the_wait_for_the_account_holder() {
+        let platform = Arc::new(StubPlatform::default());
         let (host_config, _) = runtime_config("myapp.dot");
-        let runtime = PairingHostRuntime::new(
-            Arc::new(StubPlatform::default()),
-            host_config,
-            test_spawner(),
-        );
-        runtime
-            .pairing_host
-            .session_state()
-            .set_session(crate::test_support::sso_session_info());
+        let runtime = PairingHostRuntime::new(platform.clone(), host_config, test_spawner());
+        install_session_after_boot(&runtime, &platform, crate::test_support::sso_session_info());
 
         // Nothing answers the wallet request, and wait_for_sso_remote_response exits
         // only on a peer answer, a disconnect, or the caller's token. Without

@@ -117,7 +117,7 @@ mod tests {
             RingDomainSize::Domain11,
             entropy,
             &members,
-            b"SSS_SLOT:test-context-padding..",
+            &[0x33; 32],
             &[0x42; 32],
         )
         .unwrap();
@@ -132,7 +132,7 @@ mod tests {
             RingDomainSize::Domain11,
             entropy,
             &[other],
-            b"SSS_SLOT:test-context-padding..",
+            &[0x33; 32],
             &[0x42; 32],
         )
         .unwrap_err();

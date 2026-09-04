@@ -285,7 +285,7 @@ provider-swift-check: provider-swift ## Fail if the committed TrUAPIProvider bin
 		|| { echo "Committed TrUAPIProvider bindings are stale: run 'make provider-ios'."; exit 1; }
 
 provider-ios: ## Build the TrUAPIProvider Swift bindings + xcframework (adds --sim-only via SIM_ONLY=1).
-	bash ios/truapi-provider/scripts/rebuild.sh $(if $(SIM_ONLY),--sim-only,)
+	bash ios/truapi-provider/scripts/rebuild.sh $(if $(SIM_ONLY_ON),--sim-only,)
 
 provider-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-provider cdylib.
 	$(CARGO) build -p truapi-provider --profile codegen --no-default-features --features uniffi
@@ -431,11 +431,18 @@ XCFRAMEWORK_HEADERS := target/xcframework-headers
 # Slices and cargo profile the xcframework is assembled from. The defaults are
 # what a release needs; a compile-only consumer overrides both for speed. The
 # profile name doubles as cargo's output directory.
-XCFRAMEWORK_TARGETS ?= $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
+# SIM_ONLY=1 drops the device slice while iterating, which halves the target
+# builds. publish.sh refuses a framework missing either slice, so this cannot
+# reach a release asset. XCFRAMEWORK_TARGETS still overrides both.
+#
+# 0, false, no and off mean off. Make treats any non-empty value as true, so
+# without this SIM_ONLY=0 would drop the device slice.
+SIM_ONLY_ON := $(filter-out 0 false no off,$(SIM_ONLY))
+XCFRAMEWORK_TARGETS ?= $(if $(SIM_ONLY_ON),$(IOS_SIM_TARGET),$(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET))
 XCFRAMEWORK_PROFILE ?= release
 XCFRAMEWORK_CARGO_FLAGS := $(if $(filter release,$(XCFRAMEWORK_PROFILE)),--release,)
 
-xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator.
+xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator (SIM_ONLY=1 for simulator only).
 	rustup target add $(XCFRAMEWORK_TARGETS)
 	for target in $(XCFRAMEWORK_TARGETS); do \
 		IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \

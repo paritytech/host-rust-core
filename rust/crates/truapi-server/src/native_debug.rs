@@ -123,6 +123,14 @@ struct WireMessage<'a> {
     #[serde(rename = "channelId")]
     channel_id: &'a str,
     dir: &'a str,
+    /// Unix milliseconds at which this link saw the frame, stamped when the
+    /// frame is enqueued rather than when it is written. This link buffers up to
+    /// `QUEUE_CAPACITY` frames and reconnects with backoff, so a flushed backlog
+    /// arrives at the debugger all at once: without this, every duration derived
+    /// from arrival time collapses to the flush instant. Omitted when the clock
+    /// cannot be read, so a failure reads as absent rather than as 1970.
+    #[serde(rename = "observedAt", skip_serializing_if = "Option::is_none")]
+    observed_at: Option<u64>,
     frame: String,
     /// Frames this link shed since the previous envelope. Omitted when zero, as
     /// the web link omits it, so the common envelope is unchanged; the debugger
@@ -133,6 +141,16 @@ struct WireMessage<'a> {
 
 fn is_zero(count: &u64) -> bool {
     *count == 0
+}
+
+/// Unix milliseconds now, or `None` if the clock predates the epoch. Runs on the
+/// frame path, so it reads the clock and nothing else: no allocation, no lock,
+/// and no `unwrap` that could panic in a caller's dispatch.
+fn observed_at_millis() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_millis() as u64)
 }
 
 /// Validate a debug URL and resolve it to the addresses to dial, in resolver
@@ -262,6 +280,7 @@ impl DebugSink for WsDebugSink {
             channel_id: &channel_id.0,
             // Product-vantage string; never hand-mapped, so it cannot invert.
             dir: dir.wire_str(),
+            observed_at: observed_at_millis(),
             frame: BASE64.encode(&bytes),
             dropped: shed,
         };
@@ -447,6 +466,59 @@ mod tests {
         assert!(
             value.get("dropped").is_none(),
             "a frame with no preceding drops must not carry a dropped count"
+        );
+    }
+
+    /// `observedAt` is the link's clock when it took the frame, not when the frame
+    /// reached the debugger. Proven against a debugger that accepts late: the
+    /// frame sits in the queue while the socket is down, so an arrival-time stamp
+    /// would read the flush instant and collapse the gap this test opens.
+    #[tokio::test]
+    async fn observed_at_is_stamped_when_the_frame_is_taken_not_when_it_flushes() {
+        const ACCEPT_DELAY: Duration = Duration::from_millis(500);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (tx, rx) = oneshot::channel::<String>();
+        tokio::spawn(async move {
+            // Hold the frame in the sink's queue: the sink dials, the accept waits.
+            tokio::time::sleep(ACCEPT_DELAY).await;
+            let (stream, _peer) = listener.accept().await.unwrap();
+            let ws = accept_async(stream).await.unwrap();
+            let (_write, mut read) = ws.split();
+            let message = read.next().await.unwrap().unwrap();
+            tx.send(message.into_text().unwrap()).unwrap();
+        });
+
+        let sink = WsDebugSink::connect(&format!("ws://127.0.0.1:{port}")).unwrap();
+        let before = observed_at_millis().expect("clock");
+        sink.emit(DebugEvent::Frame {
+            channel_id: ChannelId("myapp.dot".to_string()),
+            dir: FrameDirection::Out,
+            bytes: vec![7, 7],
+        });
+        let after = observed_at_millis().expect("clock");
+
+        let text = tokio::time::timeout(Duration::from_secs(10), rx)
+            .await
+            .expect("debugger did not receive a frame")
+            .unwrap();
+        let arrived = observed_at_millis().expect("clock");
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        let observed = value["observedAt"]
+            .as_u64()
+            .expect("envelope carries observedAt");
+        assert!(
+            (before..=after).contains(&observed),
+            "observedAt {observed} is outside the emit window {before}..={after}"
+        );
+        // The flush really did happen later, so the previous assertion is not
+        // vacuous: an arrival stamp would have landed here instead.
+        assert!(
+            arrived - observed >= ACCEPT_DELAY.as_millis() as u64 / 2,
+            "expected a gap between the stamp and the flush; stamped {observed}, arrived {arrived}"
         );
     }
 
