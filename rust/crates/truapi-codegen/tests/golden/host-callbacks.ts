@@ -193,7 +193,15 @@ export type CoreStorageKey =
         peerStatementAccountId: Uint8Array;
         peerEncryptionPublicKey: Uint8Array;
       };
-    };
+    }
+  /**
+   * Cached root manifest of one product, as published to dotNS.
+   *
+   * The value carries the manifest JSON alongside the time it was read. The
+   * core honours it for a bounded lifetime, which is what makes a revoked
+   * trust grant eventually take effect.
+   */
+  | { tag: "ProductManifest"; value: { productId: string } };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -642,6 +650,9 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         rootPublicKey: Uint8Array;
         peerStatementAccountId: Uint8Array;
         peerEncryptionPublicKey: Uint8Array;
+      }>,
+      ProductManifest: S.Struct({ productId: S.str }) as S.Codec<{
+        productId: string;
       }>,
     }),
 );

@@ -14,9 +14,11 @@ mod authority;
 /// In-core Bulletin preimage submission over the shared Subxt client.
 pub(crate) mod bulletin_rpc;
 mod chat;
+mod dotns_lookup;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
+mod product_manifest;
 mod product_subtree;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
@@ -51,6 +53,7 @@ use crate::host_logic::product_account::index_bytes;
 use crate::host_logic::product_account::{
     derivation_index_bytes, derive_product_public_key, public_key_from_address,
 };
+use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
 use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
 use crate::host_logic::session::SessionState;
@@ -82,8 +85,7 @@ use authority::{
 };
 
 use futures::{FutureExt, StreamExt, pin_mut};
-#[cfg(test)]
-use parity_scale_codec::Encode;
+use parity_scale_codec::{Decode, Encode};
 use tracing::{debug, instrument, warn};
 use truapi::api::{
     Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
@@ -197,12 +199,12 @@ use truapi::{CallContext, CallError, CancellationReason, Subscription};
 use truapi::{latest, v01};
 use truapi_platform::Platform;
 use truapi_platform::{
-    AccountAccessReview, ChatFieldError, CreateTransactionReview, IdentityDisclosureReview,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
-    ProductContext, ProductStorageKey, ProductSubtreeReview, ResourceAllocationReview,
-    SessionUiInfo, SignPayloadReview, SignRawReview, UserConfirmationReview,
-    normalize_chat_identifier, normalize_product_identifier, validate_chat_icon,
-    validate_chat_message_content, validate_chat_name,
+    AccountAccessReview, ChatFieldError, CoreStorageKey, CreateTransactionReview,
+    IdentityDisclosureReview, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
+    PreimageSubmitReview, ProductContext, ProductStorageKey, ProductSubtreeReview,
+    ResourceAllocationReview, SessionUiInfo, SignPayloadReview, SignRawReview,
+    UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    validate_chat_icon, validate_chat_message_content, validate_chat_name,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -340,6 +342,38 @@ where
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {
     AuthorityError::Cancelled(AuthorityCancelError::new(cx.request_id(), reason))
+}
+
+/// How long a cached root manifest is honoured.
+///
+/// This is a revocation bound, not a performance knob: dotNS attaches no signal
+/// to a record edit, so a grant a publisher withdraws stays in force until the
+/// manifest is read again.
+const MANIFEST_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// A cached root manifest and when it was read.
+///
+/// The document is stored verbatim rather than reduced to the grants this core
+/// reads today, so a later consumer needs no cache migration.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+struct CachedManifest {
+    /// Seconds since the Unix epoch at which the manifest was read.
+    fetched_at_secs: u64,
+    /// The manifest JSON exactly as published.
+    json: String,
+}
+
+/// Seconds since the Unix epoch, or `None` on a clock before it.
+fn unix_time_secs() -> Option<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(target_arch = "wasm32")]
+    use web_time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs())
 }
 
 /// A scope a publisher pre-approves for another product in the manifest's
@@ -569,15 +603,77 @@ impl ProductRuntimeHost {
 
     /// Scopes `target`'s published manifest grants the calling product.
     ///
-    /// Resolving a manifest is not implemented, so a product other than the
-    /// caller grants nothing and every cross-product access is refused.
-    ///
     /// A grant that cannot be established answers `false` whatever the reason —
     /// the product does not resolve, it published no manifest, the fetch failed,
     /// or the manifest names this caller with a narrower scope. Callers turn
     /// that into one refusal, so the outcome never reveals which of those it was.
-    async fn manifest_grants_scope(&self, _target: &str, _scope: GrantedScope) -> bool {
-        false
+    /// Failing closed also means an unreachable chain withdraws grants rather
+    /// than assuming them.
+    ///
+    /// A user's own denial is not consulted here because nothing prompts for
+    /// cross-product access yet; the check belongs with the prompt that creates
+    /// one.
+    async fn manifest_grants_scope(&self, target: &str, scope: GrantedScope) -> bool {
+        let Ok(target) = normalize_product_identifier(target) else {
+            return false;
+        };
+        let Some(json) = self.root_manifest(&target).await else {
+            return false;
+        };
+        let Ok(manifest) = RootManifest::parse(&json) else {
+            return false;
+        };
+        manifest.grants(
+            bare_product_label(&self.product_id()),
+            match scope {
+                GrantedScope::Storage => Granted::Storage,
+                GrantedScope::Context => Granted::Context,
+            },
+        )
+    }
+
+    /// `target`'s root manifest JSON, from cache when it is younger than
+    /// [`MANIFEST_TTL`] and from dotNS otherwise.
+    ///
+    /// A freshly read manifest is cached even though the caller may not be
+    /// granted anything by it: the document describes the product, not the
+    /// asker.
+    async fn root_manifest(&self, target: &str) -> Option<String> {
+        let key = CoreStorageKey::ProductManifest {
+            product_id: target.to_string(),
+        };
+        let now = unix_time_secs()?;
+        if let Ok(Some(bytes)) = self.platform.read_core_storage(key.clone()).await
+            && let Ok(cached) = CachedManifest::decode(&mut bytes.as_slice())
+            && now.saturating_sub(cached.fetched_at_secs) < MANIFEST_TTL_SECS
+        {
+            return Some(cached.json);
+        }
+
+        let genesis_hash = self.services.asset_hub_chain_genesis_hash()?;
+        let json =
+            match product_manifest::fetch_root_manifest(&self.services.chain, genesis_hash, target)
+                .await
+            {
+                Ok(Some(json)) => json,
+                Ok(None) => return None,
+                Err(reason) => {
+                    warn!(%target, %reason, "root manifest lookup failed");
+                    return None;
+                }
+            };
+        let _ = self
+            .platform
+            .write_core_storage(
+                key,
+                CachedManifest {
+                    fetched_at_secs: now,
+                    json: json.clone(),
+                }
+                .encode(),
+            )
+            .await;
+        Some(json)
     }
 
     fn normalize_product_account_id(
@@ -3040,7 +3136,10 @@ mod tests {
     use crate::test_support::*;
     use std::sync::Mutex;
     use std::sync::atomic::Ordering;
-    use truapi_platform::{AuthState, CoreStorageKey, PermissionAuthorizationRequest};
+    use truapi_platform::{
+        AuthState, CoreStorage as PlatformCoreStorage, CoreStorageKey,
+        PermissionAuthorizationRequest,
+    };
 
     fn test_product_subtree(product_id: &str) -> [u8; 32] {
         let root =
@@ -3204,10 +3303,10 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_read_is_refused_without_a_manifest_reader() {
-        // No manifest reader exists, so no grant can be established and every
-        // foreign read is refused. The refusal must be the dedicated variant,
-        // not a generic error a product would retry.
+    fn a_foreign_read_is_refused_when_no_grant_can_be_established() {
+        // A host with no Asset Hub configured cannot resolve a manifest, so no
+        // grant exists and the read is refused. The refusal must be the
+        // dedicated variant, not a generic error a product would retry.
         let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
         assert_eq!(
             read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
@@ -3233,6 +3332,91 @@ mod tests {
         assert_eq!(
             read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
             refusal
+        );
+    }
+
+    /// Seeds `owner`'s cached manifest, so a grant resolves without a chain.
+    fn cache_manifest(platform: &StubPlatform, owner: &str, trusted: &str, age_secs: u64) {
+        let json = format!(
+            r#"{{"$v":1,"displayName":"D","description":"d",
+                "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted}}}"#
+        );
+        let entry = CachedManifest {
+            fetched_at_secs: unix_time_secs()
+                .expect("clock is after the epoch")
+                .saturating_sub(age_secs),
+            json,
+        };
+        futures::executor::block_on(platform.write_core_storage(
+            CoreStorageKey::ProductManifest {
+                product_id: owner.to_string(),
+            },
+            entry.encode(),
+        ))
+        .expect("stub core storage accepts the entry");
+    }
+
+    #[test]
+    fn a_cached_grant_lets_a_foreign_read_through() {
+        // The caller is `unknown.dot`, so the manifest names the bare label.
+        let platform = stub_platform();
+        cache_manifest(&platform, "wallet.dot", r#"{"unknown":["storage"]}"#, 0);
+        let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+        assert!(read_storage(&host, Some("wallet.dot"), "k").is_ok());
+    }
+
+    #[test]
+    fn all_satisfies_a_storage_read() {
+        let platform = stub_platform();
+        cache_manifest(&platform, "wallet.dot", r#"{"unknown":["all"]}"#, 0);
+        let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+        assert!(read_storage(&host, Some("wallet.dot"), "k").is_ok());
+    }
+
+    #[test]
+    fn a_grant_to_another_product_does_not_admit_this_caller() {
+        let platform = stub_platform();
+        cache_manifest(&platform, "wallet.dot", r#"{"stash":["storage"]}"#, 0);
+        let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+        assert!(read_storage(&host, Some("wallet.dot"), "k").is_err());
+    }
+
+    #[test]
+    fn a_context_grant_does_not_open_storage() {
+        // Scopes are independent: `context` must leave storage refusing.
+        let platform = stub_platform();
+        cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+        let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+        assert!(read_storage(&host, Some("wallet.dot"), "k").is_err());
+    }
+
+    #[test]
+    fn a_cached_grant_stops_being_honoured_once_it_expires() {
+        // The lifetime is the revocation bound. Past it the entry is ignored,
+        // and with no Asset Hub to re-read from the grant is gone.
+        let platform = stub_platform();
+        cache_manifest(
+            &platform,
+            "wallet.dot",
+            r#"{"unknown":["storage"]}"#,
+            MANIFEST_TTL_SECS + 1,
+        );
+        let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+        assert!(read_storage(&host, Some("wallet.dot"), "k").is_err());
+    }
+
+    #[test]
+    fn a_cached_context_grant_lets_a_foreign_proof_through() {
+        // Reaches the session check rather than the cross-product refusal,
+        // which is how a granted proof differs from an ungranted one here.
+        let platform = stub_platform();
+        cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+        let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+        assert_eq!(
+            proof_refusal(&host, "wallet.dot"),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::Rejected
+            )))
         );
     }
 
@@ -3276,9 +3460,9 @@ mod tests {
     }
 
     #[test]
-    fn a_proof_against_a_foreign_key_is_refused_without_a_manifest_reader() {
-        // A foreign key needs the owning product's `context` grant. No manifest
-        // reader exists, so no grant can be established and the call is refused
+    fn a_proof_against_a_foreign_key_is_refused_when_no_grant_can_be_established() {
+        // A foreign key needs the owning product's `context` grant. With no
+        // Asset Hub configured no manifest resolves, so the call is refused
         // before a session is ever consulted.
         let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
         assert_eq!(

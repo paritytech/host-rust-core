@@ -37,6 +37,10 @@ pub(crate) struct RuntimeServices {
     /// startup by a host that can read it. Unset leaves device grants
     /// resolving from stored state alone.
     permission_status: OnceLock<Arc<dyn PermissionStatusHost>>,
+    /// Asset Hub the dotNS contracts are deployed on, installed once at startup
+    /// by the host that knows its chain configuration. Unset leaves every
+    /// manifest unresolvable, so no cross-product grant is honoured.
+    asset_hub_chain_genesis_hash: OnceLock<[u8; 32]>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -86,6 +90,7 @@ impl RuntimeServices {
             host_info,
             chat_platform: None,
             permission_status: OnceLock::new(),
+            asset_hub_chain_genesis_hash: OnceLock::new(),
             chain,
             statement_store,
             bulletin,
@@ -136,6 +141,23 @@ impl RuntimeServices {
     }
 
     /// The host's live OS permission-status adapter, when one is installed.
+    /// Records the Asset Hub the dotNS contracts live on. Returns false when a
+    /// hash is already installed.
+    pub(crate) fn install_asset_hub_genesis_hash(&self, genesis_hash: [u8; 32]) -> bool {
+        self.asset_hub_chain_genesis_hash.set(genesis_hash).is_ok()
+    }
+
+    /// The Asset Hub dotNS reads run against, when one is configured.
+    ///
+    /// An all-zero hash is how a host says it has no Asset Hub, so it reads the
+    /// same as never having installed one.
+    pub(crate) fn asset_hub_chain_genesis_hash(&self) -> Option<[u8; 32]> {
+        self.asset_hub_chain_genesis_hash
+            .get()
+            .copied()
+            .filter(|hash| *hash != [0u8; 32])
+    }
+
     pub(crate) fn permission_status_host(&self) -> Option<Arc<dyn PermissionStatusHost>> {
         self.permission_status.get().cloned()
     }
