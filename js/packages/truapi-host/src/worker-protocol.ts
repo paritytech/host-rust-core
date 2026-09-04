@@ -66,6 +66,9 @@ export type MainToWorker =
        * the boundary.
        */
       capabilities: OptionalCapabilities;
+      // Dev-only: when set, the worker dials this debugger and streams tapped
+      // frames to it. Null in production, so the host tap stays inert.
+      debuggerUrl: string | null;
     }
   | { kind: "createCore"; coreId: number; product: unknown }
   | { kind: "disposeCore"; coreId: number }
@@ -135,7 +138,15 @@ export type MainToWorker =
  */
 export type WorkerToMain =
   | { kind: "loaded" }
-  | { kind: "ready" }
+  | {
+      kind: "ready";
+      /**
+       * The encoding core's wire-schema hash, when it reports one. The page needs
+       * it to stamp an in-host debugger tap with the same identity a dialing host
+       * puts on a standalone envelope; without it a tap is grouped but not decoded.
+       */
+      schema?: string;
+    }
   | { kind: "coreReady"; coreId: number }
   | { kind: "coreError"; coreId: number; error: string }
   | { kind: "fatalError"; error: string }
