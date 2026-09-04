@@ -1001,6 +1001,59 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(worker.terminated).toBe(true);
   });
 
+  it("ending an unknown or already-ended operation releases no other hold", async () => {
+    const worker = new FakeWorker();
+    let nextId = 1;
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        productOperations: { beginOperation: async () => ({ id: nextId++ }) },
+      }),
+      { runtimeConfig: runtimeConfig({ executionKind: "Worker" }) },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const product = ProductContext.enc({
+      productId: "dotli.dot",
+      executionKind: "Worker",
+    });
+    const begin = (requestId: number) =>
+      worker.emit({
+        kind: "callbackRequest",
+        requestId,
+        name: "beginOperation",
+        args: [product, ""],
+      });
+    const end = (requestId: number, id: number) =>
+      worker.emit({
+        kind: "callbackRequest",
+        requestId,
+        name: "endOperation",
+        args: [product, id],
+      });
+
+    begin(1);
+    begin(2);
+    await settle();
+    provider.dispose();
+
+    // Operation 1 ends twice and an unknown id ends once. Operation 2 still
+    // holds the worker.
+    end(3, 1);
+    end(4, 1);
+    end(5, 99);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(worker.terminated).toBe(false);
+
+    end(6, 2);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(worker.terminated).toBe(true);
+  });
+
   it("routes payload-carrying subscriptions by name", async () => {
     const worker = new FakeWorker();
     const keys: Uint8Array[] = [];
