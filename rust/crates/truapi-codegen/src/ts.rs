@@ -578,6 +578,12 @@ pub fn generate(
     let wire_table_code = generate_wire_table(api, target_version)?;
     fs::write(Path::new(output_dir).join("wire-table.ts"), wire_table_code)?;
 
+    let decode_table_code = generate_decode_table(api, target_version)?;
+    fs::write(
+        Path::new(output_dir).join("wire-decode.ts"),
+        decode_table_code,
+    )?;
+
     Ok(())
 }
 
@@ -707,6 +713,321 @@ fn trait_wire_id(trait_def: &TraitDef) -> Result<u8> {
             trait_def.name
         )
     })
+}
+
+/// One row of the wire contract: a frame id, its method leg, whether the method
+/// is `#[wire(..., sensitive)]`, whether the method is host-initiated, and the
+/// structural signature of the payload that frame carries.
+type WireIdRow = (u8, u8, String, bool, bool, String);
+
+/// Every wire address (sorted by `(trait, method)`) with the facts above. The
+/// one iteration the schema-hash fingerprint is derived from, so the
+/// fingerprint tracks exactly what the wire table publishes.
+///
+/// `host_initiated` is in the row because it decides WHICH SIDE sends a frame
+/// id. A host and product that disagree on it both send `start` on the same id
+/// and neither answers - a mismatch the fingerprint has to catch, and one that is
+/// strictly more consequential than `sensitive`, which changes no runtime
+/// behaviour at all.
+fn wire_id_rows(api: &ApiDefinition, target_version: u32) -> Result<Vec<WireIdRow>> {
+    let wrappers = collect_versioned_wrappers(api);
+    let types = types_by_name(api);
+    // Seed the reserved address so the fingerprint moves if it ever moves.
+    // `generate_wire_table` reserves it in its own collision map, but that map is
+    // not what the hash folds over, so without this row the reserved address could
+    // be reassigned and every already-built debugger would keep confirming the
+    // table. It carries no payload and no method, so its facts are fixed.
+    let mut seen: BTreeMap<(u8, u8), (String, bool, bool, String)> = BTreeMap::from([(
+        (
+            RESERVED_PROTOCOL_ERROR_TRAIT_ID,
+            RESERVED_PROTOCOL_ERROR_TRAIT_ID,
+        ),
+        (
+            "reserved::protocol_error".to_string(),
+            false,
+            false,
+            String::new(),
+        ),
+    )]);
+    for trait_def in &api.traits {
+        // Method-less traits (e.g. the `TrUApi` umbrella trait) own no wire
+        // frames and need no trait discriminant, matching `generate_wire_table`.
+        if trait_def.methods.is_empty() {
+            continue;
+        }
+        let trait_id = trait_wire_id(trait_def)?;
+        for method in &trait_def.methods {
+            if !method_is_included(trait_def, method, &wrappers, target_version)? {
+                continue;
+            }
+            let method_id = wire_id_for_method(trait_def, method)?;
+            let payload = method_payload_signature(method, &types);
+            // Qualify the tag with the trait. The tag is what the schema hash folds
+            // in, and the debugger's method label is derived from the generated
+            // const name (`LOCAL_STORAGE_WRITE` -> `localStorage.write`), which is
+            // trait-qualified. Hashing the bare method name lets a trait rename, or
+            // a method moving between traits, keep the same fingerprint: the host
+            // then stamps a hash the debugger affirmatively confirms and decode
+            // proceeds under the wrong label, which is the exact failure this hash
+            // exists to refuse.
+            let qualified = format!("{}::{}", trait_def.name, method.name);
+            if let Some((existing, _, _, _)) = seen.insert(
+                (trait_id, method_id),
+                (
+                    qualified.clone(),
+                    method.wire.sensitive,
+                    method.wire.host_initiated,
+                    payload,
+                ),
+            ) {
+                bail!(
+                    "wire id ({trait_id}, {method_id}) reused: `{existing}` and \
+                     `{qualified}` collide"
+                );
+            }
+        }
+    }
+    Ok(seen
+        .into_iter()
+        .map(
+            |((trait_id, method_id), (tag, sensitive, host_initiated, payload))| {
+                (trait_id, method_id, tag, sensitive, host_initiated, payload)
+            },
+        )
+        .collect())
+}
+
+/// Index the API's user-defined types by their emitted name, so a signature walk
+/// can resolve a [`TypeRef::Named`] to its actual shape.
+fn types_by_name(api: &ApiDefinition) -> HashMap<&str, &TypeDef> {
+    // Framework types are included even though they are never emitted: their
+    // shape is still on the wire. `CallError` is the one that matters - it wraps
+    // every error leg, so its variant list is the discriminant of every error
+    // response, and leaving it out let a variant be inserted (renumbering every
+    // discriminant on every error) without moving the fingerprint at all.
+    api.types
+        .iter()
+        .chain(api.framework_types.iter())
+        .map(|def| (def.name.as_str(), def))
+        .collect()
+}
+
+/// Structural signature of everything a method puts on the wire: its parameters
+/// (the request/start payload) and its return shape (the response/item payload).
+///
+/// Folded into the wire schema hash so the fingerprint moves when a payload's
+/// *layout* changes, not only when a frame id or method name does.
+fn method_payload_signature(method: &MethodDef, types: &HashMap<&str, &TypeDef>) -> String {
+    let mut out = String::new();
+    for param in &method.params {
+        let sig = type_signature(&param.type_ref, types, &mut Vec::new());
+        let _ = write!(out, "{}:{sig},", param.name);
+    }
+    out.push_str("->");
+    match &method.return_type {
+        ReturnType::Result { ok, err } => {
+            let _ = write!(
+                out,
+                "res<{},{}>",
+                type_signature(ok, types, &mut Vec::new()),
+                type_signature(err, types, &mut Vec::new())
+            );
+        }
+        ReturnType::Subscription(item) => {
+            let _ = write!(out, "sub<{}>", type_signature(item, types, &mut Vec::new()));
+        }
+        ReturnType::ResultSubscription { item, err } => {
+            let _ = write!(
+                out,
+                "ressub<{},{}>",
+                type_signature(item, types, &mut Vec::new()),
+                type_signature(err, types, &mut Vec::new())
+            );
+        }
+    }
+    out
+}
+
+/// Canonical structural rendering of a type: field order and field types for a
+/// struct, positional variant indices and payloads for an enum, resolved
+/// transitively.
+///
+/// Two layouts that encode differently under SCALE cannot render the same
+/// string: field order, field types, variant order, and arity all appear. A type
+/// this crate does not own (external or generic) degrades to its name, which is
+/// the most that is knowable from rustdoc. `seen` guards recursive types.
+fn type_signature(
+    type_ref: &TypeRef,
+    types: &HashMap<&str, &TypeDef>,
+    seen: &mut Vec<String>,
+) -> String {
+    match type_ref {
+        TypeRef::Primitive(name) => name.clone(),
+        TypeRef::Unit => "()".to_string(),
+        TypeRef::Generic(name) => format!("generic:{name}"),
+        TypeRef::Vec(inner) => format!("vec<{}>", type_signature(inner, types, seen)),
+        TypeRef::Option(inner) => format!("opt<{}>", type_signature(inner, types, seen)),
+        TypeRef::Array(inner, len) => {
+            format!("[{};{len}]", type_signature(inner, types, seen))
+        }
+        TypeRef::Tuple(items) => {
+            let inner: Vec<String> = items
+                .iter()
+                .map(|item| type_signature(item, types, seen))
+                .collect();
+            format!("({})", inner.join(","))
+        }
+        TypeRef::Named { name, args } => {
+            let rendered_args: Vec<String> = args
+                .iter()
+                .map(|arg| type_signature(arg, types, seen))
+                .collect();
+            let suffix = if rendered_args.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", rendered_args.join(","))
+            };
+            // A type already on the walk stack is recursive; naming it closes the
+            // cycle without losing that the edge exists.
+            if seen.iter().any(|entry| entry == name) {
+                return format!("rec:{name}{suffix}");
+            }
+            let Some(def) = types.get(name.as_str()) else {
+                // Degrading silently to the bare name is what let a payload's
+                // shape change without moving the fingerprint - the type's own
+                // fields or variants simply stop being hashed. Marking it keeps
+                // the blind spot visible in the canonical string, and
+                // `every_wire_reachable_type_resolves` fails the build if a new
+                // one ever appears.
+                return format!("UNRESOLVED<{name}>{suffix}");
+            };
+            seen.push(name.clone());
+            let body = match &def.kind {
+                TypeDefKind::Alias(inner) => {
+                    format!("={}", type_signature(inner, types, seen))
+                }
+                TypeDefKind::Struct(fields) => {
+                    let rendered: Vec<String> = fields
+                        .iter()
+                        .map(|field| {
+                            format!(
+                                "{}:{}",
+                                field.name,
+                                type_signature(&field.type_ref, types, seen)
+                            )
+                        })
+                        .collect();
+                    format!("{{{}}}", rendered.join(","))
+                }
+                TypeDefKind::TupleStruct(items) => {
+                    let rendered: Vec<String> = items
+                        .iter()
+                        .map(|item| type_signature(item, types, seen))
+                        .collect();
+                    format!("({})", rendered.join(","))
+                }
+                TypeDefKind::Enum(variants) => {
+                    let rendered: Vec<String> = variants
+                        .iter()
+                        .enumerate()
+                        .map(|(index, variant)| {
+                            let payload = match &variant.fields {
+                                VariantFields::Unit => String::new(),
+                                VariantFields::Unnamed(items) => {
+                                    let inner: Vec<String> = items
+                                        .iter()
+                                        .map(|item| type_signature(item, types, seen))
+                                        .collect();
+                                    format!("({})", inner.join(","))
+                                }
+                                VariantFields::Named(fields) => {
+                                    let inner: Vec<String> = fields
+                                        .iter()
+                                        .map(|field| {
+                                            format!(
+                                                "{}:{}",
+                                                field.name,
+                                                type_signature(&field.type_ref, types, seen)
+                                            )
+                                        })
+                                        .collect();
+                                    format!("{{{}}}", inner.join(","))
+                                }
+                            };
+                            // The SCALE discriminant is the explicit
+                            // `#[codec(index = N)]` when the variant carries one,
+                            // and the positional index otherwise. Hash whichever
+                            // actually ships: fingerprinting position alone is
+                            // blind to a renumbering that leaves declaration order
+                            // untouched, which is how RFC-0024 moved `Rejected`
+                            // from `0x02` to `0x04` without any signal.
+                            let discriminant = variant
+                                .codec_index
+                                .map(|explicit| explicit.to_string())
+                                .unwrap_or_else(|| index.to_string());
+                            format!("{discriminant}:{}{payload}", variant.name)
+                        })
+                        .collect();
+                    format!("|{}|", rendered.join(";"))
+                }
+            };
+            seen.pop();
+            format!("{name}{suffix}{body}")
+        }
+    }
+}
+
+/// A stable fingerprint of the wire contract: every frame id, the method leg it
+/// resolves to, and its sensitivity, folded together with the codec version.
+/// Two builds whose frame tables differ - a reassigned id, a renamed or
+/// added/removed method, or a flipped `#[wire(sensitive)]` - produce different
+/// hashes even when the handshake `codec_version` is unchanged, which is the
+/// case the coarse codec number cannot see. Emitted as `TRUAPI_WIRE_SCHEMA_HASH`
+/// on both the TS and Rust sides so a host stamps it on every debug envelope and
+/// the debugger refuses to decode a frame whose contract differs from its own.
+pub(crate) fn wire_schema_hash(
+    api: &ApiDefinition,
+    target_version: u32,
+    codec_version: u8,
+) -> Result<String> {
+    let mut canonical = format!("codec={codec_version}\n");
+    let mut unresolved: BTreeSet<String> = BTreeSet::new();
+    for (trait_id, method_id, tag, sensitive, host_initiated, payload) in
+        wire_id_rows(api, target_version)?
+    {
+        let flag = u8::from(sensitive);
+        let initiator = u8::from(host_initiated);
+        for marker in payload.split("UNRESOLVED<").skip(1) {
+            unresolved.insert(marker.chars().take_while(|c| *c != '>').collect());
+        }
+        canonical.push_str(&format!(
+            "{trait_id}.{method_id}:{tag}:{flag}:{initiator}:{payload}\n"
+        ));
+    }
+    // Fail the BUILD, not a test. A type that does not resolve contributes only
+    // its name, so its own fields or variants stop being fingerprinted and can
+    // change undetected - `CallError` sat on every error leg exactly that way,
+    // and inserting a variant renumbered every error discriminant while the hash
+    // and the whole generated tree stayed byte-identical. Enforcing it here means
+    // a future addition to the extractor's skip list cannot re-open the hole, and
+    // does not depend on a test being wired up to notice.
+    if !unresolved.is_empty() {
+        bail!(
+            "wire schema hash cannot see the shape of {unresolved:?}: these types are \
+             reachable from a wire payload but are not in the API definition, so a \
+             change to their fields or variants would not move the fingerprint. Add \
+             them to `ApiDefinition::framework_types` rather than letting the \
+             signature degrade to a bare name."
+        );
+    }
+    // FNV-1a 64-bit: deterministic across platforms and Rust versions (unlike
+    // `DefaultHasher`), dependency-free, and ample for a contract fingerprint.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in canonical.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Ok(format!("{hash:016x}"))
 }
 
 fn method_is_included(
@@ -916,6 +1237,7 @@ fn generate_types(api: &ApiDefinition, target_version: u32) -> Result<String> {
 fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) -> Result<String> {
     validate_versioned_wrapper_shapes(api)?;
 
+    let schema_hash = wire_schema_hash(api, target_version, codec_version)?;
     let mut out = String::new();
     writedoc!(
         out,
@@ -934,6 +1256,7 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         export type {{ ObservableLike, ObservableSource, Observer, Result, Subscription, TrUApiTransport }};
         export const TRUAPI_VERSION = {target_version} as const;
         export const TRUAPI_CODEC_VERSION = {codec_version} as const;
+        export const TRUAPI_WIRE_SCHEMA_HASH = "{schema_hash}" as const;
 
         function toSubscriptionError<Reason = never>(error: unknown): SubscriptionError<Reason> {{
           if (error instanceof SubscriptionError) return error as SubscriptionError<Reason>;
@@ -1068,6 +1391,92 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         "#
     )
     .unwrap();
+
+    Ok(out)
+}
+
+/// Generates the dev-only wire decode table (`wire-decode.ts`): a map from a
+/// wire address (`trait * 256 + method`, matching every direction a method
+/// carries under the nested envelope, RFC 0028) to a decoder that turns a
+/// frame's SCALE payload into its full versioned envelope value. It decodes
+/// through the same `T.{Method}Version` codec the generated client emits
+/// against ([`method_envelope_name`]), so a debugger sees exactly what the
+/// client would have decoded, direction tag included.
+fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<String> {
+    let wrappers = collect_versioned_wrappers(api);
+    let services = public_services(api)?;
+
+    // (numeric key, emitted table line) pairs, sorted for a stable,
+    // wire-ordered file that matches the wire-table layout.
+    let mut entries: Vec<(u32, String)> = Vec::new();
+
+    for service in &services {
+        let trait_def = service.trait_def;
+        for method in included_methods(trait_def, &wrappers, target_version)? {
+            let wire_const = wire_const_name(&trait_def.name, &method.name);
+            let method_id = wire_id_for_method(trait_def, method)?;
+            let trait_id = trait_wire_id(trait_def)?;
+            let key = u32::from(trait_id) * 256 + u32::from(method_id);
+
+            let envelope = match (&method.kind, &method.return_type) {
+                (MethodKind::Request, ReturnType::Result { .. }) => {
+                    method_envelope_name(api, request_wrapper_name(method, &wrappers), None)?
+                }
+                (MethodKind::Subscription, ReturnType::Subscription(ty)) => method_envelope_name(
+                    api,
+                    request_wrapper_name(method, &wrappers),
+                    versioned_wrapper_for(ty, &wrappers).map(|(name, _)| name),
+                )?,
+                (MethodKind::ResultSubscription, ReturnType::ResultSubscription { item, .. }) => {
+                    method_envelope_name(
+                        api,
+                        request_wrapper_name(method, &wrappers),
+                        versioned_wrapper_for(item, &wrappers).map(|(name, _)| name),
+                    )?
+                }
+                (kind, return_type) => {
+                    bail!(
+                        "Generator internal mismatch for method `{}`: kind {:?} does not match return type {:?}",
+                        method.name,
+                        kind,
+                        return_type
+                    );
+                }
+            };
+
+            entries.push((
+                key,
+                format!(
+                    "  [W.{wire_const}.trait * 256 + W.{wire_const}.method]: \
+                     (payload) => T.{envelope}.dec(payload),"
+                ),
+            ));
+        }
+    }
+
+    entries.sort_by_key(|(key, _)| *key);
+
+    let mut out = String::new();
+    writedoc!(
+        out,
+        r#"
+        // Auto-generated by truapi-codegen. Do not edit.
+
+        import * as T from './types.js';
+        import * as W from './wire-table.js';
+
+        /** Dev-only: decode a wire frame's SCALE payload to its full versioned envelope
+         *  value (direction tag included), keyed by `trait * 256 + method`. Unknown
+         *  addresses are absent (caller falls back to bytes). */
+        export const WIRE_DECODE_TABLE: Record<number, (payload: Uint8Array) => unknown> = {{
+        "#
+    )
+    .unwrap();
+    for (_, line) in &entries {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("};\n");
 
     Ok(out)
 }
@@ -2210,7 +2619,7 @@ fn codec_expr_mode(
             "u32" => Ok("S.u32".to_string()),
             "u64" => Ok("S.u64".to_string()),
             "u128" => Ok("S.u128".to_string()),
-            "compact" => Ok("S.compact".to_string()),
+            name if name.starts_with("compact") => Ok("S.compact".to_string()),
             "optionBool" => Ok("S.OptionBool".to_string()),
             "i8" => Ok("S.i8".to_string()),
             "i16" => Ok("S.i16".to_string()),
@@ -2295,7 +2704,7 @@ fn ts_type_with_named(ty: &TypeRef, qualified: bool, mode: NameMode<'_>) -> Resu
             "bool" => Ok("boolean".to_string()),
             "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" => Ok("number".to_string()),
             "u64" | "u128" | "i64" | "i128" => Ok("bigint".to_string()),
-            "compact" => Ok("number | bigint".to_string()),
+            name if name.starts_with("compact") => Ok("number | bigint".to_string()),
             "optionBool" => Ok("boolean | undefined".to_string()),
             "str" => Ok("string".to_string()),
             _ => bail!("Unsupported primitive type `{name}` in TypeScript type generation"),
@@ -2490,6 +2899,313 @@ mod tests {
         }
     }
 
+    /// Build a one-method API whose request payload is `struct Payload`, with the
+    /// given named fields, so a test can vary only the payload layout.
+    fn api_with_payload_fields(fields: Vec<(&str, TypeRef)>) -> ApiDefinition {
+        let payload = TypeDef {
+            name: "Payload".to_string(),
+            module_path: Vec::new(),
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Struct(
+                fields
+                    .into_iter()
+                    .map(|(name, type_ref)| FieldDef {
+                        name: name.to_string(),
+                        type_ref,
+                        docs: None,
+                    })
+                    .collect(),
+            ),
+            docs: None,
+        };
+        let method = MethodDef {
+            name: "do_thing".to_string(),
+            kind: MethodKind::Request,
+            params: vec![ParamDef {
+                name: "request".to_string(),
+                type_ref: TypeRef::Named {
+                    name: "Payload".to_string(),
+                    args: Vec::new(),
+                },
+            }],
+            return_type: ReturnType::Result {
+                ok: TypeRef::Unit,
+                err: TypeRef::Unit,
+            },
+            wire: wire_attrs(Some(7)),
+            docs: None,
+        };
+        ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Thing".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: Some(200),
+                methods: vec![method],
+                docs: None,
+            }],
+            public_trait_order: vec!["Thing".to_string()],
+            types: vec![payload],
+            framework_types: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn schema_hash_moves_when_a_payload_field_type_changes() {
+        // The drift class this fingerprint exists to catch: same frame ids, same
+        // method names, same sensitivity - only a field's width changed. A newer
+        // host's bytes would otherwise decode on the old table without throwing,
+        // silently yielding wrong values (the shape of the getAccount P0).
+        let before = api_with_payload_fields(vec![
+            ("ring_index", TypeRef::Primitive("u32".to_string())),
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+        ]);
+        let after = api_with_payload_fields(vec![
+            ("ring_index", TypeRef::Primitive("u64".to_string())),
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+        ]);
+
+        assert_ne!(
+            wire_schema_hash(&before, 1, 1).unwrap(),
+            wire_schema_hash(&after, 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn schema_hash_moves_when_same_width_payload_fields_are_reordered() {
+        // Nastier than a width change: the frame length is identical, so no
+        // arithmetic check can see it and the decode cannot fail - the values
+        // simply swap.
+        let before = api_with_payload_fields(vec![
+            ("ring_index", TypeRef::Primitive("u32".to_string())),
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+        ]);
+        let after = api_with_payload_fields(vec![
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+            ("ring_index", TypeRef::Primitive("u32".to_string())),
+        ]);
+
+        assert_ne!(
+            wire_schema_hash(&before, 1, 1).unwrap(),
+            wire_schema_hash(&after, 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn schema_hash_is_stable_for_an_unchanged_contract() {
+        // The fingerprint must not be noisy: an identical contract hashes
+        // identically, or every host would look drifted.
+        let api =
+            api_with_payload_fields(vec![("ring_index", TypeRef::Primitive("u32".to_string()))]);
+
+        assert_eq!(
+            wire_schema_hash(&api, 1, 1).unwrap(),
+            wire_schema_hash(&api, 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn type_signature_terminates_on_a_recursive_type() {
+        // `struct Node { next: Option<Node> }` must not recurse forever.
+        let node = TypeDef {
+            name: "Node".to_string(),
+            module_path: Vec::new(),
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Struct(vec![FieldDef {
+                name: "next".to_string(),
+                type_ref: TypeRef::Option(Box::new(TypeRef::Named {
+                    name: "Node".to_string(),
+                    args: Vec::new(),
+                })),
+                docs: None,
+            }]),
+            docs: None,
+        };
+        let types: HashMap<&str, &TypeDef> = [("Node", &node)].into_iter().collect();
+
+        let sig = type_signature(
+            &TypeRef::Named {
+                name: "Node".to_string(),
+                args: Vec::new(),
+            },
+            &types,
+            &mut Vec::new(),
+        );
+
+        assert!(sig.contains("rec:Node"), "unexpected signature: {sig}");
+    }
+
+    #[test]
+    fn schema_hash_moves_when_a_compact_width_changes() {
+        // `Compact<u32>` and `Compact<u64>` encode the same small values the same
+        // way, so the frame length does not change - but the wider type accepts
+        // values the narrower decoder rejects. The extractor used to discard the
+        // argument entirely, collapsing every compact site to one token, so a
+        // widening left the fingerprint byte-identical.
+        let build = |width: &str| {
+            api_with_payload_fields(vec![(
+                "size",
+                TypeRef::Primitive(format!("compact<{width}>")),
+            )])
+        };
+
+        assert_ne!(
+            wire_schema_hash(&build("u32"), 1, 1).unwrap(),
+            wire_schema_hash(&build("u64"), 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn schema_hash_moves_when_an_enum_variant_is_reordered() {
+        // Variant position is the SCALE discriminant, so a reorder silently
+        // renumbers every variant on the wire.
+        let variant = |name: &str| VariantDef {
+            name: name.to_string(),
+            fields: VariantFields::Unit,
+            docs: None,
+            codec_index: None,
+        };
+        let build = |names: [&str; 2]| {
+            let enum_def = TypeDef {
+                name: "Choice".to_string(),
+                module_path: Vec::new(),
+                generic_params: Vec::new(),
+                kind: TypeDefKind::Enum(names.iter().map(|n| variant(n)).collect()),
+                docs: None,
+            };
+            let method = MethodDef {
+                name: "do_thing".to_string(),
+                kind: MethodKind::Request,
+                params: vec![ParamDef {
+                    name: "choice".to_string(),
+                    type_ref: TypeRef::Named {
+                        name: "Choice".to_string(),
+                        args: Vec::new(),
+                    },
+                }],
+                return_type: ReturnType::Result {
+                    ok: TypeRef::Unit,
+                    err: TypeRef::Unit,
+                },
+                wire: wire_attrs(Some(7)),
+                docs: None,
+            };
+            ApiDefinition {
+                traits: vec![TraitDef {
+                    name: "Thing".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(200),
+                    methods: vec![method],
+                    docs: None,
+                }],
+                public_trait_order: vec!["Thing".to_string()],
+                types: vec![enum_def],
+                framework_types: Vec::new(),
+            }
+        };
+
+        assert_ne!(
+            wire_schema_hash(&build(["Allow", "Deny"]), 1, 1).unwrap(),
+            wire_schema_hash(&build(["Deny", "Allow"]), 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn schema_hash_moves_when_a_method_changes_trait() {
+        // The debugger derives its displayed method label from the generated const
+        // name, which is trait-qualified (`LOCAL_STORAGE_WRITE` -> the label
+        // `localStorage.write`). Hashing the bare method name therefore let a trait
+        // rename, or a method moving between traits, keep the same fingerprint: the
+        // host stamped a hash the debugger affirmatively confirmed, decode ran, and
+        // every surface showed a confident wrong label - the exact failure the
+        // fingerprint exists to refuse.
+        let build = |trait_name: &str, trait_id: u8| {
+            let method = MethodDef {
+                name: "write".to_string(),
+                kind: MethodKind::Request,
+                params: Vec::new(),
+                return_type: ReturnType::Result {
+                    ok: TypeRef::Unit,
+                    err: TypeRef::Unit,
+                },
+                wire: wire_attrs(Some(7)),
+                docs: None,
+            };
+            ApiDefinition {
+                traits: vec![TraitDef {
+                    name: trait_name.to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(trait_id),
+                    methods: vec![method],
+                    docs: None,
+                }],
+                public_trait_order: vec![trait_name.to_string()],
+                types: Vec::new(),
+                framework_types: Vec::new(),
+            }
+        };
+
+        // Same method id, same method name, same payload shape; only the trait
+        // (name and id both) differs.
+        assert_ne!(
+            wire_schema_hash(&build("LocalStorage", 200), 1, 1).unwrap(),
+            wire_schema_hash(&build("Statement", 201), 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_wire_reachable_type_fails_the_build() {
+        // The guard that replaced an env-gated test which asserted nothing when
+        // the variable was unset. `Missing` is referenced by the payload but is
+        // absent from both `types` and `framework_types`, so its shape cannot be
+        // fingerprinted - exactly the state `CallError` was in.
+        let method = MethodDef {
+            name: "do_thing".to_string(),
+            kind: MethodKind::Request,
+            params: vec![ParamDef {
+                name: "request".to_string(),
+                type_ref: TypeRef::Named {
+                    name: "Missing".to_string(),
+                    args: Vec::new(),
+                },
+            }],
+            return_type: ReturnType::Result {
+                ok: TypeRef::Unit,
+                err: TypeRef::Unit,
+            },
+            wire: wire_attrs(Some(7)),
+            docs: None,
+        };
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Thing".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: Some(200),
+                methods: vec![method],
+                docs: None,
+            }],
+            public_trait_order: vec!["Thing".to_string()],
+            types: Vec::new(),
+            framework_types: Vec::new(),
+        };
+
+        let err = wire_schema_hash(&api, 1, 1)
+            .expect_err("an unresolvable payload type must fail codegen");
+        assert!(
+            format!("{err}").contains("Missing"),
+            "the error must name the offending type: {err}"
+        );
+    }
+
+    #[test]
+    fn a_resolvable_payload_hashes_without_complaint() {
+        // The negative control: the guard must not fire on an ordinary payload,
+        // or every codegen run would fail.
+        let api =
+            api_with_payload_fields(vec![("ring_index", TypeRef::Primitive("u32".to_string()))]);
+
+        assert!(wire_schema_hash(&api, 1, 1).is_ok());
+    }
+
     #[test]
     fn service_display_name_formats_known_acronyms() {
         let json_rpc = TraitDef {
@@ -2547,6 +3263,7 @@ mod tests {
             }],
             public_trait_order: Vec::new(),
             types: Vec::new(),
+            framework_types: Vec::new(),
         }
     }
 
@@ -2591,6 +3308,20 @@ mod tests {
         }
     }
 
+    /// An empty struct `TypeDef`, so a synthetic fixture's payload types resolve.
+    /// A fixture that references a name it never defines is not a realistic API,
+    /// and the schema-hash guard rejects it for the same reason it rejects real
+    /// drift: an unresolvable type contributes only its name to the fingerprint.
+    fn empty_struct(name: &str) -> TypeDef {
+        TypeDef {
+            name: name.to_string(),
+            module_path: Vec::new(),
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Struct(Vec::new()),
+            docs: None,
+        }
+    }
+
     fn versioned_tuple_wrapper_variants(name: &str, variants: &[(u32, &str)]) -> TypeDef {
         TypeDef {
             name: name.to_string(),
@@ -2603,6 +3334,7 @@ mod tests {
                         name: format!("V{version}"),
                         fields: VariantFields::Unnamed(vec![named_type(inner)]),
                         docs: None,
+                        codec_index: None,
                     })
                     .collect(),
             ),
@@ -2656,11 +3388,13 @@ mod tests {
                     name: "V1".to_string(),
                     fields: VariantFields::Named(fields.clone()),
                     docs: None,
+                    codec_index: None,
                 },
                 VariantDef {
                     name: "V2".to_string(),
                     fields: VariantFields::Named(fields),
                     docs: None,
+                    codec_index: None,
                 },
             ]),
             docs: None,
@@ -2681,6 +3415,7 @@ mod tests {
                         args: Vec::new(),
                     }]),
                     docs: None,
+                    codec_index: None,
                 },
                 VariantDef {
                     name: "V10".to_string(),
@@ -2689,6 +3424,7 @@ mod tests {
                         args: Vec::new(),
                     }]),
                     docs: None,
+                    codec_index: None,
                 },
                 VariantDef {
                     name: "V2".to_string(),
@@ -2697,6 +3433,7 @@ mod tests {
                         args: Vec::new(),
                     }]),
                     docs: None,
+                    codec_index: None,
                 },
             ]),
             docs: None,
@@ -2740,6 +3477,7 @@ mod tests {
             traits: Vec::new(),
             public_trait_order: Vec::new(),
             types: Vec::new(),
+            framework_types: Vec::new(),
         };
         assert_eq!(latest_wire_version(&api), 1);
     }
@@ -2754,6 +3492,7 @@ mod tests {
                 versioned_tuple_wrapper_variants("TwoWrapper", &[(1, "Legacy"), (3, "Latest")]),
                 versioned_tuple_wrapper_variants("ThreeWrapper", &[(2, "Middle")]),
             ],
+            framework_types: Vec::new(),
         };
         assert_eq!(latest_wire_version(&api), 3);
     }
@@ -2782,6 +3521,65 @@ mod tests {
                     .find("export const EXAMPLE_LATER")
                     .expect("later entry")
         );
+    }
+
+    #[test]
+    fn generate_decode_table_emits_frame_keyed_decoders() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Example".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: Some(200),
+                methods: vec![
+                    request_method_with_wrappers(
+                        "feature_supported",
+                        Some(2),
+                        "FeatureSupportedRequest",
+                        "FeatureSupportedResponse",
+                        "FeatureSupportedError",
+                    ),
+                    subscription_method_with_wrappers("stream", Some(10), "StreamItem"),
+                ],
+                docs: None,
+            }],
+            public_trait_order: vec!["Example".to_string()],
+            types: vec![
+                versioned_tuple_wrapper_variants(
+                    "FeatureSupportedRequest",
+                    &[(1, "FeatureSupportedRequestV1")],
+                ),
+                versioned_tuple_wrapper_variants(
+                    "FeatureSupportedResponse",
+                    &[(1, "FeatureSupportedResponseV1")],
+                ),
+                versioned_tuple_wrapper_variants(
+                    "FeatureSupportedError",
+                    &[(1, "FeatureSupportedErrorV1")],
+                ),
+                versioned_tuple_wrapper_variants(
+                    "FeatureSupportedVersion",
+                    &[(1, "FeatureSupportedVersionV1")],
+                ),
+                versioned_tuple_wrapper_variants("StreamItem", &[(1, "StreamItemV1")]),
+                versioned_tuple_wrapper_variants("StreamVersion", &[(1, "StreamVersionV1")]),
+                empty_struct("FeatureSupportedRequestV1"),
+                empty_struct("FeatureSupportedResponseV1"),
+                empty_struct("FeatureSupportedErrorV1"),
+                empty_struct("StreamItemV1"),
+            ],
+            framework_types: Vec::new(),
+        };
+
+        let source = generate_decode_table(&api, 1).expect("generate decode table");
+
+        assert!(source.contains("export const WIRE_DECODE_TABLE"));
+        assert!(source.contains("(payload: Uint8Array) => unknown"));
+        assert!(source.contains(
+            "[W.EXAMPLE_FEATURE_SUPPORTED.trait * 256 + W.EXAMPLE_FEATURE_SUPPORTED.method]"
+        ));
+        assert!(source.contains("[W.EXAMPLE_STREAM.trait * 256 + W.EXAMPLE_STREAM.method]"));
+        assert!(source.contains("T.FeatureSupportedVersion.dec(payload)"));
+        assert!(source.contains("T.StreamVersion.dec(payload)"));
     }
 
     #[test]
@@ -2849,6 +3647,7 @@ mod tests {
                 docs: None,
             }],
             public_trait_order: Vec::new(),
+            framework_types: Vec::new(),
             types: vec![
                 versioned_tuple_wrapper_variants("FutureRequest", &[(2, "FutureRequestV2")]),
                 versioned_tuple_wrapper_variants("FutureResponse", &[(2, "FutureResponseV2")]),
@@ -2908,6 +3707,7 @@ mod tests {
             ],
             public_trait_order: Vec::new(),
             types: Vec::new(),
+            framework_types: Vec::new(),
         };
 
         let source = generate_wire_table(&api, 2).expect("generate wire table");
@@ -2940,6 +3740,7 @@ mod tests {
             ],
             public_trait_order: Vec::new(),
             types: Vec::new(),
+            framework_types: Vec::new(),
         };
 
         let err = generate_wire_table(&api, 2).expect_err("duplicate trait ids must error");
@@ -2959,6 +3760,7 @@ mod tests {
             }],
             public_trait_order: Vec::new(),
             types: Vec::new(),
+            framework_types: Vec::new(),
         };
 
         let err = generate_wire_table(&api, 2).expect_err("missing trait id must error");
@@ -3001,6 +3803,7 @@ mod tests {
                 versioned_tuple_wrapper_variants("FutureError", &[(2, "FutureErrorV2")]),
                 versioned_tuple_wrapper_variants("FutureItem", &[(2, "FutureItemV2")]),
             ],
+            framework_types: Vec::new(),
         };
 
         let source = generate_wire_table(&api, 1).expect("generate wire table");
@@ -3052,7 +3855,11 @@ mod tests {
                 versioned_tuple_wrapper_variants("FutureError", &[(2, "FutureErrorV2")]),
                 versioned_tuple_wrapper_variants("LegacyVersion", &[(1, "LegacyVersionV1")]),
                 versioned_tuple_wrapper_variants("FutureVersion", &[(2, "FutureVersionV2")]),
+                empty_struct("LegacyErrorV1"),
+                empty_struct("LegacyRequestV1"),
+                empty_struct("LegacyResponseV1"),
             ],
+            framework_types: Vec::new(),
         };
 
         let source = generate_client(&api, 1, 1).expect("generate client");
@@ -3099,7 +3906,12 @@ mod tests {
                 versioned_tuple_wrapper("ExampleRequest", "LegacyRequest", "LatestRequest"),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
                 versioned_tuple_wrapper_variants("ExampleVersion", &[(1, "ExampleVersionV1")]),
+                empty_struct("LatestRequest"),
+                empty_struct("LatestResponse"),
+                empty_struct("LegacyRequest"),
+                empty_struct("LegacyResponse"),
             ],
+            framework_types: Vec::new(),
         };
 
         let client_source = generate_client(&api, 2, 1).expect("generate client");
@@ -3166,6 +3978,7 @@ mod tests {
                 single_field_struct("V01ExampleError", "legacy_code", "u8"),
                 single_field_struct("V02ExampleError", "latest_code", "u32"),
             ],
+            framework_types: Vec::new(),
         };
 
         let source = generate_types(&api, 2).expect("generate types");
@@ -3216,7 +4029,11 @@ mod tests {
                 versioned_tuple_wrapper_variants("ExampleRequest", &[(1, "LegacyRequest")]),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
                 versioned_tuple_wrapper_variants("ExampleVersion", &[(1, "ExampleVersionV1")]),
+                empty_struct("LatestResponse"),
+                empty_struct("LegacyRequest"),
+                empty_struct("LegacyResponse"),
             ],
+            framework_types: Vec::new(),
         };
 
         let client_source = generate_client(&api, 2, 1).expect("generate client");
@@ -3262,6 +4079,7 @@ mod tests {
                 named_field_versioned_wrapper("ExampleRequest"),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
             ],
+            framework_types: Vec::new(),
         };
 
         let err = generate_client(&api, 2, 1).expect_err("named field wrapper rejected");

@@ -23,11 +23,11 @@ pub use wasm_bridge::generate_wasm_bridge;
 pub use wire_table::generate_wire_table;
 
 /// Generates the Rust wire dispatcher and wire-table sources into `output_dir`.
-pub fn generate(api: &ApiDefinition, output_dir: &Path) -> Result<()> {
+pub fn generate(api: &ApiDefinition, output_dir: &Path, schema_hash: &str) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     let dispatcher = generate_dispatcher(api)?;
     fs::write(output_dir.join("dispatcher.rs"), dispatcher)?;
-    let wire_table = generate_wire_table(api)?;
+    let wire_table = generate_wire_table(api, schema_hash)?;
     fs::write(output_dir.join("wire_table.rs"), wire_table)?;
     Ok(())
 }
@@ -153,6 +153,7 @@ mod tests {
             wire: WireAttrs {
                 host_initiated: false,
                 id: Some(request_id),
+                sensitive: false,
             },
             docs: None,
         }
@@ -170,6 +171,7 @@ mod tests {
             wire: WireAttrs {
                 host_initiated: false,
                 id: Some(start_id),
+                sensitive: false,
             },
             docs: None,
         }
@@ -187,6 +189,7 @@ mod tests {
                     args: vec![],
                 }]),
                 docs: None,
+                codec_index: None,
             }]),
             docs: None,
         }
@@ -252,9 +255,10 @@ mod tests {
             }],
             public_trait_order: vec!["Account".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
 
-        let src = generate_wire_table(&api).expect("generate_wire_table");
+        let src = generate_wire_table(&api, "testhash").expect("generate_wire_table");
         let entries = parse_entries(&src);
         assert_eq!(
             entries,
@@ -304,6 +308,7 @@ mod tests {
                 types.push(versioned_test_type("PreimageSubmitVersion"));
                 types
             },
+            framework_types: Vec::new(),
         };
 
         let dispatcher = generate_dispatcher(&api).expect("dispatcher");
@@ -316,7 +321,7 @@ mod tests {
             "dispatcher missing prefixed Preimage const:\n{dispatcher}"
         );
 
-        let table = generate_wire_table(&api).expect("wire_table");
+        let table = generate_wire_table(&api, "testhash").expect("wire_table");
         let entries = parse_entries(&table);
         assert!(
             entries
@@ -356,8 +361,10 @@ mod tests {
             ],
             public_trait_order: vec!["Foo".to_string(), "FooBar".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
-        let err = generate_wire_table(&api).expect_err("duplicate wire method name must error");
+        let err = generate_wire_table(&api, "testhash")
+            .expect_err("duplicate wire method name must error");
         let msg = format!("{err}");
         assert!(
             msg.contains("wire method name `foo_bar_baz` reused"),
@@ -396,14 +403,15 @@ mod tests {
                 types.push(versioned_test_type("RequestDevicePermissionVersion"));
                 types
             },
+            framework_types: Vec::new(),
         };
 
         let dispatcher_a = generate_dispatcher(&api).expect("dispatcher a");
         let dispatcher_b = generate_dispatcher(&api).expect("dispatcher b");
         assert_eq!(dispatcher_a, dispatcher_b);
 
-        let table_a = generate_wire_table(&api).expect("wire_table a");
-        let table_b = generate_wire_table(&api).expect("wire_table b");
+        let table_a = generate_wire_table(&api, "testhash").expect("wire_table a");
+        let table_b = generate_wire_table(&api, "testhash").expect("wire_table b");
         assert_eq!(table_a, table_b);
     }
 
@@ -424,8 +432,9 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
-        let err = generate_wire_table(&api).expect_err("duplicate ids must error");
+        let err = generate_wire_table(&api, "testhash").expect_err("duplicate ids must error");
         let msg = format!("{err}");
         assert!(
             msg.contains("wire id (197, 10) reused"),
@@ -456,9 +465,10 @@ mod tests {
             ],
             public_trait_order: vec!["StatementStore".to_string(), "Preimage".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
 
-        let table = generate_wire_table(&api).expect("wire_table");
+        let table = generate_wire_table(&api, "testhash").expect("wire_table");
         assert!(
             table.contains("trait_id: 205,"),
             "missing trait id 13:\n{table}"
@@ -491,9 +501,11 @@ mod tests {
             ],
             public_trait_order: vec!["StatementStore".to_string(), "Preimage".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
 
-        let err = generate_wire_table(&api).expect_err("duplicate trait ids must error");
+        let err =
+            generate_wire_table(&api, "testhash").expect_err("duplicate trait ids must error");
         let msg = format!("{err}");
         assert!(
             msg.contains("wire trait id 196 reused"),
@@ -514,9 +526,10 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
 
-        let err = generate_wire_table(&api).expect_err("missing trait id must error");
+        let err = generate_wire_table(&api, "testhash").expect_err("missing trait id must error");
         let msg = format!("{err}");
         assert!(
             msg.contains("missing #[wire_trait(id = N)]"),
@@ -543,9 +556,10 @@ mod tests {
             }],
             public_trait_order: vec!["Example".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
 
-        let err = generate_wire_table(&api).expect_err("trait id 255 must be refused");
+        let err = generate_wire_table(&api, "testhash").expect_err("trait id 255 must be refused");
         let msg = err.to_string();
         assert!(
             msg.contains("wire trait id 255 reused")
@@ -570,9 +584,10 @@ mod tests {
             }],
             public_trait_order: vec!["Example".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
 
-        generate_wire_table(&api).expect("(1, 255) is an ordinary address");
+        generate_wire_table(&api, "testhash").expect("(1, 255) is an ordinary address");
     }
 
     /// Pin `wire_const_name`'s `convert_case::Case::UpperSnake` behavior:
@@ -622,8 +637,10 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
-        let err = generate_wire_table(&api).expect_err("missing id annotation must error");
+        let err =
+            generate_wire_table(&api, "testhash").expect_err("missing id annotation must error");
         let msg = format!("{err}");
         assert!(
             msg.contains("missing #[wire(id"),
@@ -654,6 +671,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_dispatcher(&api).expect_err("two-param method must error");
         let msg = format!("{err}");
@@ -688,6 +706,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_dispatcher(&api).expect_err("primitive response must error");
         let msg = format!("{err}");

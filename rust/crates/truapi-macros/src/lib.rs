@@ -38,6 +38,7 @@ use syn::{
 struct WireArgs {
     host_initiated: bool,
     id: Option<u8>,
+    sensitive: bool,
 }
 
 struct ServiceArgs {
@@ -77,28 +78,36 @@ impl Parse for WireArgs {
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
+
             if key == "host_initiated" {
                 if args.host_initiated {
                     return Err(syn::Error::new(key.span(), "duplicate `host_initiated`"));
                 }
                 args.host_initiated = true;
-                if input.is_empty() {
-                    break;
+            } else if key == "sensitive" {
+                // `sensitive` is a bare flag with no `= N` value: it classifies
+                // the method's payloads as carrying key material or bearer
+                // secrets. The classification is folded into the wire
+                // schema-hash fingerprint, so a change in a frame's sensitivity
+                // is caught as contract drift. It suppresses no decoding: it
+                // reaches neither the generated TS nor any runtime.
+                if args.sensitive {
+                    return Err(syn::Error::new(key.span(), "duplicate `sensitive`"));
                 }
-                input.parse::<Token![,]>()?;
-                continue;
-            }
-            if key != "id" {
-                return Err(syn::Error::new(key.span(), "expected `id = N`"));
-            }
-            input.parse::<Token![=]>()?;
-            let lit: LitInt = input.parse()?;
-            let value = lit.base10_parse().map_err(|err| {
-                syn::Error::new(lit.span(), format!("wire id must fit in a u8: {err}"))
-            })?;
+                args.sensitive = true;
+            } else {
+                if key != "id" {
+                    return Err(syn::Error::new(key.span(), "expected `id = N`"));
+                }
+                input.parse::<Token![=]>()?;
+                let lit: LitInt = input.parse()?;
+                let value = lit.base10_parse().map_err(|err| {
+                    syn::Error::new(lit.span(), format!("wire id must fit in a u8: {err}"))
+                })?;
 
-            if args.id.replace(value).is_some() {
-                return Err(syn::Error::new(key.span(), "duplicate `id`"));
+                if args.id.replace(value).is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `id`"));
+                }
             }
 
             if input.is_empty() {
@@ -126,6 +135,15 @@ impl Parse for WireArgs {
 ///
 /// #[wire(id = 42)]
 /// async fn host_account_connection_status_subscribe(...) -> ...;
+///
+/// // Classify a method whose payloads carry key material or bearer secrets.
+/// // The flag is folded into the wire schema-hash fingerprint, so a change in a
+/// // frame's sensitivity classification is caught as contract drift. It is a
+/// // classification only, and grants no confidentiality: it reaches neither the
+/// // generated TypeScript nor any runtime, and nothing suppresses decoding of
+/// // the payload.
+/// #[wire(id = 14, sensitive)]
+/// async fn sign_raw(...) -> ...;
 /// ```
 ///
 /// Expands to the original method plus hidden doc tags that `truapi-codegen`
@@ -217,6 +235,9 @@ fn wire_tags(args: &WireArgs) -> Vec<String> {
     }
     if args.host_initiated {
         tags.push("@wire_host_initiated".to_string());
+    }
+    if args.sensitive {
+        tags.push("@wire_sensitive=true".to_string());
     }
     tags
 }
