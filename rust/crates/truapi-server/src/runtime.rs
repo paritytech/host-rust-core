@@ -342,6 +342,20 @@ fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) ->
     AuthorityError::Cancelled(AuthorityCancelError::new(cx.request_id(), reason))
 }
 
+/// A scope a publisher pre-approves for another product in the manifest's
+/// `trustedProducts`.
+///
+/// `all` is a superset rather than a peer, so a grant of `all` satisfies every
+/// variant here. The core decides which calls each scope gates; the manifest
+/// only carries the grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantedScope {
+    /// Reading the granting product's host-local storage. Read-only.
+    Storage,
+    /// Using the granting product's account and the identity derived from it.
+    Context,
+}
+
 /// Product-scoped adapter that exposes a long-lived host runtime through the
 /// `truapi::api::*` trait set the generated dispatcher routes to.
 pub struct ProductRuntimeHost {
@@ -538,6 +552,32 @@ impl ProductRuntimeHost {
         product_id == "localhost"
             || product_id.starts_with("localhost:")
             || dot_ns_identifier == product_id
+    }
+
+    /// Whether the calling product may reach `target` under `scope`.
+    ///
+    /// The caller's own id is not a cross-product access and consults no grant.
+    /// Any other product must name this caller in its manifest's
+    /// `trustedProducts` with `scope` or `all`.
+    async fn cross_product_scope_allowed(&self, target: &str, scope: GrantedScope) -> bool {
+        if normalize_product_identifier(target).ok().as_deref() == Some(self.product_id().as_str())
+        {
+            return true;
+        }
+        self.manifest_grants_scope(target, scope).await
+    }
+
+    /// Scopes `target`'s published manifest grants the calling product.
+    ///
+    /// Resolving a manifest is not implemented, so a product other than the
+    /// caller grants nothing and every cross-product access is refused.
+    ///
+    /// A grant that cannot be established answers `false` whatever the reason —
+    /// the product does not resolve, it published no manifest, the fetch failed,
+    /// or the manifest names this caller with a narrower scope. Callers turn
+    /// that into one refusal, so the outcome never reveals which of those it was.
+    async fn manifest_grants_scope(&self, _target: &str, _scope: GrantedScope) -> bool {
+        false
     }
 
     fn normalize_product_account_id(
@@ -980,16 +1020,16 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
         let v02::HostLocalStorageReadRequest { product, key } = request.into_latest();
 
-        // A foreign read needs the `storage` scope from the owning product's
-        // manifest, and no manifest reader exists yet, so every foreign read is
-        // refused. The refusal is deliberately indistinguishable from "that
+        // A read addressed at another product needs that product's `storage`
+        // grant. The refusal is deliberately indistinguishable from "that
         // product granted you nothing": telling them apart would make this call
-        // a probe for which products exist and which hold data. The RFC also
-        // forbids falling back to a prompt here — stored values are opaque
-        // bytes, so the user would be approving something nobody can inspect.
+        // a probe for which products exist and which hold data. Falling back to
+        // a prompt is not an option either — stored values are opaque bytes, so
+        // the user would be approving something nobody can inspect.
         if let Some(target) = product
-            && normalize_product_identifier(&target).ok().as_deref()
-                != Some(self.product_id().as_str())
+            && !self
+                .cross_product_scope_allowed(&target, GrantedScope::Storage)
+                .await
         {
             return Err(CallError::Domain(HostLocalStorageReadError::V2(
                 v02::HostLocalStorageReadError::AccessNotGranted,
@@ -1196,7 +1236,13 @@ impl Account for ProductRuntimeHost {
                 },
             ))
         })?;
-        if key_handle.dot_ns_identifier != self.product_id() {
+        // Proving against another product's key uses that product's account and
+        // the identity derived from it, so it needs that product's `context`
+        // grant. One refusal covers every reason it is not held.
+        if !self
+            .cross_product_scope_allowed(&key_handle.dot_ns_identifier, GrantedScope::Context)
+            .await
+        {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::NotAllowlisted,
             )));
@@ -1336,7 +1382,13 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if request.key_handle.dot_ns_identifier != self.product_id() {
+        if !self
+            .cross_product_scope_allowed(
+                &request.key_handle.dot_ns_identifier,
+                GrantedScope::Context,
+            )
+            .await
+        {
             return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
                 v01::HostAccountRingVrfSignError::NotAllowlisted,
             )));
@@ -3181,6 +3233,74 @@ mod tests {
         assert_eq!(
             read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
             refusal
+        );
+    }
+
+    fn proof_refusal(
+        host: &ProductRuntimeHost,
+        product: &str,
+    ) -> Option<CallError<HostAccountCreateProofError>> {
+        futures::executor::block_on(
+            host.create_account_proof(&CallContext::default(), create_proof_request(product)),
+        )
+        .err()
+    }
+
+    #[test]
+    fn a_proof_against_the_callers_own_key_consults_no_grant() {
+        // Proving with your own key is not a cross-product access, so it must
+        // never be refused as one. It still fails here for want of a session,
+        // which is a different refusal entirely.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let own = host.product_id();
+        assert_eq!(
+            proof_refusal(&host, &own),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::Rejected
+            )))
+        );
+    }
+
+    #[test]
+    fn a_proof_naming_the_caller_in_another_spelling_is_still_its_own() {
+        // Normalized before comparison, so casing cannot turn a product's own
+        // key into a cross-product refusal.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let shouted = host.product_id().to_uppercase();
+        assert_eq!(
+            proof_refusal(&host, &shouted),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::Rejected
+            )))
+        );
+    }
+
+    #[test]
+    fn a_proof_against_a_foreign_key_is_refused_without_a_manifest_reader() {
+        // A foreign key needs the owning product's `context` grant. No manifest
+        // reader exists, so no grant can be established and the call is refused
+        // before a session is ever consulted.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert_eq!(
+            proof_refusal(&host, "wallet.dot"),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::NotAllowlisted
+            )))
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_product_cannot_reach_a_foreign_key() {
+        // An id that does not normalize is not the caller, so it takes the same
+        // refusal as a product that granted nothing.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert_eq!(
+            proof_refusal(&host, "not a product"),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::Unknown {
+                    reason: "Invalid key handle".to_string()
+                }
+            )))
         );
     }
 
