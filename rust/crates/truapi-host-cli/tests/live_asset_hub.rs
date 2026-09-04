@@ -22,7 +22,7 @@ fn asset_hub_ws() -> String {
 }
 const PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";
 
-/// An active lite-person ring mirrored to Asset Hub.
+/// Must stay active so the ignored live tests can resolve its mirrored roots.
 const RING_INDEX: u32 = 1;
 /// The ring this fixture's index belongs to.
 const COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;

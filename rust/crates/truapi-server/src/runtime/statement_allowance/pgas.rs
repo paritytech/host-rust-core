@@ -103,19 +103,12 @@ fn current_generation_key() -> Vec<u8> {
     .concat()
 }
 
-/// The generation `RingRoots` is currently keyed under.
-///
-/// An absent value is the `ValueQuery` default, so it only means generation 0
-/// once the runtime is known to declare the entry. Checking the metadata first
-/// keeps a renamed pallet or item from reading as generation 0 and silently
-/// building keys nothing will ever answer.
-///
-/// Decoded with `decode_all`, so an entry that stops being a bare `u32` fails by
-/// name here instead of yielding the first four bytes of some other layout.
 async fn read_current_generation(
     rpc: &RpcClient,
     metadata: &Metadata,
 ) -> Result<u32, StatementAllowanceError> {
+    // Missing entries and absent values both read as `None`, so distinguish them
+    // before accepting the runtime's default generation.
     if metadata
         .storage_value_type("MembersSubscriber", "CurrentGeneration")
         .is_none()
@@ -134,8 +127,6 @@ async fn read_current_generation(
     }
 }
 
-/// `MembersSubscriber.RingRoots[(generation, identifier, ring_index)]` storage
-/// key on Asset Hub.
 fn ring_roots_key(generation: u32, collection: PersonhoodCollection, ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"MembersSubscriber").as_slice(),
@@ -369,10 +360,8 @@ pub async fn await_ring_revision(
         })?;
     let started = Instant::now();
     loop {
-        // Re-read per poll rather than once up front: a rebuild landing while we
-        // wait is exactly what this loop is waiting through, and a generation
-        // read from before it would key every remaining poll at a generation the
-        // roots have left, so the wait could only ever time out.
+        // A rebuild can land during this wait, leaving cached-generation polls
+        // on roots that will never return.
         let generation = read_current_generation(rpc, metadata).await?;
         if let Some(bytes) = rpc
             .get_storage(&ring_roots_key(generation, collection, ring_index))
@@ -571,28 +560,18 @@ mod tests {
         assert_read_ring_5_of(&scripted);
     }
 
-    /// The generation uses `Twox64Concat`; the remaining two keys use
-    /// `Blake2_128Concat`.
+    /// A wrong key hasher makes imported roots look absent until timeout.
     #[test]
-    fn subscriber_ring_key_hashes_all_three_map_keys() {
-        let collection = PersonhoodCollection::LitePeople;
-        let key = ring_roots_key(7, collection, 136);
-
-        assert_eq!(key.len(), 16 + 16 + 8 + 4 + 16 + 32 + 16 + 4);
+    fn subscriber_ring_key_matches_the_runtime_layout() {
         assert_eq!(
-            &key[40..44],
-            &7u32.to_le_bytes(),
-            "generation follows its hash"
-        );
-        assert_eq!(
-            &key[60..92],
-            collection.identifier(),
-            "identifier follows its hash"
-        );
-        assert_eq!(
-            &key[108..],
-            &136u32.to_le_bytes(),
-            "ring index is little-endian"
+            ring_roots_key(7, PersonhoodCollection::LitePeople, 136),
+            hex::decode(
+                "c8d053ab324196afc756c5ae3fbd29178034a4ffd558299b9ac8097424772405\
+                 0e0d969b0e48cab7070000000bf6e234fafa085fd6710b952081ed8d706f703a\
+                 706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465751c83\
+                 d291ed9a90887239b8a92828a688000000"
+            )
+            .unwrap(),
         );
     }
 
@@ -601,18 +580,63 @@ mod tests {
         let scripted = ScriptedRpc::new(["null"]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
-        assert_eq!(
+        let generation =
             futures::executor::block_on(read_current_generation(&rpc, test_fixtures::asset_hub()))
-                .unwrap(),
-            0
+                .unwrap();
+
+        assert_eq!(
+            (generation, scripted.calls()),
+            (
+                0,
+                vec![(
+                    "state_getStorage".to_string(),
+                    r#"["0xc8d053ab324196afc756c5ae3fbd2917c2dbc4fc2f665a39ada06f0965cccf86"]"#
+                        .to_string(),
+                )],
+            ),
         );
+    }
+
+    /// Caching the generation would leave later polls on abandoned roots.
+    #[test]
+    fn a_generation_change_during_wait_moves_the_ring_root_read() {
+        let first_generation = format!(r#""0x{}""#, hex::encode(7u32.to_le_bytes()));
+        let second_generation = format!(r#""0x{}""#, hex::encode(8u32.to_le_bytes()));
+        let roots = format!(
+            r#""0x{}""#,
+            hex::encode(test_fixtures::ASSET_HUB_RING_5_ROOTS)
+        );
+        let scripted = ScriptedRpc::new([
+            first_generation.as_str(),
+            "null",
+            second_generation.as_str(),
+            roots.as_str(),
+        ]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        futures::executor::block_on(await_ring_revision(
+            &rpc,
+            test_fixtures::asset_hub(),
+            CAPTURED_COLLECTION,
+            5,
+            106,
+        ))
+        .unwrap();
+
+        let storage_call = |key: Vec<u8>| {
+            (
+                "state_getStorage".to_string(),
+                format!(r#"["0x{}"]"#, hex::encode(key)),
+            )
+        };
         assert_eq!(
             scripted.calls(),
-            vec![(
-                "state_getStorage".to_string(),
-                r#"["0xc8d053ab324196afc756c5ae3fbd2917c2dbc4fc2f665a39ada06f0965cccf86"]"#
-                    .to_string(),
-            )]
+            vec![
+                storage_call(current_generation_key()),
+                storage_call(ring_roots_key(7, CAPTURED_COLLECTION, 5)),
+                storage_call(current_generation_key()),
+                storage_call(ring_roots_key(8, CAPTURED_COLLECTION, 5)),
+            ],
         );
     }
 
@@ -641,8 +665,7 @@ mod tests {
     /// defaulting there would key every ring-root read at generation 0.
     #[test]
     fn a_runtime_without_current_generation_is_named_rather_than_defaulted() {
-        // A real runtime that declares no `MembersSubscriber` at all, which is
-        // what the gate is about.
+        // Real metadata, because the regression depends on the pallet being absent.
         let people = test_fixtures::people();
         let scripted = ScriptedRpc::new(["null"]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
