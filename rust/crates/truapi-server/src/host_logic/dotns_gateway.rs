@@ -441,19 +441,25 @@ pub struct DotnsIdentity {
 
 /// Classifies bare contract labels into lite and full usernames.
 ///
-/// The gateway flattens a lite username `stem.NN` (a DNS-label stem plus exactly
-/// two digits, `StringUtils.isSingleDotLiteLabel`) into the flat label `stemNN`
-/// before minting, so a flat label whose last two characters are digits after a
-/// DNS-label stem is read back as a lite username and re-dotted (`alice01` →
-/// `alice.01`). Every other canonical DNS label is a full username; anything
-/// that is not one — oversized, non-ASCII, control characters, markup, or a
-/// dotted subname — is skipped, so no unscreened contract string becomes a
-/// username. First hit per slot wins. Labels are expected bare:
-/// [`resolve_labels`] strips the network TLD.
+/// A lite username is recognised in both spellings the contracts have used.
+/// Deployments to date flatten `stem.NN` into `stemNN` before minting
+/// (`DotnsPopController._reserveLite` strips the dot), so a flat label whose
+/// last two characters are digits after a DNS-label stem is read back as a
+/// lite username and re-dotted (`alice01` → `alice.01`). Deployments that
+/// store the dotted form keep it verbatim: a label matching
+/// [`is_dotted_lite_username`] (`alice.42`) is the lite username as stored.
+/// Every other canonical DNS label is a full username; anything that is not
+/// one — oversized, non-ASCII, control characters, markup, or a dotted
+/// subname — is skipped, so no unscreened contract string becomes a username.
+/// First hit per slot wins. Labels are expected bare: [`resolve_labels`]
+/// strips the network TLD.
 ///
-/// Lite and public names share one namespace on the contract side, so a public
-/// name ending in two digits is indistinguishable from a flattened lite name
-/// here; the contract documents that ambiguity as accepted.
+/// Two ambiguities are inherited from the contracts and accepted: a public
+/// flat name ending in two digits is indistinguishable from a flattened lite
+/// name, and a depth-one subname under a digit-only parent (`app.42`) is
+/// indistinguishable from a dotted lite name — a digit-only second-level name
+/// is governance-only, so the latter cannot occur without governance minting
+/// the parent.
 ///
 /// TODO(dotns): the full username is the first letters-only label, which a
 /// self-registered or purchased name older than the gateway name can win.
@@ -469,19 +475,26 @@ where
     for label in labels {
         let label = label.as_ref();
         // Contract data is untrusted and these strings reach host UI
-        // (`SessionUiInfo`): anything that is not a canonical DNS label —
-        // oversized, control characters, markup, dots — is not a username.
+        // (`SessionUiInfo`): only the bounded dotted lite shape or a canonical
+        // DNS label — never oversized, control characters, markup, or other
+        // dotted strings — becomes a username.
+        if is_dotted_lite_username(label) {
+            identity
+                .lite_username
+                .get_or_insert_with(|| label.to_string());
+            continue;
+        }
         if !is_dns_label(label) {
             continue;
         }
         let (stem, digits) = label.split_at(label.len().saturating_sub(2));
-        let is_lite =
+        let is_flat_lite =
             is_dns_label(stem) && digits.len() == 2 && digits.chars().all(|c| c.is_ascii_digit());
-        if is_lite {
+        if is_flat_lite {
             identity
                 .lite_username
                 .get_or_insert_with(|| format!("{stem}.{digits}"));
-        } else if !label.is_empty() {
+        } else {
             identity
                 .full_username
                 .get_or_insert_with(|| label.to_string());
@@ -504,6 +517,18 @@ pub fn is_dns_label(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// The dotted lite shape: a canonical DNS-label stem, one dot, exactly two
+/// digits (`StringUtils.isSingleDotLiteLabel`). Shape only — see
+/// [`is_dotted_lite_username`] for the gateway's byte bound on top.
+pub fn is_lite_label(label: &str) -> bool {
+    match label.rsplit_once('.') {
+        Some((stem, digits)) => {
+            is_dns_label(stem) && digits.len() == 2 && digits.chars().all(|c| c.is_ascii_digit())
+        }
+        None => false,
+    }
 }
 
 /// Longest label the gateway pallet accepts (`BaseLabel = BoundedVec<u8, 32>`).
@@ -529,19 +554,13 @@ pub fn is_registrable_full_label(label: &str) -> bool {
     is_full_person_label(label) && label.len() >= MIN_PERSON_LABEL_LEN
 }
 
-/// Whether `value` is a dotted lite username, `stem.NN`: a DNS-label stem, one
-/// dot, exactly two digits (`StringUtils.isSingleDotLiteLabel`), and at most
-/// [`MAX_BASE_LABEL_LEN`] bytes once flattened.
+/// Whether `value` is a dotted lite username the gateway can hold:
+/// [`is_lite_label`] within [`MAX_BASE_LABEL_LEN`] bytes. The pallet keys
+/// `LiteLabelOwner` by the dotted label itself (`BaseLabel` is a 32-byte
+/// `BoundedVec`), so the bound applies to the dotted form, not a flattened
+/// spelling.
 pub fn is_dotted_lite_username(value: &str) -> bool {
-    match value.rsplit_once('.') {
-        Some((stem, digits)) => {
-            is_dns_label(stem)
-                && digits.len() == 2
-                && digits.chars().all(|c| c.is_ascii_digit())
-                && stem.len() + 2 <= MAX_BASE_LABEL_LEN
-        }
-        None => false,
-    }
+    is_lite_label(value) && value.len() <= MAX_BASE_LABEL_LEN
 }
 
 /// Page size for `LabelStore.getLabels`.
@@ -752,14 +771,15 @@ pub async fn resolve_labels<T: DotnsTransport + ?Sized>(
 }
 
 /// Strips the network TLD from a `LabelStore` label. `None` for labels that do
-/// not carry it or that still hold a dot afterwards (subnames).
+/// not carry it or that still hold a dot afterwards, unless that dot is a lite
+/// label's separator (`alice.42`); other dotted remainders are subnames.
 fn bare_store_label<'a>(label: &'a str, tld: &str) -> Option<&'a str> {
     let bare = if tld.is_empty() {
         label
     } else {
         label.strip_suffix(tld)?
     };
-    (!bare.is_empty() && !bare.contains('.')).then_some(bare)
+    (!bare.is_empty() && (!bare.contains('.') || is_dotted_lite_username(bare))).then_some(bare)
 }
 
 /// The TLD of networks whose `DotnsProtocolRegistry` has no `tld()` view;
@@ -1382,20 +1402,26 @@ mod tests {
 
     #[test]
     fn labels_classify_into_lite_and_full_usernames() {
+        // Both lite spellings resolve to the dotted username: flattened
+        // storage is re-dotted, dotted storage is kept verbatim.
         let identity = classify_labels(["alice01", "myproject"]);
         assert_eq!(identity.lite_username.as_deref(), Some("alice.01"));
         assert_eq!(identity.full_username.as_deref(), Some("myproject"));
+        let identity = classify_labels(["alice.01", "myproject"]);
+        assert_eq!(identity.lite_username.as_deref(), Some("alice.01"));
+        assert_eq!(identity.full_username.as_deref(), Some("myproject"));
 
-        // Dotted labels are not base names and are skipped; a DNS stem may hold
-        // digits and hyphens (`isSingleDotLiteLabel`), a hyphen may not lead or
-        // trail it.
+        // A DNS stem may hold digits and hyphens, a hyphen may not lead or
+        // trail it; dotted labels that are not the lite shape are subnames
+        // and are skipped.
         let identity = classify_labels([
             "bobby42.dot",
             "app.web3app",
-            "aé01",
+            "sub.alice.01",
+            "aé.01",
             "web3app",
-            "a2b34",
-            "-x01",
+            "a2b.34",
+            "-x.01",
         ]);
         assert_eq!(identity.lite_username.as_deref(), Some("a2b.34"));
         assert_eq!(identity.full_username.as_deref(), Some("web3app"));
@@ -1419,10 +1445,17 @@ mod tests {
         // The 63-octet DNS bound is the cut-off.
         assert!(classify_labels(["a".repeat(63)]).full_username.is_some());
         assert!(classify_labels(["a".repeat(64)]).full_username.is_none());
-        // One trailing digit is not lite format.
+        // One digit after the dot is not lite format, and dotted non-lite is
+        // not a full name either; three digits stay a subname.
+        assert_eq!(classify_labels(["alice.1"]), DotnsIdentity::default());
+        assert_eq!(classify_labels(["alice.012"]), DotnsIdentity::default());
         let identity = classify_labels(["alice1"]);
         assert_eq!(identity.lite_username, None);
         assert_eq!(identity.full_username.as_deref(), Some("alice1"));
+        // An oversized dotted label never reaches the UI: the gateway bound
+        // caps the dotted form at 32 bytes.
+        let oversized = format!("{}.01", "a".repeat(30));
+        assert_eq!(classify_labels([oversized]), DotnsIdentity::default());
     }
 
     #[test]
@@ -1451,7 +1484,10 @@ mod tests {
         assert!(!is_dotted_lite_username("alice.012"));
         assert!(!is_dotted_lite_username("a.lice.01"));
         assert!(!is_dotted_lite_username(".01"));
-        assert!(!is_dotted_lite_username(&format!("{}.01", "a".repeat(31))));
+        // The 32-byte gateway bound applies to the dotted form: a 29-char stem
+        // (32 bytes dotted) fits, a 30-char stem (33 bytes) does not.
+        assert!(is_dotted_lite_username(&format!("{}.01", "a".repeat(29))));
+        assert!(!is_dotted_lite_username(&format!("{}.01", "a".repeat(30))));
     }
 
     /// A transport for controller discovery: `DispatcherAddress` holds `stored`,
@@ -1747,6 +1783,13 @@ mod tests {
         assert_eq!(bare_store_label("alice01.dot", ".paseo"), None);
         assert_eq!(bare_store_label("app.alice.paseo", ".paseo"), None);
         assert_eq!(bare_store_label(".paseo", ".paseo"), None);
+        // A dotted lite label survives the strip; other dotted remainders
+        // stay subnames.
+        assert_eq!(
+            bare_store_label("alice.01.paseo", ".paseo"),
+            Some("alice.01")
+        );
+        assert_eq!(bare_store_label("sub.alice.01.paseo", ".paseo"), None);
         // An empty TLD leaves bare labels as they are.
         assert_eq!(bare_store_label("alice01", ""), Some("alice01"));
     }
