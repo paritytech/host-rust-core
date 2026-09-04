@@ -92,6 +92,26 @@ wait_for_pairing_pattern() {
   return 1
 }
 
+wait_for_new_pairing_pattern() {
+  local pattern="$1"
+  local previous_count="$2"
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local current_count
+    current_count="$(grep -cE "$pattern" "$PAIRING_LOG" || true)"
+    if [ "$current_count" -gt "$previous_count" ]; then
+      return 0
+    fi
+    if ! process_running "$PAIRING_PID"; then
+      echo "pairing host exited before another match for $pattern" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for another match for $pattern in $PAIRING_LOG" >&2
+  return 1
+}
+
 wait_for_signing_pattern() {
   local pattern="$1"
   local deadline=$((SECONDS + TIMEOUT_SECONDS))
@@ -177,6 +197,7 @@ wait_for_signing_pattern 'TrUAPI signing host'
 send_signing_command "/pair $deeplink"
 wait_for_pairing_pattern '^DEVICE_REMOVE_CONNECTED$'
 wait_for_persisted_auth_session
+pairing_ended_before_removal="$(grep -c 'Pairing ended' "$PAIRING_LOG" || true)"
 
 send_signing_command '/devices'
 wait_for_signing_pattern 'Paired devices for session'
@@ -195,7 +216,7 @@ tmux send-keys -t "$TMUX_SESSION" y
 wait_for_signing_pattern 'Paired device removed'
 
 wait_for_pairing_pattern '^DEVICE_REMOVE_DISCONNECT_OK$'
-wait_for_pairing_pattern 'Pairing ended'
+wait_for_new_pairing_pattern 'Pairing ended' "$pairing_ended_before_removal"
 wait_for_auth_session_clear
 
 send_signing_command '/devices'
