@@ -2460,6 +2460,16 @@ fn find_paired_host(
         })
 }
 
+/// Notify the peer, then drop the local pairing.
+///
+/// The order is deliberate and it is not symmetric. A failed notification leaves
+/// everything in place, so the operator can retry against a device that is still
+/// listed. A notification that succeeds and is then followed by a failed local
+/// removal leaves the peer believing the session is over while this host still
+/// lists the device and runs its responder; the error surfaces to the operator,
+/// and a retry re-notifies a peer that has already been told. That window is a
+/// local file write wide, and it is the cheaper direction to fail in than telling
+/// the operator a device is gone while the peer still holds a live session.
 async fn disconnect_and_remove_paired_host(
     session: &mut SigningHostSession,
     statement_account_id: &[u8; 32],

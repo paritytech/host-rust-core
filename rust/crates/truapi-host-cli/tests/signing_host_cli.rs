@@ -231,8 +231,15 @@ fn exec_clear_all_removes_every_session_for_the_network() {
     assert!(!output.stdout.contains(&0x1b));
 }
 
+/// Removal is notify-first, so anything that stops the notification leaves every
+/// pairing in place. This drives the cheapest such failure: no local session, so
+/// `disconnect_paired_host` fails at `root_entropy` before it reaches the
+/// statement store. A rejection from the store itself takes the same branch and
+/// is covered by `disconnect_paired_host_propagates_submission_failure` in
+/// `truapi-server`; the end-to-end path needs two live hosts and lives in
+/// `e2e/device-removal-disconnect.sh`.
 #[test]
-fn exec_device_removal_preserves_pairings_when_the_peer_cannot_be_notified() {
+fn exec_device_removal_preserves_pairings_when_the_local_session_is_inactive() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
     let profile = temporary.path().join("paseo-next-v2/alice_signing_host");
     std::fs::create_dir_all(&profile).expect("create signing-host profile");
