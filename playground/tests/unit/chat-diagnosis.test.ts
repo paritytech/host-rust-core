@@ -16,10 +16,15 @@ const UNDIAGNOSED_WORKER_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 describe("ChatDiagnosis", () => {
-  // Expectation comes from codegen, so a missing method fails here.
+  // Expectation comes from codegen, so a missing method fails here. The
+  // Worker service is the worker's own operation lifecycle rather than a
+  // diagnosis step, so the report does not cover it.
   test("covers every generated Worker method", () => {
     const generated = servicesForExecution(generatedServices, "Worker")
-      .filter((service) => service.requiredExecution === "Worker")
+      .filter(
+        (service) =>
+          service.requiredExecution === "Worker" && service.name !== "Worker",
+      )
       .flatMap((service) =>
         service.methods.map((method) => `${service.name}/${method.name}`),
       )
