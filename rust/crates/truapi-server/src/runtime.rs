@@ -87,7 +87,7 @@ use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
 use truapi::api::{
     Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
-    Permissions, Preimage, ResourceAllocation, Signing, System, Theme,
+    Permissions, Preimage, ResourceAllocation, Signing, System, Theme, Worker,
 };
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
@@ -146,9 +146,10 @@ use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
 };
 use truapi::versioned::local_storage::{
-    HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
-    HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
-    HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
+    HostLocalStorageChangeItem, HostLocalStorageClearError, HostLocalStorageClearRequest,
+    HostLocalStorageClearResponse, HostLocalStorageReadError, HostLocalStorageReadRequest,
+    HostLocalStorageReadResponse, HostLocalStorageSubscribeRequest, HostLocalStorageWriteError,
+    HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
 use truapi::versioned::locale::HostLocaleSubscribeItem;
 use truapi::versioned::notifications::{
@@ -191,6 +192,11 @@ use truapi::versioned::system::{
     HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
+use truapi::versioned::worker::{
+    HostWorkerBeginOperationError, HostWorkerBeginOperationRequest,
+    HostWorkerBeginOperationResponse, HostWorkerEndOperationError, HostWorkerEndOperationRequest,
+    HostWorkerEndOperationResponse,
+};
 use truapi::{CallContext, CallError, CancellationReason, Subscription};
 use truapi::{latest, v01};
 use truapi_platform::Platform;
@@ -994,8 +1000,18 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Result<HostLocalStorageWriteResponse, CallError<HostLocalStorageWriteError>> {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
+        let storage_key = self.product_storage_key(key);
+        // Skip the store write when the value is byte-identical to what the key
+        // already holds, so a subscriber sees only real changes and no
+        // redundant persistence happens. A failed pre-read falls through to the
+        // write rather than blocking it.
+        if let Ok(Some(current)) = self.platform.read(storage_key.clone()).await
+            && current == value
+        {
+            return Ok(HostLocalStorageWriteResponse::V1);
+        }
         self.platform
-            .write(self.product_storage_key(key), value)
+            .write(storage_key, value)
             .await
             .map(|()| HostLocalStorageWriteResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageWriteError::V1(err)))
@@ -1013,6 +1029,68 @@ impl LocalStorage for ProductRuntimeHost {
             .await
             .map(|()| HostLocalStorageClearResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageClearError::V1(err)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "local_storage.subscribe"))]
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        request: HostLocalStorageSubscribeRequest,
+    ) -> Subscription<HostLocalStorageChangeItem> {
+        let HostLocalStorageSubscribeRequest::V1(v01::HostLocalStorageSubscribeRequest { key }) =
+            request;
+        Subscription::new(Box::pin(
+            self.platform
+                .subscribe_storage(self.product_storage_key(key).into_bytes())
+                .filter_map(|item| async {
+                    match item {
+                        Ok(item) => Some(HostLocalStorageChangeItem::V1(item)),
+                        Err(error) => {
+                            warn!(
+                                reason = %error.reason,
+                                "local storage subscription platform stream failed"
+                            );
+                            None
+                        }
+                    }
+                }),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Worker
+// ---------------------------------------------------------------------------
+
+#[truapi_platform::async_trait]
+impl Worker for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "worker.begin_operation"))]
+    async fn begin_operation(
+        &self,
+        _cx: &CallContext,
+        request: HostWorkerBeginOperationRequest,
+    ) -> Result<HostWorkerBeginOperationResponse, CallError<HostWorkerBeginOperationError>> {
+        let HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label }) =
+            request;
+        self.platform
+            .begin_operation(&self.product, label.unwrap_or_default())
+            .await
+            .map(HostWorkerBeginOperationResponse::V1)
+            .map_err(|error| CallError::Domain(HostWorkerBeginOperationError::V1(error)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "worker.end_operation"))]
+    async fn end_operation(
+        &self,
+        _cx: &CallContext,
+        request: HostWorkerEndOperationRequest,
+    ) -> Result<HostWorkerEndOperationResponse, CallError<HostWorkerEndOperationError>> {
+        let HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }) = request;
+        self.platform
+            .end_operation(&self.product, id)
+            .await
+            .map(|()| HostWorkerEndOperationResponse::V1)
+            .map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))
     }
 }
 
@@ -4849,6 +4927,171 @@ mod tests {
             RemotePreimageLookupSubscribeItem::V1(v01::RemotePreimageLookupSubscribeItem {
                 value: Some(value)
             })
+        );
+    }
+
+    fn storage_item(value: Option<&[u8]>) -> HostLocalStorageChangeItem {
+        HostLocalStorageChangeItem::V1(v01::HostLocalStorageChangeItem {
+            value: value.map(<[u8]>::to_vec),
+        })
+    }
+
+    fn subscribe_storage_key(
+        host: &ProductRuntimeHost,
+        key: &str,
+    ) -> Subscription<HostLocalStorageChangeItem> {
+        futures::executor::block_on(LocalStorage::subscribe(
+            host,
+            &CallContext::default(),
+            HostLocalStorageSubscribeRequest::V1(v01::HostLocalStorageSubscribeRequest {
+                key: key.to_string(),
+            }),
+        ))
+    }
+
+    fn write_storage_key(host: &ProductRuntimeHost, key: &str, value: &[u8]) {
+        futures::executor::block_on(host.write(
+            &CallContext::default(),
+            HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest {
+                key: key.to_string(),
+                value: value.to_vec(),
+            }),
+        ))
+        .expect("storage write");
+    }
+
+    #[test]
+    fn local_storage_subscribe_sees_writes_and_clears_but_not_identical_rewrites() {
+        let platform = stub_platform();
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        let mut subscription = subscribe_storage_key(&host, "progress");
+        let next = |subscription: &mut Subscription<HostLocalStorageChangeItem>| {
+            futures::executor::block_on(subscription.next()).expect("storage item")
+        };
+
+        assert_eq!(
+            next(&mut subscription),
+            storage_item(None),
+            "the first item is the current value"
+        );
+
+        write_storage_key(&host, "progress", b"1");
+        assert_eq!(next(&mut subscription), storage_item(Some(b"1")));
+
+        write_storage_key(&host, "progress", b"1");
+        assert!(
+            futures::FutureExt::now_or_never(subscription.next()).is_none(),
+            "a byte-identical rewrite emits nothing"
+        );
+        assert_eq!(
+            platform
+                .local_storage_writes
+                .lock()
+                .expect("local storage writes mutex poisoned")
+                .len(),
+            1,
+            "the core skips the identical write before it reaches the platform"
+        );
+
+        futures::executor::block_on(host.clear(
+            &CallContext::default(),
+            HostLocalStorageClearRequest::V1(v01::HostLocalStorageClearRequest {
+                key: "progress".to_string(),
+            }),
+        ))
+        .expect("storage clear");
+        assert_eq!(next(&mut subscription), storage_item(None));
+    }
+
+    #[test]
+    fn local_storage_subscribe_is_scoped_to_the_calling_product() {
+        let platform = stub_platform();
+        let mine = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        let other = ProductRuntimeHost::new(platform, runtime_config("other.dot"), test_spawner());
+        write_storage_key(&mine, "shared", b"mine");
+
+        let mut mine_items = subscribe_storage_key(&mine, "shared");
+        let mut other_items = subscribe_storage_key(&other, "shared");
+        assert_eq!(
+            futures::executor::block_on(mine_items.next()),
+            Some(storage_item(Some(b"mine")))
+        );
+        assert_eq!(
+            futures::executor::block_on(other_items.next()),
+            Some(storage_item(None)),
+            "the same key name in another product is a different key"
+        );
+
+        write_storage_key(&mine, "shared", b"again");
+        assert_eq!(
+            futures::executor::block_on(mine_items.next()),
+            Some(storage_item(Some(b"again")))
+        );
+        assert!(
+            futures::FutureExt::now_or_never(other_items.next()).is_none(),
+            "another product's write never reaches this subscriber"
+        );
+    }
+
+    #[test]
+    fn worker_operations_reach_the_platform_scoped_to_the_calling_product() {
+        let platform = stub_platform();
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        let cx = CallContext::default();
+        let begin = |label: Option<&str>| {
+            let HostWorkerBeginOperationResponse::V1(response) =
+                futures::executor::block_on(host.begin_operation(
+                    &cx,
+                    HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                        label: label.map(str::to_string),
+                    }),
+                ))
+                .expect("begin operation");
+            response.id
+        };
+        let end = |id: u32| {
+            futures::executor::block_on(host.end_operation(
+                &cx,
+                HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }),
+            ))
+            .expect("end operation")
+        };
+
+        assert_eq!(begin(Some("funding")), 1);
+        assert_eq!(begin(None), 2);
+        assert_eq!(
+            *platform
+                .begun_operations
+                .lock()
+                .expect("begun operations mutex poisoned"),
+            vec![
+                ("myapp.dot".to_string(), "funding".to_string()),
+                ("myapp.dot".to_string(), String::new()),
+            ],
+            "begin reaches the platform under the calling product; a missing label is empty"
+        );
+
+        end(1);
+        end(99);
+        assert_eq!(
+            *platform
+                .ended_operations
+                .lock()
+                .expect("ended operations mutex poisoned"),
+            vec![("myapp.dot".to_string(), 1), ("myapp.dot".to_string(), 99)],
+            "end reaches the platform under the calling product, unknown ids included"
         );
     }
 

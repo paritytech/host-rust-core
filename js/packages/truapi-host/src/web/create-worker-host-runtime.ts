@@ -17,6 +17,7 @@ import type {
 import {
   CustomRendererNode as CustomRendererNodeCodec,
   HostChatActionSubscribeItem as HostChatActionSubscribeItemCodec,
+  HostWorkerBeginOperationResponse as HostWorkerBeginOperationResponseCodec,
 } from "@parity/truapi";
 import { PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec } from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -118,6 +119,18 @@ interface RuntimeState {
     }
   >;
   subscriptionDisposers: Map<number, () => void>;
+  /**
+   * Ids of open worker pending operations (`worker.beginOperation`). While
+   * this is non-empty the worker is kept alive: a `dispose()` is deferred
+   * until the last operation ends. Keyed by id so ending an unknown or
+   * already-ended id releases nothing. Worker-global, not per-core, because a
+   * `callbackRequest` carries no core id and "keep the worker alive" is
+   * worker-scoped. ponytail: no cap on how long an operation may hold the
+   * worker; add a timeout ceiling here if a stuck operation becomes a problem.
+   */
+  openOperations: Set<number>;
+  /** A dispose() arrived while operations were open; run it once they drain. */
+  disposePending: boolean;
   chainConnections: Map<number, ChainConnection>;
   pendingDisconnects: Map<
     number,
@@ -372,6 +385,23 @@ function handleCallbackRequest(
     .then(() => fn(...msg.args))
     .then(
       (value) => {
+        // Keep the worker alive across an open pending operation: track ids
+        // only on success, so a rejected begin never leaves a stuck hold.
+        // When the last operation ends and a dispose is pending, run it.
+        if (msg.name === "beginOperation") {
+          state.openOperations.add(
+            HostWorkerBeginOperationResponseCodec.dec(value as Uint8Array).id,
+          );
+        } else if (msg.name === "endOperation") {
+          const id = msg.args[1];
+          if (typeof id === "number") {
+            state.openOperations.delete(id);
+          }
+          if (state.openOperations.size === 0 && state.disposePending) {
+            state.disposePending = false;
+            teardown(state, new Error("runtime disposed"), false);
+          }
+        }
         state.worker.postMessage({
           kind: "callbackResponse",
           requestId: msg.requestId,
@@ -781,6 +811,8 @@ export function createWebWorkerPairingHostRuntime(
       cores: new Map(),
       pendingCores: new Map(),
       subscriptionDisposers: new Map(),
+      openOperations: new Set(),
+      disposePending: false,
       chainConnections: new Map(),
       pendingDisconnects: new Map(),
       pendingSessionActivations: new Map(),
@@ -1220,6 +1252,14 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
     },
     dispose(): void {
       devGlobalTargets.delete(runtime);
+      // Defer a clean dispose while the worker holds an open operation, so a
+      // background task (e.g. a funding transaction) runs to completion. The
+      // last endOperation runs the deferred teardown. Fault teardown is never
+      // deferred.
+      if (state.openOperations.size > 0) {
+        state.disposePending = true;
+        return;
+      }
       teardown(state, new Error("runtime disposed"), false);
     },
   };

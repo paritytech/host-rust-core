@@ -1,12 +1,13 @@
 //! Unified [`LocalStorage`] trait.
 
 use crate::versioned::local_storage::{
-    HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
-    HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
-    HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
+    HostLocalStorageChangeItem, HostLocalStorageClearError, HostLocalStorageClearRequest,
+    HostLocalStorageClearResponse, HostLocalStorageReadError, HostLocalStorageReadRequest,
+    HostLocalStorageReadResponse, HostLocalStorageSubscribeRequest, HostLocalStorageWriteError,
+    HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
 use crate::wire;
-use crate::{CallContext, CallError};
+use crate::{CallContext, CallError, Subscription};
 
 /// Local key/value storage scoped to the calling product.
 #[crate::async_trait]
@@ -55,4 +56,27 @@ pub trait LocalStorage: Send + Sync {
         cx: &CallContext,
         request: HostLocalStorageClearRequest,
     ) -> Result<HostLocalStorageClearResponse, CallError<HostLocalStorageClearError>>;
+
+    /// Subscribe to changes of one key in the product's own storage namespace.
+    ///
+    /// Emits the current value immediately, then one item per later write or
+    /// clear of the key by any of the product's runtimes. A write that leaves
+    /// the stored bytes unchanged emits nothing.
+    ///
+    /// ```ts
+    /// import { firstValueFrom, from } from "rxjs";
+    ///
+    /// const item = await firstValueFrom(
+    ///   from(truapi.localStorage.subscribe({ request: { key: "test-key" } })),
+    /// );
+    /// console.log("storage change received:", item);
+    /// ```
+    #[wire(start_id = 198)]
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostLocalStorageSubscribeRequest,
+    ) -> Subscription<HostLocalStorageChangeItem> {
+        Subscription::empty()
+    }
 }

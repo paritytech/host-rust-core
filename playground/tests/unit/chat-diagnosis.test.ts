@@ -7,7 +7,7 @@ describe("ChatDiagnosis", () => {
   // Expectation comes from codegen, so a missing method fails here.
   test("covers every generated Chat method", () => {
     const generated = servicesForExecution(generatedServices, "Worker")
-      .filter((service) => service.requiredExecution === "Worker")
+      .filter((service) => service.name === "Chat")
       .flatMap((service) =>
         service.methods.map((method) => `${service.name}/${method.name}`),
       );

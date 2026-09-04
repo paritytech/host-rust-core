@@ -354,6 +354,19 @@ interface HostBridge {
     @Throws(HostRejection::class)
     fun supportedChains(): HostChainSet = HostChainSet(network = "", chains = emptyList())
 
+    /**
+     * Begin a pending operation for a product's worker, returning a
+     * host-assigned id. The host keeps the product's worker alive while it holds
+     * at least one open operation. [label] is a log/UI hint, empty when the
+     * product gave none. Default: no worker keep-alive.
+     */
+    @Throws(HostRejection::class)
+    suspend fun beginOperation(productId: String, label: String): UInt = 0u
+
+    /** End a pending operation. Idempotent: an unknown or already-ended id succeeds. */
+    @Throws(HostRejection::class)
+    suspend fun endOperation(productId: String, id: UInt) {}
+
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
 
@@ -495,6 +508,12 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override fun localStorageClear(key: String) =
         withStorageException { bridge.storage.clear(key) }
+
+    override suspend fun beginOperation(productId: String, label: String): UInt =
+        withHostRejection { bridge.beginOperation(productId, label) }
+
+    override suspend fun endOperation(productId: String, id: UInt) =
+        withHostRejection { bridge.endOperation(productId, id) }
 }
 
 // A host that throws an exception type its callback does not declare crosses
@@ -942,6 +961,14 @@ class TrUAPIProductExecution internal constructor(
     /** Push a host locale update to active TrUAPI locale subscriptions. */
     fun notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
         inner.notifyLocaleChanged(locale)
+    }
+
+    /**
+     * Push a host storage change for [key] to active TrUAPI storage
+     * subscriptions. A null [value] represents a cleared or absent key.
+     */
+    fun notifyStorageChanged(key: String, value: ByteArray?) {
+        inner.notifyStorageChanged(key, value)
     }
 
     /** Push a preimage lookup update to active subscriptions for [key]. */

@@ -16,6 +16,7 @@ pub mod signing;
 pub mod statement_store;
 pub mod system;
 pub mod theme;
+pub mod worker;
 
 pub use account::Account;
 pub use chain::Chain;
@@ -33,6 +34,7 @@ pub use signing::Signing;
 pub use statement_store::StatementStore;
 pub use system::System;
 pub use theme::Theme;
+pub use worker::Worker;
 
 /// The unified TrUAPI contract.
 pub trait TrUApi:
@@ -52,6 +54,7 @@ pub trait TrUApi:
     + StatementStore
     + System
     + Theme
+    + Worker
     + Send
     + Sync
 {
@@ -74,6 +77,7 @@ impl<T> TrUApi for T where
         + StatementStore
         + System
         + Theme
+        + Worker
         + Send
         + Sync
 {

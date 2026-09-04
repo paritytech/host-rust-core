@@ -17,10 +17,12 @@ import {
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocalStorageChangeItem,
   HostLocaleSubscribeItem,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
+  HostWorkerBeginOperationResponse,
   RemotePermissionRequest,
   RemotePermissionResponse,
 } from "@parity/truapi";
@@ -83,9 +85,16 @@ export interface RawCallbacks {
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  beginOperation(product: Uint8Array, label: string): Promise<Uint8Array>;
+  endOperation(product: Uint8Array, id: number): Promise<void>;
   read(key: string): Promise<Uint8Array | null | undefined>;
   write(key: string, value: Uint8Array): Promise<void>;
   clear(key: string): Promise<void>;
+  subscribeStorage(
+    key: Uint8Array,
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
   subscribeTheme(
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
@@ -194,10 +203,28 @@ export function createWasmRawCallbacks(
         sendItem,
         sendError,
       ),
+    beginOperation: async (product, label) =>
+      HostWorkerBeginOperationResponse.enc(
+        await callbacks.productOperations.beginOperation(
+          ProductContext.dec(product),
+          label,
+        ),
+      ),
+    endOperation: async (product, id) =>
+      await callbacks.productOperations.endOperation(
+        ProductContext.dec(product),
+        id,
+      ),
     read: async (key) => await callbacks.productStorage.read(key),
     write: async (key, value) =>
       await callbacks.productStorage.write(key, value),
     clear: async (key) => await callbacks.productStorage.clear(key),
+    subscribeStorage: (key, sendItem, sendError) =>
+      driveResultStream(
+        callbacks.productStorage.subscribeStorage(key),
+        (item) => sendItem(HostLocalStorageChangeItem.enc(item)),
+        sendError,
+      ),
     subscribeTheme: (sendItem, sendError) =>
       driveResultStream(
         callbacks.theme.subscribeTheme(),

@@ -29,6 +29,7 @@ use truapi::api::{
     StatementStore,
     System,
     Theme,
+    Worker,
 };
 use truapi::versioned::{self, Versioned};
 use truapi_platform::ProductExecutionKind;
@@ -63,7 +64,8 @@ where
     register_signing(dispatcher, host.clone());
     register_statement_store(dispatcher, host.clone());
     register_system(dispatcher, host.clone());
-    register_theme(dispatcher, host);
+    register_theme(dispatcher, host.clone());
+    register_worker(dispatcher, host);
 }
 
 /// Start the host-initiated `chat_custom_message_render` subscription.
@@ -1626,7 +1628,7 @@ where
         });
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_request(wire_table::LOCAL_STORAGE_CLEAR, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
@@ -1661,6 +1663,21 @@ where
                         target_version,
                     ),
                 ))
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_subscription(wire_table::LOCAL_STORAGE_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::local_storage::HostLocalStorageSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(_) => return Err(Vec::new()),
+                };
+                let cx = CallContext::with_request_id(request_id.clone());
+                let stream = host.subscribe(&cx, request).await;
+                Ok(subscription_stream::<versioned::local_storage::HostLocalStorageChangeItem, _>(stream))
             })
         });
     }
@@ -2696,6 +2713,102 @@ where
                 let cx = CallContext::with_request_id(request_id.clone());
                 let stream = host.subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::theme::HostThemeSubscribeItem, _>(stream))
+            })
+        });
+    }
+}
+
+fn register_worker<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Worker + Send + Sync + 'static,
+{
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host.clone();
+        dispatcher.on_request(wire_table::WORKER_BEGIN_OPERATION, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::worker::HostWorkerBeginOperationRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::worker::HostWorkerBeginOperationError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::worker::HostWorkerBeginOperationError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::worker::HostWorkerBeginOperationError> =
+                        truapi::CallError::Denied;
+                    return Ok(encode_versioned_err_payload(error, target_version));
+                }
+                let response: versioned::worker::HostWorkerBeginOperationResponse = match host.begin_operation(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(
+                            downgrade_call_error(err, target_version),
+                            target_version,
+                        ));
+                    }
+                };
+                // Downgraded to the caller's version: a handler answers in
+                // latest terms, and a peer that asked in an older version
+                // cannot decode a newer variant.
+                Ok(encode_versioned_ok_payload(
+                    <versioned::worker::HostWorkerBeginOperationResponse as truapi::versioned::FromLatest>::from_latest(
+                        truapi::versioned::IntoLatest::into_latest(response),
+                        target_version,
+                    ),
+                ))
+            })
+        });
+    }
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host;
+        dispatcher.on_request(wire_table::WORKER_END_OPERATION, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::worker::HostWorkerEndOperationRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::worker::HostWorkerEndOperationError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::worker::HostWorkerEndOperationError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::worker::HostWorkerEndOperationError> =
+                        truapi::CallError::Denied;
+                    return Ok(encode_versioned_err_payload(error, target_version));
+                }
+                let response: versioned::worker::HostWorkerEndOperationResponse = match host.end_operation(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(
+                            downgrade_call_error(err, target_version),
+                            target_version,
+                        ));
+                    }
+                };
+                // Downgraded to the caller's version: a handler answers in
+                // latest terms, and a peer that asked in an older version
+                // cannot decode a newer variant.
+                Ok(encode_versioned_ok_payload(
+                    <versioned::worker::HostWorkerEndOperationResponse as truapi::versioned::FromLatest>::from_latest(
+                        truapi::versioned::IntoLatest::into_latest(response),
+                        target_version,
+                    ),
+                ))
             })
         });
     }

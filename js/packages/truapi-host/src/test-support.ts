@@ -29,6 +29,11 @@ export function makeHostCallbacks(
       read: async () => undefined,
       write: async () => {},
       clear: async () => {},
+      async *subscribeStorage() {},
+    },
+    productOperations: {
+      beginOperation: async () => ({ id: 1 }),
+      endOperation: async () => {},
     },
     coreStorage: {
       readCoreStorage: async () => undefined,
@@ -64,6 +69,10 @@ export function makeHostCallbacks(
     productStorage: {
       ...defaults.productStorage,
       ...overrides.productStorage,
+    },
+    productOperations: {
+      ...defaults.productOperations,
+      ...overrides.productOperations,
     },
     coreStorage: {
       ...defaults.coreStorage,
