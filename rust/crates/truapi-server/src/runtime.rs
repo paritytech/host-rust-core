@@ -87,7 +87,7 @@ use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
 use truapi::api::{
     Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
-    Permissions, Preimage, ResourceAllocation, Signing, System, Theme,
+    Permissions, Pocket, Preimage, ResourceAllocation, Signing, System, Theme,
 };
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
@@ -2909,6 +2909,15 @@ impl Locale for ProductRuntimeHost {
         Subscription::new(Box::pin(stream))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pocket
+// ---------------------------------------------------------------------------
+
+// The trait defaults answer `Unavailable` and empty streams until a host
+// surface backs the collection.
+#[truapi::async_trait]
+impl Pocket for ProductRuntimeHost {}
 
 // `Notifications` delegates to the platform so hosts can own scheduling and
 // cancellation while the core preserves the typed TrUAPI wire shape.

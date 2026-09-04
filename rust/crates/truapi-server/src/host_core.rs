@@ -1166,6 +1166,33 @@ impl ProductRuntimeControl {
         });
         Ok(truapi::Subscription::new(Box::pin(stream)))
     }
+
+    /// Stream the face of one Pocket card from this connection's product
+    /// worker. Each item is a complete renderer tree replacing the previous one.
+    pub fn render_pocket_card(
+        &self,
+        card_id: String,
+    ) -> Result<
+        truapi::Subscription<Result<v01::CustomRendererNode, v01::GenericError>>,
+        ProductRuntimeError,
+    > {
+        self.runtime()?;
+        let request = truapi::versioned::pocket::ProductPocketCardRenderRequest::V1(
+            v01::ProductPocketCardRenderRequest { card_id },
+        );
+        let transport: Arc<dyn Transport> = self.transport.clone();
+        let stream = crate::generated::dispatcher::pocket_card_render(
+            &self.host_subscriptions,
+            transport,
+            request,
+        )
+        .map(|item| {
+            item.map(|item| match item {
+                truapi::versioned::pocket::ProductPocketCardRenderItem::V1(node) => node,
+            })
+        });
+        Ok(truapi::Subscription::new(Box::pin(stream)))
+    }
 }
 
 impl ProductRuntime {

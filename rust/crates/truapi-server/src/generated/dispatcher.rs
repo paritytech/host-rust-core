@@ -14,7 +14,7 @@ use parity_scale_codec::Decode;
 use truapi::CallContext;
 use truapi::api::{
     Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
-    Permissions, Preimage, ResourceAllocation, Signing, StatementStore, System, Theme,
+    Permissions, Pocket, Preimage, ResourceAllocation, Signing, StatementStore, System, Theme,
 };
 use truapi::versioned::{self, Versioned};
 use truapi_platform::ProductExecutionKind;
@@ -44,6 +44,7 @@ where
     register_notifications(dispatcher, host.clone());
     register_payment(dispatcher, host.clone());
     register_permissions(dispatcher, host.clone());
+    register_pocket(dispatcher, host.clone());
     register_preimage(dispatcher, host.clone());
     register_resource_allocation(dispatcher, host.clone());
     register_signing(dispatcher, host.clone());
@@ -62,6 +63,21 @@ pub(crate) fn chat_custom_message_render(
 > {
     subscriptions.start(
         wire_table::CHAT_CUSTOM_MESSAGE_RENDER,
+        parity_scale_codec::Encode::encode(&request),
+        transport,
+    )
+}
+
+/// Start the host-initiated `pocket_card_render` subscription.
+pub(crate) fn pocket_card_render(
+    subscriptions: &HostInitiatedSubscriptionManager,
+    transport: Arc<dyn Transport>,
+    request: versioned::pocket::ProductPocketCardRenderRequest,
+) -> truapi::Subscription<
+    Result<versioned::pocket::ProductPocketCardRenderItem, truapi::latest::GenericError>,
+> {
+    subscriptions.start(
+        wire_table::POCKET_CARD_RENDER,
         parity_scale_codec::Encode::encode(&request),
         transport,
     )
@@ -2014,6 +2030,101 @@ where
                 ))
             })
         });
+    }
+}
+
+fn register_pocket<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Pocket + Send + Sync + 'static,
+{
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host.clone();
+        dispatcher.on_subscription(
+            wire_table::POCKET_LIST_SUBSCRIBE,
+            move |request_id: String, bytes: Vec<u8>| {
+                let host = host.clone();
+                Box::pin(async move {
+                    let _ = bytes;
+                    let cx = CallContext::with_request_id(request_id.clone());
+                    if !execution_allowed {
+                        return Err(Vec::new());
+                    }
+                    let stream = host.list_subscribe(&cx).await;
+                    Ok(subscription_stream::<
+                        versioned::pocket::HostPocketListSubscribeItem,
+                        _,
+                    >(stream))
+                })
+            },
+        );
+    }
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host.clone();
+        dispatcher.on_request(wire_table::POCKET_REMOVE_CARD, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::pocket::HostPocketRemoveCardRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::pocket::HostPocketRemoveCardError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::pocket::HostPocketRemoveCardError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::pocket::HostPocketRemoveCardError> =
+                        truapi::CallError::Denied;
+                    return Ok(encode_versioned_err_payload(error, target_version));
+                }
+                let response: versioned::pocket::HostPocketRemoveCardResponse = match host.remove_card(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(
+                            downgrade_call_error(err, target_version),
+                            target_version,
+                        ));
+                    }
+                };
+                // Downgraded to the caller's version: a handler answers in
+                // latest terms, and a peer that asked in an older version
+                // cannot decode a newer variant.
+                Ok(encode_versioned_ok_payload(
+                    <versioned::pocket::HostPocketRemoveCardResponse as truapi::versioned::FromLatest>::from_latest(
+                        truapi::versioned::IntoLatest::into_latest(response),
+                        target_version,
+                    ),
+                ))
+            })
+        });
+    }
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host;
+        dispatcher.on_subscription(
+            wire_table::POCKET_ACTION_SUBSCRIBE,
+            move |request_id: String, bytes: Vec<u8>| {
+                let host = host.clone();
+                Box::pin(async move {
+                    let _ = bytes;
+                    let cx = CallContext::with_request_id(request_id.clone());
+                    if !execution_allowed {
+                        return Err(Vec::new());
+                    }
+                    let stream = host.action_subscribe(&cx).await;
+                    Ok(subscription_stream::<
+                        versioned::pocket::HostPocketActionSubscribeItem,
+                        _,
+                    >(stream))
+                })
+            },
+        );
     }
 }
 
