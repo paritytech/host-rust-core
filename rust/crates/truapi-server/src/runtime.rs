@@ -89,6 +89,8 @@ use truapi::api::{
     Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Locale, Notifications, Payment,
     Permissions, Preimage, ResourceAllocation, Signing, System, Theme,
 };
+use truapi::v02;
+use truapi::versioned::IntoLatest;
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
@@ -340,6 +342,20 @@ fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) ->
     AuthorityError::Cancelled(AuthorityCancelError::new(cx.request_id(), reason))
 }
 
+/// A scope a publisher pre-approves for another product in the manifest's
+/// `trustedProducts`.
+///
+/// `all` is a superset rather than a peer, so a grant of `all` satisfies every
+/// variant here. The core decides which calls each scope gates; the manifest
+/// only carries the grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantedScope {
+    /// Reading the granting product's host-local storage. Read-only.
+    Storage,
+    /// Using the granting product's account and the identity derived from it.
+    Context,
+}
+
 /// Product-scoped adapter that exposes a long-lived host runtime through the
 /// `truapi::api::*` trait set the generated dispatcher routes to.
 pub struct ProductRuntimeHost {
@@ -536,6 +552,32 @@ impl ProductRuntimeHost {
         product_id == "localhost"
             || product_id.starts_with("localhost:")
             || dot_ns_identifier == product_id
+    }
+
+    /// Whether the calling product may reach `target` under `scope`.
+    ///
+    /// The caller's own id is not a cross-product access and consults no grant.
+    /// Any other product must name this caller in its manifest's
+    /// `trustedProducts` with `scope` or `all`.
+    async fn cross_product_scope_allowed(&self, target: &str, scope: GrantedScope) -> bool {
+        if normalize_product_identifier(target).ok().as_deref() == Some(self.product_id().as_str())
+        {
+            return true;
+        }
+        self.manifest_grants_scope(target, scope).await
+    }
+
+    /// Scopes `target`'s published manifest grants the calling product.
+    ///
+    /// Resolving a manifest is not implemented, so a product other than the
+    /// caller grants nothing and every cross-product access is refused.
+    ///
+    /// A grant that cannot be established answers `false` whatever the reason —
+    /// the product does not resolve, it published no manifest, the fetch failed,
+    /// or the manifest names this caller with a narrower scope. Callers turn
+    /// that into one refusal, so the outcome never reveals which of those it was.
+    async fn manifest_grants_scope(&self, _target: &str, _scope: GrantedScope) -> bool {
+        false
     }
 
     fn normalize_product_account_id(
@@ -976,14 +1018,38 @@ impl LocalStorage for ProductRuntimeHost {
         _cx: &CallContext,
         request: HostLocalStorageReadRequest,
     ) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
-        let HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest { key }) = request;
+        let v02::HostLocalStorageReadRequest { product, key } = request.into_latest();
+
+        // A read addressed at another product needs that product's `storage`
+        // grant. The refusal is deliberately indistinguishable from "that
+        // product granted you nothing": telling them apart would make this call
+        // a probe for which products exist and which hold data. Falling back to
+        // a prompt is not an option either — stored values are opaque bytes, so
+        // the user would be approving something nobody can inspect.
+        if let Some(target) = product
+            && !self
+                .cross_product_scope_allowed(&target, GrantedScope::Storage)
+                .await
+        {
+            return Err(CallError::Domain(HostLocalStorageReadError::V2(
+                v02::HostLocalStorageReadError::AccessNotGranted,
+            )));
+        }
+
         self.platform
             .read(self.product_storage_key(key))
             .await
             .map(|value| {
-                HostLocalStorageReadResponse::V1(v01::HostLocalStorageReadResponse { value })
+                HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value })
             })
-            .map_err(|err| CallError::Domain(HostLocalStorageReadError::V1(err)))
+            .map_err(|err| {
+                CallError::Domain(HostLocalStorageReadError::V2(match err {
+                    v01::HostLocalStorageReadError::Full => v02::HostLocalStorageReadError::Full,
+                    v01::HostLocalStorageReadError::Unknown { reason } => {
+                        v02::HostLocalStorageReadError::Unknown { reason }
+                    }
+                }))
+            })
     }
 
     #[instrument(skip_all, fields(runtime.method = "local_storage.write"))]
@@ -1170,7 +1236,13 @@ impl Account for ProductRuntimeHost {
                 },
             ))
         })?;
-        if key_handle.dot_ns_identifier != self.product_id() {
+        // Proving against another product's key uses that product's account and
+        // the identity derived from it, so it needs that product's `context`
+        // grant. One refusal covers every reason it is not held.
+        if !self
+            .cross_product_scope_allowed(&key_handle.dot_ns_identifier, GrantedScope::Context)
+            .await
+        {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::NotAllowlisted,
             )));
@@ -1310,7 +1382,13 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if request.key_handle.dot_ns_identifier != self.product_id() {
+        if !self
+            .cross_product_scope_allowed(
+                &request.key_handle.dot_ns_identifier,
+                GrantedScope::Context,
+            )
+            .await
+        {
             return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
                 v01::HostAccountRingVrfSignError::NotAllowlisted,
             )));
@@ -3083,6 +3161,147 @@ mod tests {
         assert_eq!(inner.network, "paseo");
         assert_eq!(inner.chain, v01::ChainIdentifier::AssetHub);
         assert_eq!(inner.genesis_hash, [0xaa; 32]);
+    }
+
+    fn read_storage(
+        host: &ProductRuntimeHost,
+        product: Option<&str>,
+        key: &str,
+    ) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
+        futures::executor::block_on(LocalStorage::read(
+            host,
+            &CallContext::default(),
+            HostLocalStorageReadRequest::V2(v02::HostLocalStorageReadRequest {
+                product: product.map(str::to_string),
+                key: key.to_string(),
+            }),
+        ))
+    }
+
+    #[test]
+    fn an_unaddressed_read_reaches_the_callers_own_storage() {
+        // `product: None` is what every v0.1 read meant, so it must not become
+        // a foreign read and must not consult a grant.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert!(read_storage(&host, None, "k").is_ok());
+    }
+
+    #[test]
+    fn a_read_naming_the_caller_itself_is_not_a_foreign_read() {
+        // Addressing your own id explicitly is the same call as omitting it.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let own = host.product_id();
+        assert!(read_storage(&host, Some(&own), "k").is_ok());
+    }
+
+    #[test]
+    fn a_read_naming_the_caller_in_another_spelling_is_still_its_own() {
+        // Normalized before comparison, so casing cannot turn an own-storage
+        // read into a refusal.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let shouted = host.product_id().to_uppercase();
+        assert!(read_storage(&host, Some(&shouted), "k").is_ok());
+    }
+
+    #[test]
+    fn a_foreign_read_is_refused_without_a_manifest_reader() {
+        // No manifest reader exists, so no grant can be established and every
+        // foreign read is refused. The refusal must be the dedicated variant,
+        // not a generic error a product would retry.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert_eq!(
+            read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+            CallError::Domain(HostLocalStorageReadError::V2(
+                v02::HostLocalStorageReadError::AccessNotGranted
+            ))
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_product_is_refused_identically_to_an_ungranted_one() {
+        // One answer for every reason, so the call cannot be used to probe which
+        // products exist.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let refusal = CallError::Domain(HostLocalStorageReadError::V2(
+            v02::HostLocalStorageReadError::AccessNotGranted,
+        ));
+        assert_eq!(
+            read_storage(&host, Some("not a product"), "k").unwrap_err(),
+            refusal
+        );
+        assert_eq!(read_storage(&host, Some(""), "k").unwrap_err(), refusal);
+        assert_eq!(
+            read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+            refusal
+        );
+    }
+
+    fn proof_refusal(
+        host: &ProductRuntimeHost,
+        product: &str,
+    ) -> Option<CallError<HostAccountCreateProofError>> {
+        futures::executor::block_on(
+            host.create_account_proof(&CallContext::default(), create_proof_request(product)),
+        )
+        .err()
+    }
+
+    #[test]
+    fn a_proof_against_the_callers_own_key_consults_no_grant() {
+        // Proving with your own key is not a cross-product access, so it must
+        // never be refused as one. It still fails here for want of a session,
+        // which is a different refusal entirely.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let own = host.product_id();
+        assert_eq!(
+            proof_refusal(&host, &own),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::Rejected
+            )))
+        );
+    }
+
+    #[test]
+    fn a_proof_naming_the_caller_in_another_spelling_is_still_its_own() {
+        // Normalized before comparison, so casing cannot turn a product's own
+        // key into a cross-product refusal.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let shouted = host.product_id().to_uppercase();
+        assert_eq!(
+            proof_refusal(&host, &shouted),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::Rejected
+            )))
+        );
+    }
+
+    #[test]
+    fn a_proof_against_a_foreign_key_is_refused_without_a_manifest_reader() {
+        // A foreign key needs the owning product's `context` grant. No manifest
+        // reader exists, so no grant can be established and the call is refused
+        // before a session is ever consulted.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert_eq!(
+            proof_refusal(&host, "wallet.dot"),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::NotAllowlisted
+            )))
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_product_cannot_reach_a_foreign_key() {
+        // An id that does not normalize is not the caller, so it takes the same
+        // refusal as a product that granted nothing.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert_eq!(
+            proof_refusal(&host, "not a product"),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::Unknown {
+                    reason: "Invalid key handle".to_string()
+                }
+            )))
+        );
     }
 
     #[test]
