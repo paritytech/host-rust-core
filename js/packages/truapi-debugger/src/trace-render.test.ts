@@ -20,12 +20,26 @@ import {
 /** Wire ids for one unary method and one subscription, as the wire table has them. */
 const WIRE: ReadonlyMap<number, WireMethodInfo> = new Map([
   [22, { method: "account.getAccount", kind: "request" }],
-  [23, { method: "account.getAccount", kind: "response" }],
-  [40, { method: "account.connectionStatus", kind: "start" }],
-  [41, { method: "account.connectionStatus", kind: "receive" }],
-  [42, { method: "account.connectionStatus", kind: "stop" }],
-  [43, { method: "account.connectionStatus", kind: "interrupt" }],
+  [23, { method: "account.getAccount", kind: "request" }],
+  [40, { method: "account.connectionStatus", kind: "subscription" }],
+  [41, { method: "account.connectionStatus", kind: "subscription" }],
+  [42, { method: "account.connectionStatus", kind: "subscription" }],
+  [43, { method: "account.connectionStatus", kind: "subscription" }],
 ]);
+
+/**
+ * The direction byte each fixture id below stands in for (see `resolveRole`):
+ * 22/23 are `request`-kind's two legs, 40/41/43/42 are `subscription`-kind's
+ * four (`start`/`receive`/`interrupt`/`stop` in that direction-byte order).
+ */
+const DIRECTION_BYTE: Readonly<Record<number, number>> = {
+  22: 0, // request
+  23: 1, // response
+  40: 0, // start
+  41: 1, // receive
+  43: 2, // interrupt
+  42: 3, // stop
+};
 
 /**
  * Build a view the way a mount does - through the wire adapter - so the badges
@@ -37,14 +51,16 @@ function viewOf(
 ): TraceView {
   const observed: ObservedFrame[] = frames.map(([frameId, timestamp]) => ({
     channelId: "localhost:3000",
-    // Real ingest cannot know the lifecycle role; the adapter resolves it from
-    // the frame id's wire-table kind.
+    // Real ingest cannot know the lifecycle role without the frame's own
+    // bytes; the adapter resolves it from the frame id's wire-table kind plus
+    // the direction byte retained below (see resolveRole).
     role: "unknown" as FrameRole,
     direction: "out",
     requestId: "p:1",
     frameId,
     byteLength: 8,
     timestamp,
+    bytes: new Uint8Array([0, DIRECTION_BYTE[frameId] ?? 0]),
   }));
   const trace: WireTrace = {
     channelId: "localhost:3000",

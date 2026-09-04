@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   encodeWireMessage,
+  HostAccountGetVersion,
   TRUAPI_CODEC_VERSION,
   TRUAPI_WIRE_SCHEMA_HASH,
-  VersionedHostAccountGetRequest,
 } from "@parity/truapi";
-import * as W from "@parity/truapi/wire-table";
+import * as REAL_W from "@parity/truapi/wire-table";
 import { Window } from "happy-dom";
 
 import { createInAppDebugger, type InAppFrameIdentity } from "./in-app.js";
@@ -16,16 +16,65 @@ import {
 } from "./inspector-styles.js";
 import { computeTraceStats, createDebugSession } from "./session.js";
 import { renderOperationRow } from "./trace-render.js";
+import { frameIdOf } from "./wire-debugger.js";
 import { wireTraceToView } from "./trace-view.js";
 
+/**
+ * Test-only compatibility view over the generated wire table: reconstructs
+ * each entry's pre-RFC-0028 per-direction "flat id" properties by encoding
+ * `(frameId, direction)` as one number (`frameId * 4 + direction`), so
+ * existing fixtures keep addressing a method's specific leg by name.
+ * `frameBytes()` below decodes a leg id back into a real `(trait, method)`
+ * pair and a direction byte.
+ */
+function legacyIds(table: Record<string, unknown>): Record<string, Record<string, number>> {
+  const legs = {
+    request: ["request", "response"],
+    subscription: ["start", "receive", "interrupt", "stop"],
+  } as const;
+  const out: Record<string, Record<string, number>> = {};
+  for (const [name, entry] of Object.entries(table)) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      !("trait" in entry) ||
+      !("method" in entry) ||
+      !("kind" in entry)
+    ) {
+      continue;
+    }
+    const { trait, method, kind } = entry as {
+      trait: number;
+      method: number;
+      kind: "request" | "subscription";
+    };
+    const base = frameIdOf(trait, method) * 4;
+    const rec: Record<string, number> = {};
+    legs[kind].forEach((leg, i) => {
+      rec[leg] = base + i;
+    });
+    out[name] = rec;
+  }
+  return out;
+}
+
+const W = legacyIds(REAL_W as unknown as Record<string, unknown>);
+
+/** `value` past the version/direction bytes this helper adds, for leg id `legacyId`. */
 function frameBytes(
-  id: number,
+  legacyId: number,
   value: number[] = [0],
   requestId = "p:1",
 ): Uint8Array {
+  const frameId = Math.floor(legacyId / 4);
+  const direction = legacyId % 4;
   const r = encodeWireMessage({
     requestId,
-    payload: { id, value: new Uint8Array(value) },
+    payload: {
+      traitId: Math.floor(frameId / 256),
+      methodId: frameId % 256,
+      value: new Uint8Array([0, direction, ...value]),
+    },
   });
   if (r.isErr()) throw r.error;
   return r.value;
@@ -33,18 +82,25 @@ function frameBytes(
 
 /** A real, decodable account-get request wire message (non-sensitive). */
 function accountGetRequestBytes(requestId = "p:1"): Uint8Array {
-  const value = VersionedHostAccountGetRequest.enc({
+  const value = HostAccountGetVersion.enc({
     tag: "V1",
     value: {
-      productAccountId: {
-        dotNsIdentifier: "alice.dot",
-        derivationIndex: { tag: "Index", value: 0 },
+      tag: "Request",
+      value: {
+        productAccountId: {
+          dotNsIdentifier: "alice.dot",
+          derivationIndex: { tag: "Index", value: 0 },
+        },
       },
     },
   });
   const r = encodeWireMessage({
     requestId,
-    payload: { id: W.ACCOUNT_GET_ACCOUNT.request, value },
+    payload: {
+      traitId: REAL_W.ACCOUNT_GET_ACCOUNT.trait,
+      methodId: REAL_W.ACCOUNT_GET_ACCOUNT.method,
+      value,
+    },
   });
   if (r.isErr()) throw r.error;
   return r.value;

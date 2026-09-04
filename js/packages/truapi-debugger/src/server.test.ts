@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 
 import {
   encodeWireMessage,
+  HostSignRawVersion,
   TRUAPI_CODEC_VERSION,
   TRUAPI_WIRE_SCHEMA_HASH,
-  VersionedHostSignRawRequest,
 } from "@parity/truapi";
-import * as W from "@parity/truapi/wire-table";
+import * as REAL_W from "@parity/truapi/wire-table";
 
 import { WIRE_ENVELOPE_VERSION } from "./ingest.js";
 import {
@@ -16,6 +16,7 @@ import {
   portFromEnv,
   startDebugServer,
 } from "./server.js";
+import { frameIdOf } from "./wire-debugger.js";
 
 interface TraceFrameView {
   direction: string;
@@ -28,9 +29,59 @@ interface TraceView {
   frames: TraceFrameView[];
 }
 
-/** base64 of a wire message for `frameId` carrying `value` as its payload. */
-function encodeFrame(requestId: string, frameId: number, value: Uint8Array): string {
-  const encoded = encodeWireMessage({ requestId, payload: { id: frameId, value } });
+/**
+ * Test-only compatibility view over the generated wire table: reconstructs
+ * each entry's pre-RFC-0028 per-direction "flat id" properties by encoding
+ * `(frameId, direction)` as one number (`frameId * 4 + direction`), so
+ * existing fixtures keep addressing a method's specific leg by name.
+ * `encodeFrame()` below decodes a leg id back into a real `(trait, method)`
+ * pair and a direction byte.
+ */
+function legacyIds(table: Record<string, unknown>): Record<string, Record<string, number>> {
+  const legs = {
+    request: ["request", "response"],
+    subscription: ["start", "receive", "interrupt", "stop"],
+  } as const;
+  const out: Record<string, Record<string, number>> = {};
+  for (const [name, entry] of Object.entries(table)) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      !("trait" in entry) ||
+      !("method" in entry) ||
+      !("kind" in entry)
+    ) {
+      continue;
+    }
+    const { trait, method, kind } = entry as {
+      trait: number;
+      method: number;
+      kind: "request" | "subscription";
+    };
+    const base = frameIdOf(trait, method) * 4;
+    const rec: Record<string, number> = {};
+    legs[kind].forEach((leg, i) => {
+      rec[leg] = base + i;
+    });
+    out[name] = rec;
+  }
+  return out;
+}
+
+const W = legacyIds(REAL_W as unknown as Record<string, unknown>);
+
+/** base64 of a wire message for leg id `legacyId` carrying `value` past the version/direction bytes this adds. */
+function encodeFrame(requestId: string, legacyId: number, value: Uint8Array): string {
+  const frameId = Math.floor(legacyId / 4);
+  const direction = legacyId % 4;
+  const encoded = encodeWireMessage({
+    requestId,
+    payload: {
+      traitId: Math.floor(frameId / 256),
+      methodId: frameId % 256,
+      value: new Uint8Array([0, direction, ...value]),
+    },
+  });
   if (encoded.isErr()) throw encoded.error;
   return Buffer.from(encoded.value).toString("base64");
 }
@@ -41,19 +92,26 @@ function encodeFrame(requestId: string, frameId: number, value: Uint8Array): str
  * can prove the value surfaced — this debugger decodes it like any other frame.
  */
 function signFrame(requestId: string): string {
-  const value = VersionedHostSignRawRequest.enc({
+  const value = HostSignRawVersion.enc({
     tag: "V1",
     value: {
-      account: {
-        dotNsIdentifier: "alice.dot",
-        derivationIndex: { tag: "Index", value: 0 },
+      tag: "Request",
+      value: {
+        account: {
+          dotNsIdentifier: "alice.dot",
+          derivationIndex: { tag: "Index", value: 0 },
+        },
+        payload: { tag: "Bytes", value: { bytes: "0xdeadbeef" } },
       },
-      payload: { tag: "Bytes", value: { bytes: "0xdeadbeef" } },
     },
   });
   const encoded = encodeWireMessage({
     requestId,
-    payload: { id: W.SIGNING_SIGN_RAW.request, value },
+    payload: {
+      traitId: REAL_W.SIGNING_SIGN_RAW.trait,
+      methodId: REAL_W.SIGNING_SIGN_RAW.method,
+      value,
+    },
   });
   if (encoded.isErr()) throw encoded.error;
   return Buffer.from(encoded.value).toString("base64");
@@ -94,7 +152,11 @@ test("decodes and groups a frame a host streams over the WS", async () => {
   try {
     const encoded = encodeWireMessage({
       requestId: "p:1",
-      payload: { id: W.SYSTEM_HANDSHAKE.request, value: new Uint8Array([1, 2, 3]) },
+      payload: {
+        traitId: REAL_W.SYSTEM_HANDSHAKE.trait,
+        methodId: REAL_W.SYSTEM_HANDSHAKE.method,
+        value: new Uint8Array([0, 0, 1, 2, 3]),
+      },
     });
     if (encoded.isErr()) throw encoded.error;
     const frame = Buffer.from(encoded.value).toString("base64");
@@ -123,7 +185,9 @@ test("decodes and groups a frame a host streams over the WS", async () => {
     expect(traces).toHaveLength(1);
     expect(traces[0].requestId).toBe("p:1");
     expect(traces[0].frames[0].direction).toBe("out");
-    expect(traces[0].frames[0].frameId).toBe(W.SYSTEM_HANDSHAKE.request);
+    expect(traces[0].frames[0].frameId).toBe(
+      frameIdOf(REAL_W.SYSTEM_HANDSHAKE.trait, REAL_W.SYSTEM_HANDSHAKE.method),
+    );
     // The method map resolves the wire id to a dotted name for the view.
     expect(typeof traces[0].frames[0].method).toBe("string");
   } finally {
@@ -254,7 +318,8 @@ test("/stats is byte- and value-free even with value decode on", async () => {
     for (const banned of ['"value"', '"decoded"', '"tag"', "V1", "0x"]) {
       expect(raw).not.toContain(banned);
     }
-    // The aggregate is present, and `bytes` is a summed length (here 1B), a count.
+    // The aggregate is present, and `bytes` is a summed length (here 3B: version +
+    // direction + the 1 inner byte), a count.
     const stats = JSON.parse(raw) as {
       ops: number;
       frames: number;
@@ -262,7 +327,7 @@ test("/stats is byte- and value-free even with value decode on", async () => {
     };
     expect(stats.ops).toBe(1);
     expect(stats.frames).toBe(1);
-    expect(stats.bytes).toBe(1);
+    expect(stats.bytes).toBe(3);
   } finally {
     server.stop();
   }
@@ -296,7 +361,8 @@ test("/frame decodes a non-sensitive frame by default; decodeValues:false report
     await streamFrame(baseOff, off.port, frame);
     const detail = await (await fetch(`${baseOff}/frame?id=p:1&i=0`)).json();
     expect(detail.kind).toBe("bytes");
-    expect(detail.byteLength).toBe(1);
+    // version + direction + the 1 inner byte.
+    expect(detail.byteLength).toBe(3);
   } finally {
     off.stop();
   }
@@ -746,10 +812,10 @@ test("groups by (channel, requestId) — two hosts minting the same id do not me
     expect(byChannel.get("hostA.dot")?.requestId).toBe("p:1");
     expect(byChannel.get("hostB.dot")?.requestId).toBe("p:1");
     expect(byChannel.get("hostA.dot")?.frames[0].frameId).toBe(
-      W.ACCOUNT_GET_ACCOUNT.request,
+      frameIdOf(REAL_W.ACCOUNT_GET_ACCOUNT.trait, REAL_W.ACCOUNT_GET_ACCOUNT.method),
     );
     expect(byChannel.get("hostB.dot")?.frames[0].frameId).toBe(
-      W.CHAIN_GET_HEAD_HEADER.request,
+      frameIdOf(REAL_W.CHAIN_GET_HEAD_HEADER.trait, REAL_W.CHAIN_GET_HEAD_HEADER.method),
     );
 
     // /frame disambiguates by channel: same id "p:1" resolves to the right
@@ -760,8 +826,8 @@ test("groups by (channel, requestId) — two hosts minting the same id do not me
     const detailB = await (
       await fetch(`${base}/frame?id=p:1&i=0&channel=hostB.dot`)
     ).json();
-    expect(detailA.byteLength).toBe(1);
-    expect(detailB.byteLength).toBe(3);
+    expect(detailA.byteLength).toBe(3);
+    expect(detailB.byteLength).toBe(5);
     expect(detailA).not.toEqual(detailB);
   } finally {
     server.stop();
@@ -1185,13 +1251,19 @@ test("a replayed backlog keeps the producer's clock through the real socket", as
   try {
     const send = (
       requestId: string,
-      id: number,
+      legacyId: number,
       dir: "in" | "out",
       observedAt: number,
     ): string => {
+      const frameId = Math.floor(legacyId / 4);
+      const direction = legacyId % 4;
       const encoded = encodeWireMessage({
         requestId,
-        payload: { id, value: new Uint8Array([0]) },
+        payload: {
+          traitId: Math.floor(frameId / 256),
+          methodId: frameId % 256,
+          value: new Uint8Array([0, direction, 0]),
+        },
       });
       if (encoded.isErr()) throw encoded.error;
       return JSON.stringify({
@@ -1243,10 +1315,16 @@ test("a host-terminated subscription stops counting as live on /stats", async ()
   const server = startDebugServer({ port: 0 });
   const base = `http://localhost:${server.port}`;
   try {
-    const send = (id: number, dir: "in" | "out"): string => {
+    const send = (legacyId: number, dir: "in" | "out"): string => {
+      const frameId = Math.floor(legacyId / 4);
+      const direction = legacyId % 4;
       const encoded = encodeWireMessage({
         requestId: "p:1",
-        payload: { id, value: new Uint8Array([0]) },
+        payload: {
+          traitId: Math.floor(frameId / 256),
+          methodId: frameId % 256,
+          value: new Uint8Array([0, direction, 0]),
+        },
       });
       if (encoded.isErr()) throw encoded.error;
       return JSON.stringify({

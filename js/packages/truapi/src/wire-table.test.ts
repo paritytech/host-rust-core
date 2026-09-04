@@ -43,11 +43,14 @@ function unwrap<T>(result: Result<T, { message: string }>, message: string): T {
     );
 }
 
-const frames = Object.entries(W as Record<string, Record<string, number>>).flatMap(
-    ([method, ids]) => {
-        const { trait: traitId, ...kinds } = ids;
-        return Object.entries(kinds).map(([kind, id]) => ({ method, kind, traitId, id }));
-    },
+interface WireTableEntry {
+    trait: number;
+    method: number;
+    kind: "request" | "subscription";
+}
+
+const frames = Object.entries(W as Record<string, WireTableEntry>).map(
+    ([name, ids]) => ({ name, traitId: ids.trait, methodId: ids.method }),
 );
 
 describe("generated wire-table round-trip", () => {
@@ -56,30 +59,30 @@ describe("generated wire-table round-trip", () => {
     });
 
     it("gives every constant a trait discriminant", () => {
-        for (const [method, ids] of Object.entries(W as Record<string, Record<string, number>>)) {
-            expect(Number.isInteger(ids.trait), `${method} is missing a trait id`).toBe(true);
+        for (const [name, ids] of Object.entries(W as Record<string, WireTableEntry>)) {
+            expect(Number.isInteger(ids.trait), `${name} is missing a trait id`).toBe(true);
         }
     });
 
     // Per-pair sentinel payload so any cross-talk between pairs surfaces as a
     // concrete byte mismatch rather than a silent equality.
-    it.each(frames)("round-trips $method.$kind (pair ($traitId, $id))", ({ traitId, id }) => {
-        const sentinel = new Uint8Array([traitId, id, 0xa5, ~id & 0xff, 0x5a]);
-        const requestId = `r:${traitId}:${id}`;
+    it.each(frames)("round-trips $name (pair ($traitId, $methodId))", ({ traitId, methodId }) => {
+        const sentinel = new Uint8Array([traitId, methodId, 0xa5, ~methodId & 0xff, 0x5a]);
+        const requestId = `r:${traitId}:${methodId}`;
 
         const encoded = unwrap(
             encodeWireMessage({
                 requestId,
-                payload: { traitId, methodId: id, value: sentinel },
+                payload: { traitId, methodId, value: sentinel },
             }),
             "encode",
         );
-        expect(toHex(encoded)).toBe(toHex(expectedWire(requestId, traitId, id, sentinel)));
+        expect(toHex(encoded)).toBe(toHex(expectedWire(requestId, traitId, methodId, sentinel)));
 
         const decoded = unwrap(decodeWireMessage(encoded), "decode");
         expect(decoded.requestId).toBe(requestId);
         expect(decoded.payload.traitId).toBe(traitId);
-        expect(decoded.payload.methodId).toBe(id);
+        expect(decoded.payload.methodId).toBe(methodId);
         expect(toHex(decoded.payload.value)).toBe(toHex(sentinel));
     });
 });

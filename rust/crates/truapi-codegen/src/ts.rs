@@ -636,7 +636,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
         RESERVED_PROTOCOL_ERROR_TRAIT_ID,
         "reserved for protocol errors".to_string(),
     )]);
-    let mut constants: Vec<(String, u8, u8)> = Vec::new();
+    let mut constants: Vec<(String, u8, u8, &'static str)> = Vec::new();
 
     for trait_def in &api.traits {
         // Method-less traits (e.g. the `TrUApi` umbrella trait) own no wire
@@ -662,15 +662,20 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
             if !method_is_included(trait_def, method, &wrappers, target_version)? {
                 continue;
             }
+            let wire_kind = match method.kind {
+                MethodKind::Request => "request",
+                MethodKind::Subscription | MethodKind::ResultSubscription => "subscription",
+            };
             constants.push((
                 wire_const_name(&trait_def.name, &method.name),
                 trait_id,
                 method_id,
+                wire_kind,
             ));
         }
     }
 
-    constants.sort_by_key(|(_, trait_id, method_id)| (*trait_id, *method_id));
+    constants.sort_by_key(|(_, trait_id, method_id, _)| (*trait_id, *method_id));
 
     let mut out = String::new();
     writedoc!(
@@ -682,21 +687,25 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
 
         // Wire-protocol (trait, method) discriminant pairs. One id addresses
         // a method regardless of shape; direction and version are carried
-        // inside the payload. Trait and method ordering are part of the
-        // protocol; only ever append within a trait or explicitly reserve
-        // gaps.
+        // inside the payload. `kind` says whether that payload is a
+        // `Request<Req, Res>` or a `Subscription<Start, Item, Err>` envelope,
+        // the one piece of shape a payload-blind reader (e.g. a wire debugger)
+        // needs to resolve a frame's role without decoding it. Trait and
+        // method ordering are part of the protocol; only ever append within a
+        // trait or explicitly reserve gaps.
 
         "#
     )
     .unwrap();
-    for (name, trait_id, method_id) in constants {
+    for (name, trait_id, method_id, wire_kind) in constants {
         out.push('\n');
-        out.push_str(&formatdoc! {"
+        out.push_str(&formatdoc! {r#"
             export const {name} = {{
               trait: {trait_id},
               method: {method_id},
+              kind: "{wire_kind}",
             }} as const satisfies MethodIds;
-        "});
+        "#});
     }
 
     Ok(out)

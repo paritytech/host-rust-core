@@ -18,7 +18,7 @@
  * @module
  */
 
-import type { ObservedFrame, TransportObserver } from "./observed-frame.js";
+import type { FrameRole, ObservedFrame, TransportObserver } from "./observed-frame.js";
 
 /**
  * What a trace's retention caps dropped, counted per axis.
@@ -88,21 +88,22 @@ export interface WireTrace {
 /** Sink for fully-formatted debug lines (defaults to `console.debug`). */
 export type WireDebugSink = (line: string, frame: ObservedFrame) => void;
 
-/** Which of a method's wire ids a given `frameId` is. */
-export type WireFrameKind =
-  | "request"
-  | "response"
-  | "start"
-  | "stop"
-  | "receive"
-  | "interrupt";
+/**
+ * A method's wire envelope shape: whether its payload is a `Request<Req, Res>`
+ * or a `Subscription<Start, Item, Err>` (which covers both plain and result
+ * subscriptions - both share the same four-phase wire shape). This is the one
+ * piece of shape carried on the routing table itself; combined with a frame's
+ * observed {@link FrameDirection}, it is enough to resolve a {@link FrameRole}
+ * without decoding the payload.
+ */
+export type WireMethodKind = "request" | "subscription";
 
 /** Resolution of a bare wire `frameId` to its human-readable method. */
 export interface WireMethodInfo {
   /** Dotted method path as it appears on the client, e.g. `"account.getAccount"`. */
   method: string;
-  /** Which of the method's wire ids this `frameId` is. */
-  kind: WireFrameKind;
+  /** The method's wire envelope shape. */
+  kind: WireMethodKind;
 }
 
 /** `camelCase` → `CONST_CASE`, matching the wire-table's constant naming. */
@@ -119,15 +120,86 @@ function camelCase(constName: string): string {
   );
 }
 
+/** One generated wire-table entry: `{ trait, method, kind }` satisfying `MethodIds`. */
+interface WireTableEntry {
+  trait: number;
+  method: number;
+  kind: WireMethodKind;
+}
+
+function isWireTableEntry(value: unknown): value is WireTableEntry {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as WireTableEntry).trait === "number" &&
+    typeof (value as WireTableEntry).method === "number" &&
+    (value as WireTableEntry).kind !== undefined
+  );
+}
+
 /**
- * Build a reverse map from wire `frameId` to `"service.method"` name out of the
- * generated wire-table module and the client's service names.
+ * The `frameId` a `(trait, method)` pair resolves to across the debugger,
+ * matching the generated `WIRE_DECODE_TABLE`'s own keying (`trait * 256 +
+ * method`) so a frame's `frameId` and its decode-table entry are always the
+ * same lookup.
+ */
+export function frameIdOf(trait: number, method: number): number {
+  return trait * 256 + method;
+}
+
+/**
+ * Resolve a frame's lifecycle `role` from its method's static wire
+ * {@link WireMethodKind} and the direction byte at `payloadValue[1]` - not a
+ * domain value: the byte immediately after the 1-byte version tag in every
+ * method's envelope (`[version: u8][direction: u8][inner payload]`), with a
+ * fixed, protocol-wide meaning pinned by `Request`/`Subscription`'s explicit
+ * `#[codec(index = N)]` (`truapi::versioned`). This is wire framing, the same
+ * kind of read as the `(trait, method)` pair itself, never the typed value a
+ * version's own `Request`/`Response` (or subscription item/error) payload
+ * carries - that stays exclusively behind the drill-down decoder.
  *
- * The wire-table exports one `CONST_CASE` group per method (e.g.
- * `ACCOUNT_GET_ACCOUNT = { request: 22, response: 23 }`); the service list -
- * typically `Object.keys(createClient(transport))` - disambiguates where the
- * service prefix ends (`LOCAL_STORAGE_READ` → `localStorage.read`, not
- * `local.storageRead`). Non-group exports in `table` are ignored, so the whole
+ * `Start`/`Stop` and `Response`/`Receive`/`Interrupt` are NOT distinguishable
+ * from direction alone (both of a subscription's "out" phases share direction
+ * 0, and both of its "in" phases beyond the first share 1 with a request's own
+ * `Response`) - `kind` is what resolves that ambiguity. Returns `"unknown"`
+ * when `kind` is unset (an off-table id) or `payloadValue` is too short to
+ * carry a direction byte (no bytes retained, or a malformed payload).
+ */
+export function resolveRole(
+  payloadValue: Uint8Array,
+  kind: WireMethodKind | undefined,
+): FrameRole {
+  if (kind === undefined || payloadValue.length < 2) return "unknown";
+  const direction = payloadValue[1];
+  if (kind === "request") {
+    if (direction === 0) return "request";
+    if (direction === 1) return "response";
+    return "unknown";
+  }
+  switch (direction) {
+    case 0:
+      return "start";
+    case 1:
+      return "receive";
+    case 2:
+      return "interrupt";
+    case 3:
+      return "stop";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * Build a reverse map from wire `frameId` (see {@link frameIdOf}) to
+ * `"service.method"` name and wire {@link WireMethodKind}, out of the generated
+ * wire-table module and the client's service names.
+ *
+ * Each wire-table export is a flat `{ trait, method, kind }` record (see the
+ * generated `MethodIds`); the service list - typically
+ * `Object.keys(createClient(transport))` - disambiguates where the service
+ * prefix ends (`LOCAL_STORAGE_READ` → `localStorage.read`, not
+ * `local.storageRead`). Non-entry exports in `table` are ignored, so the whole
  * `import * as W from "./generated/wire-table.js"` namespace can be passed
  * directly.
  */
@@ -141,16 +213,13 @@ export function createMethodNameMap(
     .sort((a, b) => b.prefix.length - a.prefix.length);
 
   const map = new Map<number, WireMethodInfo>();
-  for (const [constName, group] of Object.entries(table)) {
-    if (group === null || typeof group !== "object") continue;
+  for (const [constName, entry] of Object.entries(table)) {
+    if (!isWireTableEntry(entry)) continue;
     const match = prefixes.find(({ prefix }) => constName.startsWith(prefix));
     const method = match
       ? `${match.service}.${camelCase(constName.slice(match.prefix.length))}`
       : camelCase(constName);
-    for (const [kind, id] of Object.entries(group)) {
-      if (typeof id !== "number") continue;
-      map.set(id, { method, kind: kind as WireFrameKind });
-    }
+    map.set(frameIdOf(entry.trait, entry.method), { method, kind: entry.kind });
   }
   return map;
 }
@@ -329,11 +398,15 @@ export function createWireDebugger(
   // Whole operations LRU-evicted since the last clear(). Surfaced so a session
   // that overflowed maxTraces doesn't silently under-report its op count.
   let evictedCount = 0;
-  // A frame's lifecycle role. The ingest leaves it "unknown" (lifecycle isn't on
-  // the wire), so fall back to the frameId's wire-table kind — the same resolution
-  // wireTraceToView uses — otherwise no real frame ever reads as an opener.
+  // A frame's lifecycle role. Ingest resolves it against the frame's own bytes
+  // whenever it has a methodNames map (see resolveRole); a frame can still
+  // arrive "unknown" (no map there, or an off-table id) — fall back the same
+  // way wireTraceToView does, the same resolution — otherwise no real frame
+  // ever reads as an opener.
   const roleOf = (f: ObservedFrame): string | undefined =>
-    f.role !== "unknown" ? f.role : methodNames?.get(f.frameId)?.kind;
+    f.role !== "unknown"
+      ? f.role
+      : resolveRole(f.bytes ?? new Uint8Array(0), methodNames?.get(f.frameId)?.kind);
   // A frame that begins an operation: a unary request or a subscription start.
   const isOpener = (f: ObservedFrame): boolean => {
     const r = roleOf(f);

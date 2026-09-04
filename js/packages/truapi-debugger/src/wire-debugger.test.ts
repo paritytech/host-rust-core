@@ -3,6 +3,25 @@ import { describe, expect, test } from "bun:test";
 import { createWireDebugger, type WireMethodInfo } from "./wire-debugger.js";
 import type { FrameRole, ObservedFrame } from "./observed-frame.js";
 
+/**
+ * The direction byte each fixture id below stands in for (see `resolveRole`),
+ * for the two tests that pass a `methodNames` map and so exercise the
+ * `role: "unknown"` fallback: 22/40 are their method's `request` leg, 23/41 the
+ * `response` leg. Every other id used in this file never resolves through that
+ * fallback (its test passes no `methodNames`), so its entry here is arbitrary.
+ */
+const DIRECTION_BYTE: Readonly<Record<number, number>> = {
+  18: 0, // start
+  20: 2, // interrupt
+  21: 1, // receive
+  22: 0, // request
+  23: 1, // response
+  24: 0,
+  40: 0, // request
+  41: 1, // response
+  80: 0,
+};
+
 /** A minimal observed frame; only the fields the trace engine keys/groups on matter. */
 function frame(
   channelId: string,
@@ -19,6 +38,7 @@ function frame(
     role,
     byteLength: 1,
     timestamp,
+    bytes: new Uint8Array([0, DIRECTION_BYTE[frameId] ?? 0]),
   };
 }
 
@@ -121,9 +141,9 @@ describe("createWireDebugger grouping", () => {
     // is resolved from the frameId's wire-table kind — so the split must still fire.
     const methodNames = new Map<number, WireMethodInfo>([
       [40, { method: "chat.createRoom", kind: "request" }],
-      [41, { method: "chat.createRoom", kind: "response" }],
+      [41, { method: "chat.createRoom", kind: "request" }],
       [22, { method: "account.getAccount", kind: "request" }],
-      [23, { method: "account.getAccount", kind: "response" }],
+      [23, { method: "account.getAccount", kind: "request" }],
     ]);
     const wd = createWireDebugger({ sink: () => {}, methodNames });
     wd.observe(frame("app.dot", "p:5", 40, 1)); // op 0: chat.createRoom (role "unknown")
@@ -154,7 +174,7 @@ describe("createWireDebugger grouping", () => {
     // on an op that was fully observed.
     const methodNames = new Map<number, WireMethodInfo>([
       [22, { method: "account.getAccount", kind: "request" }],
-      [23, { method: "account.getAccount", kind: "response" }],
+      [23, { method: "account.getAccount", kind: "request" }],
     ]);
     const wd = createWireDebugger({ sink: () => {}, methodNames });
     wd.observe(frame("app.dot", "p:1", 23, 1_000)); // tail of a pre-tap op

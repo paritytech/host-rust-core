@@ -164,6 +164,15 @@ export interface MethodIds {
    * Wire method discriminant within the trait.
    **/
   method: number;
+
+  /**
+   * Which envelope shape this method's payload carries: `Request<Req, Res>`,
+   * or `Subscription<Start, Item, Err>` (`"subscription"` covers both plain
+   * and result subscriptions, which share the same four-phase wire shape).
+   * The one piece of shape a payload-blind reader can use to resolve a
+   * frame's role from its direction alone, without decoding.
+   **/
+  kind: "request" | "subscription";
 }
 
 /**
