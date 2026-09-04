@@ -5,10 +5,32 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
-## [0.13.1] - 2026-09-02
+## [0.14.0] - 2026-09-04
+
+### Added
+
+- wire trace engine, standalone inspector, and in-app panel (#536)
+- payload-blind wire-debug tap, sinks, and the codegen decode surface (#295)
+- persist /log level (#583)
+
+### Changed
+
+- speed up UniFFI binding generation (#590)
 
 ### Fixed
 
+- adopt current People proof contexts (#587)
+- announce the boot auth state after the initial session restore (#571)
+
+## [0.13.1] - 2026-09-02
+
+### Changed
+
+- @parity/truapi 0.13.1, @parity/truapi-host 0.10.1, @parity/ios-host 0.13.1 (#581)
+
+### Fixed
+
+- strip the provider xcframework modulemaps (#553)
 - resolve the dotNS controller whether the gateway stores a dispatcher or the controller (#564)
 - follow previewnet and paseo-next-v2 through their wipes (#579)
 - read Resources parameters through view functions (#577)

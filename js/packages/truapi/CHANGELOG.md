@@ -1,5 +1,11 @@
 # @parity/truapi
 
+## 0.14.0
+
+### Minor Changes
+
+- Add the `@parity/truapi/wire-decode` entry point: a generated `WIRE_DECODE_TABLE` that turns raw SCALE frame bytes into typed values. It sits on its own subpath rather than the package barrel, so importing `@parity/truapi` never pulls a decoder into a product bundle, and the product transport keeps no debug seam of its own. The wire metadata also marks which methods carry sensitive payloads.
+
 ## 0.13.1
 
 ### Patch Changes

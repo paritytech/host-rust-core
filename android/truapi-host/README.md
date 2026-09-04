@@ -28,7 +28,7 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("io.parity:truapi-host-android:0.1.0")
+    implementation("io.parity:truapi-host-android:0.2.0")
 }
 ```
 

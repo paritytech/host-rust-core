@@ -33,6 +33,6 @@
     "typescript": "^6.0"
   },
   "dependencies": {
-    "@parity/truapi": "^0.13.1"
+    "@parity/truapi": "^0.14.0"
   }
 }
