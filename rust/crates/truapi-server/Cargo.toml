@@ -29,6 +29,7 @@ dwarf-debug-info = false
 default = ["wasm-signing-host"]
 wasm-signing-host = []
 ws-bridge = ["dep:tokio", "dep:tokio-tungstenite", "dep:rand", "dep:base64"]
+native-pvm-gpu = ["truapi-pvm-host/native-gpu"]
 
 [dependencies]
 truapi = { path = "../truapi" }
@@ -68,6 +69,7 @@ verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b0
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 truapi = { path = "../truapi", features = ["uniffi"] }
+truapi-pvm-host = { path = "../truapi-pvm-host", features = ["ffi"] }
 truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
 futures = { version = "0.3", features = ["thread-pool"] }
 rand = { version = "0.8", optional = true }

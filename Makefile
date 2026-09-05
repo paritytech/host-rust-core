@@ -139,7 +139,7 @@ UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-check
 
 uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
-	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
+	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge,native-pvm-gpu
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -238,9 +238,9 @@ uniffi-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-server cdyli
 		--language kotlin \
 		--out-dir $(UNIFFI_KOTLIN_OUT)
 
-# Android ABIs to cross-compile the cdylib for. arm64 + armv7 cover physical
-# devices; x86_64 covers the emulator on Intel/Apple-silicon hosts.
-ANDROID_ABIS ?= arm64-v8a armeabi-v7a x86_64
+# Android ABIs supported by both TrUAPI and PolkaVM. arm64 covers physical
+# devices; x86_64 covers emulators. PolkaVM does not support 32-bit armv7.
+ANDROID_ABIS ?= arm64-v8a x86_64
 ANDROID_JNILIBS := android/truapi-host/src/main/jniLibs
 
 android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
@@ -446,12 +446,13 @@ xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulato
 	rustup target add $(XCFRAMEWORK_TARGETS)
 	for target in $(XCFRAMEWORK_TARGETS); do \
 		IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \
-			$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge --target $$target || exit 1; \
+			$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge,native-pvm-gpu --target $$target || exit 1; \
 	done
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
 	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(UNIFFI_SWIFT_TMP)/truapi_platformFFI.h \
-		$(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
+		$(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(UNIFFI_SWIFT_TMP)/pvm_runtimeFFI.h \
+		$(XCFRAMEWORK_HEADERS)/
 	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
 	slices=""; \
 	for target in $(XCFRAMEWORK_TARGETS); do \

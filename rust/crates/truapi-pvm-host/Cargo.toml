@@ -1,0 +1,26 @@
+[package]
+name = "truapi-pvm-host"
+version = "0.1.0"
+edition.workspace = true
+description = "Reviewed host-rust-core bridge to the standalone PolkaVM application runtime"
+license = "MIT"
+repository = "https://github.com/paritytech/host-rust-core"
+publish = false
+
+[features]
+default = []
+ffi = ["pvm-runtime/ffi"]
+browser-assets = ["dep:pvm-runtime-assets"]
+native-gpu = ["pvm-runtime/native-gpu"]
+
+[dependencies]
+pvm-runtime = { git = "https://github.com/paritytech/pvm-host-runtime.git", rev = "7f7f1dcfd499a269f582b89ab4dfba2f962d18fb" }
+pvm-runtime-assets = { git = "https://github.com/paritytech/pvm-host-runtime.git", rev = "7f7f1dcfd499a269f582b89ab4dfba2f962d18fb", optional = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pvm-assets-export"
+path = "src/bin/pvm-assets-export.rs"
+required-features = ["browser-assets"]

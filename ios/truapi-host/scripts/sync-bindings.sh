@@ -14,7 +14,7 @@ PACKAGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TRUAPI_ROOT="$(cd "$PACKAGE_ROOT/../.." && pwd)"
 UNIFFI_OUT="$TRUAPI_ROOT/target/uniffi-swift-out"
 
-NAMESPACES="truapi truapi_platform truapi_server"
+NAMESPACES="truapi truapi_platform truapi_server pvm_runtime"
 
 CHECK_ONLY=0
 case "${1-}" in
