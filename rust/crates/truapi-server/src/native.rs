@@ -3322,14 +3322,16 @@ mod tests {
         let (feature_response, permission_response) = rt.block_on(async {
             let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("dial");
 
-            // [version=0, direction=Request=0][request bytes]
-            let mut permission_value = vec![0x00, 0x00];
-            permission_value.extend(v01::HostDevicePermissionRequest::Camera.encode());
+            let permission_value = truapi::versioned::permissions::HostDevicePermissionRequest::V1(
+                v01::HostDevicePermissionRequest::Camera,
+            )
+            .encode();
             let permission_frame = ProtocolMessage {
                 request_id: "p:permission".into(),
                 payload: Payload {
                     trait_id: permission_ids.trait_id,
                     method_id: permission_ids.method_id,
+                    message_type: crate::frame::MESSAGE_TYPE_REQUEST,
                     value: permission_value,
                 },
             };
@@ -3349,19 +3351,18 @@ mod tests {
                 "permission callback was not invoked"
             );
 
-            // [version=0, direction=Request=0][request bytes]
-            let mut feature_value = vec![0x00, 0x00];
-            feature_value.extend(
+            let feature_value = truapi::versioned::system::HostFeatureSupportedRequest::V1(
                 v01::HostFeatureSupportedRequest::Chain {
                     genesis_hash: vec![0u8; 32],
-                }
-                .encode(),
-            );
+                },
+            )
+            .encode();
             let feature_frame = ProtocolMessage {
                 request_id: "p:feature".into(),
                 payload: Payload {
                     trait_id: feature_ids.trait_id,
                     method_id: feature_ids.method_id,
+                    message_type: crate::frame::MESSAGE_TYPE_REQUEST,
                     value: feature_value,
                 },
             };
@@ -3423,10 +3424,21 @@ mod tests {
             permission_response.payload.method_id,
             permission_ids.method_id
         );
-        // [version=0, direction=Response=1][Ok=0x00][granted=1]
+        assert_eq!(
+            permission_response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
+        let expected_permission: Result<
+            truapi::versioned::permissions::HostDevicePermissionResponse,
+            truapi::CallError<truapi::versioned::permissions::HostDevicePermissionError>,
+        > = Ok(
+            truapi::versioned::permissions::HostDevicePermissionResponse::V1(
+                v01::HostDevicePermissionResponse { granted: true },
+            ),
+        );
         assert_eq!(
             permission_response.payload.value,
-            vec![0x00, 0x01, 0x00, 0x01]
+            expected_permission.encode()
         );
 
         execution.stop_ws_bridge();

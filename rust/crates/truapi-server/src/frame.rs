@@ -4,14 +4,20 @@
 //! and a `payload`. On the wire the envelope is:
 //!
 //! ```text
-//!   [requestId: SCALE str][trait: u8][method: u8][payload bytes...]
+//!   [requestId: SCALE str][trait: u8][method: u8][message_type: u8][payload bytes...]
 //! ```
 //!
 //! The `(trait, method)` discriminant pair maps to a method/kind slot via the
 //! auto-generated [`crate::generated::wire_table::WIRE_TABLE`]. Trait ids and
 //! per-trait method ordering are part of the wire protocol; only ever append
-//! within a trait. The payload bytes are the SCALE-encoded inner value,
-//! inlined without a length prefix.
+//! within a trait. `message_type` (see the `MESSAGE_TYPE_*` constants) names
+//! which leg of that method's exchange this frame carries — `Request`/
+//! `Response`, or a subscription's `Start`/`Receive`/`Interrupt`/`Stop` —
+//! generically, without decoding the payload: the framework dispatcher, the
+//! subscription manager, and any tooling that taps the wire can all read it
+//! directly off `Payload`. The payload bytes that follow are that leg's own
+//! versioned wrapper (e.g. `{Method}Request`), SCALE-encoded and inlined
+//! without a length prefix — nothing about direction lives inside them.
 //!
 //! In-memory we keep the numeric pair directly so dispatch does not need to
 //! reconstruct string action tags on every frame.
@@ -77,20 +83,6 @@ pub(crate) fn decode_protocol_error_payload(
     Ok(error)
 }
 
-/// Encode `Versioned<Result<Ok, _>>` from a versioned success wrapper.
-///
-/// TODO(shared-core-wire): once all hosts use the shared Rust core/generated
-/// client stack, remove this dispatcher compatibility rewrite and encode the
-/// trait return shape directly: `Result<VersionedOk, CallError<VersionedErr>>`.
-pub fn encode_versioned_ok_payload<T: Encode>(value: T) -> Vec<u8> {
-    encode_versioned_result_payload(value, 0)
-}
-
-/// Encode `Versioned<Result<(), _>>` for methods whose success type is unit.
-pub fn encode_versioned_unit_ok_payload(version: u8) -> Vec<u8> {
-    vec![version_index(version), 0]
-}
-
 /// Downgrade a call error's domain payload to the version its caller speaks.
 ///
 /// A handler answers in latest terms. The frame's version byte alone is not
@@ -112,98 +104,36 @@ where
     }
 }
 
-/// Encode `Versioned<Result<_, Err>>` from an ordinary error value.
-pub fn encode_versioned_err_payload<T: Encode>(value: T, version: u8) -> Vec<u8> {
-    let encoded = value.encode();
-    let mut out = Vec::with_capacity(encoded.len() + 2);
-    out.push(version_index(version));
-    out.push(1);
-    out.extend_from_slice(&encoded);
-    out
-}
+/// Which leg of a method's exchange a frame carries: `Request`/`Response` for
+/// a plain request/response method, or a subscription's `Start`/`Receive`/
+/// `Interrupt`/`Stop`. Wire-level, third byte of every frame (see the module
+/// doc), so any code — the dispatcher, the subscription manager, a debug tap
+/// — can read it generically, without decoding the leg's own payload.
+///
+/// `Request` and `Start` share `0`, `Response` and `Receive` share `1`: a
+/// subscription's first two legs occupy the same slots a plain method's two
+/// legs would, so the byte alone plus the method's registered kind (never
+/// both a request and a subscription) resolves unambiguously.
+pub const MESSAGE_TYPE_REQUEST: u8 = 0;
+/// See [`MESSAGE_TYPE_REQUEST`].
+pub const MESSAGE_TYPE_START: u8 = 0;
+/// See [`MESSAGE_TYPE_REQUEST`].
+pub const MESSAGE_TYPE_RESPONSE: u8 = 1;
+/// See [`MESSAGE_TYPE_REQUEST`].
+pub const MESSAGE_TYPE_RECEIVE: u8 = 1;
+/// A subscription's stream-ending frame: `Some(error)` for a failure,
+/// `None` for natural completion. Carries no version — nothing method-
+/// specific is ever negotiated for a bare `Option`.
+pub const MESSAGE_TYPE_INTERRUPT: u8 = 2;
+/// A subscription's cancellation, product → host. Carries no payload at all.
+pub const MESSAGE_TYPE_STOP: u8 = 3;
 
-/// Encode `Result<(), _>` for unversioned methods whose success type is unit.
-pub fn encode_raw_unit_ok_payload() -> Vec<u8> {
-    Ok::<(), ()>(()).encode()
-}
-
-/// Encode `Result<(), Err>` for unversioned methods from an ordinary error value.
-pub fn encode_raw_err_payload<T: Encode>(value: T) -> Vec<u8> {
-    Err::<(), T>(value).encode()
-}
-
-/// Encode a versioned subscription interrupt payload from an ordinary error.
-pub fn encode_versioned_interrupt_payload<T: Encode>(value: T, version: u8) -> Vec<u8> {
-    let encoded = value.encode();
-    let mut out = Vec::with_capacity(encoded.len() + 1);
-    out.push(version_index(version));
-    out.extend_from_slice(&encoded);
-    out
-}
-
-/// Every nested wire envelope shares this fixed shape once its own
-/// `[version]` byte is stripped: a `truapi::versioned::Subscription`
-/// direction tag (`Start`=0, `Receive`=1, `Interrupt`=2, `Stop`=3), declared
-/// in that order in `truapi::versioned` — followed by whatever bytes that
-/// direction carries. These constants and the helpers below let runtime code
-/// that has no concrete `{Method}Version` type in scope (the framework
-/// dispatcher, the host-initiated subscription manager) still construct and
-/// inspect that structure. `Start` has no constant of its own: nothing needs
-/// to detect it by raw byte, since a `Start` frame is always decoded through
-/// the concrete `{Method}Version` type by the generated per-method handler.
-const SUBSCRIPTION_TAG_RECEIVE: u8 = 1;
-const SUBSCRIPTION_TAG_INTERRUPT: u8 = 2;
-const SUBSCRIPTION_TAG_STOP: u8 = 3;
-
-/// Peek a subscription frame's direction tag (the second byte, right after
-/// the envelope's own version tag) without needing the concrete
-/// `Start`/`Item`/`Err` types.
-pub fn subscription_direction_tag(bytes: &[u8]) -> Option<u8> {
-    bytes.get(1).copied()
-}
-
-/// Whether a subscription frame's direction tag is `Stop`.
-pub fn is_subscription_stop(bytes: &[u8]) -> bool {
-    subscription_direction_tag(bytes) == Some(SUBSCRIPTION_TAG_STOP)
-}
-
-/// Whether a subscription frame's direction tag is `Receive`.
-pub fn is_subscription_receive(bytes: &[u8]) -> bool {
-    subscription_direction_tag(bytes) == Some(SUBSCRIPTION_TAG_RECEIVE)
-}
-
-/// Whether a subscription frame's direction tag is `Interrupt`.
-pub fn is_subscription_interrupt(bytes: &[u8]) -> bool {
-    subscription_direction_tag(bytes) == Some(SUBSCRIPTION_TAG_INTERRUPT)
-}
-
-/// Split a subscription envelope frame into its direction tag and the
-/// direction's own inner bytes (byte 2 onward) — everything after the
-/// envelope's `[version, direction]` prefix. When the direction wraps a
-/// versioned type (e.g. a method's item wrapper), that type's own leading
-/// version tag is the first of these inner bytes and decodes directly; the
-/// outer envelope's version byte (byte 0) is redundant with it by
-/// construction and is discarded here, not reinserted. `None` if `bytes` is
-/// shorter than the two-byte prefix every envelope carries.
-pub fn split_subscription_direction(bytes: &[u8]) -> Option<(u8, &[u8])> {
-    let direction = *bytes.get(1)?;
-    Some((direction, &bytes[2..]))
-}
-
-/// Encode `{version_type}::V{version}(Subscription::Interrupt(None))` — a
-/// subscription's natural (error-free) completion — without needing the
-/// concrete `{version_type}`: `Option::None` always encodes as a single
-/// `0` byte, and `Interrupt`'s own tag position is fixed, so the three bytes
-/// are fully determined by `version` alone.
-pub fn encode_envelope_clean_interrupt(version: u8) -> Vec<u8> {
-    vec![version_index(version), SUBSCRIPTION_TAG_INTERRUPT, 0]
-}
-
-/// Encode `{version_type}::V{version}(Subscription::Stop)` — a subscription
-/// cancellation — without needing the concrete `{version_type}`: `Stop`
-/// carries no payload, so the two bytes are fully determined by `version`.
-pub fn encode_envelope_stop(version: u8) -> Vec<u8> {
-    vec![version_index(version), SUBSCRIPTION_TAG_STOP]
+/// Encode `Interrupt(None)` — a subscription's natural (error-free)
+/// completion. `Option::None` always encodes as a single `0` byte; pair with
+/// [`MESSAGE_TYPE_INTERRUPT`], not appended to any version tag, since a `None`
+/// carries nothing method-specific to version.
+pub fn encode_clean_interrupt() -> Vec<u8> {
+    vec![0]
 }
 
 impl Encode for ProtocolMessage {
@@ -211,6 +141,7 @@ impl Encode for ProtocolMessage {
         self.request_id.encode_to(dest);
         self.payload.trait_id.encode_to(dest);
         self.payload.method_id.encode_to(dest);
+        self.payload.message_type.encode_to(dest);
         // Payload bytes are inlined; the receiver reads "until end of frame"
         // because each transport frame is one ProtocolMessage. This matches
         // the public versioned enum transport shape (variant payload encoded
@@ -229,6 +160,8 @@ impl Decode for ProtocolMessage {
             .map_err(|_| CodecError::from("frame is missing the trait discriminant byte"))?;
         let method_id = u8::decode(input)
             .map_err(|_| CodecError::from("frame is missing the method discriminant byte"))?;
+        let message_type = u8::decode(input)
+            .map_err(|_| CodecError::from("frame is missing the message-type byte"))?;
         // Unknown (trait, method) pairs are accepted here; routing is deferred
         // to dispatch, which reports frames with no registered handler.
         let remaining = input
@@ -244,6 +177,7 @@ impl Decode for ProtocolMessage {
             payload: Payload {
                 trait_id,
                 method_id,
+                message_type,
                 value,
             },
         })
@@ -252,7 +186,8 @@ impl Decode for ProtocolMessage {
 
 /// Tagged payload. The `(trait_id, method_id)` pair is the wire discriminant
 /// from [`crate::generated::wire_table::WIRE_TABLE`], identifying the frame's
-/// trait, method, and kind (request/response/start/stop/interrupt/receive).
+/// trait and method; `message_type` (see the `MESSAGE_TYPE_*` constants)
+/// names which leg of that method's exchange this frame carries.
 ///
 /// Note: `Payload` does not derive `Encode`/`Decode` directly; the wire
 /// representation lives on [`ProtocolMessage`]. `Payload` is kept as a plain
@@ -264,7 +199,10 @@ pub struct Payload {
     pub trait_id: u8,
     /// Method discriminant within the trait: second byte of the wire pair.
     pub method_id: u8,
-    /// SCALE-encoded inner value bytes.
+    /// Which leg of the method's exchange this frame carries. See the
+    /// `MESSAGE_TYPE_*` constants.
+    pub message_type: u8,
+    /// SCALE-encoded inner value bytes: that leg's own versioned wrapper.
     pub value: Vec<u8>,
 }
 
@@ -313,47 +251,28 @@ impl IdFactory {
     }
 }
 
-fn encode_versioned_result_payload<T: Encode>(value: T, result_index: u8) -> Vec<u8> {
-    let encoded = value.encode();
-    let Some((&version_index, inner)) = encoded.split_first() else {
-        return vec![result_index];
-    };
-    let mut out = Vec::with_capacity(encoded.len() + 1);
-    out.push(version_index);
-    out.push(result_index);
-    out.extend_from_slice(inner);
-    out
-}
-
-fn version_index(version: u8) -> u8 {
-    version.saturating_sub(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[derive(Encode)]
-    enum TestVersioned<T> {
-        V1(T),
-    }
-
-    fn build(trait_id: u8, method_id: u8, value: Vec<u8>) -> ProtocolMessage {
+    fn build(trait_id: u8, method_id: u8, message_type: u8, value: Vec<u8>) -> ProtocolMessage {
         ProtocolMessage {
             request_id: "p:1".to_string(),
             payload: Payload {
                 trait_id,
                 method_id,
+                message_type,
                 value,
             },
         }
     }
 
-    fn expected_wire(trait_id: u8, method_id: u8, value: &[u8]) -> Vec<u8> {
+    fn expected_wire(trait_id: u8, method_id: u8, message_type: u8, value: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         "p:1".to_string().encode_to(&mut out);
         out.push(trait_id);
         out.push(method_id);
+        out.push(message_type);
         out.extend_from_slice(value);
         out
     }
@@ -362,15 +281,18 @@ mod tests {
     fn handshake_request_encodes_with_the_system_trait_pair() {
         // SCALE-encoded HostHandshakeRequest::V1(2u8) = [0u8 variant][2u8 codec_version]
         let inner: Vec<u8> = vec![0x00, 0x02];
-        // system trait = 1, handshake request = 0.
-        let msg = build(1, 0, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(1, 0, &inner));
+        // system trait = 1, handshake request = 0, message_type = Request.
+        let msg = build(1, 0, MESSAGE_TYPE_REQUEST, inner.clone());
+        assert_eq!(
+            msg.encode(),
+            expected_wire(1, 0, MESSAGE_TYPE_REQUEST, &inner)
+        );
     }
 
-    /// Pins where the pair lands for a multi-byte payload. The payload here is
-    /// an arbitrary blob, not a real `HostAccountGetRequest` — this layer
-    /// inlines payload bytes verbatim and never interprets them. The typed
-    /// layout of an `account_get_account` payload is asserted in
+    /// Pins where the pair and message type land for a multi-byte payload. The
+    /// payload here is an arbitrary blob, not a real `HostAccountGetRequest` —
+    /// this layer inlines payload bytes verbatim and never interprets them.
+    /// The typed layout of an `account_get_account` payload is asserted in
     /// `tests/golden_frame.rs` against the golden fixture.
     #[test]
     fn get_account_request_encodes_with_discriminant_pair() {
@@ -378,14 +300,17 @@ mod tests {
         "foo".to_string().encode_to(&mut inner);
         0u32.encode_to(&mut inner);
         // account trait = 2, get_account request = 4.
-        let msg = build(2, 4, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(2, 4, &inner));
+        let msg = build(2, 4, MESSAGE_TYPE_REQUEST, inner.clone());
+        assert_eq!(
+            msg.encode(),
+            expected_wire(2, 4, MESSAGE_TYPE_REQUEST, &inner)
+        );
     }
 
     #[test]
-    fn round_trip_preserves_ids_and_value() {
+    fn round_trip_preserves_ids_message_type_and_value() {
         let inner: Vec<u8> = vec![0x00, 0x42, 0xab, 0xcd];
-        let msg = build(199, 0, inner.clone());
+        let msg = build(199, 0, MESSAGE_TYPE_RESPONSE, inner.clone());
         let decoded = ProtocolMessage::decode(&mut &msg.encode()[..]).expect("decode");
         assert_eq!(decoded, msg);
     }
@@ -398,10 +323,12 @@ mod tests {
         "p:1".to_string().encode_to(&mut bytes);
         bytes.push(250); // far outside the populated trait range
         bytes.push(123);
+        bytes.push(MESSAGE_TYPE_REQUEST);
         bytes.extend_from_slice(&[0xaa, 0xbb]);
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("unknown pair must decode");
         assert_eq!(decoded.payload.trait_id, 250);
         assert_eq!(decoded.payload.method_id, 123);
+        assert_eq!(decoded.payload.message_type, MESSAGE_TYPE_REQUEST);
         assert_eq!(decoded.payload.value, vec![0xaa, 0xbb]);
     }
 
@@ -436,6 +363,7 @@ mod tests {
                 payload: Payload {
                     trait_id: PROTOCOL_ERROR_TRAIT_ID,
                     method_id: PROTOCOL_ERROR_METHOD_ID,
+                    message_type: MESSAGE_TYPE_REQUEST,
                     value: payload,
                 },
             };
@@ -444,29 +372,32 @@ mod tests {
     }
 
     /// All four subscription phases share one `(trait, method)` address now
-    /// (direction lives in the payload) and still round-trip through the
-    /// codec. Catches a regression where `Decode` mishandles a frame whose
-    /// payload is a bare `[version, Stop]` pair (no further inner data) but
-    /// carries more for `Start`/`Interrupt`/`Receive`. The address is
+    /// (message type is the wire's own third byte, no longer inside the
+    /// payload) and still round-trip through the codec. Catches a regression
+    /// where `Decode` mishandles an empty `Stop` payload but carries more for
+    /// `Start`/`Interrupt`/`Receive`. The address is
     /// `account_connection_status_subscribe`'s (trait 2, method 0).
     #[test]
     fn subscription_phases_round_trip_through_codec() {
-        let cases: &[Vec<u8>] = &[
-            vec![0x00, 0x00, 0xaa],             // start: [version, Start, item bytes]
-            vec![0x00, 0x01, 0x01, 0x02, 0x03], // receive: [version, Receive, item bytes]
-            vec![0x00, 0x02, 0x00],             // interrupt: [version, Interrupt, None]
-            vec![0x00, 0x03],                   // stop: [version, Stop]
+        let cases: &[(u8, Vec<u8>)] = &[
+            (MESSAGE_TYPE_START, vec![0x00, 0xaa]), // start: [version, item bytes]
+            (MESSAGE_TYPE_RECEIVE, vec![0x00, 0x01, 0x02, 0x03]), // receive: [version, item bytes]
+            (MESSAGE_TYPE_INTERRUPT, vec![0x00]),   // interrupt: None
+            (MESSAGE_TYPE_STOP, vec![]),            // stop: no payload at all
         ];
-        for value in cases {
-            let msg = build(2, 0, value.clone());
+        for (message_type, value) in cases {
+            let msg = build(2, 0, *message_type, value.clone());
             let bytes = msg.encode();
             assert_eq!(
                 bytes,
-                expected_wire(2, 0, value),
-                "encode mismatch for payload {value:?}"
+                expected_wire(2, 0, *message_type, value),
+                "encode mismatch for message_type {message_type} payload {value:?}"
             );
             let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
-            assert_eq!(decoded, msg, "round-trip mismatch for payload {value:?}");
+            assert_eq!(
+                decoded, msg,
+                "round-trip mismatch for message_type {message_type} payload {value:?}"
+            );
         }
     }
 
@@ -494,50 +425,20 @@ mod tests {
     }
 
     #[test]
-    fn subscription_direction_helpers_read_the_second_byte() {
-        assert!(is_subscription_stop(&[0, 3]));
-        assert!(!is_subscription_stop(&[0, 0]));
-        assert!(is_subscription_receive(&[0, 1, 0xaa]));
-        assert!(is_subscription_interrupt(&[0, 2, 0]));
-        assert_eq!(subscription_direction_tag(&[5, 2]), Some(2));
-        assert_eq!(subscription_direction_tag(&[5]), None);
+    fn encode_clean_interrupt_is_a_bare_none() {
+        assert_eq!(encode_clean_interrupt(), vec![0]);
     }
 
-    #[test]
-    fn split_subscription_direction_drops_the_two_byte_envelope_prefix() {
-        assert_eq!(
-            split_subscription_direction(&[0, 3, 0xaa, 0xbb]),
-            Some((3, [0xaa, 0xbb].as_slice()))
-        );
-        assert_eq!(
-            split_subscription_direction(&[0, 1]),
-            Some((1, [].as_slice()))
-        );
-        assert_eq!(split_subscription_direction(&[0]), None);
-        assert_eq!(split_subscription_direction(&[]), None);
-    }
-
-    #[test]
-    fn encode_envelope_clean_interrupt_is_version_then_interrupt_then_none() {
-        assert_eq!(encode_envelope_clean_interrupt(1), vec![0, 2, 0]);
-        assert_eq!(encode_envelope_clean_interrupt(2), vec![1, 2, 0]);
-    }
-
-    #[test]
-    fn encode_envelope_stop_is_version_then_stop() {
-        assert_eq!(encode_envelope_stop(1), vec![0, 3]);
-        assert_eq!(encode_envelope_stop(2), vec![1, 3]);
-    }
-
-    /// Genuine zero-byte payload (e.g. unit-typed response). `Decode` must
-    /// handle `remaining_len == 0` without erroring or reading past EOF.
+    /// Genuine zero-byte payload (e.g. unit-typed response, or a `Stop` frame).
+    /// `Decode` must handle `remaining_len == 0` without erroring or reading
+    /// past EOF.
     #[test]
     fn empty_payload_round_trips() {
         // local_storage_clear_response = (7, 5).
-        let msg = build(7, 5, Vec::new());
+        let msg = build(7, 5, MESSAGE_TYPE_RESPONSE, Vec::new());
         let bytes = msg.encode();
-        // [SCALE compact-len 0x0c][p][:][1][u8 7][u8 5] = 4 + 2 = 6 bytes total
-        assert_eq!(bytes.len(), 6);
+        // [SCALE compact-len 0x0c][p][:][1][u8 7][u8 5][u8 message_type] = 4 + 3 = 7 bytes total
+        assert_eq!(bytes.len(), 7);
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
         assert_eq!(decoded, msg);
     }
@@ -552,6 +453,7 @@ mod tests {
             payload: Payload {
                 trait_id: 194,
                 method_id: 4,
+                message_type: MESSAGE_TYPE_REQUEST,
                 value: vec![0x00, 0xab, 0xcd],
             },
         };
@@ -560,7 +462,8 @@ mod tests {
     }
 
     /// Truncated frames must surface a `CodecError`, not panic, and the
-    /// trait-byte and method-byte truncations report distinct errors.
+    /// trait-byte, method-byte, and message-type-byte truncations report
+    /// distinct errors.
     #[test]
     fn truncated_frames_error_cleanly() {
         // Empty buffer.
@@ -583,6 +486,15 @@ mod tests {
             format!("{err}").contains("method discriminant"),
             "unexpected error: {err}"
         );
+        // RequestId plus trait and method bytes, no message-type byte.
+        let mut missing_message_type = missing_method.clone();
+        missing_message_type.push(0);
+        let err = ProtocolMessage::decode(&mut &missing_message_type[..])
+            .expect_err("missing message-type byte must error");
+        assert!(
+            format!("{err}").contains("message-type"),
+            "unexpected error: {err}"
+        );
         // RequestId header claims length=200 but the buffer is far shorter.
         let truncated_str_header = [200u8 << 2, 0x61, 0x62, 0x63];
         assert!(ProtocolMessage::decode(&mut &truncated_str_header[..]).is_err());
@@ -598,11 +510,12 @@ mod tests {
             payload: Payload {
                 trait_id: 194,
                 method_id: 4,
+                message_type: MESSAGE_TYPE_RESPONSE,
                 value: vec![0x00, 0x01, 0x02],
             },
         };
         let bytes = msg.encode();
-        // [SCALE compact-len 0 = 0x00][trait][method][payload]
+        // [SCALE compact-len 0 = 0x00][trait][method][message_type][payload]
         assert_eq!(bytes[0], 0x00);
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
         assert_eq!(decoded, msg);
@@ -616,6 +529,7 @@ mod tests {
             payload: Payload {
                 trait_id: 194,
                 method_id: 4,
+                message_type: MESSAGE_TYPE_REQUEST,
                 value: vec![0x00, 0x01],
             },
         };
@@ -628,25 +542,9 @@ mod tests {
     #[test]
     fn large_payload_round_trips() {
         let big = vec![0xa5u8; 100 * 1024];
-        let msg = build(194, 4, big);
+        let msg = build(194, 4, MESSAGE_TYPE_RESPONSE, big);
         let decoded = ProtocolMessage::decode(&mut &msg.encode()[..]).expect("decode");
         assert_eq!(decoded, msg);
-    }
-
-    #[test]
-    fn encode_versioned_unit_ok_payload_wraps_unit_success() {
-        assert_eq!(encode_versioned_unit_ok_payload(1), vec![0u8, 0u8]);
-        assert_eq!(encode_versioned_unit_ok_payload(0), vec![0u8, 0u8]);
-    }
-
-    #[test]
-    fn encode_versioned_ok_payload_wraps_success_values() {
-        let mut expected = vec![0u8, 0u8];
-        7u32.encode_to(&mut expected);
-        assert_eq!(
-            encode_versioned_ok_payload(TestVersioned::V1(7u32)),
-            expected
-        );
     }
 
     /// A two-version error envelope, standing in for any real one. `V2` adds a
@@ -751,20 +649,6 @@ mod tests {
                 }
             );
         }
-    }
-
-    #[test]
-    fn encode_versioned_err_payload_wraps_error_values() {
-        let mut expected = vec![0u8, 1u8];
-        9u32.encode_to(&mut expected);
-        assert_eq!(encode_versioned_err_payload(9u32, 1), expected);
-    }
-
-    #[test]
-    fn encode_versioned_interrupt_payload_wraps_error_values() {
-        let mut expected = vec![1u8];
-        9u32.encode_to(&mut expected);
-        assert_eq!(encode_versioned_interrupt_payload(9u32, 2), expected);
     }
 
     /// IdFactory mints monotonically increasing ids prefixed with the

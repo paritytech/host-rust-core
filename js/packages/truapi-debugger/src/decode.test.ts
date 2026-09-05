@@ -8,12 +8,13 @@ import type { ObservedFrame } from "./observed-frame.js";
 import { frameIdOf } from "./wire-debugger.js";
 
 /** A minimal observed frame for a given id/bytes; the fields decode ignores are stubbed. */
-function frame(frameId: number, bytes?: Uint8Array): ObservedFrame {
+function frame(frameId: number, bytes?: Uint8Array, messageType = 0): ObservedFrame {
   return {
     channelId: "myapp.dot",
     direction: "out",
     requestId: "p:1",
     frameId,
+    messageType,
     role: "unknown",
     byteLength: bytes?.length ?? 0,
     timestamp: 0,
@@ -38,9 +39,9 @@ function unattested(frameId: number, bytes?: Uint8Array): ObservedFrame {
 
 describe("frame decoder (real table) — decodes everything, no special-casing", () => {
   test("a non-sensitive frame decodes only with the toggle on", () => {
-    // `connection-status.subscribe`'s Start payload is void: `V1(Start(void))` is
-    // just the version and direction index bytes, `[0, 0]` - a real frame the
-    // generated table can decode.
+    // `connection-status.subscribe` takes no request at all, so its Start leg
+    // (messageType 0, the frame's default) decodes to bare `undefined` - a real
+    // frame the generated table can decode, ignoring these two arbitrary bytes.
     const id = frameIdOf(
       W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
       W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
@@ -55,8 +56,8 @@ describe("frame decoder (real table) — decodes everything, no special-casing",
     const on = createFrameDecoder({ enabled: true });
     const onDetail = on.detail(frame(id, bytes));
     expect(onDetail.kind).toBe("decoded");
-    // Sanity: the id really is in the generated decode table.
-    expect(typeof WIRE_DECODE_TABLE[id]).toBe("function");
+    // Sanity: the id's Start leg really is in the generated decode table.
+    expect(typeof WIRE_DECODE_TABLE[id]?.[0]).toBe("function");
   });
 
   test("a formerly-'sensitive' signing frame decodes too (dev-only tool)", () => {
@@ -88,7 +89,7 @@ describe("frame decoder (real table) — decodes everything, no special-casing",
 });
 
 describe("frame decoder (injected table)", () => {
-  const table = { 999: (b: Uint8Array) => ({ ok: Array.from(b) }) };
+  const table = { 999: { 0: (b: Uint8Array) => ({ ok: Array.from(b) }) } };
 
   test("decodes an id when enabled and bytes present", () => {
     const decoder = createFrameDecoder({ enabled: true, decodeTable: table });
@@ -102,7 +103,7 @@ describe("frame decoder (injected table)", () => {
   test("decodes a secret-named field too — no content guard withholds it", () => {
     const decoder = createFrameDecoder({
       enabled: true,
-      decodeTable: { 999: () => ({ source: { sr25519SecretKey: "0xdead" } }) },
+      decodeTable: { 999: { 0: () => ({ source: { sr25519SecretKey: "0xdead" } }) } },
     });
     const detail = decoder.detail(frame(999, new Uint8Array([1])));
     expect(detail.kind).toBe("decoded");
@@ -120,8 +121,10 @@ describe("frame decoder (injected table)", () => {
     const decoder = createFrameDecoder({
       enabled: true,
       decodeTable: {
-        999: () => {
-          throw new Error("bad payload");
+        999: {
+          0: () => {
+            throw new Error("bad payload");
+          },
         },
       },
     });

@@ -635,19 +635,18 @@ mod tests {
         let response_bytes = rt.block_on(async {
             let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("dial");
 
-            // [version=0, direction=Request=0][request bytes]
-            let mut value = vec![0x00, 0x00];
-            value.extend(
+            let value = truapi::versioned::system::HostFeatureSupportedRequest::V1(
                 v01::HostFeatureSupportedRequest::Chain {
                     genesis_hash: vec![0u8; 32],
-                }
-                .encode(),
-            );
+                },
+            )
+            .encode();
             let request_frame = ProtocolMessage {
                 request_id: "p:1".into(),
                 payload: Payload {
                     trait_id: ids.trait_id,
                     method_id: ids.method_id,
+                    message_type: crate::frame::MESSAGE_TYPE_REQUEST,
                     value,
                 },
             };
@@ -670,8 +669,17 @@ mod tests {
         assert_eq!(response.request_id, "p:1");
         assert_eq!(response.payload.trait_id, ids.trait_id);
         assert_eq!(response.payload.method_id, ids.method_id);
-        // [version=0, direction=Response=1][Ok disc=0x00][supported=1]
-        assert_eq!(response.payload.value, vec![0x00, 0x01, 0x00, 0x01]);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
+        let expected: Result<
+            truapi::versioned::system::HostFeatureSupportedResponse,
+            truapi::CallError<truapi::versioned::system::HostFeatureSupportedError>,
+        > = Ok(truapi::versioned::system::HostFeatureSupportedResponse::V1(
+            v01::HostFeatureSupportedResponse { supported: true },
+        ));
+        assert_eq!(response.payload.value, expected.encode());
 
         bridge.stop();
     }

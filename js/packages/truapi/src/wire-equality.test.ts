@@ -9,7 +9,11 @@ import type { Result } from "neverthrow";
 import { describe, expect, it } from "bun:test";
 
 import { str } from "./scale.js";
-import { decodeWireMessage, encodeWireMessage } from "./transport.js";
+import {
+  MESSAGE_TYPE_REQUEST,
+  decodeWireMessage,
+  encodeWireMessage,
+} from "./transport.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 
@@ -19,13 +23,19 @@ function toHex(u: Uint8Array): string {
         .join("");
 }
 
-function expectedWire(traitId: number, methodId: number, valueBytes: Uint8Array): Uint8Array {
+function expectedWire(
+    traitId: number,
+    methodId: number,
+    messageType: number,
+    valueBytes: Uint8Array,
+): Uint8Array {
     const reqId = str.enc("p:1");
-    const out = new Uint8Array(reqId.length + 2 + valueBytes.length);
+    const out = new Uint8Array(reqId.length + 3 + valueBytes.length);
     out.set(reqId, 0);
     out[reqId.length] = traitId;
     out[reqId.length + 1] = methodId;
-    out.set(valueBytes, reqId.length + 2);
+    out[reqId.length + 2] = messageType;
+    out.set(valueBytes, reqId.length + 3);
     return out;
 }
 
@@ -40,31 +50,34 @@ function unwrap<T>(result: Result<T, { message: string }>, message: string): T {
 }
 
 describe("encodeWireMessage / decodeWireMessage wire equality", () => {
-    it("pins the handshake frame end-to-end: requestId + 0x01 0x00 + payload", () => {
+    it("pins the handshake frame end-to-end: requestId + 0x01 0x00 0x00 + payload", () => {
         // Trait 1 = system, method 0 = handshake request. The handshake is the
         // first frame either side sends, so its envelope must never drift.
         expect(W.SYSTEM_HANDSHAKE.trait).toBe(1);
         expect(W.SYSTEM_HANDSHAKE.method).toBe(0);
 
-        const inner = new Uint8Array([0x00, 0x02]); // V1 variant + codec_version=2
+        const inner = new Uint8Array([0x00, 0x02]); // request wrapper V1 + codec_version=2
         const encoded = unwrap(
             encodeWireMessage({
                 requestId: "p:1",
                 payload: {
                     traitId: W.SYSTEM_HANDSHAKE.trait,
                     methodId: W.SYSTEM_HANDSHAKE.method,
+                    messageType: MESSAGE_TYPE_REQUEST,
                     value: inner,
                 },
             }),
             "encode handshake_request",
         );
-        // [0c 70 3a 31] "p:1" + [01] system trait + [00] handshake request + payload.
-        expect(toHex(encoded)).toBe("0c703a3101000002");
-        expect(toHex(encoded)).toBe(toHex(expectedWire(1, 0, inner)));
+        // [0c 70 3a 31] "p:1" + [01] system trait + [00] handshake request
+        // + [00] messageType=Request + payload.
+        expect(toHex(encoded)).toBe("0c703a310100000002");
+        expect(toHex(encoded)).toBe(toHex(expectedWire(1, 0, MESSAGE_TYPE_REQUEST, inner)));
 
         const decoded = unwrap(decodeWireMessage(encoded), "decode handshake_request");
         expect(decoded.payload.traitId).toBe(1);
         expect(decoded.payload.methodId).toBe(0);
+        expect(decoded.payload.messageType).toBe(MESSAGE_TYPE_REQUEST);
         expect(toHex(decoded.payload.value)).toBe(toHex(inner));
     });
 
@@ -75,15 +88,12 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         // hand-rolled payload keeps encoding the layout it was written against
         // long after the type has moved on, which is exactly how the Rust
         // fixture went stale across the 0.6.0 `DerivationIndex` change.
-        const inner = T.HostAccountGetVersion.enc({
+        const inner = T.VersionedHostAccountGetRequest.enc({
             tag: "V1",
             value: {
-                tag: "Request",
-                value: {
-                    productAccountId: {
-                        dotNsIdentifier: "foo",
-                        derivationIndex: { tag: "Index", value: 0 },
-                    },
+                productAccountId: {
+                    dotNsIdentifier: "foo",
+                    derivationIndex: { tag: "Index", value: 0 },
                 },
             },
         });
@@ -93,14 +103,22 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
                 payload: {
                     traitId: W.ACCOUNT_GET_ACCOUNT.trait,
                     methodId: W.ACCOUNT_GET_ACCOUNT.method,
+                    messageType: MESSAGE_TYPE_REQUEST,
                     value: inner,
                 },
             }),
             "encode account_get_request",
         );
-        expect(toHex(encoded)).toBe(toHex(expectedWire(2, 1, inner)));
-        // [0c 70 3a 31] "p:1" + [02 01] pair + [00] V1 + [00] direction=Request
-        // + [0c 66 6f 6f] "foo" + [00] DerivationIndex::Index + [00 00 00 00] u32 = 0.
+        expect(toHex(encoded)).toBe(
+            toHex(expectedWire(2, 1, MESSAGE_TYPE_REQUEST, inner)),
+        );
+        // [0c 70 3a 31] "p:1" + [02 01] pair + [00] messageType=Request
+        // + [00] request wrapper V1 + [0c 66 6f 6f] "foo"
+        // + [00] DerivationIndex::Index + [00 00 00 00] u32 = 0.
+        //
+        // Byte-for-byte identical to the pre-messageType-byte fixture: the
+        // wrapper's own V1 tag now sits where the old envelope's direction
+        // tag used to, and both happen to be 0x00.
         expect(toHex(encoded)).toBe("0c703a31020100000c666f6f0000000000");
     });
 
@@ -112,6 +130,7 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
                 payload: {
                     traitId: W.LOCAL_STORAGE_READ.trait,
                     methodId: W.LOCAL_STORAGE_READ.method,
+                    messageType: MESSAGE_TYPE_REQUEST,
                     value: inner,
                 },
             }),
@@ -121,13 +140,19 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         expect(decoded.requestId).toBe("p:1");
         expect(decoded.payload.traitId).toBe(W.LOCAL_STORAGE_READ.trait);
         expect(decoded.payload.methodId).toBe(W.LOCAL_STORAGE_READ.method);
+        expect(decoded.payload.messageType).toBe(MESSAGE_TYPE_REQUEST);
         expect(toHex(decoded.payload.value)).toBe(toHex(inner));
     });
 
     it("rejects an invalid outbound trait discriminant", () => {
         const result = encodeWireMessage({
             requestId: "p:1",
-            payload: { traitId: 256, methodId: 0, value: new Uint8Array() },
+            payload: {
+                traitId: 256,
+                methodId: 0,
+                messageType: MESSAGE_TYPE_REQUEST,
+                value: new Uint8Array(),
+            },
         });
         expect(result.isErr()).toBe(true);
         expect(result._unsafeUnwrapErr().message).toMatch(/Invalid wire trait discriminant/);
@@ -136,10 +161,29 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
     it("rejects an invalid outbound method discriminant", () => {
         const result = encodeWireMessage({
             requestId: "p:1",
-            payload: { traitId: 0, methodId: 256, value: new Uint8Array() },
+            payload: {
+                traitId: 0,
+                methodId: 256,
+                messageType: MESSAGE_TYPE_REQUEST,
+                value: new Uint8Array(),
+            },
         });
         expect(result.isErr()).toBe(true);
         expect(result._unsafeUnwrapErr().message).toMatch(/Invalid wire method discriminant/);
+    });
+
+    it("rejects an invalid outbound message type", () => {
+        const result = encodeWireMessage({
+            requestId: "p:1",
+            payload: {
+                traitId: 0,
+                methodId: 0,
+                messageType: 256,
+                value: new Uint8Array(),
+            },
+        });
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toMatch(/Invalid wire message type/);
     });
 
     it("rejects a truncated frame with no trait byte", () => {
@@ -159,6 +203,17 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         expect(result._unsafeUnwrapErr().message).toMatch(/missing method discriminant byte/);
     });
 
+    it("rejects a truncated frame with a method byte but no message-type byte", () => {
+        const reqId = str.enc("p:1");
+        const truncated = new Uint8Array(reqId.length + 2);
+        truncated.set(reqId, 0);
+        truncated[reqId.length] = 0x00;
+        truncated[reqId.length + 1] = 0x00;
+        const result = decodeWireMessage(truncated);
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toMatch(/missing message-type byte/);
+    });
+
     it("round-trips a 32 KiB requestId via the mode-2 compact-len prefix", () => {
         // Mirrors Rust `max_length_request_id_mode_two_round_trips` so both sides
         // agree the high-shift branch in scanStrEnd is correct.
@@ -170,6 +225,7 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
                 payload: {
                     traitId: W.ACCOUNT_GET_ACCOUNT.trait,
                     methodId: W.ACCOUNT_GET_ACCOUNT.method,
+                    messageType: MESSAGE_TYPE_REQUEST,
                     value: inner,
                 },
             }),
@@ -182,6 +238,7 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         expect(decoded.requestId).toBe(longId);
         expect(decoded.payload.traitId).toBe(W.ACCOUNT_GET_ACCOUNT.trait);
         expect(decoded.payload.methodId).toBe(W.ACCOUNT_GET_ACCOUNT.method);
+        expect(decoded.payload.messageType).toBe(MESSAGE_TYPE_REQUEST);
         expect(toHex(decoded.payload.value)).toBe(toHex(inner));
     });
 });

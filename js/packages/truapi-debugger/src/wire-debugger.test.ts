@@ -4,13 +4,13 @@ import { createWireDebugger, type WireMethodInfo } from "./wire-debugger.js";
 import type { FrameRole, ObservedFrame } from "./observed-frame.js";
 
 /**
- * The direction byte each fixture id below stands in for (see `resolveRole`),
+ * The `messageType` each fixture id below stands in for (see `resolveRole`),
  * for the two tests that pass a `methodNames` map and so exercise the
  * `role: "unknown"` fallback: 22/40 are their method's `request` leg, 23/41 the
  * `response` leg. Every other id used in this file never resolves through that
  * fallback (its test passes no `methodNames`), so its entry here is arbitrary.
  */
-const DIRECTION_BYTE: Readonly<Record<number, number>> = {
+const MESSAGE_TYPE: Readonly<Record<number, number>> = {
   18: 0, // start
   20: 2, // interrupt
   21: 1, // receive
@@ -35,10 +35,11 @@ function frame(
     direction: "out",
     requestId,
     frameId,
+    messageType: MESSAGE_TYPE[frameId] ?? 0,
     role,
     byteLength: 1,
     timestamp,
-    bytes: new Uint8Array([0, DIRECTION_BYTE[frameId] ?? 0]),
+    bytes: new Uint8Array([0]),
   };
 }
 
@@ -384,6 +385,7 @@ test("a cap below 1 falls back instead of counting phantom drops", () => {
       direction: i === 0 ? "out" : "in",
       requestId: "p:1",
       frameId: i === 0 ? 40 : 41,
+      messageType: i === 0 ? 0 : 1,
       role: i === 0 ? "start" : "receive",
       byteLength: 1,
       timestamp: 1000 + i,

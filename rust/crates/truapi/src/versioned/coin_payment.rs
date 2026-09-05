@@ -1,9 +1,6 @@
 //! Versioned wrappers for [`CoinPayment`](crate::api::CoinPayment) methods.
 
-use crate::CallError;
 use crate::v01;
-use crate::versioned::Request as RequestEnvelope;
-use crate::versioned::Subscription as SubscriptionEnvelope;
 
 truapi_macros::versioned_type! {
     pub enum HostCoinPaymentCreatePurseRequest { V1 => v01::HostCoinPaymentCreatePurseRequest }
@@ -33,65 +30,4 @@ truapi_macros::versioned_type! {
     pub enum HostCoinPaymentListenForRequest { V1 => v01::HostCoinPaymentListenForRequest }
     pub enum HostCoinPaymentListenForItem { V1 => v01::HostCoinPaymentListenForItem }
     pub enum HostCoinPaymentListenForError { V1 => v01::CoinPaymentError }
-
-    /// Wire-envelope version for
-    /// [`CoinPayment::create_purse`](crate::api::CoinPayment::create_purse).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentCreatePurseVersion {
-        V1 => RequestEnvelope<v01::HostCoinPaymentCreatePurseRequest, Result<v01::HostCoinPaymentCreatePurseResponse, CallError<v01::CoinPaymentError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`CoinPayment::query_purse`](crate::api::CoinPayment::query_purse).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentQueryPurseVersion {
-        V1 => RequestEnvelope<v01::HostCoinPaymentQueryPurseRequest, Result<v01::HostCoinPaymentQueryPurseResponse, CallError<v01::CoinPaymentError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`CoinPayment::rebalance_purse`](crate::api::CoinPayment::rebalance_purse).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentRebalancePurseVersion {
-        V1 => SubscriptionEnvelope<v01::HostCoinPaymentRebalancePurseRequest, v01::CoinPaymentStatus, CallError<v01::CoinPaymentError>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`CoinPayment::delete_purse`](crate::api::CoinPayment::delete_purse).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentDeletePurseVersion {
-        V1 => SubscriptionEnvelope<v01::HostCoinPaymentDeletePurseRequest, v01::CoinPaymentStatus, CallError<v01::CoinPaymentError>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`CoinPayment::create_receivable`](crate::api::CoinPayment::create_receivable).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentCreateReceivableVersion {
-        V1 => RequestEnvelope<v01::HostCoinPaymentCreateReceivableRequest, Result<v01::HostCoinPaymentCreateReceivableResponse, CallError<v01::CoinPaymentError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`CoinPayment::create_cheque`](crate::api::CoinPayment::create_cheque).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentCreateChequeVersion {
-        V1 => RequestEnvelope<v01::HostCoinPaymentCreateChequeRequest, Result<v01::HostCoinPaymentCreateChequeResponse, CallError<v01::CoinPaymentError>>>,
-    }
-
-    /// Wire-envelope version for [`CoinPayment::deposit`](crate::api::CoinPayment::deposit).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentDepositVersion {
-        V1 => SubscriptionEnvelope<v01::HostCoinPaymentDepositRequest, v01::CoinPaymentStatus, CallError<v01::CoinPaymentError>>,
-    }
-
-    /// Wire-envelope version for [`CoinPayment::refund`](crate::api::CoinPayment::refund).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentRefundVersion {
-        V1 => SubscriptionEnvelope<v01::HostCoinPaymentRefundRequest, v01::CoinPaymentStatus, CallError<v01::CoinPaymentError>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`CoinPayment::listen_for_payment`](crate::api::CoinPayment::listen_for_payment).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostCoinPaymentListenForVersion {
-        V1 => SubscriptionEnvelope<v01::HostCoinPaymentListenForRequest, v01::HostCoinPaymentListenForItem, CallError<v01::CoinPaymentError>>,
-    }
 }

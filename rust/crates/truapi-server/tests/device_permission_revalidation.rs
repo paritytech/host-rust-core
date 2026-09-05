@@ -68,14 +68,16 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
     let product_runtime = runtime.product_runtime(product, sink.clone());
 
     let ids = request_ids("permissions_request_device_permission").expect("known request method");
-    // [version=0, direction=Request=0][request bytes]
-    let mut value = vec![0x00, 0x00];
-    value.extend(v01::HostDevicePermissionRequest::Camera.encode());
+    let value = truapi::versioned::permissions::HostDevicePermissionRequest::V1(
+        v01::HostDevicePermissionRequest::Camera,
+    )
+    .encode();
     let frame = ProtocolMessage {
         request_id: "p:1".into(),
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
+            message_type: truapi_server::frame::MESSAGE_TYPE_REQUEST,
             value,
         },
     };
@@ -91,13 +93,22 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
         })
         .expect("dispatcher emitted a device-permission response");
 
-    // Wire payload is [version disc][direction=Response][Ok disc][body].
+    assert_eq!(
+        response.payload.message_type,
+        truapi_server::frame::MESSAGE_TYPE_RESPONSE
+    );
     // Assert the whole thing against each possible answer rather than
     // splicing bytes out by index.
     for granted in [true, false] {
-        let mut expected = vec![0x00u8, 0x01u8, 0x00u8];
-        v01::HostDevicePermissionResponse { granted }.encode_to(&mut expected);
-        if response.payload.value == expected {
+        let expected: Result<
+            truapi::versioned::permissions::HostDevicePermissionResponse,
+            truapi::CallError<truapi::versioned::permissions::HostDevicePermissionError>,
+        > = Ok(
+            truapi::versioned::permissions::HostDevicePermissionResponse::V1(
+                v01::HostDevicePermissionResponse { granted },
+            ),
+        );
+        if response.payload.value == expected.encode() {
             return granted;
         }
     }

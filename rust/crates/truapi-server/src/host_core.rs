@@ -1644,6 +1644,7 @@ mod tests {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1797,6 +1798,7 @@ mod tests {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1915,6 +1917,7 @@ mod tests {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1971,6 +1974,7 @@ mod tests {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -2114,14 +2118,13 @@ mod tests {
             name: "Room".into(),
             icon: String::new(),
         };
-        // [version=0, direction=Request=0][request bytes]
-        let mut value = vec![0x00, 0x00];
-        value.extend(request.encode());
+        let value = truapi::versioned::chat::HostChatCreateRoomRequest::V1(request).encode();
         let frame = ProtocolMessage {
             request_id: "chat:1".into(),
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
                 value,
             },
         };
@@ -2133,13 +2136,15 @@ mod tests {
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
         assert_eq!(response.payload.trait_id, ids.trait_id);
         assert_eq!(response.payload.method_id, ids.method_id);
-        let expected = truapi::versioned::chat::HostChatCreateRoomVersion::V1(
-            truapi::versioned::Request::Response(Err(truapi::CallError::<
-                v01::HostChatCreateRoomError,
-            >::Denied)),
-        )
-        .encode();
-        assert_eq!(response.payload.value, expected);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
+        let expected: Result<
+            truapi::versioned::chat::HostChatCreateRoomResponse,
+            truapi::CallError<truapi::versioned::chat::HostChatCreateRoomError>,
+        > = Err(truapi::CallError::Denied);
+        assert_eq!(response.payload.value, expected.encode());
     }
 
     #[test]
@@ -2159,14 +2164,13 @@ mod tests {
             name: "Bot".into(),
             icon: String::new(),
         };
-        // [version=0, direction=Request=0][request bytes]
-        let mut value = vec![0x00, 0x00];
-        value.extend(request.encode());
+        let value = truapi::versioned::chat::HostChatRegisterBotRequest::V1(request).encode();
         let frame = ProtocolMessage {
             request_id: "chat:bot".into(),
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
                 value,
             },
         };
@@ -2178,13 +2182,15 @@ mod tests {
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
         assert_eq!(response.payload.trait_id, ids.trait_id);
         assert_eq!(response.payload.method_id, ids.method_id);
-        let expected = truapi::versioned::chat::HostChatRegisterBotVersion::V1(
-            truapi::versioned::Request::Response(Err(truapi::CallError::<
-                v01::HostChatRegisterBotError,
-            >::Denied)),
-        )
-        .encode();
-        assert_eq!(response.payload.value, expected);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
+        let expected: Result<
+            truapi::versioned::chat::HostChatRegisterBotResponse,
+            truapi::CallError<truapi::versioned::chat::HostChatRegisterBotError>,
+        > = Err(truapi::CallError::Denied);
+        assert_eq!(response.payload.value, expected.encode());
     }
 
     #[test]
@@ -2204,8 +2210,9 @@ mod tests {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
-                // [version=0, direction=Start=0], no start payload.
-                value: vec![0x00, 0x00],
+                message_type: crate::frame::MESSAGE_TYPE_START,
+                // No request wrapper for this method: an empty Start payload.
+                value: Vec::new(),
             },
         };
 
@@ -2217,12 +2224,11 @@ mod tests {
         assert_eq!(response.request_id, "chat:actions");
         assert_eq!(response.payload.trait_id, ids.trait_id);
         assert_eq!(response.payload.method_id, ids.method_id);
-        let expected = truapi::versioned::chat::HostChatActionSubscribeVersion::V1(
-            truapi::versioned::Subscription::Interrupt(Some(
-                truapi::CallError::<truapi::latest::GenericError>::Denied,
-            )),
-        )
-        .encode();
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_INTERRUPT
+        );
+        let expected = Some(truapi::CallError::<truapi::latest::GenericError>::Denied).encode();
         assert_eq!(response.payload.value, expected);
     }
 
@@ -2250,8 +2256,8 @@ mod tests {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
-                // [version=0, direction=Start=0], no start payload.
-                value: vec![0x00, 0x00],
+                message_type: crate::frame::MESSAGE_TYPE_START,
+                value: Vec::new(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();

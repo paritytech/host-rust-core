@@ -151,8 +151,8 @@ export interface ObservableSource<Item> {
 /**
  * Wire discriminant pair addressing a method. One id addresses a method
  * regardless of shape (request/response, or a subscription's four phases):
- * direction and version are carried inside the payload (RFC 0028), not by a
- * separate id per direction.
+ * which leg of the exchange a frame carries is the wire's own `messageType`
+ * byte, not a separate id per leg.
  **/
 export interface MethodIds {
   /**
@@ -166,11 +166,11 @@ export interface MethodIds {
   method: number;
 
   /**
-   * Which envelope shape this method's payload carries: `Request<Req, Res>`,
-   * or `Subscription<Start, Item, Err>` (`"subscription"` covers both plain
-   * and result subscriptions, which share the same four-phase wire shape).
-   * The one piece of shape a payload-blind reader can use to resolve a
-   * frame's role from its direction alone, without decoding.
+   * Whether this method's legs follow the request/response shape or the
+   * subscription shape (`"subscription"` covers both plain and result
+   * subscriptions, which share the same four-leg wire shape). The one piece
+   * of shape a payload-blind reader needs to interpret a frame's own
+   * `messageType` byte without decoding the payload.
    **/
   kind: "request" | "subscription";
 }
@@ -185,16 +185,16 @@ export interface RequestParams<Ok, Err> {
   ids: MethodIds;
 
   /**
-   * SCALE-encoded envelope payload bytes (`[version, direction=Request,
-   * ...request]`), constructed by the generated caller.
+   * SCALE-encoded request wrapper payload bytes (its own `V<N>` tag is the
+   * wire's only version signal), constructed by the generated caller.
    **/
   payload: Uint8Array;
 
   /**
-   * Decode the full raw envelope payload bytes into the typed Ok/Err
-   * outcome. Implementations decode the method's `{Method}Version` envelope
-   * and reject any direction other than `Response`. The transport unwraps
-   * the result into `ResultAsync<Ok, Err | UnsupportedCallError>`.
+   * Decode a `Response`-leg frame's raw payload bytes into the typed Ok/Err
+   * outcome. Implementations decode `Result<{Method}Response,
+   * CallError<{Method}Error>>` directly. The transport unwraps the result
+   * into `ResultAsync<Ok, Err | UnsupportedCallError>`.
    **/
   decodeResponse: (payload: Uint8Array) => ResultPayload<Ok, Err>;
 }
@@ -209,20 +209,19 @@ export interface SubscribeRawParams {
   ids: MethodIds;
 
   /**
-   * SCALE-encoded envelope payload bytes (`[version, direction=Start,
-   * ...start]`), constructed by the generated caller.
+   * SCALE-encoded `Start`-leg payload bytes: the request wrapper's own
+   * encoding, or empty bytes for a method with no request at all,
+   * constructed by the generated caller.
    **/
   payload: Uint8Array;
 
   /**
-   * Called with the full raw envelope payload bytes when the peer sends a
-   * `Receive` frame.
+   * Called with a `Receive`-leg frame's raw payload bytes.
    **/
   onReceive: (payload: Uint8Array) => void;
 
   /**
-   * Called with the full raw envelope payload bytes when the peer sends an
-   * `Interrupt` frame.
+   * Called with an `Interrupt`-leg frame's raw payload bytes.
    **/
   onInterrupt?: (payload: Uint8Array) => void;
 
@@ -253,13 +252,12 @@ export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
   /** Wire discriminants for the host-initiated subscription. **/
   ids: MethodIds;
   /**
-   * Decode the host's full raw envelope payload bytes (a `Start` frame) into
-   * the typed request.
+   * Decode a `Start`-leg frame's raw payload bytes into the typed request.
    **/
   decodeRequest(payload: Uint8Array): Request;
   /**
-   * Encode one product renderer emission as the full envelope payload bytes
-   * (a `Receive` frame).
+   * Encode one product renderer emission as a `Receive`-leg frame's raw
+   * payload bytes.
    **/
   encodeItem(item: Item): Uint8Array;
   /** Exact payload used when the product declines a render instance. **/
@@ -325,10 +323,31 @@ export interface Payload {
   methodId: number;
 
   /**
-   * SCALE-encoded payload body.
+   * Which leg of the method's exchange this frame carries: `Request`/`Start`
+   * = 0, `Response`/`Receive` = 1, `Interrupt` = 2, `Stop` = 3. Third byte of
+   * the wire frame — readable generically, without decoding `value`.
+   **/
+  messageType: number;
+
+  /**
+   * SCALE-encoded payload body: that leg's own versioned wrapper, with no
+   * further tag identifying direction or version beyond the wrapper's own.
    **/
   value: Uint8Array;
 }
+
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_REQUEST = 0;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_START = 0;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_RESPONSE = 1;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_RECEIVE = 1;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_INTERRUPT = 2;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_STOP = 3;
 
 /**
  * Top-level TrUAPI wire message.
@@ -392,18 +411,22 @@ export interface WebSocketWireProvider extends WireProvider {
 export function encodeWireMessage(
   message: ProtocolMessage,
 ): Result<Uint8Array, Error> {
-  const { traitId, methodId } = message.payload;
+  const { traitId, methodId, messageType } = message.payload;
   if (!Number.isInteger(traitId) || traitId < 0 || traitId > 255) {
     return err(new Error(`Invalid wire trait discriminant: ${traitId}`));
   }
   if (!Number.isInteger(methodId) || methodId < 0 || methodId > 255) {
     return err(new Error(`Invalid wire method discriminant: ${methodId}`));
   }
+  if (!Number.isInteger(messageType) || messageType < 0 || messageType > 255) {
+    return err(new Error(`Invalid wire message type: ${messageType}`));
+  }
   return ok(
     concatBytes(
       str.enc(message.requestId),
       u8.enc(traitId),
       u8.enc(methodId),
+      u8.enc(messageType),
       message.payload.value,
     ),
   );
@@ -436,14 +459,21 @@ export function decodeWireMessage(
       new Error("Wire frame too short: missing method discriminant byte"),
     );
   }
+  if (cursor.length < 3) {
+    return err(new Error("Wire frame too short: missing message-type byte"));
+  }
   const traitId = cursor[0];
   const methodId = cursor[1];
-  const value = cursor.subarray(2);
+  const messageType = cursor[2];
+  const value = cursor.subarray(3);
   // Hand the value bytes back as a fresh slice so callers may safely retain
   // it even if the source buffer is reused by the transport.
   const valueCopy = new Uint8Array(value.length);
   valueCopy.set(value);
-  return ok({ requestId, payload: { traitId, methodId, value: valueCopy } });
+  return ok({
+    requestId,
+    payload: { traitId, methodId, messageType, value: valueCopy },
+  });
 }
 
 /**

@@ -89,12 +89,11 @@ export interface WireTrace {
 export type WireDebugSink = (line: string, frame: ObservedFrame) => void;
 
 /**
- * A method's wire envelope shape: whether its payload is a `Request<Req, Res>`
- * or a `Subscription<Start, Item, Err>` (which covers both plain and result
- * subscriptions - both share the same four-phase wire shape). This is the one
- * piece of shape carried on the routing table itself; combined with a frame's
- * observed {@link FrameDirection}, it is enough to resolve a {@link FrameRole}
- * without decoding the payload.
+ * A method's wire shape: request/response, or subscription (which covers both
+ * plain and result subscriptions - both share the same four-leg wire shape).
+ * This is the one piece of shape carried on the routing table itself; combined
+ * with a frame's own `messageType` byte, it is enough to resolve a
+ * {@link FrameRole} without decoding the payload.
  */
 export type WireMethodKind = "request" | "subscription";
 
@@ -149,34 +148,27 @@ export function frameIdOf(trait: number, method: number): number {
 
 /**
  * Resolve a frame's lifecycle `role` from its method's static wire
- * {@link WireMethodKind} and the direction byte at `payloadValue[1]` - not a
- * domain value: the byte immediately after the 1-byte version tag in every
- * method's envelope (`[version: u8][direction: u8][inner payload]`), with a
- * fixed, protocol-wide meaning pinned by `Request`/`Subscription`'s explicit
- * `#[codec(index = N)]` (`truapi::versioned`). This is wire framing, the same
- * kind of read as the `(trait, method)` pair itself, never the typed value a
- * version's own `Request`/`Response` (or subscription item/error) payload
- * carries - that stays exclusively behind the drill-down decoder.
+ * {@link WireMethodKind} and its own `messageType` byte - the wire's own leg
+ * marker (`Payload.messageType`), read directly with no payload decode at all.
  *
  * `Start`/`Stop` and `Response`/`Receive`/`Interrupt` are NOT distinguishable
- * from direction alone (both of a subscription's "out" phases share direction
- * 0, and both of its "in" phases beyond the first share 1 with a request's own
- * `Response`) - `kind` is what resolves that ambiguity. Returns `"unknown"`
- * when `kind` is unset (an off-table id) or `payloadValue` is too short to
- * carry a direction byte (no bytes retained, or a malformed payload).
+ * from `messageType` alone (both of a subscription's "out" phases share
+ * `messageType` 0, and both of its "in" phases beyond the first share 1 with a
+ * request's own `Response`) - `kind` is what resolves that ambiguity. Returns
+ * `"unknown"` when `kind` is unset (an off-table id) or `messageType` is out
+ * of range for that kind.
  */
 export function resolveRole(
-  payloadValue: Uint8Array,
+  messageType: number,
   kind: WireMethodKind | undefined,
 ): FrameRole {
-  if (kind === undefined || payloadValue.length < 2) return "unknown";
-  const direction = payloadValue[1];
+  if (kind === undefined) return "unknown";
   if (kind === "request") {
-    if (direction === 0) return "request";
-    if (direction === 1) return "response";
+    if (messageType === 0) return "request";
+    if (messageType === 1) return "response";
     return "unknown";
   }
-  switch (direction) {
+  switch (messageType) {
     case 0:
       return "start";
     case 1:
@@ -398,15 +390,15 @@ export function createWireDebugger(
   // Whole operations LRU-evicted since the last clear(). Surfaced so a session
   // that overflowed maxTraces doesn't silently under-report its op count.
   let evictedCount = 0;
-  // A frame's lifecycle role. Ingest resolves it against the frame's own bytes
-  // whenever it has a methodNames map (see resolveRole); a frame can still
-  // arrive "unknown" (no map there, or an off-table id) — fall back the same
-  // way wireTraceToView does, the same resolution — otherwise no real frame
-  // ever reads as an opener.
+  // A frame's lifecycle role. Ingest resolves it against the frame's own
+  // `messageType` whenever it has a methodNames map (see resolveRole); a frame
+  // can still arrive "unknown" (no map there, or an off-table id) — fall back
+  // the same way wireTraceToView does, the same resolution — otherwise no
+  // real frame ever reads as an opener.
   const roleOf = (f: ObservedFrame): string | undefined =>
     f.role !== "unknown"
       ? f.role
-      : resolveRole(f.bytes ?? new Uint8Array(0), methodNames?.get(f.frameId)?.kind);
+      : resolveRole(f.messageType, methodNames?.get(f.frameId)?.kind);
   // A frame that begins an operation: a unary request or a subscription start.
   const isOpener = (f: ObservedFrame): boolean => {
     const r = roleOf(f);

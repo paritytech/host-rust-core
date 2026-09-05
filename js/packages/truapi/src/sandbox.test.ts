@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
 import {
+  MESSAGE_TYPE_REQUEST,
+  MESSAGE_TYPE_RESPONSE,
   encodeWireMessage,
   PROTOCOL_ERROR_METHOD_ID,
   PROTOCOL_ERROR_TRAIT_ID,
@@ -225,7 +227,7 @@ describe("sandbox iframe MessagePort handshake", () => {
 
         const probe = encodeWireMessage({
             requestId: "legacy-probe",
-            payload: { traitId: 254, methodId: 253, value: new Uint8Array() },
+            payload: { traitId: 254, methodId: 253, messageType: MESSAGE_TYPE_REQUEST, value: new Uint8Array() },
         });
         expect(probe.isOk()).toBe(true);
         if (probe.isErr()) throw probe.error;
@@ -259,7 +261,7 @@ describe("sandbox iframe MessagePort handshake", () => {
 
         const probe = encodeWireMessage({
             requestId: "legacy-probe",
-            payload: { traitId: 254, methodId: 253, value: new Uint8Array() },
+            payload: { traitId: 254, methodId: 253, messageType: MESSAGE_TYPE_REQUEST, value: new Uint8Array() },
         });
         expect(probe.isOk()).toBe(true);
         if (probe.isErr()) throw probe.error;
@@ -275,6 +277,7 @@ describe("sandbox iframe MessagePort handshake", () => {
             payload: {
                 traitId: PROTOCOL_ERROR_TRAIT_ID,
                 methodId: PROTOCOL_ERROR_METHOD_ID,
+                messageType: MESSAGE_TYPE_RESPONSE,
                 // [0] version index, [0] variant index, then the pair that was
                 // not understood, echoed in arrival order.
                 value: new Uint8Array([0, 0, 254, 253]),

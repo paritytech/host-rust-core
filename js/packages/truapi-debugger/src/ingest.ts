@@ -207,12 +207,12 @@ export interface DebugIngestOptions {
  * Ingest that decodes each {@link DebugFrameEnvelope} and forwards the resulting
  * {@link ObservedFrame} to `sink` (typically a {@link WireDebugger}'s `observe`).
  *
- * `role` is a pure function of the frame's wire discriminant and direction byte
- * (see {@link resolveRole}): the `(trait, method)` pair no longer carries
- * direction on its own (RFC 0028 nests it in the payload), so `role` combines
- * the method's static `kind` from `methodNames` with the frame's own direction
- * byte, rather than being reconstructed from correlation state. Resolving it at
- * ingest is what makes it true for *every* consumer -
+ * `role` is a pure function of the frame's wire discriminant and its own
+ * `messageType` byte (see {@link resolveRole}): the `(trait, method)` pair
+ * addresses a method regardless of which leg a frame carries, so `role`
+ * combines the method's static `kind` from `methodNames` with the frame's own
+ * `messageType`, rather than being reconstructed from correlation state.
+ * Resolving it at ingest is what makes it true for *every* consumer -
  * the default `console.debug` sink, the `forward` hook, and the trace engine -
  * instead of only for the view adapter, which resolves one layer further down
  * (`wireTraceToView`) and would leave the other two reading `"unknown"`.
@@ -264,6 +264,7 @@ export function createDebugIngest(
         direction: envelope.dir,
         requestId: "malformed",
         frameId: -1,
+        messageType: -1,
         role: "malformed",
         byteLength: envelope.frame.length,
         timestamp,
@@ -278,11 +279,11 @@ export function createDebugIngest(
       direction: envelope.dir,
       requestId: normalizeId(requestId, maxIdChars),
       frameId,
+      messageType: payload.messageType,
       // Resolve the lifecycle role from the method's wire-table kind plus the
-      // frame's own direction byte (see resolveRole). "unknown" when no map was
-      // given, the id is off-table (a frame from a newer host), or the payload is
-      // too short to carry a direction byte.
-      role: resolveRole(payload.value, methodNames?.get(frameId)?.kind),
+      // frame's own `messageType` byte (see resolveRole). "unknown" when no
+      // map was given, or the id is off-table (a frame from a newer host).
+      role: resolveRole(payload.messageType, methodNames?.get(frameId)?.kind),
       byteLength: payload.value.length,
       timestamp,
       ...provenance,

@@ -119,9 +119,9 @@ pub struct MethodDef {
 }
 
 /// Raw wire id extracted from `#[wire(...)]`. One id addresses the method
-/// regardless of shape; direction (request/response, or a subscription's
-/// start/stop/interrupt/receive) is carried inside the method's versioned
-/// payload, not by a separate id.
+/// regardless of shape; which leg of the exchange a frame carries
+/// (request/response, or a subscription's start/stop/interrupt/receive) is
+/// the outer wire's own `message_type` byte, not a separate id.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WireAttrs {
     /// This subscription is started by the host and served by the product.

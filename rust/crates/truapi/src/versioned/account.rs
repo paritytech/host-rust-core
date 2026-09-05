@@ -1,9 +1,6 @@
 //! Versioned wrappers for [`Account`](crate::api::Account) methods.
 
-use crate::CallError;
 use crate::v01;
-use crate::versioned::Request as RequestEnvelope;
-use crate::versioned::Subscription as SubscriptionEnvelope;
 
 truapi_macros::versioned_type! {
     pub enum HostAccountGetRequest { V1 => v01::HostAccountGetRequest }
@@ -37,76 +34,4 @@ truapi_macros::versioned_type! {
     pub enum HostGetUserIdRequest { V1 }
     pub enum HostGetUserIdResponse { V1 => v01::HostGetUserIdResponse }
     pub enum HostGetUserIdError { V1 => v01::HostGetUserIdError }
-
-    /// Wire-envelope version for
-    /// [`Account::connection_status_subscribe`](crate::api::Account::connection_status_subscribe).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountConnectionStatusSubscribeVersion {
-        V1 => SubscriptionEnvelope<(), v01::HostAccountConnectionStatusSubscribeItem, CallError<crate::latest::GenericError>>,
-    }
-
-    /// Wire-envelope version for [`Account::get_account`](crate::api::Account::get_account).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountGetVersion {
-        V1 => RequestEnvelope<v01::HostAccountGetRequest, Result<v01::HostAccountGetResponse, CallError<v01::HostAccountGetError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`Account::get_account_alias`](crate::api::Account::get_account_alias).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountGetAliasVersion {
-        V1 => RequestEnvelope<v01::HostAccountGetAliasRequest, Result<v01::ContextualAlias, CallError<v01::HostAccountGetAliasError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`Account::create_account_proof`](crate::api::Account::create_account_proof).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountCreateProofVersion {
-        V1 => RequestEnvelope<v01::HostAccountCreateProofRequest, Result<v01::HostAccountCreateProofResponse, CallError<v01::HostAccountCreateProofError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`Account::get_legacy_accounts`](crate::api::Account::get_legacy_accounts).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostGetLegacyAccountsVersion {
-        V1 => RequestEnvelope<(), Result<v01::HostGetLegacyAccountsResponse, CallError<v01::HostAccountGetError>>>,
-    }
-
-    /// Wire-envelope version for [`Account::get_user_id`](crate::api::Account::get_user_id).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostGetUserIdVersion {
-        V1 => RequestEnvelope<(), Result<v01::HostGetUserIdResponse, CallError<v01::HostGetUserIdError>>>,
-    }
-
-    /// Wire-envelope version for [`Account::request_login`](crate::api::Account::request_login).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostRequestLoginVersion {
-        V1 => RequestEnvelope<v01::HostRequestLoginRequest, Result<v01::HostRequestLoginResponse, CallError<v01::HostRequestLoginError>>>,
-    }
-
-    /// Wire-envelope version for [`Account::sign_vrf`](crate::api::Account::sign_vrf).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountSignVrfVersion {
-        V1 => RequestEnvelope<v01::HostAccountSignVrfRequest, Result<v01::VrfSignature, CallError<v01::HostAccountSignVrfError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`Account::register_ring_vrf_key`](crate::api::Account::register_ring_vrf_key).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountRegisterRingVrfKeyVersion {
-        V1 => RequestEnvelope<v01::HostAccountRegisterRingVrfKeyRequest, Result<v01::RingVrfPublicKey, CallError<v01::HostAccountRegisterRingVrfKeyError>>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`Account::list_ring_vrf_keys`](crate::api::Account::list_ring_vrf_keys).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountListRingVrfKeysVersion {
-        V1 => RequestEnvelope<v01::HostAccountListRingVrfKeysRequest, Result<Vec<v01::RegisteredRingVrfKey>, CallError<v01::HostAccountListRingVrfKeysError>>>,
-    }
-
-    /// Wire-envelope version for [`Account::ring_vrf_sign`](crate::api::Account::ring_vrf_sign).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostAccountRingVrfSignVersion {
-        V1 => RequestEnvelope<v01::HostAccountRingVrfSignRequest, Result<Vec<u8>, CallError<v01::HostAccountRingVrfSignError>>>,
-    }
 }

@@ -1,25 +1,28 @@
 //! Result-wire-shape regression test.
 //!
-//! The TS host/client codec expects every request/response and subscription
-//! frame to be a nested wire envelope: one leading version byte, then one
-//! direction byte (`Request`/`Response`, or a subscription's
-//! `Start`/`Stop`/`Interrupt`/`Receive`), then the SCALE-encoded inner value.
-//! A request/response method's `Response` direction carries a further
-//! `Result<Ok, Err>` discriminant. This test stands up a
-//! `TrUApiCore::from_platform_with_config` with a platform whose `Features`
-//! impl returns `Ok(supported = true)` and asserts:
+//! The TS host/client codec expects every request/response frame to be
+//! `Result<{Method}Response, CallError<{Method}Error>>`, and every
+//! subscription's `Interrupt` frame to be `Option<CallError<{Method}Error>>`
+//! — both leg types already-versioned wrappers (their own `V<N>` tag is the
+//! wire's only version signal), with which leg a frame carries named by the
+//! outer wire's own `messageType` byte rather than anything inside these
+//! payloads. This test stands up a `TrUApiCore::from_platform_with_config`
+//! with a platform whose `Features` impl returns `Ok(supported = true)` and
+//! asserts:
 //!
-//! - A `system_feature_supported` request produces a response whose payload
-//!   begins with `0x00` (V1), `0x01` (direction=Response), then `0x00` (Ok),
-//!   followed by the encoded `HostFeatureSupportedResponse`.
+//! - A `system_feature_supported` request produces a response frame with
+//!   `messageType = Response` whose payload begins with `0x00` (Result::Ok),
+//!   `0x00` (the response wrapper's own V1 tag), followed by the encoded
+//!   `HostFeatureSupportedResponse`.
 //! - A `local_storage_read` request whose stub returns
-//!   `Err(HostLocalStorageReadError::Full)` produces a response whose
-//!   payload begins with `0x00` (V1), `0x01` (direction=Response), then
-//!   `0x01` (Err), followed by the encoded `HostLocalStorageReadError::Full`.
+//!   `Err(HostLocalStorageReadError::Full)` produces a response frame with
+//!   `messageType = Response` whose payload begins with `0x01`
+//!   (Result::Err), `0x00` (CallError::Domain), `0x00` (the error wrapper's
+//!   own V1 tag), followed by the encoded `HostLocalStorageReadError::Full`.
 //!
 //! Both halves prove the wire layout stays in lockstep with the TS
-//! `S.indexedTaggedUnion({ V1: S.indexedTaggedUnion({ Request, Response:
-//! S.Result(ok, err) }) })` codec.
+//! `S.Result(okCodec, S.CallError(errCodec))` composition the generated
+//! client decodes a `Response` frame's payload through.
 
 use std::sync::Arc;
 
@@ -29,8 +32,9 @@ use truapi::{CallError, v01};
 
 use truapi_server::core::TrUApiCore;
 use truapi_server::frame::{
+    MESSAGE_TYPE_INTERRUPT, MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, MESSAGE_TYPE_START,
     PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1, ProtocolMessage,
-    VersionedProtocolError, encode_envelope_stop, request_ids, subscription_ids,
+    VersionedProtocolError, request_ids, subscription_ids,
 };
 
 mod common;
@@ -45,15 +49,6 @@ fn dispatch(core: &TrUApiCore, frame: ProtocolMessage) -> ProtocolMessage {
     ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response")
 }
 
-/// Wrap already-encoded bare request (or subscription start) bytes in the
-/// envelope's `[version=V1, direction=Request/Start]` prefix. `Request` and
-/// `Start` share direction tag `0`, so this helper covers both.
-fn envelope_request(bytes: Vec<u8>) -> Vec<u8> {
-    let mut value = vec![0x00u8, 0x00u8];
-    value.extend(bytes);
-    value
-}
-
 #[test]
 fn feature_supported_ok_response_uses_ok_discriminant() {
     let core = make_core();
@@ -66,21 +61,26 @@ fn feature_supported_ok_response_uses_ok_discriminant() {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            value: envelope_request(request.encode()),
+            message_type: MESSAGE_TYPE_REQUEST,
+            value: truapi::versioned::system::HostFeatureSupportedRequest::V1(request).encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.request_id, "p:1");
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
 
-    // Wire payload: [V1=0x00][direction=Response=0x01][Ok disc=0x00][encoded response body].
-    let mut expected = vec![0x00u8, 0x01u8, 0x00u8];
-    v01::HostFeatureSupportedResponse { supported: true }.encode_to(&mut expected);
-    assert_eq!(response.payload.value, expected);
+    let expected: Result<
+        truapi::versioned::system::HostFeatureSupportedResponse,
+        CallError<truapi::versioned::system::HostFeatureSupportedError>,
+    > = Ok(truapi::versioned::system::HostFeatureSupportedResponse::V1(
+        v01::HostFeatureSupportedResponse { supported: true },
+    ));
+    assert_eq!(response.payload.value, expected.encode());
+    // [Result::Ok=0x00][response wrapper V1=0x00][encoded response body...].
     assert_eq!(response.payload.value.first(), Some(&0x00));
-    assert_eq!(response.payload.value.get(1), Some(&0x01));
-    assert_eq!(response.payload.value.get(2), Some(&0x00));
+    assert_eq!(response.payload.value.get(1), Some(&0x00));
 }
 
 #[test]
@@ -95,23 +95,27 @@ fn get_chain_info_ok_response_round_trips_over_the_wire() {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            value: envelope_request(request.encode()),
+            message_type: MESSAGE_TYPE_REQUEST,
+            value: truapi::versioned::chain::RemoteChainInfoRequest::V1(request).encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.request_id, "p:9");
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
 
-    // Wire payload: [V1=0x00][direction=Response=0x01][Ok disc=0x00][encoded response body].
-    let mut expected = vec![0x00u8, 0x01u8, 0x00u8];
-    v01::RemoteChainInfoResponse {
-        network: "paseo".to_string(),
-        chain: v01::ChainIdentifier::AssetHub,
-        genesis_hash: [0xaa; 32],
-    }
-    .encode_to(&mut expected);
-    assert_eq!(response.payload.value, expected);
+    let expected: Result<
+        truapi::versioned::chain::RemoteChainInfoResponse,
+        CallError<truapi::versioned::chain::RemoteChainInfoError>,
+    > = Ok(truapi::versioned::chain::RemoteChainInfoResponse::V1(
+        v01::RemoteChainInfoResponse {
+            network: "paseo".to_string(),
+            chain: v01::ChainIdentifier::AssetHub,
+            genesis_hash: [0xaa; 32],
+        },
+    ));
+    assert_eq!(response.payload.value, expected.encode());
 }
 
 #[test]
@@ -126,17 +130,20 @@ fn get_chain_info_unserved_chain_uses_err_discriminant() {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            value: envelope_request(request.encode()),
+            message_type: MESSAGE_TYPE_REQUEST,
+            value: truapi::versioned::chain::RemoteChainInfoRequest::V1(request).encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
 
-    // Wire payload: [V1=0x00][direction=Response=0x01][Err disc=0x01][encoded domain error].
     assert_eq!(
         response.payload.value,
-        versioned_result_err_payload(v01::RemoteChainInfoError::NotSupported)
+        versioned_result_err_payload(truapi::versioned::chain::RemoteChainInfoError::V1(
+            v01::RemoteChainInfoError::NotSupported
+        ))
     );
 }
 
@@ -152,46 +159,53 @@ fn local_storage_read_err_response_uses_err_discriminant() {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            value: envelope_request(request.encode()),
+            message_type: MESSAGE_TYPE_REQUEST,
+            value: truapi::versioned::local_storage::HostLocalStorageReadRequest::V1(request)
+                .encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.request_id, "p:2");
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
 
-    // Wire payload: [V1=0x00][direction=Response=0x01][Err disc=0x01]
-    // [CallError::Domain=0x00][encoded error body].
-    let expected = versioned_result_err_payload(v01::HostLocalStorageReadError::Full);
+    let expected = versioned_result_err_payload(
+        truapi::versioned::local_storage::HostLocalStorageReadError::V1(
+            v01::HostLocalStorageReadError::Full,
+        ),
+    );
     assert_eq!(response.payload.value, expected);
-    assert_eq!(response.payload.value.first(), Some(&0x00));
-    assert_eq!(response.payload.value.get(1), Some(&0x01));
+    // [Result::Err=0x01][CallError::Domain=0x00][error wrapper V1=0x00]...
+    assert_eq!(response.payload.value.first(), Some(&0x01));
+    assert_eq!(response.payload.value.get(1), Some(&0x00));
 }
 
-/// Expected bytes for a request/response method's `Response` direction
-/// answering with a domain error: `[V1=0x00][direction=Response=0x01]
-/// [Result::Err=0x01][CallError::Domain=0x00][encoded error body]`.
-fn versioned_result_err_payload<E: Encode>(error: E) -> Vec<u8> {
-    let mut expected = vec![0x00u8, 0x01u8, 0x01u8];
-    CallError::Domain(error).encode_to(&mut expected);
+/// Expected bytes for a request/response method's `Response`-leg payload
+/// answering with a domain error: `[Result::Err=0x01][CallError::Domain=0x00]
+/// [encoded, already-versioned error wrapper]`. `wrapped_error` is the
+/// method's own `{Method}Error::V<N>(domain_error)` value.
+fn versioned_result_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<u8> {
+    let mut expected = vec![0x01u8, 0x00u8];
+    wrapped_error.encode_to(&mut expected);
     expected
 }
 
-/// Expected bytes for a subscription's `Interrupt` direction ending with a
-/// domain error: `[V1=0x00][direction=Interrupt=0x02][Option::Some=0x01]
-/// [CallError::Domain=0x00][encoded error body]`.
-fn versioned_interrupt_err_payload<E: Encode>(error: E) -> Vec<u8> {
-    let mut expected = vec![0x00u8, 0x02u8, 0x01u8];
-    CallError::Domain(error).encode_to(&mut expected);
+/// Expected bytes for a subscription's `Interrupt`-leg payload ending with a
+/// domain error: `[Option::Some=0x01][CallError::Domain=0x00][encoded,
+/// already-versioned error wrapper]`.
+fn versioned_interrupt_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<u8> {
+    let mut expected = vec![0x01u8, 0x00u8];
+    wrapped_error.encode_to(&mut expected);
     expected
 }
 
-fn assert_request_returns_domain_error<E: Encode>(
+fn assert_request_returns_domain_error<Wrapper: Encode>(
     core: &TrUApiCore,
     request_id: &str,
     method: &str,
     value: Vec<u8>,
-    error: E,
+    wrapped_error: Wrapper,
 ) {
     let ids = request_ids(method).expect("known request method");
     let response = dispatch(
@@ -201,22 +215,27 @@ fn assert_request_returns_domain_error<E: Encode>(
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
-                value: envelope_request(value),
+                message_type: MESSAGE_TYPE_REQUEST,
+                value,
             },
         },
     );
     assert_eq!(response.request_id, request_id);
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
-    assert_eq!(response.payload.value, versioned_result_err_payload(error));
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
+    assert_eq!(
+        response.payload.value,
+        versioned_result_err_payload(wrapped_error)
+    );
 }
 
-fn assert_subscription_start_interrupts_error<E: Encode>(
+fn assert_subscription_start_interrupts_error<Wrapper: Encode>(
     core: &TrUApiCore,
     request_id: &str,
     method: &str,
     value: Vec<u8>,
-    error: E,
+    wrapped_error: Wrapper,
 ) {
     let ids = subscription_ids(method).expect("known subscription method");
     let transport = Arc::new(RecordingTransport::default());
@@ -226,7 +245,8 @@ fn assert_subscription_start_interrupts_error<E: Encode>(
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
-                value: envelope_request(value),
+                message_type: MESSAGE_TYPE_START,
+                value,
             },
         },
         transport.clone(),
@@ -237,9 +257,10 @@ fn assert_subscription_start_interrupts_error<E: Encode>(
     assert_eq!(sent[0].request_id, request_id);
     assert_eq!(sent[0].payload.trait_id, ids.trait_id);
     assert_eq!(sent[0].payload.method_id, ids.method_id);
+    assert_eq!(sent[0].payload.message_type, MESSAGE_TYPE_INTERRUPT);
     assert_eq!(
         sent[0].payload.value,
-        versioned_interrupt_err_payload(error)
+        versioned_interrupt_err_payload(wrapped_error)
     );
 }
 
@@ -270,15 +291,21 @@ fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
-                value: envelope_request(request.encode()),
+                message_type: MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::account::HostAccountCreateProofRequest::V1(request)
+                    .encode(),
             },
         },
     );
     assert_eq!(response.request_id, "p:account-proof");
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
     // RFC-0024 forbids a prompt fallback for bearer proofs made with a foreign key.
-    let expected = versioned_result_err_payload(v01::HostAccountCreateProofError::NotAllowlisted);
+    let expected =
+        versioned_result_err_payload(truapi::versioned::account::HostAccountCreateProofError::V1(
+            v01::HostAccountCreateProofError::NotAllowlisted,
+        ));
     assert_eq!(response.payload.value, expected);
 }
 
@@ -295,10 +322,10 @@ fn deferred_payment_requests_return_dotli_not_implemented_errors() {
         &core,
         "p:payment",
         "payment_request",
-        request.encode(),
-        v01::HostPaymentError::Unknown {
+        truapi::versioned::payment::HostPaymentRequest::V1(request).encode(),
+        truapi::versioned::payment::HostPaymentError::V1(v01::HostPaymentError::Unknown {
             reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
-        },
+        }),
     );
 
     let top_up = v01::HostPaymentTopUpRequest {
@@ -312,10 +339,12 @@ fn deferred_payment_requests_return_dotli_not_implemented_errors() {
         &core,
         "p:top-up",
         "payment_top_up",
-        top_up.encode(),
-        v01::HostPaymentTopUpError::Unknown {
-            reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
-        },
+        truapi::versioned::payment::HostPaymentTopUpRequest::V1(top_up).encode(),
+        truapi::versioned::payment::HostPaymentTopUpError::V1(
+            v01::HostPaymentTopUpError::Unknown {
+                reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
+            },
+        ),
     );
 }
 
@@ -327,8 +356,10 @@ fn deferred_payment_subscriptions_interrupt_dotli_not_implemented_errors() {
         &core,
         "p:balance",
         "payment_balance_subscribe",
-        balance.encode(),
-        v01::HostPaymentBalanceSubscribeError::PermissionDenied,
+        truapi::versioned::payment::HostPaymentBalanceSubscribeRequest::V1(balance).encode(),
+        truapi::versioned::payment::HostPaymentBalanceSubscribeError::V1(
+            v01::HostPaymentBalanceSubscribeError::PermissionDenied,
+        ),
     );
 
     let status = v01::HostPaymentStatusSubscribeRequest {
@@ -338,10 +369,12 @@ fn deferred_payment_subscriptions_interrupt_dotli_not_implemented_errors() {
         &core,
         "p:status",
         "payment_status_subscribe",
-        status.encode(),
-        v01::HostPaymentStatusSubscribeError::Unknown {
-            reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
-        },
+        truapi::versioned::payment::HostPaymentStatusSubscribeRequest::V1(status).encode(),
+        truapi::versioned::payment::HostPaymentStatusSubscribeError::V1(
+            v01::HostPaymentStatusSubscribeError::Unknown {
+                reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
+            },
+        ),
     );
 }
 
@@ -354,10 +387,13 @@ fn statement_store_subscribe_topic_limit_interrupts_with_typed_error() {
         &core,
         "p:ss-too-many",
         "statement_store_subscribe",
-        request.encode(),
-        v01::GenericError {
-            reason: "MatchAny has 129 topics, maximum is 128".to_string(),
-        },
+        truapi::versioned::statement_store::RemoteStatementStoreSubscribeRequest::V1(request)
+            .encode(),
+        truapi::versioned::statement_store::RemoteStatementStoreSubscribeError::V1(
+            v01::GenericError {
+                reason: "MatchAny has 129 topics, maximum is 128".to_string(),
+            },
+        ),
     );
 }
 
@@ -374,6 +410,7 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: MESSAGE_TYPE_START,
                 value: vec![0xff],
             },
         },
@@ -385,15 +422,19 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
     assert_eq!(sent[0].request_id, "p:malformed-sub");
     assert_eq!(sent[0].payload.trait_id, ids.trait_id);
     assert_eq!(sent[0].payload.method_id, ids.method_id);
-    assert_eq!(sent[0].payload.value.first(), Some(&0x00));
+    assert_eq!(sent[0].payload.message_type, MESSAGE_TYPE_INTERRUPT);
+    assert_eq!(sent[0].payload.value.first(), Some(&0x01), "Option::Some");
     assert_eq!(
         sent[0].payload.value.get(1),
-        Some(&0x02),
-        "direction=Interrupt"
+        Some(&0x03),
+        "CallError::MalformedFrame"
     );
 
-    let mut payload = &sent[0].payload.value[2..];
-    let error = Option::<CallError<v01::HostPaymentBalanceSubscribeError>>::decode(&mut payload)
+    let mut payload = &sent[0].payload.value[..];
+    let error =
+        Option::<CallError<truapi::versioned::payment::HostPaymentBalanceSubscribeError>>::decode(
+            &mut payload,
+        )
         .expect("decode malformed interrupt error");
     assert!(payload.is_empty());
     match error {
@@ -439,6 +480,7 @@ fn unknown_wire_discriminant_returns_correlated_protocol_error() {
         payload: Payload {
             trait_id: 250,
             method_id: 249,
+            message_type: MESSAGE_TYPE_REQUEST,
             value: vec![0, 0, 0, 0],
         },
     };
@@ -452,6 +494,7 @@ fn unknown_wire_discriminant_returns_correlated_protocol_error() {
             payload: Payload {
                 trait_id: PROTOCOL_ERROR_TRAIT_ID,
                 method_id: PROTOCOL_ERROR_METHOD_ID,
+                message_type: MESSAGE_TYPE_RESPONSE,
                 value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
                     // echoed in arrival order; 250 != 249 so a transposed
                     // pair cannot pass this assertion
@@ -471,6 +514,7 @@ fn unknown_wire_discriminant_returns_correlated_protocol_error() {
 #[test]
 fn subscription_start_receive_stop_through_wire_boundary() {
     use std::time::{Duration, Instant};
+    use truapi_server::frame::MESSAGE_TYPE_STOP;
     use truapi_server::transport::Transport;
 
     let core = make_core();
@@ -484,7 +528,9 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            value: envelope_request(Vec::new()),
+            message_type: MESSAGE_TYPE_START,
+            // No request wrapper for this method: an empty Start payload.
+            value: Vec::new(),
         },
     };
     futures::executor::block_on(core.dispatch(start, dyn_transport.clone()));
@@ -511,7 +557,8 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            value: encode_envelope_stop(1),
+            message_type: MESSAGE_TYPE_STOP,
+            value: Vec::new(),
         },
     };
     futures::executor::block_on(core.dispatch(stop, dyn_transport));
@@ -551,13 +598,16 @@ fn coin_payment_request_reports_unsupported_on_the_wire() {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            value: envelope_request(request.encode()),
+            message_type: MESSAGE_TYPE_REQUEST,
+            value: truapi::versioned::coin_payment::HostCoinPaymentQueryPurseRequest::V1(request)
+                .encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
-    // [V1=0x00][direction=Response=0x01][Err disc=0x01][CallError::Unsupported=0x02],
-    // and nothing more.
-    assert_eq!(response.payload.value, vec![0x00u8, 0x01u8, 0x01u8, 0x02u8]);
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
+    // [Result::Err=0x01][CallError::Unsupported=0x02], and nothing more:
+    // `Unsupported` carries no domain payload, so no wrapper tag follows.
+    assert_eq!(response.payload.value, vec![0x01u8, 0x02u8]);
 }

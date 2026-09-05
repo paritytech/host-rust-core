@@ -1,9 +1,6 @@
 //! Versioned wrappers for [`Chat`](crate::api::Chat) methods.
 
-use crate::CallError;
 use crate::v01;
-use crate::versioned::Request as RequestEnvelope;
-use crate::versioned::Subscription as SubscriptionEnvelope;
 
 truapi_macros::versioned_type! {
     pub enum HostChatCreateRoomRequest { V1 => v01::HostChatCreateRoomRequest }
@@ -19,43 +16,6 @@ truapi_macros::versioned_type! {
     pub enum HostChatActionSubscribeItem { V1 => v01::HostChatActionSubscribeItem }
     pub enum ProductChatCustomMessageRenderRequest { V1 => v01::ProductChatCustomMessageRenderRequest }
     pub enum ProductChatCustomMessageRenderItem { V1 => v01::CustomRendererNode }
-
-    /// Wire-envelope version for [`Chat::create_room`](crate::api::Chat::create_room).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostChatCreateRoomVersion {
-        V1 => RequestEnvelope<v01::HostChatCreateRoomRequest, Result<v01::HostChatCreateRoomResponse, CallError<v01::HostChatCreateRoomError>>>,
-    }
-
-    /// Wire-envelope version for [`Chat::register_bot`](crate::api::Chat::register_bot).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostChatRegisterBotVersion {
-        V1 => RequestEnvelope<v01::HostChatRegisterBotRequest, Result<v01::HostChatRegisterBotResponse, CallError<v01::HostChatRegisterBotError>>>,
-    }
-
-    /// Wire-envelope version for [`Chat::list_subscribe`](crate::api::Chat::list_subscribe).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostChatListSubscribeVersion {
-        V1 => SubscriptionEnvelope<(), v01::HostChatListSubscribeItem, CallError<crate::latest::GenericError>>,
-    }
-
-    /// Wire-envelope version for [`Chat::post_message`](crate::api::Chat::post_message).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostChatPostMessageVersion {
-        V1 => RequestEnvelope<v01::HostChatPostMessageRequest, Result<v01::HostChatPostMessageResponse, CallError<v01::HostChatPostMessageError>>>,
-    }
-
-    /// Wire-envelope version for [`Chat::action_subscribe`](crate::api::Chat::action_subscribe).
-    /// Used only by the generated dispatcher/client.
-    pub enum HostChatActionSubscribeVersion {
-        V1 => SubscriptionEnvelope<(), v01::HostChatActionSubscribeItem, CallError<crate::latest::GenericError>>,
-    }
-
-    /// Wire-envelope version for
-    /// [`Chat::custom_message_render`](crate::api::Chat::custom_message_render).
-    /// Used only by the generated dispatcher/client.
-    pub enum ProductChatCustomMessageRenderVersion {
-        V1 => SubscriptionEnvelope<v01::ProductChatCustomMessageRenderRequest, v01::CustomRendererNode, CallError<crate::latest::GenericError>>,
-    }
 }
 
 #[cfg(test)]

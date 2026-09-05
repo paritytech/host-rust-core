@@ -28,11 +28,11 @@ const WIRE: ReadonlyMap<number, WireMethodInfo> = new Map([
 ]);
 
 /**
- * The direction byte each fixture id below stands in for (see `resolveRole`):
+ * The `messageType` each fixture id below stands in for (see `resolveRole`):
  * 22/23 are `request`-kind's two legs, 40/41/43/42 are `subscription`-kind's
- * four (`start`/`receive`/`interrupt`/`stop` in that direction-byte order).
+ * four (`start`/`receive`/`interrupt`/`stop` in that order).
  */
-const DIRECTION_BYTE: Readonly<Record<number, number>> = {
+const MESSAGE_TYPE: Readonly<Record<number, number>> = {
   22: 0, // request
   23: 1, // response
   40: 0, // start
@@ -51,16 +51,16 @@ function viewOf(
 ): TraceView {
   const observed: ObservedFrame[] = frames.map(([frameId, timestamp]) => ({
     channelId: "localhost:3000",
-    // Real ingest cannot know the lifecycle role without the frame's own
-    // bytes; the adapter resolves it from the frame id's wire-table kind plus
-    // the direction byte retained below (see resolveRole).
+    // Real ingest cannot know the lifecycle role without a methodNames map;
+    // the adapter resolves it from the frame id's wire-table kind plus the
+    // frame's own `messageType` (see resolveRole).
     role: "unknown" as FrameRole,
     direction: "out",
     requestId: "p:1",
     frameId,
+    messageType: MESSAGE_TYPE[frameId] ?? 0,
     byteLength: 8,
     timestamp,
-    bytes: new Uint8Array([0, DIRECTION_BYTE[frameId] ?? 0]),
   }));
   const trace: WireTrace = {
     channelId: "localhost:3000",

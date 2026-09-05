@@ -20,10 +20,9 @@ use parity_scale_codec::{Decode, DecodeLimit, Encode};
 use truapi::v01;
 
 use crate::frame::{
-    IdFactory, PROTOCOL_ERROR_KEY, Payload, ProtocolErrorV1, ProtocolMessage,
-    VersionedProtocolError, decode_protocol_error_payload, encode_envelope_clean_interrupt,
-    encode_envelope_stop, is_subscription_interrupt, is_subscription_receive,
-    split_subscription_direction,
+    IdFactory, MESSAGE_TYPE_INTERRUPT, MESSAGE_TYPE_RECEIVE, MESSAGE_TYPE_START, MESSAGE_TYPE_STOP,
+    PROTOCOL_ERROR_KEY, Payload, ProtocolErrorV1, ProtocolMessage, VersionedProtocolError,
+    decode_protocol_error_payload, encode_clean_interrupt,
 };
 use crate::generated::wire_table::MethodIds;
 use crate::transport::Transport;
@@ -153,15 +152,12 @@ impl SubscriptionManager {
     /// items as `_receive` frames until the stream ends or `_stop` is
     /// received. No-ops without starting the stream if the reservation was
     /// cancelled by a `_stop` or superseded by a newer reservation for the
-    /// same id. `version` is the wire-envelope version the caller's `Start`
-    /// frame negotiated, needed to encode a version-correct natural-
-    /// completion frame with no per-method type knowledge.
+    /// same id.
     pub fn activate(
         &self,
         token: ReservationToken,
         trait_id: u8,
         method_id: u8,
-        version: u8,
         mut stream: SubscriptionStream,
         transport: Arc<dyn Transport>,
     ) {
@@ -219,6 +215,7 @@ impl SubscriptionManager {
                                         payload: Payload {
                                             trait_id,
                                             method_id,
+                                            message_type: MESSAGE_TYPE_RECEIVE,
                                             value,
                                         },
                                     })
@@ -229,6 +226,7 @@ impl SubscriptionManager {
                                         payload: Payload {
                                             trait_id,
                                             method_id,
+                                            message_type: MESSAGE_TYPE_INTERRUPT,
                                             value,
                                         },
                                     });
@@ -261,7 +259,8 @@ impl SubscriptionManager {
                     payload: Payload {
                         trait_id,
                         method_id,
-                        value: encode_envelope_clean_interrupt(version),
+                        message_type: MESSAGE_TYPE_INTERRUPT,
+                        value: encode_clean_interrupt(),
                     },
                 });
             }
@@ -277,12 +276,11 @@ impl SubscriptionManager {
         request_id: String,
         trait_id: u8,
         method_id: u8,
-        version: u8,
         stream: SubscriptionStream,
         transport: Arc<dyn Transport>,
     ) {
         let token = self.reserve(request_id);
-        self.activate(token, trait_id, method_id, version, stream, transport);
+        self.activate(token, trait_id, method_id, stream, transport);
     }
 
     /// Handle a `_stop` frame from the product side. Cancels a live
@@ -370,16 +368,12 @@ impl HostInitiatedSubscriptionManager {
         }
     }
 
-    /// Start one typed subscription and send its `_start` frame to the
-    /// product. `payload` is already the SCALE-encoded `{Method}Version`
-    /// envelope value (`V{version}(Subscription::Start(request))`),
-    /// constructed by the generated caller, which is why `version` — needed
-    /// only for the eventual `Stop` frame — is passed alongside it rather
-    /// than derived here.
+    /// Start one typed subscription and send its `Start` frame to the
+    /// product. `payload` is already the SCALE-encoded request wrapper's own
+    /// bytes, constructed by the generated caller.
     pub fn start<Item>(
         &self,
         ids: MethodIds,
-        version: u8,
         payload: Vec<u8>,
         transport: Arc<dyn Transport>,
     ) -> truapi::Subscription<Result<Item, v01::GenericError>>
@@ -407,6 +401,7 @@ impl HostInitiatedSubscriptionManager {
             payload: Payload {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
+                message_type: MESSAGE_TYPE_START,
                 value: payload,
             },
         });
@@ -414,7 +409,6 @@ impl HostInitiatedSubscriptionManager {
         truapi::Subscription::new(Box::pin(HostInitiatedSubscription::<Item> {
             request_id,
             ids,
-            version,
             receiver,
             state: self.state.clone(),
             transport,
@@ -464,12 +458,11 @@ impl HostInitiatedSubscriptionManager {
         {
             return None;
         }
-        if is_subscription_receive(&message.payload.value) {
+        if message.payload.message_type == MESSAGE_TYPE_RECEIVE {
             let sender = slot.sender.clone();
             drop(state);
-            let (_, item_bytes) = split_subscription_direction(&message.payload.value)?;
-            let _ = sender.unbounded_send(HostInitiatedFrame::Item(item_bytes.to_vec()));
-        } else if is_subscription_interrupt(&message.payload.value) {
+            let _ = sender.unbounded_send(HostInitiatedFrame::Item(message.payload.value));
+        } else if message.payload.message_type == MESSAGE_TYPE_INTERRUPT {
             // Deliver the terminal before dropping the sender, so the stream
             // reports a declining product rather than a silent end.
             let sender = slot.sender.clone();
@@ -493,7 +486,6 @@ impl HostInitiatedSubscriptionManager {
 struct HostInitiatedSubscription<Item> {
     request_id: String,
     ids: MethodIds,
-    version: u8,
     receiver: mpsc::UnboundedReceiver<HostInitiatedFrame>,
     state: Arc<Mutex<HostInitiatedState>>,
     transport: Arc<dyn Transport>,
@@ -520,7 +512,8 @@ impl<Item> HostInitiatedSubscription<Item> {
                 payload: Payload {
                     trait_id: self.ids.trait_id,
                     method_id: self.ids.method_id,
-                    value: encode_envelope_stop(self.version),
+                    message_type: MESSAGE_TYPE_STOP,
+                    value: Vec::new(),
                 },
             });
         }
@@ -595,7 +588,7 @@ impl<Item> Drop for HostInitiatedSubscription<Item> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::frame::{PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID};
+    use crate::frame::{MESSAGE_TYPE_RESPONSE, PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID};
     use futures::FutureExt;
     use futures::stream;
     use parity_scale_codec::Encode;
@@ -664,18 +657,17 @@ mod tests {
         }
     }
 
-    /// Product frame on [`host_ids`]'s address, tagged `direction`
-    /// (`Start`=0, `Receive`=1, `Interrupt`=2, `Stop`=3) with `inner` as the
-    /// direction's own payload — matching `[version, direction, ...inner]`.
-    fn host_frame(request_id: &str, direction: u8, inner: Vec<u8>) -> ProtocolMessage {
-        let mut value = vec![0, direction];
-        value.extend(inner);
+    /// Product frame on [`host_ids`]'s address, tagged `message_type`
+    /// (`Start`=0, `Receive`=1, `Interrupt`=2, `Stop`=3) with `inner` as that
+    /// leg's own payload.
+    fn host_frame(request_id: &str, message_type: u8, inner: Vec<u8>) -> ProtocolMessage {
         ProtocolMessage {
             request_id: request_id.into(),
             payload: Payload {
                 trait_id: host_ids().trait_id,
                 method_id: host_ids().method_id,
-                value,
+                message_type,
+                value: inner,
             },
         }
     }
@@ -685,7 +677,7 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut subscription = manager.start::<u32>(host_ids(), 1, vec![0xaa], transport);
+        let mut subscription = manager.start::<u32>(host_ids(), vec![0xaa], transport);
 
         assert_eq!(transport_typed.sent()[0].request_id, "h:1");
         assert_eq!(transport_typed.sent()[0].payload.trait_id, 195);
@@ -708,7 +700,8 @@ mod tests {
         assert_eq!(frames[1].request_id, "h:1");
         assert_eq!(frames[1].payload.trait_id, 195);
         assert_eq!(frames[1].payload.method_id, 14);
-        assert_eq!(frames[1].payload.value, encode_envelope_stop(1));
+        assert_eq!(frames[1].payload.message_type, MESSAGE_TYPE_STOP);
+        assert_eq!(frames[1].payload.value, Vec::<u8>::new());
     }
 
     #[test]
@@ -721,8 +714,8 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut nested = manager.start::<NestedItem>(host_ids(), 1, vec![], transport.clone());
-        let mut healthy = manager.start::<NestedItem>(host_ids(), 1, vec![], transport);
+        let mut nested = manager.start::<NestedItem>(host_ids(), vec![], transport.clone());
+        let mut healthy = manager.start::<NestedItem>(host_ids(), vec![], transport);
 
         // One `Deeper` byte per level, terminated by `Leaf`.
         let mut bomb = vec![0x01; (MAX_SUBSCRIPTION_DECODE_DEPTH as usize) * 4];
@@ -792,8 +785,8 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut malformed = manager.start::<u32>(host_ids(), 1, vec![], transport.clone());
-        let mut healthy = manager.start::<u32>(host_ids(), 1, vec![], transport);
+        let mut malformed = manager.start::<u32>(host_ids(), vec![], transport.clone());
+        let mut healthy = manager.start::<u32>(host_ids(), vec![], transport);
 
         manager.handle_message(host_frame("h:1", 1, vec![0xff]));
         manager.handle_message(host_frame("h:2", 1, 9_u32.encode()));
@@ -815,7 +808,7 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut declined = manager.start::<u32>(host_ids(), 1, vec![], transport);
+        let mut declined = manager.start::<u32>(host_ids(), vec![], transport);
 
         manager.handle_message(host_frame("h:1", 2, vec![0]));
 
@@ -832,13 +825,14 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut unsupported = manager.start::<u32>(host_ids(), 1, vec![], transport);
+        let mut unsupported = manager.start::<u32>(host_ids(), vec![], transport);
 
         manager.handle_message(ProtocolMessage {
             request_id: "h:1".into(),
             payload: Payload {
                 trait_id: PROTOCOL_ERROR_TRAIT_ID,
                 method_id: PROTOCOL_ERROR_METHOD_ID,
+                message_type: MESSAGE_TYPE_RESPONSE,
                 value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
                     trait_id: host_ids().trait_id,
                     method_id: host_ids().method_id,
@@ -862,12 +856,10 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), 1, vec![], transport);
+        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
 
         for value in [
-            // A different address entirely (direction no longer distinguishes
-            // addresses under the nested envelope, so "unrelated" now means a
-            // different (trait, method) pair).
+            // A different (trait, method) pair than this render's own.
             VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
                 trait_id: host_ids().trait_id,
                 method_id: host_ids().method_id + 1,
@@ -880,6 +872,7 @@ mod tests {
                 payload: Payload {
                     trait_id: PROTOCOL_ERROR_TRAIT_ID,
                     method_id: PROTOCOL_ERROR_METHOD_ID,
+                    message_type: MESSAGE_TYPE_RESPONSE,
                     value,
                 },
             });
@@ -895,7 +888,7 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), 1, vec![], transport);
+        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
 
         manager.close();
 
@@ -907,14 +900,14 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), 1, vec![], transport.clone());
+        let mut render = manager.start::<u32>(host_ids(), vec![], transport.clone());
 
         manager.close();
 
         assert_eq!(futures::executor::block_on(render.next()), None);
         assert_eq!(transport_typed.sent().len(), 1);
 
-        let mut after_close = manager.start::<u32>(host_ids(), 1, vec![], transport);
+        let mut after_close = manager.start::<u32>(host_ids(), vec![], transport);
         assert_eq!(futures::executor::block_on(after_close.next()), None);
         assert_eq!(transport_typed.sent().len(), 1);
     }
@@ -924,12 +917,12 @@ mod tests {
         let first_transport_typed = Arc::new(RecordingTransport::new());
         let first_transport: Arc<dyn Transport> = first_transport_typed.clone();
         let first = HostInitiatedSubscriptionManager::new();
-        let mut first_render = first.start::<u32>(host_ids(), 1, vec![], first_transport);
+        let mut first_render = first.start::<u32>(host_ids(), vec![], first_transport);
 
         let second_transport_typed = Arc::new(RecordingTransport::new());
         let second_transport: Arc<dyn Transport> = second_transport_typed.clone();
         let second = HostInitiatedSubscriptionManager::new();
-        let mut second_render = second.start::<u32>(host_ids(), 1, vec![], second_transport);
+        let mut second_render = second.start::<u32>(host_ids(), vec![], second_transport);
 
         assert_eq!(first_transport_typed.sent()[0].request_id, "h:1");
         assert_eq!(second_transport_typed.sent()[0].request_id, "h:1");
@@ -977,7 +970,7 @@ mod tests {
         let transport_dyn: Arc<dyn Transport> = transport_typed.clone();
         let manager = SubscriptionManager::new(thread_per_subscription_spawner());
         let slow_stream: SubscriptionStream = Box::pin(stream::pending());
-        manager.register("p:1".to_string(), 7, 99, 1, slow_stream, transport_dyn);
+        manager.register("p:1".to_string(), 7, 99, slow_stream, transport_dyn);
         manager.handle_stop("p:1");
         // Give the worker thread a beat to observe the cancel.
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -995,18 +988,21 @@ mod tests {
         let transport_dyn: Arc<dyn Transport> = transport_typed.clone();
         let manager = SubscriptionManager::new(thread_per_subscription_spawner());
         let items = dummy_stream(vec![vec![0xaa], vec![0xbb]]);
-        manager.register("p:1".to_string(), 7, 99, 1, items, transport_dyn);
+        manager.register("p:1".to_string(), 7, 99, items, transport_dyn);
         let observed = transport_typed.wait_for(3, std::time::Duration::from_secs(2));
         assert_eq!(observed, 3, "expected 2 receive frames + 1 interrupt");
         let frames = transport_typed.sent();
         assert_eq!(frames[0].payload.trait_id, 7);
         assert_eq!(frames[0].payload.method_id, 99);
+        assert_eq!(frames[0].payload.message_type, MESSAGE_TYPE_RECEIVE);
         assert_eq!(frames[0].payload.value, vec![0xaa]);
         assert_eq!(frames[1].payload.method_id, 99);
+        assert_eq!(frames[1].payload.message_type, MESSAGE_TYPE_RECEIVE);
         assert_eq!(frames[1].payload.value, vec![0xbb]);
         assert_eq!(frames[2].payload.trait_id, 7);
         assert_eq!(frames[2].payload.method_id, 99);
-        assert_eq!(frames[2].payload.value, encode_envelope_clean_interrupt(1));
+        assert_eq!(frames[2].payload.message_type, MESSAGE_TYPE_INTERRUPT);
+        assert_eq!(frames[2].payload.value, encode_clean_interrupt());
     }
 
     /// Calling `handle_stop` twice on the same request id must be a
@@ -1018,7 +1014,7 @@ mod tests {
         let transport_dyn: Arc<dyn Transport> = transport_typed.clone();
         let manager = SubscriptionManager::new(thread_per_subscription_spawner());
         let slow_stream: SubscriptionStream = Box::pin(stream::pending());
-        manager.register("p:1".to_string(), 7, 99, 1, slow_stream, transport_dyn);
+        manager.register("p:1".to_string(), 7, 99, slow_stream, transport_dyn);
         manager.handle_stop("p:1");
         // Second call must not panic and must not emit any frame.
         manager.handle_stop("p:1");
@@ -1045,7 +1041,7 @@ mod tests {
         let transport_dyn: Arc<dyn Transport> = transport_typed.clone();
         let manager = SubscriptionManager::new(spawner);
         let items = dummy_stream(vec![vec![0xcc]]);
-        manager.register("p:1".to_string(), 7, 99, 1, items, transport_dyn);
+        manager.register("p:1".to_string(), 7, 99, items, transport_dyn);
 
         // Wait for the worker future to drain to completion so we know
         // the spawner closure ran on this path.
@@ -1068,7 +1064,7 @@ mod tests {
         let token = manager.reserve("p:1".to_string());
         manager.handle_stop("p:1");
         let items = dummy_stream(vec![vec![0x01], vec![0x02]]);
-        manager.activate(token, 7, 99, 1, items, transport_dyn);
+        manager.activate(token, 7, 99, items, transport_dyn);
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(
             transport_typed.sent().is_empty(),
@@ -1089,11 +1085,11 @@ mod tests {
         // First subscription never yields; the second reservation for the
         // same id must stop it.
         let pending: SubscriptionStream = Box::pin(stream::pending());
-        manager.register("p:1".to_string(), 7, 99, 1, pending, transport_dyn.clone());
+        manager.register("p:1".to_string(), 7, 99, pending, transport_dyn.clone());
 
         // Second subscription yields one item then ends.
         let items = dummy_stream(vec![vec![0xaa]]);
-        manager.register("p:1".to_string(), 7, 99, 1, items, transport_dyn);
+        manager.register("p:1".to_string(), 7, 99, items, transport_dyn);
 
         // Exactly the second stream's frames appear: one receive + one
         // completion interrupt. The first (pending) stream contributes none.
@@ -1128,7 +1124,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        manager.register("p:1".to_string(), 7, 99, 1, stream, transport_dyn);
+        manager.register("p:1".to_string(), 7, 99, stream, transport_dyn);
         manager.cancel_all();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

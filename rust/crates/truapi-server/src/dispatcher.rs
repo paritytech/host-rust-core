@@ -14,8 +14,9 @@ use parity_scale_codec::Encode;
 use tracing::instrument;
 
 use crate::frame::{
-    PROTOCOL_ERROR_KEY, PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload,
-    ProtocolErrorV1, ProtocolMessage, VersionedProtocolError, is_subscription_stop,
+    MESSAGE_TYPE_INTERRUPT, MESSAGE_TYPE_RESPONSE, MESSAGE_TYPE_STOP, PROTOCOL_ERROR_KEY,
+    PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1, ProtocolMessage,
+    VersionedProtocolError,
 };
 use crate::generated::wire_table::MethodIds;
 use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
@@ -31,13 +32,10 @@ use crate::transport::Transport;
 pub type RequestHandler =
     Arc<dyn Fn(String, Vec<u8>) -> BoxFuture<'static, Result<Vec<u8>, Vec<u8>>> + Send + Sync>;
 
-/// A handler for a subscription method. On success it also returns the
-/// wire-envelope version the caller's `Start` frame negotiated, so the
-/// framework can encode a version-correct natural-completion frame without
-/// needing the method's concrete envelope type. On the error path the
-/// handler returns the complete SCALE-encoded `_interrupt` payload.
+/// A handler for a subscription method. On the error path the handler
+/// returns the complete SCALE-encoded `Interrupt` payload.
 pub type SubscriptionHandler = Arc<
-    dyn Fn(String, Vec<u8>) -> BoxFuture<'static, Result<(u8, SubscriptionStream), Vec<u8>>>
+    dyn Fn(String, Vec<u8>) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
         + Send
         + Sync,
 >;
@@ -115,12 +113,12 @@ impl Dispatcher {
 
     /// Register a subscription handler, keyed on
     /// `(ids.trait_id, ids.method_id)`. A `Stop` frame arrives at this same
-    /// address — [`dispatch`](Self::dispatch) peeks its direction tag and
+    /// address — [`dispatch`](Self::dispatch) checks its `message_type` and
     /// routes it to [`SubscriptionManager::handle_stop`] directly, without
     /// invoking this handler. Returns the previously registered entry if any.
     pub fn on_subscription<F>(&mut self, ids: MethodIds, handler: F) -> Option<SubscriptionEntry>
     where
-        F: Fn(String, Vec<u8>) -> BoxFuture<'static, Result<(u8, SubscriptionStream), Vec<u8>>>
+        F: Fn(String, Vec<u8>) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
             + Send
             + Sync
             + 'static,
@@ -171,11 +169,12 @@ impl Dispatcher {
                 payload: Payload {
                     trait_id: entry.ids.trait_id,
                     method_id: entry.ids.method_id,
+                    message_type: MESSAGE_TYPE_RESPONSE,
                     value,
                 },
             });
         } else if let Some(entry) = self.by_start.get(&key) {
-            if is_subscription_stop(&message.payload.value) {
+            if message.payload.message_type == MESSAGE_TYPE_STOP {
                 self.subscriptions.handle_stop(&message.request_id);
                 return;
             }
@@ -186,12 +185,11 @@ impl Dispatcher {
             let token = self.subscriptions.reserve(request_id.clone());
             let result = (entry.handler)(request_id, message.payload.value).await;
             match result {
-                Ok((version, stream)) => {
+                Ok(stream) => {
                     self.subscriptions.activate(
                         token,
                         entry.ids.trait_id,
                         entry.ids.method_id,
-                        version,
                         stream,
                         transport,
                     );
@@ -203,6 +201,7 @@ impl Dispatcher {
                         payload: Payload {
                             trait_id: entry.ids.trait_id,
                             method_id: entry.ids.method_id,
+                            message_type: MESSAGE_TYPE_INTERRUPT,
                             value: err_bytes,
                         },
                     });
@@ -222,6 +221,7 @@ impl Dispatcher {
                 payload: Payload {
                     trait_id: PROTOCOL_ERROR_TRAIT_ID,
                     method_id: PROTOCOL_ERROR_METHOD_ID,
+                    message_type: MESSAGE_TYPE_RESPONSE,
                     value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
                         trait_id,
                         method_id,
@@ -241,6 +241,7 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::MESSAGE_TYPE_REQUEST;
     use std::sync::Mutex;
 
     fn test_spawner() -> Spawner {
@@ -277,12 +278,18 @@ mod tests {
         }
     }
 
-    fn make_frame(trait_id: u8, method_id: u8, value: Vec<u8>) -> ProtocolMessage {
+    fn make_frame(
+        trait_id: u8,
+        method_id: u8,
+        message_type: u8,
+        value: Vec<u8>,
+    ) -> ProtocolMessage {
         ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
                 trait_id,
                 method_id,
+                message_type,
                 value,
             },
         }
@@ -293,7 +300,7 @@ mod tests {
         let dispatcher = Dispatcher::new(test_spawner());
         let transport = Arc::new(RecordingTransport::default());
         let transport_dyn: Arc<dyn Transport> = transport.clone();
-        let frame = make_frame(250, 251, Vec::new());
+        let frame = make_frame(250, 251, MESSAGE_TYPE_REQUEST, Vec::new());
         futures::executor::block_on(dispatcher.dispatch(frame, transport_dyn));
         // 250 != 251 on purpose: the reply must echo the pair in the order it
         // arrived, and equal values would let a transposition pass.
@@ -304,6 +311,7 @@ mod tests {
                 payload: Payload {
                     trait_id: PROTOCOL_ERROR_TRAIT_ID,
                     method_id: PROTOCOL_ERROR_METHOD_ID,
+                    message_type: MESSAGE_TYPE_RESPONSE,
                     value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
                         trait_id: 250,
                         method_id: 251,
@@ -321,6 +329,7 @@ mod tests {
         let frame = make_frame(
             PROTOCOL_ERROR_TRAIT_ID,
             PROTOCOL_ERROR_METHOD_ID,
+            MESSAGE_TYPE_RESPONSE,
             VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
                 trait_id: 250,
                 method_id: 251,
@@ -345,7 +354,7 @@ mod tests {
             Box::pin(async move { Err(vec![9, 8, 7]) })
         });
         let transport = Arc::new(RecordingTransport::default());
-        let frame = make_frame(7, 200, Vec::new());
+        let frame = make_frame(7, 200, MESSAGE_TYPE_REQUEST, Vec::new());
         futures::executor::block_on(dispatcher.dispatch(frame, transport.clone()));
         let sent = transport.sent();
         assert_eq!(sent.len(), 1, "exactly one response expected");
@@ -377,8 +386,8 @@ mod tests {
         );
     }
 
-    /// A `Stop` frame (direction tag 1, right after the version byte) arrives
-    /// at the same address as `Start` and must route to
+    /// A `Stop` frame (`message_type == MESSAGE_TYPE_STOP`) arrives at the
+    /// same address as `Start` and must route to
     /// `SubscriptionManager::handle_stop` directly — never invoking the
     /// registered handler, which would otherwise try to start a second
     /// subscription instead of cancelling the first.
@@ -393,14 +402,11 @@ mod tests {
         let invoked_in_handler = invoked.clone();
         dispatcher.on_subscription(ids, move |_request_id, _bytes| {
             invoked_in_handler.store(true, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(
-                async move { Ok((1, Box::pin(futures::stream::empty()) as SubscriptionStream)) },
-            )
+            Box::pin(async move { Ok(Box::pin(futures::stream::empty()) as SubscriptionStream) })
         });
         let transport = Arc::new(RecordingTransport::default());
         let transport_dyn: Arc<dyn Transport> = transport.clone();
-        // [version=0, direction=Stop=3], matching `frame::encode_envelope_stop`.
-        let frame = make_frame(7, 50, vec![0, 3]);
+        let frame = make_frame(7, 50, MESSAGE_TYPE_STOP, Vec::new());
         futures::executor::block_on(dispatcher.dispatch(frame, transport_dyn));
         assert!(
             !invoked.load(std::sync::atomic::Ordering::SeqCst),

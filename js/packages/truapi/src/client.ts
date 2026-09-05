@@ -3,6 +3,12 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
+  MESSAGE_TYPE_INTERRUPT,
+  MESSAGE_TYPE_RECEIVE,
+  MESSAGE_TYPE_REQUEST,
+  MESSAGE_TYPE_RESPONSE,
+  MESSAGE_TYPE_START,
+  MESSAGE_TYPE_STOP,
   PROTOCOL_ERROR_METHOD_ID,
   PROTOCOL_ERROR_TRAIT_ID,
   type HostInitiatedSubscriptionHandler,
@@ -18,6 +24,7 @@ import {
   UnsupportedMessageError,
   type WireProvider,
 } from "./transport.js";
+import * as S from "./scale.js";
 import { type ResultPayload } from "./scale.js";
 import { TRUAPI_CODEC_VERSION } from "./generated/client.js";
 import * as T from "./generated/types.js";
@@ -26,44 +33,23 @@ import * as W from "./generated/wire-table.js";
 export type { Subscription, TrUApiTransport };
 
 // Every method's request/response (or start/stop/interrupt/receive) frames
-// now share one (trait, method) address (RFC 0028): direction lives in the
-// payload, not the id. A late or duplicate *answer*-direction frame
-// (Response/Stop/Interrupt/Receive) for a known method can legitimately
-// arrive with no matching pending call or subscription (e.g. after a
-// request already timed out, or after `unsubscribe`), so those are ignored
-// rather than reported as a protocol violation. A *request*-direction frame
-// (Request/Start) with nothing to route to is never expected — it means
-// this build genuinely doesn't implement the pair (no client was ever
-// created, or the specific host-initiated method has no registration) — so
-// it still earns the same reply as an unknown pair.
+// share one (trait, method) address: which leg of the exchange a frame
+// carries is the wire's own `messageType` byte, not part of the address. A
+// late or duplicate *answer*-leg frame (Response/Stop/Interrupt/Receive) for
+// a known method can legitimately arrive with no matching pending call or
+// subscription (e.g. after a request already timed out, or after
+// `unsubscribe`), so those are ignored rather than reported as a protocol
+// violation. A *request*-leg frame (Request/Start) with nothing to route to
+// is never expected — it means this build genuinely doesn't implement the
+// pair (no client was ever created, or the specific host-initiated method
+// has no registration) — so it still earns the same reply as an unknown
+// pair.
 const KNOWN_WIRE_IDS = new Set<string>(
   Object.values(W).map((ids) => `${ids.trait}:${ids.method}`),
 );
 
-/** Direction tag byte (right after the envelope's own version byte). **/
-const DIRECTION_REQUEST = 0;
-const DIRECTION_START = 0;
-const DIRECTION_RECEIVE = 1;
-const DIRECTION_INTERRUPT = 2;
-const DIRECTION_STOP = 3;
-
-/**
- * Peek a nested wire envelope's direction tag (the second byte, right after
- * the envelope's own version tag), without needing the concrete
- * `{Method}Version` codec.
- **/
-function directionTag(payload: Uint8Array): number | undefined {
-  return payload[1];
-}
-
-/**
- * Encode `{Method}Version::V1(Subscription::Stop)` — a subscription
- * cancellation — without needing the concrete `{Method}Version` codec:
- * `Stop` carries no payload, so the two bytes are fully determined by the
- * envelope version (always `V1` today; every real method has exactly one
- * version).
- **/
-const STOP_FRAME = new Uint8Array([0, DIRECTION_STOP]);
+/** A subscription cancellation: `Stop` carries no payload at all. **/
+const STOP_FRAME = new Uint8Array();
 
 /**
  * Version overrides used when constructing a transport.
@@ -99,32 +85,38 @@ function reportProtocolViolation(detail: string): void {
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 /**
- * Encode a successful host-handshake response frame: `HostHandshakeVersion::
- * V1(Request::Response(Ok(undefined)))`.
+ * Codec for `system_handshake`'s `Response`-leg payload:
+ * `Result<HostHandshakeResponse, CallError<HostHandshakeError>>`.
+ */
+const HANDSHAKE_RESPONSE_CODEC = S.Result(
+  T.VersionedHostHandshakeResponse,
+  S.CallError(T.VersionedHostHandshakeError),
+);
+
+/**
+ * Encode a successful host-handshake response frame:
+ * `Ok(HostHandshakeResponse::V1)`.
  */
 function encodeSuccessfulHandshakeResponse(): Uint8Array {
-  return T.HostHandshakeVersion.enc({
-    tag: "V1",
-    value: { tag: "Response", value: { success: true, value: undefined } },
+  return HANDSHAKE_RESPONSE_CODEC.enc({
+    success: true,
+    value: { tag: "V1" },
   });
 }
 
 /**
  * Encode a host-handshake response frame reporting an unsupported codec
- * version: `HostHandshakeVersion::V1(Request::Response(Err(CallError::Domain(
- * HostHandshakeError::UnsupportedProtocolVersion))))`.
+ * version: `Err(CallError::Domain(HostHandshakeError::V1(
+ * UnsupportedProtocolVersion)))`.
  */
 function encodeUnsupportedHandshakeResponse(): Uint8Array {
-  return T.HostHandshakeVersion.enc({
-    tag: "V1",
+  return HANDSHAKE_RESPONSE_CODEC.enc({
+    success: false,
     value: {
-      tag: "Response",
+      tag: "Domain",
       value: {
-        success: false,
-        value: {
-          tag: "Domain",
-          value: { tag: "UnsupportedProtocolVersion", value: undefined },
-        },
+        tag: "V1",
+        value: { tag: "UnsupportedProtocolVersion", value: undefined },
       },
     },
   });
@@ -304,7 +296,7 @@ export function createTransport(
     if (
       payload.traitId === W.SYSTEM_HANDSHAKE.trait &&
       payload.methodId === W.SYSTEM_HANDSHAKE.method &&
-      directionTag(payload.value) === DIRECTION_REQUEST
+      payload.messageType === MESSAGE_TYPE_REQUEST
     ) {
       // Auto-respond to inbound `host_handshake_request` frames. Hosts ping
       // the product at startup and repeat until they see a matching response,
@@ -312,24 +304,19 @@ export function createTransport(
       // down: a host whose codec this client cannot speak is exactly the peer
       // that needs an answer it can act on.
       //
-      // The direction check above matters: request and response now share
-      // this address (RFC 0028), and a `Response` frame arriving here is the
-      // host's answer to this client's own `system.handshake()` call, which
-      // must fall through to the `pending` lookup below instead.
+      // The messageType check above matters: request and response now share
+      // this address, and a `Response` frame arriving here is the host's
+      // answer to this client's own `system.handshake()` call, which must
+      // fall through to the `pending` lookup below instead.
       //
       // Respond with the handshake method's selected wire version. The inner
       // request carries the wire codec version. A request body this client
-      // cannot decode is itself a codec mismatch -- a codec 1 host's frame
-      // reads as `(0, 0)` here with the old envelope's payload shifted by a
-      // byte -- so it earns the same unsupported-version answer rather than a
-      // raw SCALE error.
+      // cannot decode is itself a codec mismatch, so it earns the same
+      // unsupported-version answer rather than a raw SCALE error.
       let response: Uint8Array;
       try {
-        const envelope = T.HostHandshakeVersion.dec(payload.value);
-        if (envelope.value.tag !== "Request") {
-          throw new Error(`expected Request direction, got ${envelope.value.tag}`);
-        }
-        const requestedCodecVersion = envelope.value.value.codecVersion;
+        const request = T.VersionedHostHandshakeRequest.dec(payload.value);
+        const requestedCodecVersion = request.value.codecVersion;
         response =
           requestedCodecVersion === codecVersion
             ? encodeSuccessfulHandshakeResponse()
@@ -348,6 +335,7 @@ export function createTransport(
           payload: {
             traitId: W.SYSTEM_HANDSHAKE.trait,
             methodId: W.SYSTEM_HANDSHAKE.method,
+            messageType: MESSAGE_TYPE_RESPONSE,
             value: response,
           },
         });
@@ -361,10 +349,9 @@ export function createTransport(
       pairKey(payload.traitId, payload.methodId),
     );
     if (hostRoute) {
-      const direction = directionTag(payload.value);
-      if (direction === DIRECTION_START) {
+      if (payload.messageType === MESSAGE_TYPE_START) {
         startHostSubscription(hostRoute, requestId, payload.value);
-      } else if (direction === DIRECTION_STOP) {
+      } else if (payload.messageType === MESSAGE_TYPE_STOP) {
         const bufferedIndex = hostRoute.buffered.findIndex(
           (start) => start.requestId === requestId,
         );
@@ -376,7 +363,7 @@ export function createTransport(
         }
       } else {
         reportProtocolViolation(
-          `ignoring host-initiated frame for (${payload.traitId}, ${payload.methodId}): unexpected direction tag ${direction}, expected Start (${DIRECTION_START}) or Stop (${DIRECTION_STOP})`,
+          `ignoring host-initiated frame for (${payload.traitId}, ${payload.methodId}): unexpected messageType ${payload.messageType}, expected Start (${MESSAGE_TYPE_START}) or Stop (${MESSAGE_TYPE_STOP})`,
         );
       }
       return;
@@ -393,7 +380,7 @@ export function createTransport(
         // Report it, then fall through rather than returning: the request stays
         // pending (this frame is not its answer), and the frame itself is one
         // this build cannot route, so it earns the same protocol-error reply as
-        // any other unroutable pair. A known method's answer-direction frame is
+        // any other unroutable pair. A known method's answer-leg frame is
         // still filtered out below.
         reportProtocolViolation(
           `ignoring frame for request ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}), expected (${p.ids.trait}, ${p.ids.method})`,
@@ -411,11 +398,10 @@ export function createTransport(
 
     const subscription = subscriptions.get(requestId);
     if (subscription) {
-      const direction = directionTag(payload.value);
       if (
         payload.traitId === subscription.ids.trait &&
         payload.methodId === subscription.ids.method &&
-        direction === DIRECTION_RECEIVE
+        payload.messageType === MESSAGE_TYPE_RECEIVE
       ) {
         try {
           subscription.onReceive(payload.value);
@@ -430,44 +416,43 @@ export function createTransport(
       } else if (
         payload.traitId === subscription.ids.trait &&
         payload.methodId === subscription.ids.method &&
-        direction === DIRECTION_INTERRUPT
+        payload.messageType === MESSAGE_TYPE_INTERRUPT
       ) {
         subscriptions.delete(requestId);
         subscription.onInterrupt?.(payload.value);
       } else {
         reportProtocolViolation(
-          `ignoring frame for subscription ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}) direction ${direction}, expected receive (${DIRECTION_RECEIVE}) or interrupt (${DIRECTION_INTERRUPT}) on (${subscription.ids.trait}, ${subscription.ids.method})`,
+          `ignoring frame for subscription ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}) messageType ${payload.messageType}, expected receive (${MESSAGE_TYPE_RECEIVE}) or interrupt (${MESSAGE_TYPE_INTERRUPT}) on (${subscription.ids.trait}, ${subscription.ids.method})`,
         );
       }
       return;
     }
 
     if (KNOWN_WIRE_IDS.has(`${payload.traitId}:${payload.methodId}`)) {
-      const direction = directionTag(payload.value);
       if (
-        direction === DIRECTION_STOP ||
-        direction === DIRECTION_INTERRUPT ||
-        direction === DIRECTION_RECEIVE
+        payload.messageType === MESSAGE_TYPE_STOP ||
+        payload.messageType === MESSAGE_TYPE_INTERRUPT ||
+        payload.messageType === MESSAGE_TYPE_RECEIVE
       ) {
-        // A known method's answer-direction frame (Response/Stop/Interrupt/
+        // A known method's answer-leg frame (Response/Stop/Interrupt/
         // Receive) with nothing to route to: a normal late/stale frame, not
         // a protocol violation.
         return;
       }
-      if (direction !== DIRECTION_REQUEST) {
+      if (payload.messageType !== MESSAGE_TYPE_REQUEST) {
         // Neither a plausible late answer nor a valid Request/Start: the
-        // direction byte itself is out of range or missing. Still dropped
-        // (there is nothing to route it to), but logged rather than
-        // silently swallowed, matching the analogous case in the
-        // `hostRoute` branch above.
+        // messageType byte itself is out of range. Still dropped (there is
+        // nothing to route it to), but logged rather than silently
+        // swallowed, matching the analogous case in the `hostRoute` branch
+        // above.
         reportProtocolViolation(
-          `ignoring frame for known pair (${payload.traitId}, ${payload.methodId}): unexpected direction tag ${direction}`,
+          `ignoring frame for known pair (${payload.traitId}, ${payload.methodId}): unexpected messageType ${payload.messageType}`,
         );
         return;
       }
     }
 
-    // Either an unknown pair, or a known method's request-direction frame
+    // Either an unknown pair, or a known method's request-leg frame
     // (Request/Start) with nothing to route to: this build does not
     // implement the pair.
     reportProtocolViolation(
@@ -479,6 +464,7 @@ export function createTransport(
         payload: {
           traitId: PROTOCOL_ERROR_TRAIT_ID,
           methodId: PROTOCOL_ERROR_METHOD_ID,
+          messageType: MESSAGE_TYPE_RESPONSE,
           value: new Uint8Array([0, 0, payload.traitId, payload.methodId]),
         },
       });
@@ -521,6 +507,7 @@ export function createTransport(
         payload: {
           traitId: route.ids.trait,
           methodId: route.ids.method,
+          messageType: MESSAGE_TYPE_INTERRUPT,
           value: route.interruptPayload,
         },
       });
@@ -578,6 +565,7 @@ export function createTransport(
               payload: {
                 traitId: route.ids.trait,
                 methodId: route.ids.method,
+                messageType: MESSAGE_TYPE_RECEIVE,
                 value: route.encodeItem(item),
               },
             });
@@ -667,6 +655,7 @@ export function createTransport(
             payload: {
               traitId: ids.trait,
               methodId: ids.method,
+              messageType: MESSAGE_TYPE_REQUEST,
               value: payload,
             },
           });
@@ -709,6 +698,7 @@ export function createTransport(
           payload: {
             traitId: ids.trait,
             methodId: ids.method,
+            messageType: MESSAGE_TYPE_START,
             value: payload,
           },
         });
@@ -730,6 +720,7 @@ export function createTransport(
               payload: {
                 traitId: ids.trait,
                 methodId: ids.method,
+                messageType: MESSAGE_TYPE_STOP,
                 value: STOP_FRAME,
               },
             });

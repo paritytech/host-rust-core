@@ -324,12 +324,12 @@ export function wireTraceToView(
       // A frame may still arrive `role: "unknown"` (a vantage with no wire
       // frameId, no methodNames map at ingest, or an off-table id); retry
       // resolution here from the method's wire-table kind plus the frame's own
-      // direction byte (see resolveRole). Falls back to "unknown" again when no
-      // bytes were retained. A `"malformed"` sentinel is kept either way.
+      // `messageType` (see resolveRole). A `"malformed"` sentinel is kept
+      // either way.
       const info = methodNames?.get(frame.frameId);
       const role =
         frame.role === "unknown"
-          ? resolveRole(frame.bytes ?? new Uint8Array(0), info?.kind)
+          ? resolveRole(frame.messageType, info?.kind)
           : frame.role;
       return {
         direction: frame.direction,

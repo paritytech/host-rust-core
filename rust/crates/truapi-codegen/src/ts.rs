@@ -386,92 +386,16 @@ fn versioned_wrapper_for<'a>(
     None
 }
 
-/// Name of a method's merged wire-envelope type (RFC 0028), derived the same
-/// way `truapi-codegen`'s Rust dispatcher emitter derives it: strip the
-/// `Request`/`Item` suffix off the request (or subscription item) wrapper's
-/// own name and append `Version`. Mirrors `envelope_type_name` in
-/// `rust/dispatcher.rs` so both languages name the same Rust type the same
-/// way. `None` only for a request/item wrapper whose name doesn't follow the
-/// `{Base}Request`/`{Base}Item` convention; every real method's wrapper does.
-fn envelope_type_name(request: Option<&str>, item: Option<&str>) -> Option<String> {
-    if let Some(base) = request.and_then(|name| name.strip_suffix("Request")) {
-        return Some(format!("{base}Version"));
+/// The well-known bare (unwrapped) type of the framework-level error every
+/// subscription can be interrupted with, even a plain (non-`ResultSubscription`)
+/// method with no domain error of its own: the framework-level `CallError`
+/// variants (`Denied`/`Unsupported`/`MalformedFrame`/`HostFailure`) still ride
+/// along on every interrupt frame and must be decodable.
+fn generic_error_type_ref() -> TypeRef {
+    TypeRef::Named {
+        name: "GenericError".to_string(),
+        args: Vec::new(),
     }
-    if let Some(base) = item.and_then(|name| name.strip_suffix("Item")) {
-        return Some(format!("{base}Version"));
-    }
-    None
-}
-
-/// Look up an extracted type definition by name.
-fn find_type<'a>(api: &'a ApiDefinition, name: &str) -> Option<&'a TypeDef> {
-    api.types.iter().find(|type_def| type_def.name == name)
-}
-
-/// Resolve a method's merged wire-envelope type name. Every codec-2 method
-/// has one: its request (or subscription item) wrapper follows the
-/// `{Base}Request`/`{Base}Item` convention and codegen always emits the
-/// matching `{Base}Version` type alongside it. Either failure here — a
-/// wrapper name outside that convention, or a derived name absent from the
-/// extracted API — means the method has no valid codec-2 payload shape, so
-/// this errors instead of silently falling back to a directionless payload.
-fn method_envelope_name(
-    api: &ApiDefinition,
-    request_wrapper: Option<&str>,
-    item_wrapper: Option<&str>,
-) -> Result<String> {
-    let name = envelope_type_name(request_wrapper, item_wrapper).ok_or_else(|| {
-        anyhow::anyhow!(
-            "wrapper name `{:?}`/`{:?}` does not follow the {{Base}}Request/{{Base}}Item \
-             convention, so no wire envelope can be derived for it",
-            request_wrapper,
-            item_wrapper
-        )
-    })?;
-    if find_type(api, &name).is_none() {
-        bail!("derived wire envelope `{name}` is not present in the extracted API");
-    }
-    Ok(name)
-}
-
-/// Extracts a subscription envelope's declared `Err` type: the third generic
-/// argument of its `Subscription<Start, Item, Err>` payload for the given
-/// wire version. Every subscription's envelope carries one, even a plain
-/// (non-`ResultSubscription`) method — its own `Err` is `CallError<GenericError>`
-/// rather than a domain-specific error, but the framework-level `CallError`
-/// still rides along on every interrupt frame and must be decodable.
-fn subscription_envelope_err_ty<'a>(
-    api: &'a ApiDefinition,
-    envelope_name: &str,
-    version: u32,
-) -> Result<&'a TypeRef> {
-    let envelope = find_type(api, envelope_name)
-        .ok_or_else(|| anyhow::anyhow!("envelope `{envelope_name}` not found in extracted API"))?;
-    let TypeDefKind::Enum(variants) = &envelope.kind else {
-        bail!("envelope `{envelope_name}` is not an enum");
-    };
-    let variant_name = format!("V{version}");
-    let variant = variants
-        .iter()
-        .find(|v| v.name == variant_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!("envelope `{envelope_name}` has no `{variant_name}` variant")
-        })?;
-    let VariantFields::Unnamed(fields) = &variant.fields else {
-        bail!("envelope `{envelope_name}` variant `{variant_name}` is not a tuple variant");
-    };
-    let [TypeRef::Named { name, args }] = fields.as_slice() else {
-        bail!(
-            "envelope `{envelope_name}` variant `{variant_name}` does not wrap a single named type"
-        );
-    };
-    if name != "Subscription" || args.len() != 3 {
-        bail!(
-            "envelope `{envelope_name}` variant `{variant_name}` does not wrap \
-             Subscription<Start, Item, Err>"
-        );
-    }
-    Ok(&args[2])
 }
 
 /// Emits a JSDoc block for `docs` at the given indent. No-op when `docs` is
@@ -686,11 +610,13 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
         import type {{ MethodIds }} from '../transport.js';
 
         // Wire-protocol (trait, method) discriminant pairs. One id addresses
-        // a method regardless of shape; direction and version are carried
-        // inside the payload. `kind` says whether that payload is a
-        // `Request<Req, Res>` or a `Subscription<Start, Item, Err>` envelope,
-        // the one piece of shape a payload-blind reader (e.g. a wire debugger)
-        // needs to resolve a frame's role without decoding it. Trait and
+        // a method regardless of shape; a frame's own third byte
+        // (`messageType`) names which leg of the exchange it carries
+        // (Request/Response, or a subscription's Start/Receive/Interrupt/
+        // Stop). `kind` says whether a method's legs follow the
+        // request/response or subscription shape, the one piece of
+        // information a payload-blind reader (e.g. a wire debugger) needs to
+        // interpret `messageType` without decoding the payload. Trait and
         // method ordering are part of the protocol; only ever append within a
         // trait or explicitly reserve gaps.
 
@@ -1209,7 +1135,6 @@ fn generate_types(api: &ApiDefinition, target_version: u32) -> Result<String> {
         // Auto-generated by truapi-codegen. Do not edit.
 
         import * as S from '../scale.js';
-        import {{ Request, Result, Subscription }} from '../scale.js';
         import type {{ HexString }} from '../scale.js';
 
         "#
@@ -1273,14 +1198,14 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
           return new SubscriptionError(cause.message, {{ cause }});
         }}
 
-        // Interrupt payload sent when a host-initiated render arrives with no
-        // registered handler, declining the start: version=V1, direction=
-        // Interrupt, Some(CallError::HostFailure with reason "unavailable").
-        // HostFailure's payload doesn't depend on the method's own domain
-        // error type, so this fixed frame is valid for every method's
-        // envelope regardless of what D in CallError<D> decodes to.
+        // Interrupt payload sent (with messageType Interrupt) when a
+        // host-initiated render arrives with no registered handler,
+        // declining the start: Some(CallError::HostFailure with reason
+        // "unavailable"). HostFailure's payload doesn't depend on the
+        // method's own domain error type, so this fixed frame is valid for
+        // every method regardless of what D in CallError<D> decodes to.
         const HOST_INITIATED_DECLINE_PAYLOAD = new Uint8Array([
-          0, 2, 1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101,
+          1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101,
         ]);
         // Items buffered per host-initiated stream while the product's handler
         // observable has no subscriber yet.
@@ -1405,19 +1330,18 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
 }
 
 /// Generates the dev-only wire decode table (`wire-decode.ts`): a map from a
-/// wire address (`trait * 256 + method`, matching every direction a method
-/// carries under the nested envelope, RFC 0028) to a decoder that turns a
-/// frame's SCALE payload into its full versioned envelope value. It decodes
-/// through the same `T.{Method}Version` codec the generated client emits
-/// against ([`method_envelope_name`]), so a debugger sees exactly what the
-/// client would have decoded, direction tag included.
+/// wire address (`trait * 256 + method`) to a decoder keyed by that frame's
+/// own `messageType` byte (`Request`/`Start` = 0, `Response`/`Receive` = 1,
+/// `Interrupt` = 2, `Stop` = 3), so a debugger reads the wire's own leg
+/// marker instead of having to decode a payload to learn its shape.
 fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<String> {
+    let ctx = CodecContext::default();
     let wrappers = collect_versioned_wrappers(api);
     let services = public_services(api)?;
 
-    // (numeric key, emitted table line) pairs, sorted for a stable,
+    // (numeric key, emitted table lines) pairs, sorted for a stable,
     // wire-ordered file that matches the wire-table layout.
-    let mut entries: Vec<(u32, String)> = Vec::new();
+    let mut entries: Vec<(u32, Vec<String>)> = Vec::new();
 
     for service in &services {
         let trait_def = service.trait_def;
@@ -1427,21 +1351,48 @@ fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<Str
             let trait_id = trait_wire_id(trait_def)?;
             let key = u32::from(trait_id) * 256 + u32::from(method_id);
 
-            let envelope = match (&method.kind, &method.return_type) {
-                (MethodKind::Request, ReturnType::Result { .. }) => {
-                    method_envelope_name(api, request_wrapper_name(method, &wrappers), None)?
+            let request_decoder = match request_wrapper_name(method, &wrappers) {
+                Some(name) => format!(
+                    "(payload) => T.{}.dec(payload)",
+                    versioned_wrapper_ts_name(name)
+                ),
+                None => "() => undefined".to_string(),
+            };
+
+            let mut lines = Vec::new();
+            match (&method.kind, &method.return_type) {
+                (MethodKind::Request, ReturnType::Result { ok, err }) => {
+                    let response_codec = leg_codec_expr(ok, &wrappers)?;
+                    let error_codec = leg_error_codec_expr(err, &wrappers, &ctx)?;
+                    lines.push(format!("    0: {request_decoder},"));
+                    lines.push(format!(
+                        "    1: (payload) => S.Result({response_codec}, {error_codec}).dec(payload),"
+                    ));
                 }
-                (MethodKind::Subscription, ReturnType::Subscription(ty)) => method_envelope_name(
-                    api,
-                    request_wrapper_name(method, &wrappers),
-                    versioned_wrapper_for(ty, &wrappers).map(|(name, _)| name),
-                )?,
-                (MethodKind::ResultSubscription, ReturnType::ResultSubscription { item, .. }) => {
-                    method_envelope_name(
-                        api,
-                        request_wrapper_name(method, &wrappers),
-                        versioned_wrapper_for(item, &wrappers).map(|(name, _)| name),
-                    )?
+                (MethodKind::Subscription, ReturnType::Subscription(ty)) => {
+                    let item_codec = leg_codec_expr(ty, &wrappers)?;
+                    let generic_error = generic_error_type_ref();
+                    let call_error_generic = TypeRef::Named {
+                        name: "CallError".to_string(),
+                        args: vec![generic_error],
+                    };
+                    let error_codec = leg_error_codec_expr(&call_error_generic, &wrappers, &ctx)?;
+                    lines.push(format!("    0: {request_decoder},"));
+                    lines.push(format!("    1: (payload) => {item_codec}.dec(payload),"));
+                    lines.push(format!(
+                        "    2: (payload) => S.Option({error_codec}).dec(payload),"
+                    ));
+                    lines.push("    3: () => undefined,".to_string());
+                }
+                (MethodKind::ResultSubscription, ReturnType::ResultSubscription { item, err }) => {
+                    let item_codec = leg_codec_expr(item, &wrappers)?;
+                    let error_codec = leg_error_codec_expr(err, &wrappers, &ctx)?;
+                    lines.push(format!("    0: {request_decoder},"));
+                    lines.push(format!("    1: (payload) => {item_codec}.dec(payload),"));
+                    lines.push(format!(
+                        "    2: (payload) => S.Option({error_codec}).dec(payload),"
+                    ));
+                    lines.push("    3: () => undefined,".to_string());
                 }
                 (kind, return_type) => {
                     bail!(
@@ -1451,14 +1402,15 @@ fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<Str
                         return_type
                     );
                 }
-            };
+            }
 
             entries.push((
                 key,
-                format!(
-                    "  [W.{wire_const}.trait * 256 + W.{wire_const}.method]: \
-                     (payload) => T.{envelope}.dec(payload),"
-                ),
+                vec![
+                    format!("  [W.{wire_const}.trait * 256 + W.{wire_const}.method]: {{"),
+                    lines.join("\n"),
+                    "  },".to_string(),
+                ],
             ));
         }
     }
@@ -1471,19 +1423,25 @@ fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<Str
         r#"
         // Auto-generated by truapi-codegen. Do not edit.
 
+        import * as S from '../scale.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
-        /** Dev-only: decode a wire frame's SCALE payload to its full versioned envelope
-         *  value (direction tag included), keyed by `trait * 256 + method`. Unknown
-         *  addresses are absent (caller falls back to bytes). */
-        export const WIRE_DECODE_TABLE: Record<number, (payload: Uint8Array) => unknown> = {{
+        /** Dev-only: decode a wire frame's SCALE payload, keyed by `trait * 256 +
+         *  method` and then by that frame's own `messageType` byte. Unknown
+         *  addresses or message types are absent (caller falls back to bytes). */
+        export const WIRE_DECODE_TABLE: Record<
+          number,
+          Record<number, (payload: Uint8Array) => unknown>
+        > = {{
         "#
     )
     .unwrap();
-    for (_, line) in &entries {
-        out.push_str(line);
-        out.push('\n');
+    for (_, lines) in &entries {
+        for line in lines {
+            out.push_str(line);
+            out.push('\n');
+        }
     }
     out.push_str("};\n");
 
@@ -1702,18 +1660,12 @@ fn emit_payload(
 }
 
 /// Response shape after the versioned wrapper is stripped. TS callers see the
-/// inner type; request responses decode `Versioned<Result<Ok, Err>>`, while
-/// subscription items still decode the full versioned item wrapper.
+/// bare inner type; decoding through the wrapper's own codec directly (its
+/// `V<N>` tag is the version) and unwrapping `.value` produces it with no
+/// further translation.
 #[derive(Clone)]
 struct ResponseEmission {
     inner_type_ts: String,
-    /// `Some(version)` when `inner_type_ts` is a domain error's own versioned
-    /// wrapper (`S.CallErrorValue<T.Versioned{Name}>`) rather than its bare
-    /// type. The merged wire envelope (RFC 0028) always carries the bare
-    /// domain error under one shared version tag, so a caller decoding
-    /// through it must re-wrap a `Domain` outcome in `{ tag: "V{version}",
-    /// value }` to keep presenting this same public shape.
-    wrap_version: Option<u32>,
 }
 
 fn emit_response(
@@ -1731,18 +1683,15 @@ fn emit_response(
         return match &wrapper.kind {
             VersionedKind::Unit => Ok(ResponseEmission {
                 inner_type_ts: "undefined".to_string(),
-                wrap_version: None,
             }),
             VersionedKind::Tuple(inner) => Ok(ResponseEmission {
                 inner_type_ts: ts_type_qualified(inner)?,
-                wrap_version: None,
             }),
         };
     }
 
     Ok(ResponseEmission {
         inner_type_ts: ts_type_qualified(ty)?,
-        wrap_version: None,
     })
 }
 
@@ -1756,25 +1705,69 @@ fn emit_error_response(
     };
 
     if let Some((wrapper_name, _wrapper)) = versioned_wrapper_for(error_wrapper_ty, wrappers) {
-        let version = wire_version.ok_or_else(|| {
-            anyhow::anyhow!("versioned error wrapper `{wrapper_name}` has no selected wire version")
-        })?;
         let versioned_name = versioned_wrapper_ts_name(wrapper_name);
         let inner_type_ts = format!("S.CallErrorValue<T.{versioned_name}>");
-        return Ok(ResponseEmission {
-            inner_type_ts,
-            wrap_version: Some(version),
-        });
+        return Ok(ResponseEmission { inner_type_ts });
     }
 
     let inner_type_ts = format!(
         "S.CallErrorValue<{}>",
         ts_type_qualified_preserve(error_wrapper_ty)?
     );
-    Ok(ResponseEmission {
-        inner_type_ts,
-        wrap_version: None,
-    })
+    Ok(ResponseEmission { inner_type_ts })
+}
+
+/// The codec expression that decodes this leg's own wire payload directly:
+/// the recognized wrapper's `Versioned{Name}` codec (its `V<N>` tag is the
+/// wire's only version signal), or `S._void` for a bare unit payload with no
+/// wrapper at all. Every real method's request/response/item is one of these
+/// two shapes; anything else is a codegen-internal mismatch.
+fn leg_codec_expr(ty: &TypeRef, wrappers: &HashMap<String, VersionedWrapper>) -> Result<String> {
+    match versioned_wrapper_for(ty, wrappers) {
+        Some((wrapper_name, _)) => Ok(format!("T.{}", versioned_wrapper_ts_name(wrapper_name))),
+        None if matches!(ty, TypeRef::Unit) => Ok("S._void".to_string()),
+        None => bail!(
+            "type `{}` is neither a recognized versioned wrapper nor unit, \
+             so no wire codec can be derived for it",
+            ts_type_name_hint(ty)
+        ),
+    }
+}
+
+/// The codec expression that decodes an error leg's wire payload: the
+/// recognized domain wrapper's `Versioned{Name}` codec composed with
+/// `S.CallError`, or a plain `S.CallError({codec})` over the bare error type
+/// when it isn't a recognized wrapper (framework-only errors have no domain
+/// payload at all, so this path is never reached for those).
+fn leg_error_codec_expr(
+    ty: &TypeRef,
+    wrappers: &HashMap<String, VersionedWrapper>,
+    ctx: &CodecContext,
+) -> Result<String> {
+    // Every real method's error type is `CallError<X>`; a bare (non-CallError)
+    // type is decoded as an ordinary leg with no framework-error envelope.
+    let Some(error_wrapper_ty) = call_error_inner(ty) else {
+        return leg_codec_expr(ty, wrappers);
+    };
+    if let Some((wrapper_name, _)) = versioned_wrapper_for(error_wrapper_ty, wrappers) {
+        return Ok(format!(
+            "S.CallError(T.{})",
+            versioned_wrapper_ts_name(wrapper_name)
+        ));
+    }
+    Ok(format!(
+        "S.CallError({})",
+        codec_expr_mode(error_wrapper_ty, true, ctx, NameMode::Public)?
+    ))
+}
+
+/// A human-readable name for an error message when a type ref that was
+/// expected to be a recognized versioned wrapper is not one.
+fn ts_type_name_hint(ty: &TypeRef) -> &str {
+    match ty {
+        TypeRef::Named { name, .. } => name,
+        _ => "<anonymous>",
+    }
 }
 
 fn versioned_kind_codec_expr_mode(
@@ -1823,12 +1816,13 @@ fn request_wrapper_name<'a>(
 
 fn emit_method(
     out: &mut String,
-    api: &ApiDefinition,
+    _api: &ApiDefinition,
     trait_def: &TraitDef,
     method: &MethodDef,
     wrappers: &HashMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
+    let ctx = CodecContext::default();
     let ts_method_name = to_camel_case(&strip_prefix(&method.name));
     let wire_const = wire_const_name(&trait_def.name, &method.name);
     let wire_version = method_wire_version(method, wrappers, target_version)?;
@@ -1839,12 +1833,32 @@ fn emit_method(
         return emit_host_initiated_method(out, method, &payload, wrappers, wire_version);
     }
 
+    let version = wire_version.ok_or_else(|| {
+        anyhow::anyhow!(
+            "method `{}` has no request/item wrapper with a selected wire version",
+            method.name
+        )
+    })?;
+    // Every `Request` method's single param is a recognized wrapper; a
+    // subscription may legitimately take none at all (its `Start` payload is
+    // then empty bytes) — see `emit_subscribe_method`.
+    let request_name = request_wrapper_name(method, wrappers);
+
     match (&method.kind, &method.return_type) {
         (MethodKind::Request, ReturnType::Result { ok, err }) => {
+            let Some(request_name) = request_name else {
+                bail!(
+                    "method `{}`: request parameter is not a recognized versioned wrapper",
+                    method.name
+                );
+            };
+            let request_codec = format!("T.{}", versioned_wrapper_ts_name(request_name));
             let is_handshake = trait_def.name == "System" && method.name == "handshake";
             let response = emit_response(ok, wrappers, wire_version)?;
             let error = emit_error_response(err, wrappers, wire_version)?;
-            let envelope = method_envelope_name(api, request_wrapper_name(method, wrappers), None)?;
+            let ok_is_wrapper = versioned_wrapper_for(ok, wrappers).is_some();
+            let response_codec = leg_codec_expr(ok, wrappers)?;
+            let error_codec = leg_error_codec_expr(err, wrappers, &ctx)?;
 
             let arg_decl = if is_handshake || payload.param_list.is_empty() {
                 String::new()
@@ -1857,49 +1871,28 @@ fn emit_method(
                 payload.value_expr.clone()
             };
 
-            let version = wire_version.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "method `{}` resolved wire envelope `{envelope}` with no selected wire version",
-                    method.name
-                )
-            })?;
-            let method_name = &method.name;
-
             writedoc!(
                 out,
                 "
                   {ts_method_name}({arg_decl}): ResultAsync<{ok_type}, {err_type}> {{
                     return this.transport.request<{ok_type}, {err_type}>({{
                       ids: W.{wire_const},
-                      payload: T.{envelope}.enc({{ tag: \"V{version}\", value: {{ tag: \"Request\", value: {request_expr} }} }}),
+                      payload: {request_codec}.enc({{ tag: \"V{version}\", value: {request_expr} }}),
                       decodeResponse: (payload) => {{
-                        const envelope = T.{envelope}.dec(payload);
-                        if (envelope.value.tag !== \"Response\") {{
-                          throw new Error(`{method_name}: expected Response direction, got ${{envelope.value.tag}}`);
-                        }}
-                        const result = envelope.value.value;
+                        const result = S.Result({response_codec}, {error_codec}).dec(payload);
                 ",
                 ok_type = response.inner_type_ts,
                 err_type = error.inner_type_ts
             )
             .unwrap();
-            match error.wrap_version {
-                Some(err_version) => writedoc!(
+            if ok_is_wrapper {
+                writeln!(
                     out,
-                    "
-                            if (!result.success) {{
-                              return {{
-                                success: false,
-                                value: result.value.tag === \"Domain\"
-                                  ? {{ tag: \"Domain\" as const, value: {{ tag: \"V{err_version}\", value: result.value.value }} }}
-                                  : result.value,
-                              }};
-                            }}
-                            return result;
-                    "
+                    "        return result.success ? {{ success: true, value: result.value.value }} : result;"
                 )
-                .unwrap(),
-                None => writeln!(out, "        return result;").unwrap(),
+                .unwrap();
+            } else {
+                writeln!(out, "        return result;").unwrap();
             }
             writeln!(out, "      }},").unwrap();
 
@@ -1914,51 +1907,52 @@ fn emit_method(
         }
         (MethodKind::Subscription, ReturnType::Subscription(ty)) => {
             let response = emit_response(ty, wrappers, wire_version)?;
-            let envelope = method_envelope_name(
-                api,
-                request_wrapper_name(method, wrappers),
-                versioned_wrapper_for(ty, wrappers).map(|(name, _)| name),
-            )?;
-            // A plain subscription has no domain error type, but its envelope's
-            // Err is still CallError<GenericError>: the framework-level failure
-            // modes (Denied, Unsupported, MalformedFrame, HostFailure) can
-            // interrupt any subscription regardless of what it declares.
-            let version = wire_version.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "method `{}` resolved wire envelope `{envelope}` with no selected wire version",
-                    method.name
-                )
-            })?;
-            let err_ty = subscription_envelope_err_ty(api, &envelope, version)?;
-            let error = emit_error_response(err_ty, wrappers, wire_version)?;
+            let item_codec = leg_codec_expr(ty, wrappers)?;
+            let item_is_wrapper = versioned_wrapper_for(ty, wrappers).is_some();
+            // A plain subscription has no domain error type, but the wire's
+            // Interrupt payload still carries a `CallError<GenericError>`: the
+            // framework-level failure modes (Denied, Unsupported,
+            // MalformedFrame, HostFailure) can interrupt any subscription
+            // regardless of what it declares.
+            let generic_error = generic_error_type_ref();
+            let call_error_generic = TypeRef::Named {
+                name: "CallError".to_string(),
+                args: vec![generic_error],
+            };
+            let error = emit_error_response(&call_error_generic, wrappers, wire_version)?;
+            let error_codec = leg_error_codec_expr(&call_error_generic, wrappers, &ctx)?;
             emit_subscribe_method(
                 out,
                 &ts_method_name,
                 &wire_const,
                 &payload,
                 response.inner_type_ts.clone(),
+                item_codec,
+                item_is_wrapper,
                 error,
-                wire_version,
-                envelope,
+                error_codec,
+                version,
+                request_name,
             )?;
         }
         (MethodKind::ResultSubscription, ReturnType::ResultSubscription { item, err }) => {
             let response = emit_response(item, wrappers, wire_version)?;
+            let item_codec = leg_codec_expr(item, wrappers)?;
+            let item_is_wrapper = versioned_wrapper_for(item, wrappers).is_some();
             let error = emit_error_response(err, wrappers, wire_version)?;
-            let envelope = method_envelope_name(
-                api,
-                request_wrapper_name(method, wrappers),
-                versioned_wrapper_for(item, wrappers).map(|(name, _)| name),
-            )?;
+            let error_codec = leg_error_codec_expr(err, wrappers, &ctx)?;
             emit_subscribe_method(
                 out,
                 &ts_method_name,
                 &wire_const,
                 &payload,
                 response.inner_type_ts.clone(),
+                item_codec,
+                item_is_wrapper,
                 error,
-                wire_version,
-                envelope,
+                error_codec,
+                version,
+                request_name,
             )?;
         }
         (kind, return_type) => {
@@ -2017,7 +2011,7 @@ fn emit_host_initiated_field(
 
 fn emit_host_initiated_registration(
     out: &mut String,
-    api: &ApiDefinition,
+    _api: &ApiDefinition,
     trait_def: &TraitDef,
     method: &MethodDef,
     wrappers: &HashMap<String, VersionedWrapper>,
@@ -2031,25 +2025,27 @@ fn emit_host_initiated_registration(
             method.name
         );
     };
-    let envelope = method_envelope_name(
-        api,
-        request_wrapper_name(method, wrappers),
-        versioned_wrapper_for(item_ty, wrappers).map(|(name, _)| name),
-    )?;
-    let method_name = &method.name;
+    let Some(request_name) = request_wrapper_name(method, wrappers) else {
+        bail!(
+            "host-initiated method `{}`: request parameter is not a recognized versioned wrapper",
+            method.name
+        );
+    };
+    let Some((item_name, _)) = versioned_wrapper_for(item_ty, wrappers) else {
+        bail!(
+            "host-initiated method `{}`: item type is not a recognized versioned wrapper",
+            method.name
+        );
+    };
+    let request_codec = format!("T.{}", versioned_wrapper_ts_name(request_name));
+    let item_codec = format!("T.{}", versioned_wrapper_ts_name(item_name));
     writedoc!(
         out,
         "
             this.{field} = transport.registerHostInitiatedSubscription({{
               ids: W.{wire_const},
-              decodeRequest: (payload) => {{
-                const envelope = T.{envelope}.dec(payload);
-                if (envelope.value.tag !== \"Start\") {{
-                  throw new Error(`{method_name}: expected Start direction, got ${{envelope.value.tag}}`);
-                }}
-                return envelope.value.value;
-              }},
-              encodeItem: (item) => T.{envelope}.enc({{ tag: \"V{version}\", value: {{ tag: \"Receive\", value: item }} }}),
+              decodeRequest: (payload) => {request_codec}.dec(payload).value,
+              encodeItem: (item) => {item_codec}.enc({{ tag: \"V{version}\", value: item }}),
               interruptPayload: HOST_INITIATED_DECLINE_PAYLOAD,
               bufferCapacity: HOST_INITIATED_BUFFER_CAPACITY,
             }});
@@ -2097,6 +2093,13 @@ fn emit_host_initiated_method(
 /// for `ResultSubscription`, `CallError<GenericError>` otherwise), so every
 /// generated method gets a real `decodeInterrupt`: `undefined` maps to clean
 /// completion, anything else maps to `error`.
+/// Emits a subscribe method body that returns an Observable-compatible
+/// object. `Start`'s payload is the request wrapper's own encoding, or empty
+/// bytes when the method takes no request at all. Every subscription's
+/// `Interrupt` payload carries a real `CallError<Err>` (a domain error for
+/// `ResultSubscription`, `CallError<GenericError>` otherwise), so every
+/// generated method gets a real `decodeInterrupt`: `undefined` maps to clean
+/// completion, anything else maps to `error`.
 #[allow(clippy::too_many_arguments)]
 fn emit_subscribe_method(
     out: &mut String,
@@ -2104,9 +2107,12 @@ fn emit_subscribe_method(
     wire_const: &str,
     payload: &PayloadEmission,
     item_type_ts: String,
+    item_codec: String,
+    item_is_wrapper: bool,
     err: ResponseEmission,
-    wire_version: Option<u32>,
-    envelope: String,
+    error_codec: String,
+    version: u32,
+    request_name: Option<&str>,
 ) -> Result<()> {
     let observable_args = format!("{item_type_ts}, {}", err.inner_type_ts);
     let signature = if payload.param_list.is_empty() {
@@ -2121,11 +2127,15 @@ fn emit_subscribe_method(
         )
     };
 
-    let version = wire_version.ok_or_else(|| {
-        anyhow::anyhow!(
-            "method `{ts_method_name}` resolved wire envelope `{envelope}` with no selected wire version"
-        )
-    })?;
+    let start_payload = match request_name {
+        Some(name) => format!(
+            "T.{}.enc({{ tag: \"V{version}\", value: {} }})",
+            versioned_wrapper_ts_name(name),
+            payload.value_expr
+        ),
+        None => "new Uint8Array()".to_string(),
+    };
+
     writedoc!(
         out,
         "
@@ -2133,42 +2143,31 @@ fn emit_subscribe_method(
             return createObservable<{observable_args}>({{
               transport: this.transport,
               ids: W.{wire_const},
-              payload: T.{envelope}.enc({{ tag: \"V{version}\", value: {{ tag: \"Start\", value: {value_expr} }} }}),
-              decodeItem: (payload) => {{
-                const envelope = T.{envelope}.dec(payload);
-                if (envelope.value.tag !== \"Receive\") {{
-                  throw new Error(`{ts_method_name}: expected Receive direction, got ${{envelope.value.tag}}`);
-                }}
-                return envelope.value.value;
-              }},
-              decodeInterrupt: (payload) => {{
-                const envelope = T.{envelope}.dec(payload);
-                if (envelope.value.tag !== \"Interrupt\") {{
-                  throw new Error(`{ts_method_name}: expected Interrupt direction, got ${{envelope.value.tag}}`);
-                }}
-                const reason = envelope.value.value;
-                if (reason === undefined) return undefined;
-        ",
-        value_expr = payload.value_expr,
+              payload: {start_payload},
+        "
     )
     .unwrap();
-    match err.wrap_version {
-        Some(err_version) => writedoc!(
+    if item_is_wrapper {
+        writedoc!(
             out,
             "
-                    return reason.tag === \"Domain\"
-                      ? {{ tag: \"Domain\" as const, value: {{ tag: \"V{err_version}\", value: reason.value }} }}
-                      : reason;
-                  }},
+              decodeItem: (payload) => {item_codec}.dec(payload).value,
             "
         )
-        .unwrap(),
-        None => writeln!(out, "        return reason;\n      }},").unwrap(),
+        .unwrap();
+    } else {
+        writedoc!(
+            out,
+            "
+              decodeItem: (payload) => {item_codec}.dec(payload),
+            "
+        )
+        .unwrap();
     }
-
     writedoc!(
         out,
         "
+              decodeInterrupt: (payload) => S.Option({error_codec}).dec(payload),
             }});
           }}
         "
@@ -3565,12 +3564,7 @@ mod tests {
                     "FeatureSupportedError",
                     &[(1, "FeatureSupportedErrorV1")],
                 ),
-                versioned_tuple_wrapper_variants(
-                    "FeatureSupportedVersion",
-                    &[(1, "FeatureSupportedVersionV1")],
-                ),
                 versioned_tuple_wrapper_variants("StreamItem", &[(1, "StreamItemV1")]),
-                versioned_tuple_wrapper_variants("StreamVersion", &[(1, "StreamVersionV1")]),
                 empty_struct("FeatureSupportedRequestV1"),
                 empty_struct("FeatureSupportedResponseV1"),
                 empty_struct("FeatureSupportedErrorV1"),
@@ -3587,8 +3581,16 @@ mod tests {
             "[W.EXAMPLE_FEATURE_SUPPORTED.trait * 256 + W.EXAMPLE_FEATURE_SUPPORTED.method]"
         ));
         assert!(source.contains("[W.EXAMPLE_STREAM.trait * 256 + W.EXAMPLE_STREAM.method]"));
-        assert!(source.contains("T.FeatureSupportedVersion.dec(payload)"));
-        assert!(source.contains("T.StreamVersion.dec(payload)"));
+        // message_type 0 (Request/Start) and 1 (Response/Receive) both decode
+        // straight through each leg's own versioned wrapper — no envelope.
+        assert!(source.contains("T.VersionedFeatureSupportedRequest.dec(payload)"));
+        assert!(source.contains(
+            "S.Result(T.VersionedFeatureSupportedResponse, T.VersionedFeatureSupportedError).dec(payload)"
+        ));
+        assert!(source.contains("T.VersionedStreamItem.dec(payload)"));
+        // message_type 2 (Interrupt) on a plain subscription still decodes a
+        // framework-level `CallError<GenericError>`, wrapped in `Option`.
+        assert!(source.contains("S.Option(S.CallError(T.GenericError)).dec(payload)"));
     }
 
     #[test]
@@ -3914,7 +3916,6 @@ mod tests {
             types: vec![
                 versioned_tuple_wrapper("ExampleRequest", "LegacyRequest", "LatestRequest"),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
-                versioned_tuple_wrapper_variants("ExampleVersion", &[(1, "ExampleVersionV1")]),
                 empty_struct("LatestRequest"),
                 empty_struct("LatestResponse"),
                 empty_struct("LegacyRequest"),
@@ -3929,9 +3930,11 @@ mod tests {
         // target version. The codegen prefers the newest shared variant so
         // callers see the latest request/response shape the host advertises.
         assert!(client_source.contains("request: T.LatestRequest"));
-        assert!(client_source.contains(
-            "payload: T.ExampleVersion.enc({ tag: \"V2\", value: { tag: \"Request\", value: request } }),"
-        ));
+        assert!(
+            client_source.contains(
+                "payload: T.VersionedExampleRequest.enc({ tag: \"V2\", value: request }),"
+            )
+        );
         assert!(client_source.contains("ResultAsync<T.LatestResponse, undefined>"));
     }
 
@@ -4037,7 +4040,6 @@ mod tests {
             types: vec![
                 versioned_tuple_wrapper_variants("ExampleRequest", &[(1, "LegacyRequest")]),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
-                versioned_tuple_wrapper_variants("ExampleVersion", &[(1, "ExampleVersionV1")]),
                 empty_struct("LatestResponse"),
                 empty_struct("LegacyRequest"),
                 empty_struct("LegacyResponse"),
@@ -4048,9 +4050,11 @@ mod tests {
         let client_source = generate_client(&api, 2, 1).expect("generate client");
 
         assert!(client_source.contains("request: T.LegacyRequest"));
-        assert!(client_source.contains(
-            "payload: T.ExampleVersion.enc({ tag: \"V1\", value: { tag: \"Request\", value: request } }),"
-        ));
+        assert!(
+            client_source.contains(
+                "payload: T.VersionedExampleRequest.enc({ tag: \"V1\", value: request }),"
+            )
+        );
         assert!(client_source.contains("ResultAsync<T.LegacyResponse, undefined>"));
     }
 

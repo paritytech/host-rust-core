@@ -14,12 +14,12 @@ import {
 } from "./wire-debugger.js";
 
 /**
- * Test-only compatibility view over the generated wire table: reconstructs
- * each entry's pre-RFC-0028 per-direction "flat id" properties by encoding
- * `(frameId, direction)` as one number (`frameId * 4 + direction`), so
- * existing fixtures keep addressing a method's specific leg by name.
- * `envelope()` below decodes a leg id back into a real `(trait, method)` pair
- * and a direction byte.
+ * Test-only convenience view over the generated wire table: gives each entry
+ * per-leg "flat id" properties by encoding `(frameId, messageType)` as one
+ * number (`frameId * 4 + messageType`), so fixtures can address a method's
+ * specific leg by name (`W.ACCOUNT_GET_ACCOUNT.request`) instead of a bare
+ * pair. `envelope()` below decodes a leg id back into a real `(trait,
+ * method)` pair and a `messageType` byte.
  */
 function legacyIds(table: Record<string, unknown>): Record<string, Record<string, number>> {
   const legs = {
@@ -61,26 +61,26 @@ const METHOD_NAMES = createMethodNameMap(
 );
 
 /**
- * One host-tap envelope carrying `legacyId` (a leg id from {@link legacyIds})
- * under correlation id `requestId`. `innerValue` is the application payload
- * past the version/direction bytes this helper adds.
+ * One host-tap envelope carrying `legId` (a leg id from {@link legacyIds})
+ * under correlation id `requestId`. `innerValue` is the leg's own payload
+ * bytes, unrelated to which leg `messageType` says this is.
  */
 function envelope(
   requestId: string,
-  legacyId: number,
+  legId: number,
   innerValue = new Uint8Array([0]),
   dir: "in" | "out" = "out",
   channelId = "myapp.dot",
 ): DebugFrameEnvelope {
-  const frameId = Math.floor(legacyId / 4);
-  const direction = legacyId % 4;
-  const value = new Uint8Array([0, direction, ...innerValue]);
+  const frameId = Math.floor(legId / 4);
+  const messageType = legId % 4;
   const encoded = encodeWireMessage({
     requestId,
     payload: {
       traitId: Math.floor(frameId / 256),
       methodId: frameId % 256,
-      value,
+      messageType,
+      value: innerValue,
     },
   });
   if (encoded.isErr()) throw encoded.error;
@@ -171,7 +171,7 @@ describe("every consumer sees the resolved role, not just the view adapter", () 
     // This is the line the default `console.debug` sink prints. It read
     // "-> unknown account.getAccount" while role was resolved only downstream.
     expect(lines[0]).toBe(
-      `[wire p:1] → request account.getAccount (id=${String(frameIdOf(REAL_W.ACCOUNT_GET_ACCOUNT.trait, REAL_W.ACCOUNT_GET_ACCOUNT.method))}, 3B)`,
+      `[wire p:1] → request account.getAccount (id=${String(frameIdOf(REAL_W.ACCOUNT_GET_ACCOUNT.trait, REAL_W.ACCOUNT_GET_ACCOUNT.method))}, 1B)`,
     );
   });
 
@@ -258,12 +258,12 @@ describe("ingest bounds ids and gates raw bytes", () => {
     const off = collect({ methodNames: METHOD_NAMES });
     off.ingest(envelope("p:1", W.ACCOUNT_GET_ACCOUNT.request, new Uint8Array([7])));
     expect(off.seen[0]?.bytes).toBeUndefined();
-    // Byte length is recorded either way: version + direction + the 1 inner byte.
-    expect(off.seen[0]?.byteLength).toBe(3);
+    // Byte length is recorded either way: the 1 inner byte.
+    expect(off.seen[0]?.byteLength).toBe(1);
 
     const on = collect({ methodNames: METHOD_NAMES, retainBytes: true });
     on.ingest(envelope("p:1", W.ACCOUNT_GET_ACCOUNT.request, new Uint8Array([7])));
-    expect(Array.from(on.seen[0]?.bytes ?? [])).toEqual([0, 0, 7]);
+    expect(Array.from(on.seen[0]?.bytes ?? [])).toEqual([7]);
   });
 
   test("the product-vantage direction is carried through untouched", () => {
