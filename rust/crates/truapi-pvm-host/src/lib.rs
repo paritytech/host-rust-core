@@ -10,8 +10,8 @@ pub use pvm_runtime::*;
 pub use pvm_runtime_assets::{BrowserAsset, RUNTIME_VERSION, browser_assets};
 
 /// Immutable standalone runtime source consumed by this bridge release.
-pub const RUNTIME_SOURCE_REVISION: &str = "b94fce87db20cfd0a548a2a4463db63eb4f2c977";
-// Pins the tagged v0.1.14 release with complete u64 browser clock results.
+pub const RUNTIME_SOURCE_REVISION: &str = "00a2246e29658d1aa129e55ca0720de6369c6481";
+// Pins the bounded runtime that admits complete libre game data sets.
 
 #[cfg(test)]
 mod tests {
