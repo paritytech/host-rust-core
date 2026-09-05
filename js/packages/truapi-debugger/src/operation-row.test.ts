@@ -17,6 +17,7 @@ function frame(
     direction: role === "response" || role === "receive" ? "in" : "out",
     requestId: "p:1",
     frameId,
+    messageType: 0,
     role,
     byteLength: 8,
     timestamp,
