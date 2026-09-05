@@ -243,7 +243,7 @@ async fn resolve_link(
     match identity.lite_username {
         // The resolved name goes into the signed ring-VRF message, so it has
         // to pass the same shape check as an explicit --link-lite: a store can
-        // hold a two-digit-suffixed label whose flattened form exceeds the
+        // hold a two-digit-suffixed label whose dotted form exceeds the
         // gateway's BaseLabel bound.
         Some(lite) if is_dotted_lite_username(&lite) => {
             debug!(%lite, "linking the account's own lite username");
