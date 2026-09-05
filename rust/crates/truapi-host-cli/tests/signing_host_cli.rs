@@ -1,9 +1,38 @@
 //! Process-boundary smoke tests for signing-host invocation modes.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn command() -> Command {
     Command::new(env!("CARGO_BIN_EXE_truapi-host"))
+}
+
+fn seed_two_paired_hosts(base_path: &Path) -> PathBuf {
+    let profile = base_path.join("paseo-next-v2/alice_signing_host");
+    std::fs::create_dir_all(&profile).expect("create signing-host profile");
+    std::fs::write(
+        profile.join("paired-hosts.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "paired_hosts": [
+                {
+                    "version": 1,
+                    "statement_account_id": vec![1_u8; 32],
+                    "encryption_public_key": vec![11_u8; 32],
+                    "host_name": "First"
+                },
+                {
+                    "version": 1,
+                    "statement_account_id": vec![2_u8; 32],
+                    "encryption_public_key": vec![22_u8; 32],
+                    "host_name": "Second"
+                }
+            ]
+        }))
+        .expect("encode paired hosts"),
+    )
+    .expect("seed paired hosts");
+    profile
 }
 
 #[test]
@@ -45,6 +74,7 @@ fn exec_help_is_plain_and_exits_successfully() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("/product"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/devices"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/devices --remove <id> --force"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/approval automatic"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session --clear-all"));
     #[cfg(unix)]
@@ -231,40 +261,10 @@ fn exec_clear_all_removes_every_session_for_the_network() {
     assert!(!output.stdout.contains(&0x1b));
 }
 
-/// Removal is notify-first, so anything that stops the notification leaves every
-/// pairing in place. This drives the cheapest such failure: no local session, so
-/// `disconnect_paired_host` fails at `root_entropy` before it reaches the
-/// statement store. A rejection from the store itself takes the same branch and
-/// is covered by `disconnect_paired_host_propagates_submission_failure` in
-/// `truapi-server`; the end-to-end path needs two live hosts and lives in
-/// `e2e/device-removal-disconnect.sh`.
 #[test]
 fn exec_device_removal_preserves_pairings_when_the_local_session_is_inactive() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
-    let profile = temporary.path().join("paseo-next-v2/alice_signing_host");
-    std::fs::create_dir_all(&profile).expect("create signing-host profile");
-    std::fs::write(
-        profile.join("paired-hosts.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "version": 1,
-            "paired_hosts": [
-                {
-                    "version": 1,
-                    "statement_account_id": vec![1_u8; 32],
-                    "encryption_public_key": vec![11_u8; 32],
-                    "host_name": "First"
-                },
-                {
-                    "version": 1,
-                    "statement_account_id": vec![2_u8; 32],
-                    "encryption_public_key": vec![22_u8; 32],
-                    "host_name": "Second"
-                }
-            ]
-        }))
-        .expect("encode paired hosts"),
-    )
-    .expect("seed paired hosts");
+    let profile = seed_two_paired_hosts(temporary.path());
 
     let listed = command()
         .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
@@ -305,6 +305,53 @@ fn exec_device_removal_preserves_pairings_when_the_local_session_is_inactive() {
                 "encryption_public_key": vec![11_u8; 32],
                 "host_name": "First"
             },
+            {
+                "version": 1,
+                "statement_account_id": vec![2_u8; 32],
+                "encryption_public_key": vec![22_u8; 32],
+                "host_name": "Second"
+            }
+        ])
+    );
+}
+
+#[test]
+fn exec_force_device_removal_removes_exactly_one_pairing_when_notification_fails() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let profile = seed_two_paired_hosts(temporary.path());
+
+    let remove_command = format!("/devices --remove 0x{} --force", hex::encode([1_u8; 32]));
+    let removed = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["--session", "alice", "exec", &remove_command])
+        .stdin(Stdio::null())
+        .output()
+        .expect("force remove paired device");
+
+    assert!(removed.status.success());
+    let expected = format!(
+        "Removed paired device 0x{} from session alice",
+        hex::encode([1_u8; 32])
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&removed.stdout).lines().last(),
+        Some(expected.as_str())
+    );
+    let stderr = String::from_utf8_lossy(&removed.stderr);
+    assert!(stderr.contains("Paired device removed without notification"));
+    assert!(stderr.contains("no active local session"));
+    assert!(stderr.contains("Forced local removal completed"));
+    assert!(stderr.contains("cannot reach a responder on this signing host"));
+
+    let stored: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(profile.join("paired-hosts.json")).expect("read paired hosts"),
+    )
+    .expect("decode paired hosts");
+    assert_eq!(
+        stored["paired_hosts"],
+        serde_json::json!([
             {
                 "version": 1,
                 "statement_account_id": vec![2_u8; 32],

@@ -2460,32 +2460,48 @@ fn find_paired_host(
         })
 }
 
-/// Notify the peer, then drop the local pairing.
-///
-/// The order is deliberate and it is not symmetric. A failed notification leaves
-/// everything in place, so the operator can retry against a device that is still
-/// listed. A notification that succeeds and is then followed by a failed local
-/// removal leaves the peer believing the session is over while this host still
-/// lists the device and runs its responder; the error surfaces to the operator,
-/// and a retry re-notifies a peer that has already been told. That window is a
-/// local file write wide, and it is the cheaper direction to fail in than telling
-/// the operator a device is gone while the peer still holds a live session.
+struct PairedHostRemoval {
+    paired_host: PairedHost,
+    notification_failure: Option<String>,
+}
+
+/// Submit the disconnect first so ordinary removal never deletes an unnotified
+/// pairing. A later cleanup failure remains retryable even though the peer may
+/// already consider the session closed.
 async fn disconnect_and_remove_paired_host(
     session: &mut SigningHostSession,
     statement_account_id: &[u8; 32],
-) -> Result<PairedHost> {
+    force: bool,
+) -> Result<PairedHostRemoval> {
     let paired_host = find_paired_host(session, statement_account_id)?;
-    session
+    let notification_failure = match session
         .runtime
         .disconnect_paired_host(paired_sso_peer(&paired_host))
         .await
-        .map_err(|error| {
-            anyhow::anyhow!(
+    {
+        Ok(()) => None,
+        Err(error) if force => Some(error.reason),
+        Err(error) => {
+            bail!(
                 "failed to notify paired device before removal: {}",
                 error.reason
             )
-        })?;
-    remove_paired_host_locally(session, paired_host).await
+        }
+    };
+    let paired_host = remove_paired_host_locally(session, paired_host).await?;
+    Ok(PairedHostRemoval {
+        paired_host,
+        notification_failure,
+    })
+}
+
+fn forced_removal_warning(reason: &str) -> (&'static str, String) {
+    (
+        "Paired device removed without notification",
+        format!(
+            "Notification failed: {reason}. Forced local removal completed. The remote host may still show stale connected state, but it cannot reach a responder on this signing host."
+        ),
+    )
 }
 
 async fn remove_paired_host_locally(
@@ -2696,16 +2712,22 @@ fn format_paired_device_list(session_name: &str, mut paired_hosts: Vec<PairedHos
 fn paired_device_remove_confirmation(
     session: &SigningHostSession,
     statement_account_id: &[u8; 32],
+    force: bool,
 ) -> Result<(String, String)> {
     let profile = session
         .profile
         .as_ref()
         .context("paired-device management is unavailable when launched with --mnemonic")?;
     let host = find_paired_host(session, statement_account_id)?;
+    let notification_failure = if force {
+        "If notification fails, local removal still continues. The remote host may show stale connected state, but it cannot reach this responder after removal."
+    } else {
+        "If notification fails, nothing is removed."
+    };
     Ok((
         format!("Remove paired device {}", paired_device_label(&host)),
         format!(
-            "Statement account 0x{}. This notifies the remote host, then stops its responder and removes its saved pairing from session {}. If notification fails, nothing is removed. Other paired devices and the signing identity are unchanged. The remote host must pair again.",
+            "Statement account 0x{}. This notifies the remote host, then stops its responder and removes its saved pairing from session {}. {notification_failure} Other paired devices and the signing identity are unchanged. The remote host must pair again.",
             hex::encode(statement_account_id),
             profile.name
         ),
@@ -3230,15 +3252,21 @@ async fn signing_interactive_loop(
                 Ok(devices) => ui.system(devices),
                 Err(error) => ui.error(format!("failed to list paired devices: {error}")),
             },
-            ShellCommand::Devices(DeviceCommand::Remove(statement_account_id)) => {
-                let (action, detail) =
-                    match paired_device_remove_confirmation(session, &statement_account_id) {
-                        Ok(confirmation) => confirmation,
-                        Err(error) => {
-                            ui.error(error.to_string());
-                            continue;
-                        }
-                    };
+            ShellCommand::Devices(DeviceCommand::Remove {
+                statement_account_id,
+                force,
+            }) => {
+                let (action, detail) = match paired_device_remove_confirmation(
+                    session,
+                    &statement_account_id,
+                    force,
+                ) {
+                    Ok(confirmation) => confirmation,
+                    Err(error) => {
+                        ui.error(error.to_string());
+                        continue;
+                    }
+                };
                 let handle = ui.handle();
                 let approved = match ui
                     .drive(input.clone(), handle.confirm(action, detail))
@@ -3251,15 +3279,22 @@ async fn signing_interactive_loop(
                     ui.system("Paired-device removal cancelled");
                     continue;
                 }
-                match disconnect_and_remove_paired_host(session, &statement_account_id).await {
-                    Ok(host) => ui.success(
-                        "Paired device removed",
-                        Some(format!(
-                            "{}\nStatement account 0x{}",
-                            paired_device_label(&host),
-                            hex::encode(statement_account_id)
-                        )),
-                    ),
+                match disconnect_and_remove_paired_host(session, &statement_account_id, force).await
+                {
+                    Ok(removal) => {
+                        if let Some(reason) = removal.notification_failure {
+                            let (title, detail) = forced_removal_warning(&reason);
+                            ui.warning(title, Some(detail));
+                        }
+                        ui.success(
+                            "Paired device removed",
+                            Some(format!(
+                                "{}\nStatement account 0x{}",
+                                paired_device_label(&removal.paired_host),
+                                hex::encode(statement_account_id)
+                            )),
+                        );
+                    }
                     Err(error) => ui.error(error.to_string()),
                 }
             }
@@ -3549,14 +3584,22 @@ async fn execute_non_interactive_command(
         ShellCommand::Devices(DeviceCommand::List) => {
             println!("{}", paired_device_list(session)?);
         }
-        ShellCommand::Devices(DeviceCommand::Remove(statement_account_id)) => {
+        ShellCommand::Devices(DeviceCommand::Remove {
+            statement_account_id,
+            force,
+        }) => {
             let profile_name = session
                 .profile
                 .as_ref()
                 .context("paired-device management is unavailable when launched with --mnemonic")?
                 .name
                 .clone();
-            disconnect_and_remove_paired_host(session, &statement_account_id).await?;
+            let removal =
+                disconnect_and_remove_paired_host(session, &statement_account_id, force).await?;
+            if let Some(reason) = removal.notification_failure {
+                let (title, detail) = forced_removal_warning(&reason);
+                terminal_ui::output_warning(title, Some(detail));
+            }
             println!(
                 "Removed paired device 0x{} from session {}",
                 hex::encode(statement_account_id),

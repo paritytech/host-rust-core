@@ -25,7 +25,10 @@ pub enum DeviceCommand {
     /// List paired devices for the active managed session.
     List,
     /// Remove the device with this statement account ID.
-    Remove([u8; 32]),
+    Remove {
+        statement_account_id: [u8; 32],
+        force: bool,
+    },
 }
 
 /// Operation selected through `/approval`.
@@ -200,14 +203,23 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             let arguments =
                 shlex::split(argument).ok_or_else(|| "invalid /devices quoting".to_string())?;
             if arguments.first().is_some_and(|value| value == "--remove") {
-                if arguments.len() != 2 {
-                    return Err("usage: /devices --remove <statement-account-id>".to_string());
-                }
-                return Ok(ShellCommand::Devices(DeviceCommand::Remove(
-                    parse_statement_account_id(&arguments[1])?,
-                )));
+                let (statement_account_id, force) = match arguments.as_slice() {
+                    [_, statement_account_id] => (statement_account_id, false),
+                    [_, statement_account_id, force] if force == "--force" => {
+                        (statement_account_id, true)
+                    }
+                    _ => {
+                        return Err(
+                            "usage: /devices --remove <statement-account-id> [--force]".to_string()
+                        );
+                    }
+                };
+                return Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                    statement_account_id: parse_statement_account_id(statement_account_id)?,
+                    force,
+                }));
             }
-            Err("usage: /devices [--list | --remove <statement-account-id>]".to_string())
+            Err("usage: /devices [--list | --remove <statement-account-id> [--force]]".to_string())
         }
         "/approval" => match argument {
             "" => Ok(ShellCommand::Approval(ApprovalCommand::Current)),
@@ -394,6 +406,21 @@ fn completions_for_scope(
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/devices ")
     {
+        if let Some((statement_account_id, force_prefix)) =
+            prefix.strip_prefix("--remove ").and_then(|value| {
+                value
+                    .split_once(char::is_whitespace)
+                    .map(|(statement_account_id, force_prefix)| {
+                        (statement_account_id, force_prefix.trim_start())
+                    })
+            })
+        {
+            return fixed_argument_completions(
+                &format!("/devices --remove {statement_account_id}"),
+                force_prefix,
+                &[("--force", "remove locally if notification fails")],
+            );
+        }
         return fixed_argument_completions(
             "/devices",
             prefix,
@@ -806,6 +833,7 @@ pub const HELP_TEXT: &str = "\
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
 /devices --remove <id>  disconnect and remove one paired device by statement account ID
+/devices --remove <id> --force  remove locally even if notification fails
 /approval               show the current confirmation approval mode
 /approval manual        prompt for every future confirmation
 /approval automatic     approve every future confirmation automatically
@@ -902,11 +930,24 @@ mod tests {
         );
         assert_eq!(
             parse_command(&format!("/devices --remove 0x{DEVICE_ID}")),
-            Ok(ShellCommand::Devices(DeviceCommand::Remove([1; 32])))
+            Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                statement_account_id: [1; 32],
+                force: false,
+            }))
         );
         assert_eq!(
             parse_command(&format!("/devices --remove 0X{DEVICE_ID}")),
-            Ok(ShellCommand::Devices(DeviceCommand::Remove([1; 32])))
+            Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                statement_account_id: [1; 32],
+                force: false,
+            }))
+        );
+        assert_eq!(
+            parse_command(&format!("/devices --remove 0x{DEVICE_ID} --force")),
+            Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                statement_account_id: [1; 32],
+                force: true,
+            }))
         );
         assert_eq!(
             parse_command("/session"),
@@ -975,6 +1016,9 @@ mod tests {
         assert!(parse_command("/devices --remove").is_err());
         assert!(parse_command("/devices --remove not-an-account").is_err());
         assert!(parse_command(&format!("/devices --remove {DEVICE_ID} extra")).is_err());
+        assert!(parse_command(&format!("/devices --remove --force {DEVICE_ID}")).is_err());
+        assert!(parse_command(&format!("/devices --remove {DEVICE_ID} --force --force")).is_err());
+        assert!(parse_command("/devices --force").is_err());
         assert!(parse_command("/devices --unknown").is_err());
         assert!(parse_command("/log noisy").is_err());
         assert!(parse_command("/product example.com").is_err());
@@ -1124,6 +1168,17 @@ mod tests {
                     description: "remove one paired device",
                 },
             ]
+        );
+        assert_eq!(
+            completions_for_scope(
+                &format!("/devices --remove {DEVICE_ID} --f"),
+                &[],
+                CommandScope::SigningHost
+            ),
+            vec![Completion {
+                value: format!("/devices --remove {DEVICE_ID} --force"),
+                description: "remove locally if notification fails",
+            }]
         );
         assert!(completions_for_scope("/devices", &[], CommandScope::PairingHost).is_empty());
     }

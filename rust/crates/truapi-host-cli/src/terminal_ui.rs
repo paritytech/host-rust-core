@@ -355,6 +355,20 @@ pub fn output_success(title: impl Into<String>, detail: Option<String>) {
     }
 }
 
+/// Emit a warning through the active transcript or standard error.
+pub fn output_warning(title: impl Into<String>, detail: Option<String>) {
+    let title = title.into();
+    if !send_to_active(UiEvent::Notice {
+        tone: NoticeTone::Warning,
+        title: title.clone(),
+        detail: detail.clone(),
+    }) {
+        let mut app = App::new_pairing(String::new(), String::new(), "info".to_string());
+        app.notice(NoticeTone::Warning, title, detail);
+        write_human_stderr(&app.transcript_text());
+    }
+}
+
 fn write_human_stdout(text: &str) {
     let styled = styled_output(io::stdout().is_terminal());
     let mut stdout = io::stdout().lock();
@@ -721,6 +735,11 @@ impl ActiveTerminalUi {
     /// Record an immediate successful result.
     pub fn success(&mut self, text: impl Into<String>, detail: Option<String>) {
         self.app.notice(NoticeTone::Success, text.into(), detail);
+    }
+
+    /// Record an immediate warning.
+    pub fn warning(&mut self, text: impl Into<String>, detail: Option<String>) {
+        self.app.notice(NoticeTone::Warning, text.into(), detail);
     }
 
     /// Record a typed lifecycle event.
@@ -3084,6 +3103,19 @@ mod tests {
         )
     }
 
+    fn test_active_ui() -> ActiveTerminalUi {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        ActiveTerminalUi {
+            terminal: None,
+            events: None,
+            receiver,
+            sender,
+            app: test_app(),
+            clipboard: None,
+            copy_next_pairing_deeplink: false,
+        }
+    }
+
     #[test]
     fn approval_temporarily_replaces_and_then_restores_command_draft() {
         let mut app = test_app();
@@ -3390,16 +3422,7 @@ mod tests {
 
     #[test]
     fn interactive_error_preserves_backend_cause_chain() {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let mut ui = ActiveTerminalUi {
-            terminal: None,
-            events: None,
-            receiver,
-            sender,
-            app: test_app(),
-            clipboard: None,
-            copy_next_pairing_deeplink: false,
-        };
+        let mut ui = test_active_ui();
         let error = anyhow::anyhow!("backend supplied explanation")
             .context("username registration failed (503 Service Unavailable)")
             .context("attest account auto-1");
@@ -3409,6 +3432,22 @@ mod tests {
         assert_eq!(
             ui.app.transcript_text(),
             "× attest account auto-1\n  username registration failed (503 Service Unavailable)\n  backend supplied explanation"
+        );
+    }
+
+    #[test]
+    fn immediate_warning_precedes_following_success() {
+        let mut ui = test_active_ui();
+
+        ui.warning(
+            "Paired device removed without notification",
+            Some("notification failed".to_string()),
+        );
+        ui.success("Paired device removed", None);
+
+        assert_eq!(
+            ui.app.transcript_text(),
+            "! Paired device removed without notification\n  notification failed\n✓ Paired device removed"
         );
     }
 

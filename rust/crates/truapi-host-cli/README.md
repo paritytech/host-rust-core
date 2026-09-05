@@ -213,6 +213,7 @@ Commands always start with `/`:
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
 | `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
 | `/devices --remove <statement-account-id>` | Disconnect and remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id> --force` | Attempt to disconnect one paired device, then remove its local pairing even if notification fails. |
 | `/approval` | Show whether signing-host confirmations are manual or automatic. |
 | `/approval manual` | Prompt for every future signing-host confirmation. |
 | `/approval automatic` | Approve every future signing-host confirmation automatically. |
@@ -388,7 +389,11 @@ prompt. Removal first submits `Disconnected` to the selected remote host. Only
 after the statement is accepted does it stop that responder, remove the saved
 pairing, and stop its allowance renewal. A submission failure preserves all
 local pairing state. The other saved pairings and the signing identity are
-unchanged.
+unchanged. For recovery when notification cannot be submitted, append
+`--force`. The command still attempts notification first, but warns and
+continues with local cleanup if that attempt fails. The remote host may continue
+to show stale connected state, but it cannot reach a responder on this signing
+host.
 
 `/session --clear <name>` permanently deletes that session's local signer
 keys, scripts, core/product storage, and permissions. `/session --clear-all`
@@ -423,6 +428,7 @@ truapi-host signing-host exec '/pair polkadotapp://pair?handshake=...'
 truapi-host signing-host --session alice.01 exec '/devices'
 truapi-host signing-host --session alice.01 exec '/devices --list'
 truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --force'
 ```
 
 `exec` does not enable raw mode or emit terminal controls. Command results go
