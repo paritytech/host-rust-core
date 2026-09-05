@@ -1636,7 +1636,7 @@ mod tests {
         Result<RegistrationOutcome, StatementAllowanceError>,
         ScriptedRpc,
     ) {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -1663,7 +1663,7 @@ mod tests {
 
         let outcome = futures::executor::block_on(register_statement_account(
             &rpc,
-            &metadata,
+            metadata,
             &chain_state,
             entropy,
             RegistrationParams {
@@ -1722,7 +1722,7 @@ mod tests {
         Result<RegistrationOutcome, StatementAllowanceError>,
         ScriptedRpc,
     ) {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -1738,10 +1738,10 @@ mod tests {
 
         let outcome = futures::executor::block_on(async {
             let scans =
-                scan_collections(&rpc, &metadata, &candidates, b"paseo", 7, &target, true).await?;
+                scan_collections(&rpc, metadata, &candidates, b"paseo", 7, &target, true).await?;
             register_statement_account_pooled(
                 &rpc,
-                &metadata,
+                metadata,
                 &chain_state,
                 &scans,
                 &memberships,
@@ -1765,7 +1765,7 @@ mod tests {
         target: [u8; 32],
         submit_error: &str,
     ) -> Result<RegistrationOutcome, StatementAllowanceError> {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -1781,10 +1781,10 @@ mod tests {
 
         futures::executor::block_on(async {
             let scans =
-                scan_collections(&rpc, &metadata, &candidates, b"paseo", 7, &target, true).await?;
+                scan_collections(&rpc, metadata, &candidates, b"paseo", 7, &target, true).await?;
             register_statement_account_pooled(
                 &rpc,
-                &metadata,
+                metadata,
                 &chain_state,
                 &scans,
                 &memberships,
@@ -2080,7 +2080,7 @@ mod tests {
     /// that never needed People at all.
     #[test]
     fn a_broken_people_collection_does_not_discard_a_lite_people_membership() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let candidates = pooled_memberships().map(|membership| CollectionCandidate {
             collection: membership.collection(),
             entropy: membership.entropy,
@@ -2105,7 +2105,7 @@ mod tests {
 
         let memberships = futures::executor::block_on(find_including_rings(
             &rpc,
-            &metadata,
+            metadata,
             &candidates,
             u32::MAX,
         ))
@@ -2123,7 +2123,7 @@ mod tests {
     /// membership" would let a caller conclude the person has no personhood.
     #[test]
     fn every_collection_failing_is_reported_as_an_error() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let candidates = pooled_memberships().map(|membership| CollectionCandidate {
             collection: membership.collection(),
             entropy: membership.entropy,
@@ -2140,7 +2140,7 @@ mod tests {
 
         let err = futures::executor::block_on(find_including_rings(
             &rpc,
-            &metadata,
+            metadata,
             &candidates,
             u32::MAX,
         ))
@@ -2225,7 +2225,7 @@ mod tests {
     /// allocation for a device that could never hold a slot in People.
     #[test]
     fn a_failed_people_scan_still_finds_the_lite_people_allocation() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let candidates = pooled_candidates();
         let target = [0x22; 32];
 
@@ -2243,7 +2243,7 @@ mod tests {
 
         let scans = futures::executor::block_on(scan_collections(
             &rpc,
-            &metadata,
+            metadata,
             &candidates,
             b"paseo",
             7,
@@ -2271,7 +2271,7 @@ mod tests {
     /// taking is replaced, and the registration proceeds.
     #[test]
     fn a_full_table_replaces_the_oldest_replaceable_slot() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -2304,7 +2304,7 @@ mod tests {
 
         let outcome = futures::executor::block_on(register_statement_account(
             &rpc,
-            &metadata,
+            metadata,
             &chain_state,
             entropy,
             RegistrationParams {
@@ -2331,7 +2331,7 @@ mod tests {
     /// submission can still land, so two takeovers for one call can cost two.
     #[test]
     fn a_duplicate_submit_retry_does_not_take_over_a_second_slot() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -2364,7 +2364,7 @@ mod tests {
 
         let err = futures::executor::block_on(register_statement_account(
             &rpc,
-            &metadata,
+            metadata,
             &chain_state,
             entropy,
             RegistrationParams {
@@ -2389,7 +2389,7 @@ mod tests {
     /// failure: the host loses the race whenever the chain's clock disagrees.
     #[test]
     fn a_refused_takeover_is_named() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -2416,7 +2416,7 @@ mod tests {
 
         let err = futures::executor::block_on(register_statement_account(
             &rpc,
-            &metadata,
+            metadata,
             &chain_state,
             entropy,
             RegistrationParams {
@@ -2440,7 +2440,7 @@ mod tests {
     /// Everything occupied and still inside the cooldown stays an error.
     #[test]
     fn a_full_table_within_the_cooldown_still_fails() {
-        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let metadata = test_fixtures::people();
         let chain_state = ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
@@ -2466,7 +2466,7 @@ mod tests {
 
         let err = futures::executor::block_on(register_statement_account(
             &rpc,
-            &metadata,
+            metadata,
             &chain_state,
             entropy,
             RegistrationParams {

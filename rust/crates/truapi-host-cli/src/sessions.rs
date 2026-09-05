@@ -201,22 +201,11 @@ impl SessionCatalog {
                 account_base_path: self.base_path.clone(),
             });
         }
-        let identity_path = self.identity_path(name);
-        let legacy_path = self.role_path.join("sessions").join(name);
-        let path = if legacy_path.is_dir() && !identity_path.is_dir() {
-            legacy_path
-        } else {
-            identity_path
-        };
-        let product_storage_dir = if path.starts_with(self.role_path.join("sessions")) {
-            self.role_path.join("storage").join(name)
-        } else {
-            path.join("storage")
-        };
+        let path = self.identity_path(name);
         Ok(SessionProfile {
             name: name.to_string(),
             path: path.clone(),
-            product_storage_dir,
+            product_storage_dir: path.join("storage"),
             account_base_path: path,
         })
     }
@@ -262,27 +251,6 @@ impl SessionCatalog {
 
     pub fn list(&self) -> Result<Vec<String>> {
         let mut names = Vec::new();
-        let sessions_path = self.role_path.join("sessions");
-        match fs::read_dir(&sessions_path) {
-            Ok(entries) => {
-                for entry in entries.filter_map(std::result::Result::ok) {
-                    if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                        continue;
-                    }
-                    let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-                        continue;
-                    };
-                    if validate_name(&name).is_ok() && name != DEFAULT_SESSION_NAME {
-                        names.push(name);
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("list sessions {}", sessions_path.display()));
-            }
-        }
         for entry in fs::read_dir(&self.network_path)
             .with_context(|| format!("list host profiles {}", self.network_path.display()))?
             .filter_map(std::result::Result::ok)
@@ -301,7 +269,6 @@ impl SessionCatalog {
             }
         }
         names.sort();
-        names.dedup();
         Ok(names)
     }
 
@@ -351,42 +318,18 @@ impl SessionCatalog {
         }
     }
 
-    fn remove_profile_data(&self, profile: &SessionProfile) -> Result<()> {
-        if !profile.path.starts_with(&self.network_path)
-            || !profile.product_storage_dir.starts_with(&self.network_path)
-        {
+    fn remove_named_data(&self, name: &str) -> Result<()> {
+        let profile = self.profile(name)?;
+        if !profile.path.starts_with(&self.network_path) {
             anyhow::bail!(
                 "refusing to clear session outside network root {}",
                 self.network_path.display()
             );
         }
-        remove_dir_if_exists(&profile.path)?;
-        if !profile.product_storage_dir.starts_with(&profile.path) {
-            remove_dir_if_exists(&profile.product_storage_dir)?;
-        }
-        Ok(())
+        remove_dir_if_exists(&profile.path)
     }
 
-    fn remove_named_data(&self, name: &str) -> Result<()> {
-        let profile = self.profile(name)?;
-        self.remove_profile_data(&profile)?;
-        for path in [
-            self.identity_path(name),
-            self.role_path.join("sessions").join(name),
-            self.role_path.join("storage").join(name),
-        ] {
-            if !path.starts_with(&self.network_path) {
-                anyhow::bail!(
-                    "refusing to clear session outside network root {}",
-                    self.network_path.display()
-                );
-            }
-            remove_dir_if_exists(&path)?;
-        }
-        Ok(())
-    }
-
-    /// Move a provisional or legacy session into the user-owned host root.
+    /// Move a provisional session into the user-owned host root.
     ///
     /// The public session name is the Lite username. The suffix is only a
     /// filesystem discriminator so pairing and signing state cannot collide.
@@ -410,21 +353,6 @@ impl SessionCatalog {
                         target_path.display()
                     )
                 })?;
-                if profile.product_storage_dir.exists()
-                    && !profile.product_storage_dir.starts_with(&profile.path)
-                {
-                    let target_storage = target_path.join("storage");
-                    fs::create_dir_all(&target_path)?;
-                    fs::rename(&profile.product_storage_dir, &target_storage).with_context(
-                        || {
-                            format!(
-                                "move product storage {} to {}",
-                                profile.product_storage_dir.display(),
-                                target_storage.display()
-                            )
-                        },
-                    )?;
-                }
             }
         }
         let promoted = SessionProfile {
@@ -578,12 +506,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 fn migrate_default_profile(profile: &SessionProfile, target_path: &Path) -> Result<()> {
-    for name in [
-        "core-storage.json",
-        "product-storage.json",
-        SESSION_INFO_FILE,
-        PAIRED_HOSTS_FILE,
-    ] {
+    for name in ["core-storage.json", SESSION_INFO_FILE, PAIRED_HOSTS_FILE] {
         let source = profile.path.join(name);
         if source.is_file() {
             fs::rename(&source, target_path.join(name))
@@ -1126,10 +1049,6 @@ mod tests {
         let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
         let alice = catalog.ensure_profile("alice")?;
         let bob = catalog.ensure_profile("bob")?;
-        let legacy_alice = catalog.role_path.join("sessions/alice");
-        let legacy_alice_storage = catalog.role_path.join("storage/alice");
-        fs::create_dir_all(&legacy_alice)?;
-        fs::create_dir_all(&legacy_alice_storage)?;
         fs::write(alice.path.join("state"), "alice")?;
         fs::write(bob.path.join("state"), "bob")?;
         catalog.set_current("alice")?;
@@ -1140,34 +1059,35 @@ mod tests {
         );
 
         assert!(!alice.path.exists());
-        assert!(!legacy_alice.exists());
-        assert!(!legacy_alice_storage.exists());
         assert!(bob.path.exists());
         assert_eq!(catalog.current_name(), DEFAULT_SESSION_NAME);
         assert_eq!(catalog.list()?, vec!["bob"]);
+
+        // The pointer is cleared, not merely left unresolvable: recreating the
+        // name must not silently re-select the session that was just wiped.
+        catalog.ensure_profile("alice")?;
+        assert_eq!(catalog.current_name(), DEFAULT_SESSION_NAME);
         Ok(())
     }
 
     #[test]
-    fn clearing_all_sessions_removes_default_legacy_and_identity_state_only() -> Result<()> {
+    fn clearing_all_sessions_removes_default_and_identity_state_only() -> Result<()> {
         let temporary = tempdir()?;
         let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
         let default = catalog.ensure_profile(DEFAULT_SESSION_NAME)?;
         let alice = catalog.ensure_profile("alice")?;
-        let legacy = catalog.role_path.join("sessions/legacy");
-        fs::create_dir_all(&legacy)?;
         fs::write(default.path.join("core-storage.json"), "{}")?;
         fs::write(alice.path.join("state"), "alice")?;
-        fs::write(legacy.join("state"), "legacy")?;
         let unrelated = catalog.network_path.join("pairing-host");
         fs::create_dir_all(&unrelated)?;
         fs::write(unrelated.join("state"), "keep")?;
 
         let cleared = catalog.clear(&SessionClearTarget::All)?;
 
-        assert_eq!(cleared, vec!["alice", "legacy"]);
+        assert_eq!(cleared, vec!["alice"]);
         assert!(!catalog.role_path.exists());
         assert!(!alice.path.exists());
+        // The other host role on the same network is not session data.
         assert!(unrelated.join("state").is_file());
         assert!(catalog.list()?.is_empty());
         Ok(())
@@ -1209,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn default_profile_preserves_legacy_storage_locations() -> Result<()> {
+    fn default_profile_uses_the_bootstrap_storage_locations() -> Result<()> {
         let temporary = tempdir()?;
         let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
         let profile = catalog.profile(DEFAULT_SESSION_NAME)?;
