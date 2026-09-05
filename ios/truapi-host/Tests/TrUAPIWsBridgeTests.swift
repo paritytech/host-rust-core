@@ -33,8 +33,9 @@ struct TrUAPIWsBridgeTests {
             Issue.record("expected binary frame, got \(message)")
             return
         }
-        // Frame tail is the SCALE Result payload: Ok(0x00), V1(0x00), supported(0x01).
-        #expect(response.suffix(3) == Data([0x00, 0x00, 0x01]))
+        // Frame tail is the merged wire envelope: version(0x00), direction=
+        // Response(0x01), Result::Ok(0x00), supported(0x01).
+        #expect(response.suffix(4) == Data([0x00, 0x01, 0x00, 0x01]))
     }
 
     /// An iOS host must classify itself as `Ios` without the embedding app
@@ -82,25 +83,28 @@ private extension TrUAPIWsBridgeTests {
         )
     }
 
-    // wire_table.rs: SYSTEM_FEATURE_SUPPORTED.request_id = 2
-    static let featureSupportedRequestDiscriminant = Data([0x02])
+    // wire_table.rs: SYSTEM_FEATURE_SUPPORTED { trait_id: 1, method_id: 1 }.
+    // Both bytes are load-bearing: a lone method byte is read as the trait and
+    // routes into a different trait's method 0 rather than failing.
+    static let featureSupportedDiscriminant = Data([0x01, 0x01])
 
-    // wire_table.rs: SYSTEM_HOST_INFO.request_id = 192
-    static let hostInfoRequestDiscriminant = Data([0xC0])
+    // wire_table.rs: SYSTEM_HOST_INFO { trait_id: 1, method_id: 3 }.
+    static let hostInfoDiscriminant = Data([0x01, 0x03])
 
     static func hostInfoRequestFrame() -> Data {
         var frame = Data()
         frame.append(contentsOf: [0x0C]) // compact length 3
         frame.append("p:1".data(using: .utf8)!)
-        frame.append(hostInfoRequestDiscriminant) // from wire_table.rs
-        frame.append(contentsOf: [0x00]) // V1
+        frame.append(hostInfoDiscriminant) // from wire_table.rs
+        frame.append(contentsOf: [0x00, 0x00]) // version=V1, direction=Request
         return frame
     }
 
-    // SCALE Result payload: Ok(0x00), V1(0x00), then HostInfo as
+    // The merged wire envelope's response tail: version(0x00),
+    // direction=Response(0x01), Result::Ok(0x00), then HostInfo as
     // platform(Ios = 0x02), name, version (empty, hostVersion is unset).
     static var hostInfoResponseTail: Data {
-        var tail = Data([0x00, 0x00, 0x02, 0x44]) // 0x44 is compact length 17
+        var tail = Data([0x00, 0x01, 0x00, 0x02, 0x44]) // 0x44 is compact length 17
         tail.append("truapi-host-tests".data(using: .utf8)!)
         tail.append(contentsOf: [0x00])
         return tail
@@ -110,8 +114,9 @@ private extension TrUAPIWsBridgeTests {
         var frame = Data()
         frame.append(contentsOf: [0x0C]) // compact length 3
         frame.append("p:1".data(using: .utf8)!)
-        frame.append(featureSupportedRequestDiscriminant) // from wire_table.rs
-        frame.append(contentsOf: [0x00, 0x00, 0x80]) // V1, Chain, compact(32)
+        frame.append(featureSupportedDiscriminant) // from wire_table.rs
+        // version=V1, direction=Request, Chain, compact(32)
+        frame.append(contentsOf: [0x00, 0x00, 0x00, 0x80])
         frame.append(Data(repeating: 0, count: 32))
         return frame
     }

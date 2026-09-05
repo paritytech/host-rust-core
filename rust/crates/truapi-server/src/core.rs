@@ -113,7 +113,20 @@ impl TrUApiCore {
     /// richer response shape is a separate API decision.
     #[instrument(skip_all, fields(runtime.method = "core.receive_from_product"))]
     pub async fn receive_from_product(&self, frame: &[u8]) -> Option<Vec<u8>> {
-        let message = ProtocolMessage::decode(&mut &*frame).ok()?;
+        let message = match ProtocolMessage::decode(&mut &*frame) {
+            Ok(message) => message,
+            Err(err) => {
+                // An undecodable frame is a wire mismatch on the product's
+                // side. Report it: dropping it unreported is indistinguishable
+                // from the product never having sent it, and the product is
+                // left waiting for a response that will never come.
+                tracing::error!(
+                    frame_len = frame.len(),
+                    "undecodable product frame; dropping frame: {err}"
+                );
+                return None;
+            }
+        };
         let transport = Arc::new(ResponseTransport::default());
         self.dispatcher
             .dispatch(message, transport.clone() as Arc<dyn Transport>)
@@ -169,12 +182,6 @@ mod tests {
     use super::*;
     use parity_scale_codec::Encode;
     use truapi::v01;
-    use truapi::versioned::local_storage::{
-        HostLocalStorageClearRequest, HostLocalStorageReadRequest, HostLocalStorageWriteRequest,
-    };
-    use truapi::versioned::notifications::HostPushNotificationRequest;
-    use truapi::versioned::permissions::RemotePermissionRequest;
-    use truapi::versioned::system::HostFeatureSupportedRequest;
 
     use crate::frame::{Payload, request_ids, subscription_ids};
     use crate::test_support::{StubPlatform, runtime_config, test_spawner};
@@ -188,15 +195,18 @@ mod tests {
             product,
             test_spawner(),
         );
-        let request = HostFeatureSupportedRequest::V1(v01::HostFeatureSupportedRequest::Chain {
+        let request = v01::HostFeatureSupportedRequest::Chain {
             genesis_hash: vec![0u8; 32],
-        });
+        };
         let ids = request_ids("system_feature_supported").expect("known request method");
+        let value = truapi::versioned::system::HostFeatureSupportedRequest::V1(request).encode();
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
-                id: ids.request_id,
-                value: request.encode(),
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value,
             },
         };
         let encoded = frame.encode();
@@ -204,23 +214,36 @@ mod tests {
             .expect("dispatcher should emit a response");
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
-        assert_eq!(response.payload.id, ids.response_id);
-        // Wire payload is `Result<Ok, Err>`-shaped:
-        // [Ok disc=0x00][V1 variant 0x00][supported=1]
-        assert_eq!(response.payload.value, vec![0x00, 0x00, 0x01]);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
+        let expected: Result<
+            truapi::versioned::system::HostFeatureSupportedResponse,
+            truapi::CallError<truapi::versioned::system::HostFeatureSupportedError>,
+        > = Ok(truapi::versioned::system::HostFeatureSupportedResponse::V1(
+            v01::HostFeatureSupportedResponse { supported: true },
+        ));
+        assert_eq!(response.payload.value, expected.encode());
     }
 
-    /// Drive a request frame through `TrUApiCore::receive_from_product`,
-    /// decode the response envelope, and return its payload bytes (without
-    /// the wrapping ProtocolMessage). Shared by the runtime-delegation
-    /// tests below.
-    fn run_request(core: &TrUApiCore, method: &str, request_bytes: Vec<u8>) -> Vec<u8> {
+    /// Drive a request frame through `TrUApiCore::receive_from_product` and
+    /// return the response payload's raw bytes: the SCALE encoding of
+    /// `Result<{Method}Response, CallError<{Method}Error>>`. `request_value`
+    /// is the method's own request wrapper, already SCALE-encoded (e.g.
+    /// `HostLocalStorageReadRequest::V1(request).encode()`). Shared by the
+    /// runtime-delegation tests below.
+    fn run_request(core: &TrUApiCore, method: &str, request_value: Vec<u8>) -> Vec<u8> {
         let ids = request_ids(method).expect("known request method");
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
-                id: ids.request_id,
-                value: request_bytes,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: request_value,
             },
         };
         let response_bytes =
@@ -228,7 +251,12 @@ mod tests {
                 .expect("dispatcher should emit a response");
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
-        assert_eq!(response.payload.id, ids.response_id);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
         response.payload.value
     }
 
@@ -245,72 +273,105 @@ mod tests {
     #[test]
     fn local_storage_read_round_trips_none() {
         let core = make_core();
-        let request = HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest {
+        let request = v01::HostLocalStorageReadRequest {
             key: "missing".into(),
-        });
-        let payload = run_request(&core, "local_storage_read", request.encode());
-        // Ok disc 0x00, V1 variant 0x00, Option::None = 0x00.
-        assert_eq!(payload, vec![0x00, 0x00, 0x00]);
+        };
+        let payload = run_request(
+            &core,
+            "local_storage_read",
+            truapi::versioned::local_storage::HostLocalStorageReadRequest::V1(request).encode(),
+        );
+        let expected: Result<
+            truapi::versioned::local_storage::HostLocalStorageReadResponse,
+            truapi::CallError<truapi::versioned::local_storage::HostLocalStorageReadError>,
+        > = Ok(
+            truapi::versioned::local_storage::HostLocalStorageReadResponse::V1(
+                v01::HostLocalStorageReadResponse { value: None },
+            ),
+        );
+        assert_eq!(payload, expected.encode());
     }
 
     #[test]
     fn local_storage_write_round_trips_unit_ok() {
         let core = make_core();
-        let request = HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest {
+        let request = v01::HostLocalStorageWriteRequest {
             key: "k".into(),
             value: vec![1, 2, 3],
-        });
-        let payload = run_request(&core, "local_storage_write", request.encode());
-        // Ok disc 0x00, V1 variant 0x00.
-        assert_eq!(payload, vec![0x00, 0x00]);
+        };
+        let payload = run_request(
+            &core,
+            "local_storage_write",
+            truapi::versioned::local_storage::HostLocalStorageWriteRequest::V1(request).encode(),
+        );
+        let expected: Result<
+            truapi::versioned::local_storage::HostLocalStorageWriteResponse,
+            truapi::CallError<truapi::versioned::local_storage::HostLocalStorageWriteError>,
+        > = Ok(truapi::versioned::local_storage::HostLocalStorageWriteResponse::V1);
+        assert_eq!(payload, expected.encode());
     }
 
     #[test]
     fn local_storage_clear_round_trips_unit_ok() {
         let core = make_core();
-        let request =
-            HostLocalStorageClearRequest::V1(v01::HostLocalStorageClearRequest { key: "k".into() });
-        let payload = run_request(&core, "local_storage_clear", request.encode());
-        // Ok disc 0x00, V1 variant 0x00.
-        assert_eq!(payload, vec![0x00, 0x00]);
+        let request = v01::HostLocalStorageClearRequest { key: "k".into() };
+        let payload = run_request(
+            &core,
+            "local_storage_clear",
+            truapi::versioned::local_storage::HostLocalStorageClearRequest::V1(request).encode(),
+        );
+        let expected: Result<
+            truapi::versioned::local_storage::HostLocalStorageClearResponse,
+            truapi::CallError<truapi::versioned::local_storage::HostLocalStorageClearError>,
+        > = Ok(truapi::versioned::local_storage::HostLocalStorageClearResponse::V1);
+        assert_eq!(payload, expected.encode());
     }
 
     #[test]
     fn send_push_notification_delegates_to_platform() {
         let core = make_core();
-        let request = HostPushNotificationRequest::V1(v01::HostPushNotificationRequest {
+        let request = v01::HostPushNotificationRequest {
             text: "hi".into(),
             deeplink: None,
             scheduled_at: None,
-        });
+        };
         let payload = run_request(
             &core,
             "notifications_send_push_notification",
-            request.encode(),
+            truapi::versioned::notifications::HostPushNotificationRequest::V1(request).encode(),
         );
-        // Ok disc 0x00, V1 variant 0x00, notification id 0.
-        let mut expected = vec![0x00u8];
-        truapi::versioned::notifications::HostPushNotificationResponse::V1(
-            v01::HostPushNotificationResponse { id: 0 },
-        )
-        .encode_to(&mut expected);
-        assert_eq!(payload, expected);
+        let expected: Result<
+            truapi::versioned::notifications::HostPushNotificationResponse,
+            truapi::CallError<truapi::versioned::notifications::HostPushNotificationError>,
+        > = Ok(
+            truapi::versioned::notifications::HostPushNotificationResponse::V1(
+                v01::HostPushNotificationResponse { id: 0 },
+            ),
+        );
+        assert_eq!(payload, expected.encode());
     }
 
     #[test]
     fn request_remote_permission_round_trips_granted() {
         let core = make_core();
-        let request = RemotePermissionRequest::V1(v01::RemotePermissionRequest {
+        let request = v01::RemotePermissionRequest {
             permission: v01::RemotePermission::ChainSubmit,
-        });
+        };
         let payload = run_request(
             &core,
             "permissions_request_remote_permission",
-            request.encode(),
+            truapi::versioned::permissions::RemotePermissionRequest::V1(request).encode(),
         );
-        // Stub permissions grants every request. Wire is Ok disc 0x00, V1
-        // variant 0x00, granted=1.
-        assert_eq!(payload, vec![0x00, 0x00, 0x01]);
+        // Stub permissions grants every request.
+        let expected: Result<
+            truapi::versioned::permissions::RemotePermissionResponse,
+            truapi::CallError<truapi::versioned::permissions::RemotePermissionError>,
+        > = Ok(
+            truapi::versioned::permissions::RemotePermissionResponse::V1(
+                v01::RemotePermissionResponse { granted: true },
+            ),
+        );
+        assert_eq!(payload, expected.encode());
     }
 
     /// `connection_status_subscribe` produces a stream whose first item is
@@ -345,7 +406,10 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
-                id: sub_ids.start_id,
+                trait_id: sub_ids.trait_id,
+                method_id: sub_ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
+                // No request wrapper for this method: an empty Start payload.
                 value: Vec::new(),
             },
         };
@@ -366,8 +430,16 @@ mod tests {
         let sent = transport.sent.lock().unwrap().clone();
         assert!(!sent.is_empty(), "expected at least one _receive frame");
         let first = &sent[0];
-        assert_eq!(first.payload.id, sub_ids.receive_id);
-        // V1(Disconnected): V1 variant 0x00, Disconnected discriminant 0x00.
-        assert_eq!(first.payload.value, vec![0x00, 0x00]);
+        assert_eq!(first.payload.trait_id, sub_ids.trait_id);
+        assert_eq!(first.payload.method_id, sub_ids.method_id);
+        assert_eq!(
+            first.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RECEIVE
+        );
+        let expected = truapi::versioned::account::HostAccountConnectionStatusSubscribeItem::V1(
+            v01::HostAccountConnectionStatusSubscribeItem::Disconnected,
+        )
+        .encode();
+        assert_eq!(first.payload.value, expected);
     }
 }

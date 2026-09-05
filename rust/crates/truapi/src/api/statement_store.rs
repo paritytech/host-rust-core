@@ -9,10 +9,11 @@ use crate::versioned::statement_store::{
     RemoteStatementStoreSubscribeError, RemoteStatementStoreSubscribeItem,
     RemoteStatementStoreSubscribeRequest,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Statement store methods.
+#[wire_trait(id = 14)]
 #[crate::async_trait]
 pub trait StatementStore: Send + Sync {
     /// Subscribe to statements matching a topic filter.
@@ -57,7 +58,7 @@ pub trait StatementStore: Send + Sync {
     /// const page = await waitForStatement();
     /// console.log("subscribe received", page);
     /// ```
-    #[wire(start_id = 56, sensitive)]
+    #[wire(id = 0, sensitive)]
     async fn subscribe(
         &self,
         _cx: &CallContext,
@@ -99,7 +100,7 @@ pub trait StatementStore: Send + Sync {
     ///   console.log("proof created:", result.value);
     /// }
     /// ```
-    #[wire(request_id = 60, sensitive)]
+    #[wire(id = 1, sensitive)]
     async fn create_proof(
         &self,
         _cx: &CallContext,
@@ -126,7 +127,7 @@ pub trait StatementStore: Send + Sync {
     /// assert(result.isOk(), "createProof failed:", result);
     /// console.log("proof created:", result.value);
     /// ```
-    #[wire(request_id = 132, sensitive)]
+    #[wire(id = 3, sensitive)]
     async fn create_proof_authorized(
         &self,
         _cx: &CallContext,
@@ -158,7 +159,7 @@ pub trait StatementStore: Send + Sync {
     /// assert(result.isOk(), "submit failed:", result);
     /// console.log("statement submitted");
     /// ```
-    #[wire(request_id = 62, sensitive)]
+    #[wire(id = 2, sensitive)]
     async fn submit(
         &self,
         _cx: &CallContext,

@@ -3,10 +3,11 @@
 use crate::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Deterministic entropy derivation.
+#[wire_trait(id = 6)]
 #[crate::async_trait]
 pub trait Entropy: Send + Sync {
     /// Derive deterministic entropy.
@@ -18,7 +19,7 @@ pub trait Entropy: Send + Sync {
     /// assert(result.isOk(), "derive failed:", result);
     /// console.log("entropy derived:", result.value);
     /// ```
-    #[wire(request_id = 108, sensitive)]
+    #[wire(id = 0, sensitive)]
     async fn derive(
         &self,
         _cx: &CallContext,

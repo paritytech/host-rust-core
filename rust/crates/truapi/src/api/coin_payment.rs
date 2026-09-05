@@ -14,14 +14,15 @@ use crate::versioned::coin_payment::{
     HostCoinPaymentRebalancePurseRequest, HostCoinPaymentRefundError, HostCoinPaymentRefundItem,
     HostCoinPaymentRefundRequest,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// CoinPayment operations.
 ///
 /// RFC 0017 describes `Resolvable<T>` values for long-running operations.
 /// TrUAPI represents those as subscriptions whose items are the RFC status
 /// updates.
+#[wire_trait(id = 5)]
 #[crate::async_trait]
 pub trait CoinPayment: Send + Sync {
     /// Create a new firewalled CoinPayment purse.
@@ -33,7 +34,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "createPurse failed:", result);
     /// console.log("purse created:", result.value.purse);
     /// ```
-    #[wire(request_id = 136)]
+    #[wire(id = 0)]
     async fn create_purse(
         &self,
         _cx: &CallContext,
@@ -50,7 +51,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "queryPurse failed:", result);
     /// console.log("purse info:", result.value.info);
     /// ```
-    #[wire(request_id = 138)]
+    #[wire(id = 1)]
     async fn query_purse(
         &self,
         _cx: &CallContext,
@@ -73,7 +74,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("rebalance status:", status);
     /// ```
-    #[wire(start_id = 140)]
+    #[wire(id = 2)]
     async fn rebalance_purse(
         &self,
         _cx: &CallContext,
@@ -99,7 +100,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("delete status:", status);
     /// ```
-    #[wire(start_id = 144)]
+    #[wire(id = 3)]
     async fn delete_purse(
         &self,
         _cx: &CallContext,
@@ -118,7 +119,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "createReceivable failed:", result);
     /// console.log("receivable created:", result.value.receivable);
     /// ```
-    #[wire(request_id = 148)]
+    #[wire(id = 4)]
     async fn create_receivable(
         &self,
         _cx: &CallContext,
@@ -141,7 +142,7 @@ pub trait CoinPayment: Send + Sync {
     /// assert(result.isOk(), "createCheque failed:", result);
     /// console.log("cheque created:", result.value.cheque);
     /// ```
-    #[wire(request_id = 150, sensitive)]
+    #[wire(id = 5, sensitive)]
     async fn create_cheque(
         &self,
         _cx: &CallContext,
@@ -168,7 +169,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("deposit status:", status);
     /// ```
-    #[wire(start_id = 152, sensitive)]
+    #[wire(id = 6, sensitive)]
     async fn deposit(
         &self,
         _cx: &CallContext,
@@ -195,7 +196,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("refund status:", status);
     /// ```
-    #[wire(start_id = 156)]
+    #[wire(id = 7)]
     async fn refund(
         &self,
         _cx: &CallContext,
@@ -222,7 +223,7 @@ pub trait CoinPayment: Send + Sync {
     /// );
     /// console.log("payment received:", item);
     /// ```
-    #[wire(start_id = 160, sensitive)]
+    #[wire(id = 8, sensitive)]
     async fn listen_for_payment(
         &self,
         _cx: &CallContext,

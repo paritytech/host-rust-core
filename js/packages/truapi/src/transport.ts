@@ -3,18 +3,28 @@ import { err, ok, type Result, type ResultAsync } from "neverthrow";
 
 import { str, u8, type CallErrorValue, type ResultPayload } from "./scale.js";
 
-/** Wire discriminant reserved for method-independent protocol errors. **/
-export const PROTOCOL_ERROR_ID = 255 as const;
+/**
+ * Wire trait discriminant reserved for method-independent protocol errors. No
+ * API trait may declare it, so no method is ever addressed here.
+ **/
+export const PROTOCOL_ERROR_TRAIT_ID = 255 as const;
+
+/** Wire method discriminant reserved for method-independent protocol errors. **/
+export const PROTOCOL_ERROR_METHOD_ID = 255 as const;
 
 /** The peer rejected an outbound frame because it does not support its API. **/
 export class UnsupportedMessageError extends Error {
-  /** Wire discriminant of the unsupported outbound frame. **/
-  readonly discriminant: number;
+  /** Trait discriminant of the unsupported outbound frame. **/
+  readonly traitId: number;
 
-  constructor(discriminant: number) {
-    super(`Peer does not support wire message ${discriminant}`);
+  /** Method discriminant of the unsupported outbound frame. **/
+  readonly methodId: number;
+
+  constructor(traitId: number, methodId: number) {
+    super(`Peer does not support wire message (${traitId}, ${methodId})`);
     this.name = "UnsupportedMessageError";
-    this.discriminant = discriminant;
+    this.traitId = traitId;
+    this.methodId = methodId;
   }
 }
 
@@ -139,43 +149,30 @@ export interface ObservableSource<Item> {
 }
 
 /**
- * Numeric frame ids for a one-shot request method.
+ * Wire discriminant pair addressing a method. One id addresses a method
+ * regardless of shape (request/response, or a subscription's four phases):
+ * which leg of the exchange a frame carries is the wire's own `messageType`
+ * byte, not a separate id per leg.
  **/
-export interface RequestFrameIds {
+export interface MethodIds {
   /**
-   * Wire discriminant for the outbound request frame.
+   * Wire trait discriminant.
    **/
-  request: number;
+  trait: number;
 
   /**
-   * Wire discriminant for the inbound response frame.
+   * Wire method discriminant within the trait.
    **/
-  response: number;
-}
-
-/**
- * Numeric frame ids for a subscription method.
- **/
-export interface SubscriptionFrameIds {
-  /**
-   * Wire discriminant for the outbound start frame.
-   **/
-  start: number;
+  method: number;
 
   /**
-   * Wire discriminant for the outbound stop frame.
+   * Whether this method's legs follow the request/response shape or the
+   * subscription shape (`"subscription"` covers both plain and result
+   * subscriptions, which share the same four-leg wire shape). The one piece
+   * of shape a payload-blind reader needs to interpret a frame's own
+   * `messageType` byte without decoding the payload.
    **/
-  stop: number;
-
-  /**
-   * Wire discriminant for the inbound interrupt frame.
-   **/
-  interrupt: number;
-
-  /**
-   * Wire discriminant for the inbound receive frame.
-   **/
-  receive: number;
+  kind: "request" | "subscription";
 }
 
 /**
@@ -185,17 +182,19 @@ export interface RequestParams<Ok, Err> {
   /**
    * Wire discriminants for this request method.
    **/
-  ids: RequestFrameIds;
+  ids: MethodIds;
 
   /**
-   * SCALE-encoded request payload bytes.
+   * SCALE-encoded request wrapper payload bytes (its own `V<N>` tag is the
+   * wire's only version signal), constructed by the generated caller.
    **/
   payload: Uint8Array;
 
   /**
-   * Decode SCALE response payload bytes into the wire `ResultPayload`
-   * envelope. The transport unwraps the envelope into
-   * `ResultAsync<Ok, Err | UnsupportedCallError>`.
+   * Decode a `Response`-leg frame's raw payload bytes into the typed Ok/Err
+   * outcome. Implementations decode `Result<{Method}Response,
+   * CallError<{Method}Error>>` directly. The transport unwraps the result
+   * into `ResultAsync<Ok, Err | UnsupportedCallError>`.
    **/
   decodeResponse: (payload: Uint8Array) => ResultPayload<Ok, Err>;
 }
@@ -207,20 +206,22 @@ export interface SubscribeRawParams {
   /**
    * Wire discriminants for this subscription method.
    **/
-  ids: SubscriptionFrameIds;
+  ids: MethodIds;
 
   /**
-   * SCALE-encoded subscription start payload bytes.
+   * SCALE-encoded `Start`-leg payload bytes: the request wrapper's own
+   * encoding, or empty bytes for a method with no request at all,
+   * constructed by the generated caller.
    **/
   payload: Uint8Array;
 
   /**
-   * Called with raw SCALE receive payload bytes.
+   * Called with a `Receive`-leg frame's raw payload bytes.
    **/
   onReceive: (payload: Uint8Array) => void;
 
   /**
-   * Called with raw SCALE interrupt payload bytes when the peer interrupts the subscription.
+   * Called with an `Interrupt`-leg frame's raw payload bytes.
    **/
   onInterrupt?: (payload: Uint8Array) => void;
 
@@ -249,10 +250,15 @@ export interface HostInitiatedSubscriptionRegistration<Request, Item> {
 /** Options used to register a host-initiated subscription method. **/
 export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
   /** Wire discriminants for the host-initiated subscription. **/
-  ids: SubscriptionFrameIds;
-  /** Decode the host's start payload. **/
+  ids: MethodIds;
+  /**
+   * Decode a `Start`-leg frame's raw payload bytes into the typed request.
+   **/
   decodeRequest(payload: Uint8Array): Request;
-  /** Encode one product renderer emission. **/
+  /**
+   * Encode one product renderer emission as a `Receive`-leg frame's raw
+   * payload bytes.
+   **/
   encodeItem(item: Item): Uint8Array;
   /** Exact payload used when the product declines a render instance. **/
   interruptPayload: Uint8Array;
@@ -307,15 +313,41 @@ export interface TrUApiTransport {
  **/
 export interface Payload {
   /**
-   * Wire-table numeric discriminant.
+   * Wire-table trait discriminant: first byte of the `(trait, method)` pair.
    **/
-  id: number;
+  traitId: number;
 
   /**
-   * SCALE-encoded payload body.
+   * Wire-table method discriminant within the trait: second byte of the pair.
+   **/
+  methodId: number;
+
+  /**
+   * Which leg of the method's exchange this frame carries: `Request`/`Start`
+   * = 0, `Response`/`Receive` = 1, `Interrupt` = 2, `Stop` = 3. Third byte of
+   * the wire frame — readable generically, without decoding `value`.
+   **/
+  messageType: number;
+
+  /**
+   * SCALE-encoded payload body: that leg's own versioned wrapper, with no
+   * further tag identifying direction or version beyond the wrapper's own.
    **/
   value: Uint8Array;
 }
+
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_REQUEST = 0;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_START = 0;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_RESPONSE = 1;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_RECEIVE = 1;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_INTERRUPT = 2;
+/** See {@link Payload.messageType}. */
+export const MESSAGE_TYPE_STOP = 3;
 
 /**
  * Top-level TrUAPI wire message.
@@ -379,12 +411,24 @@ export interface WebSocketWireProvider extends WireProvider {
 export function encodeWireMessage(
   message: ProtocolMessage,
 ): Result<Uint8Array, Error> {
-  const id = message.payload.id;
-  if (!Number.isInteger(id) || id < 0 || id > 255) {
-    return err(new Error(`Invalid wire discriminant: ${id}`));
+  const { traitId, methodId, messageType } = message.payload;
+  if (!Number.isInteger(traitId) || traitId < 0 || traitId > 255) {
+    return err(new Error(`Invalid wire trait discriminant: ${traitId}`));
+  }
+  if (!Number.isInteger(methodId) || methodId < 0 || methodId > 255) {
+    return err(new Error(`Invalid wire method discriminant: ${methodId}`));
+  }
+  if (!Number.isInteger(messageType) || messageType < 0 || messageType > 255) {
+    return err(new Error(`Invalid wire message type: ${messageType}`));
   }
   return ok(
-    concatBytes(str.enc(message.requestId), u8.enc(id), message.payload.value),
+    concatBytes(
+      str.enc(message.requestId),
+      u8.enc(traitId),
+      u8.enc(methodId),
+      u8.enc(messageType),
+      message.payload.value,
+    ),
   );
 }
 
@@ -406,15 +450,30 @@ export function decodeWireMessage(
   const requestId = str.dec(cursor.subarray(0, requestIdEnd));
   cursor = cursor.subarray(requestIdEnd);
   if (cursor.length < 1) {
-    return err(new Error("Wire frame too short: missing discriminant byte"));
+    return err(
+      new Error("Wire frame too short: missing trait discriminant byte"),
+    );
   }
-  const id = cursor[0];
-  const value = cursor.subarray(1);
+  if (cursor.length < 2) {
+    return err(
+      new Error("Wire frame too short: missing method discriminant byte"),
+    );
+  }
+  if (cursor.length < 3) {
+    return err(new Error("Wire frame too short: missing message-type byte"));
+  }
+  const traitId = cursor[0];
+  const methodId = cursor[1];
+  const messageType = cursor[2];
+  const value = cursor.subarray(3);
   // Hand the value bytes back as a fresh slice so callers may safely retain
   // it even if the source buffer is reused by the transport.
   const valueCopy = new Uint8Array(value.length);
   valueCopy.set(value);
-  return ok({ requestId, payload: { id, value: valueCopy } });
+  return ok({
+    requestId,
+    payload: { traitId, methodId, messageType, value: valueCopy },
+  });
 }
 
 /**

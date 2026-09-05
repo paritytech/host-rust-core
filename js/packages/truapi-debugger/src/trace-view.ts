@@ -26,6 +26,7 @@
 
 import type { FrameDirection, FrameRole } from "./observed-frame.js";
 import { OPENING_ROLES } from "./observed-frame.js";
+import { resolveRole } from "./wire-debugger.js";
 import type {
   TraceDropCounts,
   WireMethodInfo,
@@ -321,11 +322,15 @@ export function wireTraceToView(
     dropped: trace.dropped,
     frames: trace.frames.map((frame): TraceFrameInput => {
       // A frame may still arrive `role: "unknown"` (a vantage with no wire
-      // frameId, or an off-table id); the frameId's wire-table `kind` is the
-      // lifecycle role, so use it as the fallback. A `"malformed"` sentinel is kept.
+      // frameId, no methodNames map at ingest, or an off-table id); retry
+      // resolution here from the method's wire-table kind plus the frame's own
+      // `messageType` (see resolveRole). A `"malformed"` sentinel is kept
+      // either way.
       const info = methodNames?.get(frame.frameId);
       const role =
-        frame.role === "unknown" && info !== undefined ? info.kind : frame.role;
+        frame.role === "unknown"
+          ? resolveRole(frame.messageType, info?.kind)
+          : frame.role;
       return {
         direction: frame.direction,
         role,

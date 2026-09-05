@@ -55,11 +55,11 @@ const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 /// host's constant. Kept in sync by hand.
 const WIRE_ENVELOPE_VERSION: u32 = 1;
 
-/// The host's wire codec version, mirroring `@parity/truapi`'s
-/// `TRUAPI_CODEC_VERSION` (the handshake `codec_version`). Stamped on the
-/// envelope so the debugger refuses to decode a frame whose codec differs from
-/// its own, rather than resolving `u8` frame ids against the wrong contract.
-const WIRE_CODEC_VERSION: u32 = 1;
+/// The host's wire codec version, matching `truapi::WIRE_CODEC_VERSION` (the
+/// handshake `codec_version`). Stamped on the envelope so the debugger refuses
+/// to decode a frame whose codec differs from its own, rather than resolving a
+/// `(trait, method)` pair against the wrong contract.
+const WIRE_CODEC_VERSION: u32 = truapi::WIRE_CODEC_VERSION as u32;
 
 /// Port the debugger's server listens on (`@parity/truapi-debugger`'s
 /// `npm run serve`), used when the debug URL omits one so `ws://localhost`
@@ -453,7 +453,7 @@ mod tests {
         // constant on both sides would agree with itself even if the value the
         // debugger expects changed.
         assert_eq!(value["v"], 1);
-        assert_eq!(value["codec"], 1);
+        assert_eq!(value["codec"], 2);
         assert_eq!(value["v"], WIRE_ENVELOPE_VERSION);
         assert_eq!(value["codec"], WIRE_CODEC_VERSION);
         assert_eq!(value["schema"], TRUAPI_WIRE_SCHEMA_HASH);

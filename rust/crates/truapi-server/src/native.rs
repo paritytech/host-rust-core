@@ -3169,8 +3169,6 @@ mod tests {
         use futures::SinkExt;
         use parity_scale_codec::Decode;
         use tokio_tungstenite::tungstenite::Message as WsMessage;
-        use truapi::versioned::permissions::HostDevicePermissionRequest;
-        use truapi::versioned::system::HostFeatureSupportedRequest;
 
         use crate::frame::{Payload, ProtocolMessage, request_ids};
 
@@ -3324,14 +3322,17 @@ mod tests {
         let (feature_response, permission_response) = rt.block_on(async {
             let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("dial");
 
+            let permission_value = truapi::versioned::permissions::HostDevicePermissionRequest::V1(
+                v01::HostDevicePermissionRequest::Camera,
+            )
+            .encode();
             let permission_frame = ProtocolMessage {
                 request_id: "p:permission".into(),
                 payload: Payload {
-                    id: permission_ids.request_id,
-                    value: HostDevicePermissionRequest::V1(
-                        v01::HostDevicePermissionRequest::Camera,
-                    )
-                    .encode(),
+                    trait_id: permission_ids.trait_id,
+                    method_id: permission_ids.method_id,
+                    message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                    value: permission_value,
                 },
             };
             ws.send(WsMessage::Binary(permission_frame.encode()))
@@ -3350,16 +3351,19 @@ mod tests {
                 "permission callback was not invoked"
             );
 
+            let feature_value = truapi::versioned::system::HostFeatureSupportedRequest::V1(
+                v01::HostFeatureSupportedRequest::Chain {
+                    genesis_hash: vec![0u8; 32],
+                },
+            )
+            .encode();
             let feature_frame = ProtocolMessage {
                 request_id: "p:feature".into(),
                 payload: Payload {
-                    id: feature_ids.request_id,
-                    value: HostFeatureSupportedRequest::V1(
-                        v01::HostFeatureSupportedRequest::Chain {
-                            genesis_hash: vec![0u8; 32],
-                        },
-                    )
-                    .encode(),
+                    trait_id: feature_ids.trait_id,
+                    method_id: feature_ids.method_id,
+                    message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                    value: feature_value,
                 },
             };
             ws.send(WsMessage::Binary(feature_frame.encode()))
@@ -3408,12 +3412,34 @@ mod tests {
         });
 
         assert_eq!(feature_response.request_id, "p:feature");
-        assert_eq!(feature_response.payload.id, feature_ids.response_id);
+        assert_eq!(feature_response.payload.trait_id, feature_ids.trait_id);
+        assert_eq!(feature_response.payload.method_id, feature_ids.method_id);
 
         assert_eq!(permission_response.request_id, "p:permission");
-        assert_eq!(permission_response.payload.id, permission_ids.response_id);
-        // [Ok 0x00][V1 0x00][granted=1]
-        assert_eq!(permission_response.payload.value, vec![0x00, 0x00, 0x01]);
+        assert_eq!(
+            permission_response.payload.trait_id,
+            permission_ids.trait_id
+        );
+        assert_eq!(
+            permission_response.payload.method_id,
+            permission_ids.method_id
+        );
+        assert_eq!(
+            permission_response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
+        let expected_permission: Result<
+            truapi::versioned::permissions::HostDevicePermissionResponse,
+            truapi::CallError<truapi::versioned::permissions::HostDevicePermissionError>,
+        > = Ok(
+            truapi::versioned::permissions::HostDevicePermissionResponse::V1(
+                v01::HostDevicePermissionResponse { granted: true },
+            ),
+        );
+        assert_eq!(
+            permission_response.payload.value,
+            expected_permission.encode()
+        );
 
         execution.stop_ws_bridge();
     }

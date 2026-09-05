@@ -199,7 +199,13 @@ pub mod latest {
     pub type RemotePermissionResponse = LatestOf<versioned::permissions::RemotePermissionResponse>;
 }
 
-pub use truapi_macros::{service, wire};
+pub use truapi_macros::{service, wire, wire_trait};
+
+/// Wire codec version this crate defines. Frames address a method with a
+/// `(trait, method)` byte pair; codec 1 used a single flat method byte. The
+/// handshake accepts only this version, and codegen stamps it into the
+/// generated clients, so every peer derives it from here.
+pub const WIRE_CODEC_VERSION: u8 = 2;
 
 /// Per-message id carried from the transport frame.
 pub type RequestId = String;

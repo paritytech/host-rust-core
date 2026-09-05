@@ -79,6 +79,9 @@ pub struct TraitDef {
     /// Module path leading to the trait, excluding the trait name itself
     /// (e.g. `["truapi", "api", "account"]`).
     pub module_path: Vec<String>,
+    /// Wire-protocol trait discriminant from the `#[wire_trait(id = N)]`
+    /// attribute: the first byte of the `(trait, method)` pair on the wire.
+    pub wire_trait_id: Option<u8>,
     /// Methods declared on the trait, in declaration order.
     pub methods: Vec<MethodDef>,
     /// Rustdoc comment on the trait. Service markers are retained for codegen.
@@ -115,23 +118,16 @@ pub struct MethodDef {
     pub docs: Option<String>,
 }
 
-/// Raw wire ids extracted from `#[wire(...)]`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Raw wire id extracted from `#[wire(...)]`. One id addresses the method
+/// regardless of shape; which leg of the exchange a frame carries
+/// (request/response, or a subscription's start/stop/interrupt/receive) is
+/// the outer wire's own `message_type` byte, not a separate id.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WireAttrs {
     /// This subscription is started by the host and served by the product.
     pub host_initiated: bool,
-    /// Request frame discriminant.
-    pub request_id: Option<u8>,
-    /// Response frame discriminant.
-    pub response_id: Option<u8>,
-    /// Subscription start frame discriminant.
-    pub start_id: Option<u8>,
-    /// Subscription stop frame discriminant.
-    pub stop_id: Option<u8>,
-    /// Subscription interrupt frame discriminant.
-    pub interrupt_id: Option<u8>,
-    /// Subscription item frame discriminant.
-    pub receive_id: Option<u8>,
+    /// Method frame discriminant.
+    pub id: Option<u8>,
     /// Whether the method's payloads carry key material or bearer secrets.
     /// Marked by `#[wire(..., sensitive)]`; folded into the wire schema-hash
     /// fingerprint so a change in a frame's sensitivity classification is caught
@@ -491,6 +487,7 @@ fn should_skip_type_name(name: &str) -> bool {
     matches!(
         name,
         "Subscription"
+            | "Request"
             | "CallContext"
             | "CallError"
             | "CancellationFuture"
@@ -693,9 +690,15 @@ fn extract_trait(
         }
     }
 
+    let wire_trait_id = match item.docs.as_deref() {
+        Some(docs) => extract_wire_trait_id(&name, docs)?,
+        None => None,
+    };
+
     Ok(TraitDef {
         name,
         module_path,
+        wire_trait_id,
         methods,
         docs: item.docs.clone(),
     })
@@ -860,9 +863,43 @@ fn extract_marker_value<'a>(docs: &'a str, marker: &str) -> Option<&'a str> {
     })
 }
 
-/// Extracts `@wire_<name>_id=N` markers from a doc comment block. Annotated
-/// methods carry these markers via the `#[wire(...)]` proc-macro, which appends
-/// hidden doc strings so they propagate through rustdoc JSON.
+/// Extracts the `@wire_trait_id=N` marker from a trait's doc comment block.
+/// Annotated traits carry the marker via the `#[wire_trait(id = N)]`
+/// proc-macro, which appends a hidden doc string so it propagates through
+/// rustdoc JSON.
+///
+/// The marker owns its whole line and its value must parse as a `u8`: a
+/// malformed value is an error rather than a silent truncation, and a trait
+/// carrying more than one marker is rejected outright. Without that a
+/// hand-written doc line could quietly outrank the attribute and move a
+/// trait's whole method block to a different address on the wire.
+fn extract_wire_trait_id(trait_name: &str, docs: &str) -> Result<Option<u8>> {
+    let mut found = None;
+    for line in docs.lines() {
+        let Some(value) = line.trim().strip_prefix("@wire_trait_id=") else {
+            continue;
+        };
+        let id: u8 = value.trim().parse().with_context(|| {
+            format!(
+                "Trait `{trait_name}` has a malformed `@wire_trait_id={value}` marker; \
+                 expected a value in 0..=255"
+            )
+        })?;
+        if found.is_some() {
+            bail!(
+                "Trait `{trait_name}` carries more than one `@wire_trait_id` marker; \
+                 exactly one `#[wire_trait(id = N)]` attribute must own the trait id"
+            );
+        }
+        found = Some(id);
+    }
+    Ok(found)
+}
+
+/// Extracts the `@wire_id=N` marker (and `@wire_host_initiated`) from a doc
+/// comment block. Annotated methods carry these markers via the `#[wire(...)]`
+/// proc-macro, which appends hidden doc strings so they propagate through
+/// rustdoc JSON.
 fn extract_wire_attrs(docs: &str) -> WireAttrs {
     let mut attrs = WireAttrs::default();
     for line in docs.lines() {
@@ -881,23 +918,15 @@ fn extract_wire_attrs(docs: &str) -> WireAttrs {
             attrs.sensitive |= value != "false";
             continue;
         }
-        for (needle, target) in [
-            ("@wire_request_id=", &mut attrs.request_id),
-            ("@wire_response_id=", &mut attrs.response_id),
-            ("@wire_start_id=", &mut attrs.start_id),
-            ("@wire_stop_id=", &mut attrs.stop_id),
-            ("@wire_interrupt_id=", &mut attrs.interrupt_id),
-            ("@wire_receive_id=", &mut attrs.receive_id),
-        ] {
-            let Some(start) = line.find(needle).map(|index| index + needle.len()) else {
-                continue;
-            };
-            let end = line[start..]
-                .find(|c: char| !c.is_ascii_digit())
-                .map_or(line.len(), |offset| start + offset);
-            if let Ok(id) = line[start..end].parse::<u8>() {
-                *target = Some(id);
-            }
+        const NEEDLE: &str = "@wire_id=";
+        let Some(start) = line.find(NEEDLE).map(|index| index + NEEDLE.len()) else {
+            continue;
+        };
+        let end = line[start..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(line.len(), |offset| start + offset);
+        if let Ok(id) = line[start..end].parse::<u8>() {
+            attrs.id = Some(id);
         }
     }
     attrs
@@ -1549,7 +1578,8 @@ mod tests {
 
     #[test]
     fn clean_docs_strips_wire_markers() {
-        let docs = "Trait summary.\n\n@wire_request_id=7\n@wire_sensitive=true\n@service_required_execution=Chat\n";
+        let docs = "Trait summary.\n\n@wire_id=7\n@wire_trait_id=3\n@wire_sensitive=true\n\
+                    @service_required_execution=Chat\n";
 
         assert_eq!(clean_docs(Some(docs)).as_deref(), Some("Trait summary."));
     }
@@ -1559,6 +1589,7 @@ mod tests {
         let trait_def = TraitDef {
             name: "Chat".into(),
             module_path: Vec::new(),
+            wire_trait_id: None,
             methods: Vec::new(),
             docs: Some("Chat operations.\n\n@service_required_execution=Chat".into()),
         };
@@ -1568,14 +1599,59 @@ mod tests {
     }
 
     #[test]
+    fn extract_wire_trait_id_reads_marker() {
+        assert_eq!(
+            extract_wire_trait_id("Theme", "Trait summary.\n\n@wire_trait_id=14\n").unwrap(),
+            Some(14)
+        );
+        assert_eq!(
+            extract_wire_trait_id("Theme", "Trait summary.").unwrap(),
+            None
+        );
+    }
+
+    /// A value the attribute could never emit must fail loudly instead of
+    /// truncating to a valid id or degrading into "missing annotation".
+    #[test]
+    fn extract_wire_trait_id_rejects_malformed_markers() {
+        for docs in [
+            "@wire_trait_id=300",
+            "@wire_trait_id=",
+            "@wire_trait_id=12abc",
+            "@wire_trait_id=-1",
+            "@wire_trait_id=1 2",
+        ] {
+            let err = extract_wire_trait_id("Theme", docs)
+                .expect_err("malformed marker must be rejected");
+            assert!(
+                format!("{err:#}").contains("malformed"),
+                "unexpected error for {docs:?}: {err:#}"
+            );
+        }
+    }
+
+    /// A hand-written doc line must not be able to outrank the attribute: the
+    /// proc-macro appends its marker last, so a silent first-wins or last-wins
+    /// rule would let prose move the trait's whole method block on the wire.
+    #[test]
+    fn extract_wire_trait_id_rejects_a_second_marker() {
+        let err = extract_wire_trait_id("Theme", "@wire_trait_id=99\n@wire_trait_id=14\n")
+            .expect_err("a forged second marker must be rejected");
+        assert!(
+            format!("{err:#}").contains("more than one"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
     fn extract_wire_attrs_reads_sensitive_flag() {
-        let sensitive = extract_wire_attrs("@wire_request_id=114\n@wire_sensitive=true");
-        assert_eq!(sensitive.request_id, Some(114));
+        let sensitive = extract_wire_attrs("@wire_id=114\n@wire_sensitive=true");
+        assert_eq!(sensitive.id, Some(114));
         assert!(sensitive.sensitive);
 
         // Absent marker ⇒ not sensitive (the default for every unmarked method).
-        let plain = extract_wire_attrs("@wire_request_id=22");
-        assert_eq!(plain.request_id, Some(22));
+        let plain = extract_wire_attrs("@wire_id=22");
+        assert_eq!(plain.id, Some(22));
         assert!(!plain.sensitive);
     }
 

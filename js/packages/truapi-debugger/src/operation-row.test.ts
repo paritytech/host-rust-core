@@ -17,6 +17,7 @@ function frame(
     direction: role === "response" || role === "receive" ? "in" : "out",
     requestId: "p:1",
     frameId,
+    messageType: 0,
     role,
     byteLength: 8,
     timestamp,
@@ -36,12 +37,15 @@ function traceOf(frames: ObservedFrame[]): WireTrace {
   };
 }
 
+// Fixture frames below carry an explicit `role`, never "unknown", so
+// `wireTraceToView` never falls back to resolving it from `kind` here - only
+// the method name lookup matters, and `kind` need only type-check.
 const methodNames: ReadonlyMap<number, WireMethodInfo> = new Map([
   [22, { method: "account.getAccount", kind: "request" }],
-  [23, { method: "account.getAccount", kind: "response" }],
-  [40, { method: "account.connectionStatus", kind: "start" }],
-  [41, { method: "account.connectionStatus", kind: "receive" }],
-  [42, { method: "account.connectionStatus", kind: "stop" }],
+  [23, { method: "account.getAccount", kind: "request" }],
+  [40, { method: "account.connectionStatus", kind: "subscription" }],
+  [41, { method: "account.connectionStatus", kind: "subscription" }],
+  [42, { method: "account.connectionStatus", kind: "subscription" }],
 ]);
 
 describe("renderOperationRow", () => {

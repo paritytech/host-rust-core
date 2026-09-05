@@ -12,7 +12,7 @@
 #                                     --platform-ts-output js/packages/truapi-host/src/generated
 #                                     --platform-wasm-adapter-output js/packages/truapi-host/src/generated
 #                                     --platform-rust-output rust/crates/truapi-server/src/wasm
-#                                     --codec-version 1
+#                                     --codec-version 2
 #
 # The client surface defaults to the latest wire version any versioned
 # wrapper exposes; pass `--client-version V<N>` to pin to an older one.
@@ -43,7 +43,7 @@ cargo run -p truapi-codegen -- \
   --platform-wasm-adapter-output js/packages/truapi-host/src/generated \
   --platform-rust-output rust/crates/truapi-server/src/wasm \
   --explorer-output js/packages/truapi/src/explorer \
-  --codec-version 1
+  --codec-version 2
 
 rustfmt +"$NIGHTLY_TOOLCHAIN" --edition 2024 \
   rust/crates/truapi-server/src/generated/dispatcher.rs \

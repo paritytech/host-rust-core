@@ -222,6 +222,18 @@ fn golden_dispatcher_and_wire_table() {
             );
         }
     }
+
+    // A method body should only ever reference its pre-built `T.{Method}Version`
+    // codec by name (see `method_envelope_name` in `ts.rs`); `types.ts`
+    // legitimately inlines `S.indexedTaggedUnion(` to define those wrapper
+    // codecs themselves, which is why only `client.ts` is scanned here.
+    let client_ts = fs::read_to_string(tempdir.path().join("ts").join("client.ts"))
+        .unwrap_or_else(|e| panic!("read generated client.ts: {e}"));
+    assert!(
+        !client_ts.contains("indexedTaggedUnion"),
+        "generated client.ts contains `S.indexedTaggedUnion(`; a method body should \
+         reference its `T.{{Method}}Version` codec by name instead of inlining one"
+    );
 }
 
 /// Idempotence guard at the integration level: running the binary twice

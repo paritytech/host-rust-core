@@ -152,12 +152,7 @@ mod tests {
             },
             wire: WireAttrs {
                 host_initiated: false,
-                request_id: Some(request_id),
-                response_id: None,
-                start_id: None,
-                stop_id: None,
-                interrupt_id: None,
-                receive_id: None,
+                id: Some(request_id),
                 sensitive: false,
             },
             docs: None,
@@ -175,12 +170,7 @@ mod tests {
             }),
             wire: WireAttrs {
                 host_initiated: false,
-                request_id: None,
-                response_id: None,
-                start_id: Some(start_id),
-                stop_id: None,
-                interrupt_id: None,
-                receive_id: None,
+                id: Some(start_id),
                 sensitive: false,
             },
             docs: None,
@@ -213,12 +203,12 @@ mod tests {
     }
 
     fn parse_entries(src: &str) -> Vec<(u8, String)> {
-        // Each method's ids are emitted as a named const, e.g.
-        //   pub const PREIMAGE_SUBMIT: RequestFrameIds = RequestFrameIds {
-        //       request_id: 68,
-        //       response_id: 69,
+        // Each method's id is emitted as a named const, e.g.
+        //   pub const PREIMAGE_SUBMIT: MethodIds = MethodIds {
+        //       trait_id: 203,
+        //       method_id: 68,
         //   };
-        // Reconstruct the `(id, "{method}_{suffix}")` pairs the assertions use.
+        // Reconstruct the `(method_id, method_name)` pairs the assertions use.
         let mut out = Vec::new();
         let mut lines = src.lines();
         while let Some(line) = lines.next() {
@@ -228,9 +218,8 @@ mod tests {
             let Some(colon) = rest.find(':') else {
                 continue;
             };
-            let is_sub = rest.contains("SubscriptionFrameIds");
             // Skip non-id consts (e.g. `WIRE_TABLE: &[WireEntry]`).
-            if !is_sub && !rest.contains("RequestFrameIds") {
+            if !rest.contains("MethodIds") {
                 continue;
             }
             let method = rest[..colon].trim().to_ascii_lowercase();
@@ -247,32 +236,20 @@ mod tests {
                 }
             }
 
-            let suffixes: &[(&str, &str)] = if is_sub {
-                &[
-                    ("start_id", "start"),
-                    ("stop_id", "stop"),
-                    ("interrupt_id", "interrupt"),
-                    ("receive_id", "receive"),
-                ]
-            } else {
-                &[("request_id", "request"), ("response_id", "response")]
-            };
-            for (field, suffix) in suffixes {
-                out.push((ids[field], format!("{method}_{suffix}")));
-            }
+            out.push((ids["method_id"], method));
         }
         out
     }
 
-    /// A single subscription method must reserve four consecutive wire
-    /// ids (start/stop/interrupt/receive) even when no sibling methods
-    /// exist to mask off-by-one errors.
+    /// A single subscription method reserves exactly one wire id, same as a
+    /// request method — direction lives in the payload, not the address.
     #[test]
-    fn wire_table_subscribe_method_reserves_four_ids() {
+    fn wire_table_subscribe_method_reserves_one_id() {
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(193),
                 methods: vec![make_subscription_method("connection_status_subscribe", 18)],
                 docs: None,
             }],
@@ -285,12 +262,7 @@ mod tests {
         let entries = parse_entries(&src);
         assert_eq!(
             entries,
-            vec![
-                (18, "account_connection_status_subscribe_start".into()),
-                (19, "account_connection_status_subscribe_stop".into()),
-                (20, "account_connection_status_subscribe_interrupt".into()),
-                (21, "account_connection_status_subscribe_receive".into()),
-            ],
+            vec![(18, "account_connection_status_subscribe".into())],
         );
     }
 
@@ -300,23 +272,42 @@ mod tests {
     /// `preimage_submit`).
     #[test]
     fn collision_safe_when_two_traits_share_method_name() {
+        let mut statement_store_submit = make_request_method("submit", 62);
+        statement_store_submit.params[0].type_ref = TypeRef::Named {
+            name: "StatementStoreSubmitRequest".to_string(),
+            args: vec![],
+        };
+        let mut preimage_submit = make_request_method("submit", 68);
+        preimage_submit.params[0].type_ref = TypeRef::Named {
+            name: "PreimageSubmitRequest".to_string(),
+            args: vec![],
+        };
         let api = ApiDefinition {
             traits: vec![
                 TraitDef {
                     name: "StatementStore".to_string(),
                     module_path: Vec::new(),
-                    methods: vec![make_request_method("submit", 62)],
+                    wire_trait_id: Some(193),
+                    methods: vec![statement_store_submit],
                     docs: None,
                 },
                 TraitDef {
                     name: "Preimage".to_string(),
                     module_path: Vec::new(),
-                    methods: vec![make_request_method("submit", 68)],
+                    wire_trait_id: Some(194),
+                    methods: vec![preimage_submit],
                     docs: None,
                 },
             ],
             public_trait_order: vec!["StatementStore".to_string(), "Preimage".to_string()],
-            types: versioned_request_test_types(),
+            types: {
+                let mut types = versioned_request_test_types();
+                types.push(versioned_test_type("StatementStoreSubmitRequest"));
+                types.push(versioned_test_type("StatementStoreSubmitVersion"));
+                types.push(versioned_test_type("PreimageSubmitRequest"));
+                types.push(versioned_test_type("PreimageSubmitVersion"));
+                types
+            },
             framework_types: Vec::new(),
         };
 
@@ -335,13 +326,11 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(_, tag)| tag == "statement_store_submit_request"),
+                .any(|(_, tag)| tag == "statement_store_submit"),
             "wire_table missing prefixed StatementStore tag:\n{table}"
         );
         assert!(
-            entries
-                .iter()
-                .any(|(_, tag)| tag == "preimage_submit_request"),
+            entries.iter().any(|(_, tag)| tag == "preimage_submit"),
             "wire_table missing prefixed Preimage tag:\n{table}"
         );
     }
@@ -358,12 +347,14 @@ mod tests {
                 TraitDef {
                     name: "Foo".to_string(),
                     module_path: Vec::new(),
+                    wire_trait_id: Some(195),
                     methods: vec![make_request_method("bar_baz", 10)],
                     docs: None,
                 },
                 TraitDef {
                     name: "FooBar".to_string(),
                     module_path: Vec::new(),
+                    wire_trait_id: Some(196),
                     methods: vec![make_request_method("baz", 12)],
                     docs: None,
                 },
@@ -392,15 +383,26 @@ mod tests {
     /// same API produces byte-identical output.
     #[test]
     fn idempotent_emission() {
+        let mut method = make_request_method("request_device_permission", 8);
+        method.params[0].type_ref = TypeRef::Named {
+            name: "RequestDevicePermissionRequest".to_string(),
+            args: vec![],
+        };
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                methods: vec![make_request_method("request_device_permission", 8)],
+                wire_trait_id: Some(197),
+                methods: vec![method],
                 docs: None,
             }],
             public_trait_order: vec!["Permissions".to_string()],
-            types: versioned_request_test_types(),
+            types: {
+                let mut types = versioned_request_test_types();
+                types.push(versioned_test_type("RequestDevicePermissionRequest"));
+                types.push(versioned_test_type("RequestDevicePermissionVersion"));
+                types
+            },
             framework_types: Vec::new(),
         };
 
@@ -413,16 +415,15 @@ mod tests {
         assert_eq!(table_a, table_b);
     }
 
-    /// Methods with a `#[wire(request_id = N)]` annotation get a 2-id
-    /// slot (request/response). Methods with `#[wire(start_id = N)]`
-    /// get a 4-id slot (start/stop/interrupt/receive). The emitter
-    /// must enforce that, and reject collisions.
+    /// Every method, request or subscription, gets exactly one wire id.
+    /// The emitter must reject collisions between them.
     #[test]
     fn wire_table_rejects_collisions() {
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(197),
                 methods: vec![
                     make_request_method("alpha", 10),
                     make_request_method("beta", 10),
@@ -436,77 +437,157 @@ mod tests {
         let err = generate_wire_table(&api, "testhash").expect_err("duplicate ids must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("wire id 10 reused"),
+            msg.contains("wire id (197, 10) reused"),
             "unexpected error message: {msg}",
         );
     }
 
-    /// Discriminant 255 is reserved for protocol-level errors, so no API
-    /// method may claim it for any request, response, or subscription frame.
+    /// Method ids are scoped per trait: two traits may both use method id 0,
+    /// and the emitted consts carry each trait's discriminant.
     #[test]
-    fn wire_table_reserves_protocol_error_id() {
-        let mut explicit_request = make_request_method("explicit_request", 255);
-        explicit_request.wire.response_id = Some(1);
-
-        let inferred_response = make_request_method("inferred_response", 254);
-
-        let mut explicit_response = make_request_method("explicit_response", 1);
-        explicit_response.wire.response_id = Some(255);
-
-        let mut explicit_start = make_subscription_method("explicit_start", 255);
-        explicit_start.wire.stop_id = Some(1);
-        explicit_start.wire.interrupt_id = Some(2);
-        explicit_start.wire.receive_id = Some(3);
-
-        let mut explicit_stop = make_subscription_method("explicit_stop", 1);
-        explicit_stop.wire.stop_id = Some(255);
-        explicit_stop.wire.interrupt_id = Some(2);
-        explicit_stop.wire.receive_id = Some(3);
-
-        let mut explicit_interrupt = make_subscription_method("explicit_interrupt", 1);
-        explicit_interrupt.wire.stop_id = Some(2);
-        explicit_interrupt.wire.interrupt_id = Some(255);
-        explicit_interrupt.wire.receive_id = Some(3);
-
-        let mut explicit_receive = make_subscription_method("explicit_receive", 1);
-        explicit_receive.wire.stop_id = Some(2);
-        explicit_receive.wire.interrupt_id = Some(3);
-        explicit_receive.wire.receive_id = Some(255);
-
-        let inferred_receive = make_subscription_method("inferred_receive", 252);
-
-        for method in [
-            explicit_request,
-            inferred_response,
-            explicit_response,
-            explicit_start,
-            explicit_stop,
-            explicit_interrupt,
-            explicit_receive,
-            inferred_receive,
-        ] {
-            let method_name = method.name.clone();
-            let api = ApiDefinition {
-                traits: vec![TraitDef {
-                    name: "Example".to_string(),
+    fn wire_table_allows_same_method_id_in_different_traits() {
+        let api = ApiDefinition {
+            traits: vec![
+                TraitDef {
+                    name: "StatementStore".to_string(),
                     module_path: Vec::new(),
-                    methods: vec![method],
+                    wire_trait_id: Some(205),
+                    methods: vec![make_request_method("submit", 0)],
                     docs: None,
-                }],
-                public_trait_order: vec!["Example".to_string()],
-                types: Vec::new(),
-                framework_types: Vec::new(),
-            };
+                },
+                TraitDef {
+                    name: "Preimage".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(202),
+                    methods: vec![make_request_method("submit", 0)],
+                    docs: None,
+                },
+            ],
+            public_trait_order: vec!["StatementStore".to_string(), "Preimage".to_string()],
+            types: vec![],
+            framework_types: Vec::new(),
+        };
 
-            let error = generate_wire_table(&api, "testhash")
-                .expect_err(&format!("{method_name} must not allocate wire id 255"));
-            let message = error.to_string();
-            assert!(
-                message.contains("wire id 255 reused")
-                    && message.contains("reserved for protocol errors"),
-                "unexpected error for {method_name}: {message}",
-            );
-        }
+        let table = generate_wire_table(&api, "testhash").expect("wire_table");
+        assert!(
+            table.contains("trait_id: 205,"),
+            "missing trait id 13:\n{table}"
+        );
+        assert!(
+            table.contains("trait_id: 202,"),
+            "missing trait id 10:\n{table}"
+        );
+    }
+
+    /// Two traits must not share a wire trait id.
+    #[test]
+    fn wire_table_rejects_duplicate_trait_ids() {
+        let api = ApiDefinition {
+            traits: vec![
+                TraitDef {
+                    name: "StatementStore".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(196),
+                    methods: vec![make_request_method("submit", 0)],
+                    docs: None,
+                },
+                TraitDef {
+                    name: "Preimage".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(196),
+                    methods: vec![make_request_method("submit", 0)],
+                    docs: None,
+                },
+            ],
+            public_trait_order: vec!["StatementStore".to_string(), "Preimage".to_string()],
+            types: vec![],
+            framework_types: Vec::new(),
+        };
+
+        let err =
+            generate_wire_table(&api, "testhash").expect_err("duplicate trait ids must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("wire trait id 196 reused"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    /// A trait missing `#[wire_trait(id = N)]` must fail emission.
+    #[test]
+    fn wire_table_missing_trait_id_errors() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Permissions".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: None,
+                methods: vec![make_request_method("request_device_permission", 8)],
+                docs: None,
+            }],
+            public_trait_order: vec!["Permissions".to_string()],
+            types: vec![],
+            framework_types: Vec::new(),
+        };
+
+        let err = generate_wire_table(&api, "testhash").expect_err("missing trait id must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("missing #[wire_trait(id = N)]"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    /// Trait 255 is reserved for protocol errors, so no API trait may declare
+    /// it. Codec 2 addresses a frame by `(trait, method)`, which moves the
+    /// reservation from a single id to a whole trait: a method id of 255 is now
+    /// a perfectly ordinary address, and the only way to reach the reserved
+    /// `(255, 255)` is through a trait that owns 255. This replaces main's
+    /// method-level test, which asserted the eight method-id positions could
+    /// not be 255 - true under one byte, wrong under two.
+    #[test]
+    fn wire_table_rejects_the_reserved_protocol_error_trait_id() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Example".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: Some(crate::RESERVED_PROTOCOL_ERROR_TRAIT_ID),
+                methods: vec![make_request_method("submit", 0)],
+                docs: None,
+            }],
+            public_trait_order: vec!["Example".to_string()],
+            types: vec![],
+            framework_types: Vec::new(),
+        };
+
+        let err = generate_wire_table(&api, "testhash").expect_err("trait id 255 must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("wire trait id 255 reused")
+                && msg.contains("reserved for protocol errors"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    /// The other half of the reservation: it must not have grown. A method id of
+    /// 255 inside an ordinary trait is a legal address under a two-byte
+    /// envelope, and refusing it would silently cost every trait its last slot.
+    #[test]
+    fn wire_table_allows_method_id_255_outside_the_reserved_trait() {
+        let method = make_request_method("explicit_request", 255);
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Example".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: Some(1),
+                methods: vec![method],
+                docs: None,
+            }],
+            public_trait_order: vec!["Example".to_string()],
+            types: vec![],
+            framework_types: Vec::new(),
+        };
+
+        generate_wire_table(&api, "testhash").expect("(1, 255) is an ordinary address");
     }
 
     /// Pin `wire_const_name`'s `convert_case::Case::UpperSnake` behavior:
@@ -539,17 +620,18 @@ mod tests {
         assert_eq!(module_for_trait("Account"), "account");
     }
 
-    /// A request-kind method must not carry subscription wire ids. The
-    /// emitter rejects `start_id` / `stop_id` / `interrupt_id` / `receive_id`
-    /// on a `MethodKind::Request`.
+    /// A method missing the mandatory `#[wire(id = N)]` annotation must fail
+    /// emission, not silently default to 0 — true for both request and
+    /// subscription kinds, which now share the same single-id path.
     #[test]
-    fn wire_table_request_with_subscription_id_errors() {
+    fn wire_table_missing_id_errors() {
         let mut method = make_request_method("alpha", 10);
-        method.wire.start_id = Some(99);
+        method.wire.id = None;
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -558,86 +640,10 @@ mod tests {
             framework_types: Vec::new(),
         };
         let err =
-            generate_wire_table(&api, "testhash").expect_err("request kind + start_id must error");
+            generate_wire_table(&api, "testhash").expect_err("missing id annotation must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("must not use subscription wire ids"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    /// A subscription-kind method must not carry request wire ids.
-    #[test]
-    fn wire_table_subscription_with_request_id_errors() {
-        let mut method = make_subscription_method("connection_status_subscribe", 18);
-        method.wire.request_id = Some(99);
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Account".to_string(),
-                module_path: Vec::new(),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Account".to_string()],
-            types: vec![],
-            framework_types: Vec::new(),
-        };
-        let err = generate_wire_table(&api, "testhash")
-            .expect_err("subscription kind + request_id must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("must not use request wire ids"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    /// A request-kind method missing the mandatory `request_id` annotation
-    /// must fail emission, not silently default to 0.
-    #[test]
-    fn wire_table_missing_request_id_errors() {
-        let mut method = make_request_method("alpha", 10);
-        method.wire.request_id = None;
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Permissions".to_string(),
-                module_path: Vec::new(),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Permissions".to_string()],
-            types: vec![],
-            framework_types: Vec::new(),
-        };
-        let err = generate_wire_table(&api, "testhash")
-            .expect_err("missing request_id annotation must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("missing #[wire(request_id"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    /// Subscription-kind method missing `start_id` is similarly rejected.
-    #[test]
-    fn wire_table_missing_start_id_errors() {
-        let mut method = make_subscription_method("connection_status_subscribe", 18);
-        method.wire.start_id = None;
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Account".to_string(),
-                module_path: Vec::new(),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Account".to_string()],
-            types: vec![],
-            framework_types: Vec::new(),
-        };
-        let err = generate_wire_table(&api, "testhash")
-            .expect_err("missing start_id annotation must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("missing #[wire(start_id"),
+            msg.contains("missing #[wire(id"),
             "unexpected error message: {msg}",
         );
     }
@@ -659,6 +665,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -693,6 +700,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -704,112 +712,6 @@ mod tests {
         let msg = format!("{err}");
         assert!(
             msg.contains("response is not a versioned wrapper"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    #[test]
-    fn dispatcher_versioned_request_with_raw_error_errors() {
-        let mut method = make_request_method("alpha", 10);
-        method.return_type = ReturnType::Result {
-            ok: TypeRef::Named {
-                name: "RespWrapper".to_string(),
-                args: vec![],
-            },
-            err: TypeRef::Named {
-                name: "CallError".to_string(),
-                args: vec![TypeRef::Named {
-                    name: "RawError".to_string(),
-                    args: vec![],
-                }],
-            },
-        };
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Permissions".to_string(),
-                module_path: Vec::new(),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Permissions".to_string()],
-            types: vec![
-                versioned_test_type("ReqWrapper"),
-                versioned_test_type("RespWrapper"),
-            ],
-            framework_types: Vec::new(),
-        };
-
-        let err = generate_dispatcher(&api).expect_err("raw error wrapper must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("versioned request methods must use versioned errors"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    #[test]
-    fn dispatcher_raw_request_with_versioned_response_errors() {
-        let mut method = make_request_method("alpha", 10);
-        method.params[0].type_ref = TypeRef::Named {
-            name: "RawRequest".to_string(),
-            args: vec![],
-        };
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Permissions".to_string(),
-                module_path: Vec::new(),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Permissions".to_string()],
-            types: vec![
-                versioned_test_type("RespWrapper"),
-                versioned_test_type("ErrWrapper"),
-            ],
-            framework_types: Vec::new(),
-        };
-
-        let err = generate_dispatcher(&api).expect_err("missing target version must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("versioned responses require a target version"),
-            "unexpected error message: {msg}",
-        );
-    }
-
-    #[test]
-    fn dispatcher_result_subscription_with_raw_error_errors() {
-        let mut method = make_subscription_method("alpha_subscribe", 20);
-        method.kind = MethodKind::ResultSubscription;
-        method.return_type = ReturnType::ResultSubscription {
-            item: TypeRef::Named {
-                name: "ItemWrapper".to_string(),
-                args: vec![],
-            },
-            err: TypeRef::Named {
-                name: "CallError".to_string(),
-                args: vec![TypeRef::Named {
-                    name: "RawError".to_string(),
-                    args: vec![],
-                }],
-            },
-        };
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Account".to_string(),
-                module_path: Vec::new(),
-                methods: vec![method],
-                docs: None,
-            }],
-            public_trait_order: vec!["Account".to_string()],
-            types: vec![versioned_test_type("ItemWrapper")],
-            framework_types: Vec::new(),
-        };
-
-        let err = generate_dispatcher(&api).expect_err("raw result subscription error must error");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("result subscription methods must have an error wrapper"),
             "unexpected error message: {msg}",
         );
     }
