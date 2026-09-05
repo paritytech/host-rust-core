@@ -30,7 +30,8 @@ pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
 pub use sso_responder::{PairedSsoPeer, ResponderExit};
 pub(crate) use sso_responder::{
-    answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
+    answer_remote_message, disconnect_paired_host, establish_pairing, respond_to_pairing,
+    resume_pairing,
 };
 
 use super::authority::{

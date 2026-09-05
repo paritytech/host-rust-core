@@ -212,7 +212,8 @@ Commands always start with `/`:
 | `/pair <image-path>` | Decode a pairing QR from a PNG, JPEG, or WebP image (signing host). |
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
 | `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
-| `/devices --remove <statement-account-id>` | Remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id>` | Disconnect and remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id> --force` | Attempt to disconnect one paired device, then remove its local pairing even if notification fails. |
 | `/approval` | Show whether signing-host confirmations are manual or automatic. |
 | `/approval manual` | Prompt for every future signing-host confirmation. |
 | `/approval automatic` | Approve every future signing-host confirmation automatically. |
@@ -384,8 +385,15 @@ statement lifetime.
 order with available host and platform metadata. Interactive
 `/devices --remove <statement-account-id>` asks for confirmation. The same
 command through `exec` is an explicit one-shot removal and runs without another
-prompt. Removing one device stops only its responder and allowance renewal. The
-other saved pairings and the signing identity are unchanged.
+prompt. Removal first submits `Disconnected` to the selected remote host. Only
+after the statement is accepted does it stop that responder, remove the saved
+pairing, and stop its allowance renewal. A submission failure preserves all
+local pairing state. The other saved pairings and the signing identity are
+unchanged. For recovery when notification cannot be submitted, append
+`--force`. The command still attempts notification first, but warns and
+continues with local cleanup if that attempt fails. The remote host may continue
+to show stale connected state, but it cannot reach a responder on this signing
+host.
 
 `/session --clear <name>` permanently deletes that session's local signer
 keys, scripts, core/product storage, and permissions. `/session --clear-all`
@@ -420,6 +428,7 @@ truapi-host signing-host exec '/pair polkadotapp://pair?handshake=...'
 truapi-host signing-host --session alice.01 exec '/devices'
 truapi-host signing-host --session alice.01 exec '/devices --list'
 truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --force'
 ```
 
 `exec` does not enable raw mode or emit terminal controls. Command results go
@@ -558,6 +567,12 @@ Six scripts ship under `js/scripts/`:
     --deeplink '<pairing link>' \
     --auto-accept
   ```
+
+  `e2e/device-removal-disconnect.sh` automates the two-host removal case. It
+  pairs an isolated signing host with an isolated pairing host, removes the
+  device interactively, and verifies the remote `Disconnected` status, cleared
+  pairing auth storage, and empty signing-host device list. Run `make codegen`
+  once in a fresh checkout, build `truapi-host-cli`, then run the script.
 
 - `whoami.ts` — calls `getUserId` and prints `WHOAMI <primary username>`; this
   remains available as an explicit `/script <path>` example.
