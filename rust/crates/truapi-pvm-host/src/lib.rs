@@ -11,6 +11,9 @@ pub use pvm_runtime_assets::{BrowserAsset, RUNTIME_VERSION, browser_assets};
 
 /// Immutable standalone runtime source consumed by this bridge release.
 pub const RUNTIME_SOURCE_REVISION: &str = "5d7b86b46842a31c6ca8de2d23c2c7926b12f14e";
+// Pins the tagged v0.1.10 release (paritytech/pvm-host-runtime @ 5d7b86b).
+// The polkadot-host-computer/0.1 contract is not yet included; it will be
+// added in a follow-up after pvm-host-runtime#33 lands and tags a release.
 
 #[cfg(test)]
 mod tests {
