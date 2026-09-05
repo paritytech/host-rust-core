@@ -73,15 +73,8 @@ impl CliStoragePaths {
             .map(|user_id| network_dir.join(format!("{user_id}_pairing_host")))
             .filter(|path| path.is_dir())
             .unwrap_or_else(|| bootstrap_dir.clone());
-        let product_storage_dir = if state_dir == bootstrap_dir
-            && bootstrap_dir.join("storage").join("default").is_dir()
-        {
-            bootstrap_dir.join("storage").join("default")
-        } else {
-            state_dir.join("storage")
-        };
         Self {
-            product_storage_dir,
+            product_storage_dir: state_dir.join("storage"),
             state_dir,
             pairing_scope: Some(PairingStorageScope {
                 network_dir,
@@ -130,7 +123,7 @@ impl CliPlatform {
         approval: ApprovalPolicy,
         ui: Option<UiHandle>,
     ) -> Arc<Self> {
-        let (product_storage_dir, legacy_product_storage_path, core_storage_path) = storage
+        let (product_storage_dir, core_storage_path) = storage
             .as_ref()
             .map(|paths| {
                 if let Err(err) = fs::create_dir_all(&paths.state_dir) {
@@ -142,15 +135,13 @@ impl CliPlatform {
                 }
                 (
                     Some(paths.product_storage_dir.clone()),
-                    Some(paths.state_dir.join("product-storage.json")),
                     Some(paths.state_dir.join("core-storage.json")),
                 )
             })
-            .unwrap_or((None, None, None));
+            .unwrap_or((None, None));
         let product_storage = product_storage_dir
             .as_deref()
-            .zip(legacy_product_storage_path.as_deref())
-            .map(|(directory, legacy)| load_product_storage(directory, legacy))
+            .map(load_product_storage)
             .unwrap_or_default();
         let core_storage = core_storage_path
             .as_deref()
@@ -336,10 +327,7 @@ impl CliPlatform {
 
         let mut target_core = load_hex_key_map(&target_core_path);
         target_core.extend(carried);
-        let mut target_products = load_product_storage(
-            &target_product_dir,
-            &target_state.join("product-storage.json"),
-        );
+        let mut target_products = load_product_storage(&target_product_dir);
         if migrating_bootstrap {
             target_products.extend(
                 self.product_storage
@@ -935,46 +923,8 @@ struct ProductStorageDocument {
     values: HashMap<String, String>,
 }
 
-fn load_product_storage(
-    directory: &Path,
-    legacy_path: &Path,
-) -> HashMap<String, HashMap<String, Vec<u8>>> {
-    let legacy_exists = legacy_path.is_file();
-    let mut migration_safe = true;
+fn load_product_storage(directory: &Path) -> HashMap<String, HashMap<String, Vec<u8>>> {
     let mut products = HashMap::<String, HashMap<String, Vec<u8>>>::new();
-
-    if legacy_exists {
-        match read_string_map(legacy_path) {
-            Ok(values) => {
-                for (key, value) in values {
-                    match ProductStorageKey::decode(&key) {
-                        Ok(scoped) => {
-                            products
-                                .entry(scoped.product_id().to_string())
-                                .or_default()
-                                .insert(scoped.key().to_string(), value);
-                        }
-                        Err(error) => {
-                            migration_safe = false;
-                            tracing::warn!(
-                                path = %legacy_path.display(),
-                                %error,
-                                "could not migrate an unrecognized product storage key"
-                            );
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                migration_safe = false;
-                tracing::warn!(
-                    path = %legacy_path.display(),
-                    %error,
-                    "could not decode legacy product storage"
-                );
-            }
-        }
-    }
 
     let entries = match fs::read_dir(directory) {
         Ok(entries) => Some(entries),
@@ -1007,36 +957,6 @@ fn load_product_storage(
                 continue;
             }
             products.entry(product_id).or_default().extend(values);
-        }
-    }
-
-    if legacy_exists && migration_safe {
-        let migrated = products.iter().try_for_each(|(product_id, values)| {
-            save_product_storage(directory, product_id, values)
-        });
-        match migrated {
-            Ok(()) => {
-                let backup = legacy_path.with_file_name("product-storage.v1.json.migrated");
-                if backup.exists() {
-                    tracing::warn!(
-                        path = %legacy_path.display(),
-                        backup = %backup.display(),
-                        "legacy product storage was migrated but its backup path already exists"
-                    );
-                } else if let Err(error) = fs::rename(legacy_path, &backup) {
-                    tracing::warn!(
-                        path = %legacy_path.display(),
-                        backup = %backup.display(),
-                        %error,
-                        "could not retain migrated product storage backup"
-                    );
-                }
-            }
-            Err(error) => tracing::warn!(
-                path = %legacy_path.display(),
-                %error,
-                "could not migrate legacy product storage"
-            ),
         }
     }
 
@@ -1797,19 +1717,21 @@ mod tests {
         );
     }
 
+    /// A pairing login writes product KV before its username is known, so the
+    /// bootstrap directory's products must follow the first resolved user
+    /// instead of being stranded outside every identity namespace.
     #[test]
-    fn legacy_pairing_storage_moves_to_the_first_resolved_user() {
+    fn product_storage_written_before_the_username_carries_into_the_resolved_user() {
         let temporary = tempdir().expect("create pairing storage root");
         let network_dir = temporary.path().join("testnet");
-        let legacy_product_dir = network_dir.join("pairing-host/storage/default");
         let product_key =
             ProductStorageKey::new("product.dot", "theme").expect("product storage key");
         save_product_storage(
-            &legacy_product_dir,
+            &network_dir.join("pairing-host/storage"),
             "product.dot",
             &HashMap::from([("theme".to_string(), b"dark".to_vec())]),
         )
-        .expect("write legacy pairing product storage");
+        .expect("write bootstrap pairing product storage");
         let platform = CliPlatform::new(
             test_network(),
             Some(CliStoragePaths::pairing(network_dir.clone())),
@@ -1819,14 +1741,21 @@ mod tests {
 
         platform
             .switch_pairing_user_storage("alice.dot")
-            .expect("resolve legacy storage owner");
+            .expect("resolve the bootstrap storage owner");
 
         assert_eq!(
             futures::executor::block_on(platform.read(product_key.encode()))
-                .expect("read migrated product value"),
+                .expect("read carried product value"),
             Some(b"dark".to_vec())
         );
-        assert!(network_dir.join("alice.dot_pairing_host/storage").is_dir());
+        // Persisted, not merely carried in memory: a restart must find it too.
+        assert_eq!(
+            load_product_storage(&network_dir.join("alice.dot_pairing_host/storage")),
+            HashMap::from([(
+                "product.dot".to_string(),
+                HashMap::from([("theme".to_string(), b"dark".to_vec())]),
+            )])
+        );
     }
 
     #[test]
@@ -2019,72 +1948,6 @@ mod tests {
         assert_ne!(
             fs::read_to_string(first_path).expect("read first session file"),
             fs::read_to_string(second_path).expect("read second session file")
-        );
-    }
-
-    #[test]
-    fn legacy_product_storage_migrates_and_keeps_a_backup() {
-        let temporary = tempdir().expect("create migration root");
-        let first = ProductStorageKey::new("first.dot", "alpha").expect("first product key");
-        let second = ProductStorageKey::new("second.dot", "beta").expect("second product key");
-        let legacy_path = temporary.path().join("product-storage.json");
-        save_string_map(
-            &legacy_path,
-            &HashMap::from([
-                (first.encode(), b"one".to_vec()),
-                (second.encode(), b"two".to_vec()),
-            ]),
-        )
-        .expect("write legacy product storage");
-
-        let platform = CliPlatform::new(
-            test_network(),
-            Some(test_storage_paths(temporary.path(), "test")),
-            ApprovalPolicy::AutoAccept,
-            None,
-        );
-
-        assert!(!legacy_path.exists());
-        assert!(
-            temporary
-                .path()
-                .join("product-storage.v1.json.migrated")
-                .is_file()
-        );
-        assert_eq!(
-            fs::read_dir(temporary.path().join("storage").join("test"))
-                .expect("list migrated product files")
-                .count(),
-            2
-        );
-        let values = futures::executor::block_on(async {
-            (
-                platform.read(first.encode()).await.expect("read first"),
-                platform.read(second.encode()).await.expect("read second"),
-            )
-        });
-        assert_eq!(values, (Some(b"one".to_vec()), Some(b"two".to_vec())));
-    }
-
-    #[test]
-    fn corrupt_legacy_product_storage_is_not_marked_as_migrated() {
-        let temporary = tempdir().expect("create corrupt migration root");
-        let legacy_path = temporary.path().join("product-storage.json");
-        fs::write(&legacy_path, "{not-json").expect("write corrupt legacy storage");
-
-        let _platform = CliPlatform::new(
-            test_network(),
-            Some(test_storage_paths(temporary.path(), "test")),
-            ApprovalPolicy::AutoAccept,
-            None,
-        );
-
-        assert!(legacy_path.is_file());
-        assert!(
-            !temporary
-                .path()
-                .join("product-storage.v1.json.migrated")
-                .exists()
         );
     }
 }

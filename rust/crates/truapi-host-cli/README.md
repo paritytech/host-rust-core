@@ -317,9 +317,9 @@ settings containing arguments, such as `EDITOR='code --wait'`, are supported.
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
 and its files live under
-`<base-path>/<network>/<username>_signing_host`. Provisional and legacy named
-sessions are promoted to that user-owned root, so an old name such as `pgtest`
-does not remain the durable namespace. The selected username is remembered per
+`<base-path>/<network>/<username>_signing_host`. Provisional named sessions
+are promoted to that user-owned root, so an old name such as `pgtest` does not
+remain the durable namespace. The selected username is remembered per
 network but is not repeated in the status bar as a separate session field.
 `default` remains only as a compatibility/bootstrap location until a username
 is resolved. It is hidden from session completion and listing and cannot be
@@ -390,8 +390,8 @@ other saved pairings and the signing identity are unchanged.
 `/session --clear <name>` permanently deletes that session's local signer
 keys, scripts, core/product storage, and permissions. `/session --clear-all`
 does the same for every signing-host session on the current network, including
-legacy bootstrap state, while preserving other networks and pairing-host
-state. Neither command deregisters an on-chain username. The interactive UI
+the network's signing-host bootstrap state, while preserving other networks and
+pairing-host state. Neither command deregisters an on-chain username. The interactive UI
 asks for `[y/N]` confirmation. `exec` treats the explicit one-shot command as
 confirmation and runs it immediately. Clearing an inactive named session keeps
 the host running; clearing the active session or all sessions stops the signing
@@ -483,16 +483,14 @@ the selected id, so the newly selected product sees its own state. The next
 Pairing-host state follows the same identity rule under
 `<base-path>/<network>/<username>_pairing_host`. Before the first identity is
 known it uses the small `<network>/pairing-host` bootstrap; connecting moves
-legacy bootstrap data to the first resolved user. After `/logout`, connecting
+that bootstrap data to the first resolved user. After `/logout`, connecting
 as a different user swaps to that user's KV/core namespace instead of carrying
 the previous user's product data forward.
 
 Product-local KV is persisted independently under each identity root as
 `storage/<safe-product-slug>--<hash>.json`. Each document records its normalized
-product id and raw product keys. On first use, the older combined
-`product-storage.json` in that profile is split into those files and retained
-as `product-storage.v1.json.migrated`. Product and core JSON writes use a
-flushed temporary file and atomic rename.
+product id and raw product keys. Product and core JSON writes use a flushed
+temporary file and atomic rename.
 
 Six scripts ship under `js/scripts/`:
 

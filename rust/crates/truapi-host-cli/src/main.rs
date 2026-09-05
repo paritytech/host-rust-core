@@ -642,6 +642,9 @@ async fn run_pgas_check(
     let asset_hub_state = alloc::fetch_chain_state(&asset_hub_rpc)
         .await
         .map_err(anyhow::Error::msg)?;
+    let network_suffix = alloc::slot::read_network_suffix(&asset_hub_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
     println!(
         "asset hub: metadata V{} specVersion={} txVersion={} genesis=0x{}",
         asset_hub_metadata.metadata_version(),
@@ -715,6 +718,7 @@ async fn run_pgas_check(
         &asset_hub_metadata,
         ring.collection,
         membership.entropy,
+        &network_suffix,
         day,
         &[],
     )
@@ -738,6 +742,7 @@ async fn run_pgas_check(
         people_rpc: &people_rpc,
         people_metadata: &people_metadata,
         entropy: membership.entropy,
+        network_suffix: &network_suffix,
         target: &target,
         ring: &membership.ring,
     })
@@ -795,6 +800,9 @@ async fn run_alloc_check(
     let chain_state = alloc::fetch_chain_state(&rpc)
         .await
         .map_err(anyhow::Error::msg)?;
+    let network_suffix = alloc::slot::read_network_suffix(&rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
     println!(
         "chain: specVersion={} txVersion={} genesis=0x{}",
         chain_state.spec_version,
@@ -841,16 +849,33 @@ async fn run_alloc_check(
             continue;
         }
         print!("{}: ", candidate.collection);
-        report_slot_scan(&rpc, &metadata, *candidate, period, &target, now).await?;
+        report_slot_scan(
+            &rpc,
+            &metadata,
+            *candidate,
+            &network_suffix,
+            period,
+            &target,
+            now,
+        )
+        .await?;
     }
 
     if submit {
         if memberships.is_empty() {
             bail!("cannot submit: member not in any ring");
         }
-        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
-            .await
-            .map_err(anyhow::Error::msg)?;
+        let scans = alloc::scan_collections(
+            &rpc,
+            &metadata,
+            &candidates,
+            &network_suffix,
+            period,
+            &target,
+            true,
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
         match alloc::register_statement_account_pooled(
             &rpc,
             &metadata,
@@ -860,6 +885,7 @@ async fn run_alloc_check(
             alloc::PooledRegistrationParams {
                 target: &target,
                 period,
+                network_suffix: &network_suffix,
                 reuse_existing: true,
                 // A diagnostic that submits behaves as it did before pooling,
                 // where a full table was replaced rather than reported.
@@ -893,6 +919,7 @@ async fn report_slot_scan(
     rpc: &alloc::rpc::RpcClient,
     metadata: &alloc::extension::Metadata,
     candidate: alloc::CollectionCandidate,
+    network_suffix: &[u8],
     period: u32,
     target: &[u8; 32],
     now: u64,
@@ -903,6 +930,7 @@ async fn report_slot_scan(
         alloc::slot::SlotScan {
             collection: candidate.collection,
             entropy: candidate.entropy,
+            network_suffix,
             period,
             target,
             excluded: &[],

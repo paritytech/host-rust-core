@@ -221,6 +221,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
       capabilities: { chat: false, permissionStatus: false },
+      debuggerUrl: null,
     });
 
     worker.emit({ kind: "ready" });
@@ -1219,5 +1220,59 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(() =>
       worker.emit({ kind: "frame", coreId: 0, bytes: new Uint8Array([1]) }),
     ).not.toThrow();
+  });
+});
+
+describe("debugger enablement reporting", () => {
+  // Regression for design doc §9: a switch set on a build whose dial is compiled
+  // out must say so once. Silence there is indistinguishable from a broken
+  // debugger, and a host whose only local build is production-mode (dot.li ships
+  // `build`/`preview`, no dev server) gets no other signal.
+  //
+  // Under `bun test` `import.meta.env.DEV` is `undefined`, so the gate takes its
+  // production path - which is exactly the path being asserted.
+  const withStubbedStorage = async (
+    key: string | null,
+    run: () => Promise<unknown>,
+  ): Promise<string[]> => {
+    const g = globalThis as typeof globalThis & { localStorage?: unknown };
+    const had = Object.prototype.hasOwnProperty.call(g, "localStorage");
+    const previous = g.localStorage;
+    const logged: string[] = [];
+    const info = console.info;
+    g.localStorage = {
+      getItem: (name: string) => (name === "truapi:debugger" ? key : null),
+      setItem: () => {},
+    };
+    console.info = (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    };
+    try {
+      await run();
+    } finally {
+      console.info = info;
+      if (had) g.localStorage = previous;
+      else delete g.localStorage;
+    }
+    return logged;
+  };
+
+  it("reports once when the switch is set but the dial is compiled out", async () => {
+    const worker = new FakeWorker();
+    const logged = await withStubbedStorage("ws://127.0.0.1:9231", () =>
+      readyRuntime(worker),
+    );
+    const line = logged.find((l) => l.includes("wire debugger"));
+    expect(line).toBeDefined();
+    expect(line).toContain("truapi:debugger");
+    // Must not assert a cause it cannot know: a production build and a bundler
+    // that never substituted the token both leave the condition false.
+    expect(line).toContain("did not resolve true");
+  });
+
+  it("stays silent when the switch is unset", async () => {
+    const worker = new FakeWorker();
+    const logged = await withStubbedStorage(null, () => readyRuntime(worker));
+    expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
   });
 });

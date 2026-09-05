@@ -1168,11 +1168,7 @@ user-selectable and is omitted from session completion and listing.
 When a managed session has no connected user, startup and bare `/session` add
 an actionable transcript notice directing the user to `/session <name>`.
 
-`/session --list` includes:
-
-- legacy directories under `signing-host/sessions/`; and
-- network directories ending in `_signing_host`.
-
+`/session --list` includes the network directories ending in `_signing_host`.
 The active session is marked with `*`.
 
 `/session <name>` provisions the target before replacing the current runtime:
@@ -1222,12 +1218,11 @@ phrase is not written locally until the replacement runtime activates
 successfully.
 
 `/session --clear <name>` removes the durable name shown by `/session --list`,
-its identity or legacy session directory, any separate legacy product storage,
-and the matching network account cached in the compatibility account store.
-`/session --clear-all` removes every such session, the network's signing-host
-bootstrap state, and every compatibility account record for that network. It
-does not remove pairing-host state, another network's records, externally
-referenced scripts, or on-chain usernames.
+its identity directory, and the matching network account cached in the
+compatibility account store. `/session --clear-all` removes every such session,
+the network's signing-host bootstrap state, and every compatibility account
+record for that network. It does not remove pairing-host state, another
+network's records, externally referenced scripts, or on-chain usernames.
 
 The interactive UI describes the data loss and uses the existing `[y/N]`
 approval. `exec` executes these explicit one-shot commands without another
@@ -1260,15 +1255,14 @@ The layout may contain compatibility paths as well as identity-owned paths:
       storage/
         default/
           <product-file>.json
-      sessions/                       # accepted legacy session layout
-        <legacy-name>/
 
     pairing-host/
       current-user
       session.json                    # bootstrap script metadata, when used
       core-storage.json               # bootstrap auth/core state
       scripts/
-      storage/                        # or legacy storage/default/
+      storage/
+        <product-file>.json
 
     <username>_signing_host/
       accounts.json
@@ -1387,11 +1381,6 @@ The version `1` JSON document is:
 
 The core has already removed its product namespace before the CLI stores the
 raw key. Identity and host role are isolated by the parent directory.
-
-Legacy combined `product-storage.json` keys are decoded with
-`ProductStorageKey` and split into per-product files. A fully safe migration is
-retained as `product-storage.v1.json.migrated`. An undecodable legacy key or
-document prevents the backup rename.
 
 Noncanonical product filenames, unsupported versions, invalid ids, and invalid
 hex values are ignored with warnings.

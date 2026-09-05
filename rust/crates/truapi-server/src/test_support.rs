@@ -139,7 +139,8 @@ pub(crate) struct StubPlatform {
     pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
     pub(crate) rpc_responses: Vec<String>,
     /// Responses keyed by JSON-RPC method, answered as each request arrives with
-    /// that request's own id echoed back.
+    /// that request's own id echoed back. A `state_call` is keyed by the runtime
+    /// API it names instead, so metadata and view-function reads stay separable.
     ///
     /// Unlike `rpc_responses` this assumes nothing about request order and waits
     /// indefinitely for the next request, so a slow step between two requests
@@ -1306,7 +1307,28 @@ impl JsonRpcConnection for RecordingConnection {
     fn close(&self) {}
 }
 
-/// Answer each request as it arrives, by method, echoing its id.
+/// The scripting key for one request: a `state_call` is keyed by the runtime API
+/// it names, every other method by its own name.
+///
+/// A path that reads both metadata and a view function issues both through
+/// `state_call`, so keying those two apart is what lets a script answer them
+/// differently.
+fn response_key(request: &serde_json::Value) -> Option<&str> {
+    let method = request["method"].as_str()?;
+    if method == "state_call" {
+        return Some(request["params"][0].as_str().unwrap_or(method));
+    }
+    Some(method)
+}
+
+/// Answer each request as it arrives, keyed by [`response_key`], echoing its id.
+///
+/// Repeated entries for one key are answered in call order. Running past the
+/// last one panics rather than replaying it: a script that answers fewer calls
+/// than the code makes would otherwise hand a response meant for one read to a
+/// different one, which decodes to a plausible wrong value instead of failing.
+///
+/// Exhausted method scripts panic so one read cannot reuse another's response.
 ///
 /// Waits indefinitely for the next request rather than giving up after a fixed
 /// number of polls, so work between requests cannot race the pump.
@@ -1328,12 +1350,33 @@ fn method_keyed_responses(
                     let value: serde_json::Value =
                         serde_json::from_str(&request).expect("request is valid JSON");
                     let id = value["id"].as_str().expect("request carries a string id");
-                    let method = value["method"].as_str().expect("request carries a method");
-                    let result = answers
+                    let key = response_key(&value).expect("request carries a method");
+                    let occurrence = sent
+                        .lock()
+                        .expect("rpc list mutex poisoned")
                         .iter()
-                        .find(|(candidate, _)| *candidate == method)
+                        .take(answered)
+                        .filter(|earlier| {
+                            serde_json::from_str::<serde_json::Value>(earlier)
+                                .ok()
+                                .and_then(|earlier| response_key(&earlier).map(str::to_owned))
+                                .is_some_and(|candidate| candidate == key)
+                        })
+                        .count();
+                    let scripted = answers
+                        .iter()
+                        .filter(|(candidate, _)| *candidate == key)
+                        .collect::<Vec<_>>();
+                    let result = scripted
+                        .get(occurrence)
                         .map(|(_, body)| body.clone())
-                        .unwrap_or_else(|| panic!("no scripted response for method `{method}`"));
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "`{key}` was called {} times, and the script has {} response(s) for it",
+                                occurrence + 1,
+                                scripted.len(),
+                            )
+                        });
                     return Some((
                         format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{result}}}"#),
                         answered + 1,
@@ -1343,6 +1386,25 @@ fn method_keyed_responses(
             }
         }
     }))
+}
+
+#[test]
+#[should_panic(
+    expected = "`state_getStorage` was called 2 times, and the script has 1 response(s) for it"
+)]
+fn method_keyed_responses_do_not_replay_an_exhausted_answer() {
+    use futures::StreamExt;
+
+    let request =
+        |id| format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"state_getStorage","params":[]}}"#);
+    let sent = Arc::new(Mutex::new(vec![request(1), request(2)]));
+    let mut responses =
+        method_keyed_responses(sent, vec![("state_getStorage", "null".to_string())]);
+
+    futures::executor::block_on(async {
+        responses.next().await.expect("first scripted response");
+        responses.next().await.expect("second scripted response");
+    });
 }
 
 async fn wait_for_matching_request_id(sent: Arc<Mutex<Vec<String>>>, response: &str) {
