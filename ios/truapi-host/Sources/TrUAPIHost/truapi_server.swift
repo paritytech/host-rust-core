@@ -2649,12 +2649,16 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func shutdown()
 
     /**
-     * Start this execution's independently authenticated localhost bridge.
+     * Register this execution against the host runtime's shared localhost
+     * bridge, minting an independent authentication token. Every execution
+     * under the same host runtime connects through the same port;
+     * `bind_port` only has an effect for the first execution to register
+     * while the shared listener is still unstarted.
      */
     func startWsBridge(bindPort: UInt16) throws  -> WsBridgeEndpoint
 
     /**
-     * Stop the active bridge while leaving the execution reusable.
+     * Revoke this execution's bridge registration while leaving it reusable.
      */
     func stopWsBridge()
 
@@ -2914,7 +2918,11 @@ open func shutdown()  {try! rustCall() {
 }
 
     /**
-     * Start this execution's independently authenticated localhost bridge.
+     * Register this execution against the host runtime's shared localhost
+     * bridge, minting an independent authentication token. Every execution
+     * under the same host runtime connects through the same port;
+     * `bind_port` only has an effect for the first execution to register
+     * while the shared listener is still unstarted.
      */
 open func startWsBridge(bindPort: UInt16)throws  -> WsBridgeEndpoint  {
     return try  FfiConverterTypeWsBridgeEndpoint_lift(try rustCallWithError(FfiConverterTypeWsBridgeStartError_lift) {
@@ -2927,7 +2935,7 @@ open func startWsBridge(bindPort: UInt16)throws  -> WsBridgeEndpoint  {
 }
 
     /**
-     * Stop the active bridge while leaving the execution reusable.
+     * Revoke this execution's bridge registration while leaving it reusable.
      */
 open func stopWsBridge()  {try! rustCall() {
         uniffiCallStatus in
@@ -5998,10 +6006,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_shutdown() != 56769) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_start_ws_bridge() != 16029) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_start_ws_bridge() != 728) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_stop_ws_bridge() != 6101) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_stop_ws_bridge() != 42383) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_activate_local_session() != 40075) {
