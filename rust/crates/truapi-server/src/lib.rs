@@ -51,6 +51,9 @@ pub mod native_renderer;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
+/// Host-neutral PolkaVM application runtime exposed through the reviewed bridge.
+#[cfg(not(target_arch = "wasm32"))]
+pub use truapi_pvm_host as pvm;
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
 pub mod native_debug;
 
@@ -101,3 +104,6 @@ truapi::uniffi_reexport_scaffolding!();
 
 #[cfg(not(target_arch = "wasm32"))]
 truapi_platform::uniffi_reexport_scaffolding!();
+
+#[cfg(not(target_arch = "wasm32"))]
+truapi_pvm_host::uniffi_reexport_scaffolding!();
