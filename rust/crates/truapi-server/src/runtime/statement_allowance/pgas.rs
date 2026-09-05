@@ -424,11 +424,6 @@ mod tests {
     const CAPTURED_COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
     const TEST_GENERATION: u32 = 7;
 
-    /// Real metadata is needed because this regression depends on the pallet
-    /// being absent.
-    const PEOPLE_METADATA: &[u8] =
-        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
-
     /// The captured ring-5 roots as a scripted `state_getStorage` result, with the
     /// transport handle so the key that was read can be checked.
     fn scripted_ring_5_roots() -> (RpcClient, ScriptedRpc) {
@@ -670,11 +665,12 @@ mod tests {
     /// defaulting there would key every ring-root read at generation 0.
     #[test]
     fn a_runtime_without_current_generation_is_named_rather_than_defaulted() {
-        let people = Metadata::decode(PEOPLE_METADATA).unwrap();
+        // Real metadata, because the regression depends on the pallet being absent.
+        let people = test_fixtures::people();
         let scripted = ScriptedRpc::new(["null"]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
-        let err = futures::executor::block_on(read_current_generation(&rpc, &people))
+        let err = futures::executor::block_on(read_current_generation(&rpc, people))
             .expect_err("the People runtime declares no MembersSubscriber");
 
         assert_eq!(
