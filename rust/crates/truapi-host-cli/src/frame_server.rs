@@ -29,8 +29,8 @@ use tracing::{debug, warn};
 use crate::bootstrap;
 use truapi_platform::ProductExecutionKind;
 use truapi_server::{
-    FrameSink, PairingHostRuntime, ProductContext, ProductRuntime, ProductRuntimeError,
-    SigningHostRuntime,
+    ChannelId, DebugSink, FrameSink, PairingHostRuntime, ProductContext, ProductRuntime,
+    ProductRuntimeError, SigningHostRuntime,
 };
 
 /// Pause after a failed `accept()` before trying again.
@@ -134,6 +134,40 @@ impl ProductRuntimeFactory for PairingHostRuntime {
 impl ProductRuntimeFactory for SigningHostRuntime {
     fn product_runtime(&self, product: ProductContext, sink: Arc<dyn FrameSink>) -> ProductRuntime {
         SigningHostRuntime::product_runtime(self, product, sink)
+    }
+}
+
+/// A [`ProductRuntimeFactory`] that installs `sink` on every product runtime the
+/// wrapped factory hands out.
+///
+/// Wrapping the factory rather than each host role keeps the tap in one place:
+/// pairing, signing, and the switchable signing runtime all reach the debugger
+/// through the same decorator, and none of them knows it is being observed.
+pub struct DebugTappedRuntime {
+    inner: Arc<dyn ProductRuntimeFactory>,
+    sink: Arc<dyn DebugSink>,
+}
+
+impl DebugTappedRuntime {
+    /// Wrap `inner` so the runtimes it builds report their frames to `sink`.
+    pub fn new(inner: Arc<dyn ProductRuntimeFactory>, sink: Arc<dyn DebugSink>) -> Arc<Self> {
+        Arc::new(Self { inner, sink })
+    }
+}
+
+impl ProductRuntimeFactory for DebugTappedRuntime {
+    fn product_runtime(&self, product: ProductContext, sink: Arc<dyn FrameSink>) -> ProductRuntime {
+        let channel_id = product.product_id.clone();
+        let runtime = self.inner.product_runtime(product, sink);
+        runtime.set_debug_sink(ChannelId(channel_id), Arc::clone(&self.sink));
+        runtime
+    }
+
+    /// Delegated to the wrapped factory. A decorator that answered the default
+    /// `None` here would silently keep product connections alive across a
+    /// session switch that is meant to invalidate them.
+    fn connection_reset(&self) -> Option<watch::Receiver<u64>> {
+        self.inner.connection_reset()
     }
 }
 
@@ -1105,5 +1139,102 @@ mod tests {
         drop(server);
         assert!(!socket_directory.exists());
         Ok(())
+    }
+
+    /// A sink that records nothing: these tests are about the decorator's
+    /// delegation, not about what reaches the debugger.
+    struct SilentSink;
+
+    impl DebugSink for SilentSink {
+        fn emit(&self, _event: truapi_server::DebugEvent) {}
+    }
+
+    /// A factory that reports a reset signal and refuses to build runtimes, so a
+    /// test can observe `connection_reset` forwarding on its own.
+    struct ResettingFactory {
+        tx: watch::Sender<u64>,
+    }
+
+    impl ProductRuntimeFactory for ResettingFactory {
+        fn product_runtime(
+            &self,
+            _product: ProductContext,
+            _sink: Arc<dyn FrameSink>,
+        ) -> ProductRuntime {
+            panic!("this test observes connection_reset only")
+        }
+
+        fn connection_reset(&self) -> Option<watch::Receiver<u64>> {
+            Some(self.tx.subscribe())
+        }
+    }
+
+    /// `DebugTappedRuntime` must forward `connection_reset`, not fall back to the
+    /// trait default. Returning `None` would leave product connections alive
+    /// across a session switch that exists to invalidate them, and nothing else
+    /// in the accept loop would report the omission.
+    #[tokio::test]
+    async fn the_debug_tap_forwards_the_connection_reset_signal() -> Result<()> {
+        let (tx, _keepalive) = watch::channel(0u64);
+        let inner: Arc<dyn ProductRuntimeFactory> = Arc::new(ResettingFactory { tx: tx.clone() });
+        let tapped = DebugTappedRuntime::new(inner, Arc::new(SilentSink));
+
+        let mut reset = tapped
+            .connection_reset()
+            .context("the tap dropped the reset signal")?;
+        tx.send(7)?;
+        reset.changed().await?;
+        assert_eq!(*reset.borrow_and_update(), 7);
+        Ok(())
+    }
+
+    /// A factory with no reset signal must stay that way through the decorator:
+    /// forwarding is delegation, not fabrication.
+    #[test]
+    fn the_debug_tap_reports_no_reset_signal_when_the_inner_factory_has_none() {
+        let tapped = DebugTappedRuntime::new(Arc::new(UnusedRuntimeFactory), Arc::new(SilentSink));
+        assert!(tapped.connection_reset().is_none());
+    }
+
+    /// The decorator builds its runtime through the wrapped factory, so a tapped
+    /// host serves the same runtime it would have served untapped.
+    #[test]
+    fn the_debug_tap_builds_runtimes_through_the_wrapped_factory() -> Result<()> {
+        let tapped = DebugTappedRuntime::new(signing_runtime()?, Arc::new(SilentSink));
+        let product =
+            ProductContext::new_with_execution("localhost:3000".into(), ProductExecutionKind::App)?;
+        let runtime = tapped.product_runtime(product, Arc::new(DiscardingFrameSink));
+        runtime.dispose();
+        Ok(())
+    }
+
+    /// Frame sink for the runtime the test above builds and immediately disposes.
+    struct DiscardingFrameSink;
+
+    impl FrameSink for DiscardingFrameSink {
+        fn emit_frame(&self, _frame: Vec<u8>) {}
+    }
+
+    /// §9 requires the dial report to name the source it read. Two switches
+    /// resolve to one value, so a stale exported variable can silently beat an
+    /// explicit flag; the label is the only thing that distinguishes them, and
+    /// getting it backwards points a reader at the wrong switch.
+    #[test]
+    fn the_dial_report_names_the_switch_that_supplied_the_url() {
+        // Matching the variable means the variable is a plausible source.
+        assert_eq!(
+            crate::debugger_url_source_for_test("ws://127.0.0.1:9231", Some("ws://127.0.0.1:9231")),
+            "TRUAPI_DEBUGGER_URL"
+        );
+        // A different variable value cannot have supplied this URL, so the flag did.
+        assert_eq!(
+            crate::debugger_url_source_for_test("ws://127.0.0.1:9231", Some("ws://127.0.0.1:9300")),
+            "--debugger"
+        );
+        // No variable at all leaves only the flag.
+        assert_eq!(
+            crate::debugger_url_source_for_test("ws://127.0.0.1:9231", None),
+            "--debugger"
+        );
     }
 }
