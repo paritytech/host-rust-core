@@ -410,11 +410,15 @@ debugger: dev-bootstrap ## Wire debugger (:9231) + a DEV-MODE dotli host (:5173)
 	# both production builds, and the dial sits behind `import.meta.env.DEV`, which
 	# a production bundle replaces with `false`. The host then never dials and the
 	# board stays empty with no error - so build the host in dev mode here.
-	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true bunx --bun vite build
+	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true \
+		VITE_TRUAPI_DEBUGGER=ws://127.0.0.1:$(DEBUGGER_PORT) bunx --bun vite build
 	@printf '\n  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'
 	@printf '  Host:      http://localhost:5173/localhost:3000\n\n'
-	@printf '  One-time, in the browser console on http://localhost:5173 (the realm that\n'
-	@printf '  creates the host runtime - localStorage is per-origin AND per browser profile):\n\n'
+	@printf '  The dial URL is passed to the host build. A dotli revision that reads\n'
+	@printf '  VITE_TRUAPI_DEBUGGER seeds it into localStorage for every browser profile;\n'
+	@printf '  the revision this repo pins does not, so until that pin moves, set it once\n'
+	@printf '  in the browser console on http://localhost:5173 (the realm that creates the\n'
+	@printf '  host runtime - localStorage is per-origin AND per browser profile):\n\n'
 	@printf '    localStorage.setItem("truapi:debugger", "ws://127.0.0.1:$(DEBUGGER_PORT)"); location.reload()\n\n'
 	@printf '  The host logs `wire debugger: dialling ...` once it connects.\n\n'
 	@trap 'kill 0' EXIT; \
