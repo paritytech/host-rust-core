@@ -94,6 +94,23 @@ curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scri
 serves a fake release over loopback, installs it with the real installer, and
 updates it. Nothing contacts GitHub.
 
+### Resetting state for network-specific identities
+
+Reserved identities derive under `uid.paseo` / `peopl.paseo` on
+`paseo-next-v2`, and `uid.testnet` / `peopl.testnet` on `previewnet`.
+Account and paired-host stores use version `2`. Older stores are rejected with
+reset instructions because their `.dot` identities and pairings cannot be
+reused. There is no state migration.
+
+Stop the CLI and discard its previous base directory, or start with a fresh one:
+
+```bash
+truapi-host signing-host --network paseo-next-v2 --base-path ./truapi-host-paseo
+```
+
+Onboard a new test identity, sign out on each paired host, and pair again.
+Existing `.dot` personhood membership does not transfer to the new keys.
+
 ### Building from source
 
 A source build resolves the product-script runner from the checkout, so it also

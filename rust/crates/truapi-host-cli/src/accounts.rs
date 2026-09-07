@@ -23,6 +23,7 @@ use zeroize::Zeroize;
 
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
 const ACCOUNT_STORE_LOCK_FILE: &str = "accounts.json.lock";
+const ACCOUNT_STORE_VERSION: u32 = 2;
 const DEFAULT_USERNAME_PREFIX: &str = "headless";
 const IMPORTED_ACCOUNT_NAME: &str = "imported";
 
@@ -262,11 +263,19 @@ impl AccountStore {
                 serde_json::from_str(&text).with_context(|| format!("decode {}", path.display()))?
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => AccountStoreData {
-                version: 1,
+                version: ACCOUNT_STORE_VERSION,
                 accounts: Vec::new(),
             },
             Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
         };
+        anyhow::ensure!(
+            data.version == ACCOUNT_STORE_VERSION,
+            "unsupported account store version {} in {}; \
+             reserved keys use the network suffix; restart with a fresh \
+             --base-path, onboard again, and re-pair devices",
+            data.version,
+            path.display()
+        );
         Ok(Self { path, data })
     }
 
@@ -1013,6 +1022,36 @@ mod tests {
     }
 
     #[test]
+    fn incompatible_account_stores_require_fresh_state() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join(ACCOUNT_STORE_FILE);
+        for version in [1, 3] {
+            let stored = serde_json::to_vec(&serde_json::json!({
+                "version": version,
+                "accounts": [record("auto-1", "paseo-next-v2", true)],
+            }))?;
+            fs::write(&path, &stored)?;
+
+            let error = resolve_cached_signer(dir.path(), "paseo-next-v2", None)
+                .expect_err("incompatible state must not activate a cached signer");
+
+            assert_eq!(
+                (error.to_string(), fs::read(&path)?),
+                (
+                    format!(
+                        "unsupported account store version {version} in {}; \
+                         reserved keys use the network suffix; restart with a fresh \
+                         --base-path, onboard again, and re-pair devices",
+                        path.display()
+                    ),
+                    stored,
+                )
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn save_roundtrips_account_store() -> Result<()> {
         let dir = tempdir()?;
         let mut store = AccountStore::load(dir.path())?;
@@ -1022,10 +1061,13 @@ mod tests {
         let loaded = AccountStore::load(dir.path())?;
 
         assert_eq!(
-            loaded
-                .get("paseo-next-v2", "auto-1")
-                .map(|record| record.name.as_str()),
-            Some("auto-1")
+            (
+                loaded.data.version,
+                loaded
+                    .get("paseo-next-v2", "auto-1")
+                    .map(|record| record.name.as_str()),
+            ),
+            (2, Some("auto-1"))
         );
         assert!(!temp_path(&dir.path().join(ACCOUNT_STORE_FILE)).exists());
         Ok(())

@@ -239,7 +239,7 @@ fn exec_devices_lists_and_removes_exactly_one_paired_device() {
     std::fs::write(
         profile.join("paired-hosts.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "version": 1,
+            "version": 2,
             "paired_hosts": [
                 {
                     "version": 1,
@@ -329,7 +329,7 @@ fn existing_local_signer_is_activated_and_cached_at_startup() {
     std::fs::write(
         base_path.join("accounts.json"),
         r#"{
-  "version": 1,
+  "version": 2,
   "accounts": [{
     "name": "auto-1",
     "network": "paseo-next-v2",
@@ -375,7 +375,7 @@ fn imported_session_restores_the_exact_bound_account() {
     std::fs::write(
         profile.join("accounts.json"),
         r#"{
-  "version": 1,
+  "version": 2,
   "accounts": [{
     "name": "imported",
     "network": "paseo-next-v2",
@@ -430,7 +430,7 @@ fn imported_session_without_dotns_username_restores_by_account_binding() {
     std::fs::write(
         profile.join("accounts.json"),
         r#"{
-  "version": 1,
+  "version": 2,
   "accounts": [{
     "name": "imported",
     "network": "paseo-next-v2",

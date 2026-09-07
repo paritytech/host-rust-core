@@ -1334,8 +1334,9 @@ treated as not remembered.
 
 ### 13.4 Paired-host store
 
-`paired-hosts.json` is version `1`. It contains a list of versioned peer records.
-Each record contains:
+`paired-hosts.json` is version `2`. It contains a list of version `1` peer
+records. Other store versions are rejected before resuming saved peers, with
+instructions to use fresh CLI state and pair again. Each record contains:
 
 - the statement account ID used as its unique key;
 - the public encryption key needed to resume SSO; and
@@ -1402,7 +1403,9 @@ state, and other role-owned runtime data.
 
 ### 13.7 Account store
 
-`accounts.json` is versioned and stores records containing:
+`accounts.json` is version `2`. Other versions are rejected before restoring
+or provisioning an account, with instructions to use fresh CLI state. The
+store contains records with:
 
 - local name;
 - network id;
@@ -1416,6 +1419,13 @@ state, and other role-owned runtime data.
 Account mutations hold an exclusive `accounts.json.lock`. Secret-file writes
 use a temporary file, flush, atomic rename, and `0600` permissions on Unix.
 The lock file can be created during a read-only cached-signer lookup.
+
+Version `1` account and paired-host stores used the fixed `.dot` identity
+derivation and cannot be reused with network-specific reserved keys. Discard
+the previous base directory, onboard a new test identity, and pair devices
+again. Alternatively, use fresh paths as
+shown in the [CLI reset instructions](README.md#resetting-state-for-network-specific-identities).
+There is no state migration.
 
 ### 13.8 Write and corruption behavior
 
