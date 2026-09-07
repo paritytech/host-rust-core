@@ -957,64 +957,75 @@ async fn resource_allocation_response(
         }
     }
 
-    let mut outcomes = Vec::with_capacity(request.resources.len());
-    let mut item_failures = Vec::new();
-    for resource in request.resources {
-        let outcome = match resource {
-            SsoAllocatableResource::StatementStoreAllowance => allocate_statement_store_allowance(
-                services,
-                signing_host,
-                &request.calling_product_id,
-                request.on_existing,
-            )
-            .await
-            .map(|slot_account_key| {
-                SsoAllocationOutcome::Allocated(SsoAllocatedResource::StatementStoreAllowance {
-                    slot_account_key,
-                })
-            }),
-            SsoAllocatableResource::BulletinAllowance => allocate_bulletin_allowance(
-                services,
-                signing_host,
-                &request.calling_product_id,
-                request.on_existing,
-            )
-            .await
-            .map(|slot_account_key| {
-                SsoAllocationOutcome::Allocated(SsoAllocatedResource::BulletinAllowance {
-                    slot_account_key,
-                })
-            }),
-            SsoAllocatableResource::SmartContractAllowance(index) => {
-                allocate_smart_contract_allowance(
-                    services,
-                    signing_host,
-                    &request.calling_product_id,
-                    index.clone(),
-                    request.on_existing,
-                )
-                .await
-                .map(|()| {
-                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::SmartContractAllowance)
-                })
+    let resource_count = request.resources.len();
+    let calling_product_id = request.calling_product_id;
+    let policy = request.on_existing;
+    let allocation_results =
+        futures::future::join_all(request.resources.into_iter().map(|resource| async {
+            match resource {
+                SsoAllocatableResource::StatementStoreAllowance => {
+                    allocate_statement_store_allowance(
+                        services,
+                        signing_host,
+                        &calling_product_id,
+                        policy,
+                    )
+                    .await
+                    .map(|slot_account_key| {
+                        SsoAllocationOutcome::Allocated(
+                            SsoAllocatedResource::StatementStoreAllowance { slot_account_key },
+                        )
+                    })
+                }
+                SsoAllocatableResource::BulletinAllowance => {
+                    allocate_bulletin_allowance(services, signing_host, &calling_product_id, policy)
+                        .await
+                        .map(|slot_account_key| {
+                            SsoAllocationOutcome::Allocated(
+                                SsoAllocatedResource::BulletinAllowance { slot_account_key },
+                            )
+                        })
+                }
+                SsoAllocatableResource::SmartContractAllowance(index) => {
+                    allocate_smart_contract_allowance(
+                        services,
+                        signing_host,
+                        &calling_product_id,
+                        index,
+                        policy,
+                    )
+                    .await
+                    .map(|()| {
+                        SsoAllocationOutcome::Allocated(
+                            SsoAllocatedResource::SmartContractAllowance,
+                        )
+                    })
+                }
+                SsoAllocatableResource::AutoSigning => {
+                    (|| -> Result<_, AllowanceAllocationError> {
+                        let product_root_private_key = signing_host
+                            .product_subtree_secret(&calling_product_id)
+                            .map_err(AllowanceAllocationError::Authority)?;
+                        let root_entropy = signing_host.root_entropy()?;
+                        let ring_vrf_domain_entropy =
+                            derive_ring_vrf_domain_entropy(&root_entropy, &calling_product_id)
+                                .map_err(super::product_authority_error)
+                                .map_err(AllowanceAllocationError::Authority)?;
+                        Ok(SsoAllocationOutcome::Allocated(
+                            SsoAllocatedResource::AutoSigning {
+                                product_root_private_key,
+                                ring_vrf_domain_entropy,
+                            },
+                        ))
+                    })()
+                }
             }
-            SsoAllocatableResource::AutoSigning => (|| -> Result<_, AllowanceAllocationError> {
-                let product_root_private_key = signing_host
-                    .product_subtree_secret(&request.calling_product_id)
-                    .map_err(AllowanceAllocationError::Authority)?;
-                let root_entropy = signing_host.root_entropy()?;
-                let ring_vrf_domain_entropy =
-                    derive_ring_vrf_domain_entropy(&root_entropy, &request.calling_product_id)
-                        .map_err(super::product_authority_error)
-                        .map_err(AllowanceAllocationError::Authority)?;
-                Ok(SsoAllocationOutcome::Allocated(
-                    SsoAllocatedResource::AutoSigning {
-                        product_root_private_key,
-                        ring_vrf_domain_entropy,
-                    },
-                ))
-            })(),
-        };
+        }))
+        .await;
+
+    let mut outcomes = Vec::with_capacity(resource_count);
+    let mut item_failures = Vec::new();
+    for outcome in allocation_results {
         match outcome {
             Ok(outcome) => outcomes.push(outcome),
             Err(err) => {
