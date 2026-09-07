@@ -157,24 +157,13 @@ pub(super) async fn read_resource_u32(
     rpc: &RpcClient,
     metadata: &Metadata,
     function: &'static str,
-    fallback_constant: &'static str,
 ) -> Result<u32, StatementAllowanceError> {
-    if metadata.has_view_function("Resources", function) {
-        read_u32(rpc, metadata, "Resources", function).await
-    } else {
-        metadata.constant_u32("Resources", fallback_constant)
-    }
+    read_u32(rpc, metadata, "Resources", function).await
 }
 
-pub(super) fn supports_resource_u32(
-    metadata: &Metadata,
-    function: &'static str,
-    fallback_constant: &'static str,
-) -> bool {
+pub(super) fn supports_resource_u32(metadata: &Metadata, function: &'static str) -> bool {
     let Some(definition) = metadata.view_function("Resources", function) else {
-        return metadata
-            .constant_u32("Resources", fallback_constant)
-            .is_ok();
+        return false;
     };
     definition.inputs == 0
         && matches!(
@@ -396,12 +385,10 @@ mod tests {
         assert!(!supports_resource_u32(
             &metadata,
             "get_stmt_store_slots_per_period",
-            "StmtStoreSlotsPerPeriod",
         ));
         assert!(supports_resource_u32(
             &metadata,
             "get_lite_stmt_store_slots_per_period",
-            "LiteStmtStoreSlotsPerPeriod",
         ));
     }
 }

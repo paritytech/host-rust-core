@@ -199,8 +199,10 @@ replacement cooldown, so rotation only happens when no slot is replaceable.
 In a TTY, both hosts open the same scrollable transcript above a single command
 bar. Host lifecycle events, tracing logs, every incoming SSO request, script
 stdout/stderr, commands, and approval prompts all use that transcript, so
-background output cannot overwrite input. On `signing-host`, `--deeplink URL`
-opens the UI and starts the pairing response after initialization.
+background output cannot overwrite input. The status bar shows the active log
+value. On
+`signing-host`, `--deeplink URL` opens the UI and starts the pairing response
+after initialization.
 
 Commands always start with `/`:
 
@@ -218,7 +220,7 @@ Commands always start with `/`:
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
 | `/login` | Start pairing for the selected product, show its QR code, and copy its deeplink to the clipboard. |
 | `/logout` | Disconnect the pairing host and discard its old pairing keypair. |
-| `/log <level>` | Change tracing to `error`, `warn`, `info`, `debug`, or `trace`. |
+| `/log <level>` | Save tracing as `error`, `warn`, `info`, `debug`, or `trace`, and apply it now. |
 | `/product` | Show the currently selected product. |
 | `/product <id>` | Switch the product used by future scripts and frame connections. |
 | `/session` | Show the current session name, path, and user id (signing host). |
@@ -315,9 +317,9 @@ settings containing arguments, such as `EDITOR='code --wait'`, are supported.
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
 and its files live under
-`<base-path>/<network>/<username>_signing_host`. Provisional and legacy named
-sessions are promoted to that user-owned root, so an old name such as `pgtest`
-does not remain the durable namespace. The selected username is remembered per
+`<base-path>/<network>/<username>_signing_host`. Provisional named sessions
+are promoted to that user-owned root, so an old name such as `pgtest` does not
+remain the durable namespace. The selected username is remembered per
 network but is not repeated in the status bar as a separate session field.
 `default` remains only as a compatibility/bootstrap location until a username
 is resolved. It is hidden from session completion and listing and cannot be
@@ -388,8 +390,8 @@ other saved pairings and the signing identity are unchanged.
 `/session --clear <name>` permanently deletes that session's local signer
 keys, scripts, core/product storage, and permissions. `/session --clear-all`
 does the same for every signing-host session on the current network, including
-legacy bootstrap state, while preserving other networks and pairing-host
-state. Neither command deregisters an on-chain username. The interactive UI
+the network's signing-host bootstrap state, while preserving other networks and
+pairing-host state. Neither command deregisters an on-chain username. The interactive UI
 asks for `[y/N]` confirmation. `exec` treats the explicit one-shot command as
 confirmation and runs it immediately. Clearing an inactive named session keeps
 the host running; clearing the active session or all sessions stops the signing
@@ -481,16 +483,14 @@ the selected id, so the newly selected product sees its own state. The next
 Pairing-host state follows the same identity rule under
 `<base-path>/<network>/<username>_pairing_host`. Before the first identity is
 known it uses the small `<network>/pairing-host` bootstrap; connecting moves
-legacy bootstrap data to the first resolved user. After `/logout`, connecting
+that bootstrap data to the first resolved user. After `/logout`, connecting
 as a different user swaps to that user's KV/core namespace instead of carrying
 the previous user's product data forward.
 
 Product-local KV is persisted independently under each identity root as
 `storage/<safe-product-slug>--<hash>.json`. Each document records its normalized
-product id and raw product keys. On first use, the older combined
-`product-storage.json` in that profile is split into those files and retained
-as `product-storage.v1.json.migrated`. Product and core JSON writes use a
-flushed temporary file and atomic rename.
+product id and raw product keys. Product and core JSON writes use a flushed
+temporary file and atomic rename.
 
 Six scripts ship under `js/scripts/`:
 
@@ -609,6 +609,10 @@ are unavailable on the pairing host and in one-shot `exec` mode.
 
 Use the global `--log-level` option (`error`, `warn`, `info`, `debug`, or
 `trace`) before or after the subcommand, or `/log <level>` in the terminal UI.
+`/log` saves the level under `--base-path`, so pairing and signing hosts restore
+it after restart. A one-off `--log-level` or `TRUAPI_HOST_LOG` value overrides
+the saved level for that process without changing it; otherwise the fallback is
+`info`.
 Every decoded inbound SSO request and every published response is visible
 regardless of the selected level. Stable response entries include the request
 name, statement and remote message ids, protocol outcome, and elapsed time;
@@ -625,8 +629,11 @@ truapi-host signing-host --log-level trace --deeplink '<deeplink>' --auto-accept
 Debug and trace output may contain product signing payloads. `RUST_LOG` takes
 precedence at startup and remains available for module-specific filters, except
 that the noisy `rustls` and `tungstenite::protocol` tracing targets are always
-excluded from CLI log output. Without `RUST_LOG`, `--log-level` and `/log`
-apply to TrUAPI targets while other third-party dependencies remain at `warn`.
+excluded from CLI log output. The status bar continues to show the selected CLI
+level when `RUST_LOG` is absent; otherwise it shows the exact `RUST_LOG` value.
+`/log` replaces the startup filter with the selected level. Without `RUST_LOG`,
+`--log-level` and `/log` apply to TrUAPI targets while other third-party
+dependencies remain at `warn`.
 
 ## Statement-store allowance
 

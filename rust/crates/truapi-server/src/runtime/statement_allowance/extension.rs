@@ -448,11 +448,6 @@ impl Metadata {
             .map(Vec::as_slice)
     }
 
-    pub(super) fn has_view_function(&self, pallet: &str, function: &str) -> bool {
-        self.view_functions
-            .contains_key(&(pallet.to_string(), function.to_string()))
-    }
-
     pub(super) fn view_function(&self, pallet: &str, function: &str) -> Option<ViewFunctionDef> {
         self.view_functions
             .get(&(pallet.to_string(), function.to_string()))
@@ -934,7 +929,7 @@ mod tests {
         call
     }
 
-    /// V16 metadata captured from paseo-next-v2 (spec 1000032), the version the
+    /// V16 metadata captured from paseo-next-v2 (spec 3000000), the version the
     /// runtime API serves. Distinct from `FIXTURE`, which is the V14 the legacy
     /// RPC answers with and predates the `revision` field.
     const FIXTURE_V16: &[u8] =
@@ -967,11 +962,6 @@ mod tests {
                     .unwrap(),
             ),
             ((0x02, 0x01), (0x03, 0x01)),
-        );
-        assert!(
-            metadata
-                .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
-                .is_some()
         );
     }
 

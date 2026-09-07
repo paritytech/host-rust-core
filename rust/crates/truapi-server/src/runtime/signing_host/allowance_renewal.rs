@@ -411,6 +411,9 @@ pub(super) async fn renew_now(
     let chain_state = fetch_chain_state(&rpc)
         .await
         .map_err(|err| err.to_string())?;
+    let network_suffix = statement_allowance::slot::read_network_suffix(&rpc)
+        .await
+        .map_err(|err| err.to_string())?;
     // Every ring back to index 0, because a membership that stopped being
     // re-included still proves against the ring that holds it.
     let memberships = find_including_rings(&rpc, &metadata, &candidates, u32::MAX)
@@ -426,6 +429,7 @@ pub(super) async fn renew_now(
         rpc: &rpc,
         metadata: &metadata,
         chain_state: &chain_state,
+        network_suffix: &network_suffix,
         candidates: &candidates,
         memberships: &memberships,
     };

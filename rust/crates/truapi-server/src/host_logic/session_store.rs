@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc;
-use futures::stream::{self, BoxStream, StreamExt};
+use futures::stream::BoxStream;
 
 /// Fan-out notifier for host session-storage change ticks.
 #[derive(Default)]
@@ -30,14 +30,14 @@ impl SessionStoreChangeNotifier {
         subscribers.retain(|tx| tx.unbounded_send(()).is_ok());
     }
 
-    /// Subscribe to storage-change ticks, including one initial tick.
+    /// Subscribe to storage-change ticks.
     pub fn subscribe(&self) -> BoxStream<'static, ()> {
         let (tx, rx) = mpsc::unbounded();
         self.subscribers
             .lock()
             .expect("session-store notifier mutex poisoned")
             .push(tx);
-        Box::pin(stream::once(async {}).chain(rx))
+        Box::pin(rx)
     }
 }
 
@@ -48,20 +48,10 @@ mod tests {
     use futures::{FutureExt, StreamExt};
 
     #[test]
-    fn subscribe_emits_initial_tick() {
-        let notifier = SessionStoreChangeNotifier::new();
-        let mut ticks = notifier.subscribe();
-
-        assert!(block_on(ticks.next()).is_some());
-    }
-
-    #[test]
     fn notify_broadcasts_to_subscribers() {
         let notifier = SessionStoreChangeNotifier::new();
         let mut first = notifier.subscribe();
         let mut second = notifier.subscribe();
-        let _ = block_on(first.next());
-        let _ = block_on(second.next());
 
         notifier.notify();
 
@@ -88,10 +78,9 @@ mod tests {
     }
 
     #[test]
-    fn no_tick_without_notify_after_initial() {
+    fn no_tick_without_notify() {
         let notifier = SessionStoreChangeNotifier::new();
         let mut ticks = notifier.subscribe();
-        let _ = block_on(ticks.next());
 
         assert!(ticks.next().now_or_never().is_none());
     }

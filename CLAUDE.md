@@ -20,6 +20,19 @@ js/packages/
                           `.` (shared host types), `/web` (iframe + Web
                           Worker), `/worker-runtime` (Worker entry).
                           WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+  truapi-debugger/        @parity/truapi-debugger (published to npm): the debugger.
+                          Owns all decoding of the wire frames the Rust host tap
+                          (truapi-server's DebugSink) streams out, and decodes
+                          every frame by default (no denylist, no reveal toggle).
+                          Holds the trace, envelope-decode, and value-decode
+                          engines, the shared view model + renderers, and two
+                          mounts over them: server.ts (standalone WS+HTTP app on
+                          127.0.0.1:9231 that hosts dial into, `npm run serve`;
+                          endpoints /, /op-list, /op, /view, /channels, /stats,
+                          /traces, /frame) and in-app.ts (createInAppDebugger:
+                          same-page host, no server, no dial). @parity/truapi has
+                          no debug seam. Where the app ultimately lives is still
+                          an open decision.
 js/container/              TS lockdown container for the iOS host web view; `npm run build`
                            bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
 ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);

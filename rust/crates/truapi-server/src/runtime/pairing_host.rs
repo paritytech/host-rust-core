@@ -7,6 +7,8 @@
 mod sso_channel;
 
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::channel::oneshot;
@@ -251,6 +253,27 @@ enum StoredSessionActivationError {
     Changed,
 }
 
+/// State carried across the reconciles of one session store sync task.
+#[derive(Default)]
+struct SessionStoreSync {
+    /// Clearing the store can itself notify the sync subscription; clear at
+    /// most once per read-error streak so a persistently failing read cannot
+    /// spin the task through its own clear notifications.
+    cleared_after_read_error: bool,
+}
+
+impl SessionStoreSync {
+    /// Re-read the persisted auth session and reconcile the in-memory one.
+    async fn reconcile(&mut self, pairing_host: &PairingHost) {
+        self.cleared_after_read_error = matches!(
+            pairing_host
+                .reconcile_stored_session(!self.cleared_after_read_error, true)
+                .await,
+            Err(StoredSessionActivationError::Read(_))
+        );
+    }
+}
+
 /// Remote account authority for a pairing host.
 pub(crate) struct PairingHost {
     /// Host platform backing all syscalls.
@@ -282,6 +305,9 @@ pub(crate) struct PairingHost {
     session_lifecycle: Mutex<SessionLifecycle>,
     #[cfg(test)]
     external_session_activation_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    /// Change notifications the sync task has finished reconciling.
+    #[cfg(test)]
+    session_store_change_ticks: AtomicUsize,
     /// Self-reference captured by the spawned disconnect-monitor task.
     weak_self: Weak<PairingHost>,
     /// Task spawner for background monitors.
@@ -316,6 +342,8 @@ impl PairingHost {
             session_lifecycle: Mutex::new(SessionLifecycle::default()),
             #[cfg(test)]
             external_session_activation_pause: Mutex::new(None),
+            #[cfg(test)]
+            session_store_change_ticks: AtomicUsize::new(0),
             weak_self: weak_self.clone(),
             spawner: services.spawner.clone(),
         })
@@ -356,6 +384,12 @@ impl PairingHost {
     #[cfg(test)]
     pub(crate) fn start_session_store_sync_for_tests(self: Arc<Self>, spawner: Spawner) {
         self.start_session_store_sync(spawner);
+    }
+
+    /// Change notifications the sync task has finished reconciling.
+    #[cfg(test)]
+    pub(crate) fn session_store_change_ticks_for_tests(&self) -> usize {
+        self.session_store_change_ticks.load(Ordering::SeqCst)
     }
 
     /// Test alias for [`Self::start_remote_monitor_for_current_session`].
@@ -565,39 +599,32 @@ impl PairingHost {
         Ok(())
     }
 
-    /// Spawn the background task that re-reads the persisted auth session on
-    /// every change notification and reconciles the in-memory session.
+    /// Spawn the background task that keeps the in-memory session in step
+    /// with the persisted auth session. It reconciles once at boot and
+    /// announces the outcome, so the host always receives an opening auth
+    /// state, then reconciles again on every change notification.
     #[instrument(skip_all, fields(runtime.method = "session_store.sync"))]
     pub(crate) fn start_session_store_sync(self: Arc<Self>, spawner: Spawner) {
         let pairing_host = Arc::downgrade(&self);
+        drop(self);
         spawner(Box::pin(async move {
-            let Some(current) = pairing_host.upgrade() else {
+            let Some(booting) = pairing_host.upgrade() else {
                 return;
             };
-            let mut ticks = current.session_store_changes.subscribe();
-            drop(current);
-            // Clearing the store can itself notify this subscription; clear at
-            // most once per read-error streak so a persistently failing read
-            // cannot spin the loop through its own clear notifications.
-            let mut cleared_after_read_error = false;
+            let mut ticks = booting.session_store_changes.subscribe();
+            let mut sync = SessionStoreSync::default();
+            sync.reconcile(&booting).await;
+            booting.auth_state.announce_current();
+            drop(booting);
             while ticks.next().await.is_some() {
                 let Some(pairing_host) = pairing_host.upgrade() else {
                     break;
                 };
-                match pairing_host
-                    .reconcile_stored_session(!cleared_after_read_error, true)
-                    .await
-                {
-                    Ok(())
-                    | Err(StoredSessionActivationError::Missing)
-                    | Err(StoredSessionActivationError::Invalid(_))
-                    | Err(StoredSessionActivationError::Changed) => {
-                        cleared_after_read_error = false;
-                    }
-                    Err(StoredSessionActivationError::Read(_)) => {
-                        cleared_after_read_error = true;
-                    }
-                }
+                sync.reconcile(&pairing_host).await;
+                #[cfg(test)]
+                pairing_host
+                    .session_store_change_ticks
+                    .fetch_add(1, Ordering::SeqCst);
             }
         }));
     }

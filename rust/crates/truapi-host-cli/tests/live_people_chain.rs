@@ -103,6 +103,9 @@ async fn scanning_a_live_period_answers_without_erroring() {
         .await
         .expect("read the live chain context");
     let period = current_period();
+    let network_suffix = alloc::slot::read_network_suffix(&rpc)
+        .await
+        .expect("read the live network suffix");
 
     // Entropy and target are throwaway: no alias derived from them owns a slot,
     // so the scan must offer a free one or report the table full — never error.
@@ -112,6 +115,7 @@ async fn scanning_a_live_period_answers_without_erroring() {
         alloc::slot::SlotScan {
             collection: PersonhoodCollection::LitePeople,
             entropy: [0x11; 32],
+            network_suffix: &network_suffix,
             period,
             target: &[0x22; 32],
             excluded: &[],
