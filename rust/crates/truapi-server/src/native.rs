@@ -256,11 +256,8 @@ pub enum NativeRuntimeConfigError {
         /// Actual deeplink scheme value.
         scheme: String,
     },
-    /// Network suffix was not one bare lowercase dotNS label of at most 16
-    /// bytes.
-    #[error(
-        "network_suffix must be a bare lowercase dotNS TLD of at most 16 bytes, got {network_suffix:?}"
-    )]
+    /// Network suffix was not a supported dotNS TLD.
+    #[error("network_suffix must be a supported dotNS TLD, got {network_suffix:?}")]
     InvalidNetworkSuffix {
         /// Actual network suffix value.
         network_suffix: String,

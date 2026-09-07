@@ -95,9 +95,8 @@ pub struct SigningHostConfig {
     /// The network's dotNS TLD without the leading dot: `dot`, `paseo`,
     /// `testnet`. Every reserved RFC-0022 identity the wallet derives ends in
     /// it: the `uid.<suffix>` identity account and the `peopl.<suffix>` person
-    /// ring-VRF keys. The People chain scopes its proof contexts with the same
-    /// value (`NetworkSuffix.NetworkSuffix`), so the two never disagree about
-    /// which network a person belongs to.
+    /// ring-VRF keys. Must match the People chain's
+    /// `NetworkSuffix.NetworkSuffix` value used for proof contexts.
     pub network_suffix: String,
 }
 
@@ -235,22 +234,9 @@ impl SigningHostConfig {
     }
 }
 
-/// Longest network suffix the People chain accepts
-/// (`indiv_support::context::MAX_NETWORK_SUFFIX_LENGTH`).
-const MAX_NETWORK_SUFFIX_LENGTH: usize = 16;
-
-/// A network suffix is one bare dotNS label: the part after the last dot of a
-/// product id. It is hashed into key derivations verbatim, so anything that
-/// could also spell a different product id (`peopl.dot.x` from a suffix of
-/// `dot.x`, or `peopl.` from an empty one) is rejected here rather than
-/// silently deriving a person nobody else recognises.
 fn validate_network_suffix(network_suffix: &str) -> Result<(), RuntimeConfigValidationError> {
     require_non_empty("network_suffix", network_suffix)?;
-    let well_formed = network_suffix.len() <= MAX_NETWORK_SUFFIX_LENGTH
-        && network_suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
-    if !well_formed {
+    if !DOTNS_TLDS.contains(&network_suffix) {
         return Err(RuntimeConfigValidationError::InvalidNetworkSuffix {
             network_suffix: network_suffix.to_string(),
         });
@@ -888,11 +874,8 @@ pub enum RuntimeConfigValidationError {
         /// Actual product id value.
         product_id: String,
     },
-    /// Network suffix was not one bare lowercase dotNS label of at most 16
-    /// bytes.
-    #[display(
-        "network_suffix must be a bare lowercase dotNS TLD of at most 16 bytes, got {network_suffix:?}"
-    )]
+    /// Network suffix was not a supported dotNS TLD.
+    #[display("network_suffix must be a supported dotNS TLD, got {network_suffix:?}")]
     InvalidNetworkSuffix {
         /// Actual network suffix value.
         network_suffix: String,
@@ -1536,16 +1519,11 @@ mod tests {
 
     #[test]
     fn a_signing_host_is_configured_for_one_dotns_tld() {
-        // Every TLD navigation accepts is a valid suffix, and nothing is
-        // assumed about which one a host runs against.
         for tld in DOTNS_TLDS {
             let config = signing_host_config(tld).expect("a known TLD is a valid suffix");
             assert_eq!(config.network_suffix, *tld);
         }
 
-        // The suffix is hashed into the reserved derivations as `peopl.<suffix>`,
-        // so anything that does not read as one bare label is refused rather
-        // than deriving keys under a name that is not a product id.
         assert_eq!(
             signing_host_config(""),
             Err(RuntimeConfigValidationError::EmptyField {
@@ -1553,6 +1531,8 @@ mod tests {
             })
         );
         for malformed in [
+            "pasoe",
+            "unknown",
             ".paseo",
             "peopl.paseo",
             "Paseo",

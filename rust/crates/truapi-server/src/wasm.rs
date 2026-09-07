@@ -675,7 +675,7 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
         }
         RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
             JsValue::from_str(&format!(
-                "runtimeConfig.networkSuffix must be a bare lowercase dotNS TLD of at most 16 bytes, got {network_suffix:?}"
+                "runtimeConfig.networkSuffix must be a supported dotNS TLD, got {network_suffix:?}"
             ))
         }
     }

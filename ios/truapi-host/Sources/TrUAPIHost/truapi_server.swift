@@ -4445,8 +4445,7 @@ enum NativeRuntimeConfigError: Swift.Error, Equatable, Hashable, Foundation.Loca
          */scheme: String
     )
     /**
-     * Network suffix was not one bare lowercase dotNS label of at most 16
-     * bytes.
+     * Network suffix was not a supported dotNS TLD.
      */
     case InvalidNetworkSuffix(
         /**
