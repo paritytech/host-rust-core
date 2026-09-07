@@ -764,7 +764,7 @@ fn bare_store_label<'a>(label: &'a str, tld: &str) -> Option<&'a str> {
 
 /// The TLD of networks whose `DotnsProtocolRegistry` has no `tld()` view;
 /// previewnet is one.
-const TLD_WITHOUT_VIEW: &str = ".dot";
+pub const TLD_WITHOUT_VIEW: &str = ".dot";
 
 /// The network TLD with its leading dot (`.paseo`), read from
 /// `ProtocolRegistry.tld()`. A registry without that view reverts; the fall
@@ -772,7 +772,7 @@ const TLD_WITHOUT_VIEW: &str = ".dot";
 /// `DotnsRegistry.recordExists(namehash("dot"))` must hold the TLD's own
 /// record, or the resolution errors. Any other failure is an error: a wrong
 /// TLD would drop every label carrying the real one.
-async fn network_tld<T: DotnsTransport + ?Sized>(
+pub async fn network_tld<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     registry: &[u8; 20],
 ) -> Result<String, String> {
@@ -812,7 +812,7 @@ async fn network_tld<T: DotnsTransport + ?Sized>(
 }
 
 /// The node of the network TLD: `namehash(tld)` for a single-label TLD.
-fn tld_node(tld: &str) -> [u8; 32] {
+pub fn tld_node(tld: &str) -> [u8; 32] {
     namehash_under(&[0u8; 32], tld.trim_start_matches('.'))
 }
 
