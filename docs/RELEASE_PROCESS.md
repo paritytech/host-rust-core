@@ -128,6 +128,24 @@ each archive and its `.sha256` to the `@parity/truapi@<version>` release, and
 only then moves the `truapi-host-cli-stable` pointer that the installer and the
 in-binary updater read. There is no separate release subject entry for it.
 
+`@parity/ios-host <version>` publishes two artifacts, because SwiftPM splits a
+package across both. The xcframework goes to the `@parity/ios-host@<version>`
+GitHub release as an asset. The Swift sources go to a plain semver tag named
+`<version>`, whose commit carries the generated bindings, the FFI headers and
+the container bundle alongside a `Package.swift` pointing at that asset. The
+generated files are git-ignored on a branch, and SwiftPM resolves source
+targets from the git checkout with no way to fetch them from an asset, so the
+tag is what a consumer can actually resolve. Apps therefore pin the semver tag:
+
+```swift
+.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.12.0")
+```
+
+`ios/truapi-host/scripts/tag-release.sh` builds that commit, reading the
+required paths out of `Package.swift` so the file set cannot drift from what
+SwiftPM looks for. The job clones the tag and compiles it against the published
+asset before pushing, so a tag that cannot be resolved is never published.
+
 `@parity/android-host <version>` publishes the Android host AAR as
 `io.parity:truapi-host-android:<version>` to GitHub Packages. The job
 cross-compiles `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64,
@@ -139,9 +157,13 @@ release subject is the only place it appears. See
 consumer setup and the credentials a consumer needs.
 
 Both native jobs are also reachable by a manual `workflow_dispatch` run with a
-version input, as an escape hatch. Neither has a tag trigger, because a tag push
-cannot use the `workflow_run` gate on green CI and would be an unverified path to
-a registry.
+version input. For iOS that is also how a pre-release is cut: dispatching
+`release-ios` from a branch with a version like `0.12.0-beta.1` publishes an
+asset and a tag an app can pin, which is how an unmerged host change gets
+tested in the app. A dispatched run leaves every branch alone, because it
+passes no `manifest_branch`. Neither job has a tag trigger, because a tag push
+cannot use the `workflow_run` gate on green CI and would be an unverified path
+to a registry.
 
 ### Notifying the consumers
 

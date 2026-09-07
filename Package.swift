@@ -5,9 +5,10 @@
 // catalog — consumed as SPM git dependencies (the manifest must live at the repo
 // root for that). Package sources live under ios/truapi-host/ and
 // ios/truapi-provider/. The two products are independent and release on separate
-// tags. For both, the uniffi-generated bindings are committed build outputs
-// (regenerate with the package's scripts/rebuild.sh) while the xcframework is
-// gitignored and distributed as a GitHub release asset (scripts/publish.sh).
+// tags. For both, the uniffi-generated bindings, the container resource and the
+// xcframework are gitignored build outputs: regenerate them with the package's
+// scripts/rebuild.sh, and publish the xcframework as a GitHub release asset
+// with scripts/publish.sh.
 
 import Foundation
 import PackageDescription
