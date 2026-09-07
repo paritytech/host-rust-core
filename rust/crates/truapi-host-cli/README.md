@@ -21,7 +21,7 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, decodes copied pairing QR images or accepts deeplinks, registers statement allowance on-chain, signs. |
-| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
+| `identity-check` | Probe the root and the network's `uid.<tld>` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
 | `pgas-check` | Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring membership on People, whether Asset Hub has imported that ring revision, the day's first unclaimed slot, and the `Pgas.claim_pgas` extrinsic. |
@@ -330,7 +330,7 @@ old session, resets product WebSocket connections so clients reconnect against
 the new runtime, and restores every paired device saved for the target session.
 
 `/session --mnemonic "<phrase>"` brings an already-onboarded account into the
-session catalog. The host derives its `uid.dot` identity, reads any existing
+session catalog. The host derives its `uid.<tld>` identity, reads any existing
 full or Lite username from dotNS, falls back to the identity backend's assigned
 username records when no dotNS mirror exists, and confirms its People or
 LitePeople ring membership. This lookup is read-only and never registers a new
@@ -641,7 +641,7 @@ The real statement store enforces per-account allowance. Before pairing, the
 signing host grants it on-chain exactly as a real client does: it proves its
 personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
-that submits statements — its RFC-0022 `uid.dot` identity account and the
+that submits statements — its RFC-0022 `uid.<tld>` identity account and the
 pairing host's per-pairing device key. The shared native implementation lives in
 `truapi-server/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
@@ -708,7 +708,7 @@ gets its own signer identity on the same machine.
 `HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
 the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
 supplies its bearer token instead of the CLI minting one. For username
-registration, an injected token's subject must match the session's `uid.dot`
+registration, an injected token's subject must match the session's `uid.<tld>`
 candidate account. The automatically minted token uses that identity; and
 `HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
 discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`

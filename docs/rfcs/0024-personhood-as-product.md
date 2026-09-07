@@ -24,7 +24,7 @@ A proof is a bearer token for its context's alias and a signature is a bearer to
 
 **Personhood is welded into the Host.** RFC-0004 §"Host member-key selection" requires every Host to define the PoP ring collection internally, choose a member key corresponding to the requested `RingLocation`, fall back to the PoP key when correspondence is undeterminable, and tiebreak stably. `truapi-server` implements exactly that with the ring identities compiled in (`rust/crates/truapi-server/src/runtime/signing_host/ring_vrf.rs`: `FULL_PERSON_COLLECTION`, `LITE_PERSON_COLLECTION`, `enum PersonKey { Full, Lite }`). So every change to how a person key is derived, registered, renewed, or recovered is a Host release.
 
-A personhood product must instead own the full and light keys — under RFC-0022, the `peopl.dot` domain of the ring-VRF tree — while telling the Host and Account Holder enough to keep serving the app's own personhood-dependent features, and lending its keys and aliases to other products. The binding constraint across all of it: **no consumer may know which key is used**, not the app and not a calling product.
+A personhood product must instead own the full and light keys — under RFC-0022, the `peopl.<tld>` domain of the ring-VRF tree, `peopl.dot` on Polkadot — while telling the Host and Account Holder enough to keep serving the app's own personhood-dependent features, and lending its keys and aliases to other products. The binding constraint across all of it: **no consumer may know which key is used**, not the app and not a calling product.
 
 **The obstacle** is that the member keys serve three overlapping classes of work, and only one is not extractable:
 
@@ -108,7 +108,7 @@ fn list_ring_vrf_keys(
 - **Registration declares intent, not membership.** It means "this is the key I will use for that ring", not "the user is a person"; membership is still discovered only by attempting a proof, which returns `NotMember` (RFC-0004). This keeps the registry from being a personhood oracle.
 - **The public key is owner-visible by default, permissioned cross-product**, because a member public key is linkable across every ring it appears in.
 
-RFC-0022 already pins `//peopl.dot//index_bytes(0)` as the full personhood key and `index_bytes(1)` as the light one. Under this RFC those constants are the personhood product's own implementation detail, expressed to everyone else as two registry entries.
+RFC-0022 already pins `//peopl.<tld>//index_bytes(0)` as the full personhood key and `index_bytes(1)` as the light one, under the TLD of the network. Under this RFC those constants are the personhood product's own implementation detail, expressed to everyone else as two registry entries. The examples below are written for Polkadot, where the product is `peopl.dot`; on paseo-next-v2 read `peopl.paseo` throughout.
 
 ### Proofs, aliases, and signatures take an explicit key handle
 

@@ -3454,6 +3454,15 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
      */
     public var bulletinChainGenesisHash: Data
     /**
+     * The network's dotNS TLD without the leading dot (`dot`, `paseo`,
+     * `testnet`). The wallet's reserved identities are derived under it:
+     * `uid.<suffix>` for the identity account, `peopl.<suffix>` for the person
+     * ring-VRF keys. Read it from the network the host is configured for, the
+     * way the host's own onboarding does; a wrong value derives a different
+     * person from the same seed.
+     */
+    public var networkSuffix: String
+    /**
      * Optional local signing-host secret material (raw BIP-39 entropy).
      */
     public var localSessionSecret: Data?
@@ -3491,6 +3500,14 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
          * Bulletin-chain genesis hash. Must be exactly 32 bytes.
          */bulletinChainGenesisHash: Data,
         /**
+         * The network's dotNS TLD without the leading dot (`dot`, `paseo`,
+         * `testnet`). The wallet's reserved identities are derived under it:
+         * `uid.<suffix>` for the identity account, `peopl.<suffix>` for the person
+         * ring-VRF keys. Read it from the network the host is configured for, the
+         * way the host's own onboarding does; a wrong value derives a different
+         * person from the same seed.
+         */networkSuffix: String,
+        /**
          * Optional local signing-host secret material (raw BIP-39 entropy).
          */localSessionSecret: Data?,
         /**
@@ -3504,6 +3521,7 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.networkSuffix = networkSuffix
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
     }
@@ -3532,6 +3550,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
                 bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
+                networkSuffix: FfiConverterString.read(from: &buf),
                 localSessionSecret: FfiConverterOptionData.read(from: &buf),
                 localSessionLiteUsername: FfiConverterOptionString.read(from: &buf)
         )
@@ -3546,6 +3565,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
         FfiConverterData.write(value.bulletinChainGenesisHash, into: &buf)
+        FfiConverterString.write(value.networkSuffix, into: &buf)
         FfiConverterOptionData.write(value.localSessionSecret, into: &buf)
         FfiConverterOptionString.write(value.localSessionLiteUsername, into: &buf)
     }
@@ -4425,6 +4445,15 @@ enum NativeRuntimeConfigError: Swift.Error, Equatable, Hashable, Foundation.Loca
          */scheme: String
     )
     /**
+     * Network suffix was not one bare lowercase dotNS label of at most 16
+     * bytes.
+     */
+    case InvalidNetworkSuffix(
+        /**
+         * Actual network suffix value.
+         */networkSuffix: String
+    )
+    /**
      * Product id was not a valid host-spec product identifier.
      */
     case InvalidProductId(
@@ -4487,10 +4516,13 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
         case 6: return .InvalidDeeplinkScheme(
             scheme: try FfiConverterString.read(from: &buf)
             )
-        case 7: return .InvalidProductId(
+        case 7: return .InvalidNetworkSuffix(
+            networkSuffix: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .InvalidProductId(
             productId: try FfiConverterString.read(from: &buf)
             )
-        case 8: return .LocalSessionActivation(
+        case 9: return .LocalSessionActivation(
             reason: try FfiConverterString.read(from: &buf)
             )
 
@@ -4535,13 +4567,18 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
             FfiConverterString.write(scheme, into: &buf)
 
 
-        case let .InvalidProductId(productId):
+        case let .InvalidNetworkSuffix(networkSuffix):
             writeInt(&buf, Int32(7))
+            FfiConverterString.write(networkSuffix, into: &buf)
+
+
+        case let .InvalidProductId(productId):
+            writeInt(&buf, Int32(8))
             FfiConverterString.write(productId, into: &buf)
 
 
         case let .LocalSessionActivation(reason):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(9))
             FfiConverterString.write(reason, into: &buf)
 
         }

@@ -469,7 +469,7 @@ mod tests {
             [0xbb; 32],
             test_spawner(),
         );
-        let signing_host = SigningHostRole::new(services.clone());
+        let signing_host = SigningHostRole::new(services.clone(), "paseo".to_string());
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let host = ProductRuntimeHost::from_services(

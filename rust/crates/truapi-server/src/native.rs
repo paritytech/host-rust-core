@@ -188,6 +188,13 @@ pub struct NativeHostRuntimeConfig {
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
+    /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
+    /// `testnet`). The wallet's reserved identities are derived under it:
+    /// `uid.<suffix>` for the identity account, `peopl.<suffix>` for the person
+    /// ring-VRF keys. Read it from the network the host is configured for, the
+    /// way the host's own onboarding does; a wrong value derives a different
+    /// person from the same seed.
+    pub network_suffix: String,
     /// Optional local signing-host secret material (raw BIP-39 entropy).
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
@@ -249,6 +256,15 @@ pub enum NativeRuntimeConfigError {
         /// Actual deeplink scheme value.
         scheme: String,
     },
+    /// Network suffix was not one bare lowercase dotNS label of at most 16
+    /// bytes.
+    #[error(
+        "network_suffix must be a bare lowercase dotNS TLD of at most 16 bytes, got {network_suffix:?}"
+    )]
+    InvalidNetworkSuffix {
+        /// Actual network suffix value.
+        network_suffix: String,
+    },
     /// Product id was not a valid host-spec product identifier.
     #[error("invalid product_id: {product_id}")]
     InvalidProductId {
@@ -292,6 +308,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             },
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            config.network_suffix,
         )?;
         Ok(Self {
             signing,
@@ -329,6 +346,9 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             }
             RuntimeConfigValidationError::InvalidProductId { product_id } => {
                 Self::InvalidProductId { product_id }
+            }
+            RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
+                Self::InvalidNetworkSuffix { network_suffix }
             }
         }
     }
@@ -2163,6 +2183,7 @@ mod tests {
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
+            network_suffix: "paseo".to_string(),
             local_session_secret: Some(vec![7; 32]),
             local_session_lite_username: Some("alice".to_string()),
         }
@@ -2981,6 +3002,21 @@ mod tests {
         assert!(matches!(
             err,
             NativeRuntimeConfigError::InvalidPeopleChainGenesisHash { actual: 31 }
+        ));
+    }
+
+    #[test]
+    fn runtime_config_rejects_a_network_suffix_that_is_not_a_bare_tld() {
+        // The suffix ends every reserved derivation (`peopl.<suffix>`), so a
+        // shell passing the dotted form would silently derive a stranger.
+        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            network_suffix: ".paseo".to_string(),
+            ..native_host_runtime_config()
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            NativeRuntimeConfigError::InvalidNetworkSuffix { network_suffix } if network_suffix == ".paseo"
         ));
     }
 

@@ -70,6 +70,12 @@ use ring_vrf::{
 };
 use sso_replay::SsoReplayLocks;
 
+/// The network suffix the unit tests configure their signing host for. `dot`
+/// keeps the `peopl.dot` handles the RFC examples use meaningful; the
+/// per-network behaviour has its own tests.
+#[cfg(test)]
+const TEST_NETWORK_SUFFIX: &str = "dot";
+
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
 use truapi_platform::{
@@ -110,6 +116,10 @@ impl LocalGrantState {
 pub(crate) struct SigningHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
+    /// The dotNS TLD of the network this wallet serves, from
+    /// [`truapi_platform::SigningHostConfig::network_suffix`]. Every reserved
+    /// RFC-0022 derivation (`uid.<suffix>`, `peopl.<suffix>`) ends in it.
+    network_suffix: String,
     session_state: Arc<SessionState>,
     auth_state: AuthStateMachine,
     ring_resolver: Arc<dyn RingResolver>,
@@ -128,13 +138,15 @@ pub(crate) struct SigningHost {
 }
 
 impl SigningHost {
-    /// Build a signing host with no active session.
-    pub(crate) fn new(services: Arc<RuntimeServices>) -> Arc<Self> {
+    /// Build a signing host with no active session, serving the network whose
+    /// dotNS TLD is `network_suffix`.
+    pub(crate) fn new(services: Arc<RuntimeServices>, network_suffix: String) -> Arc<Self> {
         let platform = services.platform.clone();
         let ring_resolver = ChainRingResolver::new(services.chain.clone());
         Arc::new(Self {
             services,
             platform: platform.clone(),
+            network_suffix,
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
@@ -152,6 +164,15 @@ impl SigningHost {
         platform: Arc<dyn Platform>,
         ring_resolver: Arc<dyn RingResolver>,
     ) -> Arc<Self> {
+        Self::new_with_ring_resolver_on(platform, ring_resolver, TEST_NETWORK_SUFFIX)
+    }
+
+    #[cfg(test)]
+    fn new_with_ring_resolver_on(
+        platform: Arc<dyn Platform>,
+        ring_resolver: Arc<dyn RingResolver>,
+        network_suffix: &str,
+    ) -> Arc<Self> {
         let services = RuntimeServices::new(
             platform.clone(),
             truapi_platform::HostInfo {
@@ -167,6 +188,7 @@ impl SigningHost {
         Arc::new(Self {
             services,
             platform: platform.clone(),
+            network_suffix: network_suffix.to_string(),
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
@@ -182,6 +204,12 @@ impl SigningHost {
     /// Shared session holder for connection-status subscriptions.
     pub(super) fn session_state(&self) -> Arc<SessionState> {
         self.session_state.clone()
+    }
+
+    /// The dotNS TLD of the network this wallet serves: the suffix of every
+    /// reserved identity it derives.
+    pub(super) fn network_suffix(&self) -> &str {
+        &self.network_suffix
     }
 
     /// Current root entropy, or [`AuthorityError::Disconnected`] when no local
@@ -320,7 +348,7 @@ impl SigningHost {
 
     fn identity_keypair(&self) -> Result<schnorrkel::Keypair, AuthorityError> {
         let entropy = self.root_entropy()?;
-        derive_identity_keypair(&entropy).map_err(product_authority_error)
+        derive_identity_keypair(&entropy, &self.network_suffix).map_err(product_authority_error)
     }
 
     fn install_local_session(&self, secret: Zeroizing<Vec<u8>>, session: SessionInfo) {
@@ -398,9 +426,10 @@ impl SigningHost {
     /// Every personhood collection this wallet can derive allowance aliases for,
     /// widest slot budget first.
     ///
-    /// Wallet-internal allowance proofs use the reserved `peopl.dot` keys the
-    /// mobile hosts use. Product-facing RFC-0024 operations are unrelated: those
-    /// resolve only explicitly registered handles.
+    /// Wallet-internal allowance proofs use the reserved `peopl.<suffix>` keys
+    /// the mobile hosts derive on the same network. Product-facing RFC-0024
+    /// operations are unrelated: those resolve only explicitly registered
+    /// handles.
     ///
     /// Both entropies are always returned; which collections the person is
     /// actually a member of is settled on chain by looking for a ring that
@@ -416,11 +445,11 @@ impl SigningHost {
         Ok(vec![
             CollectionCandidate {
                 collection: PersonhoodCollection::People,
-                entropy: derive_full_person_ring_vrf_entropy(&root),
+                entropy: derive_full_person_ring_vrf_entropy(&root, &self.network_suffix),
             },
             CollectionCandidate {
                 collection: PersonhoodCollection::LitePeople,
-                entropy: derive_lite_person_ring_vrf_entropy(&root),
+                entropy: derive_lite_person_ring_vrf_entropy(&root, &self.network_suffix),
             },
         ])
     }
@@ -1264,6 +1293,7 @@ mod tests {
         SignPayloadAuthorityRequest, SignRawAuthorityRequest,
     };
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
+    use super::TEST_NETWORK_SUFFIX;
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
     use super::{
         BYTES_WRAP_PREFIX, BYTES_WRAP_SUFFIX, LocalActivation, RingVrfError,
@@ -1341,6 +1371,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            TEST_NETWORK_SUFFIX.to_string(),
         )
         .expect("signing host config is valid");
         let services = RuntimeServices::new(
@@ -1350,7 +1381,7 @@ mod tests {
             config.bulletin_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHostRole::new(services.clone());
+        let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
         (services, signing_host)
     }
 
@@ -1475,6 +1506,59 @@ mod tests {
             );
         }
         assert_ne!(candidates[0].entropy, candidates[1].entropy);
+    }
+
+    #[test]
+    fn reserved_identities_follow_the_configured_network_suffix() {
+        // A wallet on paseo-next-v2 is the `peopl.paseo` person and the
+        // `uid.paseo` account: the ones a `peopl.paseo` product registers and the
+        // ones the identity backend records a lite username for. The `.dot`
+        // derivations of the same seed are a different person.
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority = SigningHostRole::new_with_ring_resolver_on(
+            platform,
+            full_person_ring_resolver(),
+            "paseo",
+        );
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+
+        let candidates = authority
+            .reserved_person_collection_candidates(&session)
+            .expect("reserved keys derive");
+        for (candidate, index) in candidates.iter().zip([0u32, 1]) {
+            assert_eq!(
+                candidate.entropy,
+                derive_ring_vrf_entropy(
+                    &ENTROPY,
+                    "peopl.paseo",
+                    &v01::DerivationIndex::Index(index)
+                )
+                .expect("reserved RFC-0024 handle derives"),
+                "{} candidate does not use peopl.paseo/{index}",
+                candidate.collection
+            );
+            assert_ne!(
+                candidate.entropy,
+                derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(index))
+                    .expect("reserved RFC-0024 handle derives"),
+            );
+        }
+
+        let identity = derive_identity_keypair(&ENTROPY, "paseo")
+            .expect("uid.paseo identity derivation")
+            .public
+            .to_bytes();
+        assert_eq!(session.identity_account_id, Some(identity));
+        assert_eq!(
+            authority
+                .identity_keypair()
+                .expect("identity")
+                .public
+                .to_bytes(),
+            identity
+        );
     }
 
     #[test]
@@ -1687,7 +1771,7 @@ mod tests {
             .expect("activation succeeds");
 
         let session = authority.current_session().expect("active session");
-        let identity = derive_identity_keypair(&ENTROPY)
+        let identity = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX)
             .expect("uid.dot identity derivation")
             .public
             .to_bytes();
@@ -2132,7 +2216,7 @@ mod tests {
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
         let cx = CallContext::default();
-        let identity = derive_identity_keypair(&ENTROPY).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX).unwrap();
         let request = |account| SignRawAuthorityRequest::LegacyAccount {
             account,
             request: v01::HostSignRawWithLegacyAccountRequest {

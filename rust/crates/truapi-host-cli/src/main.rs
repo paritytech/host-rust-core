@@ -545,7 +545,7 @@ async fn dispatch(
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
                 .to_entropy();
-            attestation::check_identity(network.config().asset_hub_ws, &entropy).await
+            attestation::check_identity(network.config(), &entropy).await
         }
         Command::RegisterName {
             mnemonic,
@@ -612,7 +612,7 @@ async fn run_pgas_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.network_suffix);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; a claim has to credit an account");
@@ -775,7 +775,7 @@ async fn run_alloc_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.network_suffix);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; the all-zero default is read-only");
@@ -1427,9 +1427,7 @@ async fn start_signing_host(
             reserved_username: None,
         })
         .await?;
-        match attestation::registered_lite_username(network.asset_hub_ws, &explicit_signer.entropy)
-            .await
-        {
+        match attestation::registered_lite_username(network, &explicit_signer.entropy).await {
             Ok(user_id) => explicit_signer.lite_username = Some(user_id),
             Err(error) => {
                 tracing::warn!(%error, "explicit signer has no resolvable dotNS username")
@@ -1530,6 +1528,7 @@ fn build_signing_runtime(
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.network_suffix.to_string(),
     )
     .context("invalid signing host config")?;
     let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
