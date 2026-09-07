@@ -285,7 +285,7 @@ Commands:
 
 The option is global and is accepted before or after a subcommand.
 `TRUAPI_HOST_LOG` supplies the same per-process override. Without either, the
-CLI restores the level saved by `/log` under the selected base path, then falls
+CLI restores the level saved by `/log` under `<base-path>/v2`, then falls
 back to `info`. Command-line and environment overrides do not rewrite the saved
 level.
 
@@ -305,7 +305,7 @@ truapi-host pairing-host [options]
 | `--script <path>` | none | Run one JS/TS product script and exit with its status. |
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
-| `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
+| `--base-path <path>` | section 12.1 | Base directory; managed state lives under its `v2/` subdirectory. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
@@ -344,7 +344,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--session <name>` | remembered session | Restore or create a managed session. |
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
 | `--reserved-username <label>` | none | Full-person base name a newly created auto account reserves on dotNS alongside its lite username (§12.3). |
-| `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
+| `--base-path <path>` | section 12.1 | Base directory; managed state lives under its `v2/` subdirectory. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
@@ -460,7 +460,7 @@ When no command follows `--`, it serves the host until stopped.
 | `--network <preset>` | `paseo-next-v2` | Select the complete network preset. |
 | `--session <name>` | remembered session | Restore or create a persistent signing-host session. |
 | `--mnemonic <phrase>` | none | Use a disposable testnet signer instead of the managed session. `HOST_CLI_SIGNER_MNEMONIC` supplies the same value. |
-| `--base-path <path>` | section 12.1 | Root for account, session, core, and product state. |
+| `--base-path <path>` | section 12.1 | Base directory; managed state lives under its `v2/` subdirectory. |
 
 The product includes a development-only blocking tag before product code:
 
@@ -1030,8 +1030,16 @@ Host commands choose their base path in this order:
 4. `$HOME/.local/state/truapi-host`; or
 5. `.truapi-host`.
 
-The signing session catalog converts a relative base path to an absolute path
-at startup. Pairing storage uses the supplied/default path directly.
+The CLI appends `v2` to the selected base path before accessing any managed
+state, including accounts, sessions, pairings, core and product storage,
+managed scripts, and log preferences. This applies to custom base paths too.
+The signing session catalog converts the resulting relative path to an
+absolute path at startup. Pairing storage uses the resulting path directly.
+
+Previous state outside `v2` is left untouched and unused. The CLI starts normal
+onboarding with fresh identities and pairings because the previous `.dot`
+identities cannot be reused with network-specific reserved keys. There is no
+state migration; see the [state directory guide](README.md#state-directory).
 
 ### 12.2 Signer selection
 
@@ -1239,7 +1247,7 @@ unavailable in explicit-mnemonic mode.
 The layout may contain compatibility paths as well as identity-owned paths:
 
 ```text
-<base-path>/
+<base-path>/v2/
   accounts.json
   accounts.json.lock
   log-level
@@ -1334,9 +1342,8 @@ treated as not remembered.
 
 ### 13.4 Paired-host store
 
-`paired-hosts.json` is version `2`. It contains a list of version `1` peer
-records. Other store versions are rejected before resuming saved peers, with
-instructions to use fresh CLI state and pair again. Each record contains:
+`paired-hosts.json` is version `1`. It contains a list of versioned peer records.
+Each record contains:
 
 - the statement account ID used as its unique key;
 - the public encryption key needed to resume SSO; and
@@ -1403,9 +1410,7 @@ state, and other role-owned runtime data.
 
 ### 13.7 Account store
 
-`accounts.json` is version `2`. Other versions are rejected before restoring
-or provisioning an account, with instructions to use fresh CLI state. The
-store contains records with:
+`accounts.json` is version `1` and stores records containing:
 
 - local name;
 - network id;
@@ -1419,13 +1424,6 @@ store contains records with:
 Account mutations hold an exclusive `accounts.json.lock`. Secret-file writes
 use a temporary file, flush, atomic rename, and `0600` permissions on Unix.
 The lock file can be created during a read-only cached-signer lookup.
-
-Version `1` account and paired-host stores used the fixed `.dot` identity
-derivation and cannot be reused with network-specific reserved keys. Discard
-the previous base directory, onboard a new test identity, and pair devices
-again. Alternatively, use fresh paths as
-shown in the [CLI reset instructions](README.md#resetting-state-for-network-specific-identities).
-There is no state migration.
 
 ### 13.8 Write and corruption behavior
 
@@ -1821,7 +1819,7 @@ Startup selects an explicit `--log-level` or `TRUAPI_HOST_LOG` value first,
 then the level saved by `/log`, then `info`. A valid `RUST_LOG` replaces that
 scoped startup filter, and its trimmed value replaces the selected level in the
 status bar. `/log` replaces the startup filter and status value with the
-selected level, then saves it for later launches using the same base path.
+selected level, then saves it under `<base-path>/v2` for later launches.
 
 Without `RUST_LOG`, the selected CLI level applies to:
 

@@ -166,7 +166,8 @@ to get it, and the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.
 for its commands and controls.
 
 CLI reserved identities follow the selected network's dotNS suffix. Old account
-and pairing stores require [fresh state and re-pairing](rust/crates/truapi-host-cli/README.md#resetting-state-for-network-specific-identities).
+and pairing stores are left unused as the CLI starts fresh under its
+[versioned state directory](rust/crates/truapi-host-cli/README.md#state-directory).
 
 `scripts/battery.sh` drives that CLI from source over every code-generated
 example and writes both committed compatibility reports:

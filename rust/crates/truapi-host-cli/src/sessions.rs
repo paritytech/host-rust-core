@@ -16,7 +16,7 @@ const SESSION_INFO_FILE: &str = "session.json";
 const PAIRED_HOSTS_FILE: &str = "paired-hosts.json";
 const PAIRED_HOSTS_LOCK_FILE: &str = "paired-hosts.json.lock";
 const PAIRED_HOST_VERSION: u32 = 1;
-const PAIRED_HOST_STORE_VERSION: u32 = 2;
+const PAIRED_HOST_STORE_VERSION: u32 = 1;
 
 /// Safe display metadata retained from a paired host's proposal.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -617,9 +617,7 @@ fn read_paired_host_store(session_path: &Path) -> Result<PairedHostStore> {
         .with_context(|| format!("decode paired hosts {}", path.display()))?;
     anyhow::ensure!(
         store.version == PAIRED_HOST_STORE_VERSION,
-        "unsupported paired host store version {} in {}; \
-         reserved keys use the network suffix; restart with a fresh \
-         --base-path, onboard again, and re-pair devices",
+        "unsupported paired host store version {} in {}",
         store.version,
         path.display()
     );
@@ -865,7 +863,7 @@ mod tests {
         );
         let metadata: serde_json::Value =
             serde_json::from_slice(&fs::read(profile.path.join(PAIRED_HOSTS_FILE))?)?;
-        assert_eq!(metadata["version"], 2);
+        assert_eq!(metadata["version"], 1);
         assert_eq!(
             metadata["paired_hosts"][0],
             serde_json::json!({
@@ -1006,48 +1004,13 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_paired_host_stores_require_fresh_state() -> Result<()> {
-        let temporary = tempdir()?;
-        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "paseo-next-v2")?;
-        let profile = catalog.ensure_profile("alice")?;
-        let path = profile.path.join(PAIRED_HOSTS_FILE);
-        for version in [1, 3] {
-            let stored = serde_json::to_vec(&serde_json::json!({
-                "version": version,
-                "paired_hosts": [paired_host(1, 11, "first")],
-            }))?;
-            fs::write(&path, &stored)?;
-
-            let error = catalog
-                .paired_hosts(&profile)
-                .expect_err("incompatible pairings must not resume");
-            assert_eq!(
-                error.to_string(),
-                format!(
-                    "unsupported paired host store version {version} in {}; \
-                     reserved keys use the network suffix; restart with a fresh \
-                     --base-path, onboard again, and re-pair devices",
-                    path.display()
-                )
-            );
-            assert!(
-                catalog
-                    .store_paired_host(&profile, paired_host(2, 22, "second"))
-                    .is_err()
-            );
-            assert_eq!(fs::read(&path)?, stored);
-        }
-        Ok(())
-    }
-
-    #[test]
     fn unsupported_paired_host_records_are_not_overwritten() -> Result<()> {
         let temporary = tempdir()?;
         let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
         let profile = catalog.ensure_profile("alice")?;
         let path = profile.path.join(PAIRED_HOSTS_FILE);
         let unsupported = serde_json::to_vec_pretty(&serde_json::json!({
-            "version": 2,
+            "version": 1,
             "paired_hosts": [{
                 "version": 2,
                 "statement_account_id": vec![1_u8; 32],

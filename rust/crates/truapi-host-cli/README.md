@@ -94,21 +94,19 @@ curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scri
 serves a fake release over loopback, installs it with the real installer, and
 updates it. Nothing contacts GitHub.
 
-### Resetting state for network-specific identities
+### State directory
 
 Reserved identities derive under `uid.paseo` / `peopl.paseo` on
 `paseo-next-v2`, and `uid.testnet` / `peopl.testnet` on `previewnet`.
-Account and paired-host stores use version `2`. Older stores are rejected with
-reset instructions because their `.dot` identities and pairings cannot be
-reused. There is no state migration.
+All managed CLI state lives under `<base-path>/v2`, including accounts,
+sessions, pairings, core and product storage, managed scripts, and log
+preferences. The CLI appends `v2` to both the default base path and a path set
+through `--base-path` or `TRUAPI_HOST_BASE_PATH`. For example,
+`--base-path ./truapi-host-paseo` uses `./truapi-host-paseo/v2`.
 
-Stop the CLI and discard its previous base directory, or start with a fresh one:
-
-```bash
-truapi-host signing-host --network paseo-next-v2 --base-path ./truapi-host-paseo
-```
-
-Onboard a new test identity, sign out on each paired host, and pair again.
+The CLI leaves previous state outside `v2` untouched and unused, and starts
+normal onboarding automatically. There is no state migration. Pair devices
+again; sign out first on any paired host that still uses an old identity.
 Existing `.dot` personhood membership does not transfer to the new keys.
 
 ### Building from source
@@ -204,11 +202,11 @@ press Ctrl-V, use the terminal's paste shortcut, or drop an image file. You can
 also provide an image file or deeplink with `/pair <value>`, run `/script`, or
 use `/help` to discover the available commands. It uses `--mnemonic` /
 `HOST_CLI_SIGNER_MNEMONIC` if set.
-Otherwise it auto-selects or creates a stored account under `--base-path` (default
-`$XDG_STATE_HOME/truapi-host` or `~/.local/state/truapi-host`), attests it
-through the identity backend, waits for ring readiness, and rotates when the
-current account exhausts Statement Store slots and no saved pairing depends on
-its identity. A full period replaces the oldest slot past the runtime's
+Otherwise it auto-selects or creates a stored account under `<base-path>/v2`
+(default `$XDG_STATE_HOME/truapi-host/v2` or `~/.local/state/truapi-host/v2`),
+attests it through the identity backend, waits for ring readiness, and rotates
+when the current account exhausts Statement Store slots and no saved pairing
+depends on its identity. A full period replaces the oldest slot past the runtime's
 replacement cooldown, so rotation only happens when no slot is replaceable.
 
 ### Interactive terminal UI
@@ -334,7 +332,7 @@ settings containing arguments, such as `EDITOR='code --wait'`, are supported.
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
 and its files live under
-`<base-path>/<network>/<username>_signing_host`. Provisional named sessions
+`<base-path>/v2/<network>/<username>_signing_host`. Provisional named sessions
 are promoted to that user-owned root, so an old name such as `pgtest` does not
 remain the durable namespace. The selected username is remembered per
 network but is not repeated in the status bar as a separate session field.
@@ -498,7 +496,7 @@ the selected id, so the newly selected product sees its own state. The next
 `/script` also receives the new id through `host.productId`.
 
 Pairing-host state follows the same identity rule under
-`<base-path>/<network>/<username>_pairing_host`. Before the first identity is
+`<base-path>/v2/<network>/<username>_pairing_host`. Before the first identity is
 known it uses the small `<network>/pairing-host` bootstrap; connecting moves
 that bootstrap data to the first resolved user. After `/logout`, connecting
 as a different user swaps to that user's KV/core namespace instead of carrying
@@ -626,7 +624,7 @@ are unavailable on the pairing host and in one-shot `exec` mode.
 
 Use the global `--log-level` option (`error`, `warn`, `info`, `debug`, or
 `trace`) before or after the subcommand, or `/log <level>` in the terminal UI.
-`/log` saves the level under `--base-path`, so pairing and signing hosts restore
+`/log` saves the level under `<base-path>/v2`, so pairing and signing hosts restore
 it after restart. A one-off `--log-level` or `TRUAPI_HOST_LOG` value overrides
 the saved level for that process without changing it; otherwise the fallback is
 `info`.
@@ -686,7 +684,7 @@ product may not: it reports the period as exhausted, because every entry in the
 table is one of this wallet's own products and reclaiming space belongs to the
 renewal pass. `alloc-check` prints both collections' member keys, ring indices and
 slot tables. Auto-managed accounts are stored in
-`accounts.json` under `--base-path`; mnemonics are plaintext local test secrets
+`accounts.json` under `<base-path>/v2`; mnemonics are plaintext local test secrets
 and the file is written with `0600` permissions on Unix. `alloc-check` verifies
 membership and can submit a test registration.
 
