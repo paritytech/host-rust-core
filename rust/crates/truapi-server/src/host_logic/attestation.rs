@@ -71,8 +71,8 @@ pub struct LiteRegistration {
 /// Error while building lite-person registration parameters.
 #[derive(Debug, Error)]
 pub enum LiteRegistrationError {
-    /// RFC-0022 `uid.dot` identity-account derivation failed.
-    #[error("uid.dot identity derivation failed: {0}")]
+    /// RFC-0022 `uid.<suffix>` identity-account derivation failed.
+    #[error("uid identity derivation failed: {0}")]
     CandidateDerivation(#[from] ProductAccountError),
     /// Ring-VRF proof-of-ownership failed.
     #[error("ring-VRF proof-of-ownership failed: {0:?}")]
@@ -85,23 +85,27 @@ pub enum LiteRegistrationError {
 /// Build the lite-person registration parameters for `username_base`
 /// (6+ lowercase letters, no digit suffix) against the backend `verifier`.
 ///
+/// `network_suffix` is the dotNS TLD of the network being registered on
+/// (`paseo`, `testnet`): the candidate account is `uid.<suffix>` and the member
+/// key `peopl.<suffix>`, the same person every other host derives there.
 /// `reserved_username` optionally queues a base name for a later full-person
 /// claim on dotNS. `dotns_signed_at_secs` must be Asset Hub chain time, meaning
 /// `Timestamp.Now` in seconds. The local wall clock will not do: the gateway
 /// rejects signatures more than 30 seconds in the chain's future.
 pub fn build_lite_registration(
     entropy: &[u8],
+    network_suffix: &str,
     verifier_account_id: [u8; 32],
     username_base: &str,
     reserved_username: Option<&str>,
     dotns_signed_at_secs: u64,
 ) -> Result<LiteRegistration, LiteRegistrationError> {
     // Registration, local activation, and the SSO responder all use the
-    // RFC-0022 `uid.dot` default product account.
-    let candidate = derive_identity_keypair(entropy)?;
+    // RFC-0022 `uid.<suffix>` default product account.
+    let candidate = derive_identity_keypair(entropy, network_suffix)?;
     let candidate_public_key = candidate.public.to_bytes();
 
-    let vrf_entropy = derive_lite_person_ring_vrf_entropy(entropy);
+    let vrf_entropy = derive_lite_person_ring_vrf_entropy(entropy, network_suffix);
     let vrf_secret = BandersnatchVrfVerifiable::new_secret(vrf_entropy);
     let ring_vrf_key = BandersnatchVrfVerifiable::member_from_secret(&vrf_secret);
 
@@ -199,25 +203,42 @@ mod tests {
     use schnorrkel::{PublicKey, Signature};
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
+    const NETWORK_SUFFIX: &str = "paseo";
 
     #[test]
     fn registration_params_have_expected_shapes_and_verify() {
         let verifier = [0x11u8; 32];
-        let reg =
-            build_lite_registration(&ENTROPY, verifier, "headlesstester", None, 1_749_573_123)
-                .unwrap();
+        let reg = build_lite_registration(
+            &ENTROPY,
+            NETWORK_SUFFIX,
+            verifier,
+            "headlesstester",
+            None,
+            1_749_573_123,
+        )
+        .unwrap();
         assert_eq!(
             reg.candidate_public_key,
-            derive_identity_keypair(&ENTROPY).unwrap().public.to_bytes(),
-            "registration uses the canonical uid.dot identity account"
+            derive_identity_keypair(&ENTROPY, NETWORK_SUFFIX)
+                .unwrap()
+                .public
+                .to_bytes(),
+            "registration uses the network's uid.paseo identity account"
         );
-        let lite_entropy = derive_lite_person_ring_vrf_entropy(&ENTROPY);
+        let lite_entropy = derive_lite_person_ring_vrf_entropy(&ENTROPY, NETWORK_SUFFIX);
         assert_eq!(
             reg.ring_vrf_key,
             BandersnatchVrfVerifiable::member_from_secret(&BandersnatchVrfVerifiable::new_secret(
                 lite_entropy
             )),
-            "registration uses the canonical peopl.dot index-1 member"
+            "registration uses the network's peopl.paseo index-1 member"
+        );
+        assert_ne!(
+            reg.ring_vrf_key,
+            BandersnatchVrfVerifiable::member_from_secret(&BandersnatchVrfVerifiable::new_secret(
+                derive_lite_person_ring_vrf_entropy(&ENTROPY, "dot")
+            )),
+            "a person registered on paseo-next-v2 is not the seed's .dot person"
         );
 
         assert_eq!(reg.identifier_key[0], 0x04, "P-256 uncompressed prefix");
@@ -293,6 +314,7 @@ mod tests {
         let verifier = [0x33u8; 32];
         let reg = build_lite_registration(
             &ENTROPY,
+            NETWORK_SUFFIX,
             verifier,
             "headlesstester",
             Some("reservedbase"),
@@ -363,8 +385,12 @@ mod tests {
     #[test]
     fn registration_is_deterministic_per_entropy_and_username() {
         let verifier = [0x22u8; 32];
-        let first = build_lite_registration(&ENTROPY, verifier, "aliceheadless", None, 1).unwrap();
-        let again = build_lite_registration(&ENTROPY, verifier, "aliceheadless", None, 1).unwrap();
+        let first =
+            build_lite_registration(&ENTROPY, NETWORK_SUFFIX, verifier, "aliceheadless", None, 1)
+                .unwrap();
+        let again =
+            build_lite_registration(&ENTROPY, NETWORK_SUFFIX, verifier, "aliceheadless", None, 1)
+                .unwrap();
         assert_eq!(first.candidate_public_key, again.candidate_public_key);
         assert_eq!(first.ring_vrf_key, again.ring_vrf_key);
         assert_eq!(first.candidate_account_id, again.candidate_account_id);

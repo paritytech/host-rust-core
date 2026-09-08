@@ -107,9 +107,10 @@ pub struct AccountRecord {
     pub mnemonic: String,
     /// Lite username registered through the identity backend.
     pub lite_username: String,
-    /// Hex-encoded RFC-0022 `uid.dot` identity public key.
+    /// Hex-encoded RFC-0022 `uid.<suffix>` identity public key on this
+    /// account's network.
     pub public_key_hex: String,
-    /// SS58 address for the RFC-0022 `uid.dot` identity public key.
+    /// SS58 address for the RFC-0022 `uid.<suffix>` identity public key.
     pub address: String,
     /// Creation timestamp.
     pub created_at_unix: u64,
@@ -389,8 +390,8 @@ pub async fn inspect_imported_signer(
     let mnemonic = Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_string();
-    let identity = identity_from_mnemonic(&mnemonic)?;
-    let username = attestation::lookup_registered_username(network.asset_hub_ws, &identity.entropy)
+    let identity = identity_from_mnemonic(&mnemonic, network.network_suffix)?;
+    let username = attestation::lookup_registered_username(network, &identity.entropy)
         .await
         .with_context(|| {
             format!(
@@ -400,20 +401,16 @@ pub async fn inspect_imported_signer(
         })?;
     let username = match username {
         Some(username) => Some(username),
-        None => attestation::lookup_backend_username(
-            network.identity_backend_base,
-            &identity.entropy,
-            &identity.address,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "reverse-resolve the mnemonic's assigned identity-backend username on {}",
-                network.id
-            )
-        })?,
+        None => attestation::lookup_backend_username(network, &identity.entropy, &identity.address)
+            .await
+            .with_context(|| {
+                format!(
+                    "reverse-resolve the mnemonic's assigned identity-backend username on {}",
+                    network.id
+                )
+            })?,
     };
-    wait_for_ring_membership(network.people_ws, &identity.entropy)
+    wait_for_ring_membership(network, &identity.entropy)
         .await
         .with_context(|| {
             let account = username.as_deref().unwrap_or(&identity.address);
@@ -531,15 +528,11 @@ async fn create_auto_account(
     let mnemonic = Mnemonic::generate(12)
         .context("generate BIP-39 mnemonic")?
         .to_string();
-    let identity = identity_from_mnemonic(&mnemonic)?;
+    let identity = identity_from_mnemonic(&mnemonic, network.network_suffix)?;
 
-    if !attestation::lite_username_available(
-        network.identity_backend_base,
-        &identity.entropy,
-        &lite_username,
-    )
-    .await
-    .with_context(|| format!("check lite username {lite_username:?} availability"))?
+    if !attestation::lite_username_available(network, &identity.entropy, &lite_username)
+        .await
+        .with_context(|| format!("check lite username {lite_username:?} availability"))?
     {
         bail!("lite username {lite_username:?} is taken; pass a different --lite-username-prefix");
     }
@@ -568,7 +561,7 @@ async fn create_auto_account(
     );
 
     record.lite_username = attest_record(network, &record, reserved_username).await?;
-    wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+    wait_for_ring_membership(network, &identity.entropy).await?;
     record.attested = true;
     store.upsert(record.clone());
     store.save()?;
@@ -581,9 +574,9 @@ async fn ensure_record_ready(
     record: &AccountRecord,
     reserved_username: Option<&str>,
 ) -> Result<AccountRecord> {
-    let identity = identity_from_mnemonic(&record.mnemonic)?;
+    let identity = identity_from_mnemonic(&record.mnemonic, network.network_suffix)?;
     if record.origin == AccountOrigin::Imported {
-        wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+        wait_for_ring_membership(network, &identity.entropy).await?;
         return Ok(record.clone());
     }
     let mut record = record.clone();
@@ -591,10 +584,9 @@ async fn ensure_record_ready(
         record.lite_username = attest_record(network, &record, reserved_username).await?;
         record.attested = true;
     } else {
-        record.lite_username =
-            attestation::registered_lite_username(network.asset_hub_ws, &identity.entropy)
-                .await
-                .with_context(|| format!("resolve Lite username for account {}", record.name))?;
+        record.lite_username = attestation::registered_lite_username(network, &identity.entropy)
+            .await
+            .with_context(|| format!("resolve Lite username for account {}", record.name))?;
     }
     if store
         .get(network.id, &record.name)
@@ -603,7 +595,7 @@ async fn ensure_record_ready(
         store.upsert(record.clone());
         store.save()?;
     }
-    wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+    wait_for_ring_membership(network, &identity.entropy).await?;
     Ok(record)
 }
 
@@ -616,6 +608,7 @@ async fn attest_record(
     let lite_username = attestation::attest(&attestation::AttestConfig {
         backend_base: network.identity_backend_base.to_string(),
         asset_hub_ws: network.asset_hub_ws.to_string(),
+        network_suffix: network.network_suffix.to_string(),
         entropy,
         username_base: record.lite_username.clone(),
         reserved_username: reserved_username.map(str::to_string),
@@ -637,27 +630,32 @@ fn resolved_lite_username(username: &str) -> bool {
         .is_some_and(|(name, discriminator)| !name.is_empty() && !discriminator.is_empty())
 }
 
-/// Every personhood collection candidate for `entropy`, widest slot budget first.
+/// Every personhood collection candidate for `entropy` on the network whose
+/// dotNS TLD is `network_suffix`, widest slot budget first.
 ///
 /// Both are always offered; membership is settled on chain, not from local state.
-pub(crate) fn collection_candidates(entropy: &[u8]) -> Vec<alloc::CollectionCandidate> {
+pub(crate) fn collection_candidates(
+    entropy: &[u8],
+    network_suffix: &str,
+) -> Vec<alloc::CollectionCandidate> {
     vec![
         alloc::CollectionCandidate {
             collection: PersonhoodCollection::People,
-            entropy: derive_full_person_ring_vrf_entropy(entropy),
+            entropy: derive_full_person_ring_vrf_entropy(entropy, network_suffix),
         },
         alloc::CollectionCandidate {
             collection: PersonhoodCollection::LitePeople,
-            entropy: derive_lite_person_ring_vrf_entropy(entropy),
+            entropy: derive_lite_person_ring_vrf_entropy(entropy, network_suffix),
         },
     ]
 }
 
-async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()> {
+async fn wait_for_ring_membership(network: NetworkConfig, entropy: &[u8]) -> Result<()> {
     const MAX_ATTEMPTS: usize = 30;
     const SLEEP: Duration = Duration::from_secs(4);
 
-    let candidates = collection_candidates(entropy);
+    let people_ws = network.people_ws;
+    let candidates = collection_candidates(entropy, network.network_suffix);
     let mut metadata = None;
     for attempt in 1..=MAX_ATTEMPTS {
         crate::terminal_ui::update_activity(
@@ -762,10 +760,10 @@ struct SignerIdentity {
     address: String,
 }
 
-fn identity_from_mnemonic(mnemonic: &str) -> Result<SignerIdentity> {
+fn identity_from_mnemonic(mnemonic: &str, network_suffix: &str) -> Result<SignerIdentity> {
     let entropy = mnemonic_entropy(mnemonic)?;
-    let candidate = derive_identity_keypair(&entropy)
-        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let candidate = derive_identity_keypair(&entropy, network_suffix)
+        .map_err(|err| anyhow::anyhow!("uid identity derivation failed: {err}"))?;
     let public_key = candidate.public.to_bytes();
     Ok(SignerIdentity {
         entropy,
@@ -1054,7 +1052,7 @@ mod tests {
     #[test]
     fn imported_signer_is_durable_named_and_excluded_from_auto_pool() -> Result<()> {
         let dir = tempdir()?;
-        let identity = identity_from_mnemonic(MNEMONIC)?;
+        let identity = identity_from_mnemonic(MNEMONIC, "paseo")?;
         let imported = ImportedSigner {
             mnemonic: MNEMONIC.to_string(),
             entropy: identity.entropy,
@@ -1085,7 +1083,7 @@ mod tests {
     #[test]
     fn imported_signer_without_dotns_username_is_still_cached() -> Result<()> {
         let dir = tempdir()?;
-        let identity = identity_from_mnemonic(MNEMONIC)?;
+        let identity = identity_from_mnemonic(MNEMONIC, "paseo")?;
         let session_name = imported_session_name(None, &identity.public_key);
         let imported = ImportedSigner {
             mnemonic: MNEMONIC.to_string(),

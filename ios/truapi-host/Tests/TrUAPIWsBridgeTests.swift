@@ -78,7 +78,8 @@ private extension TrUAPIWsBridgeTests {
         HostRuntimeConfig(
             hostName: "truapi-host-tests",
             peopleChainGenesisHash: Data(repeating: 0, count: 32),
-            bulletinChainGenesisHash: Data(repeating: 0, count: 32)
+            bulletinChainGenesisHash: Data(repeating: 0, count: 32),
+            networkSuffix: "paseo"
         )
     }
 

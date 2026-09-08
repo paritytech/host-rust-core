@@ -1,8 +1,9 @@
 //! Full-person username registration through `DotnsGateway.register_name`.
 //!
 //! Builds and submits the v5 general transaction on Asset Hub. The signer's
-//! RFC-0022 `uid.dot` account is the call's `who`. The full-person bandersnatch
-//! key proves People-ring membership bound to the dotNS gateway context. A fresh
+//! RFC-0022 `uid.<suffix>` account is the call's `who`. The full-person
+//! bandersnatch key proves People-ring membership bound to the dotNS gateway
+//! context. A fresh
 //! sr25519 signature over the inherited-implication digest travels in the
 //! `AsDotnsGateway` extension.
 //!
@@ -63,8 +64,8 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     {
         bail!("--link-lite {lite:?} is not a dotted lite username (`name.NN`)");
     }
-    let who = derive_identity_keypair(&config.entropy)
-        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let who = derive_identity_keypair(&config.entropy, config.network.network_suffix)
+        .map_err(|err| anyhow::anyhow!("uid identity derivation failed: {err}"))?;
     let who_public = who.public.to_bytes();
 
     let mut reader = AssetHubReader::connect(config.network.asset_hub_ws).await?;
@@ -101,7 +102,8 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
         .context("connect People RPC")?;
     let people_metadata = alloc::fetch_metadata(&people_rpc).await?;
     let at = people_rpc.finalized_head().await?;
-    let full_entropy = derive_full_person_ring_vrf_entropy(&config.entropy);
+    let full_entropy =
+        derive_full_person_ring_vrf_entropy(&config.entropy, config.network.network_suffix);
     let member = proof::member_key(full_entropy);
     let ring_index = ring::read_member_ring_index_at(
         &people_rpc,

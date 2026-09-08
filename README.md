@@ -166,6 +166,10 @@ SSO transport for local end-to-end work. See [Install the CLI](#install-the-cli)
 to get it, and the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md)
 for its commands and controls.
 
+CLI reserved identities follow the selected network's dotNS suffix. Old account
+and pairing stores are left unused as the CLI starts fresh under its
+[versioned state directory](rust/crates/truapi-host-cli/README.md#state-directory).
+
 `scripts/battery.sh` drives that CLI from source over every code-generated
 example and writes both committed compatibility reports:
 `explorer/diagnosis-reports/spa/signing-host-cli.md` from a direct signing-host

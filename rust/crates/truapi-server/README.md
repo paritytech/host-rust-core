@@ -210,6 +210,15 @@ each product connection. Role-specific operations live only on the matching hand
 touching the session or other products. Calling the wrong operation is
 a compile error, not a runtime `Unavailable`.
 
+`SigningHostConfig.network_suffix` is the network's bare dotNS TLD (`dot`,
+`paseo`, or `testnet`). The shell supplies it alongside the chain genesis hashes
+from the same network configuration used by wallet onboarding. It must match
+the People chain's `NetworkSuffix.NetworkSuffix`: reserved identities derive
+under `uid.<suffix>` and `peopl.<suffix>`, while the chain uses that suffix for
+proof contexts. Configuration keeps local activation and key derivation
+available offline. The core validates supported suffixes but does not
+automatically check that the configured suffix matches the chain.
+
 ### The two roles
 
 Both implement the role-neutral **`ProductAuthority`** trait; each owns its
@@ -224,7 +233,7 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 - **`SigningHost`** (wallet-local): signs on device from local BIP-39 entropy,
   no pairing flow. `signing_host/local_activation.rs` establishes a session
   from host-held secret material. Its public identity is the RFC-0022
-  `uid.dot` index-0 product account. RFC-0024 ring-VRF keys are explicit,
+  `uid.<tld>` index-0 product account of the configured network. RFC-0024 ring-VRF keys are explicit,
   product-owned registry entries; aliases, proofs, direct signatures, and
   internal personhood flows use the requested or user-selected registered key
   without a compiled-in fallback. It resolves RFC-0004 `RingLocation` values

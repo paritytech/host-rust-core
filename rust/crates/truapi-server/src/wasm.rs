@@ -581,6 +581,8 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+    let network_suffix =
+        get_required_string_at(value, "networkSuffix", "runtimeConfig.networkSuffix")?;
 
     SigningHostConfig::new(
         HostInfo {
@@ -611,6 +613,7 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
         )?,
+        network_suffix,
     )
     .map_err(runtime_config_validation_to_js)
 }
@@ -645,6 +648,7 @@ fn runtime_config_field_to_js(field: &str) -> &str {
         "people_chain_genesis_hash" => "people.genesisHash",
         "bulletin_chain_genesis_hash" => "bulletin.genesisHash",
         "asset_hub_chain_genesis_hash" => "assetHub.genesisHash",
+        "network_suffix" => "networkSuffix",
         other => other,
     }
 }
@@ -667,6 +671,11 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
         RuntimeConfigValidationError::InvalidProductId { product_id } => {
             JsValue::from_str(&format!(
                 "runtimeConfig.productId must be a dotNS or localhost product identifier, got {product_id:?}"
+            ))
+        }
+        RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
+            JsValue::from_str(&format!(
+                "runtimeConfig.networkSuffix must be a supported dotNS TLD, got {network_suffix:?}"
             ))
         }
     }

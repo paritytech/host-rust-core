@@ -89,6 +89,12 @@ manifest PR to keep `main` current. SPM pins the resolved revision in the app's
 `Package.resolved`; update it with File > Packages > Update in Xcode or
 `xcodebuild -resolvePackageDependencies` after the tag is published.
 
+`HostRuntimeConfig.networkSuffix` is required. Supply the bare TLD (`dot`,
+`paseo`, or `testnet`) from the same network configuration used by onboarding
+and the People/Bulletin genesis hashes. It must match the People chain's
+`NetworkSuffix.NetworkSuffix`. Include this configuration update in the
+embedding app's package upgrade.
+
 Run the package tests against an iOS simulator (the xcframework has no macOS slice):
 
 ```bash
@@ -140,7 +146,8 @@ let runtime = try TrUAPIHostRuntime(
     runtimeConfig: HostRuntimeConfig(
         hostName: "My Chat Host",
         peopleChainGenesisHash: peopleChainGenesisHash,   // exactly 32 bytes
-        bulletinChainGenesisHash: bulletinChainGenesisHash
+        bulletinChainGenesisHash: bulletinChainGenesisHash,
+        networkSuffix: "dot"
     )
 )
 // Chat needs an active session; without one every Chat call answers denied.
@@ -378,7 +385,8 @@ let runtimeConfig = HostRuntimeConfig(
     hostName: "My Host",
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),
-    bulletinChainGenesisHash: Data(repeating: 0, count: 32)
+    bulletinChainGenesisHash: Data(repeating: 0, count: 32),
+    networkSuffix: "dot"
 )
 let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
 try runtime.activateLocalSession(secret: entropyBytes, liteUsername: nil)
