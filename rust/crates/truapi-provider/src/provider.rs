@@ -240,6 +240,15 @@ impl EmbeddedChainProvider {
         self.warm_store.is_some()
     }
 
+    /// The store this provider keeps blobs in, or an error naming what is
+    /// missing. Warm start is never skipped quietly: a host that meant to have
+    /// it and did not configure one is told so.
+    fn warm_store(&self) -> Result<crate::warm_start::SharedWarmStore, GenericError> {
+        self.warm_store.clone().ok_or_else(|| GenericError {
+            reason: "this provider was built without a warm store, so there is nowhere to keep finalized state".to_owned(),
+        })
+    }
+
     /// Whether a light-client connection has been opened for `genesis_hash`.
     fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
         self.connected
@@ -280,6 +289,10 @@ impl EmbeddedChainProvider {
     /// not from inside a connection callback: on the native bindings `connect`
     /// blocks the calling thread, and a store that needs the main thread would
     /// deadlock underneath it.
+    ///
+    /// Fails when the provider was built without a store. A chain that silently
+    /// never warms up is indistinguishable from one that has nothing stored
+    /// yet, so the missing configuration is reported rather than swallowed.
     pub async fn warm_up(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
         if self.is_connected(genesis_hash) {
             // smoldot keys a chain by its genesis hash and discards the blob on
@@ -294,9 +307,7 @@ impl EmbeddedChainProvider {
         if self.has_database(genesis_hash) {
             return Ok(true);
         }
-        let Some(store) = self.warm_store.clone() else {
-            return Ok(false);
-        };
+        let store = self.warm_store()?;
         let Some(blob) = store.load(genesis_hash).await? else {
             return Ok(false);
         };
@@ -320,10 +331,11 @@ impl EmbeddedChainProvider {
     /// while the app is alive, and treat a call from a teardown callback as
     /// best effort, since neither a hidden page nor a backgrounded app is
     /// guaranteed to stay scheduled long enough to finish it.
+    ///
+    /// Fails when the provider was built without a store, for the same reason
+    /// [`warm_up`](Self::warm_up) does.
     pub async fn persist(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
-        let Some(store) = self.warm_store.clone() else {
-            return Ok(false);
-        };
+        let store = self.warm_store()?;
         if !self.is_connected(genesis_hash) {
             // `snapshot` opens its own connection, so persisting a chain this
             // provider never connected would start one, sync it from the
@@ -707,14 +719,21 @@ mod tests {
         assert!(!provider.is_connected(GENESIS));
     }
 
-    /// Without a store, warm start is simply off rather than an error.
+    /// A provider with nowhere to keep blobs says so, rather than reporting
+    /// the same "nothing stored yet" a working store reports on a cold chain.
     #[cfg(feature = "smoldot")]
     #[test]
-    fn warm_up_without_a_store_reports_nothing_in_hand() {
+    fn warm_up_without_a_store_is_an_error_naming_what_is_missing() {
         let provider = EmbeddedChainProvider::builder()
             .chain([5; 32], ChainSource::light_client("{}").build())
             .build();
-        assert!(!futures::executor::block_on(provider.warm_up([5; 32])).expect("no store"));
+        let error = futures::executor::block_on(provider.warm_up([5; 32]))
+            .expect_err("a provider with no store cannot warm up");
+        assert!(
+            error.reason.contains("without a warm store"),
+            "{}",
+            error.reason
+        );
     }
 
     #[cfg(feature = "ws")]

@@ -307,10 +307,14 @@ pub struct ChainProvider {
 
 #[uniffi::export]
 impl ChainProvider {
-    /// Create a provider backed by the bundled network catalog. Every chain
-    /// starts cold; use [`with_warm_store`](Self::with_warm_store) or
-    /// [`with_file_warm_store`](Self::with_file_warm_store) to keep warm-start
-    /// blobs across runs.
+    /// Create a provider backed by the bundled network catalog, with nowhere
+    /// to keep finalized state: every chain syncs from the chain-spec
+    /// checkpoint on every run, and [`warm_up`](Self::warm_up) and
+    /// [`persist`](Self::persist) fail rather than quietly doing nothing.
+    ///
+    /// Prefer [`with_file_warm_store`](Self::with_file_warm_store), which keeps
+    /// blobs under a directory the host names, or
+    /// [`with_warm_store`](Self::with_warm_store) for storage of the host's own.
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -352,7 +356,13 @@ impl ChainProvider {
     /// Read `genesis_hash`'s stored blob into this provider, so the next
     /// [`connect`](Self::connect) to that chain resumes from finalized state
     /// instead of syncing from the chain-spec checkpoint. Answers whether a
-    /// blob is now in hand; a provider built without a store answers `false`.
+    /// blob is now in hand.
+    ///
+    /// Fails when the provider was built through [`new`](Self::new), which has
+    /// nowhere to keep blobs. A chain that never warms up looks exactly like
+    /// one with nothing stored yet, so the missing store is reported rather
+    /// than swallowed: build with [`with_file_warm_store`](Self::with_file_warm_store)
+    /// or [`with_warm_store`](Self::with_warm_store).
     ///
     /// Call it before `connect`, and never from a listener callback. `connect`
     /// blocks its calling thread, so a store awaited underneath it would
@@ -369,8 +379,8 @@ impl ChainProvider {
     }
 
     /// Snapshot `genesis_hash`'s finalized state and hand it to the warm store.
-    /// Answers whether a blob was stored; a provider built without a store
-    /// answers `false`.
+    /// Answers whether a blob was stored, and fails when the provider was built
+    /// without one, for the same reason [`warm_up`](Self::warm_up) does.
     ///
     /// This is a full round trip against the light client rather than a write,
     /// so call it while the app is alive. From a backgrounding callback treat

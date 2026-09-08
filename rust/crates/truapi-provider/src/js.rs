@@ -281,8 +281,11 @@ impl ChainProviderHandle {
         let genesis = parse_genesis(genesis_hash)?;
         // Warm start is an optimisation, so a store that cannot answer leaves
         // the chain to sync from the checkpoint rather than failing the connect.
+        // A host that turned warm start off is not asked at all.
         #[cfg(feature = "smoldot")]
-        if let Err(error) = self.inner.warm_up(genesis).await {
+        if self.inner.has_warm_store()
+            && let Err(error) = self.inner.warm_up(genesis).await
+        {
             tracing::warn!(
                 reason = %error.reason,
                 "warm store unavailable; syncing from the chain-spec checkpoint"
