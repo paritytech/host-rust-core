@@ -116,6 +116,8 @@ impl EmbeddedChainProviderBuilder {
             #[cfg(feature = "smoldot")]
             storage: self.storage,
             #[cfg(feature = "smoldot")]
+            stored_quality: Mutex::new(HashMap::new()),
+            #[cfg(feature = "smoldot")]
             light: crate::light::LightState::new(),
         }
     }
@@ -147,6 +149,11 @@ pub struct EmbeddedChainProvider {
     seeded_databases: Mutex<HashMap<[u8; 32], String>>,
     #[cfg(feature = "smoldot")]
     storage: Option<std::sync::Arc<dyn crate::storage::StorageClient>>,
+    /// Whether the blob this provider last wrote for a chain carried the runtime
+    /// code. Saves reading an 8 MB blob back on every snapshot, at the cost of
+    /// assuming nothing else writes the same key.
+    #[cfg(feature = "smoldot")]
+    stored_quality: Mutex<HashMap<[u8; 32], bool>>,
     #[cfg(feature = "smoldot")]
     light: crate::light::LightState,
 }
@@ -275,6 +282,25 @@ impl EmbeddedChainProvider {
         None
     }
 
+    /// Put a seed back after a connect that never reached `add_chain`.
+    ///
+    /// The blob is taken out of the map before connecting, so without this a
+    /// transport failure would drop it and the retry would sync cold. The web
+    /// path reloads before every connect and would recover anyway; a native
+    /// host calls `load_database` once.
+    #[cfg(feature = "smoldot")]
+    fn return_seed(&self, genesis_hash: [u8; 32], source: ChainSource) {
+        if let ChainSource::LightClient {
+            database_content: Some(blob),
+            ..
+        } = source
+        {
+            lock(&self.seeded_databases)
+                .entry(genesis_hash)
+                .or_insert(blob);
+        }
+    }
+
     /// Whether a blob is already in hand for `genesis_hash`.
     fn has_database(&self, genesis_hash: [u8; 32]) -> bool {
         lock(&self.seeded_databases).contains_key(&genesis_hash)
@@ -294,9 +320,11 @@ impl EmbeddedChainProvider {
     /// blocks the calling thread, and a store that needs the main thread would
     /// deadlock underneath it.
     ///
-    /// Fails when the provider was built without storage. A chain that silently
-    /// never warms up is indistinguishable from one that has nothing stored
-    /// yet, so the missing configuration is reported rather than swallowed.
+    /// Fails when a read is needed and the provider was built without storage.
+    /// A chain that silently never resumes is indistinguishable from one that
+    /// has nothing stored yet, so missing configuration is reported rather than
+    /// swallowed. A chain that is already running, or already holds a blob,
+    /// answers without consulting storage at all.
     pub async fn load_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
         // A parachain is only as cold as the relay under it, and the relay is
         // the one that warp syncs, so it is seeded first.
@@ -354,16 +382,31 @@ impl EmbeddedChainProvider {
             // checkpoint and store nothing worth having.
             tracing::debug!(
                 genesis = %hex::encode(genesis_hash),
-                "nothing to save_database: this provider has not connected to the chain"
+                "nothing to store: this provider has not connected to the chain"
             );
             return Ok(false);
         }
         let blob = self.snapshot(genesis_hash).await?;
-        // Read before write: a snapshot without the runtime code is worth
-        // keeping over nothing stored, and worth refusing over a blob that has
-        // it, since replacing one costs a runtime download on every later run.
-        let stored = store.load(genesis_hash).await?;
-        if !crate::storage::is_worth_storing(&blob, stored.as_deref()) {
+        // A blob carrying the runtime code is never worse than what is stored,
+        // so it needs no comparison. Only the weaker case reads what is there,
+        // and only until this provider has written once and knows what it left.
+        let has_code = crate::storage::carries_runtime_code(&blob);
+        let stored_has_code = if has_code {
+            None
+        } else {
+            // Bound before the await so the lock guard is not held across it.
+            let known = lock(&self.stored_quality).get(&genesis_hash).copied();
+            match known {
+                Some(known) => Some(known),
+                None => Some(
+                    store
+                        .load(genesis_hash)
+                        .await?
+                        .is_some_and(|stored| crate::storage::carries_runtime_code(&stored)),
+                ),
+            }
+        };
+        if !crate::storage::is_worth_storing(&blob, stored_has_code) {
             tracing::debug!(
                 genesis = %hex::encode(genesis_hash),
                 "nothing better than what is already stored"
@@ -374,6 +417,7 @@ impl EmbeddedChainProvider {
         // on its first add, and this chain is live, so nothing could read it
         // back before the process ends.
         store.save(genesis_hash, blob).await?;
+        lock(&self.stored_quality).insert(genesis_hash, has_code);
         Ok(true)
     }
 
@@ -468,9 +512,14 @@ impl ChainProvider for EmbeddedChainProvider {
             let relay = self.relays.get(&genesis_hash).copied();
             #[cfg(not(feature = "smoldot"))]
             let relay = None;
-            return Ok(self
+            let connected = self
                 .connect_source(genesis_hash, &source, &self.chains, relay)
-                .await?);
+                .await;
+            #[cfg(feature = "smoldot")]
+            if connected.is_err() {
+                self.return_seed(genesis_hash, source);
+            }
+            return Ok(connected?);
         }
         #[cfg(feature = "networks")]
         if let Some((catalog, relay)) = crate::networks::catalog_network_chains(genesis_hash) {
@@ -482,9 +531,13 @@ impl ChainProvider for EmbeddedChainProvider {
                 .expect("catalog_network_chains includes the queried genesis")
                 .clone();
             let source = self.with_seeded_database(genesis_hash, source);
-            return Ok(self
+            let connected = self
                 .connect_source(genesis_hash, &source, &catalog, relay)
-                .await?);
+                .await;
+            if connected.is_err() {
+                self.return_seed(genesis_hash, source);
+            }
+            return Ok(connected?);
         }
         Err(ProviderError::UnknownGenesis {
             genesis: genesis_hash,
@@ -603,7 +656,7 @@ mod tests {
     #[cfg(feature = "smoldot")]
     #[test]
     #[allow(irrefutable_let_patterns)]
-    fn warm_up_seeds_a_chain_from_the_store() {
+    fn a_stored_blob_seeds_a_chain() {
         const GENESIS: [u8; 32] = [3; 32];
         let store = std::sync::Arc::new(MemoryStorageClient::default());
         store
@@ -687,7 +740,7 @@ mod tests {
         assert!(
             !futures::executor::block_on(provider.save_database(GENESIS))
                 .expect("no snapshot attempted"),
-            "a chain that was never connected has nothing to save_database"
+            "a chain that was never connected has nothing to store"
         );
         assert!(
             store.stored.lock().expect("test store").is_empty(),

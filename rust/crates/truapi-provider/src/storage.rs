@@ -82,13 +82,12 @@ pub trait StorageClient: Send + Sync {
     async fn save(&self, genesis_hash: [u8; 32], blob: String) -> Result<(), StorageClientError>;
 }
 
-/// Whether a snapshot is worth storing.
+/// Whether `blob` carries the runtime code.
 ///
-/// smoldot answers `chainHead_unstable_finalizedDatabase` even when the chain
-/// has finalized nothing yet, and that blob decodes to a database with no chain
-/// information, which it then silently ignores on the next run. Saving one over
-/// a good blob turns a warm start back into a cold one, so a blob only counts
-/// once it carries chain information.
+/// A blob without it still resumes from finalized state, because the chain
+/// information decides that on its own. What it costs is a runtime download on
+/// the next start, which is why a blob that has the code must never be replaced
+/// by one that does not.
 pub(crate) fn carries_runtime_code(blob: &str) -> bool {
     // smoldot serialises the runtime code as `runtimeCode` and omits the key
     // when it has none, and its shrink ladder drops that field first when a
@@ -98,22 +97,33 @@ pub(crate) fn carries_runtime_code(blob: &str) -> bool {
     blob.contains("\"runtimeCode\":")
 }
 
-/// Whether `blob` is worth storing over `stored`.
+/// Whether `blob` is worth storing, given whether what is already stored
+/// carries the runtime code. `None` means nothing is stored.
 ///
 /// A snapshot taken early, or shrunk to fit the size cap, can carry chain
 /// information without the runtime code. That is still usable, so it is worth
 /// keeping when nothing is stored, but it must not replace a blob that has the
-/// code: doing so trades a warm start for a runtime download every run.
-pub(crate) fn is_worth_storing(blob: &str, stored: Option<&str>) -> bool {
+/// code, which would trade a resumed start for a runtime download every run.
+///
+/// The quality of the stored blob is passed in rather than the blob itself, so
+/// a caller that already knows what it wrote does not read megabytes back to
+/// find out.
+pub(crate) fn is_worth_storing(blob: &str, stored_has_runtime_code: Option<bool>) -> bool {
     if !carries_chain_information(blob) {
         return false;
     }
-    match stored {
-        Some(stored) => carries_runtime_code(blob) || !carries_runtime_code(stored),
-        None => true,
+    match stored_has_runtime_code {
+        Some(true) => carries_runtime_code(blob),
+        Some(false) | None => true,
     }
 }
 
+/// Whether `blob` carries the finalized chain information.
+///
+/// smoldot answers `chainHead_unstable_finalizedDatabase` even for a chain that
+/// has finalized nothing yet, and the blob it returns then decodes to a database
+/// with no chain information, which it discards on the next run. Storing one
+/// over a good blob trades a resumed start for a cold one.
 pub(crate) fn carries_chain_information(blob: &str) -> bool {
     // A substring test rather than a parse: this runs on every snapshot against
     // a blob of up to 8 MB, and the encoder in smoldot omits the key entirely when
@@ -164,15 +174,15 @@ mod tests {
             "a blob with no runtime code still beats nothing stored"
         );
         assert!(
-            is_worth_storing(WITH_CODE, Some(WITHOUT_CODE)),
+            is_worth_storing(WITH_CODE, Some(false)),
             "gaining the runtime code is an improvement"
         );
         assert!(
-            !is_worth_storing(WITHOUT_CODE, Some(WITH_CODE)),
+            !is_worth_storing(WITHOUT_CODE, Some(true)),
             "losing the runtime code would cost a runtime download every run"
         );
         assert!(
-            is_worth_storing(WITH_CODE, Some(WITH_CODE)),
+            is_worth_storing(WITH_CODE, Some(true)),
             "a fresher blob of the same quality is still worth storing"
         );
         assert!(

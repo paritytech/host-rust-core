@@ -276,16 +276,14 @@ impl ChainProviderHandle {
                 // Before the wait, so an idle loop does not keep the provider
                 // alive after JS has let go of it.
                 drop(strong);
-                // Freed before the wait, so a reconnect arriving mid-sleep can
-                // start a fresh loop rather than finding the slot still taken.
-                lock(&persisting).remove(&genesis);
                 futures_timer::Delay::new(interval).await;
                 interval = (interval * 2).min(SNAPSHOT_INTERVAL_MAX);
-                if !lock(&persisting).insert(genesis) {
-                    // Something else took the chain over while this loop slept.
-                    return;
-                }
             }
+            // Held for the whole life of the loop and released only here, so a
+            // connect arriving mid-sleep finds the chain taken instead of
+            // starting a second loop that doubles the snapshot cost and resets
+            // the backoff. The break paths above reach this too, which is what
+            // lets a later connect restart persistence once the chain is gone.
             lock(&persisting).remove(&genesis);
         });
     }
@@ -368,6 +366,7 @@ impl ChainProviderHandle {
     /// alive. Neither `pagehide` nor a hidden tab is guaranteed to stay
     /// scheduled long enough to finish one, and a Worker sees neither event.
     #[cfg(feature = "smoldot")]
+    #[wasm_bindgen(js_name = saveDatabase)]
     pub async fn save_database(&self, genesis_hash: &str) -> Result<bool, JsError> {
         let genesis = parse_genesis(genesis_hash)?;
         self.inner
@@ -611,6 +610,31 @@ mod tests {
         save.forget();
 
         client.into()
+    }
+
+    /// The names JS actually sees. A missing `js_name` exports the Rust name
+    /// instead, which the tests below would not notice because they call the
+    /// Rust method rather than the export.
+    #[wasm_bindgen_test]
+    fn the_exported_names_match_the_documented_ones() {
+        let mut builder = ChainProviderBuilder::new();
+        let handle = JsValue::from(builder.build().expect("an empty builder builds"));
+        for name in ["connect", "loadDatabase", "saveDatabase"] {
+            let found = js_sys::Reflect::get(&handle, &JsValue::from_str(name))
+                .expect("the handle is an object");
+            assert!(found.is_function(), "the provider does not export `{name}`");
+        }
+
+        let builder = JsValue::from(ChainProviderBuilder::new());
+        let mut expected = vec!["setStorage", "setDatabaseContent", "addRpcChain"];
+        if cfg!(feature = "networks") {
+            expected.push("addNetwork");
+        }
+        for name in expected {
+            let found = js_sys::Reflect::get(&builder, &JsValue::from_str(name))
+                .expect("the builder is an object");
+            assert!(found.is_function(), "the builder does not export `{name}`");
+        }
     }
 
     /// The crate stores nothing, so a provider nobody gave storage to must say
