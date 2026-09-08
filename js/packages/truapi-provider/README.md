@@ -8,7 +8,7 @@ for browser and desktop (webview) hosts.
 You connect to a network by its genesis hash, and everything else is handled for
 you: the bundled catalog provides the spec and relay wiring, so clients never
 ship or refresh specs of their own. One light client is shared across all
-connections. Its synced state can be captured and restored, so a launch resumes
+connections, and its synced state is kept between launches, so a launch resumes
 from finalized state instead of syncing from scratch.
 
 ## Usage
@@ -36,16 +36,6 @@ connection.send(
 const response = await connection.nextResponse(); // undefined once closed
 connection.close();
 ```
-
-## Warm start
-
-Chains resume from stored finalized state instead of warp syncing from the
-chain spec's checkpoint. It needs no setup: the provider keeps each chain's
-state in the browser's own database, reads it back before connecting, and
-refreshes it while the app runs.
-
-`setWarmStore()` overrides where the blobs live, and `setWarmStore(null)` turns
-warm start off.
 
 ## Native hosts
 
