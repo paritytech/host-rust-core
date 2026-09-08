@@ -219,12 +219,12 @@ const SNAPSHOT_INTERVAL: core::time::Duration = core::time::Duration::from_secs(
 #[cfg(feature = "smoldot")]
 const SNAPSHOT_INTERVAL_MAX: core::time::Duration = core::time::Duration::from_secs(600);
 
-/// How long the warm store gets to answer before a chain gives up and syncs
+/// How long storage gets to answer before a chain gives up and syncs
 /// from the chain-spec checkpoint. A host-supplied store is arbitrary JS whose
-/// promise may never settle, and warm start must not be able to wedge a
+/// promise may never settle, and a stored blob must not be able to wedge a
 /// connection that would otherwise work.
 #[cfg(feature = "smoldot")]
-const WARM_STORE_DEADLINE: core::time::Duration = core::time::Duration::from_secs(5);
+const STORAGE_DEADLINE: core::time::Duration = core::time::Duration::from_secs(5);
 
 /// A built provider; hand out one per page/worker.
 #[wasm_bindgen]
@@ -238,7 +238,7 @@ pub struct ChainProviderHandle {
 
 #[cfg(feature = "smoldot")]
 impl ChainProviderHandle {
-    /// Keep `genesis`'s finalized state in the warm store from now on, once per
+    /// Keep the finalized state for `genesis` in storage from now on, once per
     /// chain. Does nothing when the provider was built without a store.
     ///
     /// The loop holds a weak reference and drops it before each wait, so it
@@ -297,13 +297,13 @@ impl ChainProviderHandle {
     /// hash. Rejects when the chain is not registered or the transport fails.
     pub async fn connect(&self, genesis_hash: &str) -> Result<Connection, JsError> {
         let genesis = parse_genesis(genesis_hash)?;
-        // Warm start is an optimisation, so a store that cannot answer leaves
+        // Stored state is an optimisation, so storage that cannot answer leaves
         // the chain to sync from the checkpoint rather than failing the connect.
-        // A host that turned warm start off is not asked at all, and neither is
+        // A host that supplied no storage is not asked at all, and neither is
         // a chain that is already up, whose blob smoldot would discard anyway.
         #[cfg(feature = "smoldot")]
         if self.inner.has_storage() && !self.inner.is_connected(genesis) {
-            let deadline = futures_timer::Delay::new(WARM_STORE_DEADLINE);
+            let deadline = futures_timer::Delay::new(STORAGE_DEADLINE);
             futures::pin_mut!(deadline);
             match futures::future::select(
                 core::pin::pin!(self.inner.load_database(genesis)),
@@ -313,12 +313,12 @@ impl ChainProviderHandle {
             {
                 futures::future::Either::Left((Err(error), _)) => tracing::warn!(
                     reason = %error.reason,
-                    "warm store unavailable; syncing from the chain-spec checkpoint"
+                    "storage unavailable, syncing from the chain-spec checkpoint"
                 ),
                 futures::future::Either::Left((Ok(_), _)) => {}
                 futures::future::Either::Right(((), _)) => tracing::warn!(
-                    "warm store did not answer in {}s; syncing from the chain-spec checkpoint",
-                    WARM_STORE_DEADLINE.as_secs()
+                    "storage did not answer in {}s, syncing from the chain-spec checkpoint",
+                    STORAGE_DEADLINE.as_secs()
                 ),
             }
         }
@@ -359,7 +359,7 @@ impl ChainProviderHandle {
             .map_err(|err| JsError::new(&err.reason))
     }
 
-    /// Snapshot the finalized state of the chain and write it to the warm store.
+    /// Snapshot the finalized state of the chain and write it to storage.
     /// Resolves with whether a blob was stored.
     ///
     /// A chain that has finalized nothing yet is skipped rather than stored,
@@ -491,13 +491,13 @@ impl HostStorageClient {
     /// Read one function property off the store object.
     fn method(store: &JsValue, name: &str) -> Result<js_sys::Function, JsError> {
         js_sys::Reflect::get(store, &JsValue::from_str(name))
-            .map_err(|_| JsError::new(&format!("warm store has no `{name}`")))?
+            .map_err(|_| JsError::new(&format!("the storage client has no `{name}`")))?
             .dyn_into::<js_sys::Function>()
-            .map_err(|_| JsError::new(&format!("warm store `{name}` is not a function")))
+            .map_err(|_| JsError::new(&format!("the storage client `{name}` is not a function")))
     }
 }
 
-/// Await `call`'s result on the JS event loop, reporting it through a `Send`
+/// Await the result of `call` on the JS event loop, reporting it through a `Send`
 /// channel the caller can hold across its own await point.
 #[cfg(feature = "smoldot")]
 fn await_js(

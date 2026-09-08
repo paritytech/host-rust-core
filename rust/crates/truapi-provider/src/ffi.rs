@@ -219,7 +219,7 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for StorageClientError {
     fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
         tracing::warn!(
             reason = %error.reason,
-            "warm store threw an undeclared error; reporting it as a store failure"
+            "storage threw an undeclared error, reported as a storage failure"
         );
         StorageClientError::new(bounded_reason(error.reason))
     }
@@ -261,7 +261,7 @@ impl ChainProvider {
         })
     }
 
-    /// Read `genesis_hash`'s stored blob into this provider, so the next
+    /// Read the stored blob for `genesis_hash` into this provider, so the next
     /// [`connect`](Self::connect) to that chain resumes from finalized state
     /// instead of syncing from the chain-spec checkpoint. Answers whether a
     /// blob is now in hand.
@@ -288,7 +288,7 @@ impl ChainProvider {
             })
     }
 
-    /// Snapshot `genesis_hash`'s finalized state and hand it to the warm store.
+    /// Snapshot the finalized state for `genesis_hash` and hand it to storage.
     /// Answers whether a blob was stored, and fails when the provider was built
     /// without one, for the same reason [`load_database`](Self::load_database) does.
     ///
@@ -911,7 +911,7 @@ mod tests {
         assert!(matches!(error, ChainProviderError::BadGenesis));
     }
 
-    /// Foreign warm-store stand-in: the real one lives in Swift or Kotlin, so
+    /// Foreign storage stand-in. The real one lives in Swift or Kotlin, so
     /// this exercises the same `with_foreign` trait the bindings implement.
     /// Each call records its genesis hash, and the blob when it was a save.
     struct RecordingStore {

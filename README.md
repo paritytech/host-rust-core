@@ -137,7 +137,7 @@ dependency on the crate:
   Kotlin bindings and the cdylib per ABI, built by
   `make provider-android-publish-local`.
 
-A light client that starts cold warp syncs from the chain spec's checkpoint, so
+A light client that starts cold warp syncs from the checkpoint in the chain spec, so
 every artifact resumes from stored finalized state instead, including the relay a
 parachain syncs through. The provider owns when a blob is read and written; the
 host owns where the bytes live. The crate stores nothing itself: a host implements

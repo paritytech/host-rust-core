@@ -280,7 +280,7 @@ impl EmbeddedChainProvider {
         lock(&self.seeded_databases).contains_key(&genesis_hash)
     }
 
-    /// Read `genesis_hash`'s stored blob into this provider, so the next
+    /// Read the stored blob for `genesis_hash` into this provider, so the next
     /// connect to that chain resumes from it instead of warp syncing from the
     /// chain-spec checkpoint. Returns whether a blob is now in hand.
     ///
@@ -331,7 +331,7 @@ impl EmbeddedChainProvider {
         Ok(true)
     }
 
-    /// Snapshot `genesis_hash`'s finalized state and hand it to the warm store.
+    /// Snapshot the finalized state for `genesis_hash` and hand it to storage.
     /// Returns whether a blob was stored.
     ///
     /// A chain that has finalized nothing yet still answers the snapshot

@@ -172,7 +172,7 @@ impl LightState {
     ///
     /// Answered from the bookkeeping the client keeps rather than from a count of
     /// handed-out connections, because a relay behind a parachain has no
-    /// connection and is exactly the chain warm start most needs to cover.
+    /// connection and is exactly the chain a stored blob most needs to cover.
     pub(crate) fn is_added(&self, genesis_hash: [u8; 32]) -> bool {
         self.inner
             .get()
@@ -547,7 +547,7 @@ mod tests {
 
     /// The blocker this file exists to prevent. The relay under a parachain has no
     /// connection of its own, so anything counting handed-out connections
-    /// cannot see it, and warm start would never store the one chain that
+    /// cannot see it, and nothing would ever store the one chain that
     /// actually warp syncs.
     #[test]
     fn a_relay_behind_a_parachain_counts_as_added() {

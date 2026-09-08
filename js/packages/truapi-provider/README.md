@@ -54,11 +54,11 @@ builder.setStorage({
 Both are called with a `0x`-prefixed lowercase genesis hash. A client that cannot
 answer must reject rather than resolve `null`, which means "nothing stored yet"
 and would let the next write replace good state. Without a client every chain
-syncs from the chain spec's checkpoint on every run.
+syncs from the checkpoint in the chain spec on every run.
 
 `setDatabaseContent(genesisHash, blob)` seeds one chain for this run and beats
 anything the client would load for it. `saveDatabase(genesisHash)` forces a write
-at a moment of the host's choosing.
+at a moment the host chooses.
 
 ## Native hosts
 
