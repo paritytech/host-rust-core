@@ -375,7 +375,9 @@ impl EmbeddedChainProvider {
     /// Fails when the provider was built without a store, for the same reason
     /// [`load_database`](Self::load_database) does.
     pub async fn save_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
-        let store = self.storage()?;
+        // Checked before the snapshot, so a provider with nowhere to write
+        // fails without paying for a round trip through the light client.
+        self.storage()?;
         if !self.is_connected(genesis_hash) {
             // `snapshot` opens its own connection, so persisting a chain this
             // provider never connected would start one, sync it from the
@@ -387,6 +389,19 @@ impl EmbeddedChainProvider {
             return Ok(false);
         }
         let blob = self.snapshot(genesis_hash).await?;
+        self.store_blob(genesis_hash, blob).await
+    }
+
+    /// Decide whether `blob` improves on what is stored, and write it if so.
+    ///
+    /// Split from [`save_database`](Self::save_database) so the decision can be
+    /// driven with a chosen blob. Reaching it through `save_database` needs a
+    /// live chain to snapshot, which leaves no way to present the case this
+    /// exists for: a snapshot that lost the runtime code arriving over a stored
+    /// blob that still has it.
+    #[cfg(feature = "smoldot")]
+    async fn store_blob(&self, genesis_hash: [u8; 32], blob: String) -> Result<bool, GenericError> {
+        let store = self.storage()?;
         // A blob carrying the runtime code is never worse than what is stored,
         // so it needs no comparison. Only the weaker case reads what is there,
         // and only until this provider has written once and knows what it left.
@@ -787,6 +802,117 @@ mod tests {
             database_content.as_deref(),
             Some("stored-blob"),
             "what the client returned is what the chain is seeded with"
+        );
+    }
+
+    /// A snapshot that lost the runtime code must not replace a stored blob
+    /// that still has it. Flipping the guard in `store_blob` makes this fail,
+    /// which the unit test on `is_worth_storing` alone does not catch.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn a_snapshot_without_the_runtime_code_does_not_replace_one_with_it() {
+        const GENESIS: [u8; 32] = [11; 32];
+        const WITH_CODE: &str = r#"{"chain":{"a":1},"runtimeCode":"AAAA"}"#;
+        const WITHOUT_CODE: &str = r#"{"chain":{"a":1}}"#;
+
+        let client = std::sync::Arc::new(MemoryStorageClient::default());
+        client
+            .stored
+            .lock()
+            .expect("test client")
+            .insert(GENESIS, WITH_CODE.to_owned());
+
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .storage(client.clone())
+            .build();
+
+        assert!(
+            !futures::executor::block_on(provider.store_blob(GENESIS, WITHOUT_CODE.to_owned()))
+                .expect("the client answers"),
+            "a blob that lost the runtime code is not worth storing"
+        );
+        assert_eq!(
+            client.stored.lock().expect("test client").get(&GENESIS),
+            Some(&WITH_CODE.to_owned()),
+            "the better blob is still there"
+        );
+    }
+
+    /// A blob carrying the runtime code always wins, and does so without
+    /// reading the stored one back.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn a_snapshot_with_the_runtime_code_is_stored_without_a_read() {
+        const GENESIS: [u8; 32] = [12; 32];
+        const WITH_CODE: &str = r#"{"chain":{"a":1},"runtimeCode":"AAAA"}"#;
+
+        let client = std::sync::Arc::new(MemoryStorageClient::default());
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .storage(client.clone())
+            .build();
+
+        assert!(
+            futures::executor::block_on(provider.store_blob(GENESIS, WITH_CODE.to_owned()))
+                .expect("the client accepts it")
+        );
+        assert_eq!(
+            client.loads.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a blob with the runtime code needs no comparison"
+        );
+        assert_eq!(
+            client.stored.lock().expect("test client").get(&GENESIS),
+            Some(&WITH_CODE.to_owned())
+        );
+    }
+
+    /// A blob with nothing finalized is never stored, whatever is there.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn a_snapshot_with_no_chain_information_is_never_stored() {
+        const GENESIS: [u8; 32] = [13; 32];
+
+        let client = std::sync::Arc::new(MemoryStorageClient::default());
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .storage(client.clone())
+            .build();
+
+        assert!(
+            !futures::executor::block_on(
+                provider.store_blob(GENESIS, r#"{"genesisHash":"0x01"}"#.to_owned())
+            )
+            .expect("the client answers")
+        );
+        assert!(client.stored.lock().expect("test client").is_empty());
+    }
+
+    /// Once this provider has written, it knows what it left behind and stops
+    /// reading the blob back on every snapshot.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn the_stored_quality_is_remembered_after_the_first_write() {
+        const GENESIS: [u8; 32] = [14; 32];
+        const WITHOUT_CODE: &str = r#"{"chain":{"a":1}}"#;
+
+        let client = std::sync::Arc::new(MemoryStorageClient::default());
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .storage(client.clone())
+            .build();
+
+        for _ in 0..3 {
+            assert!(
+                futures::executor::block_on(provider.store_blob(GENESIS, WITHOUT_CODE.to_owned()))
+                    .expect("the client answers")
+            );
+        }
+        assert_eq!(
+            client.loads.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "only the first write has to look at what was already there"
         );
     }
 
