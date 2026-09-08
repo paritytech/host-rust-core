@@ -5,7 +5,6 @@ import {
   DEFAULT_WARM_STORE_DATABASE_NAME,
   WarmStoreError,
   openIndexedDbWarmStore,
-  startWarmStartPersistence,
 } from "./warm-store.ts";
 
 const GENESIS =
@@ -132,112 +131,5 @@ describe("openIndexedDbWarmStore", () => {
 
   test("the default database name is the documented one", () => {
     expect(DEFAULT_WARM_STORE_DATABASE_NAME).toBe("truapi-provider-warm-start");
-  });
-});
-
-describe("startWarmStartPersistence", () => {
-  const settle = (ms = 12) => new Promise((r) => setTimeout(r, ms));
-
-  test("waits for the initial delay, then persists every chain each round", async () => {
-    const calls: string[] = [];
-    const stop = startWarmStartPersistence(
-      {
-        persist: async (genesis) => {
-          calls.push(genesis);
-          return true;
-        },
-      },
-      [GENESIS, OTHER_GENESIS],
-      { initialDelayMs: 5, intervalMs: 10 },
-    );
-
-    expect(calls).toEqual([]);
-    await settle(8);
-    expect(calls).toEqual([GENESIS, OTHER_GENESIS]);
-    await settle(12);
-    expect(calls.length).toBe(4);
-    stop();
-  });
-
-  test("stop() ends the loop", async () => {
-    let count = 0;
-    const stop = startWarmStartPersistence(
-      {
-        persist: async () => {
-          count += 1;
-          return true;
-        },
-      },
-      [GENESIS],
-      { initialDelayMs: 5, intervalMs: 5 },
-    );
-    await settle(8);
-    const afterFirst = count;
-    stop();
-    await settle(20);
-    expect(count).toBe(afterFirst);
-  });
-
-  test("stop() before the first round persists nothing at all", async () => {
-    let count = 0;
-    const stop = startWarmStartPersistence(
-      {
-        persist: async () => {
-          count += 1;
-          return true;
-        },
-      },
-      [GENESIS],
-      { initialDelayMs: 20, intervalMs: 20 },
-    );
-    stop();
-    await settle(35);
-    expect(count).toBe(0);
-  });
-
-  // A slow chain must not build a backlog of snapshots of the same state.
-  test("a round still running skips the next tick instead of overlapping", async () => {
-    let active = 0;
-    let overlapped = false;
-    const stop = startWarmStartPersistence(
-      {
-        persist: async () => {
-          active += 1;
-          if (active > 1) overlapped = true;
-          await new Promise((r) => setTimeout(r, 20));
-          active -= 1;
-          return true;
-        },
-      },
-      [GENESIS],
-      { initialDelayMs: 2, intervalMs: 3 },
-    );
-    await settle(40);
-    stop();
-    expect(overlapped).toBe(false);
-  });
-
-  test("one chain's failure is reported and does not stop the others", async () => {
-    const seen: string[] = [];
-    const errors: string[] = [];
-    const stop = startWarmStartPersistence(
-      {
-        persist: async (genesis) => {
-          seen.push(genesis);
-          if (genesis === GENESIS) throw new Error("store is full");
-          return true;
-        },
-      },
-      [GENESIS, OTHER_GENESIS],
-      {
-        initialDelayMs: 3,
-        intervalMs: 50,
-        onError: (_error, genesis) => errors.push(genesis),
-      },
-    );
-    await settle(15);
-    stop();
-    expect(seen).toEqual([GENESIS, OTHER_GENESIS]);
-    expect(errors).toEqual([GENESIS]);
   });
 });

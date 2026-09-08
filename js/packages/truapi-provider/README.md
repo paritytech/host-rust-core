@@ -13,10 +13,6 @@ from finalized state instead of syncing from scratch.
 
 ## Usage
 
-Build a provider, connect to a network by its genesis hash, and exchange JSON-RPC
-request and response strings over the connection. Every connection shares the one
-embedded light client.
-
 #### Web (JavaScript)
 
 The published package is `wasm-bindgen` glue plus a `.wasm` binary. Instantiate
@@ -34,83 +30,49 @@ const chains = builder.addNetwork("paseo-next-v2");
 builder.setWarmStore(openIndexedDbWarmStore());
 
 const provider = builder.build();
-
-// Seed the relay from the blob the store already holds, before connecting.
-await provider.warmUp(chains.relay);
 const connection = await provider.connect(chains.relay);
 
-connection.send('{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}');
+connection.send(
+  '{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}',
+);
 const response = await connection.nextResponse(); // undefined once closed
 connection.close();
-
-// Later, with the page or worker still alive, write finalized state back.
-// Resolves false while the chain has finalized nothing worth storing.
-await provider.persist(chains.relay);
 ```
 
 ## Warm start
 
 A light client that starts from a stored blob resumes from finalized state
-instead of warp syncing from the chain-spec checkpoint. The provider owns when
-a blob is read and written; the host owns where it lives.
+instead of warp syncing from the chain-spec checkpoint.
 
-`setWarmStore()` takes any object with `load(genesisHashHex)` resolving to the
-stored string or `null`, and `save(genesisHashHex, blob)`. Both are called with
-a `0x`-prefixed lowercase genesis hash and may return a promise. A store that
-cannot answer must reject. Resolving `null` means nothing is stored yet, so a
-failed read reported that way lets the next `persist()` overwrite good state.
-
-On the web, use the bundled IndexedDB store:
+Give the provider somewhere to keep blobs and it handles the rest: it reads a
+chain's blob before connecting to it, and from then on snapshots that chain's
+finalized state into the store, 30 seconds after the connect and every minute
+after that. There is nothing to call and no cadence to choose.
 
 ```js
 import { openIndexedDbWarmStore } from "@parity/truapi-provider/warm-store";
 
-const store = openIndexedDbWarmStore(); // { databaseName } to override
+builder.setWarmStore(openIndexedDbWarmStore());
 ```
 
-It keeps one record per chain, keyed by genesis hash, in the
-`truapi-provider-warm-start` database. That name is a persisted browser key.
-Renaming it strands every blob already written under the old name, and those
-chains warp sync again. Do not put blobs in `localStorage`: a snapshot runs to
-several megabytes against a quota near five, and the write blocks the main
-thread.
+The store keeps one record per chain, keyed by genesis hash, in the
+`truapi-provider-warm-start` database. That name is a persisted browser key:
+renaming it strands every blob already written under the old name, and those
+chains warp sync again. `openIndexedDbWarmStore({ databaseName })` overrides it.
 
-`warmUp()` has to run before the first `connect()` for that chain. smoldot keys
-a chain by its genesis hash and ignores the blob on every add after the first,
-so a later seed cannot take effect; the provider logs a warning and answers
-`false` rather than letting the chain stay silently cold.
+Warm start is an optimisation, never a dependency. A store that cannot answer
+leaves the chain to sync from the checkpoint; it does not fail the connect. Do
+not keep blobs in `localStorage`: a snapshot runs to several megabytes against
+a quota near five, and the write blocks the main thread.
 
-`persist()` answers `false` for a chain this provider never connected, rather
-than starting one just to snapshot it.
+`setWarmStore()` accepts any object with `load(genesisHashHex)` resolving to the
+stored string or `null`, and `save(genesisHashHex, blob)`. A store that cannot
+answer must reject rather than resolve `null`, which means "nothing stored yet"
+and would let the next snapshot overwrite good state.
 
-`snapshot()` and `setDatabase()` remain for a host that keeps blobs somewhere
-the provider cannot reach.
-
-#### Save on a cadence, not on the way out
-
-`persist()` is a round trip through the light client, so it needs the context to
-stay scheduled. There is no save-on-exit on the web: the provider usually runs
-in a Web Worker, which sees neither `pagehide` nor `visibilitychange`, and
-neither event keeps an async snapshot alive long enough to land.
-
-Use the shipped loop rather than writing your own:
-
-```js
-import { startWarmStartPersistence } from "@parity/truapi-provider/warm-store";
-
-const stop = startWarmStartPersistence(provider, [
-  chains.relay,
-  chains.people,
-]);
-// stop() when the worker or page is done with the provider.
-```
-
-It waits 30 seconds before the first round, then repeats every 60 seconds, and
-skips a tick while the previous round is still running so a slow chain cannot
-build a backlog of snapshots of the same state. Both intervals are options. A
-chain that fails is reported through `onError` and does not stop the others;
-the default reports to `console.warn`, because a store that quietly stops
-writing looks exactly like one that is working until the next cold start.
+`warmUp()` and `persist()` remain for a host that would rather drive both
+itself, and `snapshot()`/`setDatabase()` for one that keeps blobs somewhere the
+provider cannot reach.
 
 ## Native hosts
 

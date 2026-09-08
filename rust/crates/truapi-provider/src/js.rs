@@ -17,6 +17,11 @@
 //!
 //! Construct one provider per page/worker: connections share the provider's
 //! resources, matching the one-provider-per-host-process contract.
+//!
+//! Warm start needs only `setWarmStore`. A chain's stored blob is read before
+//! its first connect, and from then on the provider snapshots that chain into
+//! the store on its own schedule. `warmUp` and `persist` stay available for a
+//! host that would rather drive both itself.
 
 use std::sync::Arc;
 
@@ -161,6 +166,8 @@ impl ChainProviderBuilder {
             .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
         Ok(ChainProviderHandle {
             inner: Arc::new(builder.build()),
+            #[cfg(feature = "smoldot")]
+            persisting: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
     }
 }
@@ -172,10 +179,73 @@ impl Default for ChainProviderBuilder {
     }
 }
 
+/// How long a chain runs before its first snapshot. A chain that has finalized
+/// nothing yet has nothing worth storing, and asking costs a round trip.
+#[cfg(feature = "smoldot")]
+const FIRST_SNAPSHOT_DELAY: core::time::Duration = core::time::Duration::from_secs(30);
+
+/// Gap between snapshots after the first.
+#[cfg(feature = "smoldot")]
+const SNAPSHOT_INTERVAL: core::time::Duration = core::time::Duration::from_secs(60);
+
 /// A built provider; hand out one per page/worker.
 #[wasm_bindgen]
 pub struct ChainProviderHandle {
     inner: Arc<EmbeddedChainProvider>,
+    /// Chains already being snapshotted, so repeated connects to one chain do
+    /// not each start their own loop.
+    #[cfg(feature = "smoldot")]
+    persisting: Arc<std::sync::Mutex<std::collections::HashSet<[u8; 32]>>>,
+}
+
+#[cfg(feature = "smoldot")]
+impl ChainProviderHandle {
+    /// Keep `genesis`'s finalized state in the warm store from now on, once per
+    /// chain. Does nothing when the provider was built without a store.
+    ///
+    /// The loop holds a weak reference and drops it before each wait, so it
+    /// stops on its own once JS releases the provider rather than keeping it
+    /// alive for the life of the page.
+    fn start_persistence(&self, genesis: [u8; 32]) {
+        if !self.inner.has_warm_store() {
+            return;
+        }
+        {
+            let mut persisting = self
+                .persisting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !persisting.insert(genesis) {
+                return;
+            }
+        }
+
+        let provider = Arc::downgrade(&self.inner);
+        let persisting = Arc::clone(&self.persisting);
+        wasm_bindgen_futures::spawn_local(async move {
+            futures_timer::Delay::new(FIRST_SNAPSHOT_DELAY).await;
+            loop {
+                let Some(strong) = provider.upgrade() else {
+                    persisting
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&genesis);
+                    return;
+                };
+                if let Err(error) = strong.persist(genesis).await {
+                    tracing::warn!(
+                        genesis = %hex0x(&genesis),
+                        reason = %error.reason,
+                        "could not store finalized state"
+                    );
+                }
+                // Before the wait, so an idle loop does not keep the provider
+                // alive after JS has let go of it.
+                drop(strong);
+                futures_timer::Delay::new(SNAPSHOT_INTERVAL).await;
+            }
+        });
+    }
 }
 
 #[wasm_bindgen]
@@ -184,11 +254,22 @@ impl ChainProviderHandle {
     /// hash. Rejects when the chain is not registered or the transport fails.
     pub async fn connect(&self, genesis_hash: &str) -> Result<Connection, JsError> {
         let genesis = parse_genesis(genesis_hash)?;
+        // Warm start is an optimisation, so a store that cannot answer leaves
+        // the chain to sync from the checkpoint rather than failing the connect.
+        #[cfg(feature = "smoldot")]
+        if let Err(error) = self.inner.warm_up(genesis).await {
+            tracing::warn!(
+                reason = %error.reason,
+                "warm store unavailable; syncing from the chain-spec checkpoint"
+            );
+        }
         let connection = self
             .inner
             .connect(genesis)
             .await
             .map_err(|err| JsError::new(&err.reason))?;
+        #[cfg(feature = "smoldot")]
+        self.start_persistence(genesis);
         let responses = connection.responses();
         Ok(Connection {
             inner: Arc::from(connection),

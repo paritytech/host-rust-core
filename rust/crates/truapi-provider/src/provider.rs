@@ -235,6 +235,11 @@ const SNAPSHOT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(6
 
 #[cfg(feature = "smoldot")]
 impl EmbeddedChainProvider {
+    /// Whether this provider was built with somewhere to keep blobs.
+    pub fn has_warm_store(&self) -> bool {
+        self.warm_store.is_some()
+    }
+
     /// Whether a light-client connection has been opened for `genesis_hash`.
     fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
         self.connected
