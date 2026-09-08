@@ -24,7 +24,7 @@ pub struct EmbeddedChainProviderBuilder {
     /// Warm-start database blobs keyed by genesis hash, applied to a
     /// light-client chain at connect time if it has no explicit blob.
     #[cfg(feature = "smoldot")]
-    databases: HashMap<[u8; 32], String>,
+    seeded_databases: HashMap<[u8; 32], String>,
     /// Where warm-start blobs are read from and written back to.
     #[cfg(feature = "smoldot")]
     warm_store: Option<crate::warm_start::SharedWarmStore>,
@@ -37,7 +37,7 @@ impl core::fmt::Debug for EmbeddedChainProviderBuilder {
         #[cfg(feature = "smoldot")]
         builder
             .field("relays", &self.relays)
-            .field("databases", &self.databases)
+            .field("seeded_databases", &self.seeded_databases)
             .field("warm_store", &self.warm_store.is_some());
         builder.finish()
     }
@@ -78,7 +78,7 @@ impl EmbeddedChainProviderBuilder {
     /// ignored for a chain that already carries an explicit blob.
     #[cfg(feature = "smoldot")]
     pub fn database(mut self, genesis_hash: [u8; 32], blob: String) -> Self {
-        self.databases.insert(genesis_hash, blob);
+        self.seeded_databases.insert(genesis_hash, blob);
         self
     }
 
@@ -101,7 +101,7 @@ impl EmbeddedChainProviderBuilder {
             #[cfg(feature = "smoldot")]
             relays: self.relays,
             #[cfg(feature = "smoldot")]
-            databases: Mutex::new(self.databases),
+            seeded_databases: Mutex::new(self.seeded_databases),
             #[cfg(feature = "smoldot")]
             warm_store: self.warm_store,
             #[cfg(feature = "smoldot")]
@@ -130,10 +130,12 @@ pub struct EmbeddedChainProvider {
     /// parachains carry theirs in the catalog entry.
     #[cfg(feature = "smoldot")]
     relays: HashMap<[u8; 32], [u8; 32]>,
-    /// Blobs seeded explicitly or read back from the warm store, kept behind a
-    /// lock because `warm_up` fills it after the provider is built.
+    /// Database contents waiting to seed a chain, whether registered explicitly
+    /// or read back from the warm store. Behind a lock because `warm_up` fills
+    /// it after the provider is built, and only useful until a chain's first
+    /// add: smoldot ignores the blob on every add after that.
     #[cfg(feature = "smoldot")]
-    databases: Mutex<HashMap<[u8; 32], String>>,
+    seeded_databases: Mutex<HashMap<[u8; 32], String>>,
     #[cfg(feature = "smoldot")]
     warm_store: Option<crate::warm_start::SharedWarmStore>,
     /// Chains a light-client connection has been opened for, so `warm_up` can
@@ -201,11 +203,11 @@ impl EmbeddedChainProvider {
     /// `genesis_hash` and the source is a light client with no explicit blob.
     #[cfg(feature = "smoldot")]
     fn with_seeded_database(&self, genesis_hash: [u8; 32], mut source: ChainSource) -> ChainSource {
-        let databases = self
-            .databases
+        let seeded_databases = self
+            .seeded_databases
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(blob) = databases.get(&genesis_hash)
+        if let Some(blob) = seeded_databases.get(&genesis_hash)
             && let ChainSource::LightClient {
                 database_content, ..
             } = &mut source
@@ -270,7 +272,7 @@ impl EmbeddedChainProvider {
 
     /// Whether a blob is already in hand for `genesis_hash`.
     fn has_database(&self, genesis_hash: [u8; 32]) -> bool {
-        self.databases
+        self.seeded_databases
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&genesis_hash)
@@ -311,7 +313,7 @@ impl EmbeddedChainProvider {
         let Some(blob) = store.load(genesis_hash).await? else {
             return Ok(false);
         };
-        self.databases
+        self.seeded_databases
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(genesis_hash)
@@ -355,7 +357,7 @@ impl EmbeddedChainProvider {
             return Ok(false);
         }
         store.save(genesis_hash, blob.clone()).await?;
-        self.databases
+        self.seeded_databases
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(genesis_hash, blob);
