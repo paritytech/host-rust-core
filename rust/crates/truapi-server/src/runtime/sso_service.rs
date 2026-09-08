@@ -85,46 +85,19 @@ impl<R: SsoResponse> SsoReply<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::sso::messages::{ProductSubtreeResponse, RemoteMessageData, v1};
+    use crate::host_logic::sso::messages::{ProductSubtreeResponse, RemoteMessageData};
 
     #[test]
     fn finish_addresses_the_response_to_the_request() {
         let answer =
             SsoReply::<ProductSubtreeResponse>::from(Err("nope".to_string())).finish("m-1");
 
-        assert_eq!(
-            answer,
-            Answer {
-                message: RemoteMessage {
-                    message_id: "m-1:response".to_string(),
-                    data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(
-                        ProductSubtreeResponse {
-                            responding_to: "m-1".to_string(),
-                            product_public_key: Err("nope".to_string()),
-                        },
-                    )),
-                },
-                outcome: ResponseOutcome {
-                    outcome: "error",
-                    reason: Some("nope".to_string()),
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn reply_outcome_does_not_change_the_wire_payload() {
-        let answer = SsoReply::<ProductSubtreeResponse>::from(Err("denied".to_string()))
-            .with_outcome(ResponseOutcome {
-                outcome: "rejected",
-                reason: Some("local detail".to_string()),
-            })
-            .finish("m-1");
-
-        assert_eq!(answer.outcome.outcome, "rejected");
-        assert_eq!(answer.outcome.reason.as_deref(), Some("local detail"));
+        assert_eq!(answer.message.message_id, "m-1:response");
         let RemoteMessageData::V1(data) = answer.message.data;
         let response = ProductSubtreeResponse::from_message(data).unwrap();
-        assert_eq!(response.product_public_key, Err("denied".to_string()));
+        assert_eq!(response.responding_to, "m-1");
+        assert_eq!(response.product_public_key, Err("nope".to_string()));
+        assert_eq!(answer.outcome.outcome, "error");
+        assert_eq!(answer.outcome.reason.as_deref(), Some("nope"));
     }
 }

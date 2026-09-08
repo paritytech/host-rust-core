@@ -109,10 +109,8 @@ returning a typed outcome: response bytes to post back, a disconnect marker, or
 ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
-SSO resource consent is bound to the signing session that received the request;
-switching accounts or reconnecting while approval is pending invalidates it.
 See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
-for the handler declarations and typed wire contracts.
+for typed handlers and resource consent bound to the signing session.
 
 ### JS Host SDKs
 
