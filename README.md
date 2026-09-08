@@ -140,11 +140,9 @@ dependency on the crate:
 A light client that starts cold warp syncs from the chain spec's checkpoint, so
 every artifact resumes from stored finalized state instead, including the relay a
 parachain syncs through. The provider owns when a blob is read and written; the
-host owns where the bytes live. Browser hosts get it with no setup: the provider
-keeps each chain's state in the origin's IndexedDB and reads it back before
-connecting. Native hosts pass a directory and get the crate's file-backed store,
-or implement `WarmStore` over storage of their own, and drive `loadDatabase` and
-`saveDatabase` from their own lifecycle.
+host owns where the bytes live. The crate stores nothing itself: a host implements
+`StorageClient` over storage it already owns, on web and native alike, so it keeps
+control of quota and of whether the bytes are backed up or encrypted.
 
 ## How it works
 

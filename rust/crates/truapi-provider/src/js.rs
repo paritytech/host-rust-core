@@ -18,10 +18,10 @@
 //! Construct one provider per page/worker: connections share the provider's
 //! resources, matching the one-provider-per-host-process contract.
 //!
-//! Warm start needs no wiring: a chain's stored blob is read before its first
-//! connect, and from then on the provider snapshots that chain into the store on
-//! its own schedule. `saveDatabase` forces a snapshot for a host that wants one
-//! at a moment of its choosing.
+//! Warm start is opt-in and the crate stores nothing: hand `setStorage` a client
+//! to the host's own storage and a chain's blob is read before its first connect,
+//! then written back on the provider's schedule. `saveDatabase` forces a write at
+//! a moment of the host's choosing.
 
 use std::sync::Arc;
 
@@ -54,10 +54,6 @@ pub fn set_log_level(level: &str) {
 #[wasm_bindgen]
 pub struct ChainProviderBuilder {
     inner: Option<EmbeddedChainProviderBuilder>,
-    /// Whether the host answered the warm-store question itself, either with a
-    /// store of its own or by turning warm start off.
-    #[cfg(feature = "smoldot")]
-    warm_store_chosen: bool,
 }
 
 #[wasm_bindgen]
@@ -67,8 +63,6 @@ impl ChainProviderBuilder {
     pub fn new() -> Self {
         ChainProviderBuilder {
             inner: Some(EmbeddedChainProviderBuilder::new()),
-            #[cfg(feature = "smoldot")]
-            warm_store_chosen: false,
         }
     }
 
@@ -109,13 +103,20 @@ impl ChainProviderBuilder {
         Ok(())
     }
 
-    /// Seed a warm-start database blob (from
-    /// [`snapshot`](ChainProviderHandle::snapshot)) for the `0x`-prefixed
-    /// genesis hash, so its light client resumes from that finalized state
-    /// instead of re-syncing from the checkpoint.
+    /// Seed the chain with the `0x`-prefixed genesis hash from a stored
+    /// database blob, so its light client resumes from that finalized state
+    /// instead of syncing from the chain-spec checkpoint.
+    ///
+    /// The blob is the string smoldot's `chainHead_unstable_finalizedDatabase`
+    /// produces. It seeds this run only, and beats anything
+    /// [`set_storage`](Self::set_storage) would load for the same chain.
     #[cfg(feature = "smoldot")]
-    #[wasm_bindgen(js_name = setDatabase)]
-    pub fn set_database(&mut self, genesis_hash: &str, blob: String) -> Result<(), JsError> {
+    #[wasm_bindgen(js_name = setDatabaseContent)]
+    pub fn set_database_content(
+        &mut self,
+        genesis_hash: &str,
+        blob: String,
+    ) -> Result<(), JsError> {
         let genesis = parse_genesis(genesis_hash)?;
         let builder = self
             .inner
@@ -125,14 +126,17 @@ impl ChainProviderBuilder {
         Ok(())
     }
 
-    /// Keep warm-start blobs somewhere other than the browser's own database,
-    /// or nowhere at all.
+    /// Keep database blobs in the host's own storage.
     ///
-    /// Warm start needs no setup: without this call the provider keeps blobs in
-    /// IndexedDB for the origin. Pass a JS object with `load(genesisHash)`
-    /// resolving to the stored string or `null` and `save(genesisHash, blob)`
-    /// to store them elsewhere, or `null` to turn warm start off and have every
-    /// chain sync from the chain-spec checkpoint.
+    /// The crate stores nothing itself, so without this call every chain syncs
+    /// from the chain-spec checkpoint on every run. Pass a JS object with
+    /// `load(genesisHash)` resolving to the stored string or `null`, and
+    /// `save(genesisHash, blob)`. Both are called with a `0x`-prefixed hex
+    /// genesis hash and may return a promise. Passing `null` does nothing.
+    ///
+    /// A blob seeded through
+    /// [`set_database_content`](Self::set_database_content) beats one loaded
+    /// here for the same chain.
     ///
     /// A store that cannot answer must reject rather than resolve empty: an
     /// empty read is taken as nothing stored yet, and would let a later
@@ -143,21 +147,17 @@ impl ChainProviderBuilder {
     /// client's view of the chain. Origin-scoped storage satisfies that; a
     /// store fed by another page or a server does not.
     #[cfg(feature = "smoldot")]
-    #[wasm_bindgen(js_name = setWarmStore)]
-    pub fn set_warm_store(&mut self, store: JsValue) -> Result<(), JsError> {
-        if store.is_null() || store.is_undefined() {
-            self.warm_store_chosen = true;
+    #[wasm_bindgen(js_name = setStorage)]
+    pub fn set_storage(&mut self, client: JsValue) -> Result<(), JsError> {
+        if client.is_null() || client.is_undefined() {
             return Ok(());
         }
-        // After the store is built: a malformed object leaves the default in
-        // place rather than silently turning warm start off.
-        let store = JsWarmStore::new(store)?;
-        self.warm_store_chosen = true;
+        let store = HostStorageClient::new(client)?;
         let builder = self
             .inner
             .take()
             .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
-        self.inner = Some(builder.warm_store(std::sync::Arc::new(store)));
+        self.inner = Some(builder.storage(std::sync::Arc::new(store)));
         Ok(())
     }
 
@@ -184,22 +184,11 @@ impl ChainProviderBuilder {
     }
 
     /// Build the provider, consuming the builder.
-    ///
-    /// Unless the host chose otherwise through
-    /// [`set_warm_store`](Self::set_warm_store), chains resume from state kept
-    /// in the browser's own database.
     pub fn build(&mut self) -> Result<ChainProviderHandle, JsError> {
-        #[allow(unused_mut)]
-        let mut builder = self
+        let builder = self
             .inner
             .take()
             .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
-        #[cfg(feature = "smoldot")]
-        if !self.warm_store_chosen {
-            builder = builder.warm_store(std::sync::Arc::new(
-                crate::warm_start_web::IndexedDbWarmStore,
-            ));
-        }
         Ok(ChainProviderHandle {
             inner: Arc::new(builder.build()),
             #[cfg(feature = "smoldot")]
@@ -256,7 +245,7 @@ impl ChainProviderHandle {
     /// stops on its own once JS releases the provider rather than keeping it
     /// alive for the life of the page.
     fn start_persistence(&self, genesis: [u8; 32]) {
-        if !self.inner.has_warm_store() {
+        if !self.inner.has_storage() {
             return;
         }
         if !lock(&self.persisting).insert(genesis) {
@@ -313,7 +302,7 @@ impl ChainProviderHandle {
         // A host that turned warm start off is not asked at all, and neither is
         // a chain that is already up, whose blob smoldot would discard anyway.
         #[cfg(feature = "smoldot")]
-        if self.inner.has_warm_store() && !self.inner.is_connected(genesis) {
+        if self.inner.has_storage() && !self.inner.is_connected(genesis) {
             let deadline = futures_timer::Delay::new(WARM_STORE_DEADLINE);
             futures::pin_mut!(deadline);
             match futures::future::select(
@@ -361,7 +350,7 @@ impl ChainProviderHandle {
     /// Call this before connecting. The store is read at most once per chain,
     /// because only a chain's first add consumes a blob.
     #[cfg(feature = "smoldot")]
-    #[wasm_bindgen(js_name = warmUp)]
+    #[wasm_bindgen(js_name = loadDatabase)]
     pub async fn load_database(&self, genesis_hash: &str) -> Result<bool, JsError> {
         let genesis = parse_genesis(genesis_hash)?;
         self.inner
@@ -383,18 +372,6 @@ impl ChainProviderHandle {
         let genesis = parse_genesis(genesis_hash)?;
         self.inner
             .save_database(genesis)
-            .await
-            .map_err(|err| JsError::new(&err.reason))
-    }
-
-    /// Produce a warm-start database blob for the `0x`-prefixed genesis hash.
-    /// Persist it and feed it back via
-    /// [`setDatabase`](ChainProviderBuilder::set_database) on a later run.
-    #[cfg(feature = "smoldot")]
-    pub async fn snapshot(&self, genesis_hash: &str) -> Result<String, JsError> {
-        let genesis = parse_genesis(genesis_hash)?;
-        self.inner
-            .snapshot(genesis)
             .await
             .map_err(|err| JsError::new(&err.reason))
     }
@@ -480,7 +457,7 @@ pub(crate) fn hex0x(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-/// A [`WarmStore`](crate::warm_start::WarmStore) over a JS object's `load` and
+/// A [`StorageClient`](crate::storage::StorageClient) over a JS object's `load` and
 /// `save` methods.
 ///
 /// The JS values are held in a `SendWrapper` because the trait is `Send`, and
@@ -488,26 +465,26 @@ pub(crate) fn hex0x(bytes: &[u8; 32]) -> String {
 /// awaiting the promise in place: a `JsFuture` is not `Send` and could not be
 /// held across the trait method's await point.
 #[cfg(feature = "smoldot")]
-struct JsWarmStore {
-    inner: send_wrapper::SendWrapper<JsStoreMethods>,
+struct HostStorageClient {
+    inner: send_wrapper::SendWrapper<HostStorageMethods>,
 }
 
 /// The JS object and the two functions taken from it at registration time.
 #[cfg(feature = "smoldot")]
-struct JsStoreMethods {
+struct HostStorageMethods {
     store: JsValue,
     load: js_sys::Function,
     save: js_sys::Function,
 }
 
 #[cfg(feature = "smoldot")]
-impl JsWarmStore {
+impl HostStorageClient {
     /// Take `load` and `save` off `store`, failing if either is missing.
     fn new(store: JsValue) -> Result<Self, JsError> {
         let load = Self::method(&store, "load")?;
         let save = Self::method(&store, "save")?;
         Ok(Self {
-            inner: send_wrapper::SendWrapper::new(JsStoreMethods { store, load, save }),
+            inner: send_wrapper::SendWrapper::new(HostStorageMethods { store, load, save }),
         })
     }
 
@@ -554,11 +531,11 @@ fn describe_js(error: &JsValue) -> String {
 
 #[cfg(feature = "smoldot")]
 #[truapi_platform::async_trait]
-impl crate::warm_start::WarmStore for JsWarmStore {
+impl crate::storage::StorageClient for HostStorageClient {
     async fn load(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Option<String>, crate::warm_start::WarmStoreError> {
+    ) -> Result<Option<String>, crate::storage::StorageClientError> {
         let receiver = {
             let methods = &*self.inner;
             await_js(
@@ -569,8 +546,8 @@ impl crate::warm_start::WarmStore for JsWarmStore {
         };
         let value = receiver
             .await
-            .map_err(|_| crate::warm_start::WarmStoreError::new("the warm store never answered"))?
-            .map_err(crate::warm_start::WarmStoreError::new)?;
+            .map_err(|_| crate::storage::StorageClientError::new("the warm store never answered"))?
+            .map_err(crate::storage::StorageClientError::new)?;
         Ok(value.as_string())
     }
 
@@ -578,7 +555,7 @@ impl crate::warm_start::WarmStore for JsWarmStore {
         &self,
         genesis_hash: [u8; 32],
         blob: String,
-    ) -> Result<(), crate::warm_start::WarmStoreError> {
+    ) -> Result<(), crate::storage::StorageClientError> {
         let receiver = {
             let methods = &*self.inner;
             await_js(methods.save.call2(
@@ -589,8 +566,8 @@ impl crate::warm_start::WarmStore for JsWarmStore {
         };
         receiver
             .await
-            .map_err(|_| crate::warm_start::WarmStoreError::new("the warm store never answered"))?
-            .map_err(crate::warm_start::WarmStoreError::new)?;
+            .map_err(|_| crate::storage::StorageClientError::new("the warm store never answered"))?
+            .map_err(crate::storage::StorageClientError::new)?;
         Ok(())
     }
 }
@@ -600,4 +577,102 @@ fn parse_genesis(hex_str: &str) -> Result<[u8; 32], JsError> {
         .map_err(|err| JsError::new(&format!("invalid genesis hash hex: {err}")))?
         .try_into()
         .map_err(|_| JsError::new("genesis hashes are 32 bytes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    use super::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A client whose `load` and `save` record what they were called with, so a
+    /// test can prove the wasm boundary actually reaches the host's object.
+    fn recording_client(calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>) -> JsValue {
+        let client = js_sys::Object::new();
+
+        let load_calls = std::rc::Rc::clone(&calls);
+        let load = Closure::<dyn FnMut(String) -> JsValue>::new(move |genesis: String| {
+            load_calls.borrow_mut().push(format!("load {genesis}"));
+            JsValue::from_str("stored-blob")
+        });
+        js_sys::Reflect::set(&client, &JsValue::from_str("load"), load.as_ref()).expect("set load");
+        load.forget();
+
+        let save_calls = std::rc::Rc::clone(&calls);
+        let save =
+            Closure::<dyn FnMut(String, String)>::new(move |genesis: String, blob: String| {
+                save_calls
+                    .borrow_mut()
+                    .push(format!("save {genesis} {}", blob.len()));
+            });
+        js_sys::Reflect::set(&client, &JsValue::from_str("save"), save.as_ref()).expect("set save");
+        save.forget();
+
+        client.into()
+    }
+
+    /// The crate stores nothing, so a provider nobody gave storage to must say
+    /// so rather than quietly never warming up.
+    #[wasm_bindgen_test]
+    async fn without_storage_the_database_calls_fail() {
+        let mut builder = ChainProviderBuilder::new();
+        let provider = builder.build().expect("an empty builder builds");
+        let genesis = format!("0x{}", "11".repeat(32));
+
+        assert!(
+            provider.load_database(&genesis).await.is_err(),
+            "loading needs somewhere to load from"
+        );
+        assert!(
+            provider.save_database(&genesis).await.is_err(),
+            "saving needs somewhere to save to"
+        );
+    }
+
+    /// The host's client is reached across the wasm boundary, with the genesis
+    /// hash it expects.
+    #[wasm_bindgen_test]
+    async fn the_host_client_is_called_with_the_genesis_hash() {
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let genesis = format!("0x{}", "22".repeat(32));
+
+        let mut builder = ChainProviderBuilder::new();
+        builder
+            .set_storage(recording_client(std::rc::Rc::clone(&calls)))
+            .expect("the client has load and save");
+        let provider = builder.build().expect("builds");
+
+        assert!(
+            provider
+                .load_database(&genesis)
+                .await
+                .expect("the client answers"),
+            "the client returned a blob, so one is now in hand"
+        );
+        assert_eq!(calls.borrow().as_slice(), [format!("load {genesis}")]);
+    }
+
+    /// A seeded blob is used without consulting the client at all.
+    #[wasm_bindgen_test]
+    async fn a_seeded_blob_beats_the_client() {
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let genesis = format!("0x{}", "33".repeat(32));
+
+        let mut builder = ChainProviderBuilder::new();
+        builder
+            .set_storage(recording_client(std::rc::Rc::clone(&calls)))
+            .expect("the client has load and save");
+        builder
+            .set_database_content(&genesis, "seeded-blob".to_owned())
+            .expect("the genesis parses");
+        let provider = builder.build().expect("builds");
+
+        assert!(provider.load_database(&genesis).await.expect("in hand"));
+        assert!(
+            calls.borrow().is_empty(),
+            "a seeded blob is already in hand, so the client is never asked"
+        );
+    }
 }

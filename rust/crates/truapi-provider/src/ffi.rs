@@ -27,7 +27,7 @@ use futures::stream::StreamExt;
 use truapi_platform::{ChainProvider as _, JsonRpcConnection};
 
 use crate::EmbeddedChainProvider;
-use crate::warm_start::{FileWarmStore, WarmStore, WarmStoreError};
+use crate::storage::{StorageClient, StorageClientError};
 
 /// Errors surfaced to the foreign caller.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -47,9 +47,9 @@ pub enum ChainProviderError {
         /// Human-readable failure reason.
         reason: String,
     },
-    /// The warm store, or the snapshot taken to feed it, failed.
+    /// The host's storage, or the snapshot taken to feed it, failed.
     #[error("{reason}")]
-    WarmStore {
+    Storage {
         /// Human-readable failure reason.
         reason: String,
     },
@@ -215,13 +215,13 @@ pub trait ChainMessageListener: Send + Sync {
 ///
 /// It lives here rather than beside the type because the reason is
 /// foreign-authored, and this is where the crate bounds foreign text.
-impl From<uniffi::UnexpectedUniFFICallbackError> for WarmStoreError {
+impl From<uniffi::UnexpectedUniFFICallbackError> for StorageClientError {
     fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
         tracing::warn!(
             reason = %error.reason,
             "warm store threw an undeclared error; reporting it as a store failure"
         );
-        WarmStoreError::new(bounded_reason(error.reason))
+        StorageClientError::new(bounded_reason(error.reason))
     }
 }
 
@@ -239,9 +239,8 @@ impl ChainProvider {
     /// checkpoint on every run, and [`load_database`](Self::load_database) and
     /// [`save_database`](Self::save_database) fail rather than quietly doing nothing.
     ///
-    /// Prefer [`with_file_warm_store`](Self::with_file_warm_store), which keeps
-    /// blobs under a directory the host names, or
-    /// [`with_warm_store`](Self::with_warm_store) for storage of the host's own.
+    /// Use [`with_storage`](Self::with_storage) to resume from state the host
+    /// keeps for it.
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -249,33 +248,17 @@ impl ChainProvider {
         })
     }
 
-    /// Create a provider that reads and writes warm-start blobs through
-    /// `store`, for a host that keeps them somewhere of its own.
-    #[uniffi::constructor(name = "with_warm_store")]
-    pub fn with_warm_store(store: Arc<dyn WarmStore>) -> Arc<Self> {
-        Arc::new(Self {
-            inner: EmbeddedChainProvider::builder().warm_store(store).build(),
-        })
-    }
-
-    /// Create a provider that keeps one warm-start blob per chain as a file
-    /// under `directory`, creating the directory if it does not exist.
+    /// Create a provider that reads and writes database blobs through `client`.
     ///
-    /// The path comes from the host because this crate cannot discover a
-    /// writable, non-evicted location on its own: that is
-    /// `applicationSupportDirectory` on iOS, `filesDir` on Android, and a state
-    /// directory on desktop.
-    #[uniffi::constructor(name = "with_file_warm_store")]
-    pub fn with_file_warm_store(directory: String) -> Result<Arc<Self>, ChainProviderError> {
-        let store =
-            FileWarmStore::new(directory).map_err(|error| ChainProviderError::WarmStore {
-                reason: error.to_string(),
-            })?;
-        Ok(Arc::new(Self {
-            inner: EmbeddedChainProvider::builder()
-                .warm_store(Arc::new(store))
-                .build(),
-        }))
+    /// The crate stores nothing itself, so a provider built with
+    /// [`new`](Self::new) syncs every chain from the chain-spec checkpoint on
+    /// every run. The host owns where the bytes live and therefore whether they
+    /// are backed up, encrypted, or excluded from cloud sync.
+    #[uniffi::constructor(name = "with_storage")]
+    pub fn with_storage(client: Arc<dyn StorageClient>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: EmbeddedChainProvider::builder().storage(client).build(),
+        })
     }
 
     /// Read `genesis_hash`'s stored blob into this provider, so the next
@@ -286,8 +269,7 @@ impl ChainProvider {
     /// Fails when the provider was built through [`new`](Self::new), which has
     /// nowhere to keep blobs. A chain that never warms up looks exactly like
     /// one with nothing stored yet, so the missing store is reported rather
-    /// than swallowed: build with [`with_file_warm_store`](Self::with_file_warm_store)
-    /// or [`with_warm_store`](Self::with_warm_store).
+    /// than swallowed: build with [`with_storage`](Self::with_storage).
     ///
     /// Call it before `connect`, and never from a listener callback. `connect`
     /// blocks its calling thread, so a store awaited underneath it would
@@ -301,7 +283,7 @@ impl ChainProvider {
             // Bounded here rather than in an adapter: a foreign store authors
             // this reason, so it is unbounded at the source and crosses the
             // boundary twice.
-            .map_err(|error| ChainProviderError::WarmStore {
+            .map_err(|error| ChainProviderError::Storage {
                 reason: bounded_reason(error.reason),
             })
     }
@@ -323,7 +305,7 @@ impl ChainProvider {
             // Bounded here rather than in an adapter: a foreign store authors
             // this reason, so it is unbounded at the source and crosses the
             // boundary twice.
-            .map_err(|error| ChainProviderError::WarmStore {
+            .map_err(|error| ChainProviderError::Storage {
                 reason: bounded_reason(error.reason),
             })
     }
@@ -945,17 +927,17 @@ mod tests {
             })
         }
 
-        fn answer(&self) -> Result<(), WarmStoreError> {
+        fn answer(&self) -> Result<(), StorageClientError> {
             match &self.failure {
-                Some(reason) => Err(WarmStoreError::new(reason)),
+                Some(reason) => Err(StorageClientError::new(reason)),
                 None => Ok(()),
             }
         }
     }
 
     #[truapi_platform::async_trait]
-    impl WarmStore for RecordingStore {
-        async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, WarmStoreError> {
+    impl StorageClient for RecordingStore {
+        async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError> {
             self.calls
                 .lock()
                 .expect("not poisoned")
@@ -963,7 +945,11 @@ mod tests {
             self.answer().map(|()| Some("blob".to_owned()))
         }
 
-        async fn save(&self, genesis_hash: [u8; 32], blob: String) -> Result<(), WarmStoreError> {
+        async fn save(
+            &self,
+            genesis_hash: [u8; 32],
+            blob: String,
+        ) -> Result<(), StorageClientError> {
             self.calls
                 .lock()
                 .expect("not poisoned")
@@ -973,12 +959,12 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_length_genesis_is_rejected_before_the_warm_store_is_asked() {
+    fn a_wrong_length_genesis_is_rejected_before_storage_is_asked() {
         // The check has to happen on this side: a host that got handed 31 bytes
         // would key its storage by them and answer a blob for a chain that has
         // no such hash.
         let store = RecordingStore::new(None);
-        let provider = ChainProvider::with_warm_store(store.clone());
+        let provider = ChainProvider::with_storage(store.clone());
 
         for outcome in [
             block_on(provider.load_database(vec![0u8; 31])),
@@ -993,10 +979,10 @@ mod tests {
     }
 
     #[test]
-    fn an_undeclared_warm_store_error_converts_and_is_bounded() {
+    fn an_undeclared_storage_error_converts_and_is_bounded() {
         let thrown = format!("HEAD{}", "\u{1f600}".repeat(CLOSE_REASON_MAX_CHARS * 2));
-        let WarmStoreError::Failed { reason } =
-            WarmStoreError::from(uniffi::UnexpectedUniFFICallbackError::new(thrown));
+        let StorageClientError::Failed { reason } =
+            StorageClientError::from(uniffi::UnexpectedUniFFICallbackError::new(thrown));
 
         assert_eq!(reason.chars().count(), CLOSE_REASON_MAX_CHARS);
         assert!(reason.starts_with("HEAD"), "the bound keeps the head");

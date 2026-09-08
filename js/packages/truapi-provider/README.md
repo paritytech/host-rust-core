@@ -37,10 +37,28 @@ const response = await connection.nextResponse(); // undefined once closed
 connection.close();
 ```
 
-Warm start is on by default and needs no wiring. `setWarmStore(store)` puts the
-blobs somewhere else, and `setWarmStore(null)` turns it off, in which case every
-chain syncs from the chain spec's checkpoint. `saveDatabase(genesisHash)` forces
-a snapshot at a moment of the host's choosing.
+Warm start is opt-in, because this package stores nothing itself. Hand
+`setStorage` a client to storage you already own:
+
+```js
+builder.setStorage({
+  async load(genesisHash) {
+    return (await myStore.get(genesisHash)) ?? null;
+  },
+  async save(genesisHash, blob) {
+    await myStore.put(genesisHash, blob);
+  },
+});
+```
+
+Both are called with a `0x`-prefixed lowercase genesis hash. A client that cannot
+answer must reject rather than resolve `null`, which means "nothing stored yet"
+and would let the next write replace good state. Without a client every chain
+syncs from the chain spec's checkpoint on every run.
+
+`setDatabaseContent(genesisHash, blob)` seeds one chain for this run and beats
+anything the client would load for it. `saveDatabase(genesisHash)` forces a write
+at a moment of the host's choosing.
 
 ## Native hosts
 

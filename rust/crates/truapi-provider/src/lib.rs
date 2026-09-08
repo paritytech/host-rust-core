@@ -56,9 +56,7 @@ mod logging_native;
 mod networks;
 mod provider;
 #[cfg(feature = "smoldot")]
-pub mod warm_start;
-#[cfg(all(feature = "js", feature = "smoldot", target_arch = "wasm32"))]
-mod warm_start_web;
+pub mod storage;
 #[cfg(all(feature = "ws", not(target_arch = "wasm32")))]
 mod ws;
 #[cfg(all(feature = "ws", target_arch = "wasm32"))]
@@ -73,10 +71,8 @@ pub use config::LightClientBuilder;
 #[cfg(feature = "networks")]
 pub use networks::{NetworkChains, known_networks};
 pub use provider::{EmbeddedChainProvider, EmbeddedChainProviderBuilder};
-#[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
-pub use warm_start::FileWarmStore;
 #[cfg(feature = "smoldot")]
-pub use warm_start::{WarmStore, WarmStoreError};
+pub use storage::{StorageClient, StorageClientError};
 
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();

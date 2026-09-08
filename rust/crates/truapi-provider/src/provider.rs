@@ -35,7 +35,7 @@ pub struct EmbeddedChainProviderBuilder {
     seeded_databases: HashMap<[u8; 32], String>,
     /// Where warm-start blobs are read from and written back to.
     #[cfg(feature = "smoldot")]
-    warm_store: Option<std::sync::Arc<dyn crate::warm_start::WarmStore>>,
+    storage: Option<std::sync::Arc<dyn crate::storage::StorageClient>>,
 }
 
 impl core::fmt::Debug for EmbeddedChainProviderBuilder {
@@ -46,7 +46,7 @@ impl core::fmt::Debug for EmbeddedChainProviderBuilder {
         builder
             .field("relays", &self.relays)
             .field("seeded_databases", &self.seeded_databases)
-            .field("warm_store", &self.warm_store.is_some());
+            .field("storage", &self.storage.is_some());
         builder.finish()
     }
 }
@@ -99,8 +99,8 @@ impl EmbeddedChainProviderBuilder {
     /// and write to. A blob registered with [`database`](Self::database) still
     /// wins over a stored one.
     #[cfg(feature = "smoldot")]
-    pub fn warm_store(mut self, store: std::sync::Arc<dyn crate::warm_start::WarmStore>) -> Self {
-        self.warm_store = Some(store);
+    pub fn storage(mut self, store: std::sync::Arc<dyn crate::storage::StorageClient>) -> Self {
+        self.storage = Some(store);
         self
     }
 
@@ -114,7 +114,7 @@ impl EmbeddedChainProviderBuilder {
             #[cfg(feature = "smoldot")]
             seeded_databases: Mutex::new(self.seeded_databases),
             #[cfg(feature = "smoldot")]
-            warm_store: self.warm_store,
+            storage: self.storage,
             #[cfg(feature = "smoldot")]
             light: crate::light::LightState::new(),
         }
@@ -146,7 +146,7 @@ pub struct EmbeddedChainProvider {
     #[cfg(feature = "smoldot")]
     seeded_databases: Mutex<HashMap<[u8; 32], String>>,
     #[cfg(feature = "smoldot")]
-    warm_store: Option<std::sync::Arc<dyn crate::warm_start::WarmStore>>,
+    storage: Option<std::sync::Arc<dyn crate::storage::StorageClient>>,
     #[cfg(feature = "smoldot")]
     light: crate::light::LightState,
 }
@@ -242,16 +242,16 @@ const SNAPSHOT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(6
 #[cfg(feature = "smoldot")]
 impl EmbeddedChainProvider {
     /// Whether this provider was built with somewhere to keep blobs.
-    pub fn has_warm_store(&self) -> bool {
-        self.warm_store.is_some()
+    pub fn has_storage(&self) -> bool {
+        self.storage.is_some()
     }
 
     /// The store this provider keeps blobs in, or an error naming what is
     /// missing. Warm start is never skipped quietly: a host that meant to have
     /// it and did not configure one is told so.
-    fn warm_store(&self) -> Result<std::sync::Arc<dyn crate::warm_start::WarmStore>, GenericError> {
-        self.warm_store.clone().ok_or_else(|| GenericError {
-            reason: "this provider was built without a warm store, so there is nowhere to keep finalized state".to_owned(),
+    fn storage(&self) -> Result<std::sync::Arc<dyn crate::storage::StorageClient>, GenericError> {
+        self.storage.clone().ok_or_else(|| GenericError {
+            reason: "this provider was built without storage, so there is nowhere to keep finalized state".to_owned(),
         })
     }
 
@@ -294,7 +294,7 @@ impl EmbeddedChainProvider {
     /// blocks the calling thread, and a store that needs the main thread would
     /// deadlock underneath it.
     ///
-    /// Fails when the provider was built without a store. A chain that silently
+    /// Fails when the provider was built without storage. A chain that silently
     /// never warms up is indistinguishable from one that has nothing stored
     /// yet, so the missing configuration is reported rather than swallowed.
     pub async fn load_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
@@ -303,7 +303,7 @@ impl EmbeddedChainProvider {
         if let Some(relay) = self.relay_of(genesis_hash)
             && !self.is_connected(relay)
             && !self.has_database(relay)
-            && let Some(store) = self.warm_store.clone()
+            && let Some(store) = self.storage.clone()
             && let Some(blob) = store.load(relay).await?
         {
             lock(&self.seeded_databases).entry(relay).or_insert(blob);
@@ -321,7 +321,7 @@ impl EmbeddedChainProvider {
         if self.has_database(genesis_hash) {
             return Ok(true);
         }
-        let store = self.warm_store()?;
+        let store = self.storage()?;
         let Some(blob) = store.load(genesis_hash).await? else {
             return Ok(false);
         };
@@ -347,7 +347,7 @@ impl EmbeddedChainProvider {
     /// Fails when the provider was built without a store, for the same reason
     /// [`load_database`](Self::load_database) does.
     pub async fn save_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
-        let store = self.warm_store()?;
+        let store = self.storage()?;
         if !self.is_connected(genesis_hash) {
             // `snapshot` opens its own connection, so persisting a chain this
             // provider never connected would start one, sync it from the
@@ -363,7 +363,7 @@ impl EmbeddedChainProvider {
         // keeping over nothing stored, and worth refusing over a blob that has
         // it, since replacing one costs a runtime download on every later run.
         let stored = store.load(genesis_hash).await?;
-        if !crate::warm_start::is_worth_storing(&blob, stored.as_deref()) {
+        if !crate::storage::is_worth_storing(&blob, stored.as_deref()) {
             tracing::debug!(
                 genesis = %hex::encode(genesis_hash),
                 "nothing better than what is already stored"
@@ -543,7 +543,7 @@ mod tests {
     /// blob it returns is accepted back as a warm-start seed.
     #[cfg(feature = "smoldot")]
     #[test]
-    fn snapshot_round_trips_into_a_warm_start_seed() {
+    fn snapshot_round_trips_into_a_seed() {
         const GENESIS: [u8; 32] = [1; 32];
         const SPEC: &str = include_str!("../tests/fixtures/paseo.json");
         let provider = EmbeddedChainProvider::builder()
@@ -564,18 +564,18 @@ mod tests {
     /// A store answering from memory, recording what it was asked to keep.
     #[cfg(feature = "smoldot")]
     #[derive(Default)]
-    struct MemoryWarmStore {
+    struct MemoryStorageClient {
         stored: std::sync::Mutex<std::collections::HashMap<[u8; 32], String>>,
         loads: std::sync::atomic::AtomicUsize,
     }
 
     #[cfg(feature = "smoldot")]
     #[truapi_platform::async_trait]
-    impl crate::warm_start::WarmStore for MemoryWarmStore {
+    impl crate::storage::StorageClient for MemoryStorageClient {
         async fn load(
             &self,
             genesis_hash: [u8; 32],
-        ) -> Result<Option<String>, crate::warm_start::WarmStoreError> {
+        ) -> Result<Option<String>, crate::storage::StorageClientError> {
             self.loads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(self
@@ -590,7 +590,7 @@ mod tests {
             &self,
             genesis_hash: [u8; 32],
             blob: String,
-        ) -> Result<(), crate::warm_start::WarmStoreError> {
+        ) -> Result<(), crate::storage::StorageClientError> {
             self.stored
                 .lock()
                 .expect("test store")
@@ -605,7 +605,7 @@ mod tests {
     #[allow(irrefutable_let_patterns)]
     fn warm_up_seeds_a_chain_from_the_store() {
         const GENESIS: [u8; 32] = [3; 32];
-        let store = std::sync::Arc::new(MemoryWarmStore::default());
+        let store = std::sync::Arc::new(MemoryStorageClient::default());
         store
             .stored
             .lock()
@@ -614,7 +614,7 @@ mod tests {
 
         let provider = EmbeddedChainProvider::builder()
             .chain(GENESIS, ChainSource::light_client("{}").build())
-            .warm_store(store.clone())
+            .storage(store.clone())
             .build();
 
         assert!(
@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn an_explicit_blob_wins_over_the_store() {
         const GENESIS: [u8; 32] = [4; 32];
-        let store = std::sync::Arc::new(MemoryWarmStore::default());
+        let store = std::sync::Arc::new(MemoryStorageClient::default());
         store
             .stored
             .lock()
@@ -660,7 +660,7 @@ mod tests {
         let provider = EmbeddedChainProvider::builder()
             .chain(GENESIS, ChainSource::light_client("{}").build())
             .database(GENESIS, "explicit-blob".to_owned())
-            .warm_store(store.clone())
+            .storage(store.clone())
             .build();
 
         assert!(
@@ -678,10 +678,10 @@ mod tests {
     #[test]
     fn persist_without_a_connection_stores_nothing() {
         const GENESIS: [u8; 32] = [7; 32];
-        let store = std::sync::Arc::new(MemoryWarmStore::default());
+        let store = std::sync::Arc::new(MemoryStorageClient::default());
         let provider = EmbeddedChainProvider::builder()
             .chain(GENESIS, ChainSource::light_client("{}").build())
-            .warm_store(store.clone())
+            .storage(store.clone())
             .build();
 
         assert!(
@@ -695,21 +695,59 @@ mod tests {
         );
     }
 
+    /// A client implemented in Rust is driven by both database calls, which is
+    /// the coverage the deleted file store used to give.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    // Without the `ws` backend the enum has a single variant, making the
+    // let-else below irrefutable there.
+    #[allow(irrefutable_let_patterns)]
+    fn a_rust_client_is_driven_by_both_database_calls() {
+        const GENESIS: [u8; 32] = [10; 32];
+        let client = std::sync::Arc::new(MemoryStorageClient::default());
+        client
+            .stored
+            .lock()
+            .expect("test client")
+            .insert(GENESIS, "stored-blob".to_owned());
+
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .storage(client.clone())
+            .build();
+
+        assert!(
+            futures::executor::block_on(provider.load_database(GENESIS))
+                .expect("the client answers")
+        );
+        assert_eq!(client.loads.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        let seeded =
+            provider.with_seeded_database(GENESIS, ChainSource::light_client("{}").build());
+        let ChainSource::LightClient {
+            database_content, ..
+        } = seeded
+        else {
+            panic!("expected a LightClient source");
+        };
+        assert_eq!(
+            database_content.as_deref(),
+            Some("stored-blob"),
+            "what the client returned is what the chain is seeded with"
+        );
+    }
+
     /// A provider with nowhere to keep blobs says so, rather than reporting
     /// the same "nothing stored yet" a working store reports on a cold chain.
     #[cfg(feature = "smoldot")]
     #[test]
-    fn warm_up_without_a_store_is_an_error_naming_what_is_missing() {
+    fn load_database_without_storage_is_an_error_naming_what_is_missing() {
         let provider = EmbeddedChainProvider::builder()
             .chain([5; 32], ChainSource::light_client("{}").build())
             .build();
         let error = futures::executor::block_on(provider.load_database([5; 32]))
-            .expect_err("a provider with no store cannot warm up");
-        assert!(
-            error.reason.contains("without a warm store"),
-            "{}",
-            error.reason
-        );
+            .expect_err("a provider with no storage cannot load a database");
+        assert!(error.reason.contains("without storage"), "{}", error.reason);
     }
 
     #[cfg(feature = "ws")]

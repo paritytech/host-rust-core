@@ -4,8 +4,10 @@
 //! A light client that starts from a stored finalized-database blob resumes
 //! from that state instead of warp syncing from the chain-spec checkpoint. The
 //! blob itself is opaque, so the only thing a host has to supply is somewhere
-//! to keep it: [`FileWarmStore`] on native targets, or its own implementation
-//! over whatever storage the platform offers.
+//! to keep it: an implementation of [`StorageClient`] over whatever storage the
+//! platform already offers. The crate stores nothing itself, so it never
+//! competes with the host for the same quota and never decides on its behalf
+//! whether the bytes are backed up or encrypted.
 //!
 //! Reads and writes are explicit — [`load_database`](crate::EmbeddedChainProvider::load_database)
 //! and [`save_database`](crate::EmbeddedChainProvider::save_database) — rather than hidden
@@ -13,7 +15,7 @@
 //! awaiting a foreign callback underneath it would deadlock a host whose store
 //! runs on the main thread.
 
-/// Failure reported by a [`WarmStore`] implementation.
+/// Failure reported by a [`StorageClient`] implementation.
 ///
 /// An enum with one variant rather than a struct because the native bindings
 /// export this type, and uniffi errors must be enums.
@@ -22,7 +24,7 @@
     all(feature = "uniffi", not(target_arch = "wasm32")),
     derive(uniffi::Error)
 )]
-pub enum WarmStoreError {
+pub enum StorageClientError {
     /// The store could not read or write the blob.
     #[display("warm store: {reason}")]
     Failed {
@@ -31,7 +33,7 @@ pub enum WarmStoreError {
     },
 }
 
-impl WarmStoreError {
+impl StorageClientError {
     /// Build an error from anything printable.
     pub fn new(reason: impl core::fmt::Display) -> Self {
         Self::Failed {
@@ -46,10 +48,10 @@ impl WarmStoreError {
     }
 }
 
-impl std::error::Error for WarmStoreError {}
+impl std::error::Error for StorageClientError {}
 
-impl From<WarmStoreError> for truapi::latest::GenericError {
-    fn from(error: WarmStoreError) -> Self {
+impl From<StorageClientError> for truapi::latest::GenericError {
+    fn from(error: StorageClientError) -> Self {
         Self {
             reason: error.to_string(),
         }
@@ -71,62 +73,12 @@ impl From<WarmStoreError> for truapi::latest::GenericError {
     uniffi::export(with_foreign)
 )]
 #[truapi_platform::async_trait]
-pub trait WarmStore: Send + Sync {
+pub trait StorageClient: Send + Sync {
     /// Read the blob stored for `genesis_hash`, if any.
-    async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, WarmStoreError>;
+    async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError>;
 
     /// Replace the blob stored for `genesis_hash`.
-    async fn save(&self, genesis_hash: [u8; 32], blob: String) -> Result<(), WarmStoreError>;
-}
-
-/// Hex file name a blob is stored under.
-#[cfg(not(target_arch = "wasm32"))]
-fn blob_file_name(genesis_hash: [u8; 32]) -> String {
-    format!("{}.json", hex::encode(genesis_hash))
-}
-
-/// A [`WarmStore`] keeping one file per chain under a directory the host owns.
-///
-/// The host picks the directory because only it knows a location the platform
-/// will not evict: `applicationSupportDirectory` on iOS, `filesDir` on Android,
-/// a state directory on desktop.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone)]
-pub struct FileWarmStore {
-    directory: std::path::PathBuf,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl FileWarmStore {
-    /// Store blobs as files under `directory`, creating it if needed.
-    pub fn new(directory: impl Into<std::path::PathBuf>) -> Result<Self, WarmStoreError> {
-        let directory = directory.into();
-        std::fs::create_dir_all(&directory).map_err(WarmStoreError::new)?;
-        Ok(Self { directory })
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[truapi_platform::async_trait]
-impl WarmStore for FileWarmStore {
-    async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, WarmStoreError> {
-        let path = self.directory.join(blob_file_name(genesis_hash));
-        match std::fs::read_to_string(&path) {
-            Ok(blob) => Ok(Some(blob)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(WarmStoreError::new(error)),
-        }
-    }
-
-    async fn save(&self, genesis_hash: [u8; 32], blob: String) -> Result<(), WarmStoreError> {
-        // Written beside the target and renamed, so a process killed mid-write
-        // leaves the previous blob intact rather than a truncated one, which
-        // smoldot would discard in silence.
-        let path = self.directory.join(blob_file_name(genesis_hash));
-        let temporary = path.with_extension("json.partial");
-        std::fs::write(&temporary, blob).map_err(WarmStoreError::new)?;
-        std::fs::rename(&temporary, &path).map_err(WarmStoreError::new)
-    }
+    async fn save(&self, genesis_hash: [u8; 32], blob: String) -> Result<(), StorageClientError>;
 }
 
 /// Whether a snapshot is worth storing.
@@ -226,22 +178,5 @@ mod tests {
             !is_worth_storing(r#"{"genesisHash":"0x01"}"#, None),
             "a blob with no chain information is worth nothing"
         );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn a_file_store_round_trips_a_blob_and_reports_a_missing_one() {
-        let directory = std::env::temp_dir().join("truapi-provider-warm-store-test");
-        let _ = std::fs::remove_dir_all(&directory);
-        let store = FileWarmStore::new(&directory).expect("the directory is creatable");
-
-        let missing = futures::executor::block_on(store.load([7; 32])).expect("load succeeds");
-        assert_eq!(missing, None);
-
-        futures::executor::block_on(store.save([7; 32], "blob".to_owned())).expect("save succeeds");
-        let found = futures::executor::block_on(store.load([7; 32])).expect("load succeeds");
-        assert_eq!(found.as_deref(), Some("blob"));
-
-        let _ = std::fs::remove_dir_all(&directory);
     }
 }
