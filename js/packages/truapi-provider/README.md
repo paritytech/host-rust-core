@@ -88,14 +88,29 @@ the provider cannot reach.
 
 #### Save on a cadence, not on the way out
 
-`persist()` is a round trip through the light client, so it needs the context
-to stay scheduled. Call it periodically while the app runs, and at points you
-choose, such as after the first sync settles.
+`persist()` is a round trip through the light client, so it needs the context to
+stay scheduled. There is no save-on-exit on the web: the provider usually runs
+in a Web Worker, which sees neither `pagehide` nor `visibilitychange`, and
+neither event keeps an async snapshot alive long enough to land.
 
-There is no save-on-exit on the web. The provider usually runs in a Web Worker,
-which sees neither `pagehide` nor `visibilitychange`, and neither event is
-guaranteed to keep an async write alive on the main thread either. A snapshot
-started as the page goes away is a snapshot that does not land.
+Use the shipped loop rather than writing your own:
+
+```js
+import { startWarmStartPersistence } from "@parity/truapi-provider/warm-store";
+
+const stop = startWarmStartPersistence(provider, [
+  chains.relay,
+  chains.people,
+]);
+// stop() when the worker or page is done with the provider.
+```
+
+It waits 30 seconds before the first round, then repeats every 60 seconds, and
+skips a tick while the previous round is still running so a slow chain cannot
+build a backlog of snapshots of the same state. Both intervals are options. A
+chain that fails is reported through `onError` and does not stop the others;
+the default reports to `console.warn`, because a store that quietly stops
+writing looks exactly like one that is working until the next cold start.
 
 ## Native hosts
 
