@@ -3,6 +3,8 @@
 //! Pairing and signing hosts implement these traits differently, but
 //! `ProductRuntimeHost` can use this module's shared request/session types
 //! without knowing where the key material lives.
+//! Alias, proof, and ring-VRF operations reuse the request payloads in
+//! `host_logic::sso::messages` for both local calls and SSO transport.
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -13,7 +15,7 @@ use truapi::latest::{
     HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
     HostSignPayloadRequest, HostSignPayloadResponse, HostSignPayloadWithLegacyAccountRequest,
     HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
-    ProductAccountId, ProductAccountTxPayload, ProductProofContext, RingLocation,
+    ProductAccountId, ProductAccountTxPayload,
 };
 use truapi::v01::{HostAccountSignVrfRequest, VrfSignature};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
@@ -21,7 +23,10 @@ use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
 
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::RingVrfError;
+use crate::host_logic::sso::messages::{
+    CreateAccountProofRequest, GetAccountAliasRequest, ListRingVrfKeysRequest,
+    RegisterRingVrfKeyRequest, RingVrfError, RingVrfSignRequest,
+};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
 
 /// Secret key allocated for Bulletin preimage submission.
@@ -224,67 +229,6 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
-/// Contextual-alias request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AccountAliasAuthorityRequest {
-    /// Calling product, so the Account Holder can scope context derivation.
-    pub calling_product_id: String,
-    /// Explicit ring-VRF key handle.
-    pub key_handle: ProductAccountId,
-    /// Product-scoped context the derived alias is bound to.
-    pub context: ProductProofContext,
-    /// Ring the explicit key must be registered for.
-    pub ring_location: RingLocation,
-}
-
-/// Ring-VRF proof request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CreateProofAuthorityRequest {
-    /// Calling product, so the Account Holder can scope context derivation.
-    pub calling_product_id: String,
-    /// Explicit ring-VRF key handle.
-    pub key_handle: ProductAccountId,
-    /// Product-scoped context the derived alias is bound to.
-    pub context: ProductProofContext,
-    /// Ring the explicit key must be registered for.
-    pub ring_location: RingLocation,
-    /// Opaque message bound into the proof.
-    pub message: Vec<u8>,
-}
-
-/// Ring-VRF key registration request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RegisterRingVrfKeyAuthorityRequest {
-    /// Calling product that owns the key.
-    pub calling_product_id: String,
-    /// Key derivation index within the caller's ring-VRF domain.
-    pub index: truapi::v01::DerivationIndex,
-    /// Declared ring for the key.
-    pub ring: RingLocation,
-}
-
-/// Ring-VRF key listing request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ListRingVrfKeysAuthorityRequest {
-    /// Calling product requesting the list.
-    pub calling_product_id: String,
-    /// Owner product whose entries should be listed.
-    pub owner: String,
-    /// Disclosure requested by the caller.
-    pub disclosure: truapi::v01::RingVrfKeyDisclosure,
-}
-
-/// Direct ring-VRF member-key signing request.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RingVrfSignAuthorityRequest {
-    /// Calling product requesting the signature.
-    pub calling_product_id: String,
-    /// Registered key handle.
-    pub key_handle: ProductAccountId,
-    /// Message to sign.
-    pub message: Vec<u8>,
-}
-
 /// Statement-store allowance signing material held by the authority layer.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct StatementStoreAllowanceKey {
@@ -418,7 +362,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: AccountAliasAuthorityRequest,
+        request: GetAccountAliasRequest,
     ) -> Result<HostAccountGetAliasResponse, RingVrfError>;
 
     /// Create a ring-VRF proof bound to a context and message.
@@ -429,7 +373,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: CreateProofAuthorityRequest,
+        request: CreateAccountProofRequest,
     ) -> Result<HostAccountCreateProofResponse, RingVrfError>;
 
     /// Register a ring-VRF key owned by the calling product.
@@ -437,7 +381,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: RegisterRingVrfKeyAuthorityRequest,
+        request: RegisterRingVrfKeyRequest,
     ) -> Result<HostAccountRegisterRingVrfKeyResponse, RingVrfError>;
 
     /// List registered ring-VRF keys.
@@ -445,7 +389,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: ListRingVrfKeysAuthorityRequest,
+        request: ListRingVrfKeysRequest,
     ) -> Result<HostAccountListRingVrfKeysResponse, RingVrfError>;
 
     /// Sign bytes directly with a registered ring-VRF key.
@@ -453,7 +397,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: RingVrfSignAuthorityRequest,
+        request: RingVrfSignRequest,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
 
     /// Ask the account authority to allocate product-scoped resources.

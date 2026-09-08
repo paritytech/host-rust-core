@@ -5676,6 +5676,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "truapi",
+ "truapi-macros",
  "truapi-platform",
  "unicode-normalization",
  "uniffi",

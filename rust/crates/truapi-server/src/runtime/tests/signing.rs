@@ -272,7 +272,7 @@ fn sign_raw_accepts_confirmation_then_returns_sso_response() {
             crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request)
         ) if matches!(
             request.as_ref(),
-            crate::host_logic::sso::messages::SigningRequest::Raw(_)
+            crate::host_logic::sso::messages::SignRequest::Raw(_)
         )
     ));
     let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
@@ -535,7 +535,7 @@ fn sign_payload_accepts_confirmation_then_returns_sso_response() {
             crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request)
         ) if matches!(
             request.as_ref(),
-            crate::host_logic::sso::messages::SigningRequest::Payload(_)
+            crate::host_logic::sso::messages::SignRequest::Payload(_)
         )
     ));
 }
@@ -691,7 +691,7 @@ fn legacy_sign_raw_accepts_derived_ss58_then_returns_sso_response() {
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SigningRequest::Raw(request) = *request else {
+    let crate::host_logic::sso::messages::SignRequest::Raw(request) = *request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(
@@ -744,7 +744,7 @@ fn legacy_sign_raw_accepts_derived_hex_then_returns_sso_response() {
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SigningRequest::Raw(request) = *request else {
+    let crate::host_logic::sso::messages::SignRequest::Raw(request) = *request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(
@@ -787,7 +787,8 @@ fn legacy_sign_raw_accepts_identity_ss58_then_routes_legacy_request() {
     let HostSignRawWithLegacyAccountResponse::V1(response) = response;
     assert_eq!(response.signature, vec![7, 7]);
     let message = submitted_remote_message(&platform, &session);
-    let RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyRequest(request)) = message.data
+    let RemoteMessageData::V1(v1::RemoteMessage::SignRawWithLegacyAccountRequest(request)) =
+        message.data
     else {
         panic!("expected legacy raw signing request");
     };

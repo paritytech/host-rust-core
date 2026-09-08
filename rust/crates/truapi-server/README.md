@@ -226,14 +226,24 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 
 - **`PairingHost`** (seedless): the user's keys live in an external wallet, so
   signing/aliases/entropy relay over an encrypted SSO channel (statement store
-  on the People chain; the channel lives in `pairing_host/sso_channel.rs`). The
-  v2 wire protocol uses raw X25519 keys, HKDF-SHA256, and
-  ChaCha20-Poly1305. It owns pairing/login state, persisted auth-session reload,
-  and remote signing-host liveness monitoring.
+  on the People chain; the channel lives in `pairing_host/sso_channel.rs`,
+  whose one generic `call(request)` sends any `SsoRequest` and returns its
+  typed response payload). The v2 wire protocol uses raw X25519 keys,
+  HKDF-SHA256, and ChaCha20-Poly1305. It owns pairing/login state, persisted
+  auth-session reload, and remote signing-host liveness monitoring.
 - **`SigningHost`** (wallet-local): signs on device from local BIP-39 entropy,
   no pairing flow. `signing_host/local_activation.rs` establishes a session
-  from host-held secret material. Its public identity is the RFC-0022
-  `uid.<tld>` index-0 product account of the configured network. RFC-0024 ring-VRF keys are explicit,
+  from host-held secret material. Paired hosts' requests reach it through the
+  `SigningHostSsoService` handlers (`signing_host/sso_service.rs`, one method
+  per wire request in an inherent impl annotated with `#[sso_service]`). The
+  macro generates the service's dispatcher. Handlers own consent prompts and
+  revalidate the request's signing session after resource consent and allocation;
+  `signing_host/sso_responder.rs` runs the statement-store serve loop and holds
+  the shared allowance helpers. Those helpers use the caller's session through
+  chain reads and revalidate it before allocation and key return.
+  Its public identity is the RFC-0022
+  `uid.<tld>` index-0 product account of the configured network. RFC-0024
+  ring-VRF keys are explicit,
   product-owned registry entries; aliases, proofs, direct signatures, and
   internal personhood flows use the requested or user-selected registered key
   without a compiled-in fallback. It resolves RFC-0004 `RingLocation` values
@@ -247,8 +257,54 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
   call.
 
 `host_logic` stays pure: the orchestrators above call into it for codecs,
-session/SSO crypto, key derivation, and permission policy, while all I/O
-(statement-store RPC, storage, prompts, chain RPC) stays in the layers above.
+session/SSO crypto, SSO wire types and traits (`sso/wire.rs`), key derivation,
+and permission policy. The runtime service supplies request/response pairing;
+all I/O (statement-store RPC, storage, prompts, chain RPC) stays in the layers
+above.
+
+### Inter-host SSO
+
+The hand-written `host_logic::sso::messages::v1::RemoteMessage` enum defines
+the wire variants and their SCALE indices. `SsoWire` derives classification,
+request wrapping, correlation helpers, and message names from that enum.
+These helpers do not require a runtime service implementation. Response
+structs derive `SsoResponse` to expose their `Result` payload and classify
+its transcript outcome.
+
+Each method in the annotated `impl SigningHostSsoService` names its wire request
+and wire response directly. `#[sso_service]` derives request/response pairing
+and an exhaustive `dispatch` method from those handler signatures. It wraps
+ordinary `Result` bodies in `SsoReply<WireResponse>`, preserving `?` and early
+returns. Constructors and helpers live in a separate, unannotated impl; service
+methods use native async functions. Dispatch adds the correlation id and constructs
+the wire response. Request context holds the call context and captured signing
+session. The allocation handler collects
+item failures locally and supplies a transcript outcome with those details;
+other replies derive their outcome from the response payload.
+
+An additional SSO operation requires payload definitions, wire variants, one
+handler in the annotated impl, and a typed client call. The macro's checked-in
+compiler tests cover valid handler bodies and reject incomplete or incompatible
+contracts.
+
+`PairingHost::call(request)` uses the generated pairing and rejects a response
+of the wrong kind immediately. Alias, proof, and ring-VRF operations share
+request types between the local authority and SSO service. Transcripts and the
+client's `action` field use the service method name; forwarding spans distinguish
+payload signing, raw signing, and transaction creation, with `account_kind`
+identifying product, legacy, or identity accounts as applicable.
+
+The SSO macros share `truapi-macros`' proc-macro infrastructure. They are
+server-specific: their generated `crate::host_logic` and `crate::runtime`
+paths resolve only when invoked inside `truapi-server`. The canonical `truapi`
+crate uses the other macros and has no dependency on the server runtime.
+
+Rust consumers of the public `host_logic::sso` module depend on its Rust API
+as well as the wire format. Stable SCALE indices and payload layouts do not
+make renamed types or removed helpers source-compatible. Construct outgoing
+requests with `RemoteMessage::request(message_id, typed_request)`; decoded
+`SsoSessionStatement::RemoteMessages` contains ordered wire messages, which can
+be matched directly or unwrapped with `SsoResponse::from_message`.
 
 ## Wire envelope
 

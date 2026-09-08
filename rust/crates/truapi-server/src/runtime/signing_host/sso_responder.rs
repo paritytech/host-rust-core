@@ -17,49 +17,38 @@ use std::time::Instant;
 
 use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
-use truapi::{CallContext, latest as api, v01};
-use truapi_platform::{
-    CreateTransactionReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
-    UserConfirmationReview,
-};
+use truapi::v01;
 
-use super::SigningHost;
 use super::sso_replay::{ReplayExecution, SsoReplayScope, execute_once};
+use super::{SigningHost, SigningHostSsoService};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
-    ProductAccountError, derive_identity_keypair, derive_ring_vrf_domain_entropy,
-    derive_root_keypair_from_entropy, product_public_key_to_address,
+    ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{
-    self, CreateTransactionPayload, IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessage,
-    RemoteMessageData, ResourceAllocationResponse, RingVrfAliasResponse, RingVrfError,
-    RingVrfProofResponse, RingVrfSignResponse, SignRawLegacyResponse, SignVrfResponse,
-    SigningPayloadResponseData, SigningRequest, SigningResponse, SsoAllocatableResource,
-    SsoAllocatedResource, SsoAllocationOutcome, SsoResponseCode, build_outgoing_request_statement,
-    build_signed_session_response_statement, decode_incoming_sso_request, v1,
+    IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessageData, SsoResponseCode,
+    build_outgoing_request_statement, build_signed_session_response_statement,
+    decode_incoming_sso_request, v1,
 };
 use crate::host_logic::sso::pairing::{
     ResponderIdentity, VersionedHandshakeProposal, bootstrap_topic, decode_pairing_deeplink,
     derive_identity_chat_private_key, derive_x25519_keypair_from_entropy,
     encrypt_v2_handshake_response, establish_responder_session_info, v2, x25519_public_key,
 };
+use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::host_logic::statement_store::{
     build_signed_statement, current_unix_secs as statement_current_unix_secs,
     parse_new_statements_result,
 };
-use crate::runtime::authority::{
-    AccountAliasAuthorityRequest, AuthorityError, CreateProofAuthorityRequest,
-    CreateTransactionAuthorityRequest, ListRingVrfKeysAuthorityRequest, ProductAuthority,
-    RegisterRingVrfKeyAuthorityRequest, RingVrfSignAuthorityRequest, SignPayloadAuthorityRequest,
-    SignRawAuthorityRequest,
-};
+use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::fresh_statement_expiry;
+use crate::runtime::sso_service::Dispatch;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
@@ -364,6 +353,7 @@ async fn serve_session(
     session: SsoSessionInfo,
     replay_scope: SsoReplayScope,
 ) -> Result<ResponderExit, String> {
+    let service = SigningHostSsoService::new(services.clone(), signing_host.clone());
     let rpc_client = services
         .statement_store
         .client("sso-responder session")
@@ -414,14 +404,16 @@ async fn serve_session(
             for message in &incoming.messages {
                 let cli_summary = format!(
                     "Incoming SSO request · {}\nstatement_request_id={}\nremote_message_id={}",
-                    message, incoming.request_id, message.message_id
+                    message.name(),
+                    incoming.request_id,
+                    message.message_id
                 );
                 tracing::event!(
                     target: "truapi_server::sso_transcript",
                     tracing::Level::DEBUG,
                     cli_summary = cli_summary.as_str(),
                     cli_event = "request_received",
-                    request = %message,
+                    request = message.name(),
                     statement_request_id = %incoming.request_id,
                     remote_message_id = %message.message_id,
                 );
@@ -436,7 +428,7 @@ async fn serve_session(
                 &request_id,
                 expires_at_unix_secs,
                 statement_current_unix_secs(),
-                || serve_request(&services, &signing_host, &session, incoming),
+                || serve_request(&services, &service, &session, incoming),
             )
             .await?;
             let exit = match execution {
@@ -457,32 +449,29 @@ async fn serve_session(
 /// Ack one inbound request statement and answer its batched messages.
 async fn serve_request(
     services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
+    service: &SigningHostSsoService,
     session: &SsoSessionInfo,
     incoming: IncomingSsoRequest,
 ) -> Result<Option<ResponderExit>, String> {
     acknowledge_request(services, session, &incoming.request_id).await?;
 
     for message in incoming.messages {
-        let RemoteMessageData::V1(request) = message.data;
-        if matches!(request, v1::RemoteMessage::Disconnected) {
-            debug!("pairing host disconnected the SSO session");
-            return Ok(Some(ResponderExit::PeerDisconnected));
-        }
-        let request_name = request.to_string();
+        let request_name = message.name();
         let responding_to = message.message_id.clone();
         let started = Instant::now();
-        let Some(answer) =
-            answer_remote_message(services, signing_host, message.message_id, request).await
-        else {
-            continue;
+        let (response, outcome) = match service.dispatch(service.current_session(), message).await {
+            Dispatch::Response(answer) => (answer.message, answer.outcome),
+            Dispatch::Disconnected => {
+                debug!("pairing host disconnected the SSO session");
+                return Ok(Some(ResponderExit::PeerDisconnected));
+            }
+            Dispatch::NotARequest(name) => {
+                warn!(name, "peer sent a response variant as a request");
+                continue;
+            }
         };
-        let response = answer.response;
         let response_message_id = response.message_id.clone();
-        let response_result = answer
-            .response_result
-            .unwrap_or_else(|| remote_response_result(&response.data));
-        let statement_request_id = format!("resp:{}", response.message_id);
+        let statement_request_id = format!("resp:{response_message_id}");
         let statement = build_outgoing_request_statement(
             session,
             statement_request_id,
@@ -498,11 +487,11 @@ async fn serve_request(
             Ok(()) => {
                 let cli_summary = response_cli_summary(
                     "SSO response sent",
-                    &request_name,
+                    request_name,
                     &incoming.request_id,
                     &responding_to,
                     &response_message_id,
-                    &response_result,
+                    &outcome,
                     elapsed_ms,
                 );
                 tracing::event!(
@@ -510,23 +499,23 @@ async fn serve_request(
                     tracing::Level::DEBUG,
                     cli_summary = cli_summary.as_str(),
                     cli_event = "response_sent",
-                    request = request_name.as_str(),
+                    request = request_name,
                     statement_request_id = %incoming.request_id,
                     responding_to = %responding_to,
                     %response_message_id,
-                    outcome = response_result.outcome,
-                    reason = response_result.reason.as_deref().unwrap_or_default(),
+                    outcome = outcome.outcome,
+                    reason = outcome.reason.as_deref().unwrap_or_default(),
                     elapsed_ms = elapsed_ms as u64,
                 );
             }
             Err(reason) => {
-                let failure = ResponseResult {
+                let failure = ResponseOutcome {
                     outcome: "publish_failed",
                     reason: Some(reason.clone()),
                 };
                 let cli_summary = response_cli_summary(
                     "SSO response failed",
-                    &request_name,
+                    request_name,
                     &incoming.request_id,
                     &responding_to,
                     &response_message_id,
@@ -538,7 +527,7 @@ async fn serve_request(
                     tracing::Level::WARN,
                     cli_summary = cli_summary.as_str(),
                     cli_event = "response_failed",
-                    request = request_name.as_str(),
+                    request = request_name,
                     statement_request_id = %incoming.request_id,
                     responding_to = %responding_to,
                     %response_message_id,
@@ -583,185 +572,13 @@ fn duplicate_request_exit(incoming: &IncomingSsoRequest) -> Option<ResponderExit
         .then_some(ResponderExit::PeerDisconnected)
 }
 
-struct ResponseResult {
-    outcome: &'static str,
-    reason: Option<String>,
-}
-
-/// Result of answering one remote message: the response envelope and an
-/// optional pre-classified outcome for logging.
-pub(crate) struct AnsweredRemoteMessage {
-    /// Response to post back over the session transport.
-    pub(crate) response: RemoteMessage,
-    /// Pre-classified outcome summary for SSO transcript logging (outcome code and error reason).
-    response_result: Option<ResponseResult>,
-}
-
-struct ResourceAllocationAnswer {
-    payload: Result<Vec<SsoAllocationOutcome>, String>,
-    item_failures: Vec<String>,
-}
-
-fn remote_response_result(message: &RemoteMessageData) -> ResponseResult {
-    let RemoteMessageData::V1(message) = message;
-    let error = match message {
-        v1::RemoteMessage::SignResponse(response) => response.payload.as_ref().err().cloned(),
-        v1::RemoteMessage::RingVrfAliasResponse(response) => {
-            response.payload.as_ref().err().map(ring_vrf_error_reason)
-        }
-        v1::RemoteMessage::RingVrfProofResponse(response) => {
-            response.payload.as_ref().err().map(ring_vrf_error_reason)
-        }
-        v1::RemoteMessage::RegisterRingVrfKeyResponse(response) => {
-            response.payload.as_ref().err().map(ring_vrf_error_reason)
-        }
-        v1::RemoteMessage::ListRingVrfKeysResponse(response) => {
-            response.payload.as_ref().err().map(ring_vrf_error_reason)
-        }
-        v1::RemoteMessage::RingVrfSignResponse(response) => {
-            response.payload.as_ref().err().map(ring_vrf_error_reason)
-        }
-        v1::RemoteMessage::ResourceAllocationResponse(response) => {
-            return resource_allocation_payload_result(&response.payload, &[]);
-        }
-        v1::RemoteMessage::CreateTransactionResponse(response) => {
-            response.signed_transaction.as_ref().err().cloned()
-        }
-        v1::RemoteMessage::SignRawLegacyResponse(response) => {
-            response.signature.as_ref().err().cloned()
-        }
-        v1::RemoteMessage::SignVrfResponse(response) => {
-            response.payload.as_ref().err().map(sign_vrf_error_reason)
-        }
-        _ => None,
-    };
-    ResponseResult {
-        outcome: if error.is_some() { "error" } else { "ok" },
-        reason: error,
-    }
-}
-
-fn resource_allocation_payload_result(
-    payload: &Result<Vec<SsoAllocationOutcome>, String>,
-    item_failures: &[String],
-) -> ResponseResult {
-    let outcomes = match payload {
-        Ok(outcomes) => outcomes,
-        Err(reason) => {
-            return ResponseResult {
-                outcome: "error",
-                reason: Some(reason.clone()),
-            };
-        }
-    };
-    if outcomes.is_empty() {
-        return ResponseResult {
-            outcome: "ok",
-            reason: None,
-        };
-    }
-
-    let allocated = outcomes
-        .iter()
-        .filter(|outcome| matches!(outcome, SsoAllocationOutcome::Allocated(_)))
-        .count();
-    let rejected = outcomes
-        .iter()
-        .filter(|outcome| matches!(outcome, SsoAllocationOutcome::Rejected))
-        .count();
-    let unavailable = outcomes
-        .iter()
-        .filter(|outcome| matches!(outcome, SsoAllocationOutcome::NotAvailable))
-        .count();
-    let total = outcomes.len();
-
-    if allocated == total {
-        return ResponseResult {
-            outcome: "ok",
-            reason: None,
-        };
-    }
-    if allocated > 0 {
-        let mut reason = format!("{allocated} of {total} requested resources allocated");
-        if rejected > 0 {
-            reason.push_str(&format!("; {rejected} rejected"));
-        }
-        if unavailable > 0 {
-            reason.push_str(&format!("; {unavailable} unavailable"));
-        }
-        return allocation_result_with_failures(
-            ResponseResult {
-                outcome: "partial",
-                reason: Some(reason),
-            },
-            item_failures,
-        );
-    }
-    if rejected > 0 {
-        let reason = if rejected == total {
-            if total == 1 {
-                "Requested resource was rejected".to_string()
-            } else {
-                format!("All {total} requested resources were rejected")
-            }
-        } else {
-            format!("No resources allocated; {rejected} rejected; {unavailable} unavailable")
-        };
-        return allocation_result_with_failures(
-            ResponseResult {
-                outcome: "rejected",
-                reason: Some(reason),
-            },
-            item_failures,
-        );
-    }
-
-    allocation_result_with_failures(
-        ResponseResult {
-            outcome: "not_available",
-            reason: Some(if total == 1 {
-                "Requested resource is not available".to_string()
-            } else {
-                format!("None of the {total} requested resources are available")
-            }),
-        },
-        item_failures,
-    )
-}
-
-fn allocation_result_with_failures(
-    mut result: ResponseResult,
-    item_failures: &[String],
-) -> ResponseResult {
-    if !item_failures.is_empty() {
-        let details = item_failures.join("; ").replace(['\r', '\n'], " ");
-        result.reason = Some(match result.reason {
-            Some(summary) => format!("{summary}: {details}"),
-            None => details,
-        });
-    }
-    result
-}
-
-fn ring_vrf_error_reason(error: &RingVrfError) -> String {
-    match error {
-        RingVrfError::RingNotFound => "RingNotFound".to_string(),
-        RingVrfError::NotMember => "NotMember".to_string(),
-        RingVrfError::KeyNotRegistered => "KeyNotRegistered".to_string(),
-        RingVrfError::KeyNotInRing => "KeyNotInRing".to_string(),
-        RingVrfError::NotAllowlisted => "NotAllowlisted".to_string(),
-        RingVrfError::Rejected => "Rejected".to_string(),
-        RingVrfError::Unknown { reason } => format!("Unknown: {reason}"),
-    }
-}
-
 fn response_cli_summary(
     heading: &str,
     request_name: &str,
     statement_request_id: &str,
     responding_to: &str,
     response_message_id: &str,
-    result: &ResponseResult,
+    result: &ResponseOutcome,
     elapsed_ms: u128,
 ) -> String {
     let mut summary = format!(
@@ -775,273 +592,11 @@ fn response_cli_summary(
     summary
 }
 
-/// Answer one application-level request message; `None` for message kinds
-/// that take no response (responses echoed by the peer, unknown variants).
-pub(crate) async fn answer_remote_message(
-    services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
-    message_id: String,
-    request: v1::RemoteMessage,
-) -> Option<AnsweredRemoteMessage> {
-    let response_id = format!("{message_id}:response");
-    let mut response_result = None;
-    let data = match request {
-        v1::RemoteMessage::SignRequest(request) => v1::RemoteMessage::SignResponse(
-            sign_response(services, signing_host, &message_id, *request).await,
-        ),
-        v1::RemoteMessage::RingVrfAliasRequest(request) => {
-            let payload = account_alias_response(signing_host, request).await;
-            v1::RemoteMessage::RingVrfAliasResponse(RingVrfAliasResponse {
-                responding_to: message_id,
-                payload,
-            })
-        }
-        v1::RemoteMessage::RingVrfProofRequest(request) => {
-            let payload = create_proof_response(signing_host, request).await;
-            v1::RemoteMessage::RingVrfProofResponse(RingVrfProofResponse {
-                responding_to: message_id,
-                payload,
-            })
-        }
-        v1::RemoteMessage::RegisterRingVrfKeyRequest(request) => {
-            let payload = register_ring_vrf_key_response(signing_host, request).await;
-            v1::RemoteMessage::RegisterRingVrfKeyResponse(messages::RegisterRingVrfKeyResponse {
-                responding_to: message_id,
-                payload,
-            })
-        }
-        v1::RemoteMessage::ListRingVrfKeysRequest(request) => {
-            let payload = list_ring_vrf_keys_response(signing_host, request).await;
-            v1::RemoteMessage::ListRingVrfKeysResponse(messages::ListRingVrfKeysResponse {
-                responding_to: message_id,
-                payload,
-            })
-        }
-        v1::RemoteMessage::RingVrfSignRequest(request) => {
-            let payload = ring_vrf_sign_response(signing_host, request).await;
-            v1::RemoteMessage::RingVrfSignResponse(RingVrfSignResponse {
-                responding_to: message_id,
-                payload,
-            })
-        }
-        v1::RemoteMessage::ResourceAllocationRequest(request) => {
-            let answer = resource_allocation_response(services, signing_host, request).await;
-            if let Err(reason) = &answer.payload {
-                warn!(%reason, "resource allocation request failed");
-            }
-            response_result = Some(resource_allocation_payload_result(
-                &answer.payload,
-                &answer.item_failures,
-            ));
-            v1::RemoteMessage::ResourceAllocationResponse(ResourceAllocationResponse {
-                responding_to: message_id,
-                payload: answer.payload,
-            })
-        }
-        v1::RemoteMessage::CreateTransactionRequest(request) => {
-            let CreateTransactionPayload::V1(payload) = request.payload;
-            let signed_transaction = create_transaction_response(
-                services,
-                signing_host,
-                CreateTransactionReview::Product(payload.clone()),
-                CreateTransactionAuthorityRequest::Product(payload),
-            )
-            .await;
-            v1::RemoteMessage::CreateTransactionResponse(messages::CreateTransactionResponse {
-                responding_to: message_id,
-                signed_transaction,
-            })
-        }
-        v1::RemoteMessage::CreateTransactionLegacyRequest(request) => {
-            let messages::CreateTransactionLegacyPayload::V1(payload) = request.payload;
-            let signed_transaction = create_transaction_response(
-                services,
-                signing_host,
-                CreateTransactionReview::LegacyAccount(payload.clone()),
-                CreateTransactionAuthorityRequest::IdentityAccount(payload),
-            )
-            .await;
-            v1::RemoteMessage::CreateTransactionResponse(messages::CreateTransactionResponse {
-                responding_to: message_id,
-                signed_transaction,
-            })
-        }
-        v1::RemoteMessage::SignRawLegacyRequest(request) => {
-            let signature = sign_raw_legacy_response(services, signing_host, request).await;
-            v1::RemoteMessage::SignRawLegacyResponse(SignRawLegacyResponse {
-                responding_to: message_id,
-                signature,
-            })
-        }
-        v1::RemoteMessage::SignVrfRequest(request) => {
-            let payload = sign_vrf_response(signing_host, message_id.clone(), request).await;
-            v1::RemoteMessage::SignVrfResponse(SignVrfResponse {
-                responding_to: message_id,
-                payload,
-            })
-        }
-        v1::RemoteMessage::ProductSubtreeRequest(request) => {
-            let product_public_key = match signing_host.current_session() {
-                Some(session) => signing_host
-                    .product_subtree_public_key(
-                        &CallContext::with_request_id(message_id.clone()),
-                        &session,
-                        request.product_id,
-                    )
-                    .await
-                    .map_err(|err| err.to_string()),
-                None => Err("signing host is disconnected".to_string()),
-            };
-            v1::RemoteMessage::ProductSubtreeResponse(messages::ProductSubtreeResponse {
-                responding_to: message_id,
-                product_public_key,
-            })
-        }
-        v1::RemoteMessage::Disconnected
-        | v1::RemoteMessage::SignResponse(_)
-        | v1::RemoteMessage::RingVrfAliasResponse(_)
-        | v1::RemoteMessage::RingVrfProofResponse(_)
-        | v1::RemoteMessage::RegisterRingVrfKeyResponse(_)
-        | v1::RemoteMessage::ListRingVrfKeysResponse(_)
-        | v1::RemoteMessage::RingVrfSignResponse(_)
-        | v1::RemoteMessage::ResourceAllocationResponse(_)
-        | v1::RemoteMessage::CreateTransactionResponse(_)
-        | v1::RemoteMessage::SignRawLegacyResponse(_)
-        | v1::RemoteMessage::ProductSubtreeResponse(_)
-        | v1::RemoteMessage::SignVrfResponse(_) => return None,
-    };
-    Some(AnsweredRemoteMessage {
-        response: RemoteMessage {
-            message_id: response_id,
-            data: RemoteMessageData::V1(data),
-        },
-        response_result,
-    })
-}
-
-async fn resource_allocation_response(
-    services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
-    request: messages::ResourceAllocationRequest,
-) -> ResourceAllocationAnswer {
-    let review = UserConfirmationReview::ResourceAllocation(ResourceAllocationReview {
-        calling_product_id: request.calling_product_id.clone(),
-        resources: request
-            .resources
-            .iter()
-            .map(public_allocatable_resource)
-            .collect(),
-    });
-    match services.platform.confirm_user_action(review).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return ResourceAllocationAnswer {
-                payload: Ok(vec![
-                    SsoAllocationOutcome::Rejected;
-                    request.resources.len()
-                ]),
-                item_failures: Vec::new(),
-            };
-        }
-        Err(err) => {
-            return ResourceAllocationAnswer {
-                payload: Err(format!("confirmation failed: {}", err.reason)),
-                item_failures: Vec::new(),
-            };
-        }
-    }
-
-    let mut outcomes = Vec::with_capacity(request.resources.len());
-    let mut item_failures = Vec::new();
-    for resource in request.resources {
-        let outcome = match resource {
-            SsoAllocatableResource::StatementStoreAllowance => allocate_statement_store_allowance(
-                services,
-                signing_host,
-                &request.calling_product_id,
-                request.on_existing,
-            )
-            .await
-            .map(|slot_account_key| {
-                SsoAllocationOutcome::Allocated(SsoAllocatedResource::StatementStoreAllowance {
-                    slot_account_key,
-                })
-            }),
-            SsoAllocatableResource::BulletinAllowance => allocate_bulletin_allowance(
-                services,
-                signing_host,
-                &request.calling_product_id,
-                request.on_existing,
-            )
-            .await
-            .map(|slot_account_key| {
-                SsoAllocationOutcome::Allocated(SsoAllocatedResource::BulletinAllowance {
-                    slot_account_key,
-                })
-            }),
-            SsoAllocatableResource::SmartContractAllowance(index) => {
-                allocate_smart_contract_allowance(
-                    services,
-                    signing_host,
-                    &request.calling_product_id,
-                    index.clone(),
-                    request.on_existing,
-                )
-                .await
-                .map(|()| {
-                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::SmartContractAllowance)
-                })
-            }
-            SsoAllocatableResource::AutoSigning => (|| -> Result<_, AllowanceAllocationError> {
-                let product_root_private_key = signing_host
-                    .product_subtree_secret(&request.calling_product_id)
-                    .map_err(AllowanceAllocationError::Authority)?;
-                let root_entropy = signing_host.root_entropy()?;
-                let ring_vrf_domain_entropy =
-                    derive_ring_vrf_domain_entropy(&root_entropy, &request.calling_product_id)
-                        .map_err(super::product_authority_error)
-                        .map_err(AllowanceAllocationError::Authority)?;
-                Ok(SsoAllocationOutcome::Allocated(
-                    SsoAllocatedResource::AutoSigning {
-                        product_root_private_key,
-                        ring_vrf_domain_entropy,
-                    },
-                ))
-            })(),
-        };
-        match outcome {
-            Ok(outcome) => outcomes.push(outcome),
-            Err(err) => {
-                let reason = err.to_string();
-                warn!(%reason, "resource allocation item failed");
-                item_failures.push(reason);
-                outcomes.push(SsoAllocationOutcome::NotAvailable);
-            }
-        }
-    }
-    ResourceAllocationAnswer {
-        payload: Ok(outcomes),
-        item_failures,
-    }
-}
-
-fn public_allocatable_resource(resource: &SsoAllocatableResource) -> api::AllocatableResource {
-    match resource {
-        SsoAllocatableResource::StatementStoreAllowance => {
-            api::AllocatableResource::StatementStoreAllowance
-        }
-        SsoAllocatableResource::BulletinAllowance => api::AllocatableResource::BulletinAllowance,
-        SsoAllocatableResource::SmartContractAllowance(index) => {
-            api::AllocatableResource::SmartContractAllowance(index.clone())
-        }
-        SsoAllocatableResource::AutoSigning => api::AllocatableResource::AutoSigning,
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_statement_store_allowance(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
+    session: &AuthoritySession,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -1051,14 +606,12 @@ pub(super) async fn allocate_statement_store_allowance(
         register_statement_account_pooled, scan_collections,
     };
 
+    signing_host.require_current_session(session)?;
     let entropy = signing_host.root_entropy()?;
     let allowance =
         derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
     let target = allowance.public.to_bytes();
-    let session = signing_host
-        .current_session()
-        .ok_or(AuthorityError::Disconnected)?;
-    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    let candidates = signing_host.reserved_person_collection_candidates(session)?;
     let client = services
         .statement_store
         .chain_client("statement-store allowance")
@@ -1096,6 +649,7 @@ pub(super) async fn allocate_statement_store_allowance(
             %collection,
             "statement-store allowance already allocated"
         );
+        signing_host.require_current_session(session)?;
         return Ok(allowance.secret.to_bytes().to_vec());
     }
 
@@ -1107,6 +661,7 @@ pub(super) async fn allocate_statement_store_allowance(
             resource: "statement-store",
         });
     }
+    signing_host.require_current_session(session)?;
     let outcome = register_statement_account_pooled(
         rpc,
         &chain.metadata,
@@ -1151,6 +706,7 @@ pub(super) async fn allocate_statement_store_allowance(
             );
         }
     }
+    signing_host.require_current_session(session)?;
     if let Err(reason) = allowance_renewal::track(
         signing_host,
         vec![StatementRenewalTarget::ProductStatementAllowance {
@@ -1161,6 +717,7 @@ pub(super) async fn allocate_statement_store_allowance(
     {
         warn!(%product_id, %reason, "failed to record statement-store renewal target");
     }
+    signing_host.require_current_session(session)?;
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
@@ -1168,6 +725,7 @@ pub(super) async fn allocate_statement_store_allowance(
 pub(super) async fn allocate_bulletin_allowance(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
+    session: &AuthoritySession,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -1177,6 +735,7 @@ pub(super) async fn allocate_bulletin_allowance(
         wait_bulletin_authorization,
     };
 
+    signing_host.require_current_session(session)?;
     let entropy = signing_host.root_entropy()?;
     let allowance = derive_sr25519_hard_path(&entropy, &["allowance", "bulletin", product_id])?;
     let target = allowance.public.to_bytes();
@@ -1195,6 +754,7 @@ pub(super) async fn allocate_bulletin_allowance(
     if matches!(policy, OnExistingAllowancePolicy::Ignore)
         && current_allowance.is_some_and(|allowance| allowance.available())
     {
+        signing_host.require_current_session(session)?;
         return Ok(allowance.secret.to_bytes().to_vec());
     }
 
@@ -1205,10 +765,7 @@ pub(super) async fn allocate_bulletin_allowance(
     let people_rpc = people_client.rpc();
     let chain = services.chain_context.get(&people_client).await?;
     let network_suffix = statement_allowance::slot::read_network_suffix(people_rpc).await?;
-    let session = signing_host
-        .current_session()
-        .ok_or(AuthorityError::Disconnected)?;
-    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    let candidates = signing_host.reserved_person_collection_candidates(session)?;
     // Statement-store slots and PGAS claims are each bounded by a per-collection
     // constant, so their budgets are meant to be spent per collection. Long-term
     // storage is bounded by `Resources.LongTermStorageClaimsPerPeriod` alone, with
@@ -1232,6 +789,7 @@ pub(super) async fn allocate_bulletin_allowance(
         current_unix_secs()?,
         period_duration,
     )?;
+    signing_host.require_current_session(session)?;
     let outcome = claim_long_term_storage(statement_allowance::LongTermStorageClaim {
         rpc: people_rpc,
         metadata: &chain.metadata,
@@ -1269,6 +827,7 @@ pub(super) async fn allocate_bulletin_allowance(
         remained_transactions = authorization.remained_transactions,
         "Bulletin authorization visible"
     );
+    signing_host.require_current_session(session)?;
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
@@ -1276,6 +835,7 @@ pub(super) async fn allocate_bulletin_allowance(
 pub(super) async fn allocate_statement_store_allowance(
     _services: &Arc<RuntimeServices>,
     _signing_host: &SigningHost,
+    _session: &AuthoritySession,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -1299,6 +859,7 @@ pub(super) async fn allocate_statement_store_allowance(
 pub(super) async fn allocate_smart_contract_allowance(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
+    session: &AuthoritySession,
     product_id: &str,
     derivation_index: v01::DerivationIndex,
     policy: OnExistingAllowancePolicy,
@@ -1308,9 +869,7 @@ pub(super) async fn allocate_smart_contract_allowance(
     use crate::host_logic::features;
     use crate::runtime::statement_allowance::{self, ChainClient, find_including_rings, pgas};
 
-    let session = signing_host
-        .current_session()
-        .ok_or(AuthorityError::Disconnected)?;
+    signing_host.require_current_session(session)?;
 
     // PGAS credits the product account the caller named.
     let target = signing_host
@@ -1347,6 +906,7 @@ pub(super) async fn allocate_smart_contract_allowance(
         && pgas::holds_a_full_claim(asset_hub_client.rpc(), &asset_hub.metadata, &target).await?
     {
         debug!(%product_id, "PGAS allowance already funded; leaving it alone");
+        signing_host.require_current_session(session)?;
         return Ok(());
     }
     let network_suffix =
@@ -1359,7 +919,7 @@ pub(super) async fn allocate_smart_contract_allowance(
     let people_rpc = people_client.rpc();
     let people = services.chain_context.get(&people_client).await?;
 
-    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    let candidates = signing_host.reserved_person_collection_candidates(session)?;
     // A single claim needs one collection, so take the strongest membership the
     // person actually holds rather than assuming light personhood.
     let membership = find_including_rings(people_rpc, &people.metadata, &candidates, u32::MAX)
@@ -1368,6 +928,7 @@ pub(super) async fn allocate_smart_contract_allowance(
         .next()
         .ok_or(AllowanceAllocationError::MissingPersonhoodMembership { resource: "PGAS" })?;
 
+    signing_host.require_current_session(session)?;
     let outcome = pgas::claim_pgas(pgas::PgasClaim {
         asset_hub_rpc: asset_hub_client.rpc(),
         asset_hub: &asset_hub,
@@ -1387,6 +948,7 @@ pub(super) async fn allocate_smart_contract_allowance(
         block = %outcome.block_hash,
         "claimed PGAS allowance"
     );
+    signing_host.require_current_session(session)?;
     Ok(())
 }
 
@@ -1395,6 +957,7 @@ pub(super) async fn allocate_smart_contract_allowance(
 pub(super) async fn allocate_smart_contract_allowance(
     _services: &Arc<RuntimeServices>,
     _signing_host: &SigningHost,
+    _session: &AuthoritySession,
     _product_id: &str,
     _derivation_index: v01::DerivationIndex,
     _policy: OnExistingAllowancePolicy,
@@ -1406,6 +969,7 @@ pub(super) async fn allocate_smart_contract_allowance(
 pub(super) async fn allocate_bulletin_allowance(
     _services: &Arc<RuntimeServices>,
     _signing_host: &SigningHost,
+    _session: &AuthoritySession,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -1422,284 +986,24 @@ pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
         .map_err(|_| AllowanceAllocationError::SystemClockBeforeUnixEpoch)
 }
 
-/// Confirm and serve a payload or raw signing request.
-async fn sign_response(
-    services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
-    message_id: &str,
-    request: SigningRequest,
-) -> SigningResponse {
-    let payload = serve_sign_request(services, signing_host, request).await;
-    if let Err(reason) = &payload {
-        warn!(%reason, "sign request failed");
-    }
-    SigningResponse {
-        responding_to: message_id.to_string(),
-        payload,
-    }
-}
-
-async fn serve_sign_request(
-    services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
-    request: SigningRequest,
-) -> Result<SigningPayloadResponseData, String> {
-    let session = signing_host
-        .current_session()
-        .ok_or_else(|| "signing host session is not active".to_string())?;
-    let cx = CallContext::default();
-    let response = match request {
-        SigningRequest::Payload(request) => {
-            let request: api::HostSignPayloadRequest = (*request).into();
-            confirm(
-                services,
-                UserConfirmationReview::SignPayload(SignPayloadReview::Product(request.clone())),
-            )
-            .await?;
-            signing_host
-                .sign_payload(&cx, &session, SignPayloadAuthorityRequest::Product(request))
-                .await
-        }
-        SigningRequest::Raw(request) => {
-            let request: api::HostSignRawRequest = request.into();
-            confirm(
-                services,
-                UserConfirmationReview::SignRaw(SignRawReview::Product(request.clone())),
-            )
-            .await?;
-            signing_host
-                .sign_raw(&cx, &session, SignRawAuthorityRequest::Product(request))
-                .await
-        }
-    }
-    .map_err(|err| err.to_string())?;
-    Ok(SigningPayloadResponseData {
-        signature: response.signature,
-        signed_transaction: response.signed_transaction,
-    })
-}
-
-async fn sign_raw_legacy_response(
-    services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
-    request: messages::SignRawLegacyRequest,
-) -> Result<Vec<u8>, String> {
-    let public_request = api::HostSignRawWithLegacyAccountRequest {
-        signer: product_public_key_to_address(request.account),
-        payload: request.data.into(),
-    };
-    confirm(
-        services,
-        UserConfirmationReview::SignRaw(SignRawReview::LegacyAccount(public_request.clone())),
-    )
-    .await?;
-    let session = signing_host
-        .current_session()
-        .ok_or_else(|| "signing host session is not active".to_string())?;
-    signing_host
-        .sign_raw(
-            &CallContext::default(),
-            &session,
-            SignRawAuthorityRequest::LegacyAccount {
-                account: request.account,
-                request: public_request,
-            },
-        )
-        .await
-        .map(|response| response.signature)
-        .map_err(|err| err.to_string())
-}
-
-fn sign_vrf_error_reason(error: &v01::HostAccountSignVrfError) -> String {
-    match error {
-        v01::HostAccountSignVrfError::NotConnected => "NotConnected".to_string(),
-        v01::HostAccountSignVrfError::Rejected => "Rejected".to_string(),
-        v01::HostAccountSignVrfError::Unknown { reason } => reason.clone(),
-    }
-}
-
-async fn sign_vrf_response(
-    signing_host: &Arc<SigningHost>,
-    message_id: String,
-    request: messages::SignVrfRequest,
-) -> Result<v01::VrfSignature, v01::HostAccountSignVrfError> {
-    let session = signing_host
-        .current_session()
-        .ok_or(v01::HostAccountSignVrfError::NotConnected)?;
-    signing_host
-        .sign_vrf(
-            &CallContext::with_request_id(message_id),
-            &session,
-            request.calling_product_id,
-            request.payload,
-        )
-        .await
-        .map_err(|err| match err {
-            AuthorityError::Disconnected => v01::HostAccountSignVrfError::NotConnected,
-            AuthorityError::Rejected => v01::HostAccountSignVrfError::Rejected,
-            AuthorityError::Cancelled(err) => v01::HostAccountSignVrfError::Unknown {
-                reason: err.to_string(),
-            },
-            AuthorityError::Unavailable { reason }
-            | AuthorityError::NotSupported { reason }
-            | AuthorityError::Unknown { reason } => {
-                v01::HostAccountSignVrfError::Unknown { reason }
-            }
-        })
-}
-
-/// Confirm and serve a transaction-creation request.
-async fn create_transaction_response(
-    services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
-    review: CreateTransactionReview,
-    request: CreateTransactionAuthorityRequest,
-) -> Result<Vec<u8>, String> {
-    let session = signing_host
-        .current_session()
-        .ok_or_else(|| "signing host session is not active".to_string())?;
-    confirm(services, UserConfirmationReview::CreateTransaction(review)).await?;
-    let cx = CallContext::default();
-    signing_host
-        .create_transaction(&cx, &session, request)
-        .await
-        .map(|response| response.transaction)
-        .map_err(|err| err.to_string())
-}
-
-async fn account_alias_response(
-    signing_host: &Arc<SigningHost>,
-    request: messages::RingVrfAliasRequest,
-) -> Result<api::HostAccountGetAliasResponse, RingVrfError> {
-    let session = signing_host
-        .current_session()
-        .ok_or_else(disconnected_ring_vrf)?;
-    let cx = CallContext::default();
-    signing_host
-        .account_alias(
-            &cx,
-            &session,
-            AccountAliasAuthorityRequest {
-                calling_product_id: request.calling_product_id,
-                key_handle: request.key_handle,
-                context: request.context,
-                ring_location: request.ring_location,
-            },
-        )
-        .await
-}
-
-async fn create_proof_response(
-    signing_host: &Arc<SigningHost>,
-    request: messages::RingVrfProofRequest,
-) -> Result<api::HostAccountCreateProofResponse, RingVrfError> {
-    let session = signing_host
-        .current_session()
-        .ok_or_else(disconnected_ring_vrf)?;
-    let cx = CallContext::default();
-    signing_host
-        .create_proof(
-            &cx,
-            &session,
-            CreateProofAuthorityRequest {
-                calling_product_id: request.calling_product_id,
-                key_handle: request.key_handle,
-                context: request.context,
-                ring_location: request.ring_location,
-                message: request.message,
-            },
-        )
-        .await
-}
-
-async fn register_ring_vrf_key_response(
-    signing_host: &Arc<SigningHost>,
-    request: messages::RegisterRingVrfKeyRequest,
-) -> Result<api::RingVrfPublicKey, RingVrfError> {
-    let session = signing_host
-        .current_session()
-        .ok_or_else(disconnected_ring_vrf)?;
-    signing_host
-        .register_ring_vrf_key(
-            &CallContext::default(),
-            &session,
-            RegisterRingVrfKeyAuthorityRequest {
-                calling_product_id: request.calling_product_id,
-                index: request.index,
-                ring: request.ring,
-            },
-        )
-        .await
-}
-
-async fn list_ring_vrf_keys_response(
-    signing_host: &Arc<SigningHost>,
-    request: messages::ListRingVrfKeysRequest,
-) -> Result<Vec<api::RegisteredRingVrfKey>, RingVrfError> {
-    let session = signing_host
-        .current_session()
-        .ok_or_else(disconnected_ring_vrf)?;
-    signing_host
-        .list_ring_vrf_keys(
-            &CallContext::default(),
-            &session,
-            ListRingVrfKeysAuthorityRequest {
-                calling_product_id: request.calling_product_id,
-                owner: request.owner,
-                disclosure: request.disclosure,
-            },
-        )
-        .await
-}
-
-async fn ring_vrf_sign_response(
-    signing_host: &Arc<SigningHost>,
-    request: messages::RingVrfSignRequest,
-) -> Result<Vec<u8>, RingVrfError> {
-    let session = signing_host
-        .current_session()
-        .ok_or_else(disconnected_ring_vrf)?;
-    signing_host
-        .ring_vrf_sign(
-            &CallContext::default(),
-            &session,
-            RingVrfSignAuthorityRequest {
-                calling_product_id: request.calling_product_id,
-                key_handle: request.key_handle,
-                message: request.message,
-            },
-        )
-        .await
-}
-
-fn disconnected_ring_vrf() -> RingVrfError {
-    RingVrfError::Unknown {
-        reason: "signing host session is not active".to_string(),
-    }
-}
-
-/// Run the platform confirmation seam; rejection and failure both refuse the
-/// operation with an opaque reason (host-spec B.7).
-async fn confirm(
-    services: &Arc<RuntimeServices>,
-    review: UserConfirmationReview,
-) -> Result<(), String> {
-    match services.platform.confirm_user_action(review).await {
-        Ok(true) => Ok(()),
-        Ok(false) => Err("Rejected".to_string()),
-        Err(err) => Err(format!("confirmation failed: {}", err.reason)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::LocalActivation;
     use super::*;
     use crate::host_logic::extrinsic::tests::split_v4;
+    use crate::host_logic::product_account::derive_ring_vrf_domain_entropy;
+    use crate::host_logic::sso::messages::{
+        self, GetAccountAliasResponse, RemoteMessage, ResourceAllocationResponse, RingVrfError,
+        SsoAllocatableResource, SsoAllocatedResource, SsoAllocationOutcome,
+        resource_allocation_outcome,
+    };
+    use crate::host_logic::sso::wire::SsoResponse;
     use crate::host_logic::statement_store::decode_verified_statement_data;
+    use crate::runtime::authority::ProductAuthority;
     use crate::runtime::services::RuntimeServices;
     use crate::test_support::{StubPlatform, test_spawner};
     use std::sync::Arc;
+    use truapi::latest as api;
     use truapi_platform::{HostInfo, Platform, PlatformInfo, SigningHostConfig};
 
     const ENTROPY: [u8; 16] = [0xab; 16];
@@ -1806,10 +1110,12 @@ mod tests {
         // unbounded test would hang instead of reporting. The bound is generous
         // because it is catching a hang, not asserting latency.
         let secret = futures::executor::block_on(async {
+            let session = signing_host.current_session().unwrap();
             futures::select! {
                 result = allocate_statement_store_allowance(
                     &services,
                     &signing_host,
+                    &session,
                     product_id,
                     OnExistingAllowancePolicy::Ignore,
                 )
@@ -1989,55 +1295,36 @@ mod tests {
         );
     }
 
-    fn response_payload(answer: AnsweredRemoteMessage) -> v1::RemoteMessage {
-        let RemoteMessageData::V1(data) = answer.response.data;
+    fn answer(
+        services: &Arc<RuntimeServices>,
+        signing_host: &Arc<SigningHost>,
+        message_id: &str,
+        request: v1::RemoteMessage,
+    ) -> v1::RemoteMessage {
+        let service = SigningHostSsoService::new(services.clone(), signing_host.clone());
+        let message = RemoteMessage {
+            message_id: message_id.to_string(),
+            data: RemoteMessageData::V1(request),
+        };
+        let Dispatch::Response(answer) =
+            futures::executor::block_on(service.dispatch(service.current_session(), message))
+        else {
+            panic!("expected a response");
+        };
+        let RemoteMessageData::V1(data) = answer.message.data;
         data
     }
 
     #[test]
-    fn account_alias_requires_confirmation_for_cross_product_request() {
-        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
-
-        let response = futures::executor::block_on(answer_remote_message(
-            &services,
-            &signing_host,
-            "alias-1".to_string(),
-            v1::RemoteMessage::RingVrfAliasRequest(messages::RingVrfAliasRequest {
-                calling_product_id: "myapp.dot".to_string(),
-                key_handle: api::ProductAccountId {
-                    dot_ns_identifier: "peopl.dot".to_string(),
-                    derivation_index: api::DerivationIndex::Index(0),
-                },
-                context: api::ProductProofContext {
-                    product_id: "other.dot".to_string(),
-                    suffix: api::DerivationIndex::Index(0),
-                },
-                ring_location: api::RingLocation {
-                    chain_id: [0; 32],
-                    junctions: vec![],
-                },
-            }),
-        ))
-        .expect("response is emitted");
-
-        let v1::RemoteMessage::RingVrfAliasResponse(response) = response_payload(response) else {
-            panic!("expected alias response");
-        };
-        assert_eq!(response.payload.unwrap_err(), RingVrfError::Rejected);
-    }
-
-    #[test]
     fn response_summary_reports_protocol_errors_without_multiline_output() {
-        let response = RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasResponse(
-            RingVrfAliasResponse {
-                responding_to: "alias-1".to_string(),
-                payload: Err(RingVrfError::Unknown {
-                    reason: "chain RPC\ntimed out".to_string(),
-                }),
-            },
-        ));
+        let response = GetAccountAliasResponse {
+            responding_to: "alias-1".to_string(),
+            payload: Err(RingVrfError::Unknown {
+                reason: "chain RPC\ntimed out".to_string(),
+            }),
+        };
 
-        let result = remote_response_result(&response);
+        let result = response.outcome();
         let summary = response_cli_summary(
             "SSO response sent",
             "get_account_alias",
@@ -2062,62 +1349,181 @@ mod tests {
 
     #[test]
     fn resource_allocation_summary_reflects_per_resource_outcomes() {
-        let result =
-            resource_allocation_payload_result(&Ok(vec![SsoAllocationOutcome::Rejected]), &[]);
-        assert_eq!(result.outcome, "rejected");
+        let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::Rejected]));
         assert_eq!(
-            result.reason.as_deref(),
-            Some("Requested resource was rejected")
+            (result.outcome, result.reason.as_deref()),
+            ("rejected", Some("Requested resource was rejected"))
         );
 
-        let result = resource_allocation_payload_result(
-            &Ok(vec![
-                SsoAllocationOutcome::Allocated(SsoAllocatedResource::BulletinAllowance {
-                    slot_account_key: vec![1; 64],
-                }),
-                SsoAllocationOutcome::Rejected,
-                SsoAllocationOutcome::NotAvailable,
-            ]),
-            &[],
-        );
-        assert_eq!(result.outcome, "partial");
+        let result = resource_allocation_outcome(&Ok(vec![
+            SsoAllocationOutcome::Allocated(SsoAllocatedResource::BulletinAllowance {
+                slot_account_key: vec![1; 64],
+            }),
+            SsoAllocationOutcome::Rejected,
+            SsoAllocationOutcome::NotAvailable,
+        ]));
         assert_eq!(
-            result.reason.as_deref(),
-            Some("1 of 3 requested resources allocated; 1 rejected; 1 unavailable")
-        );
-
-        let result = resource_allocation_payload_result(
-            &Ok(vec![SsoAllocationOutcome::NotAvailable]),
-            &["timed out waiting for Bulletin authorization".to_string()],
-        );
-        assert_eq!(result.outcome, "not_available");
-        assert_eq!(
-            result.reason.as_deref(),
-            Some(
-                "Requested resource is not available: timed out waiting for Bulletin authorization"
+            (result.outcome, result.reason.as_deref()),
+            (
+                "partial",
+                Some("1 of 3 requested resources allocated; 1 rejected; 1 unavailable")
             )
+        );
+
+        let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::NotAvailable]));
+        assert_eq!(
+            (result.outcome, result.reason.as_deref()),
+            ("not_available", Some("Requested resource is not available"))
         );
     }
 
     #[test]
     fn response_summary_classifies_resource_allocation_batches() {
-        let response = RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-            ResourceAllocationResponse {
-                responding_to: "allocation-1".to_string(),
-                payload: Ok(vec![
-                    SsoAllocationOutcome::Rejected,
-                    SsoAllocationOutcome::NotAvailable,
-                ]),
-            },
-        ));
+        let response = ResourceAllocationResponse {
+            responding_to: "allocation-1".to_string(),
+            payload: Ok(vec![
+                SsoAllocationOutcome::Rejected,
+                SsoAllocationOutcome::NotAvailable,
+            ]),
+        };
 
-        let result = remote_response_result(&response);
+        let result = response.outcome();
 
-        assert_eq!(result.outcome, "rejected");
         assert_eq!(
-            result.reason.as_deref(),
-            Some("No resources allocated; 1 rejected; 1 unavailable")
+            (result.outcome, result.reason.as_deref()),
+            (
+                "rejected",
+                Some("No resources allocated; 1 rejected; 1 unavailable")
+            )
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn allocation_failure_details_reach_the_response_transcript() {
+        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            chain_connect_error: Some("allocation node unavailable"),
+            ..StubPlatform::default()
+        }));
+        let auto_signing = SsoAllocationOutcome::Allocated(SsoAllocatedResource::AutoSigning {
+            product_root_private_key: signing_host.product_subtree_secret("myapp.dot").unwrap(),
+            ring_vrf_domain_entropy: derive_ring_vrf_domain_entropy(&ENTROPY, "myapp.dot").unwrap(),
+        });
+        let service = SigningHostSsoService::new(services, signing_host);
+        let cases = [
+            (
+                vec![SsoAllocatableResource::BulletinAllowance],
+                vec![SsoAllocationOutcome::NotAvailable],
+                "not_available",
+                "Requested resource is not available",
+                1,
+            ),
+            (
+                vec![
+                    SsoAllocatableResource::AutoSigning,
+                    SsoAllocatableResource::BulletinAllowance,
+                    SsoAllocatableResource::StatementStoreAllowance,
+                ],
+                vec![
+                    auto_signing.clone(),
+                    SsoAllocationOutcome::NotAvailable,
+                    SsoAllocationOutcome::NotAvailable,
+                ],
+                "partial",
+                "1 of 3 requested resources allocated; 2 unavailable",
+                2,
+            ),
+            (
+                vec![SsoAllocatableResource::AutoSigning],
+                vec![auto_signing],
+                "ok",
+                "",
+                0,
+            ),
+        ];
+
+        for (index, (resources, outcomes, outcome, summary, failures)) in
+            cases.into_iter().enumerate()
+        {
+            let message_id = format!("allocation-{index}");
+            let request = RemoteMessage::request(
+                message_id.clone(),
+                messages::ResourceAllocationRequest {
+                    calling_product_id: "myapp.dot".to_string(),
+                    resources,
+                    on_existing: OnExistingAllowancePolicy::Ignore,
+                },
+            );
+            let Dispatch::Response(answer) =
+                futures::executor::block_on(service.dispatch(service.current_session(), request))
+            else {
+                panic!("expected an allocation response");
+            };
+
+            let expected = RemoteMessage {
+                message_id: format!("{message_id}:response"),
+                data: RemoteMessageData::V1(
+                    ResourceAllocationResponse::new(message_id.clone(), Ok(outcomes))
+                        .into_message(),
+                ),
+            };
+            assert_eq!(answer.message.encode(), expected.encode());
+            assert_eq!(answer.outcome.outcome, outcome);
+            if failures == 0 {
+                assert_eq!(answer.outcome.reason, None);
+                continue;
+            }
+            let reason = answer.outcome.reason.as_deref().unwrap();
+            assert!(reason.starts_with(summary));
+            assert_eq!(
+                reason.matches("allocation node unavailable").count(),
+                failures,
+                "{reason}"
+            );
+            assert!(!reason.contains(['\r', '\n']));
+            let cli = response_cli_summary(
+                "SSO response sent",
+                "resource_allocation",
+                &message_id,
+                &message_id,
+                &answer.message.message_id,
+                &answer.outcome,
+                0,
+            );
+            assert!(cli.contains(&format!("reason={reason}")));
+        }
+    }
+
+    #[test]
+    fn account_alias_requires_confirmation_for_cross_product_request() {
+        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+
+        let response = answer(
+            &services,
+            &signing_host,
+            "alias-1",
+            v1::RemoteMessage::GetAccountAliasRequest(messages::GetAccountAliasRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                key_handle: api::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: api::DerivationIndex::Index(0),
+                },
+                context: api::ProductProofContext {
+                    product_id: "other.dot".to_string(),
+                    suffix: api::DerivationIndex::Index(0),
+                },
+                ring_location: api::RingLocation {
+                    chain_id: [0; 32],
+                    junctions: vec![],
+                },
+            }),
+        );
+
+        let v1::RemoteMessage::GetAccountAliasResponse(response) = response else {
+            panic!("expected alias response");
+        };
+        assert_eq!(response.payload.unwrap_err(), RingVrfError::Rejected);
     }
 
     #[test]
@@ -2125,20 +1531,18 @@ mod tests {
         let platform = Arc::new(StubPlatform::default());
         let (services, signing_host) = signing_fixture(platform.clone());
 
-        let response = futures::executor::block_on(answer_remote_message(
+        let response = answer(
             &services,
             &signing_host,
-            "alloc-1".to_string(),
+            "alloc-1",
             v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 resources: vec![SsoAllocatableResource::StatementStoreAllowance],
                 on_existing: messages::OnExistingAllowancePolicy::Ignore,
             }),
-        ))
-        .expect("response is emitted");
+        );
 
-        let v1::RemoteMessage::ResourceAllocationResponse(response) = response_payload(response)
-        else {
+        let v1::RemoteMessage::ResourceAllocationResponse(response) = response else {
             panic!("expected resource allocation response");
         };
         assert_eq!(
@@ -2170,20 +1574,18 @@ mod tests {
             derive_ring_vrf_domain_entropy(&ENTROPY, "myapp.dot")
                 .expect("ring-VRF domain entropy derives");
 
-        let response = futures::executor::block_on(answer_remote_message(
+        let response = answer(
             &services,
             &signing_host,
-            "alloc-auto-signing".to_string(),
+            "alloc-auto-signing",
             v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 resources: vec![SsoAllocatableResource::AutoSigning],
                 on_existing: messages::OnExistingAllowancePolicy::Ignore,
             }),
-        ))
-        .expect("response is emitted");
+        );
 
-        let v1::RemoteMessage::ResourceAllocationResponse(response) = response_payload(response)
-        else {
+        let v1::RemoteMessage::ResourceAllocationResponse(response) = response else {
             panic!("expected resource allocation response");
         };
         assert_eq!(
@@ -2195,6 +1597,73 @@ mod tests {
                 }
             )]
         );
+    }
+
+    fn allocation_after_session_change(replacement: Option<Vec<u8>>) {
+        use futures::{FutureExt, channel::oneshot};
+
+        let (release, gate) = oneshot::channel();
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            resource_allocation_confirmation_gate: std::sync::Mutex::new(Some(gate)),
+            ..StubPlatform::default()
+        });
+        let (services, signing_host) = signing_fixture(platform.clone());
+        let service = SigningHostSsoService::new(services, signing_host.clone());
+        let message = RemoteMessage::request(
+            "alloc-stale".to_string(),
+            messages::ResourceAllocationRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                resources: vec![SsoAllocatableResource::AutoSigning],
+                on_existing: OnExistingAllowancePolicy::Ignore,
+            },
+        );
+
+        futures::executor::block_on(async {
+            let answer = service.dispatch(service.current_session(), message);
+            futures::pin_mut!(answer);
+            assert!(answer.as_mut().now_or_never().is_none());
+            assert_eq!(
+                platform.resource_allocation_reviews.lock().unwrap().len(),
+                1
+            );
+
+            signing_host.disconnect().await;
+            if let Some(entropy) = replacement {
+                signing_host.activate_local_session(entropy).await.unwrap();
+            }
+            release.send(()).unwrap();
+
+            let Dispatch::Response(answer) = answer.await else {
+                panic!("expected an allocation response");
+            };
+            let RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(response)) =
+                answer.message.data
+            else {
+                panic!("expected an allocation response");
+            };
+            assert_eq!(response.responding_to, "alloc-stale");
+            assert!(
+                response.payload.is_err(),
+                "stale consent must not release keys"
+            );
+            assert!(platform.sent_rpc.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn resource_consent_cannot_authorize_a_replacement_account() {
+        allocation_after_session_change(Some(vec![0xcd; 16]));
+    }
+
+    #[test]
+    fn resource_consent_cannot_survive_same_account_reactivation() {
+        allocation_after_session_change(Some(ENTROPY.to_vec()));
+    }
+
+    #[test]
+    fn resource_consent_cannot_survive_disconnect() {
+        allocation_after_session_change(None);
     }
 
     #[test]
@@ -2216,20 +1685,18 @@ mod tests {
             tx_ext_version: 0,
         };
 
-        let response = futures::executor::block_on(answer_remote_message(
+        let response = answer(
             &services,
             &signing_host,
-            "legacy-tx-1".to_string(),
-            v1::RemoteMessage::CreateTransactionLegacyRequest(
-                messages::CreateTransactionLegacyRequest {
+            "legacy-tx-1",
+            v1::RemoteMessage::CreateTransactionWithLegacyAccountRequest(
+                messages::CreateTransactionWithLegacyAccountRequest {
                     payload: messages::CreateTransactionLegacyPayload::V1(payload),
                 },
             ),
-        ))
-        .expect("response is emitted");
+        );
 
-        let v1::RemoteMessage::CreateTransactionResponse(response) = response_payload(response)
-        else {
+        let v1::RemoteMessage::CreateTransactionResponse(response) = response else {
             panic!("expected create transaction response");
         };
         let transaction = response
@@ -2250,17 +1717,16 @@ mod tests {
     #[test]
     fn product_subtree_request_is_consent_free_and_hard_derived() {
         let (services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
-        let response = futures::executor::block_on(answer_remote_message(
+        let response = answer(
             &services,
             &signing_host,
-            "subtree-1".to_string(),
+            "subtree-1",
             v1::RemoteMessage::ProductSubtreeRequest(messages::ProductSubtreeRequest {
                 product_id: "browse.dot".to_string(),
             }),
-        ))
-        .expect("response is emitted");
+        );
 
-        let v1::RemoteMessage::ProductSubtreeResponse(response) = response_payload(response) else {
+        let v1::RemoteMessage::ProductSubtreeResponse(response) = response else {
             panic!("expected product subtree response");
         };
         let root =

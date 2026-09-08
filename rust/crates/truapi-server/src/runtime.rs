@@ -27,6 +27,7 @@ mod signing_host;
 pub(crate) mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
 pub(crate) mod sso_remote;
+pub(crate) mod sso_service;
 /// Native Statement Store and Bulletin allowance allocation.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod statement_allowance;
@@ -51,7 +52,7 @@ pub(crate) use services::RuntimeServices;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, establish_pairing,
+    LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, establish_pairing,
     respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};

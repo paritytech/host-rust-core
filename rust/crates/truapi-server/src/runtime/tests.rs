@@ -56,7 +56,7 @@ use truapi_platform::{AuthState, CoreStorageKey, PermissionAuthorizationRequest}
 use super::*;
 use crate::host_logic::product_account::index_bytes;
 use crate::host_logic::sso::messages::{
-    RemoteMessage, RemoteMessageData, RingVrfAliasResponse, RingVrfProofResponse, v1,
+    CreateAccountProofResponse, GetAccountAliasResponse, RemoteMessage, RemoteMessageData, v1,
 };
 use crate::test_support::*;
 
@@ -1196,8 +1196,8 @@ fn get_account_alias_forwards_without_pairing_host_confirmation() {
             &session,
             RemoteMessage {
                 message_id: "wallet-alias-1".to_string(),
-                data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasResponse(
-                    RingVrfAliasResponse {
+                data: RemoteMessageData::V1(v1::RemoteMessage::GetAccountAliasResponse(
+                    GetAccountAliasResponse {
                         responding_to: "alias-1".to_string(),
                         payload: Ok(v01::ContextualAlias {
                             context: [9; 32],
@@ -1224,7 +1224,7 @@ fn get_account_alias_forwards_without_pairing_host_confirmation() {
     assert_eq!(inner.context, [9; 32]);
     assert_eq!(inner.alias, vec![1, 2, 3]);
     let message = submitted_remote_message(&platform, &session);
-    let RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasRequest(request)) = message.data
+    let RemoteMessageData::V1(v1::RemoteMessage::GetAccountAliasRequest(request)) = message.data
     else {
         panic!("expected ring VRF alias request");
     };
@@ -1258,8 +1258,8 @@ fn create_account_proof_returns_sso_proof() {
             &session,
             RemoteMessage {
                 message_id: "wallet-proof-1".to_string(),
-                data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofResponse(
-                    RingVrfProofResponse {
+                data: RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofResponse(
+                    CreateAccountProofResponse {
                         responding_to: "proof-1".to_string(),
                         payload: Ok(v01::HostAccountCreateProofResponse {
                             proof: vec![0xaa, 0xbb],
@@ -1292,7 +1292,7 @@ fn create_account_proof_returns_sso_proof() {
     assert_eq!(inner.ring_index, 5);
     assert_eq!(inner.ring_revision, 7);
     let message = submitted_remote_message(&platform, &session);
-    let RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofRequest(request)) = message.data
+    let RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofRequest(request)) = message.data
     else {
         panic!("expected ring VRF proof request");
     };
@@ -1309,8 +1309,8 @@ fn create_account_proof_maps_not_member_error() {
             &session,
             RemoteMessage {
                 message_id: "wallet-proof-1".to_string(),
-                data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofResponse(
-                    RingVrfProofResponse {
+                data: RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofResponse(
+                    CreateAccountProofResponse {
                         responding_to: "proof-1".to_string(),
                         payload: Err(RingVrfError::NotMember),
                     },
@@ -1891,7 +1891,7 @@ fn legacy_create_transaction_accepts_identity_account_then_routes_legacy_request
     assert_eq!(inner.transaction, vec![0xca, 0xfe]);
     let message = submitted_remote_message(&platform, &session);
     let crate::host_logic::sso::messages::RemoteMessageData::V1(
-        crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionLegacyRequest(
+        crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionWithLegacyAccountRequest(
             request,
         ),
     ) = message.data

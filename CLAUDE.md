@@ -73,6 +73,27 @@ scripts/truapi-host-installer.sh
   rather than importing a concrete protocol version. Runtime crates may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
+- Inter-host SSO messages (`truapi-server/src/host_logic/sso/`) are an RPC
+  surface: the hand-written `v1::RemoteMessage` enum is the wire spec and
+  derives `SsoWire` for classification, request wrapping, and correlation
+  helpers (variant names equal payload type names). Response structs derive
+  `SsoResponse`. A dedicated inherent `impl SigningHostSsoService` in
+  `runtime/signing_host/sso_service.rs` carries `#[sso_service]`; every method
+  in that block is a handler naming its wire request and wire response.
+  The macro generates request/response pairing and an exhaustive `dispatch()`
+  method from those signatures. Constructors and helpers live in a separate,
+  unannotated impl. Shared responses are named directly by both handlers.
+  Bodies return ordinary `Result` payloads or explicit replies with a transcript
+  outcome; the service uses native async methods.
+  Method-specific diagnostics are collected and summarized by their handler;
+  other replies derive the outcome from the wire response payload.
+  The macro wraps handler results in `SsoReply<WireResponse>`; dispatch adds
+  correlation ids. Request context carries only the call and signing session.
+  The pairing host sends through
+  `PairingHost::call(request)` using the same generated pairing.
+  Never add per-variant match lists for pairing, correlation, or transcript
+  outcome outside those derives; a new message is two payload structs, two
+  enum variants, and one handler; the client uses the typed `call` method.
 - Native bindings expose canonical Rust domain and protocol types directly.
   Add feature-gated UniFFI derives to those types and custom conversions for
   unsupported leaf values instead of defining parallel `Native*` mirrors.

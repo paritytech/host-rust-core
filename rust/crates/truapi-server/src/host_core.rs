@@ -30,11 +30,12 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
+use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
+use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
     ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
     PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
-    SigningHostRole, answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
+    SigningHostRole, SigningHostSsoService, establish_pairing, respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -780,20 +781,11 @@ impl SigningHostRuntime {
         &self,
         message: RemoteMessage,
     ) -> SsoRequestOutcome<RemoteMessage> {
-        let RemoteMessageData::V1(request) = message.data;
-        if matches!(request, v1::RemoteMessage::Disconnected) {
-            return SsoRequestOutcome::Disconnected;
-        }
-        match answer_remote_message(
-            &self.services,
-            &self.signing_host,
-            message.message_id,
-            request,
-        )
-        .await
-        {
-            Some(answer) => SsoRequestOutcome::Response(answer.response),
-            None => SsoRequestOutcome::Ignored,
+        let service = SigningHostSsoService::new(self.services.clone(), self.signing_host.clone());
+        match service.dispatch(service.current_session(), message).await {
+            Dispatch::Response(answer) => SsoRequestOutcome::Response(answer.message),
+            Dispatch::Disconnected => SsoRequestOutcome::Disconnected,
+            Dispatch::NotARequest(_) => SsoRequestOutcome::Ignored,
         }
     }
 }
@@ -2246,7 +2238,7 @@ mod tests {
     #[test]
     fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
         use crate::host_logic::sso::messages::{
-            RemoteMessage, RemoteMessageData, SignRawLegacyResponse, v1,
+            RemoteMessage, RemoteMessageData, SignRawWithLegacyAccountResponse, v1,
         };
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
@@ -2279,8 +2271,8 @@ mod tests {
 
         let response_variant = RemoteMessage {
             message_id: "m2".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(
-                SignRawLegacyResponse {
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignRawWithLegacyAccountResponse(
+                SignRawWithLegacyAccountResponse {
                     responding_to: "m2".to_string(),
                     signature: Ok(vec![]),
                 },

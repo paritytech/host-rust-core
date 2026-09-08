@@ -25,9 +25,9 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 
-use crate::runtime::authority::{
-    AccountAliasAuthorityRequest, CreateProofAuthorityRequest, ListRingVrfKeysAuthorityRequest,
-    RegisterRingVrfKeyAuthorityRequest, RingVrfSignAuthorityRequest,
+use crate::host_logic::sso::messages::{
+    CreateAccountProofRequest, GetAccountAliasRequest, ListRingVrfKeysRequest,
+    RegisterRingVrfKeyRequest, RingVrfSignRequest,
 };
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
@@ -151,7 +151,7 @@ impl Account for ProductRuntimeHost {
             self.authority.account_alias(
                 &cx,
                 &session,
-                AccountAliasAuthorityRequest {
+                GetAccountAliasRequest {
                     calling_product_id,
                     key_handle,
                     context,
@@ -202,7 +202,7 @@ impl Account for ProductRuntimeHost {
             self.authority.create_proof(
                 &cx,
                 &session,
-                CreateProofAuthorityRequest {
+                CreateAccountProofRequest {
                     calling_product_id,
                     key_handle,
                     context,
@@ -241,7 +241,7 @@ impl Account for ProductRuntimeHost {
             self.authority.register_ring_vrf_key(
                 &cx,
                 &session,
-                RegisterRingVrfKeyAuthorityRequest {
+                RegisterRingVrfKeyRequest {
                     calling_product_id,
                     index,
                     ring,
@@ -287,7 +287,7 @@ impl Account for ProductRuntimeHost {
             self.authority.list_ring_vrf_keys(
                 &cx,
                 &session,
-                ListRingVrfKeysAuthorityRequest {
+                ListRingVrfKeysRequest {
                     calling_product_id,
                     owner,
                     disclosure,
@@ -335,7 +335,7 @@ impl Account for ProductRuntimeHost {
             self.authority.ring_vrf_sign(
                 &cx,
                 &session,
-                RingVrfSignAuthorityRequest {
+                RingVrfSignRequest {
                     calling_product_id,
                     key_handle: request.key_handle,
                     message: request.message,
