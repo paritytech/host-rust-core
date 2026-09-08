@@ -3211,6 +3211,41 @@ fn stored_session_activation_rejects_invalid_blob_and_disconnects() {
     );
 }
 
+/// An untagged blob restores and the slot is rewritten in the written form, so
+/// a host upgrades its stored session by activating once rather than by pairing
+/// again. `SessionInfo::encode` is the untagged eight-field layout; the canary in
+/// `host_logic::session` is what keeps that true.
+#[test]
+fn activating_an_untagged_stored_session_restores_it_and_rewrites_the_slot() {
+    let stored = sso_session_info();
+    let untagged = stored.encode();
+    let platform = Arc::new(StubPlatform {
+        session_blob: Some(untagged.clone()),
+        ..Default::default()
+    });
+    let (host, pairing_host) =
+        ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+    futures::executor::block_on(pairing_host.activate_stored_session())
+        .expect("an untagged stored session activates");
+
+    assert_eq!(host.test_session_state().current(), Some(stored.clone()));
+    let written = crate::host_logic::session::encode_persisted_session(&stored);
+    assert_ne!(
+        untagged, written,
+        "the fixture must not already be in the written form, or this proves nothing"
+    );
+    assert_eq!(
+        platform
+            .session_writes
+            .lock()
+            .expect("session write list mutex poisoned")
+            .last(),
+        Some(&written),
+        "the slot still holds the untagged blob, so it would be re-read on every start"
+    );
+}
+
 #[test]
 fn session_store_sync_restores_valid_blob_from_tick() {
     let stored = sso_session_info();
