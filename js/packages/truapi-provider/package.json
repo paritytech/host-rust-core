@@ -43,9 +43,12 @@
   "scripts": {
     "build": "npm run build:wasm && npm run build:ts",
     "build:wasm": "node scripts/build-wasm.mjs",
-    "build:ts": "tsc -b"
+    "build:ts": "tsc -b",
+    "test": "bun test"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.7"
   }
 }

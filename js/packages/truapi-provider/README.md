@@ -75,6 +75,14 @@ chains warp sync again. Do not put blobs in `localStorage`: a snapshot runs to
 several megabytes against a quota near five, and the write blocks the main
 thread.
 
+`warmUp()` has to run before the first `connect()` for that chain. smoldot keys
+a chain by its genesis hash and ignores the blob on every add after the first,
+so a later seed cannot take effect; the provider logs a warning and answers
+`false` rather than letting the chain stay silently cold.
+
+`persist()` answers `false` for a chain this provider never connected, rather
+than starting one just to snapshot it.
+
 `snapshot()` and `setDatabase()` remain for a host that keeps blobs somewhere
 the provider cannot reach.
 
@@ -106,6 +114,7 @@ entry under `dist/js/`.
 npm run build           # both halves
 npm run build:wasm      # wasm-pack --target web, features "js networks"
 npm run build:ts        # tsc, emits dist/js/
+npm test                # bun test, against fake-indexeddb
 ```
 
 `wasm-pack` is required (`cargo install wasm-pack`). Set `TRUAPI_WASM_PROFILE=dev`

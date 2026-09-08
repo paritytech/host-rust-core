@@ -105,6 +105,8 @@ impl EmbeddedChainProviderBuilder {
             #[cfg(feature = "smoldot")]
             warm_store: self.warm_store,
             #[cfg(feature = "smoldot")]
+            connected: Mutex::new(std::collections::HashSet::new()),
+            #[cfg(feature = "smoldot")]
             light: crate::light::LightState::new(),
         }
     }
@@ -134,6 +136,11 @@ pub struct EmbeddedChainProvider {
     databases: Mutex<HashMap<[u8; 32], String>>,
     #[cfg(feature = "smoldot")]
     warm_store: Option<crate::warm_start::SharedWarmStore>,
+    /// Chains a light-client connection has been opened for, so `warm_up` can
+    /// tell that its blob arrived too late and `persist` can tell there is
+    /// nothing to snapshot.
+    #[cfg(feature = "smoldot")]
+    connected: Mutex<std::collections::HashSet<[u8; 32]>>,
     #[cfg(feature = "smoldot")]
     light: crate::light::LightState,
 }
@@ -228,6 +235,25 @@ const SNAPSHOT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(6
 
 #[cfg(feature = "smoldot")]
 impl EmbeddedChainProvider {
+    /// Whether a light-client connection has been opened for `genesis_hash`.
+    fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
+        self.connected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&genesis_hash)
+    }
+
+    /// Record a light-client connect, so `warm_up` and `persist` can tell
+    /// whether the chain is past the point where a blob still matters.
+    fn mark_light_connect(&self, genesis_hash: [u8; 32], source: &ChainSource) {
+        if matches!(source, ChainSource::LightClient { .. }) {
+            self.connected
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(genesis_hash);
+        }
+    }
+
     /// Whether a blob is already in hand for `genesis_hash`.
     fn has_database(&self, genesis_hash: [u8; 32]) -> bool {
         self.databases
@@ -250,6 +276,16 @@ impl EmbeddedChainProvider {
     /// blocks the calling thread, and a store that needs the main thread would
     /// deadlock underneath it.
     pub async fn warm_up(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
+        if self.is_connected(genesis_hash) {
+            // smoldot keys a chain by its genesis hash and discards the blob on
+            // every add after the first, so a seed arriving now cannot take
+            // effect and the chain would silently stay cold.
+            tracing::warn!(
+                genesis = %hex::encode(genesis_hash),
+                "warm_up ran after the chain was already connected, so the stored blob cannot take effect"
+            );
+            return Ok(false);
+        }
         if self.has_database(genesis_hash) {
             return Ok(true);
         }
@@ -283,6 +319,16 @@ impl EmbeddedChainProvider {
         let Some(store) = self.warm_store.clone() else {
             return Ok(false);
         };
+        if !self.is_connected(genesis_hash) {
+            // `snapshot` opens its own connection, so persisting a chain this
+            // provider never connected would start one, sync it from the
+            // checkpoint and store nothing worth having.
+            tracing::debug!(
+                genesis = %hex::encode(genesis_hash),
+                "nothing to persist: this provider has not connected to the chain"
+            );
+            return Ok(false);
+        }
         let blob = self.snapshot(genesis_hash).await?;
         if !crate::warm_start::carries_chain_information(&blob) {
             tracing::debug!(
@@ -390,7 +436,10 @@ impl ChainProvider for EmbeddedChainProvider {
             let relay = self.relays.get(&genesis_hash).copied();
             #[cfg(not(feature = "smoldot"))]
             let relay = None;
-            return Ok(self.connect_source(&source, &self.chains, relay).await?);
+            let connection = self.connect_source(&source, &self.chains, relay).await?;
+            #[cfg(feature = "smoldot")]
+            self.mark_light_connect(genesis_hash, &source);
+            return Ok(connection);
         }
         #[cfg(feature = "networks")]
         if let Some((catalog, relay)) = crate::networks::catalog_network_chains(genesis_hash) {
@@ -402,7 +451,9 @@ impl ChainProvider for EmbeddedChainProvider {
                 .expect("catalog_network_chains includes the queried genesis")
                 .clone();
             let source = self.with_seeded_database(genesis_hash, source);
-            return Ok(self.connect_source(&source, &catalog, relay).await?);
+            let connection = self.connect_source(&source, &catalog, relay).await?;
+            self.mark_light_connect(genesis_hash, &source);
+            return Ok(connection);
         }
         Err(ProviderError::UnknownGenesis {
             genesis: genesis_hash,
@@ -582,6 +633,73 @@ mod tests {
             0,
             "an explicit blob means the store is never consulted"
         );
+    }
+
+    /// A blob that arrives after the chain is up cannot take effect, so it is
+    /// reported rather than silently accepted.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn warm_up_after_connecting_reports_that_the_blob_is_too_late() {
+        const GENESIS: [u8; 32] = [6; 32];
+        let store = std::sync::Arc::new(MemoryWarmStore::default());
+        store
+            .stored
+            .lock()
+            .expect("test store")
+            .insert(GENESIS, "stored-blob".to_owned());
+
+        let source = ChainSource::light_client("{}").build();
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, source.clone())
+            .warm_store(store.clone())
+            .build();
+        provider.mark_light_connect(GENESIS, &source);
+
+        assert!(
+            !futures::executor::block_on(provider.warm_up(GENESIS)).expect("no store read"),
+            "a seed after the first connect cannot reach smoldot"
+        );
+        assert_eq!(
+            store.loads.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the store is not read once the blob could no longer be used"
+        );
+    }
+
+    /// Persisting a chain nobody connected would start one just to snapshot it.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn persist_without_a_connection_stores_nothing() {
+        const GENESIS: [u8; 32] = [7; 32];
+        let store = std::sync::Arc::new(MemoryWarmStore::default());
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .warm_store(store.clone())
+            .build();
+
+        assert!(
+            !futures::executor::block_on(provider.persist(GENESIS)).expect("no snapshot attempted"),
+            "a chain that was never connected has nothing to persist"
+        );
+        assert!(
+            store.stored.lock().expect("test store").is_empty(),
+            "nothing is written for a chain that was never connected"
+        );
+    }
+
+    /// A remote node has no local database, so connecting to one does not make
+    /// the chain eligible for a snapshot.
+    #[cfg(all(feature = "smoldot", feature = "ws"))]
+    #[test]
+    fn a_remote_node_connect_is_not_recorded_as_warm_startable() {
+        const GENESIS: [u8; 32] = [8; 32];
+        let url = url::Url::parse("ws://node.example").expect("static URL parses");
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::rpc_node(url.clone()))
+            .build();
+
+        provider.mark_light_connect(GENESIS, &ChainSource::rpc_node(url));
+        assert!(!provider.is_connected(GENESIS));
     }
 
     /// Without a store, warm start is simply off rather than an error.

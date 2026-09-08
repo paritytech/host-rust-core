@@ -251,6 +251,11 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for NativeWarmStoreError {
 /// stored yet", and lets the next [`persist`](ChainProvider::persist) overwrite
 /// good state.
 ///
+/// A loaded blob is trusted input: it becomes the finalized state the light
+/// client resumes from, so whatever can write to the store can steer the
+/// client's view of the chain. Keep it no more writable than the source the
+/// chain specification came from.
+///
 /// Both methods are awaited on the thread the caller drives the returned future
 /// on, which is never guaranteed to be the main thread. An implementation must
 /// not require one: no `@MainActor` on the Swift side, no `Dispatchers.Main` on

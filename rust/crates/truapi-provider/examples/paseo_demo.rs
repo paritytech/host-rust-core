@@ -32,7 +32,7 @@ mod imp {
     use futures::stream::{BoxStream, StreamExt};
     use serde_json::{Value, json};
     use truapi_platform::ChainProvider;
-    use truapi_provider::{ChainSource, EmbeddedChainProvider};
+    use truapi_provider::{ChainSource, EmbeddedChainProvider, FileWarmStore};
 
     /// Paseo relay-chain genesis hash.
     const PASEO_GENESIS_HEX: &str =
@@ -65,9 +65,31 @@ mod imp {
         };
 
         let genesis = parse_genesis(PASEO_GENESIS_HEX);
+        // Blobs are kept beside the example rather than in a temp directory, so
+        // a second run of the light leg actually has one to resume from.
+        let warm_directory = std::env::current_dir()
+            .expect("the working directory must be readable")
+            .join(".paseo-demo-warm-start");
+        let store = FileWarmStore::new(&warm_directory).expect("the warm-start directory opens");
         let provider = EmbeddedChainProvider::builder()
             .chain(genesis, source)
+            .warm_store(std::sync::Arc::new(store))
             .build();
+
+        // Before connecting: smoldot only consumes a blob on a chain's first
+        // add, so a later read could not take effect.
+        let warm = provider
+            .warm_up(genesis)
+            .await
+            .expect("reading the warm-start store must succeed");
+        println!(
+            "[{mode}] warm start: {}",
+            if warm {
+                "resuming from stored finalized state"
+            } else {
+                "nothing stored yet, syncing from the checkpoint"
+            }
+        );
 
         let started = Instant::now();
         let connection = provider
@@ -197,6 +219,20 @@ mod imp {
             .to_string(),
         );
         connection.close();
+
+        // While the process is still alive and the chain is still up: a chain
+        // that has finalized nothing yet stores nothing rather than replacing
+        // good state, and a remote node has no local database to offer.
+        match provider.persist(genesis).await {
+            Ok(true) => println!(
+                "[{mode}] stored finalized state in {}",
+                warm_directory.display()
+            ),
+            Ok(false) => println!("[{mode}] nothing worth storing yet"),
+            Err(error) => {
+                eprintln!("[{mode}] could not store finalized state: {}", error.reason)
+            }
+        }
     }
 
     fn usage() -> ! {

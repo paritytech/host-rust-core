@@ -47,6 +47,11 @@ impl From<WarmStoreError> for truapi::latest::GenericError {
 /// A store that cannot answer must return `Err`, never `Ok(None)`: an empty
 /// read is taken as "nothing stored yet" and lets a later
 /// [`persist`](crate::EmbeddedChainProvider::persist) overwrite good state.
+///
+/// A loaded blob is trusted input: it goes to the light client as the finalized
+/// state to resume from, so whatever can write to the store can steer the
+/// client's view of the chain. Keep the store no more writable than the source
+/// the chain specification itself came from.
 #[truapi_platform::async_trait]
 pub trait WarmStore: Send + Sync {
     /// Read the blob stored for `genesis_hash`, if any.

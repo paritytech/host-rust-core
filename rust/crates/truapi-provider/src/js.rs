@@ -114,6 +114,11 @@ impl ChainProviderBuilder {
     /// A store that cannot answer must reject rather than resolve empty: an
     /// empty read is taken as nothing stored yet, and would let a later
     /// [`persist`](ChainProviderHandle::persist) overwrite good state.
+    ///
+    /// A loaded blob is trusted input: it becomes the finalized state the light
+    /// client resumes from, so whatever can write to the store can steer the
+    /// client's view of the chain. Origin-scoped storage such as IndexedDB
+    /// satisfies that; a store fed by another page or a server does not.
     #[cfg(feature = "smoldot")]
     #[wasm_bindgen(js_name = setWarmStore)]
     pub fn set_warm_store(&mut self, store: JsValue) -> Result<(), JsError> {

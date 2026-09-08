@@ -43,7 +43,11 @@ export interface WarmStore {
   /** Replace the blob stored for the `0x`-prefixed genesis hash. */
   save(genesisHashHex: string, blob: string): Promise<void>;
 
-  /** Drop the open database connection; the next call reopens it. */
+  /**
+   * Drop the open database connection. The next `load` or `save` reopens it,
+   * so this is not a teardown the provider needs: reach for it when the page
+   * is done with the store, or to let another tab's upgrade proceed.
+   */
   close(): void;
 }
 
