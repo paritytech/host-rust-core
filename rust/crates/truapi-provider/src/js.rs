@@ -33,6 +33,14 @@ use wasm_bindgen::prelude::*;
 use crate::config::ChainSource;
 use crate::provider::{EmbeddedChainProvider, EmbeddedChainProviderBuilder};
 
+/// Lock a mutex, recovering the guard if a previous holder panicked.
+#[cfg(feature = "smoldot")]
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Route the embedded provider's (and smoldot's) `tracing` output to the
 /// browser console at `level` (`error`|`warn`|`info`|`debug`|`trace`; anything
 /// else disables it). Installs the console subscriber on the first call and is
@@ -137,11 +145,14 @@ impl ChainProviderBuilder {
     #[cfg(feature = "smoldot")]
     #[wasm_bindgen(js_name = setWarmStore)]
     pub fn set_warm_store(&mut self, store: JsValue) -> Result<(), JsError> {
-        self.warm_store_chosen = true;
         if store.is_null() || store.is_undefined() {
+            self.warm_store_chosen = true;
             return Ok(());
         }
+        // After the store is built: a malformed object leaves the default in
+        // place rather than silently turning warm start off.
         let store = JsWarmStore::new(store)?;
+        self.warm_store_chosen = true;
         let builder = self
             .inner
             .take()
@@ -209,9 +220,22 @@ impl Default for ChainProviderBuilder {
 #[cfg(feature = "smoldot")]
 const FIRST_SNAPSHOT_DELAY: core::time::Duration = core::time::Duration::from_secs(30);
 
-/// Gap between snapshots after the first.
+/// Gap between the first snapshots. Doubles up to [`SNAPSHOT_INTERVAL_MAX`],
+/// because a chain's finalized state stops being newsworthy long before the
+/// snapshot stops costing a round trip and a multi-megabyte write.
 #[cfg(feature = "smoldot")]
 const SNAPSHOT_INTERVAL: core::time::Duration = core::time::Duration::from_secs(60);
+
+/// Longest gap the backoff reaches.
+#[cfg(feature = "smoldot")]
+const SNAPSHOT_INTERVAL_MAX: core::time::Duration = core::time::Duration::from_secs(600);
+
+/// How long the warm store gets to answer before a chain gives up and syncs
+/// from the chain-spec checkpoint. A host-supplied store is arbitrary JS whose
+/// promise may never settle, and warm start must not be able to wedge a
+/// connection that would otherwise work.
+#[cfg(feature = "smoldot")]
+const WARM_STORE_DEADLINE: core::time::Duration = core::time::Duration::from_secs(5);
 
 /// A built provider; hand out one per page/worker.
 #[wasm_bindgen]
@@ -235,20 +259,15 @@ impl ChainProviderHandle {
         if !self.inner.has_warm_store() {
             return;
         }
-        {
-            let mut persisting = self
-                .persisting
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !persisting.insert(genesis) {
-                return;
-            }
+        if !lock(&self.persisting).insert(genesis) {
+            return;
         }
 
         let provider = Arc::downgrade(&self.inner);
         let persisting = Arc::clone(&self.persisting);
         wasm_bindgen_futures::spawn_local(async move {
             futures_timer::Delay::new(FIRST_SNAPSHOT_DELAY).await;
+            let mut interval = SNAPSHOT_INTERVAL;
             loop {
                 let Some(strong) = provider.upgrade() else {
                     break;
@@ -268,12 +287,17 @@ impl ChainProviderHandle {
                 // Before the wait, so an idle loop does not keep the provider
                 // alive after JS has let go of it.
                 drop(strong);
-                futures_timer::Delay::new(SNAPSHOT_INTERVAL).await;
+                // Freed before the wait, so a reconnect arriving mid-sleep can
+                // start a fresh loop rather than finding the slot still taken.
+                lock(&persisting).remove(&genesis);
+                futures_timer::Delay::new(interval).await;
+                interval = (interval * 2).min(SNAPSHOT_INTERVAL_MAX);
+                if !lock(&persisting).insert(genesis) {
+                    // Something else took the chain over while this loop slept.
+                    return;
+                }
             }
-            persisting
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&genesis);
+            lock(&persisting).remove(&genesis);
         });
     }
 }
@@ -289,14 +313,22 @@ impl ChainProviderHandle {
         // A host that turned warm start off is not asked at all, and neither is
         // a chain that is already up, whose blob smoldot would discard anyway.
         #[cfg(feature = "smoldot")]
-        if self.inner.has_warm_store()
-            && !self.inner.is_connected(genesis)
-            && let Err(error) = self.inner.warm_up(genesis).await
-        {
-            tracing::warn!(
-                reason = %error.reason,
-                "warm store unavailable; syncing from the chain-spec checkpoint"
-            );
+        if self.inner.has_warm_store() && !self.inner.is_connected(genesis) {
+            let deadline = futures_timer::Delay::new(WARM_STORE_DEADLINE);
+            futures::pin_mut!(deadline);
+            match futures::future::select(core::pin::pin!(self.inner.warm_up(genesis)), deadline)
+                .await
+            {
+                futures::future::Either::Left((Err(error), _)) => tracing::warn!(
+                    reason = %error.reason,
+                    "warm store unavailable; syncing from the chain-spec checkpoint"
+                ),
+                futures::future::Either::Left((Ok(_), _)) => {}
+                futures::future::Either::Right(((), _)) => tracing::warn!(
+                    "warm store did not answer in {}s; syncing from the chain-spec checkpoint",
+                    WARM_STORE_DEADLINE.as_secs()
+                ),
+            }
         }
         let connection = self
             .inner
@@ -441,7 +473,7 @@ impl NetworkChains {
 }
 
 #[cfg(any(feature = "networks", feature = "smoldot"))]
-fn hex0x(bytes: &[u8; 32]) -> String {
+pub(crate) fn hex0x(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 

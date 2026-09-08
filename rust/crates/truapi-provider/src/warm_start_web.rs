@@ -36,12 +36,31 @@ pub(crate) struct IndexedDbWarmStore;
 
 /// Key a chain's blob is stored under.
 fn storage_key(genesis_hash: [u8; 32]) -> String {
-    format!("0x{}", hex::encode(genesis_hash))
+    crate::js::hex0x(&genesis_hash)
 }
 
 /// Render a JS error value for a message.
+///
+/// Every failure here arrives as a `DOMException`, which is an object rather
+/// than a string, so its `name` and `message` are read off it directly. Losing
+/// them would hide the one failure an 8 MB write will really produce,
+/// `QuotaExceededError`, and Safari's private-browsing block with it.
 fn describe(error: &JsValue, fallback: &str) -> WarmStoreError {
-    WarmStoreError::new(error.as_string().unwrap_or_else(|| fallback.to_owned()))
+    let field = |name: &str| {
+        js_sys::Reflect::get(error, &JsValue::from_str(name))
+            .ok()
+            .and_then(|value| value.as_string())
+            .filter(|value| !value.is_empty())
+    };
+    let detail = match (field("name"), field("message")) {
+        (Some(name), Some(message)) => Some(format!("{name}: {message}")),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => error.as_string(),
+    };
+    match detail {
+        Some(detail) => WarmStoreError::new(format!("{fallback}: {detail}")),
+        None => WarmStoreError::new(fallback),
+    }
 }
 
 /// The environment's IndexedDB, in a page or a worker alike.
@@ -67,6 +86,51 @@ fn on_event_loop<T: Send + 'static>(
         let _ = sender.send(work.await);
     });
     receiver
+}
+
+/// Await an IndexedDB transaction's commit, which is the durable signal. A
+/// request succeeds before its transaction commits, so reporting on the request
+/// alone would call an aborted write a stored blob.
+async fn await_commit(
+    transaction: web_sys::IdbTransaction,
+    failure: &'static str,
+) -> Result<(), WarmStoreError> {
+    let (sender, receiver) = oneshot::channel();
+    let sender = Rc::new(RefCell::new(Some(sender)));
+
+    let on_complete = {
+        let sender = Rc::clone(&sender);
+        Closure::once(move |_event: web_sys::Event| {
+            if let Some(sender) = sender.borrow_mut().take() {
+                let _ = sender.send(Ok(()));
+            }
+        })
+    };
+    let on_error = {
+        let sender = Rc::clone(&sender);
+        Closure::once(move |_event: web_sys::Event| {
+            if let Some(sender) = sender.borrow_mut().take() {
+                let _ = sender.send(Err(WarmStoreError::new(failure)));
+            }
+        })
+    };
+    let on_abort = {
+        let sender = Rc::clone(&sender);
+        Closure::once(move |_event: web_sys::Event| {
+            if let Some(sender) = sender.borrow_mut().take() {
+                let _ = sender.send(Err(WarmStoreError::new(failure)));
+            }
+        })
+    };
+    transaction.set_oncomplete(Some(on_complete.as_ref().unchecked_ref()));
+    transaction.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    transaction.set_onabort(Some(on_abort.as_ref().unchecked_ref()));
+
+    let outcome = receiver.await;
+    drop(on_complete);
+    drop(on_error);
+    drop(on_abort);
+    outcome.map_err(|_| lost())?
 }
 
 /// Await one IndexedDB request, keeping its handlers alive until it settles.
@@ -171,39 +235,63 @@ fn lost() -> WarmStoreError {
 async fn load_blob(genesis_hash: [u8; 32]) -> Result<Option<String>, WarmStoreError> {
     let key = storage_key(genesis_hash);
     let database = open().await?;
+    let outcome = read(&database, &key).await;
+    // Closed on every path, so a failed read leaks no handle.
+    database.close();
+    outcome
+}
+
+/// Read one chain's blob out of an open database.
+async fn read(database: &IdbDatabase, key: &str) -> Result<Option<String>, WarmStoreError> {
+    const FAILURE: &str = "could not read the browser database";
     let request = {
         let store = database
             .transaction_with_str_and_mode(OBJECT_STORE, IdbTransactionMode::Readonly)
             .and_then(|transaction| transaction.object_store(OBJECT_STORE))
-            .map_err(|error| describe(&error, "could not read the browser database"))?;
+            .map_err(|error| describe(&error, FAILURE))?;
         store
-            .get(&JsValue::from_str(&key))
-            .map_err(|error| describe(&error, "could not read the browser database"))?
+            .get(&JsValue::from_str(key))
+            .map_err(|error| describe(&error, FAILURE))?
     };
-    let blob = await_request(request, "could not read the browser database", |request| {
+    await_request(request, FAILURE, |request| {
         Ok(request.result().ok().and_then(|value| value.as_string()))
     })
-    .await?;
-    database.close();
-    Ok(blob)
+    .await
 }
 
 /// Write one chain's blob, entirely on the JS event loop.
 async fn save_blob(genesis_hash: [u8; 32], blob: String) -> Result<(), WarmStoreError> {
     let key = storage_key(genesis_hash);
     let database = open().await?;
-    let request = {
-        let store = database
-            .transaction_with_str_and_mode(OBJECT_STORE, IdbTransactionMode::Readwrite)
-            .and_then(|transaction| transaction.object_store(OBJECT_STORE))
-            .map_err(|error| describe(&error, "could not write the browser database"))?;
-        store
-            .put_with_key(&JsValue::from_str(&blob), &JsValue::from_str(&key))
-            .map_err(|error| describe(&error, "could not write the browser database"))?
-    };
-    await_request(request, "could not write the browser database", |_| Ok(())).await?;
+    let outcome = write(&database, &key, blob).await;
+    // Closed on every path: a `?` return would otherwise leak a handle, once
+    // per snapshot.
     database.close();
-    Ok(())
+    outcome
+}
+
+/// Put the blob and wait for its transaction to commit.
+async fn write(database: &IdbDatabase, key: &str, blob: String) -> Result<(), WarmStoreError> {
+    const FAILURE: &str = "could not write the browser database";
+    let transaction = database
+        .transaction_with_str_and_mode(OBJECT_STORE, IdbTransactionMode::Readwrite)
+        .map_err(|error| describe(&error, FAILURE))?;
+    {
+        let store = transaction
+            .object_store(OBJECT_STORE)
+            .map_err(|error| describe(&error, FAILURE))?;
+        let value = JsValue::from_str(&blob);
+        // `put` structured-clones the value, so the Rust copy is dead here and
+        // megabytes need not sit in the future's state across the await below.
+        drop(blob);
+        store
+            .put_with_key(&value, &JsValue::from_str(key))
+            .map_err(|error| describe(&error, FAILURE))?;
+    }
+    // The commit, not the request: a request succeeds inside its transaction,
+    // so a transaction that aborts afterwards would be reported as a stored
+    // blob, and the next snapshot would decline to replace it.
+    await_commit(transaction, FAILURE).await
 }
 
 #[cfg(test)]

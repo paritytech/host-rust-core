@@ -10,12 +10,6 @@
 //! background thread pumps the response stream and invokes it until the
 //! connection closes.
 //!
-//! Warm start is opt-in through the [`ChainProvider::with_warm_store`] and
-//! [`ChainProvider::with_file_warm_store`] constructors, and driven by the
-//! awaited [`warm_up`](ChainProvider::warm_up) and
-//! [`persist`](ChainProvider::persist) methods rather than by `connect`, which
-//! blocks its calling thread and would deadlock a store awaited underneath it.
-//!
 //! The `tracing` calls in this module are not observable here. `tracing-subscriber`
 //! is pulled in by the `js` feature alone and `mod logging` is `wasm32`-only, so a
 //! build with `--features uniffi` has no way to install a subscriber and every

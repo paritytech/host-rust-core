@@ -118,15 +118,21 @@ const MAX_UNDELIVERED_FRAMES: usize = 1024;
 
 struct LightInner {
     client: Client<Platform, ()>,
-    /// Relay chains added implicitly to sync parachain connections, refcounted
-    /// by the live parachain connections that named them. A relay is removed
-    /// from the client when its last such connection closes.
-    relays: HashMap<[u8; 32], RelayEntry>,
+    /// Every chain this client is running, refcounted by what holds it: one
+    /// reference per connection, plus one per parachain connection that named
+    /// it as a relay. This is the answer to "is smoldot running this chain",
+    /// which is what decides whether a stored blob can still be consumed and
+    /// whether there is anything to snapshot.
+    added: HashMap<[u8; 32], AddedChain>,
 }
 
-/// A shared implicit relay chain and how many live parachain connections use it.
-struct RelayEntry {
-    chain_id: ChainId,
+/// A chain the client is running and how many things hold it.
+struct AddedChain {
+    /// Set for a relay this crate added behind a parachain, which no connection
+    /// owns and so must be removed here when the last holder goes. A chain that
+    /// only ever had connections leaves this `None`: each connection removes the
+    /// chain it added itself.
+    implicit_id: Option<ChainId>,
     refcount: usize,
 }
 
@@ -146,7 +152,7 @@ impl LightState {
         self.inner.get_or_init(|| {
             Arc::new(Mutex::new(LightInner {
                 client: Client::new(new_platform()),
-                relays: HashMap::new(),
+                added: HashMap::new(),
             }))
         })
     }
@@ -154,7 +160,23 @@ impl LightState {
     /// Number of implicit relay chains currently held.
     #[cfg(test)]
     pub(crate) fn relay_count(&self) -> usize {
-        lock(self.inner()).relays.len()
+        lock(self.inner())
+            .added
+            .values()
+            .filter(|chain| chain.implicit_id.is_some())
+            .count()
+    }
+
+    /// Whether the client is running the chain with this genesis hash, whether
+    /// a connection asked for it or a parachain brought it up as its relay.
+    ///
+    /// Answered from the client's own bookkeeping rather than from a count of
+    /// handed-out connections, because a relay behind a parachain has no
+    /// connection and is exactly the chain warm start most needs to cover.
+    pub(crate) fn is_added(&self, genesis_hash: [u8; 32]) -> bool {
+        self.inner
+            .get()
+            .is_some_and(|inner| lock(inner).added.contains_key(&genesis_hash))
     }
 
     /// Add `source` to the shared client as a [`JsonRpcConnection`]. For a
@@ -164,6 +186,7 @@ impl LightState {
     /// is reachable on native targets.
     pub(crate) async fn connect(
         &self,
+        genesis_hash: [u8; 32],
         source: &ChainSource,
         relay: Option<([u8; 32], ChainSource)>,
     ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
@@ -219,11 +242,22 @@ impl LightState {
             Ok(success) => success,
             Err(error) => {
                 if let Some(genesis) = relay_genesis {
-                    release_relay(&mut guard, genesis);
+                    release_chain(&mut guard, genesis);
                 }
                 return Err(error);
             }
         };
+
+        // Counted only once the add succeeded, so a failed connect leaves no
+        // chain behind that `is_added` would report as running.
+        guard
+            .added
+            .entry(genesis_hash)
+            .or_insert(AddedChain {
+                implicit_id: None,
+                refcount: 0,
+            })
+            .refcount += 1;
 
         let responses = success
             .json_rpc_responses
@@ -239,6 +273,7 @@ impl LightState {
         Ok(Box::new(LightConnection {
             inner,
             chain_id: success.chain_id,
+            genesis_hash,
             relay: relay_genesis,
             errors_tx: Mutex::new(errors_tx),
             responses: Mutex::new(Some((responses, errors_rx))),
@@ -259,9 +294,14 @@ fn add_relay(
     relay_genesis: [u8; 32],
     relay_source: &ChainSource,
 ) -> Result<ChainId, ProviderError> {
-    if let Some(existing) = guard.relays.get_mut(&relay_genesis) {
+    // Only an implicit add can be handed to a parachain: a direct connection to
+    // the same genesis is its own chain, and removing it would strand the
+    // parachain that borrowed its id.
+    if let Some(existing) = guard.added.get_mut(&relay_genesis)
+        && let Some(chain_id) = existing.implicit_id
+    {
         existing.refcount += 1;
-        return Ok(existing.chain_id);
+        return Ok(chain_id);
     }
 
     // `ChainSource` collapses to a single variant when only the smoldot backend
@@ -294,13 +334,12 @@ fn add_relay(
             reason: err.to_string(),
         })?;
 
-    guard.relays.insert(
-        relay_genesis,
-        RelayEntry {
-            chain_id: success.chain_id,
-            refcount: 1,
-        },
-    );
+    let entry = guard.added.entry(relay_genesis).or_insert(AddedChain {
+        implicit_id: None,
+        refcount: 0,
+    });
+    entry.implicit_id = Some(success.chain_id);
+    entry.refcount += 1;
     Ok(success.chain_id)
 }
 
@@ -309,16 +348,19 @@ fn add_relay(
 ///
 /// Callers must have already removed (or never added) the parachain chain that
 /// held the reference, so no live chain still depends on the relay.
-fn release_relay(guard: &mut LightInner, relay_genesis: [u8; 32]) {
-    let orphaned = match guard.relays.get_mut(&relay_genesis) {
-        Some(entry) => {
-            entry.refcount -= 1;
-            (entry.refcount == 0).then_some(entry.chain_id)
-        }
-        None => None,
+fn release_chain(guard: &mut LightInner, genesis_hash: [u8; 32]) {
+    let Some(entry) = guard.added.get_mut(&genesis_hash) else {
+        return;
     };
-    if let Some(relay_id) = orphaned {
-        guard.relays.remove(&relay_genesis);
+    entry.refcount -= 1;
+    if entry.refcount > 0 {
+        return;
+    }
+    let implicit_id = entry.implicit_id;
+    guard.added.remove(&genesis_hash);
+    // A connection removes the chain it added itself; only an implicit relay
+    // has no owner to do that for it.
+    if let Some(relay_id) = implicit_id {
         let _: () = guard.client.remove_chain(relay_id);
     }
 }
@@ -350,6 +392,9 @@ fn statement_seed() -> u128 {
 struct LightConnection {
     inner: Arc<Mutex<LightInner>>,
     chain_id: ChainId,
+    /// Genesis of the chain this connection is for; its reference is released
+    /// on close, which is what stops reporting the chain as running.
+    genesis_hash: [u8; 32],
     /// Genesis of the implicit relay this connection holds a reference on, if
     /// it is a parachain; released on close.
     relay: Option<[u8; 32]>,
@@ -455,11 +500,12 @@ impl JsonRpcConnection for LightConnection {
         // channel ends its half of the merged stream, so `responses()`
         // terminates cleanly.
         let _: () = guard.client.remove_chain(self.chain_id);
+        release_chain(&mut guard, self.genesis_hash);
 
         // This connection's own chain is already removed above, so no live chain
         // still depends on the relay it held a reference on.
         if let Some(relay_genesis) = self.relay {
-            release_relay(&mut guard, relay_genesis);
+            release_chain(&mut guard, relay_genesis);
         }
 
         lock(&self.errors_tx).close_channel();
@@ -497,6 +543,69 @@ mod tests {
         EmbeddedChainProvider::builder()
             .chain(RELAY_GENESIS, ChainSource::light_client(RELAY_SPEC).build())
             .build()
+    }
+
+    /// The blocker this file exists to prevent: a parachain's relay has no
+    /// connection of its own, so anything counting handed-out connections
+    /// cannot see it, and warm start would never store the one chain that
+    /// actually warp syncs.
+    #[test]
+    fn a_relay_behind_a_parachain_counts_as_added() {
+        let provider = EmbeddedChainProvider::builder()
+            .chain(RELAY_GENESIS, ChainSource::light_client(RELAY_SPEC).build())
+            .parachain(
+                PARACHAIN_GENESIS,
+                ChainSource::light_client(PARACHAIN_SPEC).build(),
+                RELAY_GENESIS,
+            )
+            .build();
+
+        let connection =
+            block_on(provider.connect(PARACHAIN_GENESIS)).expect("offline add_chain succeeds");
+        assert!(
+            provider.is_connected(PARACHAIN_GENESIS),
+            "the chain that was asked for is running"
+        );
+        assert!(
+            provider.is_connected(RELAY_GENESIS),
+            "so is the relay it was brought up behind, which nothing connected to"
+        );
+
+        connection.close();
+        assert!(!provider.is_connected(PARACHAIN_GENESIS));
+        assert!(
+            !provider.is_connected(RELAY_GENESIS),
+            "the relay goes when its last parachain does"
+        );
+    }
+
+    /// A chain is running only while something holds it, and a second close
+    /// must not underflow the count.
+    #[test]
+    fn a_chain_is_added_until_its_last_connection_closes() {
+        let provider = offline_provider();
+        let first = block_on(provider.connect(RELAY_GENESIS)).expect("first connect");
+        let second = block_on(provider.connect(RELAY_GENESIS)).expect("second connect");
+        assert!(provider.is_connected(RELAY_GENESIS));
+
+        first.close();
+        assert!(
+            provider.is_connected(RELAY_GENESIS),
+            "one closed connection does not stop the chain"
+        );
+
+        second.close();
+        assert!(!provider.is_connected(RELAY_GENESIS));
+        second.close();
+        assert!(!provider.is_connected(RELAY_GENESIS), "close is idempotent");
+    }
+
+    /// A chain that was never connected is not running, so there is nothing to
+    /// snapshot and a stored blob can still be consumed.
+    #[test]
+    fn an_unconnected_chain_is_not_added() {
+        let provider = offline_provider();
+        assert!(!provider.is_connected(RELAY_GENESIS));
     }
 
     #[test]

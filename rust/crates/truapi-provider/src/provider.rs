@@ -5,13 +5,21 @@
 
 use std::collections::HashMap;
 #[cfg(feature = "smoldot")]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use truapi::latest::GenericError;
 use truapi_platform::{ChainProvider, JsonRpcConnection};
 
 use crate::config::ChainSource;
 use crate::error::ProviderError;
+
+/// Lock a mutex, recovering the guard if a previous holder panicked.
+#[cfg(feature = "smoldot")]
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Builder collecting genesis-hash to [`ChainSource`] registrations.
 #[derive(Default)]
@@ -105,8 +113,6 @@ impl EmbeddedChainProviderBuilder {
             #[cfg(feature = "smoldot")]
             warm_store: self.warm_store,
             #[cfg(feature = "smoldot")]
-            live: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(feature = "smoldot")]
             light: crate::light::LightState::new(),
         }
     }
@@ -138,12 +144,6 @@ pub struct EmbeddedChainProvider {
     seeded_databases: Mutex<HashMap<[u8; 32], String>>,
     #[cfg(feature = "smoldot")]
     warm_store: Option<crate::warm_start::SharedWarmStore>,
-    /// Open light-client connections per chain. A chain drops out of the map
-    /// when its last connection closes, which is also when smoldot drops the
-    /// running chain, so this answers "is this chain up right now" rather than
-    /// "was it ever up".
-    #[cfg(feature = "smoldot")]
-    live: Arc<Mutex<HashMap<[u8; 32], usize>>>,
     #[cfg(feature = "smoldot")]
     light: crate::light::LightState,
 }
@@ -163,6 +163,7 @@ impl EmbeddedChainProvider {
     #[cfg_attr(not(feature = "smoldot"), allow(unused_variables))]
     async fn connect_source(
         &self,
+        genesis_hash: [u8; 32],
         source: &ChainSource,
         chains: &HashMap<[u8; 32], ChainSource>,
         relay: Option<[u8; 32]>,
@@ -176,7 +177,7 @@ impl EmbeddedChainProvider {
                     None => None,
                     Some(relay_genesis) => Some(self.resolve_relay(chains, relay_genesis)?),
                 };
-                self.light.connect(source, relay).await
+                self.light.connect(genesis_hash, source, relay).await
             }
         }
     }
@@ -204,17 +205,16 @@ impl EmbeddedChainProvider {
     /// `genesis_hash` and the source is a light client with no explicit blob.
     #[cfg(feature = "smoldot")]
     fn with_seeded_database(&self, genesis_hash: [u8; 32], mut source: ChainSource) -> ChainSource {
-        let seeded_databases = self
-            .seeded_databases
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(blob) = seeded_databases.get(&genesis_hash)
-            && let ChainSource::LightClient {
-                database_content, ..
-            } = &mut source
+        // Taken, not cloned: a chain consumes a blob only on its first add, so
+        // keeping it would retain megabytes for the life of the provider and
+        // make every later connect re-clone a string smoldot then discards.
+        if let ChainSource::LightClient {
+            database_content, ..
+        } = &mut source
             && database_content.is_none()
+            && let Some(blob) = lock(&self.seeded_databases).remove(&genesis_hash)
         {
-            *database_content = Some(blob.clone());
+            *database_content = Some(blob);
         }
         source
     }
@@ -222,61 +222,6 @@ impl EmbeddedChainProvider {
     #[cfg(not(feature = "smoldot"))]
     fn with_seeded_database(&self, _genesis_hash: [u8; 32], source: ChainSource) -> ChainSource {
         source
-    }
-}
-
-/// A connection that stops counting towards its chain's liveness once closed.
-#[cfg(feature = "smoldot")]
-struct TrackedConnection {
-    inner: Box<dyn JsonRpcConnection>,
-    live: Arc<Mutex<HashMap<[u8; 32], usize>>>,
-    genesis_hash: [u8; 32],
-    released: core::sync::atomic::AtomicBool,
-}
-
-#[cfg(feature = "smoldot")]
-impl TrackedConnection {
-    /// Drop this connection's claim on the chain, once.
-    fn release(&self) {
-        if self
-            .released
-            .swap(true, core::sync::atomic::Ordering::SeqCst)
-        {
-            return;
-        }
-        let mut live = self
-            .live
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(count) = live.get_mut(&self.genesis_hash) {
-            *count -= 1;
-            if *count == 0 {
-                live.remove(&self.genesis_hash);
-            }
-        }
-    }
-}
-
-#[cfg(feature = "smoldot")]
-impl JsonRpcConnection for TrackedConnection {
-    fn send(&self, request: String) {
-        self.inner.send(request);
-    }
-
-    fn responses(&self) -> futures::stream::BoxStream<'static, String> {
-        self.inner.responses()
-    }
-
-    fn close(&self) {
-        self.inner.close();
-        self.release();
-    }
-}
-
-#[cfg(feature = "smoldot")]
-impl Drop for TrackedConnection {
-    fn drop(&mut self) {
-        self.release();
     }
 }
 
@@ -307,13 +252,10 @@ impl EmbeddedChainProvider {
         })
     }
 
-    /// Whether a light-client connection to `genesis_hash` is open right now.
-    pub fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
-        self.live
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&genesis_hash)
-            .is_some_and(|count| *count > 0)
+    /// Whether the embedded client is running this chain right now, whether a
+    /// connection asked for it or a parachain brought it up as its relay.
+    pub(crate) fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
+        self.light.is_added(genesis_hash)
     }
 
     /// The relay `genesis_hash` syncs through, from the registry or the
@@ -330,37 +272,9 @@ impl EmbeddedChainProvider {
         None
     }
 
-    /// Count a light-client connection and hand back a connection that
-    /// discounts itself when it closes.
-    fn track(
-        &self,
-        genesis_hash: [u8; 32],
-        source: &ChainSource,
-        connection: Box<dyn JsonRpcConnection>,
-    ) -> Box<dyn JsonRpcConnection> {
-        if !matches!(source, ChainSource::LightClient { .. }) {
-            return connection;
-        }
-        *self
-            .live
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(genesis_hash)
-            .or_insert(0) += 1;
-        Box::new(TrackedConnection {
-            inner: connection,
-            live: Arc::clone(&self.live),
-            genesis_hash,
-            released: core::sync::atomic::AtomicBool::new(false),
-        })
-    }
-
     /// Whether a blob is already in hand for `genesis_hash`.
     fn has_database(&self, genesis_hash: [u8; 32]) -> bool {
-        self.seeded_databases
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&genesis_hash)
+        lock(&self.seeded_databases).contains_key(&genesis_hash)
     }
 
     /// Read `genesis_hash`'s stored blob into this provider, so the next
@@ -389,11 +303,7 @@ impl EmbeddedChainProvider {
             && let Some(store) = self.warm_store.clone()
             && let Some(blob) = store.load(relay).await?
         {
-            self.seeded_databases
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(relay)
-                .or_insert(blob);
+            lock(&self.seeded_databases).entry(relay).or_insert(blob);
         }
         if self.is_connected(genesis_hash) {
             // smoldot keys a chain by its genesis hash and discards the blob on
@@ -412,9 +322,7 @@ impl EmbeddedChainProvider {
         let Some(blob) = store.load(genesis_hash).await? else {
             return Ok(false);
         };
-        self.seeded_databases
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.seeded_databases)
             .entry(genesis_hash)
             .or_insert(blob);
         Ok(true)
@@ -553,10 +461,9 @@ impl ChainProvider for EmbeddedChainProvider {
             let relay = self.relays.get(&genesis_hash).copied();
             #[cfg(not(feature = "smoldot"))]
             let relay = None;
-            let connection = self.connect_source(&source, &self.chains, relay).await?;
-            #[cfg(feature = "smoldot")]
-            let connection = self.track(genesis_hash, &source, connection);
-            return Ok(connection);
+            return Ok(self
+                .connect_source(genesis_hash, &source, &self.chains, relay)
+                .await?);
         }
         #[cfg(feature = "networks")]
         if let Some((catalog, relay)) = crate::networks::catalog_network_chains(genesis_hash) {
@@ -568,9 +475,9 @@ impl ChainProvider for EmbeddedChainProvider {
                 .expect("catalog_network_chains includes the queried genesis")
                 .clone();
             let source = self.with_seeded_database(genesis_hash, source);
-            let connection = self.connect_source(&source, &catalog, relay).await?;
-            let connection = self.track(genesis_hash, &source, connection);
-            return Ok(connection);
+            return Ok(self
+                .connect_source(genesis_hash, &source, &catalog, relay)
+                .await?);
         }
         Err(ProviderError::UnknownGenesis {
             genesis: genesis_hash,
@@ -582,8 +489,6 @@ impl ChainProvider for EmbeddedChainProvider {
 #[cfg(test)]
 mod tests {
     use truapi_platform::ChainProvider;
-
-    use truapi_platform::JsonRpcConnection;
 
     use super::EmbeddedChainProvider;
     use crate::config::ChainSource;
@@ -649,25 +554,6 @@ mod tests {
             .expect("a chain seeded with its own snapshot connects");
     }
 
-    /// A connection that answers nothing, for tests that only care about the
-    /// bookkeeping around one.
-    #[cfg(feature = "smoldot")]
-    struct OfflineConnection;
-
-    #[cfg(feature = "smoldot")]
-    impl JsonRpcConnection for OfflineConnection {
-        fn send(&self, _request: String) {}
-        fn responses(&self) -> futures::stream::BoxStream<'static, String> {
-            Box::pin(futures::stream::empty())
-        }
-        fn close(&self) {}
-    }
-
-    #[cfg(feature = "smoldot")]
-    fn offline_connection() -> Box<dyn JsonRpcConnection> {
-        Box::new(OfflineConnection)
-    }
-
     /// A store answering from memory, recording what it was asked to keep.
     #[cfg(feature = "smoldot")]
     #[derive(Default)]
@@ -729,6 +615,13 @@ mod tests {
             "a stored blob is reported as in hand"
         );
 
+        futures::executor::block_on(provider.warm_up(GENESIS)).expect("the store answers");
+        assert_eq!(
+            store.loads.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a blob already in hand is not read again"
+        );
+
         let seeded =
             provider.with_seeded_database(GENESIS, ChainSource::light_client("{}").build());
         let ChainSource::LightClient {
@@ -738,12 +631,9 @@ mod tests {
             panic!("expected a LightClient source");
         };
         assert_eq!(database_content.as_deref(), Some("stored-blob"));
-
-        futures::executor::block_on(provider.warm_up(GENESIS)).expect("the store answers");
-        assert_eq!(
-            store.loads.load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "the store is read once per chain, since only the first add consumes a blob"
+        assert!(
+            !provider.has_database(GENESIS),
+            "the blob is taken by the chain that consumed it rather than retained"
         );
     }
 
@@ -773,37 +663,6 @@ mod tests {
         );
     }
 
-    /// A blob that arrives after the chain is up cannot take effect, so it is
-    /// reported rather than silently accepted.
-    #[cfg(feature = "smoldot")]
-    #[test]
-    fn warm_up_after_connecting_reports_that_the_blob_is_too_late() {
-        const GENESIS: [u8; 32] = [6; 32];
-        let store = std::sync::Arc::new(MemoryWarmStore::default());
-        store
-            .stored
-            .lock()
-            .expect("test store")
-            .insert(GENESIS, "stored-blob".to_owned());
-
-        let source = ChainSource::light_client("{}").build();
-        let provider = EmbeddedChainProvider::builder()
-            .chain(GENESIS, source.clone())
-            .warm_store(store.clone())
-            .build();
-        let _connection = provider.track(GENESIS, &source, offline_connection());
-
-        assert!(
-            !futures::executor::block_on(provider.warm_up(GENESIS)).expect("no store read"),
-            "a seed after the first connect cannot reach smoldot"
-        );
-        assert_eq!(
-            store.loads.load(std::sync::atomic::Ordering::Relaxed),
-            0,
-            "the store is not read once the blob could no longer be used"
-        );
-    }
-
     /// Persisting a chain nobody connected would start one just to snapshot it.
     #[cfg(feature = "smoldot")]
     #[test]
@@ -823,54 +682,6 @@ mod tests {
             store.stored.lock().expect("test store").is_empty(),
             "nothing is written for a chain that was never connected"
         );
-    }
-
-    /// A remote node has no local database, so connecting to one does not make
-    /// the chain eligible for a snapshot.
-    #[cfg(all(feature = "smoldot", feature = "ws"))]
-    #[test]
-    fn a_remote_node_connect_is_not_recorded_as_warm_startable() {
-        const GENESIS: [u8; 32] = [8; 32];
-        let url = url::Url::parse("ws://node.example").expect("static URL parses");
-        let provider = EmbeddedChainProvider::builder()
-            .chain(GENESIS, ChainSource::rpc_node(url.clone()))
-            .build();
-
-        let tracked = provider.track(GENESIS, &ChainSource::rpc_node(url), offline_connection());
-        assert!(!provider.is_connected(GENESIS));
-        drop(tracked);
-    }
-
-    /// Liveness follows the connections, so a chain nobody holds open is not
-    /// snapshotted and not treated as too late to seed.
-    #[cfg(feature = "smoldot")]
-    #[test]
-    fn a_chain_stops_counting_as_connected_once_its_connections_close() {
-        const GENESIS: [u8; 32] = [9; 32];
-        let source = ChainSource::light_client("{}").build();
-        let provider = EmbeddedChainProvider::builder()
-            .chain(GENESIS, source.clone())
-            .build();
-
-        let first = provider.track(GENESIS, &source, offline_connection());
-        let second = provider.track(GENESIS, &source, offline_connection());
-        assert!(provider.is_connected(GENESIS));
-
-        first.close();
-        assert!(
-            provider.is_connected(GENESIS),
-            "one closed connection does not end the chain"
-        );
-
-        second.close();
-        assert!(
-            !provider.is_connected(GENESIS),
-            "the last close ends it, which is when smoldot drops the chain too"
-        );
-
-        // Idempotent: closing again must not underflow the count.
-        second.close();
-        assert!(!provider.is_connected(GENESIS));
     }
 
     /// A provider with nowhere to keep blobs says so, rather than reporting
