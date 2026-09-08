@@ -18,7 +18,7 @@
 //! Observability: on native targets smoldot logs through the `log` crate, and
 //! `logging_native` installs a stderr sink for it when `TRUAPI_PROVIDER_LOG`
 //! names a level. With that variable unset no logger is installed, leaving a
-//! host free to route smoldot's output into its own `tracing` subscriber with a
+//! host free to route the output from smoldot into its own `tracing` subscriber with a
 //! `log`->`tracing` bridge (e.g. `tracing_log::LogTracer`).
 
 use core::num::{NonZero, NonZeroUsize};
@@ -120,9 +120,9 @@ struct LightInner {
     client: Client<Platform, ()>,
     /// Every chain this client is running, refcounted by what holds it: one
     /// reference per connection, plus one per parachain connection that named
-    /// it as a relay. This is the answer to "is smoldot running this chain",
-    /// which is what decides whether a stored blob can still be consumed and
-    /// whether there is anything to snapshot.
+    /// it as a relay. A chain is present here exactly while smoldot is running
+    /// it, which decides whether a stored blob can still be consumed and whether
+    /// there is anything to snapshot.
     added: HashMap<[u8; 32], AddedChain>,
 }
 
@@ -170,7 +170,7 @@ impl LightState {
     /// Whether the client is running the chain with this genesis hash, whether
     /// a connection asked for it or a parachain brought it up as its relay.
     ///
-    /// Answered from the client's own bookkeeping rather than from a count of
+    /// Answered from the bookkeeping the client keeps rather than from a count of
     /// handed-out connections, because a relay behind a parachain has no
     /// connection and is exactly the chain warm start most needs to cover.
     pub(crate) fn is_added(&self, genesis_hash: [u8; 32]) -> bool {
@@ -358,7 +358,7 @@ fn release_chain(guard: &mut LightInner, genesis_hash: [u8; 32]) {
     }
     let implicit_id = entry.implicit_id;
     guard.added.remove(&genesis_hash);
-    // A connection removes the chain it added itself; only an implicit relay
+    // A connection removes the chain it added itself. Only an implicit relay
     // has no owner to do that for it.
     if let Some(relay_id) = implicit_id {
         let _: () = guard.client.remove_chain(relay_id);
@@ -392,7 +392,7 @@ fn statement_seed() -> u128 {
 struct LightConnection {
     inner: Arc<Mutex<LightInner>>,
     chain_id: ChainId,
-    /// Genesis of the chain this connection is for; its reference is released
+    /// Genesis of the chain this connection is for. Its reference is released
     /// on close, which is what stops reporting the chain as running.
     genesis_hash: [u8; 32],
     /// Genesis of the implicit relay this connection holds a reference on, if
@@ -545,7 +545,7 @@ mod tests {
             .build()
     }
 
-    /// The blocker this file exists to prevent: a parachain's relay has no
+    /// The blocker this file exists to prevent. The relay under a parachain has no
     /// connection of its own, so anything counting handed-out connections
     /// cannot see it, and warm start would never store the one chain that
     /// actually warp syncs.

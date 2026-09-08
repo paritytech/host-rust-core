@@ -141,7 +141,7 @@ pub struct EmbeddedChainProvider {
     relays: HashMap<[u8; 32], [u8; 32]>,
     /// Database contents waiting to seed a chain, whether registered explicitly
     /// or read back from the warm store. Behind a lock because `load_database` fills
-    /// it after the provider is built, and only useful until a chain's first
+    /// it after the provider is built, and only useful until the first
     /// add: smoldot ignores the blob on every add after that.
     #[cfg(feature = "smoldot")]
     seeded_databases: Mutex<HashMap<[u8; 32], String>>,
@@ -737,8 +737,8 @@ mod tests {
         );
     }
 
-    /// A provider with nowhere to keep blobs says so, rather than reporting
-    /// the same "nothing stored yet" a working store reports on a cold chain.
+    /// A provider with nowhere to keep blobs says so, rather than answering the
+    /// same way a working client answers for a chain it has nothing stored for.
     #[cfg(feature = "smoldot")]
     #[test]
     fn load_database_without_storage_is_an_error_naming_what_is_missing() {

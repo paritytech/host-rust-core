@@ -47,7 +47,7 @@ pub enum ChainProviderError {
         /// Human-readable failure reason.
         reason: String,
     },
-    /// The host's storage, or the snapshot taken to feed it, failed.
+    /// Storage the host owns, or the snapshot taken to feed it, failed.
     #[error("{reason}")]
     Storage {
         /// Human-readable failure reason.

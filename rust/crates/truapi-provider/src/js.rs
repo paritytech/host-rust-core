@@ -19,9 +19,9 @@
 //! resources, matching the one-provider-per-host-process contract.
 //!
 //! Warm start is opt-in and the crate stores nothing: hand `setStorage` a client
-//! to the host's own storage and a chain's blob is read before its first connect,
-//! then written back on the provider's schedule. `saveDatabase` forces a write at
-//! a moment of the host's choosing.
+//! to storage the host owns and the blob for a chain is read before its first connect,
+//! then written back on a schedule the provider sets. `saveDatabase` forces a write at
+//! a moment the host chooses.
 
 use std::sync::Arc;
 
@@ -107,7 +107,7 @@ impl ChainProviderBuilder {
     /// database blob, so its light client resumes from that finalized state
     /// instead of syncing from the chain-spec checkpoint.
     ///
-    /// The blob is the string smoldot's `chainHead_unstable_finalizedDatabase`
+    /// The blob is the string the `chainHead_unstable_finalizedDatabase` function in smoldot
     /// produces. It seeds this run only, and beats anything
     /// [`set_storage`](Self::set_storage) would load for the same chain.
     #[cfg(feature = "smoldot")]
@@ -126,7 +126,7 @@ impl ChainProviderBuilder {
         Ok(())
     }
 
-    /// Keep database blobs in the host's own storage.
+    /// Keep database blobs in storage the host owns.
     ///
     /// The crate stores nothing itself, so without this call every chain syncs
     /// from the chain-spec checkpoint on every run. Pass a JS object with
@@ -144,8 +144,8 @@ impl ChainProviderBuilder {
     ///
     /// A loaded blob is trusted input: it becomes the finalized state the light
     /// client resumes from, so whatever can write to the store can steer the
-    /// client's view of the chain. Origin-scoped storage satisfies that; a
-    /// store fed by another page or a server does not.
+    /// view of the chain. Origin-scoped storage satisfies that. A store fed by
+    /// another page or a server does not.
     #[cfg(feature = "smoldot")]
     #[wasm_bindgen(js_name = setStorage)]
     pub fn set_storage(&mut self, client: JsValue) -> Result<(), JsError> {
@@ -210,7 +210,7 @@ impl Default for ChainProviderBuilder {
 const FIRST_SNAPSHOT_DELAY: core::time::Duration = core::time::Duration::from_secs(30);
 
 /// Gap between the first snapshots. Doubles up to [`SNAPSHOT_INTERVAL_MAX`],
-/// because a chain's finalized state stops being newsworthy long before the
+/// because the finalized state of a chain stops being newsworthy long before the
 /// snapshot stops costing a round trip and a multi-megabyte write.
 #[cfg(feature = "smoldot")]
 const SNAPSHOT_INTERVAL: core::time::Duration = core::time::Duration::from_secs(60);
@@ -343,12 +343,12 @@ impl ChainProviderHandle {
         })
     }
 
-    /// Read the warm store's blob for the `0x`-prefixed genesis hash into this
+    /// Read the stored blob for the `0x`-prefixed genesis hash into this
     /// provider, so the next [`connect`](ChainProviderHandle::connect) to that
     /// chain resumes from it. Resolves with whether a blob is now in hand.
     ///
     /// Call this before connecting. The store is read at most once per chain,
-    /// because only a chain's first add consumes a blob.
+    /// because only the first add of a chain consumes a blob.
     #[cfg(feature = "smoldot")]
     #[wasm_bindgen(js_name = loadDatabase)]
     pub async fn load_database(&self, genesis_hash: &str) -> Result<bool, JsError> {
@@ -359,13 +359,13 @@ impl ChainProviderHandle {
             .map_err(|err| JsError::new(&err.reason))
     }
 
-    /// Snapshot the chain's finalized state and write it to the warm store.
+    /// Snapshot the finalized state of the chain and write it to the warm store.
     /// Resolves with whether a blob was stored.
     ///
     /// A chain that has finalized nothing yet is skipped rather than stored,
     /// since that blob would be discarded on the next run. This is a full round
     /// trip against the light client, so drive it while the page or worker is
-    /// alive; neither `pagehide` nor a hidden tab is guaranteed to stay
+    /// alive. Neither `pagehide` nor a hidden tab is guaranteed to stay
     /// scheduled long enough to finish one, and a Worker sees neither event.
     #[cfg(feature = "smoldot")]
     pub async fn save_database(&self, genesis_hash: &str) -> Result<bool, JsError> {
@@ -396,7 +396,7 @@ impl Connection {
     ///
     /// Calling this in a loop is not optional: it is the only thing that drains
     /// the connection. Frames queue until they are taken, and once the backlog
-    /// reaches the connection's budget further [`send`](Connection::send) calls
+    /// reaches the budget for the connection further [`send`](Connection::send) calls
     /// come back as JSON-RPC errors instead of being queued, so a caller that
     /// sends without reading eventually gets nothing but errors.
     #[wasm_bindgen(js_name = nextResponse)]
@@ -457,13 +457,13 @@ pub(crate) fn hex0x(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-/// A [`StorageClient`](crate::storage::StorageClient) over a JS object's `load` and
+/// A [`StorageClient`](crate::storage::StorageClient) over the `load` and
 /// `save` methods.
 ///
 /// The JS values are held in a `SendWrapper` because the trait is `Send`, and
 /// every call crosses back to Rust through a oneshot channel rather than
 /// awaiting the promise in place: a `JsFuture` is not `Send` and could not be
-/// held across the trait method's await point.
+/// held across the await point in the trait method.
 #[cfg(feature = "smoldot")]
 struct HostStorageClient {
     inner: send_wrapper::SendWrapper<HostStorageMethods>,
@@ -588,7 +588,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     /// A client whose `load` and `save` record what they were called with, so a
-    /// test can prove the wasm boundary actually reaches the host's object.
+    /// test can prove the wasm boundary actually reaches the object the host passed.
     fn recording_client(calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>) -> JsValue {
         let client = js_sys::Object::new();
 
@@ -631,7 +631,7 @@ mod tests {
         );
     }
 
-    /// The host's client is reached across the wasm boundary, with the genesis
+    /// The client the host passed is reached across the wasm boundary, with the genesis
     /// hash it expects.
     #[wasm_bindgen_test]
     async fn the_host_client_is_called_with_the_genesis_hash() {

@@ -9,11 +9,12 @@
 //! competes with the host for the same quota and never decides on its behalf
 //! whether the bytes are backed up or encrypted.
 //!
-//! Reads and writes are explicit — [`load_database`](crate::EmbeddedChainProvider::load_database)
-//! and [`save_database`](crate::EmbeddedChainProvider::save_database) — rather than hidden
-//! inside `connect`. Connecting is a blocking call on the native bindings, and
-//! awaiting a foreign callback underneath it would deadlock a host whose store
-//! runs on the main thread.
+//! Reads and writes are explicit, through
+//! [`load_database`](crate::EmbeddedChainProvider::load_database) and
+//! [`save_database`](crate::EmbeddedChainProvider::save_database), rather than
+//! hidden inside `connect`. Connecting is a blocking call on the native
+//! bindings. Awaiting a foreign callback underneath it would deadlock a host
+//! whose client runs on the main thread.
 
 /// Failure reported by a [`StorageClient`] implementation.
 ///
@@ -60,13 +61,13 @@ impl From<StorageClientError> for truapi::latest::GenericError {
 
 /// Where warm-start blobs are kept between runs.
 ///
-/// A store that cannot answer must return `Err`, never `Ok(None)`: an empty
-/// read is taken as "nothing stored yet" and lets a later
+/// A client that cannot answer must return `Err`, never `Ok(None)`: an empty
+/// read is taken as nothing being stored for that chain yet, and lets a later
 /// [`save_database`](crate::EmbeddedChainProvider::save_database) overwrite good state.
 ///
 /// A loaded blob is trusted input: it goes to the light client as the finalized
 /// state to resume from, so whatever can write to the store can steer the
-/// client's view of the chain. Keep the store no more writable than the source
+/// view the client has of the chain. Keep storage no more writable than the source
 /// the chain specification itself came from.
 #[cfg_attr(
     all(feature = "uniffi", not(target_arch = "wasm32")),
@@ -92,7 +93,7 @@ pub(crate) fn carries_runtime_code(blob: &str) -> bool {
     // smoldot serialises the runtime code as `runtimeCode` and omits the key
     // when it has none, and its shrink ladder drops that field first when a
     // snapshot is over the size cap. A blob without it still skips the warp
-    // sync, since the database's chain information is chosen on finalized block
+    // sync, since the chain information in the database is chosen on finalized block
     // number alone, but it costs a runtime download on the next start.
     blob.contains("\"runtimeCode\":")
 }
@@ -115,7 +116,7 @@ pub(crate) fn is_worth_storing(blob: &str, stored: Option<&str>) -> bool {
 
 pub(crate) fn carries_chain_information(blob: &str) -> bool {
     // A substring test rather than a parse: this runs on every snapshot against
-    // a blob of up to 8 MB, and smoldot's encoder omits the key entirely when
+    // a blob of up to 8 MB, and the encoder in smoldot omits the key entirely when
     // there is no chain information and writes it as an object when there is
     // (`skip_serializing_if` on `SerdeDatabase::chain`). The truncation
     // sentinels it can return instead, `"<too-large>"` and the empty string,
