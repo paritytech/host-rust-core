@@ -80,7 +80,9 @@ impl AssetHubReader {
         let labels = resolve_labels(self, &controller, account)
             .await
             .map_err(anyhow::Error::msg)?;
-        Ok(classify_labels(labels))
+        classify_labels(self, &controller, labels)
+            .await
+            .map_err(anyhow::Error::msg)
     }
 
     /// Whether the registrar would still mint `label` under the network TLD.

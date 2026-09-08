@@ -160,6 +160,24 @@ pub fn call_no_args(signature: &str) -> Vec<u8> {
     selector(signature).to_vec()
 }
 
+/// Calldata for a view function taking one `string` argument.
+pub fn call_string(signature: &str, value: &str) -> Vec<u8> {
+    let bytes = value.as_bytes();
+    let mut data = call_no_args(signature);
+    let mut word = [0u8; 32];
+    word[31] = 0x20;
+    data.extend_from_slice(&word);
+    let mut len = [0u8; 32];
+    len[24..].copy_from_slice(&(bytes.len() as u64).to_be_bytes());
+    data.extend_from_slice(&len);
+    data.extend_from_slice(bytes);
+    data.extend(std::iter::repeat_n(
+        0u8,
+        bytes.len().div_ceil(32) * 32 - bytes.len(),
+    ));
+    data
+}
+
 /// Calldata for a view function taking one `address` argument.
 pub fn call_address(signature: &str, address: &[u8; 20]) -> Vec<u8> {
     let mut data = call_no_args(signature);
@@ -441,66 +459,62 @@ pub struct DotnsIdentity {
 
 /// Classifies bare contract labels into lite and full usernames.
 ///
-/// A lite username is recognised in both spellings the contracts have used.
-/// Deployments to date flatten `stem.NN` into `stemNN` before minting
-/// (`DotnsPopController._reserveLite` strips the dot), so a flat label whose
-/// last two characters are digits after a DNS-label stem is read back as a
-/// lite username and re-dotted (`alice01` → `alice.01`). Deployments that
-/// store the dotted form keep it verbatim: a label matching
-/// [`is_dotted_lite_username`] (`alice.42`) is the lite username as stored.
-/// Every other canonical DNS label is a full username; anything that is not
-/// one — oversized, non-ASCII, control characters, markup, or a dotted
-/// subname — is skipped, so no unscreened contract string becomes a username.
+/// Only labels the PoP controller actually issued become usernames:
+/// `DotnsPopController.isPopIssued(label)` is the provenance authority, so a
+/// public registration, an incoming transfer, or a subname under a digit-only
+/// parent never fills a username slot no matter its shape. A label matching
+/// [`is_dotted_lite_username`] (`alice.42`, stored dotted) is the lite
+/// username verbatim; any other issued canonical DNS label is the full
+/// username. Anything that is not one of those shapes — oversized, non-ASCII,
+/// control characters, markup, other dotted strings — is skipped before the
+/// provenance read, so no unscreened contract string is even asked about.
 /// First hit per slot wins. Labels are expected bare: [`resolve_labels`]
 /// strips the network TLD.
-///
-/// Two ambiguities are inherited from the contracts and accepted: a public
-/// flat name ending in two digits is indistinguishable from a flattened lite
-/// name, and a depth-one subname under a digit-only parent (`app.42`) is
-/// indistinguishable from a dotted lite name — a digit-only second-level name
-/// is governance-only, so the latter cannot occur without governance minting
-/// the parent.
-///
-/// TODO(dotns): the full username is the first letters-only label, which a
-/// self-registered or purchased name older than the gateway name can win.
-/// `chatKey(node)` proves gateway provenance but survives transfers, so it is
-/// not a filter either. Once `DotnsPopController` exposes
-/// `usernameNodeOf(address)`, read the full username from it instead.
-pub fn classify_labels<I>(labels: I) -> DotnsIdentity
+pub async fn classify_labels<T, I>(
+    transport: &mut T,
+    controller: &[u8; 20],
+    labels: I,
+) -> Result<DotnsIdentity, String>
 where
+    T: DotnsTransport + ?Sized,
     I: IntoIterator,
     I::Item: AsRef<str>,
 {
     let mut identity = DotnsIdentity::default();
     for label in labels {
         let label = label.as_ref();
-        // Contract data is untrusted and these strings reach host UI
-        // (`SessionUiInfo`): only the bounded dotted lite shape or a canonical
-        // DNS label — never oversized, control characters, markup, or other
-        // dotted strings — becomes a username.
+        let shape_ok = is_dotted_lite_username(label) || is_dns_label(label);
+        if !shape_ok {
+            continue;
+        }
+        if !is_pop_issued(transport, controller, label).await? {
+            continue;
+        }
         if is_dotted_lite_username(label) {
             identity
                 .lite_username
                 .get_or_insert_with(|| label.to_string());
-            continue;
-        }
-        if !is_dns_label(label) {
-            continue;
-        }
-        let (stem, digits) = label.split_at(label.len().saturating_sub(2));
-        let is_flat_lite =
-            is_dns_label(stem) && digits.len() == 2 && digits.chars().all(|c| c.is_ascii_digit());
-        if is_flat_lite {
-            identity
-                .lite_username
-                .get_or_insert_with(|| format!("{stem}.{digits}"));
         } else {
             identity
                 .full_username
                 .get_or_insert_with(|| label.to_string());
         }
     }
-    identity
+    Ok(identity)
+}
+
+/// Whether the PoP controller issued `label`, per
+/// `DotnsPopController.isPopIssued(string)`.
+pub async fn is_pop_issued<T: DotnsTransport + ?Sized>(
+    transport: &mut T,
+    controller: &[u8; 20],
+    label: &str,
+) -> Result<bool, String> {
+    let output = transport
+        .view(controller, call_string("isPopIssued(string)", label))
+        .await
+        .map_err(|err| format!("DotnsPopController.isPopIssued({label}): {err}"))?;
+    decode_bool(&output).map_err(|err| format!("DotnsPopController.isPopIssued({label}): {err}"))
 }
 
 /// RFC 1035 label bound the contracts enforce (`StringUtils.MAX_DNS_LABEL_OCTETS`).
@@ -519,13 +533,18 @@ pub fn is_dns_label(value: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// The dotted lite shape: a canonical DNS-label stem, one dot, exactly two
-/// digits (`StringUtils.isSingleDotLiteLabel`). Shape only — see
+/// The dotted lite shape: a letters-only stem, one dot, exactly two digits
+/// (`StringUtils.isLitePersonLabel`; the stem follows `_isPersonLabel`, so a
+/// digit or hyphen in it is not a lite label). Shape only — see
 /// [`is_dotted_lite_username`] for the gateway's byte bound on top.
 pub fn is_lite_label(label: &str) -> bool {
     match label.rsplit_once('.') {
         Some((stem, digits)) => {
-            is_dns_label(stem) && digits.len() == 2 && digits.chars().all(|c| c.is_ascii_digit())
+            !stem.is_empty()
+                && stem.len() <= MAX_DNS_LABEL_LEN
+                && stem.chars().all(|c| c.is_ascii_lowercase())
+                && digits.len() == 2
+                && digits.chars().all(|c| c.is_ascii_digit())
         }
         None => false,
     }
@@ -1402,60 +1421,136 @@ mod tests {
 
     #[test]
     fn labels_classify_into_lite_and_full_usernames() {
-        // Both lite spellings resolve to the dotted username: flattened
-        // storage is re-dotted, dotted storage is kept verbatim.
-        let identity = classify_labels(["alice01", "myproject"]);
-        assert_eq!(identity.lite_username.as_deref(), Some("alice.01"));
-        assert_eq!(identity.full_username.as_deref(), Some("myproject"));
-        let identity = classify_labels(["alice.01", "myproject"]);
-        assert_eq!(identity.lite_username.as_deref(), Some("alice.01"));
-        assert_eq!(identity.full_username.as_deref(), Some("myproject"));
+        futures::executor::block_on(async {
+            // Every label the transport is asked about counts as pop-issued
+            // unless listed; assertions below separate shape from provenance.
+            struct IssuedAll {
+                denied: Vec<&'static str>,
+            }
+            #[truapi_platform::async_trait]
+            impl DotnsTransport for IssuedAll {
+                async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+                    unreachable!("classify_labels reads no storage")
+                }
+                async fn view(
+                    &mut self,
+                    _dest: &[u8; 20],
+                    input: Vec<u8>,
+                ) -> Result<Vec<u8>, DotnsViewError> {
+                    assert_eq!(&input[..4], &selector("isPopIssued(string)"));
+                    let issued = !self
+                        .denied
+                        .iter()
+                        .any(|denied| input.windows(denied.len()).any(|w| w == denied.as_bytes()));
+                    let mut word = [0u8; 32];
+                    word[31] = u8::from(issued);
+                    Ok(word.to_vec())
+                }
+            }
+            let controller = [0xAA; 20];
+            let mut all = IssuedAll { denied: vec![] };
 
-        // A DNS stem may hold digits and hyphens, a hyphen may not lead or
-        // trail it; dotted labels that are not the lite shape are subnames
-        // and are skipped.
-        let identity = classify_labels([
-            "bobby42.dot",
-            "app.web3app",
-            "sub.alice.01",
-            "aé.01",
-            "web3app",
-            "a2b.34",
-            "-x.01",
-        ]);
-        assert_eq!(identity.lite_username.as_deref(), Some("a2b.34"));
-        assert_eq!(identity.full_username.as_deref(), Some("web3app"));
+            let identity = classify_labels(&mut all, &controller, ["alice.01", "myproject"])
+                .await
+                .unwrap();
+            assert_eq!(identity.lite_username.as_deref(), Some("alice.01"));
+            assert_eq!(identity.full_username.as_deref(), Some("myproject"));
 
-        assert_eq!(
-            classify_labels(Vec::<String>::new()),
-            DotnsIdentity::default()
-        );
+            // The lite stem is letters only (`isLitePersonLabel`): a digit or
+            // hyphen in the stem is not a lite label. The flat spelling is an
+            // ordinary label, and dotted non-lite labels are subnames.
+            let identity = classify_labels(
+                &mut all,
+                &controller,
+                [
+                    "app.web3app",
+                    "sub.alice.01",
+                    "aé.01",
+                    "a2b.34",
+                    "-x.01",
+                    "alice01",
+                ],
+            )
+            .await
+            .unwrap();
+            assert_eq!(identity.lite_username, None);
+            assert_eq!(identity.full_username.as_deref(), Some("alice01"));
 
-        // Hostile store data never becomes a username: oversized labels,
-        // control characters, markup, ANSI escapes, interior NULs.
-        let identity = classify_labels([
-            "a".repeat(5000),
-            "admin\r\nx".to_string(),
-            "a\0b".to_string(),
-            "\x1b[31mred\x1b[0m".to_string(),
-            "<img src=x onerror=alert(1)>".to_string(),
-            "Upper".to_string(),
-        ]);
-        assert_eq!(identity, DotnsIdentity::default());
-        // The 63-octet DNS bound is the cut-off.
-        assert!(classify_labels(["a".repeat(63)]).full_username.is_some());
-        assert!(classify_labels(["a".repeat(64)]).full_username.is_none());
-        // One digit after the dot is not lite format, and dotted non-lite is
-        // not a full name either; three digits stay a subname.
-        assert_eq!(classify_labels(["alice.1"]), DotnsIdentity::default());
-        assert_eq!(classify_labels(["alice.012"]), DotnsIdentity::default());
-        let identity = classify_labels(["alice1"]);
-        assert_eq!(identity.lite_username, None);
-        assert_eq!(identity.full_username.as_deref(), Some("alice1"));
-        // An oversized dotted label never reaches the UI: the gateway bound
-        // caps the dotted form at 32 bytes.
-        let oversized = format!("{}.01", "a".repeat(30));
-        assert_eq!(classify_labels([oversized]), DotnsIdentity::default());
+            assert_eq!(
+                classify_labels(&mut all, &controller, Vec::<String>::new())
+                    .await
+                    .unwrap(),
+                DotnsIdentity::default()
+            );
+
+            // Provenance gates every slot: a perfectly shaped label the
+            // controller did not issue is skipped.
+            let mut denying = IssuedAll {
+                denied: vec!["app.42", "squatter"],
+            };
+            let identity = classify_labels(
+                &mut denying,
+                &controller,
+                ["app.42", "squatter", "alice.01", "myproject"],
+            )
+            .await
+            .unwrap();
+            assert_eq!(identity.lite_username.as_deref(), Some("alice.01"));
+            assert_eq!(identity.full_username.as_deref(), Some("myproject"));
+
+            // Hostile store data is dropped before the provenance read: the
+            // transport panics on storage and asserts the selector, so reaching
+            // it with garbage would fail loudly.
+            let identity = classify_labels(
+                &mut all,
+                &controller,
+                [
+                    "a".repeat(5000),
+                    "admin\r\nx".to_string(),
+                    "a\0b".to_string(),
+                    "\x1b[31mred\x1b[0m".to_string(),
+                    "<img src=x onerror=alert(1)>".to_string(),
+                    "Upper".to_string(),
+                ],
+            )
+            .await
+            .unwrap();
+            assert_eq!(identity, DotnsIdentity::default());
+
+            // The 63-octet DNS bound is the cut-off for full labels; the lite
+            // dotted form is capped by the 32-byte gateway bound.
+            assert!(
+                classify_labels(&mut all, &controller, ["a".repeat(63)])
+                    .await
+                    .unwrap()
+                    .full_username
+                    .is_some()
+            );
+            assert!(
+                classify_labels(&mut all, &controller, ["a".repeat(64)])
+                    .await
+                    .unwrap()
+                    .full_username
+                    .is_none()
+            );
+            let oversized = format!("{}.01", "a".repeat(30));
+            assert_eq!(
+                classify_labels(&mut all, &controller, [oversized])
+                    .await
+                    .unwrap(),
+                DotnsIdentity::default()
+            );
+
+            // One digit after the dot is not lite format; three digits neither.
+            for wrong in ["alice.1", "alice.012"] {
+                assert_eq!(
+                    classify_labels(&mut all, &controller, [wrong])
+                        .await
+                        .unwrap(),
+                    DotnsIdentity::default()
+                );
+            }
+        });
     }
 
     #[test]
@@ -1478,7 +1573,10 @@ mod tests {
         assert!(!is_full_person_label(&"a".repeat(33)));
 
         assert!(is_dotted_lite_username("alice.01"));
-        assert!(is_dotted_lite_username("a2b.34"));
+        // The stem is letters only (`isLitePersonLabel`): digits and hyphens
+        // in the stem are not lite labels.
+        assert!(!is_dotted_lite_username("a2b.34"));
+        assert!(!is_dotted_lite_username("a-b.34"));
         assert!(!is_dotted_lite_username("alice01"));
         assert!(!is_dotted_lite_username("alice.1"));
         assert!(!is_dotted_lite_username("alice.012"));
