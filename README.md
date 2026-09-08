@@ -76,7 +76,8 @@ js/packages/
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
   truapi-provider/         @parity/truapi-provider: WASM ChainProvider backends
-                          (embedded smoldot light client + remote WebSocket RPC)
+                          (embedded smoldot light client + remote WebSocket RPC);
+                          `/warm-store` is the IndexedDB warm-start store
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
@@ -136,6 +137,15 @@ dependency on the crate:
 - [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
   Kotlin bindings and the cdylib per ABI, built by
   `make provider-android-publish-local`.
+
+A light client that starts cold warp syncs from the chain spec's checkpoint, so
+every artifact can resume from stored finalized state instead. The provider owns
+when a blob is read and written, through `warmUp(genesis)` before connecting and
+`persist(genesis)` while the app is alive; the host owns where the bytes live.
+Native hosts pass a directory and get the crate's file-backed store, or supply
+their own through the `NativeWarmStore` callback interface. Browser hosts hand
+`setWarmStore` the IndexedDB store from
+[`@parity/truapi-provider/warm-store`](js/packages/truapi-provider).
 
 ## How it works
 
