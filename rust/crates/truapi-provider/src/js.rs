@@ -46,6 +46,10 @@ pub fn set_log_level(level: &str) {
 #[wasm_bindgen]
 pub struct ChainProviderBuilder {
     inner: Option<EmbeddedChainProviderBuilder>,
+    /// Whether the host answered the warm-store question itself, either with a
+    /// store of its own or by turning warm start off.
+    #[cfg(feature = "smoldot")]
+    warm_store_chosen: bool,
 }
 
 #[wasm_bindgen]
@@ -55,6 +59,8 @@ impl ChainProviderBuilder {
     pub fn new() -> Self {
         ChainProviderBuilder {
             inner: Some(EmbeddedChainProviderBuilder::new()),
+            #[cfg(feature = "smoldot")]
+            warm_store_chosen: false,
         }
     }
 
@@ -111,22 +117,30 @@ impl ChainProviderBuilder {
         Ok(())
     }
 
-    /// Keep warm-start blobs in `store`, a JS object with
-    /// `load(genesisHash)` returning the stored string or `null`, and
-    /// `save(genesisHash, blob)`. Both are called with a `0x`-prefixed hex
-    /// genesis hash and may return a promise.
+    /// Keep warm-start blobs somewhere other than the browser's own database,
+    /// or nowhere at all.
+    ///
+    /// Warm start needs no setup: without this call the provider keeps blobs in
+    /// IndexedDB for the origin. Pass a JS object with `load(genesisHash)`
+    /// resolving to the stored string or `null` and `save(genesisHash, blob)`
+    /// to store them elsewhere, or `null` to turn warm start off and have every
+    /// chain sync from the chain-spec checkpoint.
     ///
     /// A store that cannot answer must reject rather than resolve empty: an
     /// empty read is taken as nothing stored yet, and would let a later
-    /// [`persist`](ChainProviderHandle::persist) overwrite good state.
+    /// snapshot overwrite good state.
     ///
     /// A loaded blob is trusted input: it becomes the finalized state the light
     /// client resumes from, so whatever can write to the store can steer the
-    /// client's view of the chain. Origin-scoped storage such as IndexedDB
-    /// satisfies that; a store fed by another page or a server does not.
+    /// client's view of the chain. Origin-scoped storage satisfies that; a
+    /// store fed by another page or a server does not.
     #[cfg(feature = "smoldot")]
     #[wasm_bindgen(js_name = setWarmStore)]
     pub fn set_warm_store(&mut self, store: JsValue) -> Result<(), JsError> {
+        self.warm_store_chosen = true;
+        if store.is_null() || store.is_undefined() {
+            return Ok(());
+        }
         let store = JsWarmStore::new(store)?;
         let builder = self
             .inner
@@ -159,11 +173,22 @@ impl ChainProviderBuilder {
     }
 
     /// Build the provider, consuming the builder.
+    ///
+    /// Unless the host chose otherwise through
+    /// [`set_warm_store`](Self::set_warm_store), chains resume from state kept
+    /// in the browser's own database.
     pub fn build(&mut self) -> Result<ChainProviderHandle, JsError> {
-        let builder = self
+        #[allow(unused_mut)]
+        let mut builder = self
             .inner
             .take()
             .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
+        #[cfg(feature = "smoldot")]
+        if !self.warm_store_chosen {
+            builder = builder.warm_store(std::sync::Arc::new(
+                crate::warm_start_web::IndexedDbWarmStore,
+            ));
+        }
         Ok(ChainProviderHandle {
             inner: Arc::new(builder.build()),
             #[cfg(feature = "smoldot")]

@@ -1,4 +1,3 @@
 node_modules/
-*.tsbuildinfo
 # Generated wasm-pack bundle and compiled TypeScript; rebuilt with `npm run build`.
 dist/

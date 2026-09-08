@@ -24,10 +24,6 @@
       "types": "./dist/truapi_provider.d.ts",
       "import": "./dist/truapi_provider.js"
     },
-    "./warm-store": {
-      "types": "./dist/js/warm-store.d.ts",
-      "import": "./dist/js/warm-store.js"
-    },
     "./truapi_provider_bg.wasm": "./dist/truapi_provider_bg.wasm"
   },
   "files": [
@@ -41,14 +37,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "npm run build:wasm && npm run build:ts",
-    "build:wasm": "node scripts/build-wasm.mjs",
-    "build:ts": "tsc -b",
-    "test": "bun test"
-  },
-  "devDependencies": {
-    "@types/bun": "^1.4.2",
-    "fake-indexeddb": "^6.2.5",
-    "typescript": "^5.7"
+    "build": "node scripts/build-wasm.mjs",
+    "build:wasm": "node scripts/build-wasm.mjs"
   }
 }

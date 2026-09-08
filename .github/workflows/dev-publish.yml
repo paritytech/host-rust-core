@@ -71,11 +71,6 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      # Before the version stamp below rewrites package.json, which would leave
-      # the lockfile out of sync and make `npm ci` refuse to run.
-      - name: Install workspace dependencies
-        run: npm ci --ignore-scripts
-
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           toolchain: stable
@@ -135,8 +130,8 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Computed @parity/truapi-provider@${version} -> dist-tag ${tag}"
 
-      - name: Build wasm and TypeScript
-        run: npm run build --prefix js/packages/truapi-provider
+      - name: Build wasm
+        run: npm run build:wasm --prefix js/packages/truapi-provider
 
       - name: Pack
         run: |

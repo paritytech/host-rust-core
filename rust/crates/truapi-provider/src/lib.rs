@@ -57,6 +57,8 @@ mod networks;
 mod provider;
 #[cfg(feature = "smoldot")]
 pub mod warm_start;
+#[cfg(all(feature = "js", feature = "smoldot", target_arch = "wasm32"))]
+mod warm_start_web;
 #[cfg(all(feature = "ws", not(target_arch = "wasm32")))]
 mod ws;
 #[cfg(all(feature = "ws", target_arch = "wasm32"))]

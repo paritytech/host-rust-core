@@ -133,10 +133,6 @@ tokio-tungstenite = "0.24"
 wasm-bindgen-test = "0.3"
 
 [[example]]
-name = "paseo_demo"
-required-features = ["ws", "smoldot"]
-
-[[example]]
 name = "gateway"
 required-features = ["ws", "networks"]
 
