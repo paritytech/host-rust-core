@@ -210,85 +210,18 @@ pub trait ChainMessageListener: Send + Sync {
     fn on_closed(&self, reason: ChainCloseReason) -> Result<(), ChainProviderError>;
 }
 
-/// Failure a foreign [`NativeWarmStore`] reports.
-#[derive(Debug, thiserror::Error, uniffi::Error)]
-pub enum NativeWarmStoreError {
-    /// The store could not read or write the blob.
-    #[error("{reason}")]
-    Failed {
-        /// Human-readable failure reason.
-        reason: String,
-    },
-}
-
-impl From<uniffi::UnexpectedUniFFICallbackError> for NativeWarmStoreError {
-    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        // Without this the generic converter panics unconditionally, so a store
-        // that throws anything it did not declare kills the process rather than
-        // failing the one call.
+/// Without this the generic converter panics, so a store that throws anything
+/// it did not declare would kill the process rather than fail the one call.
+///
+/// It lives here rather than beside the type because the reason is
+/// foreign-authored, and this is where the crate bounds foreign text.
+impl From<uniffi::UnexpectedUniFFICallbackError> for WarmStoreError {
+    fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
         tracing::warn!(
-            reason = %err.reason,
+            reason = %error.reason,
             "warm store threw an undeclared error; reporting it as a store failure"
         );
-        NativeWarmStoreError::Failed {
-            reason: bounded_reason(err.reason),
-        }
-    }
-}
-
-/// Where a native host keeps warm-start database blobs between runs, so a chain
-/// resumes from finalized state instead of syncing from the chain-spec
-/// checkpoint. The provider owns when a blob is read and written; the host owns
-/// where it lives, since only it knows a location the platform will not evict.
-///
-/// A store that cannot answer must throw. Returning no blob means "nothing
-/// stored yet", and lets the next [`persist`](ChainProvider::persist) overwrite
-/// good state.
-///
-/// A loaded blob is trusted input: it becomes the finalized state the light
-/// client resumes from, so whatever can write to the store can steer the
-/// client's view of the chain. Keep it no more writable than the source the
-/// chain specification came from.
-///
-/// Both methods are awaited on the thread the caller drives the returned future
-/// on, which is never guaranteed to be the main thread. An implementation must
-/// not require one: no `@MainActor` on the Swift side, no `Dispatchers.Main` on
-/// the Kotlin side.
-///
-/// `genesis_hash` is 32 bytes. It arrives as a byte array because UniFFI has no
-/// fixed-size array type; the provider checks the length before it ever reaches
-/// here.
-#[uniffi::export(with_foreign)]
-#[async_trait::async_trait]
-pub trait NativeWarmStore: Send + Sync {
-    /// Read the blob stored for `genesis_hash`, if any.
-    async fn load(&self, genesis_hash: Vec<u8>) -> Result<Option<String>, NativeWarmStoreError>;
-    /// Replace the blob stored for `genesis_hash`.
-    async fn save(&self, genesis_hash: Vec<u8>, blob: String) -> Result<(), NativeWarmStoreError>;
-}
-
-/// Adapts a foreign [`NativeWarmStore`] to the crate's [`WarmStore`], whose
-/// fixed-size genesis hash has no UniFFI representation.
-struct ForeignWarmStore {
-    inner: Arc<dyn NativeWarmStore>,
-}
-
-#[truapi_platform::async_trait]
-impl WarmStore for ForeignWarmStore {
-    async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, WarmStoreError> {
-        self.inner
-            .load(genesis_hash.to_vec())
-            .await
-            // Bounded like a listener's: the reason is foreign-authored, so it
-            // is unbounded at the source and crosses the boundary twice.
-            .map_err(|error| WarmStoreError::new(bounded_display(&error)))
-    }
-
-    async fn save(&self, genesis_hash: [u8; 32], blob: String) -> Result<(), WarmStoreError> {
-        self.inner
-            .save(genesis_hash.to_vec(), blob)
-            .await
-            .map_err(|error| WarmStoreError::new(bounded_display(&error)))
+        WarmStoreError::new(bounded_reason(error.reason))
     }
 }
 
@@ -303,8 +236,8 @@ pub struct ChainProvider {
 impl ChainProvider {
     /// Create a provider backed by the bundled network catalog, with nowhere
     /// to keep finalized state: every chain syncs from the chain-spec
-    /// checkpoint on every run, and [`warm_up`](Self::warm_up) and
-    /// [`persist`](Self::persist) fail rather than quietly doing nothing.
+    /// checkpoint on every run, and [`load_database`](Self::load_database) and
+    /// [`save_database`](Self::save_database) fail rather than quietly doing nothing.
     ///
     /// Prefer [`with_file_warm_store`](Self::with_file_warm_store), which keeps
     /// blobs under a directory the host names, or
@@ -319,11 +252,9 @@ impl ChainProvider {
     /// Create a provider that reads and writes warm-start blobs through
     /// `store`, for a host that keeps them somewhere of its own.
     #[uniffi::constructor(name = "with_warm_store")]
-    pub fn with_warm_store(store: Arc<dyn NativeWarmStore>) -> Arc<Self> {
+    pub fn with_warm_store(store: Arc<dyn WarmStore>) -> Arc<Self> {
         Arc::new(Self {
-            inner: EmbeddedChainProvider::builder()
-                .warm_store(Arc::new(ForeignWarmStore { inner: store }))
-                .build(),
+            inner: EmbeddedChainProvider::builder().warm_store(store).build(),
         })
     }
 
@@ -363,18 +294,21 @@ impl ChainProvider {
     /// deadlock. The store is read at most once per chain: smoldot keys a chain
     /// by its genesis hash, so only the first connect to a chain can consume a
     /// blob.
-    pub async fn warm_up(&self, genesis_hash: Vec<u8>) -> Result<bool, ChainProviderError> {
+    pub async fn load_database(&self, genesis_hash: Vec<u8>) -> Result<bool, ChainProviderError> {
         self.inner
-            .warm_up(genesis_from(genesis_hash)?)
+            .load_database(genesis_from(genesis_hash)?)
             .await
+            // Bounded here rather than in an adapter: a foreign store authors
+            // this reason, so it is unbounded at the source and crosses the
+            // boundary twice.
             .map_err(|error| ChainProviderError::WarmStore {
-                reason: error.reason,
+                reason: bounded_reason(error.reason),
             })
     }
 
     /// Snapshot `genesis_hash`'s finalized state and hand it to the warm store.
     /// Answers whether a blob was stored, and fails when the provider was built
-    /// without one, for the same reason [`warm_up`](Self::warm_up) does.
+    /// without one, for the same reason [`load_database`](Self::load_database) does.
     ///
     /// This is a full round trip against the light client rather than a write,
     /// so call it while the app is alive. From a backgrounding callback treat
@@ -382,12 +316,15 @@ impl ChainProvider {
     /// enough to guarantee it finishes. A chain that has finalized nothing yet
     /// stores nothing and answers `false`, rather than replacing a good blob
     /// with one smoldot would discard.
-    pub async fn persist(&self, genesis_hash: Vec<u8>) -> Result<bool, ChainProviderError> {
+    pub async fn save_database(&self, genesis_hash: Vec<u8>) -> Result<bool, ChainProviderError> {
         self.inner
-            .persist(genesis_from(genesis_hash)?)
+            .save_database(genesis_from(genesis_hash)?)
             .await
+            // Bounded here rather than in an adapter: a foreign store authors
+            // this reason, so it is unbounded at the source and crosses the
+            // boundary twice.
             .map_err(|error| ChainProviderError::WarmStore {
-                reason: error.reason,
+                reason: bounded_reason(error.reason),
             })
     }
 
@@ -1008,38 +945,29 @@ mod tests {
             })
         }
 
-        fn answer(&self) -> Result<(), NativeWarmStoreError> {
+        fn answer(&self) -> Result<(), WarmStoreError> {
             match &self.failure {
-                Some(reason) => Err(NativeWarmStoreError::Failed {
-                    reason: reason.clone(),
-                }),
+                Some(reason) => Err(WarmStoreError::new(reason)),
                 None => Ok(()),
             }
         }
     }
 
-    #[async_trait::async_trait]
-    impl NativeWarmStore for RecordingStore {
-        async fn load(
-            &self,
-            genesis_hash: Vec<u8>,
-        ) -> Result<Option<String>, NativeWarmStoreError> {
+    #[truapi_platform::async_trait]
+    impl WarmStore for RecordingStore {
+        async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, WarmStoreError> {
             self.calls
                 .lock()
                 .expect("not poisoned")
-                .push((genesis_hash, None));
+                .push((genesis_hash.to_vec(), None));
             self.answer().map(|()| Some("blob".to_owned()))
         }
 
-        async fn save(
-            &self,
-            genesis_hash: Vec<u8>,
-            blob: String,
-        ) -> Result<(), NativeWarmStoreError> {
+        async fn save(&self, genesis_hash: [u8; 32], blob: String) -> Result<(), WarmStoreError> {
             self.calls
                 .lock()
                 .expect("not poisoned")
-                .push((genesis_hash, Some(blob)));
+                .push((genesis_hash.to_vec(), Some(blob)));
             self.answer()
         }
     }
@@ -1053,8 +981,8 @@ mod tests {
         let provider = ChainProvider::with_warm_store(store.clone());
 
         for outcome in [
-            block_on(provider.warm_up(vec![0u8; 31])),
-            block_on(provider.persist(vec![0u8; 33])),
+            block_on(provider.load_database(vec![0u8; 31])),
+            block_on(provider.save_database(vec![0u8; 33])),
         ] {
             assert!(
                 matches!(outcome, Err(ChainProviderError::BadGenesis)),
@@ -1065,50 +993,10 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_store_sees_the_genesis_as_32_bytes() {
-        let store = RecordingStore::new(None);
-        let adapter = ForeignWarmStore {
-            inner: store.clone(),
-        };
-
-        assert_eq!(
-            block_on(adapter.load([7; 32])).expect("the store answers"),
-            Some("blob".to_owned())
-        );
-        block_on(adapter.save([7; 32], "next".to_owned())).expect("the store accepts");
-
-        assert_eq!(
-            store.calls.lock().expect("not poisoned").as_slice(),
-            &[
-                (vec![7u8; 32], None),
-                (vec![7u8; 32], Some("next".to_owned()))
-            ]
-        );
-    }
-
-    #[test]
-    fn a_foreign_store_reason_is_bounded_before_it_crosses_back() {
-        // Same shape as a listener's reason: foreign-authored, unbounded at the
-        // source, and multi-byte, so a bound written in bytes would split a
-        // character and panic.
-        let thrown = format!("HEAD{}", "\u{1f600}".repeat(CLOSE_REASON_MAX_CHARS * 2));
-        let adapter = ForeignWarmStore {
-            inner: RecordingStore::new(Some(thrown)),
-        };
-
-        let error = block_on(adapter.load([7; 32])).expect_err("the store was told to fail");
-        assert_eq!(error.reason.chars().count(), CLOSE_REASON_MAX_CHARS);
-        assert!(error.reason.starts_with("HEAD"), "the bound keeps the head");
-    }
-
-    /// The impl exists so an undeclared throw from a Swift or Kotlin store
-    /// becomes a failed call instead of uniffi's unconditional panic, which
-    /// `panic = "abort"` would turn into a process kill.
-    #[test]
     fn an_undeclared_warm_store_error_converts_and_is_bounded() {
         let thrown = format!("HEAD{}", "\u{1f600}".repeat(CLOSE_REASON_MAX_CHARS * 2));
-        let NativeWarmStoreError::Failed { reason } =
-            NativeWarmStoreError::from(uniffi::UnexpectedUniFFICallbackError::new(thrown));
+        let WarmStoreError::Failed { reason } =
+            WarmStoreError::from(uniffi::UnexpectedUniFFICallbackError::new(thrown));
 
         assert_eq!(reason.chars().count(), CLOSE_REASON_MAX_CHARS);
         assert!(reason.starts_with("HEAD"), "the bound keeps the head");

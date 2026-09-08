@@ -35,7 +35,7 @@ pub struct EmbeddedChainProviderBuilder {
     seeded_databases: HashMap<[u8; 32], String>,
     /// Where warm-start blobs are read from and written back to.
     #[cfg(feature = "smoldot")]
-    warm_store: Option<crate::warm_start::SharedWarmStore>,
+    warm_store: Option<std::sync::Arc<dyn crate::warm_start::WarmStore>>,
 }
 
 impl core::fmt::Debug for EmbeddedChainProviderBuilder {
@@ -91,12 +91,12 @@ impl EmbeddedChainProviderBuilder {
     }
 
     /// Keep warm-start blobs in `store`, so
-    /// [`warm_up`](EmbeddedChainProvider::warm_up) and
-    /// [`persist`](EmbeddedChainProvider::persist) have somewhere to read from
+    /// [`load_database`](EmbeddedChainProvider::load_database) and
+    /// [`save_database`](EmbeddedChainProvider::save_database) have somewhere to read from
     /// and write to. A blob registered with [`database`](Self::database) still
     /// wins over a stored one.
     #[cfg(feature = "smoldot")]
-    pub fn warm_store(mut self, store: crate::warm_start::SharedWarmStore) -> Self {
+    pub fn warm_store(mut self, store: std::sync::Arc<dyn crate::warm_start::WarmStore>) -> Self {
         self.warm_store = Some(store);
         self
     }
@@ -137,13 +137,13 @@ pub struct EmbeddedChainProvider {
     #[cfg(feature = "smoldot")]
     relays: HashMap<[u8; 32], [u8; 32]>,
     /// Database contents waiting to seed a chain, whether registered explicitly
-    /// or read back from the warm store. Behind a lock because `warm_up` fills
+    /// or read back from the warm store. Behind a lock because `load_database` fills
     /// it after the provider is built, and only useful until a chain's first
     /// add: smoldot ignores the blob on every add after that.
     #[cfg(feature = "smoldot")]
     seeded_databases: Mutex<HashMap<[u8; 32], String>>,
     #[cfg(feature = "smoldot")]
-    warm_store: Option<crate::warm_start::SharedWarmStore>,
+    warm_store: Option<std::sync::Arc<dyn crate::warm_start::WarmStore>>,
     #[cfg(feature = "smoldot")]
     light: crate::light::LightState,
 }
@@ -246,7 +246,7 @@ impl EmbeddedChainProvider {
     /// The store this provider keeps blobs in, or an error naming what is
     /// missing. Warm start is never skipped quietly: a host that meant to have
     /// it and did not configure one is told so.
-    fn warm_store(&self) -> Result<crate::warm_start::SharedWarmStore, GenericError> {
+    fn warm_store(&self) -> Result<std::sync::Arc<dyn crate::warm_start::WarmStore>, GenericError> {
         self.warm_store.clone().ok_or_else(|| GenericError {
             reason: "this provider was built without a warm store, so there is nowhere to keep finalized state".to_owned(),
         })
@@ -294,7 +294,7 @@ impl EmbeddedChainProvider {
     /// Fails when the provider was built without a store. A chain that silently
     /// never warms up is indistinguishable from one that has nothing stored
     /// yet, so the missing configuration is reported rather than swallowed.
-    pub async fn warm_up(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
+    pub async fn load_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
         // A parachain is only as cold as the relay under it, and the relay is
         // the one that warp syncs, so it is seeded first.
         if let Some(relay) = self.relay_of(genesis_hash)
@@ -311,7 +311,7 @@ impl EmbeddedChainProvider {
             // effect and the chain would silently stay cold.
             tracing::warn!(
                 genesis = %hex::encode(genesis_hash),
-                "warm_up ran after the chain was already connected, so the stored blob cannot take effect"
+                "load_database ran after the chain was already connected, so the stored blob cannot take effect"
             );
             return Ok(false);
         }
@@ -342,8 +342,8 @@ impl EmbeddedChainProvider {
     /// guaranteed to stay scheduled long enough to finish it.
     ///
     /// Fails when the provider was built without a store, for the same reason
-    /// [`warm_up`](Self::warm_up) does.
-    pub async fn persist(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
+    /// [`load_database`](Self::load_database) does.
+    pub async fn save_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
         let store = self.warm_store()?;
         if !self.is_connected(genesis_hash) {
             // `snapshot` opens its own connection, so persisting a chain this
@@ -351,7 +351,7 @@ impl EmbeddedChainProvider {
             // checkpoint and store nothing worth having.
             tracing::debug!(
                 genesis = %hex::encode(genesis_hash),
-                "nothing to persist: this provider has not connected to the chain"
+                "nothing to save_database: this provider has not connected to the chain"
             );
             return Ok(false);
         }
@@ -611,11 +611,12 @@ mod tests {
             .build();
 
         assert!(
-            futures::executor::block_on(provider.warm_up(GENESIS)).expect("the store answers"),
+            futures::executor::block_on(provider.load_database(GENESIS))
+                .expect("the store answers"),
             "a stored blob is reported as in hand"
         );
 
-        futures::executor::block_on(provider.warm_up(GENESIS)).expect("the store answers");
+        futures::executor::block_on(provider.load_database(GENESIS)).expect("the store answers");
         assert_eq!(
             store.loads.load(std::sync::atomic::Ordering::Relaxed),
             1,
@@ -655,7 +656,9 @@ mod tests {
             .warm_store(store.clone())
             .build();
 
-        assert!(futures::executor::block_on(provider.warm_up(GENESIS)).expect("no store read"));
+        assert!(
+            futures::executor::block_on(provider.load_database(GENESIS)).expect("no store read")
+        );
         assert_eq!(
             store.loads.load(std::sync::atomic::Ordering::Relaxed),
             0,
@@ -675,8 +678,9 @@ mod tests {
             .build();
 
         assert!(
-            !futures::executor::block_on(provider.persist(GENESIS)).expect("no snapshot attempted"),
-            "a chain that was never connected has nothing to persist"
+            !futures::executor::block_on(provider.save_database(GENESIS))
+                .expect("no snapshot attempted"),
+            "a chain that was never connected has nothing to save_database"
         );
         assert!(
             store.stored.lock().expect("test store").is_empty(),
@@ -692,7 +696,7 @@ mod tests {
         let provider = EmbeddedChainProvider::builder()
             .chain([5; 32], ChainSource::light_client("{}").build())
             .build();
-        let error = futures::executor::block_on(provider.warm_up([5; 32]))
+        let error = futures::executor::block_on(provider.load_database([5; 32]))
             .expect_err("a provider with no store cannot warm up");
         assert!(
             error.reason.contains("without a warm store"),

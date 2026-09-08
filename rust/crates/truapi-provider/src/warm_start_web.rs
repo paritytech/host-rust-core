@@ -34,6 +34,32 @@ const VERSION: u32 = 1;
 /// The browser's own storage, used when the host names none.
 pub(crate) struct IndexedDbWarmStore;
 
+/// Ask the browser to keep this origin's storage rather than evicting it under
+/// pressure, once per process.
+///
+/// Best effort by design: the promise is not awaited, because awaiting it can
+/// block on a permission prompt, and a refusal only means blobs may be
+/// reclaimed, which turns a warm start cold rather than breaking anything.
+fn request_persistence() {
+    use std::sync::Once;
+
+    static ASKED: Once = Once::new();
+    ASKED.call_once(|| {
+        let Ok(storage) = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("navigator"))
+            .and_then(|navigator| js_sys::Reflect::get(&navigator, &JsValue::from_str("storage")))
+        else {
+            return;
+        };
+        let Ok(persist) = js_sys::Reflect::get(&storage, &JsValue::from_str("persist")) else {
+            return;
+        };
+        let Ok(persist) = persist.dyn_into::<js_sys::Function>() else {
+            return;
+        };
+        let _ = persist.call0(&storage);
+    });
+}
+
 /// Key a chain's blob is stored under.
 fn storage_key(genesis_hash: [u8; 32]) -> String {
     crate::js::hex0x(&genesis_hash)
@@ -174,6 +200,7 @@ async fn await_request<T: 'static>(
 
 /// Open the database, creating the object store on first use.
 async fn open() -> Result<IdbDatabase, WarmStoreError> {
+    request_persistence();
     let request: IdbOpenDbRequest = factory()?
         .open_with_u32(DATABASE_NAME, VERSION)
         .map_err(|error| describe(&error, "could not open the browser database"))?;

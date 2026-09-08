@@ -138,13 +138,13 @@ dependency on the crate:
   `make provider-android-publish-local`.
 
 A light client that starts cold warp syncs from the chain spec's checkpoint, so
-every artifact can resume from stored finalized state instead. The provider owns
-when a blob is read and written, through `warmUp(genesis)` before connecting and
-`persist(genesis)` while the app is alive; the host owns where the bytes live.
-Browser hosts get it with no setup: the provider keeps each chain's state in the
-origin's IndexedDB and reads it back before connecting. Native hosts pass a
-directory and get the crate's file-backed store, or supply their own through the
-`NativeWarmStore` callback interface.
+every artifact resumes from stored finalized state instead, including the relay a
+parachain syncs through. The provider owns when a blob is read and written; the
+host owns where the bytes live. Browser hosts get it with no setup: the provider
+keeps each chain's state in the origin's IndexedDB and reads it back before
+connecting. Native hosts pass a directory and get the crate's file-backed store,
+or implement `WarmStore` over storage of their own, and drive `loadDatabase` and
+`saveDatabase` from their own lifecycle.
 
 ## How it works
 

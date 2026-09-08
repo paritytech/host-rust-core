@@ -18,10 +18,10 @@
 //! Construct one provider per page/worker: connections share the provider's
 //! resources, matching the one-provider-per-host-process contract.
 //!
-//! Warm start needs only `setWarmStore`. A chain's stored blob is read before
-//! its first connect, and from then on the provider snapshots that chain into
-//! the store on its own schedule. `warmUp` and `persist` stay available for a
-//! host that would rather drive both itself.
+//! Warm start needs no wiring: a chain's stored blob is read before its first
+//! connect, and from then on the provider snapshots that chain into the store on
+//! its own schedule. `saveDatabase` forces a snapshot for a host that wants one
+//! at a moment of its choosing.
 
 use std::sync::Arc;
 
@@ -277,7 +277,7 @@ impl ChainProviderHandle {
                 if !strong.is_connected(genesis) {
                     break;
                 }
-                if let Err(error) = strong.persist(genesis).await {
+                if let Err(error) = strong.save_database(genesis).await {
                     tracing::warn!(
                         genesis = %hex0x(&genesis),
                         reason = %error.reason,
@@ -316,8 +316,11 @@ impl ChainProviderHandle {
         if self.inner.has_warm_store() && !self.inner.is_connected(genesis) {
             let deadline = futures_timer::Delay::new(WARM_STORE_DEADLINE);
             futures::pin_mut!(deadline);
-            match futures::future::select(core::pin::pin!(self.inner.warm_up(genesis)), deadline)
-                .await
+            match futures::future::select(
+                core::pin::pin!(self.inner.load_database(genesis)),
+                deadline,
+            )
+            .await
             {
                 futures::future::Either::Left((Err(error), _)) => tracing::warn!(
                     reason = %error.reason,
@@ -359,10 +362,10 @@ impl ChainProviderHandle {
     /// because only a chain's first add consumes a blob.
     #[cfg(feature = "smoldot")]
     #[wasm_bindgen(js_name = warmUp)]
-    pub async fn warm_up(&self, genesis_hash: &str) -> Result<bool, JsError> {
+    pub async fn load_database(&self, genesis_hash: &str) -> Result<bool, JsError> {
         let genesis = parse_genesis(genesis_hash)?;
         self.inner
-            .warm_up(genesis)
+            .load_database(genesis)
             .await
             .map_err(|err| JsError::new(&err.reason))
     }
@@ -376,10 +379,10 @@ impl ChainProviderHandle {
     /// alive; neither `pagehide` nor a hidden tab is guaranteed to stay
     /// scheduled long enough to finish one, and a Worker sees neither event.
     #[cfg(feature = "smoldot")]
-    pub async fn persist(&self, genesis_hash: &str) -> Result<bool, JsError> {
+    pub async fn save_database(&self, genesis_hash: &str) -> Result<bool, JsError> {
         let genesis = parse_genesis(genesis_hash)?;
         self.inner
-            .persist(genesis)
+            .save_database(genesis)
             .await
             .map_err(|err| JsError::new(&err.reason))
     }

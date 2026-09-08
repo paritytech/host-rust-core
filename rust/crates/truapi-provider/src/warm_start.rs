@@ -7,28 +7,42 @@
 //! to keep it: [`FileWarmStore`] on native targets, or its own implementation
 //! over whatever storage the platform offers.
 //!
-//! Reads and writes are explicit — [`warm_up`](crate::EmbeddedChainProvider::warm_up)
-//! and [`persist`](crate::EmbeddedChainProvider::persist) — rather than hidden
+//! Reads and writes are explicit — [`load_database`](crate::EmbeddedChainProvider::load_database)
+//! and [`save_database`](crate::EmbeddedChainProvider::save_database) — rather than hidden
 //! inside `connect`. Connecting is a blocking call on the native bindings, and
 //! awaiting a foreign callback underneath it would deadlock a host whose store
 //! runs on the main thread.
 
-use std::sync::Arc;
-
 /// Failure reported by a [`WarmStore`] implementation.
+///
+/// An enum with one variant rather than a struct because the native bindings
+/// export this type, and uniffi errors must be enums.
 #[derive(Debug, Clone, derive_more::Display)]
-#[display("warm store: {reason}")]
-pub struct WarmStoreError {
-    /// What went wrong, for logs and error reports.
-    pub reason: String,
+#[cfg_attr(
+    all(feature = "uniffi", not(target_arch = "wasm32")),
+    derive(uniffi::Error)
+)]
+pub enum WarmStoreError {
+    /// The store could not read or write the blob.
+    #[display("warm store: {reason}")]
+    Failed {
+        /// What went wrong, for logs and error reports.
+        reason: String,
+    },
 }
 
 impl WarmStoreError {
     /// Build an error from anything printable.
     pub fn new(reason: impl core::fmt::Display) -> Self {
-        Self {
+        Self::Failed {
             reason: reason.to_string(),
         }
+    }
+
+    /// What went wrong.
+    pub fn reason(&self) -> &str {
+        let Self::Failed { reason } = self;
+        reason
     }
 }
 
@@ -46,12 +60,16 @@ impl From<WarmStoreError> for truapi::latest::GenericError {
 ///
 /// A store that cannot answer must return `Err`, never `Ok(None)`: an empty
 /// read is taken as "nothing stored yet" and lets a later
-/// [`persist`](crate::EmbeddedChainProvider::persist) overwrite good state.
+/// [`save_database`](crate::EmbeddedChainProvider::save_database) overwrite good state.
 ///
 /// A loaded blob is trusted input: it goes to the light client as the finalized
 /// state to resume from, so whatever can write to the store can steer the
 /// client's view of the chain. Keep the store no more writable than the source
 /// the chain specification itself came from.
+#[cfg_attr(
+    all(feature = "uniffi", not(target_arch = "wasm32")),
+    uniffi::export(with_foreign)
+)]
 #[truapi_platform::async_trait]
 pub trait WarmStore: Send + Sync {
     /// Read the blob stored for `genesis_hash`, if any.
@@ -128,8 +146,19 @@ pub(crate) fn carries_chain_information(blob: &str) -> bool {
     blob.contains("\"chain\":{")
 }
 
-/// Shared handle to the store a provider was built with.
-pub(crate) type SharedWarmStore = Arc<dyn WarmStore>;
+/// Genesis hash of the chain a blob belongs to.
+pub type GenesisHash = [u8; 32];
+
+// Bridged for the native bindings the way `truapi` bridges its own 32-byte
+// values: uniffi has no fixed-size array type, so the hash crosses as bytes and
+// converts back here. Lowering only, since the provider validates the length
+// before a store ever sees one.
+#[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
+uniffi::custom_type!(GenesisHash, Vec<u8>, {
+    remote,
+    lower: |hash| hash.to_vec(),
+    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
+});
 
 #[cfg(test)]
 mod tests {
