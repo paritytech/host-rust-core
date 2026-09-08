@@ -322,7 +322,15 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
-          swift build --target TrUAPIProvider
+          # Built for the simulator like TrUAPIHost above, not with `swift build`,
+          # which targets macOS: the xcframeworks carry iOS slices only, and the
+          # generated bindings use Swift concurrency, which the package's macOS
+          # floor would have to declare purely to satisfy a host-platform build.
+          xcodebuild build \
+            -scheme TrUAPIProvider \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPIProviderDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
 
   ts-client:
     name: "@parity/truapi"

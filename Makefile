@@ -128,7 +128,7 @@ codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 
 wasm: check-generated ## Rebuild the truapi-server and truapi-provider WASM bundles under js/packages/*/dist/.
 	cd $(HOST_WASM_PKG) && npm run build:wasm
-	cd $(PROVIDER_WASM_PKG) && npm run build:wasm
+	cd $(PROVIDER_WASM_PKG) && npm run build
 
 wasm-crypto-test: ## Run crypto/vector tests on wasm32 via wasm-pack/node.
 	wasm-pack test --node rust/crates/truapi-server --test wasm_crypto_vectors --no-default-features

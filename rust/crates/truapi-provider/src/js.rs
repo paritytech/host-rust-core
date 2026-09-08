@@ -251,12 +251,13 @@ impl ChainProviderHandle {
             futures_timer::Delay::new(FIRST_SNAPSHOT_DELAY).await;
             loop {
                 let Some(strong) = provider.upgrade() else {
-                    persisting
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&genesis);
-                    return;
+                    break;
                 };
+                // Snapshotting a chain nobody holds open would start one just
+                // to photograph it, every tick, for the life of the provider.
+                if !strong.is_connected(genesis) {
+                    break;
+                }
                 if let Err(error) = strong.persist(genesis).await {
                     tracing::warn!(
                         genesis = %hex0x(&genesis),
@@ -269,6 +270,10 @@ impl ChainProviderHandle {
                 drop(strong);
                 futures_timer::Delay::new(SNAPSHOT_INTERVAL).await;
             }
+            persisting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&genesis);
         });
     }
 }
@@ -281,9 +286,11 @@ impl ChainProviderHandle {
         let genesis = parse_genesis(genesis_hash)?;
         // Warm start is an optimisation, so a store that cannot answer leaves
         // the chain to sync from the checkpoint rather than failing the connect.
-        // A host that turned warm start off is not asked at all.
+        // A host that turned warm start off is not asked at all, and neither is
+        // a chain that is already up, whose blob smoldot would discard anyway.
         #[cfg(feature = "smoldot")]
         if self.inner.has_warm_store()
+            && !self.inner.is_connected(genesis)
             && let Err(error) = self.inner.warm_up(genesis).await
         {
             tracing::warn!(
@@ -297,7 +304,14 @@ impl ChainProviderHandle {
             .await
             .map_err(|err| JsError::new(&err.reason))?;
         #[cfg(feature = "smoldot")]
-        self.start_persistence(genesis);
+        {
+            // The relay a parachain syncs through is the chain that actually
+            // warp syncs, so it is kept warm alongside it.
+            if let Some(relay) = self.inner.relay_of(genesis) {
+                self.start_persistence(relay);
+            }
+            self.start_persistence(genesis);
+        }
         let responses = connection.responses();
         Ok(Connection {
             inner: Arc::from(connection),

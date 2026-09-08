@@ -119,10 +119,13 @@ impl WarmStore for FileWarmStore {
 /// a good blob turns a warm start back into a cold one, so a blob only counts
 /// once it carries chain information.
 pub(crate) fn carries_chain_information(blob: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(blob)
-        .ok()
-        .and_then(|value| value.get("chain").cloned())
-        .is_some_and(|chain| !chain.is_null())
+    // A substring test rather than a parse: this runs on every snapshot against
+    // a blob of up to 8 MB, and smoldot's encoder omits the key entirely when
+    // there is no chain information and writes it as an object when there is
+    // (`skip_serializing_if` on `SerdeDatabase::chain`). The truncation
+    // sentinels it can return instead, `"<too-large>"` and the empty string,
+    // carry no key at all.
+    blob.contains("\"chain\":{")
 }
 
 /// Shared handle to the store a provider was built with.
@@ -137,6 +140,8 @@ mod tests {
         assert!(!carries_chain_information(r#"{"chain":null}"#));
         assert!(!carries_chain_information("{}"));
         assert!(!carries_chain_information("not json"));
+        assert!(!carries_chain_information("<too-large>"));
+        assert!(!carries_chain_information(""));
         assert!(carries_chain_information(
             r#"{"chain":{"finalized_block_header":"0x00"},"genesisHash":"0x01"}"#
         ));

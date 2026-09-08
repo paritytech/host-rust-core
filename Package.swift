@@ -56,9 +56,7 @@ let providerBinaryTarget: Target = useLocalProviderBinary
 
 let package = Package(
     name: "TrUAPIHost",
-    // macOS is declared because `swift build` targets the host platform, and the
-    // provider's generated bindings use Swift concurrency, which needs 10.15+.
-    platforms: [.iOS(.v17), .macOS(.v12)],
+    platforms: [.iOS(.v17)],
     products: [
         .library(name: "TrUAPIHost", targets: ["TrUAPIHost"]),
         .library(name: "TrUAPIProvider", targets: ["TrUAPIProvider"]),
