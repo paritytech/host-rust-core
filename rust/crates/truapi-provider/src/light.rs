@@ -15,10 +15,11 @@
 //! which seeds a chain whether it is connected directly or brought up behind
 //! one of its parachains.
 //!
-//! Observability: on native targets smoldot logs through the `log` crate. A
-//! host that wants those lines in its `tracing` output should install a
-//! `log`->`tracing` bridge (e.g. `tracing_log::LogTracer`); the provider does
-//! not install a global logger of its own.
+//! Observability: on native targets smoldot logs through the `log` crate, and
+//! `logging_native` installs a stderr sink for it when `TRUAPI_PROVIDER_LOG`
+//! names a level. With that variable unset no logger is installed, leaving a
+//! host free to route smoldot's output into its own `tracing` subscriber with a
+//! `log`->`tracing` bridge (e.g. `tracing_log::LogTracer`).
 
 use core::num::{NonZero, NonZeroUsize};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -73,6 +74,8 @@ type Platform = crate::light_platform_web::SubxtPlatform;
 fn new_platform() -> Platform {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // Before the client starts, or its first log lines are dropped.
+        crate::logging_native::init_from_env();
         smoldot_light::platform::DefaultPlatform::new(
             env!("CARGO_PKG_NAME").into(),
             env!("CARGO_PKG_VERSION").into(),

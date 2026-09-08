@@ -50,6 +50,8 @@ mod light;
 mod light_platform_web;
 #[cfg(all(feature = "js", target_arch = "wasm32"))]
 mod logging;
+#[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
+mod logging_native;
 #[cfg(feature = "networks")]
 mod networks;
 mod provider;

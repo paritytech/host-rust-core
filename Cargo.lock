@@ -5400,6 +5400,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
+ "log",
  "pin-project",
  "rand 0.8.7",
  "send_wrapper",
