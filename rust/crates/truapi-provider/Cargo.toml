@@ -40,6 +40,7 @@ ws = [
 ]
 smoldot = [
     "dep:futures-timer",
+    "dep:log",
     "dep:getrandom",
     "dep:js-sys",
     "dep:pin-project",
@@ -72,14 +73,15 @@ derive_more = { version = "2", features = ["display", "error"] }
 futures = "0.3"
 hex = "0.4"
 serde_json = "1"
-# smoldot's native output goes through `log`, and this staticlib owns its own
-# copy of that global, so the sink lives here (see logging_native).
-log = { version = "0.4", features = ["std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"], optional = true }
 url = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# smoldot's native output goes through `log`, and this staticlib owns its own
+# copy of that global, so the sink lives here (see logging_native). Only that
+# module uses it, and only off wasm, so it arrives with the light client.
+log = { version = "0.4", features = ["std"], optional = true }
 jsonrpsee-client-transport = { version = "0.24", features = ["ws", "tls-rustls-platform-verifier"], optional = true }
 jsonrpsee-core = { version = "0.24", features = ["client"], optional = true }
 tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"], optional = true }

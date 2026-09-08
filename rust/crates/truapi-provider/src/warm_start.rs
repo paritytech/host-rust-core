@@ -136,6 +136,31 @@ impl WarmStore for FileWarmStore {
 /// information, which it then silently ignores on the next run. Saving one over
 /// a good blob turns a warm start back into a cold one, so a blob only counts
 /// once it carries chain information.
+pub(crate) fn carries_runtime_code(blob: &str) -> bool {
+    // smoldot serialises the runtime code as `runtimeCode` and omits the key
+    // when it has none, and its shrink ladder drops that field first when a
+    // snapshot is over the size cap. A blob without it still skips the warp
+    // sync, since the database's chain information is chosen on finalized block
+    // number alone, but it costs a runtime download on the next start.
+    blob.contains("\"runtimeCode\":")
+}
+
+/// Whether `blob` is worth storing over `stored`.
+///
+/// A snapshot taken early, or shrunk to fit the size cap, can carry chain
+/// information without the runtime code. That is still usable, so it is worth
+/// keeping when nothing is stored, but it must not replace a blob that has the
+/// code: doing so trades a warm start for a runtime download every run.
+pub(crate) fn is_worth_storing(blob: &str, stored: Option<&str>) -> bool {
+    if !carries_chain_information(blob) {
+        return false;
+    }
+    match stored {
+        Some(stored) => carries_runtime_code(blob) || !carries_runtime_code(stored),
+        None => true,
+    }
+}
+
 pub(crate) fn carries_chain_information(blob: &str) -> bool {
     // A substring test rather than a parse: this runs on every snapshot against
     // a blob of up to 8 MB, and smoldot's encoder omits the key entirely when
@@ -174,6 +199,33 @@ mod tests {
         assert!(carries_chain_information(
             r#"{"chain":{"finalized_block_header":"0x00"},"genesisHash":"0x01"}"#
         ));
+    }
+
+    #[test]
+    fn a_blob_without_runtime_code_never_replaces_one_that_has_it() {
+        const WITH_CODE: &str = r#"{"chain":{"a":1},"runtimeCode":"AAAA"}"#;
+        const WITHOUT_CODE: &str = r#"{"chain":{"a":1}}"#;
+
+        assert!(
+            is_worth_storing(WITHOUT_CODE, None),
+            "a blob with no runtime code still beats nothing stored"
+        );
+        assert!(
+            is_worth_storing(WITH_CODE, Some(WITHOUT_CODE)),
+            "gaining the runtime code is an improvement"
+        );
+        assert!(
+            !is_worth_storing(WITHOUT_CODE, Some(WITH_CODE)),
+            "losing the runtime code would cost a runtime download every run"
+        );
+        assert!(
+            is_worth_storing(WITH_CODE, Some(WITH_CODE)),
+            "a fresher blob of the same quality is still worth storing"
+        );
+        assert!(
+            !is_worth_storing(r#"{"genesisHash":"0x01"}"#, None),
+            "a blob with no chain information is worth nothing"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

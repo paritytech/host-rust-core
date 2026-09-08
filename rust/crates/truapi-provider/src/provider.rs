@@ -67,7 +67,10 @@ impl EmbeddedChainProviderBuilder {
 
     /// Register `source` as a parachain syncing through the relay registered
     /// under `relay_genesis`. A later registration for `genesis_hash` wins.
-    #[cfg(feature = "smoldot")]
+    ///
+    /// The catalog is the only caller outside tests, so a build without it has
+    /// no parachain to register.
+    #[cfg(all(feature = "smoldot", any(feature = "networks", test)))]
     pub(crate) fn parachain(
         mut self,
         genesis_hash: [u8; 32],
@@ -356,10 +359,14 @@ impl EmbeddedChainProvider {
             return Ok(false);
         }
         let blob = self.snapshot(genesis_hash).await?;
-        if !crate::warm_start::carries_chain_information(&blob) {
+        // Read before write: a snapshot without the runtime code is worth
+        // keeping over nothing stored, and worth refusing over a blob that has
+        // it, since replacing one costs a runtime download on every later run.
+        let stored = store.load(genesis_hash).await?;
+        if !crate::warm_start::is_worth_storing(&blob, stored.as_deref()) {
             tracing::debug!(
                 genesis = %hex::encode(genesis_hash),
-                "no finalized state to store yet"
+                "nothing better than what is already stored"
             );
             return Ok(false);
         }

@@ -37,6 +37,11 @@ const response = await connection.nextResponse(); // undefined once closed
 connection.close();
 ```
 
+Warm start is on by default and needs no wiring. `setWarmStore(store)` puts the
+blobs somewhere else, and `setWarmStore(null)` turns it off, in which case every
+chain syncs from the chain spec's checkpoint. `saveDatabase(genesisHash)` forces
+a snapshot at a moment of the host's choosing.
+
 ## Native hosts
 
 Android and iOS do not consume this package. The same `truapi-provider` crate is
