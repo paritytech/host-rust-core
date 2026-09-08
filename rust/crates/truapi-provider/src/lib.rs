@@ -55,6 +55,8 @@ mod logging_native;
 #[cfg(feature = "networks")]
 mod networks;
 mod provider;
+#[cfg(feature = "smoldot")]
+pub mod warm_start;
 #[cfg(all(feature = "ws", not(target_arch = "wasm32")))]
 mod ws;
 #[cfg(all(feature = "ws", target_arch = "wasm32"))]
@@ -69,6 +71,10 @@ pub use config::LightClientBuilder;
 #[cfg(feature = "networks")]
 pub use networks::{NetworkChains, known_networks};
 pub use provider::{EmbeddedChainProvider, EmbeddedChainProviderBuilder};
+#[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
+pub use warm_start::FileWarmStore;
+#[cfg(feature = "smoldot")]
+pub use warm_start::{WarmStore, WarmStoreError};
 
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();

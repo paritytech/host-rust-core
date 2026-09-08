@@ -106,6 +106,26 @@ impl ChainProviderBuilder {
         Ok(())
     }
 
+    /// Keep warm-start blobs in `store`, a JS object with
+    /// `load(genesisHash)` returning the stored string or `null`, and
+    /// `save(genesisHash, blob)`. Both are called with a `0x`-prefixed hex
+    /// genesis hash and may return a promise.
+    ///
+    /// A store that cannot answer must reject rather than resolve empty: an
+    /// empty read is taken as nothing stored yet, and would let a later
+    /// [`persist`](ChainProviderHandle::persist) overwrite good state.
+    #[cfg(feature = "smoldot")]
+    #[wasm_bindgen(js_name = setWarmStore)]
+    pub fn set_warm_store(&mut self, store: JsValue) -> Result<(), JsError> {
+        let store = JsWarmStore::new(store)?;
+        let builder = self
+            .inner
+            .take()
+            .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
+        self.inner = Some(builder.warm_store(std::sync::Arc::new(store)));
+        Ok(())
+    }
+
     /// Register every chain of the bundled network `name` (relay plus system
     /// parachains, with relay wiring and statement-store placement supplied by
     /// the catalog). Returns the network's genesis hashes.
@@ -169,6 +189,39 @@ impl ChainProviderHandle {
             inner: Arc::from(connection),
             responses: Arc::new(Mutex::new(responses)),
         })
+    }
+
+    /// Read the warm store's blob for the `0x`-prefixed genesis hash into this
+    /// provider, so the next [`connect`](ChainProviderHandle::connect) to that
+    /// chain resumes from it. Resolves with whether a blob is now in hand.
+    ///
+    /// Call this before connecting. The store is read at most once per chain,
+    /// because only a chain's first add consumes a blob.
+    #[cfg(feature = "smoldot")]
+    #[wasm_bindgen(js_name = warmUp)]
+    pub async fn warm_up(&self, genesis_hash: &str) -> Result<bool, JsError> {
+        let genesis = parse_genesis(genesis_hash)?;
+        self.inner
+            .warm_up(genesis)
+            .await
+            .map_err(|err| JsError::new(&err.reason))
+    }
+
+    /// Snapshot the chain's finalized state and write it to the warm store.
+    /// Resolves with whether a blob was stored.
+    ///
+    /// A chain that has finalized nothing yet is skipped rather than stored,
+    /// since that blob would be discarded on the next run. This is a full round
+    /// trip against the light client, so drive it while the page or worker is
+    /// alive; neither `pagehide` nor a hidden tab is guaranteed to stay
+    /// scheduled long enough to finish one, and a Worker sees neither event.
+    #[cfg(feature = "smoldot")]
+    pub async fn persist(&self, genesis_hash: &str) -> Result<bool, JsError> {
+        let genesis = parse_genesis(genesis_hash)?;
+        self.inner
+            .persist(genesis)
+            .await
+            .map_err(|err| JsError::new(&err.reason))
     }
 
     /// Produce a warm-start database blob for the `0x`-prefixed genesis hash.
@@ -259,9 +312,124 @@ impl NetworkChains {
     }
 }
 
-#[cfg(feature = "networks")]
+#[cfg(any(feature = "networks", feature = "smoldot"))]
 fn hex0x(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
+}
+
+/// A [`WarmStore`](crate::warm_start::WarmStore) over a JS object's `load` and
+/// `save` methods.
+///
+/// The JS values are held in a `SendWrapper` because the trait is `Send`, and
+/// every call crosses back to Rust through a oneshot channel rather than
+/// awaiting the promise in place: a `JsFuture` is not `Send` and could not be
+/// held across the trait method's await point.
+#[cfg(feature = "smoldot")]
+struct JsWarmStore {
+    inner: send_wrapper::SendWrapper<JsStoreMethods>,
+}
+
+/// The JS object and the two functions taken from it at registration time.
+#[cfg(feature = "smoldot")]
+struct JsStoreMethods {
+    store: JsValue,
+    load: js_sys::Function,
+    save: js_sys::Function,
+}
+
+#[cfg(feature = "smoldot")]
+impl JsWarmStore {
+    /// Take `load` and `save` off `store`, failing if either is missing.
+    fn new(store: JsValue) -> Result<Self, JsError> {
+        let load = Self::method(&store, "load")?;
+        let save = Self::method(&store, "save")?;
+        Ok(Self {
+            inner: send_wrapper::SendWrapper::new(JsStoreMethods { store, load, save }),
+        })
+    }
+
+    /// Read one function property off the store object.
+    fn method(store: &JsValue, name: &str) -> Result<js_sys::Function, JsError> {
+        js_sys::Reflect::get(store, &JsValue::from_str(name))
+            .map_err(|_| JsError::new(&format!("warm store has no `{name}`")))?
+            .dyn_into::<js_sys::Function>()
+            .map_err(|_| JsError::new(&format!("warm store `{name}` is not a function")))
+    }
+}
+
+/// Await `call`'s result on the JS event loop, reporting it through a `Send`
+/// channel the caller can hold across its own await point.
+#[cfg(feature = "smoldot")]
+fn await_js(
+    call: Result<JsValue, JsValue>,
+) -> futures::channel::oneshot::Receiver<Result<JsValue, String>> {
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    match call {
+        Ok(value) => {
+            let promise = js_sys::Promise::resolve(&value);
+            wasm_bindgen_futures::spawn_local(async move {
+                let outcome = wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .map_err(|error| describe_js(&error));
+                let _ = sender.send(outcome);
+            });
+        }
+        Err(error) => {
+            let _ = sender.send(Err(describe_js(&error)));
+        }
+    }
+    receiver
+}
+
+/// Render a thrown JS value for an error message.
+#[cfg(feature = "smoldot")]
+fn describe_js(error: &JsValue) -> String {
+    error
+        .as_string()
+        .unwrap_or_else(|| format!("{:?}", js_sys::Object::from(error.clone())))
+}
+
+#[cfg(feature = "smoldot")]
+#[truapi_platform::async_trait]
+impl crate::warm_start::WarmStore for JsWarmStore {
+    async fn load(
+        &self,
+        genesis_hash: [u8; 32],
+    ) -> Result<Option<String>, crate::warm_start::WarmStoreError> {
+        let receiver = {
+            let methods = &*self.inner;
+            await_js(
+                methods
+                    .load
+                    .call1(&methods.store, &JsValue::from_str(&hex0x(&genesis_hash))),
+            )
+        };
+        let value = receiver
+            .await
+            .map_err(|_| crate::warm_start::WarmStoreError::new("the warm store never answered"))?
+            .map_err(crate::warm_start::WarmStoreError::new)?;
+        Ok(value.as_string())
+    }
+
+    async fn save(
+        &self,
+        genesis_hash: [u8; 32],
+        blob: String,
+    ) -> Result<(), crate::warm_start::WarmStoreError> {
+        let receiver = {
+            let methods = &*self.inner;
+            await_js(methods.save.call2(
+                &methods.store,
+                &JsValue::from_str(&hex0x(&genesis_hash)),
+                &JsValue::from_str(&blob),
+            ))
+        };
+        receiver
+            .await
+            .map_err(|_| crate::warm_start::WarmStoreError::new("the warm store never answered"))?
+            .map_err(crate::warm_start::WarmStoreError::new)?;
+        Ok(())
+    }
 }
 
 fn parse_genesis(hex_str: &str) -> Result<[u8; 32], JsError> {

@@ -4,6 +4,8 @@
 //! [`ChainSource`]; the light backend brings the relay up behind the parachain.
 
 use std::collections::HashMap;
+#[cfg(feature = "smoldot")]
+use std::sync::Mutex;
 
 use truapi::latest::GenericError;
 use truapi_platform::{ChainProvider, JsonRpcConnection};
@@ -12,7 +14,7 @@ use crate::config::ChainSource;
 use crate::error::ProviderError;
 
 /// Builder collecting genesis-hash to [`ChainSource`] registrations.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct EmbeddedChainProviderBuilder {
     chains: HashMap<[u8; 32], ChainSource>,
     /// The relay each parachain syncs through, keyed by parachain genesis hash
@@ -23,6 +25,22 @@ pub struct EmbeddedChainProviderBuilder {
     /// light-client chain at connect time if it has no explicit blob.
     #[cfg(feature = "smoldot")]
     databases: HashMap<[u8; 32], String>,
+    /// Where warm-start blobs are read from and written back to.
+    #[cfg(feature = "smoldot")]
+    warm_store: Option<crate::warm_start::SharedWarmStore>,
+}
+
+impl core::fmt::Debug for EmbeddedChainProviderBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut builder = f.debug_struct("EmbeddedChainProviderBuilder");
+        builder.field("chains", &self.chains);
+        #[cfg(feature = "smoldot")]
+        builder
+            .field("relays", &self.relays)
+            .field("databases", &self.databases)
+            .field("warm_store", &self.warm_store.is_some());
+        builder.finish()
+    }
 }
 
 impl EmbeddedChainProviderBuilder {
@@ -64,6 +82,17 @@ impl EmbeddedChainProviderBuilder {
         self
     }
 
+    /// Keep warm-start blobs in `store`, so
+    /// [`warm_up`](EmbeddedChainProvider::warm_up) and
+    /// [`persist`](EmbeddedChainProvider::persist) have somewhere to read from
+    /// and write to. A blob registered with [`database`](Self::database) still
+    /// wins over a stored one.
+    #[cfg(feature = "smoldot")]
+    pub fn warm_store(mut self, store: crate::warm_start::SharedWarmStore) -> Self {
+        self.warm_store = Some(store);
+        self
+    }
+
     /// Build the provider. Light-client resources start lazily on the first
     /// light-client connect.
     pub fn build(self) -> EmbeddedChainProvider {
@@ -72,7 +101,9 @@ impl EmbeddedChainProviderBuilder {
             #[cfg(feature = "smoldot")]
             relays: self.relays,
             #[cfg(feature = "smoldot")]
-            databases: self.databases,
+            databases: Mutex::new(self.databases),
+            #[cfg(feature = "smoldot")]
+            warm_store: self.warm_store,
             #[cfg(feature = "smoldot")]
             light: crate::light::LightState::new(),
         }
@@ -97,8 +128,12 @@ pub struct EmbeddedChainProvider {
     /// parachains carry theirs in the catalog entry.
     #[cfg(feature = "smoldot")]
     relays: HashMap<[u8; 32], [u8; 32]>,
+    /// Blobs seeded explicitly or read back from the warm store, kept behind a
+    /// lock because `warm_up` fills it after the provider is built.
     #[cfg(feature = "smoldot")]
-    databases: HashMap<[u8; 32], String>,
+    databases: Mutex<HashMap<[u8; 32], String>>,
+    #[cfg(feature = "smoldot")]
+    warm_store: Option<crate::warm_start::SharedWarmStore>,
     #[cfg(feature = "smoldot")]
     light: crate::light::LightState,
 }
@@ -159,7 +194,11 @@ impl EmbeddedChainProvider {
     /// `genesis_hash` and the source is a light client with no explicit blob.
     #[cfg(feature = "smoldot")]
     fn with_seeded_database(&self, genesis_hash: [u8; 32], mut source: ChainSource) -> ChainSource {
-        if let Some(blob) = self.databases.get(&genesis_hash)
+        let databases = self
+            .databases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(blob) = databases.get(&genesis_hash)
             && let ChainSource::LightClient {
                 database_content, ..
             } = &mut source
@@ -189,6 +228,77 @@ const SNAPSHOT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(6
 
 #[cfg(feature = "smoldot")]
 impl EmbeddedChainProvider {
+    /// Whether a blob is already in hand for `genesis_hash`.
+    fn has_database(&self, genesis_hash: [u8; 32]) -> bool {
+        self.databases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&genesis_hash)
+    }
+
+    /// Read `genesis_hash`'s stored blob into this provider, so the next
+    /// connect to that chain resumes from it instead of warp syncing from the
+    /// chain-spec checkpoint. Returns whether a blob is now in hand.
+    ///
+    /// The store is read at most once per chain. smoldot keys a chain by its
+    /// genesis hash, so only the first add of a chain consumes a blob and a
+    /// later read could not take effect. A blob registered through
+    /// [`EmbeddedChainProviderBuilder::database`] wins and is not overwritten.
+    ///
+    /// Call this before [`connect`](truapi_platform::ChainProvider::connect),
+    /// not from inside a connection callback: on the native bindings `connect`
+    /// blocks the calling thread, and a store that needs the main thread would
+    /// deadlock underneath it.
+    pub async fn warm_up(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
+        if self.has_database(genesis_hash) {
+            return Ok(true);
+        }
+        let Some(store) = self.warm_store.clone() else {
+            return Ok(false);
+        };
+        let Some(blob) = store.load(genesis_hash).await? else {
+            return Ok(false);
+        };
+        self.databases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(genesis_hash)
+            .or_insert(blob);
+        Ok(true)
+    }
+
+    /// Snapshot `genesis_hash`'s finalized state and hand it to the warm store.
+    /// Returns whether a blob was stored.
+    ///
+    /// A chain that has finalized nothing yet still answers the snapshot
+    /// request, with a blob carrying no chain information that smoldot would
+    /// discard on the next run. Storing it would turn a warm start back into a
+    /// cold one, so it is skipped instead.
+    ///
+    /// This is a full round trip against the light client, not a write: call it
+    /// while the app is alive, and treat a call from a teardown callback as
+    /// best effort, since neither a hidden page nor a backgrounded app is
+    /// guaranteed to stay scheduled long enough to finish it.
+    pub async fn persist(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
+        let Some(store) = self.warm_store.clone() else {
+            return Ok(false);
+        };
+        let blob = self.snapshot(genesis_hash).await?;
+        if !crate::warm_start::carries_chain_information(&blob) {
+            tracing::debug!(
+                genesis = %hex::encode(genesis_hash),
+                "no finalized state to store yet"
+            );
+            return Ok(false);
+        }
+        store.save(genesis_hash, blob.clone()).await?;
+        self.databases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(genesis_hash, blob);
+        Ok(true)
+    }
+
     /// Produce a warm-start database blob for `genesis_hash` by asking the
     /// embedded light client for its finalized-database snapshot.
     ///
@@ -367,6 +477,121 @@ mod tests {
             .build();
         futures::executor::block_on(seeded.connect(GENESIS))
             .expect("a chain seeded with its own snapshot connects");
+    }
+
+    /// A store answering from memory, recording what it was asked to keep.
+    #[cfg(feature = "smoldot")]
+    #[derive(Default)]
+    struct MemoryWarmStore {
+        stored: std::sync::Mutex<std::collections::HashMap<[u8; 32], String>>,
+        loads: std::sync::atomic::AtomicUsize,
+    }
+
+    #[cfg(feature = "smoldot")]
+    #[truapi_platform::async_trait]
+    impl crate::warm_start::WarmStore for MemoryWarmStore {
+        async fn load(
+            &self,
+            genesis_hash: [u8; 32],
+        ) -> Result<Option<String>, crate::warm_start::WarmStoreError> {
+            self.loads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(self
+                .stored
+                .lock()
+                .expect("test store")
+                .get(&genesis_hash)
+                .cloned())
+        }
+
+        async fn save(
+            &self,
+            genesis_hash: [u8; 32],
+            blob: String,
+        ) -> Result<(), crate::warm_start::WarmStoreError> {
+            self.stored
+                .lock()
+                .expect("test store")
+                .insert(genesis_hash, blob);
+            Ok(())
+        }
+    }
+
+    /// A stored blob reaches the chain source the light backend is handed.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    #[allow(irrefutable_let_patterns)]
+    fn warm_up_seeds_a_chain_from_the_store() {
+        const GENESIS: [u8; 32] = [3; 32];
+        let store = std::sync::Arc::new(MemoryWarmStore::default());
+        store
+            .stored
+            .lock()
+            .expect("test store")
+            .insert(GENESIS, "stored-blob".to_owned());
+
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .warm_store(store.clone())
+            .build();
+
+        assert!(
+            futures::executor::block_on(provider.warm_up(GENESIS)).expect("the store answers"),
+            "a stored blob is reported as in hand"
+        );
+
+        let seeded =
+            provider.with_seeded_database(GENESIS, ChainSource::light_client("{}").build());
+        let ChainSource::LightClient {
+            database_content, ..
+        } = seeded
+        else {
+            panic!("expected a LightClient source");
+        };
+        assert_eq!(database_content.as_deref(), Some("stored-blob"));
+
+        futures::executor::block_on(provider.warm_up(GENESIS)).expect("the store answers");
+        assert_eq!(
+            store.loads.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the store is read once per chain, since only the first add consumes a blob"
+        );
+    }
+
+    /// An explicitly registered blob is not replaced by the stored one.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn an_explicit_blob_wins_over_the_store() {
+        const GENESIS: [u8; 32] = [4; 32];
+        let store = std::sync::Arc::new(MemoryWarmStore::default());
+        store
+            .stored
+            .lock()
+            .expect("test store")
+            .insert(GENESIS, "stored-blob".to_owned());
+
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client("{}").build())
+            .database(GENESIS, "explicit-blob".to_owned())
+            .warm_store(store.clone())
+            .build();
+
+        assert!(futures::executor::block_on(provider.warm_up(GENESIS)).expect("no store read"));
+        assert_eq!(
+            store.loads.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "an explicit blob means the store is never consulted"
+        );
+    }
+
+    /// Without a store, warm start is simply off rather than an error.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn warm_up_without_a_store_reports_nothing_in_hand() {
+        let provider = EmbeddedChainProvider::builder()
+            .chain([5; 32], ChainSource::light_client("{}").build())
+            .build();
+        assert!(!futures::executor::block_on(provider.warm_up([5; 32])).expect("no store"));
     }
 
     #[cfg(feature = "ws")]

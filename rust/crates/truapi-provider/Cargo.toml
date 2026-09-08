@@ -61,7 +61,7 @@ smoldot = [
 js = ["ws", "dep:wasm-bindgen-futures", "dep:tracing-subscriber"]
 networks = ["smoldot"]
 # Swift/UniFFI bindings for native hosts (iOS, macOS, ...).
-uniffi = ["smoldot", "networks", "dep:uniffi"]
+uniffi = ["smoldot", "networks", "dep:async-trait", "dep:uniffi"]
 # Builds the uniffi-bindgen binary (implies uniffi).
 cli = ["uniffi", "uniffi/cli"]
 
@@ -94,6 +94,9 @@ webpki-roots = { version = "0.26", optional = true }
 smoldot-light = { version = "2.0", default-features = false, features = ["std"], optional = true }
 rand = { version = "0.8", optional = true }
 thiserror = { version = "1", optional = true }
+# uniffi annotates its generated foreign-trait impl `::async_trait::async_trait`
+# whenever the trait has an async method, so the path has to resolve from here.
+async-trait = { version = "0.1", optional = true }
 uniffi = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
