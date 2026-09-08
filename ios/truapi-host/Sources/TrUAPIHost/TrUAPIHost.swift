@@ -29,6 +29,12 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     public let platformVersion: String?
     public let peopleChainGenesisHash: Data
     public let bulletinChainGenesisHash: Data
+    /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
+    /// `testnet`). The core derives the wallet's reserved identities under it:
+    /// `uid.<suffix>` for the identity account and `peopl.<suffix>` for the
+    /// person ring-VRF keys, the same person the app's own onboarding derives
+    /// on that network.
+    public let networkSuffix: String
     public let localSessionSecret: Data?
     public let localSessionLiteUsername: String?
 
@@ -40,6 +46,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         platformVersion: String? = nil,
         peopleChainGenesisHash: Data,
         bulletinChainGenesisHash: Data,
+        networkSuffix: String,
         localSessionSecret: Data? = nil,
         localSessionLiteUsername: String? = nil
     ) {
@@ -50,6 +57,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.networkSuffix = networkSuffix
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
     }
@@ -64,6 +72,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,
             bulletinChainGenesisHash: bulletinChainGenesisHash,
+            networkSuffix: networkSuffix,
             localSessionSecret: localSessionSecret,
             localSessionLiteUsername: localSessionLiteUsername
         )

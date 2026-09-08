@@ -67,7 +67,8 @@ pub enum PairCommand {
 
 /// A mnemonic accepted by the command parser without exposing it through
 /// derived debug output or retaining it after the command is dropped.
-#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop, derive_more::Debug)]
+#[debug("<redacted>")]
 pub struct SecretMnemonic(String);
 
 impl SecretMnemonic {
@@ -78,12 +79,6 @@ impl SecretMnemonic {
     /// Borrow the phrase only at the account-import boundary.
     pub fn expose_secret(&self) -> &str {
         &self.0
-    }
-}
-
-impl fmt::Debug for SecretMnemonic {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
     }
 }
 
@@ -535,6 +530,7 @@ fn path_completions(input: &str) -> Vec<Completion> {
 }
 
 /// Editable command input with completion selection and in-memory history.
+#[derive(Default)]
 pub struct CommandEditor {
     chars: Vec<char>,
     cursor: usize,
@@ -567,26 +563,8 @@ impl fmt::Debug for CommandEditor {
 impl Drop for CommandEditor {
     fn drop(&mut self) {
         self.chars.zeroize();
-        for entry in &mut self.history {
-            entry.zeroize();
-        }
+        self.history.zeroize();
         self.history_draft.zeroize();
-    }
-}
-
-impl Default for CommandEditor {
-    fn default() -> Self {
-        Self {
-            chars: Vec::new(),
-            cursor: 0,
-            history: Vec::new(),
-            history_index: None,
-            history_draft: String::new(),
-            completion_index: 0,
-            completions_dismissed: false,
-            session_names: Vec::new(),
-            scope: CommandScope::SigningHost,
-        }
     }
 }
 

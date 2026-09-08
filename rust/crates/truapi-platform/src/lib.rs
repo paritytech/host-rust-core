@@ -91,6 +91,12 @@ pub struct SigningHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
+    /// The network's dotNS TLD without the leading dot: `dot`, `paseo`,
+    /// `testnet`. Every reserved RFC-0022 identity the wallet derives ends in
+    /// it: the `uid.<suffix>` identity account and the `peopl.<suffix>` person
+    /// ring-VRF keys. Must match the People chain's
+    /// `NetworkSuffix.NetworkSuffix` value used for proof contexts.
+    pub network_suffix: String,
 }
 
 /// Product identity attached to one product-facing TrUAPI connection.
@@ -215,13 +221,26 @@ impl SigningHostConfig {
         platform_info: PlatformInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
+        network_suffix: String,
     ) -> Result<Self, RuntimeConfigValidationError> {
+        validate_network_suffix(&network_suffix)?;
         Ok(Self {
             host: HostRuntimeConfig::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            network_suffix,
         })
     }
+}
+
+fn validate_network_suffix(network_suffix: &str) -> Result<(), RuntimeConfigValidationError> {
+    require_non_empty("network_suffix", network_suffix)?;
+    if !DOTNS_TLDS.contains(&network_suffix) {
+        return Err(RuntimeConfigValidationError::InvalidNetworkSuffix {
+            network_suffix: network_suffix.to_string(),
+        });
+    }
+    Ok(())
 }
 
 impl ProductContext {
@@ -853,6 +872,12 @@ pub enum RuntimeConfigValidationError {
     InvalidProductId {
         /// Actual product id value.
         product_id: String,
+    },
+    /// Network suffix was not a supported dotNS TLD.
+    #[display("network_suffix must be a supported dotNS TLD, got {network_suffix:?}")]
+    InvalidNetworkSuffix {
+        /// Actual network suffix value.
+        network_suffix: String,
     },
 }
 
@@ -1500,6 +1525,56 @@ fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn signing_host_config(
+        network_suffix: &str,
+    ) -> Result<SigningHostConfig, RuntimeConfigValidationError> {
+        SigningHostConfig::new(
+            HostInfo {
+                name: "Test host".to_string(),
+                icon: None,
+                version: None,
+                platform: HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [1; 32],
+            network_suffix.to_string(),
+        )
+    }
+
+    #[test]
+    fn a_signing_host_is_configured_for_one_dotns_tld() {
+        for tld in DOTNS_TLDS {
+            let config = signing_host_config(tld).expect("a known TLD is a valid suffix");
+            assert_eq!(config.network_suffix, *tld);
+        }
+
+        assert_eq!(
+            signing_host_config(""),
+            Err(RuntimeConfigValidationError::EmptyField {
+                field: "network_suffix"
+            })
+        );
+        for malformed in [
+            "pasoe",
+            "unknown",
+            ".paseo",
+            "peopl.paseo",
+            "Paseo",
+            "pas eo",
+            "a-b",
+            "abcdefghijklmnopq",
+        ] {
+            assert_eq!(
+                signing_host_config(malformed),
+                Err(RuntimeConfigValidationError::InvalidNetworkSuffix {
+                    network_suffix: malformed.to_string()
+                }),
+                "{malformed:?} must be rejected"
+            );
+        }
+    }
 
     fn file_with_url(url: &str) -> ChatMessageContent {
         ChatMessageContent::File(ChatFile {

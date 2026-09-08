@@ -3,9 +3,13 @@
 //! Product subtrees use hard HDKD at `//product//{product_id}`. Individual
 //! accounts use one soft junction carrying the RFC-0022 32-byte derivation
 //! index, so a paired host can derive children from the subtree public key.
-//! Reserved built-ins additionally pin the `uid.dot` identity account and the
-//! legacy `peopl.dot` full/lite ring-VRF keyed-hash paths used by pairing
-//! attestation. RFC-0024 operational key selection comes from the registry.
+//! Reserved built-ins additionally pin the `uid.<suffix>` identity account and
+//! the `peopl.<suffix>` full/lite ring-VRF keyed-hash paths used by pairing
+//! attestation, where `<suffix>` is the network's dotNS TLD (`dot`, `paseo`,
+//! `testnet`) from [`truapi_platform::SigningHostConfig::network_suffix`]. The
+//! People chain scopes its proof contexts with the same suffix, so one
+//! network has one person per seed. RFC-0024 operational key selection comes
+//! from the registry.
 //! Host-spec C.5-C.7 define the product-account derivation, SS58 address, and
 //! `ProductAccountId` shape:
 //! <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L66-L128>
@@ -18,11 +22,30 @@ use thiserror::Error;
 
 const JUNCTION_ID_LEN: usize = 32;
 const PRODUCT_JUNCTION: &str = "product";
-/// Reserved RFC-0022 product id for the public light-person identity account.
-pub const IDENTITY_PRODUCT_ID: &str = "uid.dot";
-/// Reserved RFC-0022 ring-VRF domain for full and light personhood.
-pub const PERSONHOOD_PRODUCT_ID: &str = "peopl.dot";
+/// Reserved RFC-0022 dotNS label of the public light-person identity account;
+/// the product id is `uid.<network suffix>`, see [`identity_product_id`].
+pub const IDENTITY_LABEL: &str = "uid";
+/// Reserved RFC-0022 dotNS label of the personhood product, whose ring-VRF
+/// domain holds the full and light person keys; the product id is
+/// `peopl.<network suffix>`, see [`personhood_product_id`].
+pub const PERSONHOOD_LABEL: &str = "peopl";
 const RING_VRF_ROOT_KEY: &[u8] = b"ring-vrf";
+
+/// The reserved identity product id on the network with `network_suffix`:
+/// `uid.dot` on Polkadot, `uid.paseo` on paseo-next-v2, `uid.testnet` on
+/// previewnet.
+pub fn identity_product_id(network_suffix: &str) -> String {
+    format!("{IDENTITY_LABEL}.{network_suffix}")
+}
+
+/// The reserved personhood product id on the network with `network_suffix`:
+/// `peopl.dot` on Polkadot, `peopl.paseo` on paseo-next-v2, `peopl.testnet` on
+/// previewnet. It is the product id a personhood app is opened under on that
+/// network, so the keys derived here are the ones such an app owns through
+/// the RFC-0024 registry.
+pub fn personhood_product_id(network_suffix: &str) -> String {
+    format!("{PERSONHOOD_LABEL}.{network_suffix}")
+}
 
 /// Substrate sr25519 signing-context string. Shared by every sr25519 signature
 /// the core produces: statement store, product raw signing, dotNS gateway.
@@ -85,32 +108,46 @@ pub fn derivation_index_bytes(index: &truapi::v01::DerivationIndex) -> [u8; 32] 
         truapi::v01::DerivationIndex::Raw(bytes) => *bytes,
     }
 }
-/// Derive the RFC-0022 public light-person identity account:
-/// `//product//uid.dot/index_bytes(0)`.
-pub fn derive_identity_keypair(entropy: &[u8]) -> Result<Keypair, ProductAccountError> {
+/// Derive the RFC-0022 public light-person identity account on the network
+/// with `network_suffix`: `//product//uid.<network_suffix>/index_bytes(0)`.
+pub fn derive_identity_keypair(
+    entropy: &[u8],
+    network_suffix: &str,
+) -> Result<Keypair, ProductAccountError> {
     let root = derive_root_keypair_from_entropy(entropy)?;
-    let subtree = derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, IDENTITY_PRODUCT_ID])?;
+    let subtree = derive_hard_path_from_keypair(
+        root,
+        &[PRODUCT_JUNCTION, &identity_product_id(network_suffix)],
+    )?;
     Ok(subtree.derived_key_simple(ChainCode(index_bytes(0)), []).0)
 }
 
-/// Derive the RFC-0022 full-person ring-VRF entropy at
-/// `hash(root_entropy, "ring-vrf")//peopl.dot//index_bytes(0)`.
-pub fn derive_full_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
-    derive_person_ring_vrf_entropy(root_entropy, 0)
+/// Derive the RFC-0022 full-person ring-VRF entropy on the network with
+/// `network_suffix`:
+/// `hash(root_entropy, "ring-vrf")//peopl.<network_suffix>//index_bytes(0)`.
+pub fn derive_full_person_ring_vrf_entropy(root_entropy: &[u8], network_suffix: &str) -> [u8; 32] {
+    derive_person_ring_vrf_entropy(root_entropy, network_suffix, 0)
 }
 
-/// Derive the RFC-0022 light-person ring-VRF entropy at
-/// `hash(root_entropy, "ring-vrf")//peopl.dot//index_bytes(1)`.
-pub fn derive_lite_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
-    derive_person_ring_vrf_entropy(root_entropy, 1)
+/// Derive the RFC-0022 light-person ring-VRF entropy on the network with
+/// `network_suffix`:
+/// `hash(root_entropy, "ring-vrf")//peopl.<network_suffix>//index_bytes(1)`.
+pub fn derive_lite_person_ring_vrf_entropy(root_entropy: &[u8], network_suffix: &str) -> [u8; 32] {
+    derive_person_ring_vrf_entropy(root_entropy, network_suffix, 1)
 }
 
-fn derive_person_ring_vrf_entropy(root_entropy: &[u8], index: u32) -> [u8; 32] {
+fn derive_person_ring_vrf_entropy(
+    root_entropy: &[u8],
+    network_suffix: &str,
+    index: u32,
+) -> [u8; 32] {
     derive_ring_vrf_entropy(
         root_entropy,
-        PERSONHOOD_PRODUCT_ID,
+        &personhood_product_id(network_suffix),
         &truapi::v01::DerivationIndex::Index(index),
     )
+    // The only failing junction is an all-digit string outside `u64`, and
+    // this one always starts with the `peopl.` label.
     .expect("the reserved personhood product id is a valid junction")
 }
 
@@ -414,13 +451,62 @@ mod tests {
             "372b08255c7798fe3193756296005adc4c44adb9f3986fb718aa98a48b4bf725"
         );
         assert_eq!(
-            hex::encode(derive_full_person_ring_vrf_entropy(&root_entropy)),
+            hex::encode(derive_full_person_ring_vrf_entropy(&root_entropy, "dot")),
             "c47086f94a7f4c05b7afd9f2339d3fea168f3823b5424ba1f7b31043d8ef60af"
         );
         assert_eq!(
-            hex::encode(derive_lite_person_ring_vrf_entropy(&root_entropy)),
+            hex::encode(derive_lite_person_ring_vrf_entropy(&root_entropy, "dot")),
             "8d7f5e1510a7e8d813887e100f5a260ec9de60e68695477b93360ee7e3d16a9f"
         );
+    }
+
+    #[test]
+    fn person_ring_vrf_entropy_follows_the_network_suffix() {
+        // Same seed, one person per network. The vectors come from an
+        // independent RFC-0022 implementation (`@web3-citizenship/accounts`
+        // `fullPersonRingVrfEntropy(entropy, tld)`), which is also what the
+        // iOS host derives; a `.dot` key is never a `.paseo` key.
+        let root_entropy: Vec<u8> = (1..=32).collect();
+        let vectors = [
+            (
+                "paseo",
+                "50a2adfe7b557a72521789d3961795e71619ac8a19f9cb42b581f3fb703d7453",
+                "a0e869e303f9828ccfd006682798ab0e91c29ce3f1ce3d93c640449be4a157dc",
+            ),
+            (
+                "testnet",
+                "b46833f2492571d719072e0a04478433cc8f836fc626c0690bc13e00bd7d1547",
+                "574bdaa99061a6a88442c3d90207de487a753fc7da34f960e305e9d9152bb060",
+            ),
+        ];
+        for (suffix, full, lite) in vectors {
+            assert_eq!(
+                hex::encode(derive_full_person_ring_vrf_entropy(&root_entropy, suffix)),
+                full,
+                "full person key under peopl.{suffix}"
+            );
+            assert_eq!(
+                hex::encode(derive_lite_person_ring_vrf_entropy(&root_entropy, suffix)),
+                lite,
+                "light person key under peopl.{suffix}"
+            );
+            // The reserved keys are exactly what a `peopl.<suffix>` product
+            // registers through RFC-0024 at indexes 0 and 1: no special case.
+            let product_id = personhood_product_id(suffix);
+            for (index, expected) in [(0u32, full), (1, lite)] {
+                assert_eq!(
+                    hex::encode(
+                        derive_ring_vrf_entropy(
+                            &root_entropy,
+                            &product_id,
+                            &truapi::v01::DerivationIndex::Index(index),
+                        )
+                        .unwrap()
+                    ),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]
@@ -440,14 +526,18 @@ mod tests {
     #[test]
     fn identity_is_uid_dot_default_product_account_and_signs() {
         let entropy = [0xAB; 16];
-        let identity = derive_identity_keypair(&entropy).unwrap();
+        let identity = derive_identity_keypair(&entropy, "dot").unwrap();
         let root = derive_root_keypair_from_entropy(&entropy).unwrap();
         let uid_subtree =
-            derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, IDENTITY_PRODUCT_ID]).unwrap();
+            derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, "uid.dot"]).unwrap();
         let expected = uid_subtree
             .derived_key_simple(ChainCode(index_bytes(0)), [])
             .0;
         assert_eq!(identity.public, expected.public);
+        assert_eq!(
+            product_public_key_to_address(identity.public.to_bytes()),
+            "5ESC9GvvMe6troagKBHZHNAqw7kcpXafF9NvTgnnwCJATi8Z"
+        );
 
         let message = b"RFC-0022 identity signing vector";
         let signature =
@@ -460,6 +550,38 @@ mod tests {
                 .verify_simple(SR25519_SIGNING_CONTEXT, message, &signature)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn identity_account_follows_the_network_suffix() {
+        // `//product//uid.<suffix>/index_bytes(0)`, one ordinary product
+        // account per network; addresses from the same independent
+        // implementation as the ring-VRF vectors above.
+        let entropy = [0xAB; 16];
+        for (suffix, address) in [
+            ("paseo", "5CtVJYWUwK7WksAU9CDm6u58ucgKkmWPE26TKhjjwiJKo2hW"),
+            (
+                "testnet",
+                "5DhuA7ba5CxLtFjuU4YkAeCoCCH1YV1jjUUjFf3W5VSEmRxx",
+            ),
+        ] {
+            let identity = derive_identity_keypair(&entropy, suffix).unwrap();
+            assert_eq!(
+                product_public_key_to_address(identity.public.to_bytes()),
+                address,
+                "identity account under uid.{suffix}"
+            );
+            let subtree = derive_product_subtree_keypair(
+                &derive_root_keypair_from_entropy(&entropy).unwrap(),
+                &identity_product_id(suffix),
+            )
+            .unwrap();
+            assert_eq!(
+                derive_product_public_key(subtree.public.to_bytes(), index_bytes(0)).unwrap(),
+                identity.public.to_bytes(),
+                "the identity account is the product account at index 0"
+            );
+        }
     }
 
     #[test]

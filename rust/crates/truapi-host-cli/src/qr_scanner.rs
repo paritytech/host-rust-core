@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::fmt;
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::Path;
@@ -55,28 +54,13 @@ impl FrameOutcome {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 enum FrameError {
+    #[display("image dimensions {width}x{height} exceed the supported limit")]
     Dimensions { width: usize, height: usize },
+    #[display("RGBA image contains {actual} bytes, expected {expected}")]
     Length { expected: usize, actual: usize },
 }
-
-impl fmt::Display for FrameError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Dimensions { width, height } => write!(
-                formatter,
-                "image dimensions {width}x{height} exceed the supported limit"
-            ),
-            Self::Length { expected, actual } => write!(
-                formatter,
-                "RGBA image contains {actual} bytes, expected {expected}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for FrameError {}
 
 #[derive(Clone, Copy)]
 struct LineFinder {

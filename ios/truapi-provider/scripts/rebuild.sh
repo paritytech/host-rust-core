@@ -5,7 +5,8 @@
 #     (Sources/TrUAPIProvider + Sources/truapi_providerFFI)
 #
 # Run after changing the crate's uniffi surface or refreshing the bundled chain
-# specs, and commit the regenerated bindings with the source change.
+# specs. The outputs are gitignored, so the package's Swift target does not
+# exist until this has run.
 # Usage: ./scripts/rebuild.sh [--sim-only]
 #
 # --sim-only drops the device slice for a faster loop; publish.sh rejects the
@@ -41,14 +42,7 @@ cargo run -q -p uniffi-bindgen-cli -- generate \
     --language swift \
     --out-dir "$UNIFFI_OUT"
 
-mkdir -p "$PACKAGE_ROOT/Sources/TrUAPIProvider" \
-    "$PACKAGE_ROOT/Sources/truapi_providerFFI/include"
-cp "$UNIFFI_OUT/truapi_provider.swift" \
-    "$PACKAGE_ROOT/Sources/TrUAPIProvider/truapi_provider.swift"
-cp "$UNIFFI_OUT/truapi_providerFFI.h" \
-    "$PACKAGE_ROOT/Sources/truapi_providerFFI/include/truapi_providerFFI.h"
-cp "$UNIFFI_OUT/truapi_providerFFI.modulemap" \
-    "$PACKAGE_ROOT/Sources/truapi_providerFFI/include/module.modulemap"
+PROVIDER_UNIFFI_OUT="$UNIFFI_OUT" sh "$PACKAGE_ROOT/scripts/sync-bindings.sh"
 
 # The xcframework carries the headers; the systemLibrary target above reads the
 # committed copies, so both must come from this same generation.

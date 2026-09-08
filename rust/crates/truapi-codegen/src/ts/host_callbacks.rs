@@ -19,9 +19,9 @@ use crate::platform::{
     PlatformDefinition, PlatformInner, PlatformMethod, PlatformParam, PlatformReturn, PlatformTrait,
 };
 use crate::platform_callbacks::{
-    callback_namespace, composed_traits, optional_trait_names, platform_trait_names,
-    raw_callback_adapter_name, raw_callback_name, raw_callback_type_name, raw_callback_wire_name,
-    stream_item, to_camel_case, trait_object_return_name,
+    callback_namespace, collect_local_bridge_payload_types, composed_traits, optional_trait_names,
+    platform_trait_names, raw_callback_adapter_name, raw_callback_name, raw_callback_type_name,
+    raw_callback_wire_name, stream_item, to_camel_case, trait_object_return_name,
 };
 use crate::rustdoc::{FieldDef, TypeDef, TypeDefKind, TypeRef, VariantDef, VariantFields};
 use crate::ts::ts_string_literal;
@@ -39,7 +39,10 @@ pub fn generate(
 ) -> Result<()> {
     fs::create_dir_all(callbacks_output_dir)?;
     fs::create_dir_all(adapter_output_dir)?;
-    let local_codec_types = collect_local_bridge_payload_types(definition);
+    let local_codec_types = collect_local_bridge_payload_types(definition)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     let body = emit_host_callbacks(definition, &local_codec_types)?;
     fs::write(
         Path::new(callbacks_output_dir).join("host-callbacks.ts"),
@@ -1231,52 +1234,6 @@ fn adapter_stream_impl(
     ))
 }
 
-fn collect_local_bridge_payload_types(definition: &PlatformDefinition) -> BTreeSet<String> {
-    let local: BTreeSet<String> = definition.types.iter().map(|ty| ty.name.clone()).collect();
-    let mut out = BTreeSet::new();
-    for trait_def in &definition.traits {
-        for method in &trait_def.methods {
-            for param in &method.params {
-                collect_local_from_type(&param.type_ref, &local, &mut out);
-            }
-            match &method.return_shape.inner {
-                PlatformInner::Result { ok, .. } | PlatformInner::Plain(ok) => {
-                    collect_local_from_type(ok, &local, &mut out);
-                }
-                PlatformInner::Stream(item) => {
-                    collect_local_from_type(stream_item(item), &local, &mut out)
-                }
-                PlatformInner::Unit | PlatformInner::TraitObject(_) => {}
-            }
-        }
-    }
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let referenced = definition
-            .types
-            .iter()
-            .filter(|ty| out.contains(&ty.name))
-            .collect::<Vec<_>>();
-        for type_def in referenced {
-            let before = out.len();
-            collect_local_from_type_def(type_def, &local, &mut out);
-            changed |= out.len() != before;
-        }
-    }
-    out
-}
-
-fn collect_local_from_type_def(
-    type_def: &TypeDef,
-    local: &BTreeSet<String>,
-    out: &mut BTreeSet<String>,
-) {
-    walk_type_def(type_def, out, &mut |ty, out| {
-        collect_local_from_type(ty, local, out)
-    });
-}
-
 fn collect_from_type_def(type_def: &TypeDef, out: &mut BTreeSet<String>) {
     walk_type_def(type_def, out, &mut |ty, out| collect_from_type(ty, out));
 }
@@ -1318,28 +1275,6 @@ fn walk_type_def(
                 }
             }
         }
-    }
-}
-
-fn collect_local_from_type(ty: &TypeRef, local: &BTreeSet<String>, out: &mut BTreeSet<String>) {
-    match ty {
-        TypeRef::Named { name, args } => {
-            if local.contains(name) {
-                out.insert(name.clone());
-            }
-            for arg in args {
-                collect_local_from_type(arg, local, out);
-            }
-        }
-        TypeRef::Vec(inner) | TypeRef::Option(inner) | TypeRef::Array(inner, _) => {
-            collect_local_from_type(inner, local, out);
-        }
-        TypeRef::Tuple(items) => {
-            for item in items {
-                collect_local_from_type(item, local, out);
-            }
-        }
-        TypeRef::Primitive(_) | TypeRef::Generic(_) | TypeRef::Unit => {}
     }
 }
 

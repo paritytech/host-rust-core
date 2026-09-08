@@ -78,8 +78,9 @@ const MAX_DECODE_FAILURE_REQUEST_IDS: usize = 1024;
 
 fn derive_responder_identity(
     entropy: &[u8],
+    network_suffix: &str,
 ) -> Result<(ResponderIdentity, [u8; 32]), ProductAccountError> {
-    let statement = derive_identity_keypair(entropy)?;
+    let statement = derive_identity_keypair(entropy, network_suffix)?;
     let (encryption_secret_key, encryption_public_key) =
         derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
     let identity_chat_private_key = derive_identity_chat_private_key(entropy);
@@ -164,7 +165,7 @@ impl PairedSsoPeer {
 pub(super) enum AllowanceAllocationError {
     /// Signing host session or authority state was unavailable.
     #[error("{0}")]
-    Authority(AuthorityError),
+    Authority(#[from] AuthorityError),
     /// The host serves no chain for this role, so there is nothing to claim on.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("host serves no {chain} chain")]
@@ -179,7 +180,7 @@ pub(super) enum AllowanceAllocationError {
     /// Product-account key derivation failed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
-    ProductAccount(ProductAccountError),
+    ProductAccount(#[from] ProductAccountError),
     /// Chain state, metadata, ring, slot, proof, or extrinsic allocation failed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
@@ -216,19 +217,6 @@ pub(super) enum AllowanceAllocationError {
         /// Resource name.
         resource: &'static str,
     },
-}
-
-impl From<AuthorityError> for AllowanceAllocationError {
-    fn from(err: AuthorityError) -> Self {
-        Self::Authority(err)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl From<ProductAccountError> for AllowanceAllocationError {
-    fn from(err: ProductAccountError) -> Self {
-        Self::ProductAccount(err)
-    }
 }
 
 impl AllowanceAllocationError {
@@ -279,11 +267,13 @@ async fn establish_pairing_session(
         .root_entropy()
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
     // Product accounts and the SSO statement identity derive from the
-    // canonical root key; the identity is the RFC-0022 uid.dot default account.
+    // canonical root key; the identity is the RFC-0022 `uid.<suffix>` default
+    // account of the network this host is configured for.
     let root = derive_root_keypair_from_entropy(&entropy)
         .map_err(|err| format!("root account derivation failed: {err}"))?;
-    let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
-        .map_err(|err| format!("responder identity derivation failed: {err}"))?;
+    let (identity, identity_chat_private_key) =
+        derive_responder_identity(&entropy, signing_host.network_suffix())
+            .map_err(|err| format!("responder identity derivation failed: {err}"))?;
     let device_enc_pub_key = x25519_public_key(services.device_encryption_secret().await?);
     let session = responder_session_from_identity(&identity, peer)?;
 
@@ -331,7 +321,7 @@ pub(crate) async fn resume_pairing(
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
     let root = derive_root_keypair_from_entropy(&entropy)
         .map_err(|err| format!("root account derivation failed: {err}"))?;
-    let session = responder_session(&entropy, peer)?;
+    let session = responder_session(&entropy, signing_host.network_suffix(), peer)?;
     serve_session(
         services,
         signing_host,
@@ -345,8 +335,12 @@ pub(crate) async fn resume_pairing(
     .await
 }
 
-fn responder_session(entropy: &[u8], peer: PairedSsoPeer) -> Result<SsoSessionInfo, String> {
-    let (identity, _) = derive_responder_identity(entropy)
+fn responder_session(
+    entropy: &[u8],
+    network_suffix: &str,
+    peer: PairedSsoPeer,
+) -> Result<SsoSessionInfo, String> {
+    let (identity, _) = derive_responder_identity(entropy, network_suffix)
         .map_err(|err| format!("responder identity derivation failed: {err}"))?;
     responder_session_from_identity(&identity, peer)
 }
@@ -1709,6 +1703,9 @@ mod tests {
     use truapi_platform::{HostInfo, Platform, PlatformInfo, SigningHostConfig};
 
     const ENTROPY: [u8; 16] = [0xab; 16];
+    /// The fixture's People chain is paseo-next-v2 (see `PEOPLE_METADATA`),
+    /// whose runtime carries the `paseo` network suffix.
+    const NETWORK_SUFFIX: &str = "paseo";
 
     fn signing_fixture(platform: Arc<StubPlatform>) -> (Arc<RuntimeServices>, Arc<SigningHost>) {
         let platform: Arc<dyn Platform> = platform;
@@ -1722,6 +1719,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            NETWORK_SUFFIX.to_string(),
         )
         .expect("signing host config is valid");
         let services = RuntimeServices::new(
@@ -1731,7 +1729,7 @@ mod tests {
             config.bulletin_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHost::new(services.clone());
+        let signing_host = SigningHost::new(services.clone(), config.network_suffix);
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         (services, signing_host)
@@ -1740,7 +1738,7 @@ mod tests {
     /// Metadata for the People chain the signing fixture is configured for.
     #[cfg(not(target_arch = "wasm32"))]
     const PEOPLE_METADATA: &[u8] =
-        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
 
     /// An existing statement-store allowance must be served without resolving a
     /// ring or submitting anything. The cache and the scan are covered on their
@@ -1774,13 +1772,22 @@ mod tests {
                     "chain_getBlockHash",
                     format!(r#""0x{}""#, hex::encode([0u8; 32])),
                 ),
-                // `Metadata_metadata_at_version(16)` answering absent, so the
-                // legacy fetch below is what serves the metadata.
-                ("state_call", r#""0x00""#.to_string()),
                 (
-                    "state_getMetadata",
-                    format!(r#""0x{}""#, hex::encode(PEOPLE_METADATA)),
+                    "Metadata_metadata_at_version",
+                    format!(
+                        r#""0x{}""#,
+                        hex::encode(Some(PEOPLE_METADATA.to_vec()).encode()),
+                    ),
                 ),
+                // The scan bound, read through the `Resources` view functions.
+                (
+                    "RuntimeViewFunction_execute_view_function",
+                    format!(
+                        r#""0x{}""#,
+                        hex::encode(Ok::<Vec<u8>, ()>(20u32.encode()).encode()),
+                    ),
+                ),
+                // The network suffix, read once before the scan.
                 (
                     "state_getStorage",
                     format!(r#""0x{}""#, hex::encode(b"paseo".to_vec().encode())),
@@ -1841,6 +1848,7 @@ mod tests {
                 .any(|method| method.starts_with("author_submit")),
             "an extrinsic was submitted for an allowance already in place: {methods:?}"
         );
+        // The suffix and one slot read answered it; the scan stopped at the first match.
         assert_eq!(
             methods
                 .iter()
@@ -1859,8 +1867,18 @@ mod tests {
             .unwrap()
             .identity_account_id
             .unwrap();
-        let (identity, _) = derive_responder_identity(&ENTROPY).unwrap();
+        let (identity, _) = derive_responder_identity(&ENTROPY, NETWORK_SUFFIX).unwrap();
         assert_eq!(identity.statement_public_key, local_identity);
+        // The statement identity is the network's `uid.<suffix>` account, the
+        // one the pairing host resolves a username for; a `.dot` account has
+        // no lite record on a test network.
+        assert_ne!(
+            derive_responder_identity(&ENTROPY, "dot")
+                .unwrap()
+                .0
+                .statement_public_key,
+            local_identity
+        );
 
         let (_, host_encryption_public_key) =
             derive_x25519_keypair_from_entropy(&[0x42; 16], b"sso");
@@ -1927,14 +1945,14 @@ mod tests {
             statement_account_id: [0x53; 32],
             encryption_public_key: x25519_public_key([0x64; 32]),
         };
-        let (identity, _) = derive_responder_identity(&ENTROPY).unwrap();
+        let (identity, _) = derive_responder_identity(&ENTROPY, NETWORK_SUFFIX).unwrap();
         let mut expected = establish_responder_session_info(
             &identity,
             peer.statement_account_id,
             peer.encryption_public_key,
         )
         .unwrap();
-        let resumed = responder_session(&ENTROPY, peer).unwrap();
+        let resumed = responder_session(&ENTROPY, NETWORK_SUFFIX, peer).unwrap();
 
         assert_eq!(
             crate::host_logic::statement_store::statement_public_key_from_secret(resumed.ss_secret)
@@ -2185,7 +2203,7 @@ mod tests {
             create_transaction_confirmed: true,
             ..StubPlatform::default()
         }));
-        let identity = derive_identity_keypair(&ENTROPY).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY, NETWORK_SUFFIX).unwrap();
         let payload = api::LegacyAccountTxPayload {
             signer: identity.public.to_bytes(),
             genesis_hash: [0xaa; 32],

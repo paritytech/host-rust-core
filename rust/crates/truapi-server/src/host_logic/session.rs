@@ -21,7 +21,7 @@ use truapi::versioned::account::HostAccountConnectionStatusSubscribeItem as Vers
 /// Session info for a pairing host's active signing-host session. The 32-byte
 /// sr25519 public key plus optional usernames are sourced from the signing host
 /// and dotNS identity record (read from Asset Hub).
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SessionInfo {
     /// 32-byte sr25519 root public key owned by the signing host.
     pub public_key: [u8; 32],
@@ -29,11 +29,13 @@ pub struct SessionInfo {
     /// Sessions restored from older test fixtures may leave it empty.
     pub sso: Option<SsoSessionInfo>,
     /// Wallet-provided source for deterministic product entropy.
+    #[debug("{:?}", root_entropy_source.as_ref().map(|_| "<redacted>"))]
     pub root_entropy_source: Option<[u8; 32]>,
     /// Wallet identity account id used for the dotNS username lookup on Asset Hub.
     pub identity_account_id: Option<[u8; 32]>,
     /// X25519 private key addressing this identity in chat. A pairing host
     /// retains what the handshake shares and cannot recompute it.
+    #[debug("{:?}", identity_chat_private_key.as_ref().map(|_| "<redacted>"))]
     pub identity_chat_private_key: Option<[u8; 32]>,
     /// X25519 public key of the wallet device that answered pairing. Distinct
     /// from [`SsoSessionInfo::peer_enc_pubkey`], which keys the SSO channels.
@@ -71,13 +73,15 @@ fn non_empty_username(value: &Option<String>) -> bool {
 }
 
 /// SSO session material negotiated by the pairing host with the signing host.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SsoSessionInfo {
     /// Pairing host's own 64-byte expanded sr25519 statement-store secret.
+    #[debug("\"<redacted>\"")]
     pub ss_secret: [u8; 64],
     /// Pairing host's own session sr25519 statement-store public key.
     pub ss_public_key: [u8; 32],
     /// Pairing host's X25519 private key.
+    #[debug("\"<redacted>\"")]
     pub enc_secret: [u8; 32],
     /// Signing host's persistent X25519 public key.
     pub peer_enc_pubkey: [u8; 32],
@@ -342,6 +346,35 @@ mod tests {
     }
 
     #[test]
+    fn debug_preserves_optional_secret_presence_without_exposing_values() {
+        for entropy_present in [false, true] {
+            for chat_key_present in [false, true] {
+                let mut session = info(0x42);
+                session.root_entropy_source = entropy_present.then_some([0xab; 32]);
+                session.identity_chat_private_key = chat_key_present.then_some([0xcd; 32]);
+
+                for rendered in [format!("{session:?}"), format!("{session:#?}")] {
+                    let compact: String =
+                        rendered.chars().filter(|ch| !ch.is_whitespace()).collect();
+                    for (field, present) in [
+                        ("root_entropy_source", entropy_present),
+                        ("identity_chat_private_key", chat_key_present),
+                    ] {
+                        let expected = if present {
+                            "Some(\"<redacted>\""
+                        } else {
+                            "None"
+                        };
+                        assert!(compact.contains(&format!("{field}:{expected}")));
+                    }
+                    assert!(!rendered.contains("171"), "entropy exposed");
+                    assert!(!rendered.contains("205"), "chat key exposed");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn persisted_sso_session_round_trips() {
         let mut session = info(0x42);
         session.sso = Some(SsoSessionInfo {
@@ -357,6 +390,18 @@ mod tests {
             peer_request_channel: [10; 32],
         });
 
+        session.root_entropy_source = Some([0xab; 32]);
+        session.identity_chat_private_key = Some([0xcd; 32]);
+        for rendered in [format!("{session:?}"), format!("{session:#?}")] {
+            assert!(rendered.contains("<redacted>"));
+            assert!(!rendered.contains("171"), "entropy exposed");
+            assert!(!rendered.contains("205"), "chat key exposed");
+            assert!(!rendered.contains("ss_secret: ["), "statement key exposed");
+            assert!(
+                !rendered.contains("enc_secret: ["),
+                "encryption key exposed"
+            );
+        }
         let blob = encode_persisted_session(&session);
         let decoded = decode_persisted_session(&blob).expect("session should decode");
 

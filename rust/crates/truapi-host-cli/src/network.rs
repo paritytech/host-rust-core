@@ -36,6 +36,7 @@ impl Network {
         match self {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
+                network_suffix: "paseo",
                 identity_backend_base: "https://identity.dotspark.app/api/v1",
                 people_ws: PASEO_PEOPLE.ws,
                 bulletin_ws: PASEO_BULLETIN.ws,
@@ -47,6 +48,7 @@ impl Network {
             },
             Self::Previewnet => NetworkConfig {
                 id: "previewnet",
+                network_suffix: "testnet",
                 identity_backend_base: "https://identity-previewnet.dotspark.app/api/v1",
                 people_ws: PREVIEWNET_PEOPLE.ws,
                 bulletin_ws: PREVIEWNET_BULLETIN.ws,
@@ -137,6 +139,13 @@ const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] =
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkConfig {
     pub id: &'static str,
+    /// The network's dotNS TLD without the dot, as its runtimes report it in
+    /// `NetworkSuffix.NetworkSuffix`. Every reserved RFC-0022 identity the CLI
+    /// derives ends in it (`uid.<suffix>`, `peopl.<suffix>`), so a person the
+    /// CLI creates here is the same person a phone derives from that seed on
+    /// this network. `live_people_chain::network_suffix_matches_the_preset`
+    /// holds it against the chain.
+    pub network_suffix: &'static str,
     pub identity_backend_base: &'static str,
     pub people_ws: &'static str,
     #[allow(dead_code)]
@@ -412,6 +421,20 @@ mod tests {
         "identity.dotspark.app",
         "identity-previewnet.dotspark.app",
     ];
+
+    #[test]
+    fn every_preset_names_a_known_dotns_tld() {
+        for network in Network::value_variants() {
+            let config = network.preset();
+            assert!(
+                truapi_platform::DOTNS_TLDS.contains(&config.network_suffix),
+                "preset `{}` derives reserved identities under `.{}`, a TLD navigation does not \
+                 accept",
+                config.id,
+                config.network_suffix,
+            );
+        }
+    }
 
     #[test]
     fn every_preset_is_a_test_network() {

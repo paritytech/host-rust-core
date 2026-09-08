@@ -161,20 +161,16 @@ impl AutoSigningOwner {
     }
 }
 
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, zeroize::ZeroizeOnDrop)]
 struct PersistedAutoSigningKey {
+    #[zeroize(skip)]
     owner: AutoSigningOwner,
+    #[zeroize(skip)]
     product_id: String,
+    #[zeroize(skip)]
     expected_product_subtree_public_key: [u8; 32],
     secret: [u8; 64],
     ring_vrf_domain_entropy: [u8; 32],
-}
-
-impl Drop for PersistedAutoSigningKey {
-    fn drop(&mut self) {
-        self.secret.zeroize();
-        self.ring_vrf_domain_entropy.zeroize();
-    }
 }
 
 type AutoSigningCacheKey = (AutoSigningOwner, String);

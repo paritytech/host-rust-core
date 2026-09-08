@@ -11,7 +11,7 @@ The `TrUAPIProvider` SPM product an iOS host imports when it wants to serve chai
 - `Sources/TrUAPIProvider/truapi_provider.swift` and `Sources/truapi_providerFFI/include/` — the generated UniFFI bindings. There is no hand-written Swift shell: the crate's [`ffi.rs`](../../rust/crates/truapi-provider/src/ffi.rs) is the whole surface.
 - the crate as a binary target — a GitHub release asset by default (`providerBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_provider.xcframework` when `TRUAPI_PROVIDER_USE_LOCAL_BINARY=1`.
 
-The bindings are committed build outputs; the xcframework is **gitignored** and distributed as a GitHub release asset. Three scripts split the lifecycle:
+The bindings and the xcframework are both **gitignored** build outputs, so the package's Swift target does not exist until `rebuild.sh` has run; the xcframework is additionally distributed as a GitHub release asset. Three scripts split the lifecycle:
 
 ```bash
 ./scripts/rebuild.sh            # build the crate for device + simulator, regenerate
@@ -26,7 +26,7 @@ The bindings are committed build outputs; the xcframework is **gitignored** and 
 
 The strip matters because module resolution comes from the `systemLibrary` target; a slice copy collides with other xcframeworks in Xcode's flat include dir, which is what stops a host embedding both this and its own UniFFI framework.
 
-Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the `ChainProvider` methods, `ChainMessageListener`, `ChainProviderError`, `ChainCloseReason` — or after a chain-spec refresh, and commit the regenerated bindings together with the source change. Pass `--sim-only` (or `make provider-ios SIM_ONLY=1`) to skip the device slice while iterating; `publish.sh` refuses a simulator-only xcframework.
+Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the `ChainProvider` methods, `ChainMessageListener`, `ChainProviderError`, `ChainCloseReason` — or after a chain-spec refresh, to refresh your local build outputs; the bindings are gitignored and CI regenerates them. Pass `--sim-only` (or `make provider-ios SIM_ONLY=1`) to skip the device slice while iterating; `publish.sh` refuses a simulator-only xcframework.
 
 ## Integrating in an iOS app
 

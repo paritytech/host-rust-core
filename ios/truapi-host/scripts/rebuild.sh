@@ -15,9 +15,8 @@ TRUAPI_ROOT="$(cd "$PACKAGE_ROOT/../.." && pwd)"
 
 make -C "$TRUAPI_ROOT" xcframework
 
-# The binding copy and normalization live in sync-bindings.sh so that CI's
-# --check mode and this in-place write share one definition of what the
-# committed bindings should contain.
+# The binding copy and normalization live in sync-bindings.sh so that a caller
+# refreshing only the bindings does not need Xcode or the iOS targets.
 sh "$PACKAGE_ROOT/scripts/sync-bindings.sh"
 
 # Staging the built framework lives in stage-xcframework.sh so that a caller

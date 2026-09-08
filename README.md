@@ -95,8 +95,9 @@ scripts/battery.sh         Run the generated battery against both headless CLI h
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
 manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
-dependency. Its `scripts/rebuild.sh` regenerates the committed bindings and
-container bundle (`make xcframework` + `make uniffi`); see
+dependency. The UniFFI bindings and the container bundle are gitignored build
+outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
+(`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
@@ -130,7 +131,7 @@ dependency on the crate:
 - [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
   browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
 - [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
-  `Package.swift`, an xcframework plus committed Swift bindings, built by
+  `Package.swift`, an xcframework plus generated Swift bindings, built by
   `make provider-ios`.
 - [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
   Kotlin bindings and the cdylib per ABI, built by
@@ -164,6 +165,10 @@ The native `truapi-host` utility runs pairing and signing hosts against the real
 SSO transport for local end-to-end work. See [Install the CLI](#install-the-cli)
 to get it, and the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md)
 for its commands and controls.
+
+CLI reserved identities follow the selected network's dotNS suffix. Old account
+and pairing stores are left unused as the CLI starts fresh under its
+[versioned state directory](rust/crates/truapi-host-cli/README.md#state-directory).
 
 `scripts/battery.sh` drives that CLI from source over every code-generated
 example and writes both committed compatibility reports:
