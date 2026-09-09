@@ -33,9 +33,10 @@ use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
 use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
-    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
-    PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
-    SigningHostRole, SigningHostSsoService, establish_pairing, respond_to_pairing, resume_pairing,
+    AuthorityError, ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation,
+    PairedSsoPeer, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
+    RuntimeServices, SigningHostRole, SigningHostSsoService, establish_pairing, respond_to_pairing,
+    resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -659,6 +660,14 @@ impl SigningHostRuntime {
         self.signing_host.session_state().current().is_some()
     }
 
+    /// Current monotonic activation generation, as a decimal string.
+    ///
+    /// Stable for the lifetime of one local activation; changes on every
+    /// disconnect and re-activation. Never resets to zero and never repeats.
+    pub fn session_generation(&self) -> String {
+        self.signing_host.session_generation()
+    }
+
     /// Disconnect the active account-authority session.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.disconnect_session"))]
     pub async fn disconnect_session(&self) {
@@ -787,6 +796,89 @@ impl SigningHostRuntime {
             Dispatch::Disconnected => SsoRequestOutcome::Disconnected,
             Dispatch::NotARequest(_) => SsoRequestOutcome::Ignored,
         }
+    }
+
+    /// Return the 32-byte identity public key for the active local session.
+    ///
+    /// The identity key is the RFC-0022 `uid.dot` account:
+    /// `sr25519("//product//uid.dot/index_bytes(0)")`.
+    ///
+    /// Returns [`AuthorityError::Disconnected`] when no local session is active.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn identity_public_key(&self) -> Result<[u8; 32], AuthorityError> {
+        self.signing_host.identity_public_key()
+    }
+
+    /// Build an identity-auth proof over `challenge`.
+    ///
+    /// Signs `SHA-256(challenge || identityPublicKey || SHA-256(UTF8('{}')))` using
+    /// the active session's identity key (`uid.dot`).
+    ///
+    /// Returns [`AuthorityError::Disconnected`] when no local session is active.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn build_identity_auth_proof(
+        &self,
+        challenge: &[u8],
+    ) -> Result<[u8; 64], AuthorityError> {
+        self.signing_host.build_identity_auth_proof(challenge)
+    }
+
+    /// Build the lite-person registration parameters for `username_base`
+    /// against the backend `verifier`.
+    ///
+    /// The returned [`crate::host_logic::attestation::LiteRegistration`] carries only
+    /// public values and one-time signatures; no secret material crosses the
+    /// host boundary.
+    ///
+    /// Returns [`AuthorityError::Disconnected`] when no local session is active.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn build_lite_person_registration(
+        &self,
+        verifier_account_id: [u8; 32],
+        username_base: &str,
+        reserved_username: Option<&str>,
+        dotns_signed_at_secs: u64,
+    ) -> Result<crate::host_logic::attestation::LiteRegistration, AuthorityError> {
+        self.signing_host.build_lite_person_registration(
+            verifier_account_id,
+            username_base,
+            reserved_username,
+            dotns_signed_at_secs,
+        )
+    }
+    /// Register a ring-VRF key under the given product and derivation index.
+    ///
+    /// The key is derived from the active session's root entropy via the
+    /// People Lite ring-VRF path and registered in the same durable registry
+    /// that [`ProductAuthority::register_ring_vrf_key`] uses for product-facing
+    /// requests.
+    ///
+    /// Returns the 32-byte public key on success.
+    ///
+    /// Requires an active local session; returns
+    /// [`AuthorityError::Disconnected`] when none is present.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) async fn register_ring_vrf_key(
+        &self,
+        product_id: String,
+        derivation_index: u32,
+        chain_id: [u8; 32],
+        pallet_instance: u8,
+        collection_id: [u8; 32],
+    ) -> Result<[u8; 32], AuthorityError> {
+        self.signing_host
+            .register_ring_vrf_key_for_chain(
+                product_id,
+                derivation_index,
+                chain_id,
+                pallet_instance,
+                collection_id,
+            )
+            .await
     }
 }
 

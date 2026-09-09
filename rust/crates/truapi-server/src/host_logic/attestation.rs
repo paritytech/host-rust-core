@@ -12,6 +12,7 @@
 //! (`host_logic::dotns_gateway`), where the backend's `reserve_name` records it.
 
 use parity_scale_codec::{Decode, Encode};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use verifiable::Error as VerifiableError;
 use verifiable::GenerateVerifiable;
@@ -30,8 +31,13 @@ use crate::host_logic::product_account::{
 ///
 /// The pallet verifies `MSG_PREFIX || candidate || ring_vrf_key`.
 const REGISTER_PREFIX: &[u8] = b"pop:people-lite:register using";
-/// Domain label for the P-256 identifier key advertised to the backend.
-const IDENTIFIER_KEY_LABEL: &[u8] = b"chat-encryption";
+/// SHA-256 digest of the UTF-8 encoding of `'{}'`, used as the auth-stamp
+/// component of the identity-auth proof message. This is a fixed value
+/// computed once so the digest does not need to be repeated at call time.
+const AUTH_STAMP_HASH: [u8; 32] = [
+    0x44, 0x13, 0x6f, 0xa3, 0x55, 0xb3, 0x67, 0x8a, 0x11, 0x46, 0xad, 0x16, 0xf7, 0xe8, 0x64, 0x9e,
+    0x94, 0xfb, 0x4f, 0xc2, 0x1f, 0xe7, 0x7e, 0x83, 0x10, 0xc0, 0x60, 0xf6, 0x1c, 0xaa, 0xff, 0x8a,
+];
 
 /// SCALE payload signed for a lite consumer registration.
 ///
@@ -121,7 +127,8 @@ pub fn build_lite_registration(
     let proof_of_ownership = BandersnatchVrfVerifiable::sign(&vrf_secret, &proof_message)
         .map_err(LiteRegistrationError::ProofOfOwnership)?;
 
-    let identifier_key = derive_identifier_key(entropy)?;
+    let identity_secret = candidate.secret.to_bytes();
+    let identifier_key = derive_identifier_key(&identity_secret)?;
 
     let consumer_message = ConsumerRegistrationSigningPayload {
         account: candidate_public_key,
@@ -169,32 +176,50 @@ pub fn build_lite_registration(
     })
 }
 
-fn derive_identifier_key(entropy: &[u8]) -> Result<[u8; 65], LiteRegistrationError> {
-    use p256::SecretKey;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+/// Build an identity-auth proof for `challenge`.
+///
+/// The proof signs `SHA-256(challenge || identityPublicKey || AUTH_STAMP_HASH)` where
+/// `AUTH_STAMP_HASH = SHA-256(UTF8('{}'))`. This is the byte-for-byte equivalent of the
+/// signing-bot attestation flow used by the People-chain identity backend.
+///
+/// `entropy` is the wallet's BIP-39 root entropy; the identity key is derived as
+/// `//product//uid.<network_suffix>/index_bytes(0)`, the same account the
+/// registration and the SSO responder use on that network.
+pub fn build_identity_auth_proof(
+    entropy: &[u8],
+    network_suffix: &str,
+    challenge: &[u8],
+) -> Result<[u8; 64], LiteRegistrationError> {
+    let candidate = derive_identity_keypair(entropy, network_suffix)?;
+    let identity_public_key = candidate.public.to_bytes();
 
-    for attempt in 0..64 {
-        let mut message = Vec::with_capacity(IDENTIFIER_KEY_LABEL.len() + 1);
-        message.extend_from_slice(IDENTIFIER_KEY_LABEL);
-        message.push(attempt);
-        let candidate: [u8; 32] = blake2b_simd::Params::new()
-            .hash_length(32)
-            .key(entropy)
-            .hash(&message)
-            .as_bytes()
-            .try_into()
-            .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed");
-        let Ok(secret) = SecretKey::from_slice(&candidate) else {
-            continue;
-        };
-        return Ok(secret
-            .public_key()
-            .to_encoded_point(false)
-            .as_bytes()
-            .try_into()
-            .expect("uncompressed P-256 public keys are exactly 65 bytes"));
-    }
-    Err(LiteRegistrationError::IdentifierKey)
+    let mut message = Vec::with_capacity(challenge.len() + 64);
+    message.extend_from_slice(challenge);
+    message.extend_from_slice(&identity_public_key);
+    message.extend_from_slice(&AUTH_STAMP_HASH);
+    let digest = Sha256::digest(&message);
+
+    Ok(candidate
+        .secret
+        .sign_simple(SR25519_SIGNING_CONTEXT, &digest, &candidate.public)
+        .to_bytes())
+}
+
+fn derive_identifier_key(identity_secret: &[u8]) -> Result<[u8; 65], LiteRegistrationError> {
+    use k256::SecretKey;
+    use k256::elliptic_curve::sec1::ToEncodedPoint;
+
+    let scalar = blake2b_simd::Params::new()
+        .hash_length(32)
+        .hash(identity_secret);
+    let secret = SecretKey::from_slice(scalar.as_bytes())
+        .map_err(|_| LiteRegistrationError::IdentifierKey)?;
+    secret
+        .public_key()
+        .to_encoded_point(false)
+        .as_bytes()
+        .try_into()
+        .map_err(|_| LiteRegistrationError::IdentifierKey)
 }
 
 #[cfg(test)]
@@ -241,7 +266,7 @@ mod tests {
             "a person registered on paseo-next-v2 is not the seed's .dot person"
         );
 
-        assert_eq!(reg.identifier_key[0], 0x04, "P-256 uncompressed prefix");
+        assert_eq!(reg.identifier_key[0], 0x04, "secp256k1 uncompressed prefix");
         assert!(
             reg.candidate_account_id
                 .chars()
@@ -252,6 +277,14 @@ mod tests {
         let mut proof_message = Vec::new();
         proof_message.extend_from_slice(REGISTER_PREFIX);
         proof_message.extend_from_slice(&reg.candidate_public_key);
+        assert!(
+            k256::PublicKey::from_sec1_bytes(&reg.identifier_key).is_ok(),
+            "identifier key is a valid secp256k1 public key"
+        );
+        assert!(
+            p256::PublicKey::from_sec1_bytes(&reg.identifier_key).is_err(),
+            "identifier key must not be emitted on the previous P-256 curve"
+        );
         proof_message.extend_from_slice(&reg.ring_vrf_key);
         let public = PublicKey::from_bytes(&reg.candidate_public_key).unwrap();
         let sig = Signature::from_bytes(&reg.candidate_signature).unwrap();
@@ -394,5 +427,47 @@ mod tests {
         assert_eq!(first.candidate_public_key, again.candidate_public_key);
         assert_eq!(first.ring_vrf_key, again.ring_vrf_key);
         assert_eq!(first.candidate_account_id, again.candidate_account_id);
+    }
+
+    #[test]
+    fn auth_proof_signs_the_canonical_sha256_digest() {
+        let challenge = b"hello world";
+        let proof = build_identity_auth_proof(&ENTROPY, NETWORK_SUFFIX, challenge).unwrap();
+        let identity_keypair = derive_identity_keypair(&ENTROPY, NETWORK_SUFFIX).unwrap();
+        let identity_public_key = identity_keypair.public.to_bytes();
+        let mut message = Vec::new();
+        message.extend_from_slice(challenge);
+        message.extend_from_slice(&identity_public_key);
+        message.extend_from_slice(&AUTH_STAMP_HASH);
+        let digest = Sha256::digest(&message);
+        let signature = Signature::from_bytes(&proof).unwrap();
+
+        assert!(
+            identity_keypair
+                .public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &digest, &signature)
+                .is_ok()
+        );
+        assert!(
+            identity_keypair
+                .public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &message, &signature)
+                .is_err(),
+            "the backend contract signs the outer SHA-256 digest, not the concatenated bytes"
+        );
+    }
+
+    #[test]
+    fn auth_proof_differs_for_different_challenges() {
+        let proof_a = build_identity_auth_proof(&ENTROPY, NETWORK_SUFFIX, b"challenge A").unwrap();
+        let proof_b = build_identity_auth_proof(&ENTROPY, NETWORK_SUFFIX, b"challenge B").unwrap();
+        assert_ne!(proof_a, proof_b);
+    }
+
+    #[test]
+    fn auth_proof_fails_for_invalid_entropy() {
+        let bad_entropy = [];
+        let result = build_identity_auth_proof(&bad_entropy, NETWORK_SUFFIX, b"challenge");
+        assert!(result.is_err(), "auth proof rejects empty entropy");
     }
 }

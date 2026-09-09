@@ -34,13 +34,15 @@ use truapi_platform::{
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-#[cfg(feature = "wasm-signing-host")]
-use crate::SigningHostRuntime;
 use crate::subscription::Spawner;
 use crate::{
     ChannelId, DebugEvent, DebugSink, FrameSink, PairingHostRuntime,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, ProductRuntime,
 };
+#[cfg(feature = "wasm-signing-host")]
+use crate::{ResponderExit, SigningHostRuntime};
+#[cfg(feature = "wasm-signing-host")]
+use serde::Serialize;
 
 mod generated_bridge;
 
@@ -1080,6 +1082,87 @@ pub fn describe_core_storage_key_for_wasm(encoded: Vec<u8>) -> Result<JsValue, J
     Ok(value.into())
 }
 
+/// Completion reason returned by the signing-host pairing responder.
+/// Serialized to JS as the plain string `"PeerDisconnected"` or
+/// `"SubscriptionEnded"`.
+#[cfg(feature = "wasm-signing-host")]
+#[derive(Debug, Serialize)]
+pub enum ResponderExitJs {
+    /// The pairing host announced `Disconnected`; its durable pairing may be removed.
+    PeerDisconnected,
+    /// The statement subscription ended without a disconnect message.
+    SubscriptionEnded,
+}
+
+#[cfg(feature = "wasm-signing-host")]
+impl From<ResponderExit> for ResponderExitJs {
+    fn from(exit: ResponderExit) -> Self {
+        match exit {
+            ResponderExit::PeerDisconnected => Self::PeerDisconnected,
+            ResponderExit::SubscriptionEnded => Self::SubscriptionEnded,
+        }
+    }
+}
+
+/// Lite-person registration parameters for JavaScript. Every byte field is a
+/// lowercase `0x`-prefixed hex string; only public values and one-time
+/// signatures cross this boundary.
+#[cfg(feature = "wasm-signing-host")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiteRegistrationJs {
+    /// SS58 address of the candidate account (the `uid.dot` identity key).
+    pub candidate_account_id: String,
+    /// 32-byte raw candidate public key.
+    pub candidate_public_key: String,
+    /// 64-byte sr25519 proof-of-ownership signature.
+    pub candidate_signature: String,
+    /// 32-byte bandersnatch ring-VRF member key.
+    pub ring_vrf_key: String,
+    /// 64-byte bandersnatch VRF proof-of-ownership.
+    pub proof_of_ownership: String,
+    /// 64-byte sr25519 consumer-registration signature.
+    pub consumer_registration_signature: String,
+    /// 65-byte uncompressed identifier key.
+    pub identifier_key: String,
+    /// 64-byte sr25519 signature over the dotNS gateway reservation message
+    /// (`reservedUsername`, `dotnsSignedAtSecs`).
+    pub dotns_signature: String,
+}
+
+#[cfg(feature = "wasm-signing-host")]
+impl From<crate::host_logic::attestation::LiteRegistration> for LiteRegistrationJs {
+    fn from(reg: crate::host_logic::attestation::LiteRegistration) -> Self {
+        Self {
+            candidate_account_id: reg.candidate_account_id,
+            candidate_public_key: format!("0x{}", hex::encode(reg.candidate_public_key)),
+            candidate_signature: format!("0x{}", hex::encode(reg.candidate_signature)),
+            ring_vrf_key: format!("0x{}", hex::encode(reg.ring_vrf_key)),
+            proof_of_ownership: format!("0x{}", hex::encode(reg.proof_of_ownership)),
+            consumer_registration_signature: format!(
+                "0x{}",
+                hex::encode(reg.consumer_registration_signature)
+            ),
+            identifier_key: format!("0x{}", hex::encode(reg.identifier_key)),
+            dotns_signature: format!("0x{}", hex::encode(reg.dotns_signature)),
+        }
+    }
+}
+
+#[cfg(feature = "wasm-signing-host")]
+fn serialize_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(value).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+fn bytes32_arg(value: Uint8Array, name: &str) -> Result<[u8; 32], JsValue> {
+    value.to_vec().try_into().map_err(|v: Vec<u8>| {
+        JsValue::from_str(&format!(
+            "{name} must be exactly 32 bytes, got {} bytes",
+            v.len()
+        ))
+    })
+}
+
 #[cfg(feature = "wasm-signing-host")]
 /// JS-callable handle to a wallet-local signing-host runtime.
 #[wasm_bindgen]
@@ -1160,6 +1243,120 @@ impl WasmSigningHostRuntime {
             .clear_product_state(&product_id)
             .await
             .map_err(generic_error_to_js)
+    }
+
+    /// Monotonic activation counter as a decimal string.
+    ///
+    /// Stable for the lifetime of one local activation; changes on every
+    /// `disconnectSession()` and every `activateLocalSession*` call. Never
+    /// resets to zero and never repeats for the life of this runtime.
+    #[wasm_bindgen(js_name = sessionGeneration)]
+    pub fn session_generation(&self) -> String {
+        self.runtime.session_generation()
+    }
+
+    /// Return the 32-byte identity public key (`uid.dot` index 0) for the
+    /// active root entropy. Returns `"0x" + lowercase 64-char hex`.
+    ///
+    /// Rejects with a descriptive `JsValue` when no session is active.
+    #[wasm_bindgen(js_name = identityPublicKey)]
+    pub fn identity_public_key(&self) -> Result<String, JsValue> {
+        self.runtime
+            .identity_public_key()
+            .map(|pk| format!("0x{}", hex::encode(pk)))
+            .map_err(|err| JsValue::from_str(&err.to_string()))
+    }
+
+    /// Build an identity-auth proof over `challenge`.
+    ///
+    /// Signs `SHA-256(challenge || identityPublicKey || SHA-256(UTF8("{}")))` with
+    /// the active session's `uid.dot` identity key. Returns `"0x" + lowercase
+    /// 128-char hex` sr25519 signature.
+    ///
+    /// Rejects with a descriptive `JsValue` when no session is active.
+    #[wasm_bindgen(js_name = buildIdentityAuthProof)]
+    pub fn build_identity_auth_proof(&self, challenge: Uint8Array) -> Result<String, JsValue> {
+        self.runtime
+            .build_identity_auth_proof(&challenge.to_vec())
+            .map(|sig| format!("0x{}", hex::encode(sig)))
+            .map_err(|err| JsValue::from_str(&err.to_string()))
+    }
+
+    /// Build lite-person registration parameters for `username_base` against the
+    /// backend `verifier_account_id`.
+    ///
+    /// `verifier_account_id` must be a 32-byte `Uint8Array`. `username_base`
+    /// must be a 6+ lowercase-letter username stem (no digit suffix).
+    /// `reserved_username` optionally queues a base name for a later full-person
+    /// dotNS claim; `dotns_signed_at_secs` must then be Asset Hub chain time in
+    /// seconds (`Timestamp.Now`), not the wall clock. Returns a
+    /// [`LiteRegistrationJs`] object containing only public values and one-time
+    /// signatures.
+    ///
+    /// Rejects with a descriptive `JsValue` when no session is active or when
+    /// inputs fail validation.
+    #[wasm_bindgen(js_name = buildLitePersonRegistration)]
+    pub fn build_lite_person_registration(
+        &self,
+        verifier_account_id: Uint8Array,
+        username_base: String,
+        reserved_username: Option<String>,
+        dotns_signed_at_secs: u64,
+    ) -> Result<JsValue, JsValue> {
+        let verifier = bytes32_arg(verifier_account_id, "verifierAccountId")?;
+        let registration = self
+            .runtime
+            .build_lite_person_registration(
+                verifier,
+                &username_base,
+                reserved_username.as_deref(),
+                dotns_signed_at_secs,
+            )
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+        serialize_js(&LiteRegistrationJs::from(registration))
+    }
+
+    /// Register a ring-VRF key under `product_id` / `derivation_index` for the
+    /// ring at (`chain_id`, `pallet_instance`, `collection_id`). Returns the
+    /// 32-byte public key.
+    ///
+    /// Rejects with a descriptive `JsValue` when no session is active or when the
+    /// ring location fails validation.
+    #[wasm_bindgen(js_name = registerRingVrfKey)]
+    pub async fn register_ring_vrf_key(
+        &self,
+        product_id: String,
+        derivation_index: u32,
+        chain_id: Uint8Array,
+        pallet_instance: u8,
+        collection_id: Uint8Array,
+    ) -> Result<Uint8Array, JsValue> {
+        let chain_id = bytes32_arg(chain_id, "chainId")?;
+        let collection_id = bytes32_arg(collection_id, "collectionId")?;
+        let public_key = self
+            .runtime
+            .register_ring_vrf_key(
+                product_id,
+                derivation_index,
+                chain_id,
+                pallet_instance,
+                collection_id,
+            )
+            .await
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+        Ok(Uint8Array::from(public_key.as_slice()))
+    }
+
+    /// Answer a desktop pairing deeplink and serve its SSO session until it
+    /// ends. Resolves to a [`ResponderExitJs`] string.
+    #[wasm_bindgen(js_name = respondToPairing)]
+    pub async fn respond_to_pairing(&self, deeplink: String) -> Result<JsValue, JsValue> {
+        let exit = self
+            .runtime
+            .respond_to_pairing(&deeplink)
+            .await
+            .map_err(generic_error_to_js)?;
+        serialize_js(&ResponderExitJs::from(exit))
     }
 }
 

@@ -435,6 +435,19 @@ impl ProductRuntimeHost {
         })
     }
 
+    /// product-sdk `createApp` 0.22 appends `.dot` to an already-qualified
+    /// dapp name when it asks for its own account. Canonicalize only that
+    /// exact self alias; every other identifier is left for the
+    /// cross-product access check.
+    fn canonicalize_self_account_alias(
+        caller_product_id: &str,
+        product_account_id: &mut v01::ProductAccountId,
+    ) {
+        if product_account_id.dot_ns_identifier == format!("{caller_product_id}.dot") {
+            product_account_id.dot_ns_identifier = caller_product_id.to_string();
+        }
+    }
+
     fn product_id(&self) -> String {
         self.product.product_id.as_str().to_string()
     }

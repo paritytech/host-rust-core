@@ -2799,6 +2799,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "k256"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
+dependencies = [
+ "cfg-if",
+ "elliptic-curve",
+]
+
+[[package]]
 name = "kasuari"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4307,6 +4317,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "serde_bytes"
 version = "0.11.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5653,6 +5674,7 @@ dependencies = [
  "hex",
  "hkdf",
  "js-sys",
+ "k256",
  "merlin",
  "nanoid",
  "p256",
@@ -5664,6 +5686,7 @@ dependencies = [
  "schnorrkel",
  "send_wrapper",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.10.9",
  "sp-crypto-hashing",

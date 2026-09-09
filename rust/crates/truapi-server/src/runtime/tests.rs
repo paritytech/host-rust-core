@@ -656,6 +656,26 @@ fn bare_localhost_product_allows_dev_product_accounts() {
 }
 
 #[test]
+fn canonicalizes_product_sdk_qualified_self_alias() {
+    let mut account = v01::ProductAccountId {
+        dot_ns_identifier: "myapp.paseo.dot".to_string(),
+        derivation_index: v01::DerivationIndex::Index(0),
+    };
+    ProductRuntimeHost::canonicalize_self_account_alias("myapp.paseo", &mut account);
+    assert_eq!(account.dot_ns_identifier, "myapp.paseo");
+}
+
+#[test]
+fn leaves_unrelated_nested_product_identifier_unchanged() {
+    let mut account = v01::ProductAccountId {
+        dot_ns_identifier: "other.paseo.dot".to_string(),
+        derivation_index: v01::DerivationIndex::Index(0),
+    };
+    ProductRuntimeHost::canonicalize_self_account_alias("myapp.paseo", &mut account);
+    assert_eq!(account.dot_ns_identifier, "other.paseo.dot");
+}
+
+#[test]
 fn navigate_to_uses_dotns_decision_and_then_platform() {
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
     let cx = CallContext::default();

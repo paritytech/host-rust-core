@@ -42,8 +42,8 @@ impl Account for ProductRuntimeHost {
         request: HostAccountGetRequest,
     ) -> Result<HostAccountGetResponse, CallError<HostAccountGetError>> {
         let HostAccountGetRequest::V1(v01::HostAccountGetRequest { product_account_id }) = request;
-        let product_account_id =
-            Self::normalize_product_account_id(product_account_id).map_err(|()| {
+        let mut product_account_id = Self::normalize_product_account_id(product_account_id)
+            .map_err(|()| {
                 CallError::Domain(HostAccountGetError::V1(
                     v01::HostAccountGetError::DomainNotValid,
                 ))
@@ -55,6 +55,7 @@ impl Account for ProductRuntimeHost {
         };
 
         let product_id = self.product_id();
+        Self::canonicalize_self_account_alias(&product_id, &mut product_account_id);
         if product_account_id.dot_ns_identifier != product_id {
             match account_access_authorization(
                 self.platform.as_ref(),

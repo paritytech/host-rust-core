@@ -10,7 +10,7 @@
 //! signing, v4 transaction construction (payload fields and extensions arrive
 //! pre-encoded, so no chain metadata is needed), RFC-0007 product entropy,
 //! bandersnatch ring-VRF aliases and membership proofs, and product-scoped
-//! Statement Store and Bulletin allowance keys (native only).
+//! Statement Store allowance keys on every target and Bulletin keys on native targets.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod allowance_renewal;
@@ -44,6 +44,8 @@ use super::authority::{
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
+use crate::host_logic::attestation;
+use crate::host_logic::attestation::{build_identity_auth_proof, build_lite_registration};
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::{
     Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
@@ -89,6 +91,7 @@ use zeroize::Zeroizing;
 const BYTES_WRAP_PREFIX: &[u8] = b"<Bytes>";
 const BYTES_WRAP_SUFFIX: &[u8] = b"</Bytes>";
 
+/// In-memory grants and pending responder tasks for one local activation.
 #[derive(Default)]
 struct LocalGrantState {
     activation_generation: u64,
@@ -96,6 +99,8 @@ struct LocalGrantState {
 }
 
 impl LocalGrantState {
+    /// Advance the activation generation and clear grants scoped to the old
+    /// activation.
     fn advance_activation(&mut self) {
         self.activation_generation = self
             .activation_generation
@@ -347,10 +352,71 @@ impl SigningHost {
         self.product_keypair_with_owner(account)
             .map(|(_, keypair)| keypair)
     }
-
     fn identity_keypair(&self) -> Result<schnorrkel::Keypair, AuthorityError> {
         let entropy = self.root_entropy()?;
         derive_identity_keypair(&entropy, &self.network_suffix).map_err(product_authority_error)
+    }
+
+    /// Return the 32-byte identity public key for the active local session.
+    ///
+    /// The identity key is the RFC-0022 `uid.dot` account derived from the
+    /// active root entropy. Fails with [`AuthorityError::Disconnected`] when
+    /// no local session is active.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn identity_public_key(&self) -> Result<[u8; 32], AuthorityError> {
+        Ok(self.identity_keypair()?.public.to_bytes())
+    }
+
+    /// Build an identity-auth proof over `challenge` using the active identity key.
+    ///
+    /// Signs `SHA-256(challenge || identityPublicKey || SHA-256(UTF8("{}")))` with
+    /// the `uid.dot` sr25519 keypair held in the active session. Fails with
+    /// [`AuthorityError::Disconnected`] when no local session is active.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn build_identity_auth_proof(
+        &self,
+        challenge: &[u8],
+    ) -> Result<[u8; 64], AuthorityError> {
+        let entropy = self.root_entropy()?;
+        build_identity_auth_proof(&entropy, &self.network_suffix, challenge).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: format!("identity auth proof failed: {}", err),
+            }
+        })
+    }
+
+    /// Build lite-person registration parameters for `username_base` against the
+    /// backend `verifier_account_id`.
+    ///
+    /// All inputs are validated: `verifier_account_id` must be 32 bytes and
+    /// `username_base` must be a valid username stem (6+ lowercase letters, no
+    /// digit suffix). Returns only public values and one-time signatures; no
+    /// secret material is included in the result.
+    ///
+    /// Fails with [`AuthorityError::Disconnected`] when no local session is active.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn build_lite_person_registration(
+        &self,
+        verifier_account_id: [u8; 32],
+        username_base: &str,
+        reserved_username: Option<&str>,
+        dotns_signed_at_secs: u64,
+    ) -> Result<attestation::LiteRegistration, AuthorityError> {
+        let entropy = self.root_entropy()?;
+        build_lite_registration(
+            &entropy,
+            &self.network_suffix,
+            verifier_account_id,
+            username_base,
+            reserved_username,
+            dotns_signed_at_secs,
+        )
+        .map_err(|err| AuthorityError::Unavailable {
+            reason: format!("lite registration failed: {}", err),
+        })
     }
 
     fn install_local_session(&self, secret: Zeroizing<Vec<u8>>, session: SessionInfo) {
@@ -410,6 +476,25 @@ impl SigningHost {
         }
         Ok((current, state.activation_generation))
     }
+
+    /// Current monotonic activation generation, as a decimal string.
+    ///
+    /// Advances on every local activation and disconnect and never resets or
+    /// repeats for the lifetime of this signing host, so a host embedding can
+    /// detect that a session it observed has since been superseded even
+    /// without an intervening disconnect notification.
+    pub(crate) fn session_generation(&self) -> String {
+        self.local_grants
+            .lock()
+            .expect("local AutoSigning grant mutex poisoned")
+            .activation_generation
+            .to_string()
+    }
+
+    /// Register a new SSO pairing-responder task bound to the current
+    /// activation, returning the [`futures::future::AbortRegistration`] it
+    /// must wrap its work in.
+    ///
 
     fn ring_vrf_entropy(
         &self,
@@ -571,6 +656,57 @@ impl SigningHost {
         self.ring_vrf_registry
             .select_provider(session.public_key, ring, handle)
             .await
+    }
+
+    /// Register a ring-VRF key for a caller-supplied product, derivation index,
+    /// and ring location.
+    ///
+    /// Derives the key via the ring-VRF entropy path and writes it to the
+    /// durable ring-VRF registry after validating the ring location.
+    ///
+    /// Returns the 32-byte public key on success.
+    // Reached from the wasm signing-host surface (`wasm.rs`); unused on native.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) async fn register_ring_vrf_key_for_chain(
+        &self,
+        product_id: String,
+        derivation_index: u32,
+        chain_id: [u8; 32],
+        pallet_instance: u8,
+        collection_id: [u8; 32],
+    ) -> Result<[u8; 32], AuthorityError> {
+        let session = self
+            .current_local_session()
+            .ok_or(AuthorityError::Disconnected)?;
+        let ring_location = v01::RingLocation {
+            chain_id,
+            junctions: vec![
+                v01::RingLocationJunction::PalletInstance(pallet_instance),
+                v01::RingLocationJunction::CollectionId(collection_id.to_vec()),
+            ],
+        };
+        self.ring_resolver
+            .validate(&ring_location)
+            .await
+            .map_err(authority_error_from_ring_vrf_error)?;
+        let handle = v01::ProductAccountId {
+            dot_ns_identifier: normalize_product_identifier(&product_id).map_err(|err| {
+                AuthorityError::Unavailable {
+                    reason: err.to_string(),
+                }
+            })?,
+            derivation_index: v01::DerivationIndex::Index(derivation_index),
+        };
+        let entropy = self
+            .ring_vrf_entropy(&session, &handle)
+            .map_err(authority_error_from_ring_vrf_error)?;
+        let public_key =
+            member_from_entropy(&entropy).map_err(authority_error_from_ring_vrf_error)?;
+        self.ring_vrf_registry
+            .register(session.public_key, handle, ring_location, public_key)
+            .await
+            .map_err(authority_error_from_ring_vrf_error)?;
+        Ok(public_key)
     }
 }
 
@@ -1202,6 +1338,13 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn authority_error_from_ring_vrf_error(err: RingVrfError) -> AuthorityError {
+    AuthorityError::Unavailable {
+        reason: err.to_string(),
+    }
+}
+
 /// Assemble a transaction locally from caller-supplied, pre-encoded parts.
 ///
 /// V4 needs no metadata. V5 resolves the runtime's call and transaction
@@ -1211,6 +1354,21 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
 ///
 /// V5 is signed with the local key only when `extensions` omits
 /// `VerifyMultiSignature`; callers that supply it are assembled unsigned.
+/// Returns `true` only when the V5 build failed with the host-owned error:
+/// the runtime does not declare `VerifyMultiSignature` **and** the host cannot
+/// supply it because it was not provided by the caller.  A caller-supplied
+/// `VerifyMultiSignature` must never trigger fallback — the transaction is
+/// intentionally left unsigned in that case.
+fn should_fallback_v5_to_v4(pipeline_version: u8, error: &V5BuildError) -> bool {
+    pipeline_version == 0
+        && matches!(
+            error,
+            V5BuildError::UnsupportedExtensions(reason) if
+                reason.contains("does not declare VerifyMultiSignature")
+                && reason.contains("host cannot authorize this transaction")
+        )
+}
+
 async fn build_local_transaction(
     services: &RuntimeServices,
     keypair: &schnorrkel::Keypair,
@@ -1246,21 +1404,27 @@ async fn build_local_transaction(
             .map_err(|error| AuthorityError::Unavailable {
                 reason: format!("signing host: cannot select a V5 metadata block: {error}"),
             })?;
-    let transaction = build_signed_extrinsic_v5(
-        &signer,
-        genesis_hash,
-        call_data,
-        extensions,
-        at_block.metadata(),
-    )
-    .map_err(|error| match error {
-        V5BuildError::UnsupportedExtensions(reason) => AuthorityError::NotSupported {
-            reason: format!("signing host: {reason}"),
-        },
-        V5BuildError::Other(reason) => AuthorityError::Unknown {
-            reason: format!("signing host: {reason}"),
-        },
-    })?;
+    let metadata = at_block.metadata();
+    let pipeline_version = metadata
+        .extrinsic()
+        .transaction_extension_version_to_use_for_encoding();
+    let transaction =
+        match build_signed_extrinsic_v5(&signer, genesis_hash, call_data, extensions, metadata) {
+            Ok(transaction) => transaction,
+            Err(error) if should_fallback_v5_to_v4(pipeline_version, &error) => {
+                build_signed_extrinsic_v4(&signer, call_data, extensions)
+            }
+            Err(V5BuildError::UnsupportedExtensions(reason)) => {
+                return Err(AuthorityError::NotSupported {
+                    reason: format!("signing host: {reason}"),
+                });
+            }
+            Err(V5BuildError::Other(reason)) => {
+                return Err(AuthorityError::Unknown {
+                    reason: format!("signing host: {reason}"),
+                });
+            }
+        };
     Ok(v01::HostCreateTransactionResponse { transaction })
 }
 
@@ -1314,7 +1478,7 @@ mod tests {
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
     use super::{
         BYTES_WRAP_PREFIX, BYTES_WRAP_SUFFIX, LocalActivation, RingVrfError,
-        SR25519_SIGNING_CONTEXT, raw_payload_bytes,
+        SR25519_SIGNING_CONTEXT, V5BuildError, raw_payload_bytes, should_fallback_v5_to_v4,
     };
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
@@ -1327,6 +1491,7 @@ mod tests {
     };
     use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
+    use sha2::{Digest, Sha256};
     use truapi::api::{Account, Entropy, ResourceAllocation, Signing};
     use truapi::latest::{
         HostAccountCreateProofRequest, HostAccountGetAliasRequest,
@@ -1340,6 +1505,7 @@ mod tests {
     use truapi::versioned::signing::{HostSignRawError, HostSignRawRequest, HostSignRawResponse};
     use truapi::{CallContext, CallError, v01};
     use truapi_platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
+    use verifiable::GenerateVerifiable;
     use verifiable::ring::RingDomainSize;
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
@@ -1800,6 +1966,117 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn register_ring_vrf_key_requires_active_session() {
+        let (_, authority) = signing_runtime();
+        let error = futures::executor::block_on(authority.register_ring_vrf_key_for_chain(
+            "peopl.dot".to_string(),
+            0,
+            [0x22; 32],
+            67,
+            *b"pop:polkadot.network/people     ",
+        ))
+        .unwrap_err();
+        assert!(matches!(error, AuthorityError::Disconnected));
+    }
+
+    #[test]
+    fn register_ring_vrf_key_validates_ring_and_derives_correct_public_key() {
+        let resolver = full_person_ring_resolver();
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority = SigningHostRole::new_with_ring_resolver(platform, resolver);
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        // The resolver accepts the supplied ring location before registration.
+        let chain_id = [0x22; 32];
+        let pallet_instance: u8 = 67;
+        let collection_id = *b"pop:polkadot.network/people     ";
+
+        let public_key = futures::executor::block_on(authority.register_ring_vrf_key_for_chain(
+            "peopl.dot".to_string(),
+            7,
+            chain_id,
+            pallet_instance,
+            collection_id,
+        ))
+        .expect("registration succeeds");
+
+        // The public key uses the caller-supplied derivation index.
+        let expected_entropy =
+            derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(7))
+                .expect("people-lite entropy derives");
+        let expected_public_key =
+            member_from_entropy(&expected_entropy).expect("member key derives");
+        assert_eq!(public_key, expected_public_key);
+    }
+
+    #[test]
+    fn register_ring_vrf_key_rejects_invalid_product_id() {
+        let resolver = full_person_ring_resolver();
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority = SigningHostRole::new_with_ring_resolver(platform, resolver);
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let error = futures::executor::block_on(authority.register_ring_vrf_key_for_chain(
+            "not a valid product id!".to_string(),
+            0,
+            [0x22; 32],
+            67,
+            *b"pop:polkadot.network/people     ",
+        ))
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AuthorityError::Unavailable { reason } if reason.contains("product identifier")
+        ));
+    }
+
+    #[test]
+    fn register_ring_vrf_key_fails_when_ring_validation_fails() {
+        struct AlwaysFailResolver;
+        #[async_trait::async_trait]
+        impl RingResolver for AlwaysFailResolver {
+            async fn validate(
+                &self,
+                _location: &v01::RingLocation,
+            ) -> Result<[u8; 32], RingVrfError> {
+                Err(RingVrfError::Unknown {
+                    reason: "resolver validation failed".to_string(),
+                })
+            }
+            async fn resolve(
+                &self,
+                _location: &v01::RingLocation,
+                _candidates: &[MemberCandidate],
+            ) -> Result<ResolvedRing, RingVrfError> {
+                unreachable!("resolve not called during registration")
+            }
+        }
+
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, Arc::new(AlwaysFailResolver));
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let error = futures::executor::block_on(authority.register_ring_vrf_key_for_chain(
+            "peopl.dot".to_string(),
+            0,
+            [0x22; 32],
+            67,
+            *b"pop:polkadot.network/people     ",
+        ))
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AuthorityError::Unavailable { reason } if reason.contains("resolver validation failed")
+        ));
     }
 
     #[test]
@@ -2774,5 +3051,242 @@ mod tests {
                 v01::AllocationOutcome::Allocated,
             ]
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Attestation helper tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn identity_public_key_rejects_when_disconnected() {
+        let (_services, authority) = signing_runtime();
+        let result = authority.identity_public_key();
+        assert!(
+            matches!(result, Err(AuthorityError::Disconnected)),
+            "identity_public_key must reject when no session is active"
+        );
+    }
+
+    #[test]
+    fn identity_public_key_returns_canonical_uid_dot_key() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let pk = authority
+            .identity_public_key()
+            .expect("active session has identity key");
+        let expected = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX)
+            .unwrap()
+            .public
+            .to_bytes();
+        assert_eq!(
+            pk, expected,
+            "identity_public_key returns the canonical uid.dot key"
+        );
+    }
+
+    #[test]
+    fn build_identity_auth_proof_rejects_when_disconnected() {
+        let (_services, authority) = signing_runtime();
+        let result = authority.build_identity_auth_proof(b"challenge");
+        assert!(
+            matches!(result, Err(AuthorityError::Disconnected)),
+            "build_identity_auth_proof must reject when no session is active"
+        );
+    }
+
+    #[test]
+    fn build_identity_auth_proof_is_valid() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let challenge = b"test vector".to_vec();
+        let proof = authority
+            .build_identity_auth_proof(&challenge)
+            .expect("active session");
+
+        // Verify the signature is correct: derives the expected identity key and
+        // verifies against the canonical message.
+        let expected_keypair = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX).unwrap();
+        let expected_pk = expected_keypair.public.to_bytes();
+        let mut message = Vec::new();
+        message.extend_from_slice(&challenge);
+        message.extend_from_slice(&expected_pk);
+        let auth_stamp_hash = Sha256::digest(b"{}");
+        message.extend_from_slice(&auth_stamp_hash);
+        let public = schnorrkel::PublicKey::from_bytes(&expected_pk).unwrap();
+        let sig = schnorrkel::Signature::from_bytes(&proof).unwrap();
+        assert!(
+            public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &Sha256::digest(&message), &sig)
+                .is_ok(),
+            "auth proof signature verifies"
+        );
+    }
+
+    #[test]
+    fn build_identity_auth_proof_is_valid_and_verifies() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let challenge = b"test vector".to_vec();
+        let first = authority
+            .build_identity_auth_proof(&challenge)
+            .expect("active session");
+        let again = authority
+            .build_identity_auth_proof(&challenge)
+            .expect("active session");
+
+        let keypair = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX).unwrap();
+        let pk = keypair.public.to_bytes();
+        let public = schnorrkel::PublicKey::from_bytes(&pk).unwrap();
+        let mut message = Vec::new();
+        message.extend_from_slice(&challenge);
+        message.extend_from_slice(&pk);
+        let auth_stamp_hash = Sha256::digest(b"{}");
+        message.extend_from_slice(&auth_stamp_hash);
+
+        // Each call uses a fresh nonce; both signatures must still verify.
+        for sig_bytes in [&first, &again] {
+            let sig = schnorrkel::Signature::from_bytes(sig_bytes).unwrap();
+            assert!(
+                public
+                    .verify_simple(SR25519_SIGNING_CONTEXT, &Sha256::digest(&message), &sig)
+                    .is_ok(),
+                "auth proof signature verifies"
+            );
+        }
+    }
+
+    #[test]
+    fn build_identity_auth_proof_is_available_when_session_active() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let result = authority.build_identity_auth_proof(b"challenge");
+        assert!(
+            result.is_ok(),
+            "build_identity_auth_proof succeeds when session is active"
+        );
+    }
+
+    #[test]
+    fn build_lite_person_registration_rejects_when_disconnected() {
+        let (_services, authority) = signing_runtime();
+        let result = authority.build_lite_person_registration([0x22; 32], "aliceheadless", None, 0);
+        assert!(
+            matches!(result, Err(AuthorityError::Disconnected)),
+            "build_lite_person_registration must reject when no session is active"
+        );
+    }
+
+    #[test]
+    fn build_lite_person_registration_produces_valid_signatures() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let verifier = [0x33u8; 32];
+        let username = "headlesstester";
+
+        let host_reg = authority
+            .build_lite_person_registration(verifier, username, None, 0)
+            .expect("active session");
+
+        // Verify the candidate_public_key matches the canonical uid.dot identity key.
+        let identity_keypair = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX).unwrap();
+        assert_eq!(
+            host_reg.candidate_public_key,
+            identity_keypair.public.to_bytes(),
+            "candidate_public_key is the canonical uid.dot key"
+        );
+
+        // Verify candidate_signature over the canonical ownership message:
+        // REGISTER_PREFIX ‖ candidate_public_key ‖ ring_vrf_key
+        let mut ownership_msg = Vec::new();
+        ownership_msg.extend_from_slice(b"pop:people-lite:register using");
+        ownership_msg.extend_from_slice(&host_reg.candidate_public_key);
+        ownership_msg.extend_from_slice(&host_reg.ring_vrf_key);
+        let public = schnorrkel::PublicKey::from_bytes(&host_reg.candidate_public_key).unwrap();
+        let sig = schnorrkel::Signature::from_bytes(&host_reg.candidate_signature).unwrap();
+        assert!(
+            public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &ownership_msg, &sig)
+                .is_ok(),
+            "candidate_signature verifies over the ownership message"
+        );
+
+        // Verify proof_of_ownership is a valid bandersnatch VRF signature for the same message.
+        assert!(
+            verifiable::ring::bandersnatch::BandersnatchVrfVerifiable::verify_signature(
+                &host_reg.proof_of_ownership,
+                &ownership_msg,
+                &host_reg.ring_vrf_key
+            ),
+            "proof_of_ownership is a valid bandersnatch VRF signature"
+        );
+
+        // Verify consumer_registration_signature over the SCALE consumer-registration tuple.
+        use parity_scale_codec::Encode;
+        let consumer_msg = (
+            host_reg.candidate_public_key,
+            verifier,
+            host_reg.identifier_key,
+            username.as_bytes().to_vec(),
+            None::<Vec<u8>>,
+        )
+            .encode();
+        let sig =
+            schnorrkel::Signature::from_bytes(&host_reg.consumer_registration_signature).unwrap();
+        assert!(
+            public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &consumer_msg, &sig)
+                .is_ok(),
+            "consumer_registration_signature verifies over the SCALE tuple"
+        );
+    }
+    #[test]
+    fn pipeline_zero_host_owned_verify_multi_signature_error_falls_back_to_v4() {
+        // The full host-owned error message contains both substrings.
+        let error = V5BuildError::UnsupportedExtensions(
+            "pipeline version 0 does not declare VerifyMultiSignature, \
+             host cannot authorize this transaction"
+                .to_string(),
+        );
+        assert!(should_fallback_v5_to_v4(0, &error));
+    }
+
+    #[test]
+    fn caller_supplied_verify_multi_signature_does_not_fall_back() {
+        // Caller-supplied VerifyMultiSignature is intentionally left unsigned;
+        // it must NOT trigger V4 fallback even when the runtime also rejects it.
+        // The production error phrase is: "does not declare VerifyMultiSignature,
+        // so the supplied value cannot authorize this transaction".
+        let error = V5BuildError::UnsupportedExtensions(
+            "pipeline version 0 does not declare VerifyMultiSignature, \
+             so the supplied value cannot authorize this transaction"
+                .to_string(),
+        );
+        assert!(
+            !should_fallback_v5_to_v4(0, &error),
+            "caller-supplied VerifyMultiSignature must not fall back to V4"
+        );
+    }
+
+    #[test]
+    fn nonzero_pipeline_never_falls_back_to_v4() {
+        let error = V5BuildError::UnsupportedExtensions(
+            "pipeline version 1 does not declare VerifyMultiSignature, \
+             host cannot authorize this transaction"
+                .to_string(),
+        );
+        assert!(!should_fallback_v5_to_v4(1, &error));
+    }
+
+    #[test]
+    fn unrelated_v5_error_never_falls_back_to_v4() {
+        let error = V5BuildError::UnsupportedExtensions(
+            "runtime does not support CheckMortality".to_string(),
+        );
+        assert!(!should_fallback_v5_to_v4(0, &error));
     }
 }
