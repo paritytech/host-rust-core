@@ -6,16 +6,19 @@
 //! <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/divergences.md?plain=1#L26-L35>
 
 use parity_scale_codec::{Decode, Encode};
+use truapi::latest::{
+    HostAccountCreateProofRequest, HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
+    HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest, HostAccountSignVrfRequest,
+};
 use truapi_macros::SsoWire;
 
 use super::{
-    CreateAccountProofRequest, CreateAccountProofResponse, CreateTransactionRequest,
-    CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest, GetAccountAliasRequest,
-    GetAccountAliasResponse, ListRingVrfKeysRequest, ListRingVrfKeysResponse,
-    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyRequest,
-    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse, Response,
-    RingVrfSignRequest, RingVrfSignResponse, SignRawWithLegacyAccountRequest,
-    SignRawWithLegacyAccountResponse, SignRequest, SignResponse, SignVrfRequest, SignVrfResponse,
+    CreateAccountProofResponse, CreateTransactionRequest, CreateTransactionResponse,
+    CreateTransactionWithLegacyAccountRequest, GetAccountAliasResponse, ListRingVrfKeysResponse,
+    ProductRequest, ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
+    ResourceAllocationRequest, ResourceAllocationResponse, Response, RingVrfSignResponse,
+    SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
+    SignVrfResponse,
 };
 
 /// v1 messages exchanged with the paired signing host over the encrypted SSO channel.
@@ -31,7 +34,7 @@ pub enum RemoteMessage {
     /// Signing host's answer to [`RemoteMessage::SignRequest`].
     SignResponse(Response<SignResponse>),
     /// Ask the Account Holder for a contextual alias.
-    GetAccountAliasRequest(GetAccountAliasRequest),
+    GetAccountAliasRequest(ProductRequest<HostAccountGetAliasRequest>),
     /// Account Holder's answer to [`RemoteMessage::GetAccountAliasRequest`].
     GetAccountAliasResponse(Response<GetAccountAliasResponse>),
     /// Ask the signing host to allocate SSO-backed resources.
@@ -49,12 +52,12 @@ pub enum RemoteMessage {
     /// Signing host's answer to [`RemoteMessage::SignRawWithLegacyAccountRequest`].
     SignRawWithLegacyAccountResponse(Response<SignRawWithLegacyAccountResponse>),
     /// Ask the Account Holder for a ring-VRF proof.
-    CreateAccountProofRequest(CreateAccountProofRequest),
+    CreateAccountProofRequest(ProductRequest<HostAccountCreateProofRequest>),
     /// Account Holder's answer to [`RemoteMessage::CreateAccountProofRequest`].
     CreateAccountProofResponse(Response<CreateAccountProofResponse>),
     /// Ask the Account Holder to sign an RFC-0023 sr25519 VRF transcript.
     #[codec(index = 14)]
-    SignVrfRequest(SignVrfRequest),
+    SignVrfRequest(ProductRequest<HostAccountSignVrfRequest>),
     /// Account Holder's answer to [`RemoteMessage::SignVrfRequest`].
     #[codec(index = 15)]
     SignVrfResponse(Response<SignVrfResponse>),
@@ -66,19 +69,19 @@ pub enum RemoteMessage {
     ProductSubtreeResponse(Response<ProductSubtreeResponse>),
     /// Register a ring-VRF key with the Account Holder.
     #[codec(index = 18)]
-    RegisterRingVrfKeyRequest(RegisterRingVrfKeyRequest),
+    RegisterRingVrfKeyRequest(ProductRequest<HostAccountRegisterRingVrfKeyRequest>),
     /// Account Holder's answer to [`RemoteMessage::RegisterRingVrfKeyRequest`].
     #[codec(index = 19)]
     RegisterRingVrfKeyResponse(Response<RegisterRingVrfKeyResponse>),
     /// List registered ring-VRF keys.
     #[codec(index = 20)]
-    ListRingVrfKeysRequest(ListRingVrfKeysRequest),
+    ListRingVrfKeysRequest(ProductRequest<HostAccountListRingVrfKeysRequest>),
     /// Account Holder's answer to [`RemoteMessage::ListRingVrfKeysRequest`].
     #[codec(index = 21)]
     ListRingVrfKeysResponse(Response<ListRingVrfKeysResponse>),
     /// Sign bytes with a registered ring-VRF key.
     #[codec(index = 22)]
-    RingVrfSignRequest(RingVrfSignRequest),
+    RingVrfSignRequest(ProductRequest<HostAccountRingVrfSignRequest>),
     /// Account Holder's answer to [`RemoteMessage::RingVrfSignRequest`].
     #[codec(index = 23)]
     RingVrfSignResponse(Response<RingVrfSignResponse>),

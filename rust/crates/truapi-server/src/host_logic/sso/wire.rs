@@ -16,8 +16,6 @@ pub trait SsoRequest: Sized {
     type Response;
     /// Wrap into the request variant.
     fn into_message(self) -> v1::RemoteMessage;
-    /// Unwrap from the request variant; `None` for any other message.
-    fn from_message(message: v1::RemoteMessage) -> Option<Self>;
     /// Wrap an envelope into this request's response variant.
     fn response_into_message(response: Response<Self::Response>) -> v1::RemoteMessage;
     /// Unwrap this request's response variant; `None` for any other message.
@@ -125,7 +123,7 @@ mod tests {
     use crate::host_logic::sso::messages::v1::{AnyRequest, Incoming, classify};
     use crate::host_logic::sso::messages::{
         CreateTransactionRequest, CreateTransactionWithLegacyAccountRequest, ProductSubtreeRequest,
-        SignRawWithLegacyAccountRequest, SignRequest, SigningRawPayload, SigningRawRequest,
+        SignRawWithLegacyAccountRequest, SignRequest,
     };
 
     #[test]
@@ -156,12 +154,12 @@ mod tests {
             classify(request.clone().into_message()),
             Incoming::Request(AnyRequest::ProductSubtreeRequest(request))
         );
-        let boxed = SignRequest::Raw(SigningRawRequest {
-            product_account_id: ProductAccountId {
+        let boxed = SignRequest::Raw(truapi::latest::HostSignRawRequest {
+            account: ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
                 derivation_index: DerivationIndex::Index(7),
             },
-            data: SigningRawPayload::Bytes(vec![]),
+            payload: truapi::latest::RawPayload::Bytes { bytes: vec![] },
         });
         assert_eq!(
             classify(boxed.clone().into_message()),

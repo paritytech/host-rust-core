@@ -695,15 +695,15 @@ fn legacy_sign_raw_accepts_derived_ss58_then_returns_sso_response() {
         panic!("expected raw signing payload");
     };
     assert_eq!(
-        request.product_account_id,
+        request.account,
         v01::ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
             derivation_index: v01::DerivationIndex::Index(0),
         }
     );
     assert!(matches!(
-        &request.data,
-        crate::host_logic::sso::messages::SigningRawPayload::Bytes(bytes)
+        &request.payload,
+        truapi::latest::RawPayload::Bytes { bytes }
             if bytes == b"hello"
     ));
 }
@@ -748,7 +748,7 @@ fn legacy_sign_raw_accepts_derived_hex_then_returns_sso_response() {
         panic!("expected raw signing payload");
     };
     assert_eq!(
-        request.product_account_id,
+        request.account,
         v01::ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
             derivation_index: v01::DerivationIndex::Index(0),

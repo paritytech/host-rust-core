@@ -1225,8 +1225,8 @@ fn get_account_alias_forwards_without_pairing_host_confirmation() {
         panic!("expected ring VRF alias request");
     };
     assert_eq!(request.calling_product_id, "myapp.dot");
-    assert_eq!(request.context.product_id, "myapp.dot");
-    assert_eq!(request.ring_location.chain_id, [1; 32]);
+    assert_eq!(request.payload.context.product_id, "myapp.dot");
+    assert_eq!(request.payload.ring_location.chain_id, [1; 32]);
 }
 
 #[test]
@@ -1293,8 +1293,8 @@ fn create_account_proof_returns_sso_proof() {
         panic!("expected ring VRF proof request");
     };
     assert_eq!(request.calling_product_id, "myapp.dot");
-    assert_eq!(request.context.product_id, "myapp.dot");
-    assert_eq!(request.message, vec![4, 5, 6]);
+    assert_eq!(request.payload.context.product_id, "myapp.dot");
+    assert_eq!(request.payload.message, vec![4, 5, 6]);
 }
 
 #[test]

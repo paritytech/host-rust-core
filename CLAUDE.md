@@ -76,7 +76,9 @@ scripts/truapi-host-installer.sh
 - Inter-host SSO uses `SsoWire` and `#[sso_service]` as described
   in the [macro guide](rust/crates/truapi-macros/README.md). Keep per-variant pairing,
   dispatch, and correlation in those macros; do not add manual per-variant catalogs.
-  Responses share `Response<P>`; handler signatures name their result payload
+  Requests with a caller share `ProductRequest<P>` around canonical payloads;
+  handler method names select request variants. Responses share `Response<P>`;
+  handler signatures name their result payload
   and response variant. Transcript classification belongs in shared reply handling
   or the handler; request context carries only the call and signing session.
 - Native bindings expose canonical Rust domain and protocol types directly.

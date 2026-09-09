@@ -20,15 +20,13 @@ use crate::host_logic::product_account::{
     derive_ring_vrf_domain_entropy, product_public_key_to_address,
 };
 use crate::host_logic::sso::messages::{
-    CreateAccountProofRequest, CreateAccountProofResponse, CreateTransactionLegacyPayload,
-    CreateTransactionPayload, CreateTransactionRequest, CreateTransactionResponse,
-    CreateTransactionWithLegacyAccountRequest, GetAccountAliasRequest, GetAccountAliasResponse,
-    ListRingVrfKeysRequest, ListRingVrfKeysResponse, OnExistingAllowancePolicy,
-    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyRequest,
-    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse,
-    RingVrfSignRequest, RingVrfSignResponse, SignRawWithLegacyAccountRequest,
-    SignRawWithLegacyAccountResponse, SignRequest, SignResponse, SignVrfRequest, SignVrfResponse,
-    SigningPayloadResponseData, SsoAllocatableResource, SsoAllocatedResource, SsoAllocationOutcome,
+    CreateAccountProofResponse, CreateTransactionLegacyPayload, CreateTransactionPayload,
+    CreateTransactionRequest, CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest,
+    GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy, ProductRequest,
+    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
+    ResourceAllocationRequest, ResourceAllocationResponse, RingVrfSignResponse,
+    SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
+    SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
 };
 use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::runtime::authority::{
@@ -72,10 +70,10 @@ impl SigningHostSsoService {
         &self,
         cx: &SsoRequestContext,
         request: SignRequest,
-    ) -> Result<SigningPayloadResponseData, String> {
-        let response = match request {
+    ) -> Result<api::HostSignPayloadResponse, String> {
+        match request {
             SignRequest::Payload(request) => {
-                let request: api::HostSignPayloadRequest = (*request).into();
+                let request = *request;
                 self.confirm(UserConfirmationReview::SignPayload(
                     SignPayloadReview::Product(request.clone()),
                 ))
@@ -89,7 +87,6 @@ impl SigningHostSsoService {
                     .await
             }
             SignRequest::Raw(request) => {
-                let request: api::HostSignRawRequest = request.into();
                 self.confirm(UserConfirmationReview::SignRaw(SignRawReview::Product(
                     request.clone(),
                 )))
@@ -103,11 +100,7 @@ impl SigningHostSsoService {
                     .await
             }
         }
-        .map_err(|err| err.to_string())?;
-        Ok(SigningPayloadResponseData {
-            signature: response.signature,
-            signed_transaction: response.signed_transaction,
-        })
+        .map_err(|err| err.to_string())
     }
 
     async fn serve_create_transaction(
@@ -129,26 +122,28 @@ impl SigningHostSsoService {
         &self,
         session: &AuthoritySession,
         calling_product_id: &str,
-        resource: SsoAllocatableResource,
+        resource: api::AllocatableResource,
         on_existing: OnExistingAllowancePolicy,
     ) -> Result<SsoAllocationOutcome, AllowanceAllocationError> {
         let services = &self.services;
         let signing_host = &self.signing_host;
         match resource {
-            SsoAllocatableResource::StatementStoreAllowance => allocate_statement_store_allowance(
-                services,
-                signing_host,
-                session,
-                calling_product_id,
-                on_existing,
-            )
-            .await
-            .map(|slot_account_key| {
-                SsoAllocationOutcome::Allocated(SsoAllocatedResource::StatementStoreAllowance {
-                    slot_account_key,
+            api::AllocatableResource::StatementStoreAllowance => {
+                allocate_statement_store_allowance(
+                    services,
+                    signing_host,
+                    session,
+                    calling_product_id,
+                    on_existing,
+                )
+                .await
+                .map(|slot_account_key| {
+                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::StatementStoreAllowance {
+                        slot_account_key,
+                    })
                 })
-            }),
-            SsoAllocatableResource::BulletinAllowance => allocate_bulletin_allowance(
+            }
+            api::AllocatableResource::BulletinAllowance => allocate_bulletin_allowance(
                 services,
                 signing_host,
                 session,
@@ -161,7 +156,7 @@ impl SigningHostSsoService {
                     slot_account_key,
                 })
             }),
-            SsoAllocatableResource::SmartContractAllowance(index) => {
+            api::AllocatableResource::SmartContractAllowance(index) => {
                 allocate_smart_contract_allowance(
                     services,
                     signing_host,
@@ -175,7 +170,7 @@ impl SigningHostSsoService {
                     SsoAllocationOutcome::Allocated(SsoAllocatedResource::SmartContractAllowance)
                 })
             }
-            SsoAllocatableResource::AutoSigning => {
+            api::AllocatableResource::AutoSigning => {
                 let product_root_private_key = signing_host
                     .product_subtree_secret(calling_product_id)
                     .map_err(AllowanceAllocationError::Authority)?;
@@ -192,67 +187,6 @@ impl SigningHostSsoService {
                 ))
             }
         }
-    }
-
-    async fn serve_resource_allocation(
-        &self,
-        cx: &SsoRequestContext,
-        request: ResourceAllocationRequest,
-    ) -> SsoReply<ResourceAllocationResponse> {
-        let mut failures = Vec::new();
-        let payload = async {
-            let review = UserConfirmationReview::ResourceAllocation(ResourceAllocationReview {
-                calling_product_id: request.calling_product_id.clone(),
-                resources: request
-                    .resources
-                    .iter()
-                    .map(public_allocatable_resource)
-                    .collect(),
-            });
-            match self.services.platform.confirm_user_action(review).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Ok(vec![
-                        SsoAllocationOutcome::Rejected;
-                        request.resources.len()
-                    ]);
-                }
-                Err(err) => return Err(format!("confirmation failed: {}", err.reason)),
-            }
-
-            self.signing_host
-                .require_current_session(&cx.session)
-                .map_err(|err| err.to_string())?;
-            let mut outcomes = Vec::with_capacity(request.resources.len());
-            for resource in request.resources {
-                self.signing_host
-                    .require_current_session(&cx.session)
-                    .map_err(|err| err.to_string())?;
-                let outcome = self
-                    .allocate(
-                        &cx.session,
-                        &request.calling_product_id,
-                        resource,
-                        request.on_existing,
-                    )
-                    .await;
-                self.signing_host
-                    .require_current_session(&cx.session)
-                    .map_err(|err| err.to_string())?;
-                outcomes.push(outcome.unwrap_or_else(|err| {
-                    let reason = err.to_string();
-                    warn!(%reason, "resource allocation item failed");
-                    failures.push(reason);
-                    SsoAllocationOutcome::NotAvailable
-                }));
-            }
-            Ok(outcomes)
-        }
-        .await;
-        if let Err(reason) = &payload {
-            warn!(%reason, "resource allocation request failed");
-        }
-        allocation_reply(payload, failures)
     }
 }
 
@@ -274,7 +208,7 @@ fn allocation_reply(
 /// Transcript outcome for an allocation batch: `ok` only when every requested
 /// resource was allocated; otherwise `rejected`, `partial`, or `not_available`
 /// with a count summary.
-pub(super) fn resource_allocation_outcome(
+fn resource_allocation_outcome(
     payload: &Result<Vec<SsoAllocationOutcome>, String>,
 ) -> ResponseOutcome {
     let outcomes = match payload {
@@ -337,19 +271,6 @@ pub(super) fn resource_allocation_outcome(
     }
 }
 
-fn public_allocatable_resource(resource: &SsoAllocatableResource) -> api::AllocatableResource {
-    match resource {
-        SsoAllocatableResource::StatementStoreAllowance => {
-            api::AllocatableResource::StatementStoreAllowance
-        }
-        SsoAllocatableResource::BulletinAllowance => api::AllocatableResource::BulletinAllowance,
-        SsoAllocatableResource::SmartContractAllowance(index) => {
-            api::AllocatableResource::SmartContractAllowance(index.clone())
-        }
-        SsoAllocatableResource::AutoSigning => api::AllocatableResource::AutoSigning,
-    }
-}
-
 #[truapi_macros::sso_service]
 impl SigningHostSsoService {
     /// Sign a payload or raw bytes with a product account.
@@ -365,7 +286,7 @@ impl SigningHostSsoService {
     async fn get_account_alias(
         &self,
         cx: &SsoRequestContext,
-        request: GetAccountAliasRequest,
+        request: ProductRequest<api::HostAccountGetAliasRequest>,
     ) -> GetAccountAliasResponse {
         self.signing_host
             .account_alias(&cx.call, &cx.session, request)
@@ -378,7 +299,56 @@ impl SigningHostSsoService {
         cx: &SsoRequestContext,
         request: ResourceAllocationRequest,
     ) -> ResourceAllocationResponse {
-        self.serve_resource_allocation(cx, request).await
+        let mut failures = Vec::new();
+        let payload = async {
+            let review = UserConfirmationReview::ResourceAllocation(ResourceAllocationReview {
+                calling_product_id: request.calling_product_id.clone(),
+                resources: request.resources.clone(),
+            });
+            match self.services.platform.confirm_user_action(review).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(vec![
+                        SsoAllocationOutcome::Rejected;
+                        request.resources.len()
+                    ]);
+                }
+                Err(err) => return Err(format!("confirmation failed: {}", err.reason)),
+            }
+
+            self.signing_host
+                .require_current_session(&cx.session)
+                .map_err(|err| err.to_string())?;
+            let mut outcomes = Vec::with_capacity(request.resources.len());
+            for resource in request.resources {
+                self.signing_host
+                    .require_current_session(&cx.session)
+                    .map_err(|err| err.to_string())?;
+                let outcome = self
+                    .allocate(
+                        &cx.session,
+                        &request.calling_product_id,
+                        resource,
+                        request.on_existing,
+                    )
+                    .await;
+                self.signing_host
+                    .require_current_session(&cx.session)
+                    .map_err(|err| err.to_string())?;
+                outcomes.push(outcome.unwrap_or_else(|err| {
+                    let reason = err.to_string();
+                    warn!(%reason, "resource allocation item failed");
+                    failures.push(reason);
+                    SsoAllocationOutcome::NotAvailable
+                }));
+            }
+            Ok(outcomes)
+        }
+        .await;
+        if let Err(reason) = &payload {
+            warn!(%reason, "resource allocation request failed");
+        }
+        allocation_reply(payload, failures)
     }
 
     /// Build a signed transaction for a product account.
@@ -419,7 +389,7 @@ impl SigningHostSsoService {
     ) -> SignRawWithLegacyAccountResponse {
         let public_request = api::HostSignRawWithLegacyAccountRequest {
             signer: product_public_key_to_address(request.account),
-            payload: request.data.into(),
+            payload: request.data,
         };
         self.confirm(UserConfirmationReview::SignRaw(
             SignRawReview::LegacyAccount(public_request.clone()),
@@ -443,7 +413,7 @@ impl SigningHostSsoService {
     async fn create_account_proof(
         &self,
         cx: &SsoRequestContext,
-        request: CreateAccountProofRequest,
+        request: ProductRequest<api::HostAccountCreateProofRequest>,
     ) -> CreateAccountProofResponse {
         self.signing_host
             .create_proof(&cx.call, &cx.session, request)
@@ -451,7 +421,11 @@ impl SigningHostSsoService {
     }
 
     /// Sign an RFC-0023 VRF transcript.
-    async fn sign_vrf(&self, cx: &SsoRequestContext, request: SignVrfRequest) -> SignVrfResponse {
+    async fn sign_vrf(
+        &self,
+        cx: &SsoRequestContext,
+        request: ProductRequest<api::HostAccountSignVrfRequest>,
+    ) -> SignVrfResponse {
         self.signing_host
             .sign_vrf(
                 &cx.call,
@@ -490,7 +464,7 @@ impl SigningHostSsoService {
     async fn register_ring_vrf_key(
         &self,
         cx: &SsoRequestContext,
-        request: RegisterRingVrfKeyRequest,
+        request: ProductRequest<api::HostAccountRegisterRingVrfKeyRequest>,
     ) -> RegisterRingVrfKeyResponse {
         self.signing_host
             .register_ring_vrf_key(&cx.call, &cx.session, request)
@@ -501,7 +475,7 @@ impl SigningHostSsoService {
     async fn list_ring_vrf_keys(
         &self,
         cx: &SsoRequestContext,
-        request: ListRingVrfKeysRequest,
+        request: ProductRequest<api::HostAccountListRingVrfKeysRequest>,
     ) -> ListRingVrfKeysResponse {
         self.signing_host
             .list_ring_vrf_keys(&cx.call, &cx.session, request)
@@ -512,7 +486,7 @@ impl SigningHostSsoService {
     async fn ring_vrf_sign(
         &self,
         cx: &SsoRequestContext,
-        request: RingVrfSignRequest,
+        request: ProductRequest<api::HostAccountRingVrfSignRequest>,
     ) -> RingVrfSignResponse {
         self.signing_host
             .ring_vrf_sign(&cx.call, &cx.session, request)
@@ -523,6 +497,58 @@ impl SigningHostSsoService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_logic::sso::messages::Response;
+
+    #[test]
+    fn resource_allocation_summary_reflects_per_resource_outcomes() {
+        let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::Rejected]));
+        assert_eq!(
+            (result.outcome, result.reason.as_deref()),
+            ("rejected", Some("Requested resource was rejected"))
+        );
+
+        let result = resource_allocation_outcome(&Ok(vec![
+            SsoAllocationOutcome::Allocated(SsoAllocatedResource::BulletinAllowance {
+                slot_account_key: vec![1; 64],
+            }),
+            SsoAllocationOutcome::Rejected,
+            SsoAllocationOutcome::NotAvailable,
+        ]));
+        assert_eq!(
+            (result.outcome, result.reason.as_deref()),
+            (
+                "partial",
+                Some("1 of 3 requested resources allocated; 1 rejected; 1 unavailable")
+            )
+        );
+
+        let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::NotAvailable]));
+        assert_eq!(
+            (result.outcome, result.reason.as_deref()),
+            ("not_available", Some("Requested resource is not available"))
+        );
+    }
+
+    #[test]
+    fn response_summary_classifies_resource_allocation_batches() {
+        let response = Response {
+            responding_to: "allocation-1".to_string(),
+            payload: Ok(vec![
+                SsoAllocationOutcome::Rejected,
+                SsoAllocationOutcome::NotAvailable,
+            ]),
+        };
+
+        let result = resource_allocation_outcome(&response.payload);
+
+        assert_eq!(
+            (result.outcome, result.reason.as_deref()),
+            (
+                "rejected",
+                Some("No resources allocated; 1 rejected; 1 unavailable")
+            )
+        );
+    }
 
     #[test]
     fn allocation_transcript_includes_single_line_item_failures() {

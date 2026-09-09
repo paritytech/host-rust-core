@@ -9,8 +9,10 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use truapi::latest::{
-    AccountId, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
-    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyResponse,
+    AccountId, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
+    HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
+    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
+    HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
     HostAccountRingVrfSignResponse, HostCreateTransactionResponse,
     HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
     HostSignPayloadRequest, HostSignPayloadResponse, HostSignPayloadWithLegacyAccountRequest,
@@ -23,10 +25,7 @@ use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
 
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::{
-    CreateAccountProofRequest, GetAccountAliasRequest, ListRingVrfKeysRequest,
-    RegisterRingVrfKeyRequest, RingVrfError, RingVrfSignRequest,
-};
+use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
 
 /// Secret key allocated for Bulletin preimage submission.
@@ -362,7 +361,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: GetAccountAliasRequest,
+        request: ProductRequest<HostAccountGetAliasRequest>,
     ) -> Result<HostAccountGetAliasResponse, RingVrfError>;
 
     /// Create a ring-VRF proof bound to a context and message.
@@ -373,7 +372,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: CreateAccountProofRequest,
+        request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<HostAccountCreateProofResponse, RingVrfError>;
 
     /// Register a ring-VRF key owned by the calling product.
@@ -381,7 +380,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: RegisterRingVrfKeyRequest,
+        request: ProductRequest<HostAccountRegisterRingVrfKeyRequest>,
     ) -> Result<HostAccountRegisterRingVrfKeyResponse, RingVrfError>;
 
     /// List registered ring-VRF keys.
@@ -389,7 +388,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: ListRingVrfKeysRequest,
+        request: ProductRequest<HostAccountListRingVrfKeysRequest>,
     ) -> Result<HostAccountListRingVrfKeysResponse, RingVrfError>;
 
     /// Sign bytes directly with a registered ring-VRF key.
@@ -397,7 +396,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: RingVrfSignRequest,
+        request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
 
     /// Ask the account authority to allocate product-scoped resources.

@@ -989,13 +989,12 @@ pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
 #[cfg(test)]
 mod tests {
     use super::super::LocalActivation;
-    use super::super::sso_service::resource_allocation_outcome;
     use super::*;
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::derive_ring_vrf_domain_entropy;
     use crate::host_logic::sso::messages::{
-        self, GetAccountAliasResponse, RemoteMessage, Response, RingVrfError,
-        SsoAllocatableResource, SsoAllocatedResource, SsoAllocationOutcome,
+        self, GetAccountAliasResponse, RemoteMessage, Response, RingVrfError, SsoAllocatedResource,
+        SsoAllocationOutcome,
     };
     use crate::host_logic::sso::wire::ResponseOutcome;
     use crate::host_logic::statement_store::decode_verified_statement_data;
@@ -1347,57 +1346,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resource_allocation_summary_reflects_per_resource_outcomes() {
-        let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::Rejected]));
-        assert_eq!(
-            (result.outcome, result.reason.as_deref()),
-            ("rejected", Some("Requested resource was rejected"))
-        );
-
-        let result = resource_allocation_outcome(&Ok(vec![
-            SsoAllocationOutcome::Allocated(SsoAllocatedResource::BulletinAllowance {
-                slot_account_key: vec![1; 64],
-            }),
-            SsoAllocationOutcome::Rejected,
-            SsoAllocationOutcome::NotAvailable,
-        ]));
-        assert_eq!(
-            (result.outcome, result.reason.as_deref()),
-            (
-                "partial",
-                Some("1 of 3 requested resources allocated; 1 rejected; 1 unavailable")
-            )
-        );
-
-        let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::NotAvailable]));
-        assert_eq!(
-            (result.outcome, result.reason.as_deref()),
-            ("not_available", Some("Requested resource is not available"))
-        );
-    }
-
-    #[test]
-    fn response_summary_classifies_resource_allocation_batches() {
-        let response = Response {
-            responding_to: "allocation-1".to_string(),
-            payload: Ok(vec![
-                SsoAllocationOutcome::Rejected,
-                SsoAllocationOutcome::NotAvailable,
-            ]),
-        };
-
-        let result = resource_allocation_outcome(&response.payload);
-
-        assert_eq!(
-            (result.outcome, result.reason.as_deref()),
-            (
-                "rejected",
-                Some("No resources allocated; 1 rejected; 1 unavailable")
-            )
-        );
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn allocation_failure_details_reach_the_response_transcript() {
@@ -1413,7 +1361,7 @@ mod tests {
         let service = SigningHostSsoService::new(services, signing_host);
         let cases = [
             (
-                vec![SsoAllocatableResource::BulletinAllowance],
+                vec![api::AllocatableResource::BulletinAllowance],
                 vec![SsoAllocationOutcome::NotAvailable],
                 "not_available",
                 "Requested resource is not available",
@@ -1421,9 +1369,9 @@ mod tests {
             ),
             (
                 vec![
-                    SsoAllocatableResource::AutoSigning,
-                    SsoAllocatableResource::BulletinAllowance,
-                    SsoAllocatableResource::StatementStoreAllowance,
+                    api::AllocatableResource::AutoSigning,
+                    api::AllocatableResource::BulletinAllowance,
+                    api::AllocatableResource::StatementStoreAllowance,
                 ],
                 vec![
                     auto_signing.clone(),
@@ -1435,7 +1383,7 @@ mod tests {
                 2,
             ),
             (
-                vec![SsoAllocatableResource::AutoSigning],
+                vec![api::AllocatableResource::AutoSigning],
                 vec![auto_signing],
                 "ok",
                 "",
@@ -1505,19 +1453,21 @@ mod tests {
             &services,
             &signing_host,
             "alias-1",
-            v1::RemoteMessage::GetAccountAliasRequest(messages::GetAccountAliasRequest {
+            v1::RemoteMessage::GetAccountAliasRequest(messages::ProductRequest {
                 calling_product_id: "myapp.dot".to_string(),
-                key_handle: api::ProductAccountId {
-                    dot_ns_identifier: "peopl.dot".to_string(),
-                    derivation_index: api::DerivationIndex::Index(0),
-                },
-                context: api::ProductProofContext {
-                    product_id: "other.dot".to_string(),
-                    suffix: api::DerivationIndex::Index(0),
-                },
-                ring_location: api::RingLocation {
-                    chain_id: [0; 32],
-                    junctions: vec![],
+                payload: api::HostAccountGetAliasRequest {
+                    key_handle: api::ProductAccountId {
+                        dot_ns_identifier: "peopl.dot".to_string(),
+                        derivation_index: api::DerivationIndex::Index(0),
+                    },
+                    context: api::ProductProofContext {
+                        product_id: "other.dot".to_string(),
+                        suffix: api::DerivationIndex::Index(0),
+                    },
+                    ring_location: api::RingLocation {
+                        chain_id: [0; 32],
+                        junctions: vec![],
+                    },
                 },
             }),
         );
@@ -1539,7 +1489,7 @@ mod tests {
             "alloc-1",
             v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
-                resources: vec![SsoAllocatableResource::StatementStoreAllowance],
+                resources: vec![api::AllocatableResource::StatementStoreAllowance],
                 on_existing: messages::OnExistingAllowancePolicy::Ignore,
             }),
         );
@@ -1582,7 +1532,7 @@ mod tests {
             "alloc-auto-signing",
             v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
-                resources: vec![SsoAllocatableResource::AutoSigning],
+                resources: vec![api::AllocatableResource::AutoSigning],
                 on_existing: messages::OnExistingAllowancePolicy::Ignore,
             }),
         );
@@ -1616,7 +1566,7 @@ mod tests {
             "alloc-stale".to_string(),
             messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
-                resources: vec![SsoAllocatableResource::AutoSigning],
+                resources: vec![api::AllocatableResource::AutoSigning],
                 on_existing: OnExistingAllowancePolicy::Ignore,
             },
         );

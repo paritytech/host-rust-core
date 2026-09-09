@@ -258,6 +258,10 @@ consent and business logic; `sso_responder.rs` owns the transport loop and share
 allowance helpers. Resource consent is bound to the request's signing session:
 account changes, disconnects, and reactivation invalidate pending approval before
 allocation or key return. Allocation failure details stay in local transcripts.
+Allocation requests use the canonical `truapi::latest::AllocatableResource` type.
+Signing uses canonical request and result types. Product-scoped VRF requests use
+`ProductRequest<P>` to attach the caller to a canonical payload. Both product and
+SSO signing encode `with_signed_transaction` with the one-byte `OptionBool` codec.
 
 The `host_logic::sso::messages::v1::RemoteMessage` enum owns the SCALE wire
 contract. Its response variants wrap named result payloads in `Response<P>`,

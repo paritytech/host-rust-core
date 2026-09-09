@@ -648,12 +648,10 @@ pub(crate) fn sign_response_message(
             crate::host_logic::sso::messages::v1::RemoteMessage::SignResponse(
                 crate::host_logic::sso::messages::Response {
                     responding_to: message_id.to_string(),
-                    payload: Ok(
-                        crate::host_logic::sso::messages::SigningPayloadResponseData {
-                            signature,
-                            signed_transaction,
-                        },
-                    ),
+                    payload: Ok(truapi::latest::HostSignPayloadResponse {
+                        signature,
+                        signed_transaction,
+                    }),
                 },
             ),
         ),
@@ -752,7 +750,7 @@ pub(crate) fn sign_payload_data() -> v01::HostSignPayloadData {
         asset_id: None,
         metadata_hash: None,
         mode: None,
-        with_signed_transaction: None,
+        with_signed_transaction: parity_scale_codec::OptionBool(None),
     }
 }
 

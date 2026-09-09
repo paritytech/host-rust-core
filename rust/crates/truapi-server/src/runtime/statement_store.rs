@@ -622,7 +622,7 @@ mod tests {
         );
         assert_eq!(
             request.resources,
-            vec![crate::host_logic::sso::messages::SsoAllocatableResource::StatementStoreAllowance]
+            vec![truapi::latest::AllocatableResource::StatementStoreAllowance]
         );
     }
 

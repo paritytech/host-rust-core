@@ -25,10 +25,7 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 
-use crate::host_logic::sso::messages::{
-    CreateAccountProofRequest, GetAccountAliasRequest, ListRingVrfKeysRequest,
-    RegisterRingVrfKeyRequest, RingVrfSignRequest,
-};
+use crate::host_logic::sso::messages::ProductRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
@@ -151,11 +148,13 @@ impl Account for ProductRuntimeHost {
             self.authority.account_alias(
                 &cx,
                 &session,
-                GetAccountAliasRequest {
+                ProductRequest {
                     calling_product_id,
-                    key_handle,
-                    context,
-                    ring_location,
+                    payload: latest::HostAccountGetAliasRequest {
+                        key_handle,
+                        context,
+                        ring_location,
+                    },
                 },
             ),
         )
@@ -202,12 +201,14 @@ impl Account for ProductRuntimeHost {
             self.authority.create_proof(
                 &cx,
                 &session,
-                CreateAccountProofRequest {
+                ProductRequest {
                     calling_product_id,
-                    key_handle,
-                    context,
-                    ring_location,
-                    message,
+                    payload: latest::HostAccountCreateProofRequest {
+                        key_handle,
+                        context,
+                        ring_location,
+                        message,
+                    },
                 },
             ),
         )
@@ -241,10 +242,9 @@ impl Account for ProductRuntimeHost {
             self.authority.register_ring_vrf_key(
                 &cx,
                 &session,
-                RegisterRingVrfKeyRequest {
+                ProductRequest {
                     calling_product_id,
-                    index,
-                    ring,
+                    payload: latest::HostAccountRegisterRingVrfKeyRequest { index, ring },
                 },
             ),
         )
@@ -287,10 +287,9 @@ impl Account for ProductRuntimeHost {
             self.authority.list_ring_vrf_keys(
                 &cx,
                 &session,
-                ListRingVrfKeysRequest {
+                ProductRequest {
                     calling_product_id,
-                    owner,
-                    disclosure,
+                    payload: latest::HostAccountListRingVrfKeysRequest { owner, disclosure },
                 },
             ),
         )
@@ -335,10 +334,12 @@ impl Account for ProductRuntimeHost {
             self.authority.ring_vrf_sign(
                 &cx,
                 &session,
-                RingVrfSignRequest {
+                ProductRequest {
                     calling_product_id,
-                    key_handle: request.key_handle,
-                    message: request.message,
+                    payload: latest::HostAccountRingVrfSignRequest {
+                        key_handle: request.key_handle,
+                        message: request.message,
+                    },
                 },
             ),
         )

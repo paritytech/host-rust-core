@@ -13,13 +13,12 @@ use super::super::statement_store_rpc::{self, StatementStoreRpc};
 use super::PairingHost;
 use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
 use crate::host_logic::sso::messages::{
-    CreateAccountProofRequest, CreateTransactionLegacyPayload, CreateTransactionPayload,
-    CreateTransactionRequest, CreateTransactionWithLegacyAccountRequest, GetAccountAliasRequest,
-    ListRingVrfKeysRequest, OnExistingAllowancePolicy, ProductSubtreeRequest,
-    RegisterRingVrfKeyRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
-    RingVrfError, RingVrfSignRequest, SignRawWithLegacyAccountRequest, SignRequest, SignVrfRequest,
-    SsoAllocatedResource, SsoAllocationOutcome, SsoSessionStatement,
-    build_outgoing_request_statement, decode_sso_session_statement, v1,
+    CreateTransactionLegacyPayload, CreateTransactionPayload, CreateTransactionRequest,
+    CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
+    ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
+    RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
+    SsoAllocationOutcome, SsoSessionStatement, build_outgoing_request_statement,
+    decode_sso_session_statement, v1,
 };
 use crate::host_logic::sso::wire::SsoRequest;
 use crate::host_logic::statement_store::parse_new_statements_result;
@@ -272,7 +271,7 @@ impl PairingHost {
         self.call(
             cx,
             session,
-            SignVrfRequest {
+            ProductRequest {
                 calling_product_id,
                 payload: request,
             },
@@ -307,15 +306,10 @@ impl PairingHost {
                 payload: request.payload,
             },
         };
-        let payload = self
-            .call(cx, session, SignRequest::Payload(Box::new(request.into())))
+        self.call(cx, session, SignRequest::Payload(Box::new(request)))
             .await
             .map_err(remote_authority_error)?
-            .map_err(remote_authority_error)?;
-        Ok(latest::HostSignPayloadResponse {
-            signature: payload.signature,
-            signed_transaction: payload.signed_transaction,
-        })
+            .map_err(remote_authority_error)
     }
 
     /// Forward a raw-signing request to the paired signing host.
@@ -330,17 +324,11 @@ impl PairingHost {
         request: SignRawAuthorityRequest,
     ) -> Result<latest::HostSignPayloadResponse, AuthorityError> {
         match request {
-            SignRawAuthorityRequest::Product(request) => {
-                let payload = self
-                    .call(cx, session, SignRequest::Raw(request.into()))
-                    .await
-                    .map_err(remote_authority_error)?
-                    .map_err(remote_authority_error)?;
-                Ok(latest::HostSignPayloadResponse {
-                    signature: payload.signature,
-                    signed_transaction: payload.signed_transaction,
-                })
-            }
+            SignRawAuthorityRequest::Product(request) => self
+                .call(cx, session, SignRequest::Raw(request))
+                .await
+                .map_err(remote_authority_error)?
+                .map_err(remote_authority_error),
             SignRawAuthorityRequest::LegacyAccount { account, request } => {
                 let signature = self
                     .call(
@@ -348,7 +336,7 @@ impl PairingHost {
                         session,
                         SignRawWithLegacyAccountRequest {
                             account,
-                            data: request.payload.into(),
+                            data: request.payload,
                         },
                     )
                     .await
@@ -426,7 +414,7 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &SessionInfo,
-        request: GetAccountAliasRequest,
+        request: ProductRequest<latest::HostAccountGetAliasRequest>,
     ) -> Result<latest::HostAccountGetAliasResponse, RingVrfError> {
         self.call(cx, session, request)
             .await
@@ -438,7 +426,7 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &SessionInfo,
-        request: CreateAccountProofRequest,
+        request: ProductRequest<latest::HostAccountCreateProofRequest>,
     ) -> Result<latest::HostAccountCreateProofResponse, RingVrfError> {
         self.call(cx, session, request)
             .await
@@ -450,7 +438,7 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &SessionInfo,
-        request: RegisterRingVrfKeyRequest,
+        request: ProductRequest<latest::HostAccountRegisterRingVrfKeyRequest>,
     ) -> Result<latest::RingVrfPublicKey, RingVrfError> {
         self.call(cx, session, request)
             .await
@@ -462,7 +450,7 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &SessionInfo,
-        request: ListRingVrfKeysRequest,
+        request: ProductRequest<latest::HostAccountListRingVrfKeysRequest>,
     ) -> Result<Vec<latest::RegisteredRingVrfKey>, RingVrfError> {
         self.call(cx, session, request)
             .await
@@ -474,7 +462,7 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &SessionInfo,
-        request: RingVrfSignRequest,
+        request: ProductRequest<latest::HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         self.call(cx, session, request)
             .await
@@ -497,7 +485,7 @@ impl PairingHost {
                 session,
                 ResourceAllocationRequest {
                     calling_product_id: product_id.clone(),
-                    resources: request.resources.into_iter().map(Into::into).collect(),
+                    resources: request.resources,
                     on_existing: OnExistingAllowancePolicy::Increase,
                 },
             )
@@ -527,7 +515,7 @@ impl PairingHost {
                 session,
                 ResourceAllocationRequest {
                     calling_product_id: product_id.to_string(),
-                    resources: vec![resource.into()],
+                    resources: vec![resource],
                     on_existing,
                 },
             )
