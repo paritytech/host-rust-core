@@ -233,9 +233,37 @@ type DebuggerEnablement = {
     | "enabled"
     | "production-build"
     | "production-build-switch-set"
+    | "enabled-from-build"
     | "no-key"
     | "no-storage";
 };
+
+/**
+ * Dial URL a dev build was given, when it was given one.
+ *
+ * Lets a local stack point the tap at its own debugger with no per-browser setup:
+ * `localStorage` is per-origin AND per-profile, so a key is the one piece of this
+ * that cannot be arranged from outside the browser. A build-time value can, and it
+ * then holds for every profile that opens that build.
+ *
+ * Same literal-token rule as the `DEV` read below: a bundler replaces the exact
+ * `import.meta.env.VITE_TRUAPI_DEBUGGER` expression, so it must not be aliased or
+ * optionally chained. The try/catch covers realms with no `import.meta.env` at all
+ * (tsc output under Node, unit tests), where the access throws.
+ */
+function buildTimeDebuggerUrl(): string | null {
+  let raw: unknown;
+  try {
+    raw = (
+      import.meta as unknown as { env: { VITE_TRUAPI_DEBUGGER?: unknown } }
+    ).env.VITE_TRUAPI_DEBUGGER;
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "string") return null;
+  const url = raw.trim();
+  return url === "" ? null : url;
+}
 
 function readPersistedDebuggerUrl(): DebuggerEnablement {
   // Hard dev-only gate, not a convention: bundlers (Vite) replace
@@ -284,10 +312,14 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
     };
   }
   const storage = globalThis.localStorage;
+  const url = storage?.getItem(DEV_DEBUGGER_URL_KEY) ?? null;
+  // A key set by hand wins, so a developer can always aim a build somewhere else
+  // without rebuilding it. The build-time value is the default, not an override.
+  if (url !== null && url !== "") return { url, reason: "enabled" };
+  const fromBuild = buildTimeDebuggerUrl();
+  if (fromBuild !== null) return { url: fromBuild, reason: "enabled-from-build" };
   if (storage === undefined) return { url: null, reason: "no-storage" };
-  const url = storage.getItem(DEV_DEBUGGER_URL_KEY);
-  if (url === null || url === "") return { url: null, reason: "no-key" };
-  return { url, reason: "enabled" };
+  return { url: null, reason: "no-key" };
 }
 
 /**
@@ -321,6 +353,16 @@ function reportDebuggerEnablement(e: DebuggerEnablement): void {
   const origin = globalThis.location?.origin ?? "(unknown origin)";
   if (e.reason === "enabled") {
     console.info(`[truapi] wire debugger: dialling ${e.url} (origin ${origin})`);
+    return;
+  }
+  if (e.reason === "enabled-from-build") {
+    // Say where the URL came from. A developer who never set a key needs to know
+    // the build chose one, and a developer whose key was ignored needs to know it
+    // was not: a key always wins, so seeing this line means no key was set.
+    console.info(
+      `[truapi] wire debugger: dialling ${e.url} from the build (origin ${origin}); ` +
+        `set "${DEV_DEBUGGER_URL_KEY}" here to override`,
+    );
     return;
   }
   const why =

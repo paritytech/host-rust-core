@@ -273,6 +273,13 @@ no tap:
    localStorage.setItem("truapi:debugger", "ws://127.0.0.1:9231");
    ```
 
+   A dev build can carry the URL instead, which is what a local stack does:
+   build the host with `VITE_TRUAPI_DEBUGGER=ws://127.0.0.1:9231` and every
+   browser profile that opens it dials without a key. A key set by hand always
+   wins over the build's value, so it stays an override. `localStorage` is
+   per-origin and per-profile, which is the reason a build-time default exists
+   at all: a key cannot be arranged from outside the browser.
+
 Run the debugger at the other end (`@parity/truapi-debugger`, `npm run serve`,
 `127.0.0.1:9231`). On the next runtime boot the worker dials that URL and (via
 the Rust core's `DebugSink` tap) sends each frame as `{ channelId, dir, frame }`.

@@ -238,7 +238,11 @@ installed, which §9's enablement rules govern.
 
 - The web host reads its debugger URL behind a build-time DEV condition, so a
   production bundle returns no URL and a stray `localStorage` key cannot turn the
-  tap on. With no URL the host installs no emit callback, so the core installs no
+  tap on. The URL has two sources, both inside that condition: a `localStorage`
+  key, and a value the dev build carries. A key set by hand **MUST** win, so a
+  build's value is a default rather than an override, and the host **MUST** report
+  which source it used - an ignored key is otherwise indistinguishable from a key
+  that was never read. With no URL the host installs no emit callback, so the core installs no
   sink. The condition **MUST** be the bare token the bundler substitutes
   (`import.meta.env.DEV`) — no alias, no optional chaining. A bundler replaces
   that exact token and nothing else; an aliased read survives into the bundle,
