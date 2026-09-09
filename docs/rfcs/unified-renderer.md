@@ -256,7 +256,7 @@ pub enum Modifier {
     MinHeight(Size),
     FillWidth(bool),
     FillHeight(bool),
-    /// 0 is transparent, 100 is opaque.
+    /// 0 is transparent, 255 is opaque.
     Opacity(u8),
     BlendingMode(BlendingMode),
 }
