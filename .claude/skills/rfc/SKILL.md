@@ -37,7 +37,7 @@ it states what the system does, and nothing else.
 ### Cut
 
 - Selling text and justification. State the rule; drop the reasoning and the "why this is good".
-- Enumerations of examples. One case or none.
+- Enumerations of examples. One case or none; one when the enumeration is the only illustration of a rule.
 - Em-dash appositions and dash-appended lists. Use plain sentences, a colon, or "because" and "so".
 - Bold-lead paragraphs that act as mini-sections. Fold them into the surrounding text or make a real heading.
 - Self-references: "this RFC", "this section", "below", "above", "stated under X".
@@ -59,6 +59,8 @@ it states what the system does, and nothing else.
   `rust/crates/truapi/src/api/*.rs`. Every field and variant carries a doc comment.
 - A concept shared by several RFCs is defined in one and linked from the others. A dependent RFC states only what it
   adds.
+- A term is defined once. Before cutting or moving a definition, find every use of the term and put the definition at
+  the best of them: the earliest use, or a Definitions section if the document has one. All other uses stay bare.
 - An inline list is a set of examples unless it is declared exhaustive: write "may be" or "such as". An exhaustive set
   goes in a table or an enum.
 
