@@ -781,7 +781,7 @@ impl SigningHostRuntime {
         &self,
         message: RemoteMessage,
     ) -> SsoRequestOutcome<RemoteMessage> {
-        let service = SigningHostSsoService::new(self.services.clone(), self.signing_host.clone());
+        let service = SigningHostSsoService::new(self.signing_host.clone());
         match service.dispatch(service.current_session(), message).await {
             Dispatch::Response(answer) => SsoRequestOutcome::Response(answer.message),
             Dispatch::Disconnected => SsoRequestOutcome::Disconnected,

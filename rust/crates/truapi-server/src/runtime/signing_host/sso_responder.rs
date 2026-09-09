@@ -247,8 +247,8 @@ pub(crate) async fn establish_pairing(
 }
 
 async fn establish_pairing_session(
-    services: &Arc<RuntimeServices>,
-    signing_host: &Arc<SigningHost>,
+    services: &RuntimeServices,
+    signing_host: &SigningHost,
     deeplink: &str,
 ) -> Result<EstablishedPairing, String> {
     let peer = PairedSsoPeer::from_deeplink(deeplink)?;
@@ -353,7 +353,7 @@ async fn serve_session(
     session: SsoSessionInfo,
     replay_scope: SsoReplayScope,
 ) -> Result<ResponderExit, String> {
-    let service = SigningHostSsoService::new(services.clone(), signing_host.clone());
+    let service = SigningHostSsoService::new(signing_host.clone());
     let rpc_client = services
         .statement_store
         .client("sso-responder session")
@@ -448,7 +448,7 @@ async fn serve_session(
 
 /// Ack one inbound request statement and answer its batched messages.
 async fn serve_request(
-    services: &Arc<RuntimeServices>,
+    services: &RuntimeServices,
     service: &SigningHostSsoService,
     session: &SsoSessionInfo,
     incoming: IncomingSsoRequest,
@@ -543,7 +543,7 @@ async fn serve_request(
 }
 
 async fn acknowledge_request(
-    services: &Arc<RuntimeServices>,
+    services: &RuntimeServices,
     session: &SsoSessionInfo,
     request_id: &str,
 ) -> Result<(), String> {
@@ -594,7 +594,7 @@ fn response_cli_summary(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_statement_store_allowance(
-    services: &Arc<RuntimeServices>,
+    services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
     product_id: &str,
@@ -723,7 +723,7 @@ pub(super) async fn allocate_statement_store_allowance(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_bulletin_allowance(
-    services: &Arc<RuntimeServices>,
+    services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
     product_id: &str,
@@ -833,7 +833,7 @@ pub(super) async fn allocate_bulletin_allowance(
 
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn allocate_statement_store_allowance(
-    _services: &Arc<RuntimeServices>,
+    _services: &RuntimeServices,
     _signing_host: &SigningHost,
     _session: &AuthoritySession,
     _product_id: &str,
@@ -857,7 +857,7 @@ pub(super) async fn allocate_statement_store_allowance(
 /// whatever chain a stale hash happens to reach.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_smart_contract_allowance(
-    services: &Arc<RuntimeServices>,
+    services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
     product_id: &str,
@@ -955,7 +955,7 @@ pub(super) async fn allocate_smart_contract_allowance(
 /// PGAS claims need chain access the wasm host does not have.
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn allocate_smart_contract_allowance(
-    _services: &Arc<RuntimeServices>,
+    _services: &RuntimeServices,
     _signing_host: &SigningHost,
     _session: &AuthoritySession,
     _product_id: &str,
@@ -967,7 +967,7 @@ pub(super) async fn allocate_smart_contract_allowance(
 
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn allocate_bulletin_allowance(
-    _services: &Arc<RuntimeServices>,
+    _services: &RuntimeServices,
     _signing_host: &SigningHost,
     _session: &AuthoritySession,
     _product_id: &str,
@@ -1295,12 +1295,11 @@ mod tests {
     }
 
     fn answer(
-        services: &Arc<RuntimeServices>,
         signing_host: &Arc<SigningHost>,
         message_id: &str,
         request: v1::RemoteMessage,
     ) -> v1::RemoteMessage {
-        let service = SigningHostSsoService::new(services.clone(), signing_host.clone());
+        let service = SigningHostSsoService::new(signing_host.clone());
         let message = RemoteMessage {
             message_id: message_id.to_string(),
             data: RemoteMessageData::V1(request),
@@ -1316,14 +1315,11 @@ mod tests {
 
     #[test]
     fn response_summary_reports_protocol_errors_without_multiline_output() {
-        let response: Response<GetAccountAliasResponse> = Response {
-            responding_to: "alias-1".to_string(),
-            payload: Err(RingVrfError::Unknown {
-                reason: "chain RPC\ntimed out".to_string(),
-            }),
-        };
+        let payload: GetAccountAliasResponse = Err(RingVrfError::Unknown {
+            reason: "chain RPC\ntimed out".to_string(),
+        });
 
-        let result = ResponseOutcome::from_payload(&response.payload);
+        let result = ResponseOutcome::from_payload(&payload);
         let summary = response_cli_summary(
             "SSO response sent",
             "get_account_alias",
@@ -1349,7 +1345,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn allocation_failure_details_reach_the_response_transcript() {
-        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform {
+        let (_, signing_host) = signing_fixture(Arc::new(StubPlatform {
             resource_allocation_confirmed: true,
             chain_connect_error: Some("allocation node unavailable"),
             ..StubPlatform::default()
@@ -1358,7 +1354,7 @@ mod tests {
             product_root_private_key: signing_host.product_subtree_secret("myapp.dot").unwrap(),
             ring_vrf_domain_entropy: derive_ring_vrf_domain_entropy(&ENTROPY, "myapp.dot").unwrap(),
         });
-        let service = SigningHostSsoService::new(services, signing_host);
+        let service = SigningHostSsoService::new(signing_host);
         let cases = [
             (
                 vec![api::AllocatableResource::BulletinAllowance],
@@ -1447,10 +1443,9 @@ mod tests {
 
     #[test]
     fn account_alias_requires_confirmation_for_cross_product_request() {
-        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+        let (_, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
 
         let response = answer(
-            &services,
             &signing_host,
             "alias-1",
             v1::RemoteMessage::GetAccountAliasRequest(messages::ProductRequest {
@@ -1481,10 +1476,9 @@ mod tests {
     #[test]
     fn resource_allocation_requires_confirmation_before_allocation() {
         let platform = Arc::new(StubPlatform::default());
-        let (services, signing_host) = signing_fixture(platform.clone());
+        let (_, signing_host) = signing_fixture(platform.clone());
 
         let response = answer(
-            &services,
             &signing_host,
             "alloc-1",
             v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
@@ -1518,7 +1512,7 @@ mod tests {
             resource_allocation_confirmed: true,
             ..StubPlatform::default()
         });
-        let (services, signing_host) = signing_fixture(platform);
+        let (_, signing_host) = signing_fixture(platform);
         let expected_secret = signing_host
             .product_subtree_secret("myapp.dot")
             .expect("product subtree secret derives");
@@ -1527,7 +1521,6 @@ mod tests {
                 .expect("ring-VRF domain entropy derives");
 
         let response = answer(
-            &services,
             &signing_host,
             "alloc-auto-signing",
             v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
@@ -1560,8 +1553,8 @@ mod tests {
             resource_allocation_confirmation_gate: std::sync::Mutex::new(Some(gate)),
             ..StubPlatform::default()
         });
-        let (services, signing_host) = signing_fixture(platform.clone());
-        let service = SigningHostSsoService::new(services, signing_host.clone());
+        let (_, signing_host) = signing_fixture(platform.clone());
+        let service = SigningHostSsoService::new(signing_host.clone());
         let message = RemoteMessage::request(
             "alloc-stale".to_string(),
             messages::ResourceAllocationRequest {
@@ -1620,7 +1613,7 @@ mod tests {
 
     #[test]
     fn legacy_transaction_request_uses_the_controlled_identity_account() {
-        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform {
+        let (_, signing_host) = signing_fixture(Arc::new(StubPlatform {
             create_transaction_confirmed: true,
             ..StubPlatform::default()
         }));
@@ -1638,7 +1631,6 @@ mod tests {
         };
 
         let response = answer(
-            &services,
             &signing_host,
             "legacy-tx-1",
             v1::RemoteMessage::CreateTransactionWithLegacyAccountRequest(
@@ -1666,9 +1658,8 @@ mod tests {
 
     #[test]
     fn product_subtree_request_is_consent_free_and_hard_derived() {
-        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+        let (_, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
         let response = answer(
-            &services,
             &signing_host,
             "subtree-1",
             v1::RemoteMessage::ProductSubtreeRequest(messages::ProductSubtreeRequest {

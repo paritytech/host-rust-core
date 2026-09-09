@@ -13,11 +13,12 @@ use truapi::latest::{
     HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
     HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
     HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
-    HostAccountRingVrfSignResponse, HostAccountSignVrfRequest, HostCreateTransactionResponse,
-    HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
-    HostSignPayloadRequest, HostSignPayloadResponse, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
-    ProductAccountId, ProductAccountTxPayload, VrfSignature,
+    HostAccountRingVrfSignResponse, HostAccountSignVrfError, HostAccountSignVrfRequest,
+    HostCreateTransactionResponse, HostRequestResourceAllocationRequest,
+    HostRequestResourceAllocationResponse, HostSignPayloadRequest, HostSignPayloadResponse,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, ProductAccountId,
+    ProductAccountTxPayload, VrfSignature,
 };
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, CancellationReason};
@@ -158,6 +159,21 @@ impl From<AuthorityError> for RingVrfError {
             other => RingVrfError::Unknown {
                 reason: other.to_string(),
             },
+        }
+    }
+}
+
+impl From<AuthorityError> for HostAccountSignVrfError {
+    fn from(err: AuthorityError) -> Self {
+        match err {
+            AuthorityError::Disconnected => Self::NotConnected,
+            AuthorityError::Rejected => Self::Rejected,
+            AuthorityError::Cancelled(err) => Self::Unknown {
+                reason: err.to_string(),
+            },
+            AuthorityError::Unavailable { reason }
+            | AuthorityError::NotSupported { reason }
+            | AuthorityError::Unknown { reason } => Self::Unknown { reason },
         }
     }
 }

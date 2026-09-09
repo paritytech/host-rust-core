@@ -29,25 +29,20 @@ use crate::host_logic::sso::messages::{
 };
 use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::runtime::authority::{
-    AuthorityError, AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
+    AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
-use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_service::{SsoReply, SsoRequestContext};
 
 /// SSO handlers served by a locally activated [`SigningHost`].
 pub(crate) struct SigningHostSsoService {
-    services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHost>,
 }
 
 impl SigningHostSsoService {
-    /// Serve requests with `signing_host`, prompting through `services`.
-    pub(crate) fn new(services: Arc<RuntimeServices>, signing_host: Arc<SigningHost>) -> Self {
-        Self {
-            services,
-            signing_host,
-        }
+    /// Serve requests and prompt through the signing host's platform.
+    pub(crate) fn new(signing_host: Arc<SigningHost>) -> Self {
+        Self { signing_host }
     }
 
     /// The signing session captured before dispatching one request.
@@ -58,7 +53,7 @@ impl SigningHostSsoService {
     /// Run the platform confirmation seam; rejection and failure both refuse
     /// the operation with an opaque reason (host-spec B.7).
     async fn confirm(&self, review: UserConfirmationReview) -> Result<(), String> {
-        match self.services.platform.confirm_user_action(review).await {
+        match self.signing_host.platform.confirm_user_action(review).await {
             Ok(true) => Ok(()),
             Ok(false) => Err("Rejected".to_string()),
             Err(err) => Err(format!("confirmation failed: {}", err.reason)),
@@ -124,8 +119,8 @@ impl SigningHostSsoService {
         resource: api::AllocatableResource,
         on_existing: OnExistingAllowancePolicy,
     ) -> Result<SsoAllocationOutcome, AllowanceAllocationError> {
-        let services = &self.services;
         let signing_host = &self.signing_host;
+        let services = &signing_host.services;
         match resource {
             api::AllocatableResource::StatementStoreAllowance => {
                 allocate_statement_store_allowance(
@@ -304,7 +299,7 @@ impl SigningHostSsoService {
                 calling_product_id: request.calling_product_id.clone(),
                 resources: request.resources.clone(),
             });
-            match self.services.platform.confirm_user_action(review).await {
+            match self.signing_host.platform.confirm_user_action(review).await {
                 Ok(true) => {}
                 Ok(false) => {
                     return Ok(vec![
@@ -433,18 +428,7 @@ impl SigningHostSsoService {
                 request.payload,
             )
             .await
-            .map_err(|err| match err {
-                AuthorityError::Disconnected => api::HostAccountSignVrfError::NotConnected,
-                AuthorityError::Rejected => api::HostAccountSignVrfError::Rejected,
-                AuthorityError::Cancelled(err) => api::HostAccountSignVrfError::Unknown {
-                    reason: err.to_string(),
-                },
-                AuthorityError::Unavailable { reason }
-                | AuthorityError::NotSupported { reason }
-                | AuthorityError::Unknown { reason } => {
-                    api::HostAccountSignVrfError::Unknown { reason }
-                }
-            })
+            .map_err(api::HostAccountSignVrfError::from)
     }
 
     /// Consent-free product hard-subtree public key.
@@ -496,7 +480,6 @@ impl SigningHostSsoService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::sso::messages::Response;
 
     #[test]
     fn resource_allocation_summary_reflects_per_resource_outcomes() {
@@ -529,16 +512,11 @@ mod tests {
     }
 
     #[test]
-    fn response_summary_classifies_resource_allocation_batches() {
-        let response = Response {
-            responding_to: "allocation-1".to_string(),
-            payload: Ok(vec![
-                SsoAllocationOutcome::Rejected,
-                SsoAllocationOutcome::NotAvailable,
-            ]),
-        };
-
-        let result = resource_allocation_outcome(&response.payload);
+    fn mixed_unallocated_resources_report_rejection() {
+        let result = resource_allocation_outcome(&Ok(vec![
+            SsoAllocationOutcome::Rejected,
+            SsoAllocationOutcome::NotAvailable,
+        ]));
 
         assert_eq!(
             (result.outcome, result.reason.as_deref()),

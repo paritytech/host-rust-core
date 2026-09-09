@@ -752,17 +752,7 @@ fn validate_vrf_transcript(request: &v01::HostAccountSignVrfRequest) -> Result<(
 }
 
 fn vrf_call_error(err: AuthorityError) -> CallError<HostAccountSignVrfError> {
-    let error = match err {
-        AuthorityError::Disconnected => v01::HostAccountSignVrfError::NotConnected,
-        AuthorityError::Rejected => v01::HostAccountSignVrfError::Rejected,
-        AuthorityError::Cancelled(err) => v01::HostAccountSignVrfError::Unknown {
-            reason: err.to_string(),
-        },
-        AuthorityError::Unavailable { reason }
-        | AuthorityError::NotSupported { reason }
-        | AuthorityError::Unknown { reason } => v01::HostAccountSignVrfError::Unknown { reason },
-    };
-    CallError::Domain(HostAccountSignVrfError::V1(error))
+    CallError::Domain(HostAccountSignVrfError::V1(err.into()))
 }
 fn account_get_authority_error(err: AuthorityError) -> CallError<HostAccountGetError> {
     let error = match err {
