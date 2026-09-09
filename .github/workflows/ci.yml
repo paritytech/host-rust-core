@@ -209,10 +209,14 @@ jobs:
       # merge commit, so HEAD^1 is the base. Other events always run every gate.
       #
       # Neither binding set is committed, so a UniFFI surface change leaves no
-      # ios/ or android/ diff to key on. Each list therefore names every crate
-      # its bindings are generated from. js/container is in the Swift list
-      # because it is compiled into the TrUAPIHost target as a resource. Both
-      # lists name this workflow, so editing a filter exercises what it gates.
+      # ios/ or android/ diff to key on. Each list therefore names every input
+      # its gated job actually reads: the crates the bindings are generated
+      # from, the generator itself, the Makefile targets that drive it, and the
+      # manifest that pins each platform's toolchain. js/container is in the
+      # Swift list because it is compiled into the TrUAPIHost target as a
+      # resource; the root Gradle files are in the Kotlin list because they pin
+      # AGP and Kotlin. Both lists name this workflow, so editing a filter
+      # exercises the jobs that filter gates.
       - name: Detect which areas changed
         id: filter
         run: |
@@ -235,8 +239,8 @@ jobs:
             fi
           }
 
-          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|js/container/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|\.github/workflows/ci\.yml$)'
-          gate sdk_kotlin '^(android/|Makefile$|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|js/container/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_kotlin '^(android/|Makefile$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
   ios-swift:
     name: iOS package (swift compile)
