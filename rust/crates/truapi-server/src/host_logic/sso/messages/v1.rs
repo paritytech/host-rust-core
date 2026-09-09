@@ -13,7 +13,7 @@ use super::{
     CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest, GetAccountAliasRequest,
     GetAccountAliasResponse, ListRingVrfKeysRequest, ListRingVrfKeysResponse,
     ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyRequest,
-    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse,
+    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse, Response,
     RingVrfSignRequest, RingVrfSignResponse, SignRawWithLegacyAccountRequest,
     SignRawWithLegacyAccountResponse, SignRequest, SignResponse, SignVrfRequest, SignVrfResponse,
 };
@@ -29,57 +29,57 @@ pub enum RemoteMessage {
     /// Ask the signing host to sign a payload or raw data with a product account.
     SignRequest(Box<SignRequest>),
     /// Signing host's answer to [`RemoteMessage::SignRequest`].
-    SignResponse(SignResponse),
+    SignResponse(Response<SignResponse>),
     /// Ask the Account Holder for a contextual alias.
     GetAccountAliasRequest(GetAccountAliasRequest),
     /// Account Holder's answer to [`RemoteMessage::GetAccountAliasRequest`].
-    GetAccountAliasResponse(GetAccountAliasResponse),
+    GetAccountAliasResponse(Response<GetAccountAliasResponse>),
     /// Ask the signing host to allocate SSO-backed resources.
     ResourceAllocationRequest(ResourceAllocationRequest),
     /// Signing host's answer to [`RemoteMessage::ResourceAllocationRequest`].
-    ResourceAllocationResponse(ResourceAllocationResponse),
+    ResourceAllocationResponse(Response<ResourceAllocationResponse>),
     /// Ask the signing host to create a signed product-account transaction.
     CreateTransactionRequest(CreateTransactionRequest),
     /// Signing host's answer to either transaction-creation request.
-    CreateTransactionResponse(CreateTransactionResponse),
+    CreateTransactionResponse(Response<CreateTransactionResponse>),
     /// Ask the signing host to create a signed legacy-account transaction.
     CreateTransactionWithLegacyAccountRequest(CreateTransactionWithLegacyAccountRequest),
     /// Ask the signing host to sign raw data with a legacy account.
     SignRawWithLegacyAccountRequest(SignRawWithLegacyAccountRequest),
     /// Signing host's answer to [`RemoteMessage::SignRawWithLegacyAccountRequest`].
-    SignRawWithLegacyAccountResponse(SignRawWithLegacyAccountResponse),
+    SignRawWithLegacyAccountResponse(Response<SignRawWithLegacyAccountResponse>),
     /// Ask the Account Holder for a ring-VRF proof.
     CreateAccountProofRequest(CreateAccountProofRequest),
     /// Account Holder's answer to [`RemoteMessage::CreateAccountProofRequest`].
-    CreateAccountProofResponse(CreateAccountProofResponse),
+    CreateAccountProofResponse(Response<CreateAccountProofResponse>),
     /// Ask the Account Holder to sign an RFC-0023 sr25519 VRF transcript.
     #[codec(index = 14)]
     SignVrfRequest(SignVrfRequest),
     /// Account Holder's answer to [`RemoteMessage::SignVrfRequest`].
     #[codec(index = 15)]
-    SignVrfResponse(SignVrfResponse),
+    SignVrfResponse(Response<SignVrfResponse>),
     /// Consent-free request for a product's hard-subtree public key.
     #[codec(index = 16)]
     ProductSubtreeRequest(ProductSubtreeRequest),
     /// Account Holder's answer to [`RemoteMessage::ProductSubtreeRequest`].
     #[codec(index = 17)]
-    ProductSubtreeResponse(ProductSubtreeResponse),
+    ProductSubtreeResponse(Response<ProductSubtreeResponse>),
     /// Register a ring-VRF key with the Account Holder.
     #[codec(index = 18)]
     RegisterRingVrfKeyRequest(RegisterRingVrfKeyRequest),
     /// Account Holder's answer to [`RemoteMessage::RegisterRingVrfKeyRequest`].
     #[codec(index = 19)]
-    RegisterRingVrfKeyResponse(RegisterRingVrfKeyResponse),
+    RegisterRingVrfKeyResponse(Response<RegisterRingVrfKeyResponse>),
     /// List registered ring-VRF keys.
     #[codec(index = 20)]
     ListRingVrfKeysRequest(ListRingVrfKeysRequest),
     /// Account Holder's answer to [`RemoteMessage::ListRingVrfKeysRequest`].
     #[codec(index = 21)]
-    ListRingVrfKeysResponse(ListRingVrfKeysResponse),
+    ListRingVrfKeysResponse(Response<ListRingVrfKeysResponse>),
     /// Sign bytes with a registered ring-VRF key.
     #[codec(index = 22)]
     RingVrfSignRequest(RingVrfSignRequest),
     /// Account Holder's answer to [`RemoteMessage::RingVrfSignRequest`].
     #[codec(index = 23)]
-    RingVrfSignResponse(RingVrfSignResponse),
+    RingVrfSignResponse(Response<RingVrfSignResponse>),
 }

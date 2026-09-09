@@ -646,7 +646,7 @@ pub(crate) fn sign_response_message(
         message_id: format!("wallet-{message_id}"),
         data: crate::host_logic::sso::messages::RemoteMessageData::V1(
             crate::host_logic::sso::messages::v1::RemoteMessage::SignResponse(
-                crate::host_logic::sso::messages::SignResponse {
+                crate::host_logic::sso::messages::Response {
                     responding_to: message_id.to_string(),
                     payload: Ok(
                         crate::host_logic::sso::messages::SigningPayloadResponseData {
@@ -669,9 +669,9 @@ pub(crate) fn sign_raw_legacy_response_message(
         message_id: format!("wallet-{message_id}"),
         data: crate::host_logic::sso::messages::RemoteMessageData::V1(
             crate::host_logic::sso::messages::v1::RemoteMessage::SignRawWithLegacyAccountResponse(
-                crate::host_logic::sso::messages::SignRawWithLegacyAccountResponse {
+                crate::host_logic::sso::messages::Response {
                     responding_to: message_id.to_string(),
-                    signature: Ok(signature),
+                    payload: Ok(signature),
                 },
             ),
         ),

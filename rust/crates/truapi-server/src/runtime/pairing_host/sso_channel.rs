@@ -21,7 +21,7 @@ use crate::host_logic::sso::messages::{
     SsoAllocatedResource, SsoAllocationOutcome, SsoSessionStatement,
     build_outgoing_request_statement, decode_sso_session_statement, v1,
 };
-use crate::host_logic::sso::wire::{ResponsePayload, SsoRequest, SsoResponse};
+use crate::host_logic::sso::wire::SsoRequest;
 use crate::host_logic::statement_store::parse_new_statements_result;
 
 use futures::FutureExt;
@@ -151,7 +151,7 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         request: R,
-    ) -> Result<ResponsePayload<R::Response>, SsoRemoteResponseError> {
+    ) -> Result<R::Response, SsoRemoteResponseError> {
         let sso = session
             .sso
             .as_ref()
@@ -230,7 +230,7 @@ impl PairingHost {
         if matches!(&result, Err(SsoRemoteResponseError::PeerDisconnected)) {
             self.handle_signing_host_disconnected(key).await;
         }
-        result.map(SsoResponse::into_payload)
+        result.map(|response| response.payload)
     }
 
     /// Resolve a product's hard-subtree public key, asking the Account Holder

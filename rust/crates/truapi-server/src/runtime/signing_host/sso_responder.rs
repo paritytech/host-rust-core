@@ -989,15 +989,15 @@ pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
 #[cfg(test)]
 mod tests {
     use super::super::LocalActivation;
+    use super::super::sso_service::resource_allocation_outcome;
     use super::*;
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::derive_ring_vrf_domain_entropy;
     use crate::host_logic::sso::messages::{
-        self, GetAccountAliasResponse, RemoteMessage, ResourceAllocationResponse, RingVrfError,
+        self, GetAccountAliasResponse, RemoteMessage, Response, RingVrfError,
         SsoAllocatableResource, SsoAllocatedResource, SsoAllocationOutcome,
-        resource_allocation_outcome,
     };
-    use crate::host_logic::sso::wire::SsoResponse;
+    use crate::host_logic::sso::wire::ResponseOutcome;
     use crate::host_logic::statement_store::decode_verified_statement_data;
     use crate::runtime::authority::ProductAuthority;
     use crate::runtime::services::RuntimeServices;
@@ -1317,14 +1317,14 @@ mod tests {
 
     #[test]
     fn response_summary_reports_protocol_errors_without_multiline_output() {
-        let response = GetAccountAliasResponse {
+        let response: Response<GetAccountAliasResponse> = Response {
             responding_to: "alias-1".to_string(),
             payload: Err(RingVrfError::Unknown {
                 reason: "chain RPC\ntimed out".to_string(),
             }),
         };
 
-        let result = response.outcome();
+        let result = ResponseOutcome::from_payload(&response.payload);
         let summary = response_cli_summary(
             "SSO response sent",
             "get_account_alias",
@@ -1379,7 +1379,7 @@ mod tests {
 
     #[test]
     fn response_summary_classifies_resource_allocation_batches() {
-        let response = ResourceAllocationResponse {
+        let response = Response {
             responding_to: "allocation-1".to_string(),
             payload: Ok(vec![
                 SsoAllocationOutcome::Rejected,
@@ -1387,7 +1387,7 @@ mod tests {
             ]),
         };
 
-        let result = response.outcome();
+        let result = resource_allocation_outcome(&response.payload);
 
         assert_eq!(
             (result.outcome, result.reason.as_deref()),
@@ -1463,10 +1463,12 @@ mod tests {
 
             let expected = RemoteMessage {
                 message_id: format!("{message_id}:response"),
-                data: RemoteMessageData::V1(
-                    ResourceAllocationResponse::new(message_id.clone(), Ok(outcomes))
-                        .into_message(),
-                ),
+                data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
+                    Response {
+                        responding_to: message_id.clone(),
+                        payload: Ok(outcomes),
+                    },
+                )),
             };
             assert_eq!(answer.message.encode(), expected.encode());
             assert_eq!(answer.outcome.outcome, outcome);
@@ -1699,9 +1701,7 @@ mod tests {
         let v1::RemoteMessage::CreateTransactionResponse(response) = response else {
             panic!("expected create transaction response");
         };
-        let transaction = response
-            .signed_transaction
-            .expect("identity transaction succeeds");
+        let transaction = response.payload.expect("identity transaction succeeds");
         let (account, signature, tail) = split_v4(&transaction);
         assert_eq!(account, identity.public.to_bytes());
         assert_eq!(tail, vec![1, 0x00, 0x00]);
@@ -1737,7 +1737,7 @@ mod tests {
                 .public
                 .to_bytes();
         assert_eq!(response.responding_to, "subtree-1");
-        assert_eq!(response.product_public_key, Ok(expected));
+        assert_eq!(response.payload, Ok(expected));
     }
 
     #[test]

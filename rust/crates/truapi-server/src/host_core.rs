@@ -2237,9 +2237,7 @@ mod tests {
 
     #[test]
     fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
-        use crate::host_logic::sso::messages::{
-            RemoteMessage, RemoteMessageData, SignRawWithLegacyAccountResponse, v1,
-        };
+        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         const ENTROPY: [u8; 32] = [0xab; 32];
@@ -2272,9 +2270,9 @@ mod tests {
         let response_variant = RemoteMessage {
             message_id: "m2".to_string(),
             data: RemoteMessageData::V1(v1::RemoteMessage::SignRawWithLegacyAccountResponse(
-                SignRawWithLegacyAccountResponse {
+                Response {
                     responding_to: "m2".to_string(),
-                    signature: Ok(vec![]),
+                    payload: Ok(vec![]),
                 },
             )),
         };
@@ -2328,6 +2326,6 @@ mod tests {
             panic!("expected a product subtree response payload");
         };
         assert_eq!(payload.responding_to, "m3");
-        assert!(payload.product_public_key.is_ok());
+        assert!(payload.payload.is_ok());
     }
 }

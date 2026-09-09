@@ -30,6 +30,7 @@ use crate::host_logic::sso::messages::{
     SignRawWithLegacyAccountResponse, SignRequest, SignResponse, SignVrfRequest, SignVrfResponse,
     SigningPayloadResponseData, SsoAllocatableResource, SsoAllocatedResource, SsoAllocationOutcome,
 };
+use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::runtime::authority::{
     AuthorityError, AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
@@ -259,7 +260,7 @@ fn allocation_reply(
     payload: Result<Vec<SsoAllocationOutcome>, String>,
     failures: Vec<String>,
 ) -> SsoReply<ResourceAllocationResponse> {
-    let mut outcome = crate::host_logic::sso::messages::resource_allocation_outcome(&payload);
+    let mut outcome = resource_allocation_outcome(&payload);
     if !failures.is_empty() {
         let details = failures.join("; ").replace(['\r', '\n'], " ");
         outcome.reason = Some(match outcome.reason {
@@ -268,6 +269,72 @@ fn allocation_reply(
         });
     }
     SsoReply::from(payload).with_outcome(outcome)
+}
+
+/// Transcript outcome for an allocation batch: `ok` only when every requested
+/// resource was allocated; otherwise `rejected`, `partial`, or `not_available`
+/// with a count summary.
+pub(super) fn resource_allocation_outcome(
+    payload: &Result<Vec<SsoAllocationOutcome>, String>,
+) -> ResponseOutcome {
+    let outcomes = match payload {
+        Ok(outcomes) => outcomes,
+        Err(reason) => {
+            return ResponseOutcome {
+                outcome: "error",
+                reason: Some(reason.clone()),
+            };
+        }
+    };
+    let total = outcomes.len();
+    let count = |wanted: fn(&SsoAllocationOutcome) -> bool| {
+        outcomes.iter().filter(|outcome| wanted(outcome)).count()
+    };
+    let allocated = count(|outcome| matches!(outcome, SsoAllocationOutcome::Allocated(_)));
+    let rejected = count(|outcome| matches!(outcome, SsoAllocationOutcome::Rejected));
+    let unavailable = count(|outcome| matches!(outcome, SsoAllocationOutcome::NotAvailable));
+    if allocated == total {
+        return ResponseOutcome {
+            outcome: "ok",
+            reason: None,
+        };
+    }
+    if allocated > 0 {
+        let mut reason = format!("{allocated} of {total} requested resources allocated");
+        if rejected > 0 {
+            reason.push_str(&format!("; {rejected} rejected"));
+        }
+        if unavailable > 0 {
+            reason.push_str(&format!("; {unavailable} unavailable"));
+        }
+        return ResponseOutcome {
+            outcome: "partial",
+            reason: Some(reason),
+        };
+    }
+    if rejected > 0 {
+        let reason = if rejected == total {
+            if total == 1 {
+                "Requested resource was rejected".to_string()
+            } else {
+                format!("All {total} requested resources were rejected")
+            }
+        } else {
+            format!("No resources allocated; {rejected} rejected; {unavailable} unavailable")
+        };
+        return ResponseOutcome {
+            outcome: "rejected",
+            reason: Some(reason),
+        };
+    }
+    ResponseOutcome {
+        outcome: "not_available",
+        reason: Some(if total == 1 {
+            "Requested resource is not available".to_string()
+        } else {
+            format!("None of the {total} requested resources are available")
+        }),
+    }
 }
 
 fn public_allocatable_resource(resource: &SsoAllocatableResource) -> api::AllocatableResource {
@@ -463,7 +530,10 @@ mod tests {
             Ok(vec![SsoAllocationOutcome::NotAvailable]),
             vec!["rpc\nfailed".to_string(), "provider\rdown".to_string()],
         )
-        .finish("allocation-1");
+        .finish(
+            "allocation-1",
+            crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse,
+        );
 
         assert_eq!(answer.outcome.outcome, "not_available");
         assert_eq!(

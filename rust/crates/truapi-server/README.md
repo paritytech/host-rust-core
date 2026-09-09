@@ -260,7 +260,9 @@ account changes, disconnects, and reactivation invalidate pending approval befor
 allocation or key return. Allocation failure details stay in local transcripts.
 
 The `host_logic::sso::messages::v1::RemoteMessage` enum owns the SCALE wire
-contract. Macros generate request/response pairing and dispatch; see the
+contract. Its response variants wrap named result payloads in `Response<P>`,
+which carries `responding_to` once. Macros generate request/response pairing
+and dispatch; see the
 [macro guide](../truapi-macros/README.md) for handler signatures and reply handling.
 A new operation needs payload definitions, wire variants, a handler, and a typed
 client call.
@@ -268,7 +270,7 @@ client call.
 Rust consumers must update renamed SSO types and helpers even when SCALE encoding
 is unchanged. Use `RemoteMessage::request(message_id, request)` to construct
 requests. Decoded `SsoSessionStatement::RemoteMessages` preserves message order;
-match variants directly or unwrap responses with `SsoResponse::from_message`.
+match variants directly or use the request's `SsoRequest::response_from_message`.
 
 ## Wire envelope
 

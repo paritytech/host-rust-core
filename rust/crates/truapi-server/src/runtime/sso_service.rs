@@ -3,8 +3,8 @@
 use truapi::{CallContext, RequestId};
 
 use super::authority::AuthoritySession;
-use crate::host_logic::sso::messages::RemoteMessage;
-use crate::host_logic::sso::wire::{ResponseOutcome, ResponsePayload, SsoResponse};
+use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
+use crate::host_logic::sso::wire::{ResponseOutcome, SsoError};
 
 /// Per-request context handed to every service method.
 pub(crate) struct SsoRequestContext {
@@ -45,13 +45,13 @@ pub(crate) struct Answer {
 }
 
 /// A handler's payload and optional transcript outcome, before wire wrapping.
-pub(crate) struct SsoReply<R: SsoResponse> {
-    payload: ResponsePayload<R>,
+pub(crate) struct SsoReply<P> {
+    payload: P,
     outcome: Option<ResponseOutcome>,
 }
 
-impl<R: SsoResponse> From<ResponsePayload<R>> for SsoReply<R> {
-    fn from(payload: ResponsePayload<R>) -> Self {
+impl<P> From<P> for SsoReply<P> {
+    fn from(payload: P) -> Self {
         Self {
             payload,
             outcome: None,
@@ -59,23 +59,31 @@ impl<R: SsoResponse> From<ResponsePayload<R>> for SsoReply<R> {
     }
 }
 
-impl<R: SsoResponse> SsoReply<R> {
+impl<P> SsoReply<P> {
     /// Supply a transcript outcome when the payload alone does not describe the result.
     pub(crate) fn with_outcome(mut self, outcome: ResponseOutcome) -> Self {
         self.outcome = Some(outcome);
         self
     }
+}
 
-    /// Wrap the payload with correlation and use its derived or supplied outcome.
-    pub(crate) fn finish(self, message_id: &str) -> Answer {
-        let response = R::new(message_id.to_string(), self.payload);
-        let outcome = self.outcome.unwrap_or_else(|| response.outcome());
+impl<T, E: SsoError> SsoReply<Result<T, E>> {
+    /// Address the reply and wrap it in the response variant selected by the request.
+    pub(crate) fn finish(
+        self,
+        message_id: &str,
+        wrap: impl FnOnce(Response<Result<T, E>>) -> v1::RemoteMessage,
+    ) -> Answer {
+        let outcome = self
+            .outcome
+            .unwrap_or_else(|| ResponseOutcome::from_payload(&self.payload));
         Answer {
             message: RemoteMessage {
                 message_id: format!("{message_id}:response"),
-                data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                    response.into_message(),
-                ),
+                data: RemoteMessageData::V1(wrap(Response {
+                    responding_to: message_id.to_string(),
+                    payload: self.payload,
+                })),
             },
             outcome,
         }
@@ -85,18 +93,19 @@ impl<R: SsoResponse> SsoReply<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::sso::messages::{ProductSubtreeResponse, RemoteMessageData};
+    use crate::host_logic::sso::messages::{ProductSubtreeRequest, ProductSubtreeResponse};
+    use crate::host_logic::sso::wire::SsoRequest;
 
     #[test]
     fn finish_addresses_the_response_to_the_request() {
-        let answer =
-            SsoReply::<ProductSubtreeResponse>::from(Err("nope".to_string())).finish("m-1");
+        let answer = SsoReply::<ProductSubtreeResponse>::from(Err("nope".to_string()))
+            .finish("m-1", ProductSubtreeRequest::response_into_message);
 
         assert_eq!(answer.message.message_id, "m-1:response");
         let RemoteMessageData::V1(data) = answer.message.data;
-        let response = ProductSubtreeResponse::from_message(data).unwrap();
+        let response = ProductSubtreeRequest::response_from_message(data).unwrap();
         assert_eq!(response.responding_to, "m-1");
-        assert_eq!(response.product_public_key, Err("nope".to_string()));
+        assert_eq!(response.payload, Err("nope".to_string()));
         assert_eq!(answer.outcome.outcome, "error");
         assert_eq!(answer.outcome.reason.as_deref(), Some("nope"));
     }

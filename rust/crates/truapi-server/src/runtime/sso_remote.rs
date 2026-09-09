@@ -8,8 +8,10 @@ use std::sync::Mutex;
 
 use super::statement_store_rpc;
 use crate::host_logic::session::SsoSessionInfo;
-use crate::host_logic::sso::messages::{SsoSessionStatement, decode_sso_session_statement, v1};
-use crate::host_logic::sso::wire::{SsoRequest, SsoResponse};
+use crate::host_logic::sso::messages::{
+    Response, SsoSessionStatement, decode_sso_session_statement, v1,
+};
+use crate::host_logic::sso::wire::SsoRequest;
 use crate::host_logic::statement_store::{current_unix_secs, parse_new_statements_result};
 
 use futures::channel::oneshot;
@@ -248,14 +250,14 @@ fn disconnect_error(reason: String) -> SsoRemoteResponseError {
 /// error, so a confused peer fails the call instead of stalling it.
 pub(super) fn reply_matcher<R: SsoRequest>(
     message_id: &str,
-) -> impl Fn(v1::RemoteMessage) -> Option<Result<R::Response, String>> + '_ {
+) -> impl Fn(v1::RemoteMessage) -> Option<Result<Response<R::Response>, String>> + '_ {
     move |message| {
         if message.responding_to() != Some(message_id) {
             return None;
         }
         let kind = message.name();
         Some(
-            R::Response::from_message(message)
+            R::response_from_message(message)
                 .ok_or_else(|| format!("Unexpected SSO response for {}: {kind}", R::NAME)),
         )
     }
@@ -473,7 +475,7 @@ mod tests {
     use super::*;
     use crate::host_logic::sso::messages::{
         ProductSubtreeRequest, ProductSubtreeResponse, RemoteMessage, RemoteMessageData,
-        SignResponse, build_outgoing_request_statement, build_signed_session_response_statement,
+        build_outgoing_request_statement, build_signed_session_response_statement,
     };
     use crate::host_logic::sso::pairing::{SsoStatementData, encrypt_session_statement_data};
     use crate::host_logic::statement_store::build_signed_session_request_statement;
@@ -621,19 +623,17 @@ mod tests {
     fn subtree_response(responding_to: &str) -> RemoteMessage {
         RemoteMessage {
             message_id: "resp-1".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(
-                ProductSubtreeResponse {
-                    responding_to: responding_to.to_string(),
-                    product_public_key: Ok([7; 32]),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(Response {
+                responding_to: responding_to.to_string(),
+                payload: Ok([7; 32]),
+            })),
         }
     }
 
     fn wait_for_subtree(
         host: &SsoSessionInfo,
         pages: Vec<Value>,
-    ) -> Result<ProductSubtreeResponse, SsoRemoteResponseError> {
+    ) -> Result<Response<ProductSubtreeResponse>, SsoRemoteResponseError> {
         let cancel = CancellationToken::default();
         futures::executor::block_on(wait_for_sso_remote_response(
             RemoteResponseWait {
@@ -653,7 +653,7 @@ mod tests {
         let (host, responder) = sso_host_and_responder_sessions();
         let wrong_kind = RemoteMessage {
             message_id: "resp-1".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::SignResponse(SignResponse {
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignResponse(Response {
                 responding_to: "request-1".to_string(),
                 payload: Err("nope".to_string()),
             })),
@@ -704,9 +704,9 @@ mod tests {
 
         assert_eq!(
             response,
-            ProductSubtreeResponse {
+            Response {
                 responding_to: "request-1".to_string(),
-                product_public_key: Ok([7; 32]),
+                payload: Ok([7; 32]),
             }
         );
     }

@@ -1,52 +1,28 @@
-//! Typed pairing of SSO request and response payloads.
+//! Typed SSO requests and their response variants.
 //!
-//! [`SsoRequest`] is implemented by `#[sso_service]` from each handler's wire
-//! request parameter and wire response return type. `#[derive(SsoWire)]` on
-//! [`v1::RemoteMessage`] provides wire classification. [`SsoResponse`] is
-//! derived on each response struct and exposes its payload without the
-//! correlation id.
+//! `#[sso_service]` generates each request's wire conversions from its handler
+//! signature. Responses share the [`Response`] envelope; the request identifies
+//! the response variant even when different operations have identical payload types.
 
 use truapi::v01::HostAccountSignVrfError;
 
-use super::messages::{RemoteMessage, RemoteMessageData, RingVrfError, v1};
+use super::messages::{RemoteMessage, RemoteMessageData, Response, RingVrfError, v1};
 
-/// A request payload carried by one `v1::RemoteMessage` variant.
+/// A request payload and the wire response selected by its handler declaration.
 pub trait SsoRequest: Sized {
     /// Method name used for tracing.
     const NAME: &'static str;
-    /// Response payload the signing host answers with.
-    type Response: SsoResponse;
+    /// The handler's result payload, without correlation metadata.
+    type Response;
     /// Wrap into the request variant.
     fn into_message(self) -> v1::RemoteMessage;
     /// Unwrap from the request variant; `None` for any other message.
     fn from_message(message: v1::RemoteMessage) -> Option<Self>;
+    /// Wrap an envelope into this request's response variant.
+    fn response_into_message(response: Response<Self::Response>) -> v1::RemoteMessage;
+    /// Unwrap this request's response variant; `None` for any other message.
+    fn response_from_message(message: v1::RemoteMessage) -> Option<Response<Self::Response>>;
 }
-
-/// A response payload carried by one `v1::RemoteMessage` variant.
-pub trait SsoResponse: Sized {
-    /// Successful payload.
-    type Ok;
-    /// Failure payload.
-    type Err: SsoError;
-    /// Build the response for the request identified by `responding_to`.
-    fn new(responding_to: String, payload: Result<Self::Ok, Self::Err>) -> Self;
-    /// `message_id` of the request being answered.
-    fn responding_to(&self) -> &str;
-    /// Strip the correlation id.
-    fn into_payload(self) -> Result<Self::Ok, Self::Err>;
-    /// Wrap into the response variant.
-    fn into_message(self) -> v1::RemoteMessage;
-    /// Unwrap from the response variant; `None` for any other message.
-    fn from_message(message: v1::RemoteMessage) -> Option<Self>;
-    /// Transcript classification of the payload.
-    fn outcome(&self) -> ResponseOutcome;
-}
-
-/// A wire response's `Result` payload, without its correlation id.
-///
-/// The typed client returns this result. Server replies carry the same payload
-/// alongside local diagnostics; dispatch adds the wire envelope.
-pub type ResponsePayload<R> = Result<<R as SsoResponse>::Ok, <R as SsoResponse>::Err>;
 
 /// Failure payload that can express "no signing session".
 pub trait SsoError {
@@ -148,9 +124,28 @@ mod tests {
     use super::*;
     use crate::host_logic::sso::messages::v1::{AnyRequest, Incoming, classify};
     use crate::host_logic::sso::messages::{
-        CreateTransactionResponse, ProductSubtreeRequest, SignRequest, SigningRawPayload,
-        SigningRawRequest,
+        CreateTransactionRequest, CreateTransactionWithLegacyAccountRequest, ProductSubtreeRequest,
+        SignRawWithLegacyAccountRequest, SignRequest, SigningRawPayload, SigningRawRequest,
     };
+
+    #[test]
+    fn identical_payloads_keep_their_request_specific_response_variants() {
+        let response = Response {
+            responding_to: "m-1".to_string(),
+            payload: Ok(vec![7]),
+        };
+        let transaction = CreateTransactionRequest::response_into_message(response.clone());
+        assert_eq!(transaction.name(), "CreateTransactionResponse");
+        assert_eq!(
+            CreateTransactionWithLegacyAccountRequest::response_from_message(transaction.clone()),
+            Some(response.clone()),
+        );
+        assert!(SignRawWithLegacyAccountRequest::response_from_message(transaction).is_none());
+
+        let signature = SignRawWithLegacyAccountRequest::response_into_message(response);
+        assert_eq!(signature.name(), "SignRawWithLegacyAccountResponse");
+        assert!(CreateTransactionRequest::response_from_message(signature).is_none());
+    }
 
     #[test]
     fn classify_separates_requests_responses_and_disconnect() {
@@ -173,7 +168,10 @@ mod tests {
             Incoming::Request(AnyRequest::SignRequest(boxed))
         );
         assert_eq!(
-            classify(CreateTransactionResponse::new("m".to_string(), Ok(vec![])).into_message()),
+            classify(v1::RemoteMessage::CreateTransactionResponse(Response {
+                responding_to: "m".to_string(),
+                payload: Ok(vec![]),
+            })),
             Incoming::Response("CreateTransactionResponse")
         );
         assert_eq!(

@@ -14,7 +14,7 @@ fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
             RemoteMessage {
                 message_id: "wallet-vrf-1".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(
-                    crate::host_logic::sso::messages::SignVrfResponse {
+                    crate::host_logic::sso::messages::Response {
                         responding_to: "vrf-1".to_string(),
                         payload: Ok(signature.clone()),
                     },
@@ -73,7 +73,7 @@ fn sign_vrf_rejects_declined_pairing_host_confirmation_before_mobile_sso() {
             RemoteMessage {
                 message_id: "wallet-vrf-declined".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(
-                    crate::host_logic::sso::messages::SignVrfResponse {
+                    crate::host_logic::sso::messages::Response {
                         responding_to: "vrf-declined".to_string(),
                         payload: Ok(v01::VrfSignature {
                             pre_output: [0x11; 32],
@@ -551,9 +551,9 @@ fn create_transaction_accepts_confirmation_then_returns_sso_response() {
                 message_id: "wallet-create-tx-1".to_string(),
                 data: crate::host_logic::sso::messages::RemoteMessageData::V1(
                     crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
-                        crate::host_logic::sso::messages::CreateTransactionResponse {
+                        crate::host_logic::sso::messages::Response {
                             responding_to: "create-tx-1".to_string(),
-                            signed_transaction: Ok(vec![0xca, 0xfe]),
+                            payload: Ok(vec![0xca, 0xfe]),
                         },
                     ),
                 ),

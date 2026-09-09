@@ -2,9 +2,9 @@
 //!
 //! These are the encrypted payloads carried inside statement-store
 //! `SsoStatementData::Request` / `Response` frames. A pairing host sends a
-//! request with [`RemoteMessage::request`]; the signing host answers through
-//! [`RemoteMessage::response`]. Which response answers which request is typed
-//! by the annotated handler signatures (see `sso::wire`).
+//! request with [`RemoteMessage::request`]; each wire response carries a
+//! [`Response`] envelope. Annotated handler signatures pair requests with their
+//! response variants (see `sso::wire`).
 //! The encrypted statement envelope and message identifiers are specified in
 //! host-spec:
 //! <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L151-L183>
@@ -29,7 +29,6 @@ use truapi::latest::{
     ProductProofContext, RawPayload, RingLocation,
 };
 use truapi::v01::{HostAccountSignVrfError, HostAccountSignVrfRequest, VrfSignature};
-use truapi_macros::SsoResponse;
 
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::pairing::{
@@ -37,7 +36,6 @@ use crate::host_logic::sso::pairing::{
     encrypt_session_statement_data, encrypt_session_statement_data_with_nonce,
     peer_response_channel,
 };
-use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::host_logic::statement_store::{
     build_signed_session_request_statement, build_signed_statement, current_unix_secs,
     decode_verified_statement_data, statement_expiry_elapsed,
@@ -89,6 +87,17 @@ pub struct RemoteMessage {
 pub enum RemoteMessageData {
     /// Version 1 of the remote message catalog.
     V1(v1::RemoteMessage),
+}
+
+/// A response payload addressed to the request it answers.
+///
+/// SCALE encodes the correlation id before the payload for every response variant.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct Response<P> {
+    /// `message_id` of the request being answered.
+    pub responding_to: String,
+    /// The operation's result, without transport metadata.
+    pub payload: P,
 }
 
 /// Outcome of answering one SSO remote message on behalf of a caller that
@@ -286,13 +295,7 @@ impl From<SigningRawRequest> for truapi::v01::HostSignRawRequest {
 ///
 /// Decoded from [`v1::RemoteMessage::SignResponse`] while the runtime is waiting
 /// for a matching SSO remote message id.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct SignResponse {
-    /// `message_id` of the signing request being answered.
-    pub responding_to: String,
-    /// Signing result, or an error description from the signing host.
-    pub payload: Result<SigningPayloadResponseData, String>,
-}
+pub type SignResponse = Result<SigningPayloadResponseData, String>;
 
 /// Successful product-account signing result returned by the signing host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -307,13 +310,7 @@ pub struct SigningPayloadResponseData {
 ///
 /// Decoded from [`v1::RemoteMessage::SignRawWithLegacyAccountResponse`] and mapped back to
 /// the public raw-signing response shape.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct SignRawWithLegacyAccountResponse {
-    /// `message_id` of the legacy raw-signing request being answered.
-    pub responding_to: String,
-    /// Signature bytes, or an error description from the signing host.
-    pub signature: Result<Vec<u8>, String>,
-}
+pub type SignRawWithLegacyAccountResponse = Result<Vec<u8>, String>;
 
 /// RFC-0023 VRF-signing request forwarded to the Account Holder.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -325,13 +322,7 @@ pub struct SignVrfRequest {
 }
 
 /// RFC-0023 VRF-signing response returned by the Account Holder.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct SignVrfResponse {
-    /// `message_id` of the VRF-signing request being answered.
-    pub responding_to: String,
-    /// Fixed-width schnorrkel VRF signature or the public API error.
-    pub payload: Result<VrfSignature, HostAccountSignVrfError>,
-}
+pub type SignVrfResponse = Result<VrfSignature, HostAccountSignVrfError>;
 
 /// Failure returned by the Account Holder for RFC-0024 ring-VRF operations.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -372,13 +363,7 @@ pub struct GetAccountAliasRequest {
 }
 
 /// Response returned by the Account Holder for a ring-VRF alias request.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct GetAccountAliasResponse {
-    /// `message_id` of the alias request being answered.
-    pub responding_to: String,
-    /// Derived alias, or the ring-VRF failure.
-    pub payload: Result<HostAccountGetAliasResponse, RingVrfError>,
-}
+pub type GetAccountAliasResponse = Result<HostAccountGetAliasResponse, RingVrfError>;
 
 /// Request sent when a product asks the Account Holder for a ring-VRF proof.
 ///
@@ -411,13 +396,7 @@ pub struct RegisterRingVrfKeyRequest {
 }
 
 /// Response returned by the Account Holder for key registration.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct RegisterRingVrfKeyResponse {
-    /// `message_id` of the registration request being answered.
-    pub responding_to: String,
-    /// Member public key or ring-VRF failure.
-    pub payload: Result<[u8; 32], RingVrfError>,
-}
+pub type RegisterRingVrfKeyResponse = Result<[u8; 32], RingVrfError>;
 
 /// Request to list registered ring-VRF keys.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -431,13 +410,7 @@ pub struct ListRingVrfKeysRequest {
 }
 
 /// Response returned by the Account Holder for registry listing.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct ListRingVrfKeysResponse {
-    /// `message_id` of the listing request being answered.
-    pub responding_to: String,
-    /// Registry entries or ring-VRF failure.
-    pub payload: Result<Vec<truapi::v01::RegisteredRingVrfKey>, RingVrfError>,
-}
+pub type ListRingVrfKeysResponse = Result<Vec<truapi::v01::RegisteredRingVrfKey>, RingVrfError>;
 
 /// Request to sign bytes with a ring-VRF key.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -451,22 +424,10 @@ pub struct RingVrfSignRequest {
 }
 
 /// Response returned by the Account Holder for direct ring-VRF signing.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct RingVrfSignResponse {
-    /// `message_id` of the signing request being answered.
-    pub responding_to: String,
-    /// Signature bytes or ring-VRF failure.
-    pub payload: Result<Vec<u8>, RingVrfError>,
-}
+pub type RingVrfSignResponse = Result<Vec<u8>, RingVrfError>;
 
 /// Response returned by the Account Holder for a ring-VRF proof request.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct CreateAccountProofResponse {
-    /// `message_id` of the proof request being answered.
-    pub responding_to: String,
-    /// Created proof, or the ring-VRF failure.
-    pub payload: Result<HostAccountCreateProofResponse, RingVrfError>,
-}
+pub type CreateAccountProofResponse = Result<HostAccountCreateProofResponse, RingVrfError>;
 
 /// Request sent when a product asks the signing host to allocate SSO-backed
 /// resources.
@@ -521,14 +482,7 @@ pub enum OnExistingAllowancePolicy {
 }
 
 /// Response returned by the signing host for a resource-allocation request.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-#[sso(outcome = resource_allocation_outcome)]
-pub struct ResourceAllocationResponse {
-    /// `message_id` of the allocation request being answered.
-    pub responding_to: String,
-    /// Per-resource outcomes in request order, or an error description.
-    pub payload: Result<Vec<SsoAllocationOutcome>, String>,
-}
+pub type ResourceAllocationResponse = Result<Vec<SsoAllocationOutcome>, String>;
 
 /// Per-resource allocation result from the signing host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -539,72 +493,6 @@ pub enum SsoAllocationOutcome {
     Rejected,
     /// Signing host cannot currently grant this resource.
     NotAvailable,
-}
-
-/// Transcript outcome for an allocation batch: `ok` only when every requested
-/// resource was allocated; otherwise `rejected`, `partial`, or `not_available`
-/// with a count summary.
-pub fn resource_allocation_outcome(
-    payload: &Result<Vec<SsoAllocationOutcome>, String>,
-) -> ResponseOutcome {
-    let outcomes = match payload {
-        Ok(outcomes) => outcomes,
-        Err(reason) => {
-            return ResponseOutcome {
-                outcome: "error",
-                reason: Some(reason.clone()),
-            };
-        }
-    };
-    let total = outcomes.len();
-    let count = |wanted: fn(&SsoAllocationOutcome) -> bool| {
-        outcomes.iter().filter(|outcome| wanted(outcome)).count()
-    };
-    let allocated = count(|outcome| matches!(outcome, SsoAllocationOutcome::Allocated(_)));
-    let rejected = count(|outcome| matches!(outcome, SsoAllocationOutcome::Rejected));
-    let unavailable = count(|outcome| matches!(outcome, SsoAllocationOutcome::NotAvailable));
-    if allocated == total {
-        return ResponseOutcome {
-            outcome: "ok",
-            reason: None,
-        };
-    }
-    if allocated > 0 {
-        let mut reason = format!("{allocated} of {total} requested resources allocated");
-        if rejected > 0 {
-            reason.push_str(&format!("; {rejected} rejected"));
-        }
-        if unavailable > 0 {
-            reason.push_str(&format!("; {unavailable} unavailable"));
-        }
-        return ResponseOutcome {
-            outcome: "partial",
-            reason: Some(reason),
-        };
-    }
-    if rejected > 0 {
-        let reason = if rejected == total {
-            if total == 1 {
-                "Requested resource was rejected".to_string()
-            } else {
-                format!("All {total} requested resources were rejected")
-            }
-        } else {
-            format!("No resources allocated; {rejected} rejected; {unavailable} unavailable")
-        };
-        return ResponseOutcome {
-            outcome: "rejected",
-            reason: Some(reason),
-        };
-    }
-    ResponseOutcome {
-        outcome: "not_available",
-        reason: Some(if total == 1 {
-            "Requested resource is not available".to_string()
-        } else {
-            format!("None of the {total} requested resources are available")
-        }),
-    }
 }
 
 /// Resource material allocated by the signing host.
@@ -657,13 +545,7 @@ pub struct ProductSubtreeRequest {
 }
 
 /// Account Holder response carrying a product subtree public key.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct ProductSubtreeResponse {
-    /// `message_id` of the subtree request being answered.
-    pub responding_to: String,
-    /// Raw 32-byte sr25519 subtree public key or a stable failure reason.
-    pub product_public_key: Result<[u8; 32], String>,
-}
+pub type ProductSubtreeResponse = Result<[u8; 32], String>;
 
 /// Request sent when a product asks the signing host to create a transaction
 /// for a product-derived account.
@@ -695,16 +577,9 @@ pub enum CreateTransactionLegacyPayload {
     V1(LegacyAccountTxPayload),
 }
 
-/// Response returned by the signing host for either product-account or legacy-account
-/// transaction creation.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoResponse)]
-pub struct CreateTransactionResponse {
-    /// `message_id` of the transaction-creation request being answered.
-    pub responding_to: String,
-    /// SCALE-encoded transaction, or an error description. Signed unless the
-    /// request supplied its own V5 `VerifyMultiSignature` extension.
-    pub signed_transaction: Result<Vec<u8>, String>,
-}
+/// SCALE-encoded transaction for a product or legacy account, or an error description.
+/// Signed unless the request supplied its own V5 `VerifyMultiSignature` extension.
+pub type CreateTransactionResponse = Result<Vec<u8>, String>;
 
 /// Decoded inbound statement-channel outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -957,7 +832,7 @@ fn outgoing_request_data(
 mod tests {
     use super::*;
     use crate::host_logic::sso::pairing::decrypt_session_statement_data;
-    use crate::host_logic::sso::wire::SsoResponse;
+    use crate::host_logic::sso::wire::SsoRequest;
     use crate::host_logic::statement_store::{
         StatementField, build_signed_statement, decode_statement_data,
     };
@@ -1075,12 +950,10 @@ mod tests {
         .encode();
         let register_response = RemoteMessage {
             message_id: String::new(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyResponse(
-                RegisterRingVrfKeyResponse {
-                    responding_to: String::new(),
-                    payload: Ok([1; 32]),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyResponse(Response {
+                responding_to: String::new(),
+                payload: Ok([1; 32]),
+            })),
         }
         .encode();
         let list = RemoteMessage::request(
@@ -1094,12 +967,10 @@ mod tests {
         .encode();
         let list_response = RemoteMessage {
             message_id: String::new(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(
-                ListRingVrfKeysResponse {
-                    responding_to: String::new(),
-                    payload: Ok(Vec::new()),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(Response {
+                responding_to: String::new(),
+                payload: Ok(Vec::new()),
+            })),
         }
         .encode();
         let sign = RemoteMessage::request(
@@ -1113,12 +984,10 @@ mod tests {
         .encode();
         let sign_response = RemoteMessage {
             message_id: String::new(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignResponse(
-                RingVrfSignResponse {
-                    responding_to: String::new(),
-                    payload: Ok(Vec::new()),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignResponse(Response {
+                responding_to: String::new(),
+                payload: Ok(Vec::new()),
+            })),
         }
         .encode();
 
@@ -1241,26 +1110,22 @@ mod tests {
         };
         let alias_response = RemoteMessage {
             message_id: "r-alias".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::GetAccountAliasResponse(
-                GetAccountAliasResponse {
-                    responding_to: "m-alias".to_string(),
-                    payload: Ok(contextual_alias.clone()),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::GetAccountAliasResponse(Response {
+                responding_to: "m-alias".to_string(),
+                payload: Ok(contextual_alias.clone()),
+            })),
         };
         let proof_response = RemoteMessage {
             message_id: "r-proof".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofResponse(
-                CreateAccountProofResponse {
-                    responding_to: "m-proof".to_string(),
-                    payload: Ok(HostAccountCreateProofResponse {
-                        proof: vec![0x55, 0x66],
-                        contextual_alias,
-                        ring_index: 7,
-                        ring_revision: 9,
-                    }),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofResponse(Response {
+                responding_to: "m-proof".to_string(),
+                payload: Ok(HostAccountCreateProofResponse {
+                    proof: vec![0x55, 0x66],
+                    contextual_alias,
+                    ring_index: 7,
+                    ring_revision: 9,
+                }),
+            })),
         };
 
         assert_host_papp_0_8_11_fixture(
@@ -1299,12 +1164,10 @@ mod tests {
 
         let response = RemoteMessage {
             message_id: "response".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(
-                ProductSubtreeResponse {
-                    responding_to: "request".to_string(),
-                    product_public_key: Ok([0xAB; 32]),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(Response {
+                responding_to: "request".to_string(),
+                payload: Ok([0xAB; 32]),
+            })),
         };
         assert_eq!(
             hex::encode(response.encode()),
@@ -1315,10 +1178,10 @@ mod tests {
         );
         let RemoteMessageData::V1(data) = response.data;
         assert_eq!(
-            ProductSubtreeResponse::from_message(data),
-            Some(ProductSubtreeResponse {
+            ProductSubtreeRequest::response_from_message(data),
+            Some(Response {
                 responding_to: "request".to_string(),
-                product_public_key: Ok([0xAB; 32]),
+                payload: Ok([0xAB; 32]),
             })
         );
     }
@@ -1350,7 +1213,7 @@ mod tests {
 
         let response = RemoteMessage {
             message_id: "resp".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(SignVrfResponse {
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(Response {
                 responding_to: "req".to_string(),
                 payload: Ok(VrfSignature {
                     pre_output: [0x11; 32],
@@ -1368,8 +1231,8 @@ mod tests {
         );
         let RemoteMessageData::V1(data) = response.data;
         assert!(matches!(
-            SignVrfResponse::from_message(data),
-            Some(SignVrfResponse {
+            SignVrfRequest::response_from_message(data),
+            Some(Response {
                 payload: Ok(VrfSignature { .. }),
                 ..
             })
@@ -1380,17 +1243,15 @@ mod tests {
     fn auto_signing_secret_is_fixed_width_on_the_mobile_wire() {
         let message = RemoteMessage {
             message_id: "m".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-                ResourceAllocationResponse {
-                    responding_to: "r".to_string(),
-                    payload: Ok(vec![SsoAllocationOutcome::Allocated(
-                        SsoAllocatedResource::AutoSigning {
-                            product_root_private_key: sequential_bytes(0),
-                            ring_vrf_domain_entropy: sequential_bytes(64),
-                        },
-                    )]),
-                },
-            )),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(Response {
+                responding_to: "r".to_string(),
+                payload: Ok(vec![SsoAllocationOutcome::Allocated(
+                    SsoAllocatedResource::AutoSigning {
+                        product_root_private_key: sequential_bytes(0),
+                        ring_vrf_domain_entropy: sequential_bytes(64),
+                    },
+                )]),
+            })),
         };
         assert_eq!(
             hex::encode(message.encode()),
@@ -1444,7 +1305,7 @@ mod tests {
         );
 
         let auto_signing_secret = [0xA5; 64];
-        let response = ResourceAllocationResponse {
+        let response = Response {
             responding_to: "secret-test".to_string(),
             payload: Ok(vec![SsoAllocationOutcome::Allocated(
                 SsoAllocatedResource::AutoSigning {
@@ -1808,7 +1669,7 @@ mod tests {
 
         let response = RemoteMessage {
             message_id: "resp-1".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::SignResponse(SignResponse {
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignResponse(Response {
                 responding_to: "remote-1".to_string(),
                 payload: Ok(SigningPayloadResponseData {
                     signature: vec![9; 64],
@@ -1829,7 +1690,7 @@ mod tests {
         assert_eq!(
             decoded,
             Some(SsoSessionStatement::RemoteMessages(vec![Ok(
-                v1::RemoteMessage::SignResponse(SignResponse {
+                v1::RemoteMessage::SignResponse(Response {
                     responding_to: "remote-1".to_string(),
                     payload: Ok(SigningPayloadResponseData {
                         signature: vec![9; 64],
