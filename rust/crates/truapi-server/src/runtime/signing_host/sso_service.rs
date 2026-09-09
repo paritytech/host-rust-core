@@ -483,6 +483,11 @@ mod tests {
 
     #[test]
     fn resource_allocation_summary_reflects_per_resource_outcomes() {
+        let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::Allocated(
+            SsoAllocatedResource::SmartContractAllowance,
+        )]));
+        assert_eq!((result.outcome, result.reason), ("ok", None));
+
         let result = resource_allocation_outcome(&Ok(vec![SsoAllocationOutcome::Rejected]));
         assert_eq!(
             (result.outcome, result.reason.as_deref()),

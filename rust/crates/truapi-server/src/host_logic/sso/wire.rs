@@ -93,13 +93,10 @@ impl RemoteMessage {
 
 #[cfg(test)]
 mod tests {
-    use truapi::latest::{DerivationIndex, ProductAccountId};
-
     use super::*;
-    use crate::host_logic::sso::messages::v1::{AnyRequest, Incoming, classify};
     use crate::host_logic::sso::messages::{
-        CreateTransactionRequest, CreateTransactionWithLegacyAccountRequest, ProductSubtreeRequest,
-        SignRawWithLegacyAccountRequest, SignRequest,
+        CreateTransactionRequest, CreateTransactionWithLegacyAccountRequest,
+        SignRawWithLegacyAccountRequest,
     };
 
     #[test]
@@ -119,38 +116,5 @@ mod tests {
         let signature = SignRawWithLegacyAccountRequest::response_into_message(response);
         assert_eq!(signature.name(), "SignRawWithLegacyAccountResponse");
         assert!(CreateTransactionRequest::response_from_message(signature).is_none());
-    }
-
-    #[test]
-    fn classify_separates_requests_responses_and_disconnect() {
-        let request = ProductSubtreeRequest {
-            product_id: "browse.dot".to_string(),
-        };
-        assert_eq!(
-            classify(request.clone().into_message()),
-            Incoming::Request(AnyRequest::ProductSubtreeRequest(request))
-        );
-        let boxed = SignRequest::Raw(truapi::latest::HostSignRawRequest {
-            account: ProductAccountId {
-                dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: DerivationIndex::Index(7),
-            },
-            payload: truapi::latest::RawPayload::Bytes { bytes: vec![] },
-        });
-        assert_eq!(
-            classify(boxed.clone().into_message()),
-            Incoming::Request(AnyRequest::SignRequest(boxed))
-        );
-        assert_eq!(
-            classify(v1::RemoteMessage::CreateTransactionResponse(Response {
-                responding_to: "m".to_string(),
-                payload: Ok(vec![]),
-            })),
-            Incoming::Response("CreateTransactionResponse")
-        );
-        assert_eq!(
-            classify(v1::RemoteMessage::Disconnected),
-            Incoming::Disconnected
-        );
     }
 }

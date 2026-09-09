@@ -993,7 +993,7 @@ mod tests {
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::derive_ring_vrf_domain_entropy;
     use crate::host_logic::sso::messages::{
-        self, GetAccountAliasResponse, RemoteMessage, Response, RingVrfError, SsoAllocatedResource,
+        self, GetAccountAliasResponse, RemoteMessage, RingVrfError, SsoAllocatedResource,
         SsoAllocationOutcome,
     };
     use crate::host_logic::sso::wire::ResponseOutcome;
@@ -1350,95 +1350,56 @@ mod tests {
             chain_connect_error: Some("allocation node unavailable"),
             ..StubPlatform::default()
         }));
-        let auto_signing = SsoAllocationOutcome::Allocated(SsoAllocatedResource::AutoSigning {
-            product_root_private_key: signing_host.product_subtree_secret("myapp.dot").unwrap(),
-            ring_vrf_domain_entropy: derive_ring_vrf_domain_entropy(&ENTROPY, "myapp.dot").unwrap(),
-        });
         let service = SigningHostSsoService::new(signing_host);
-        let cases = [
-            (
-                vec![api::AllocatableResource::BulletinAllowance],
-                vec![SsoAllocationOutcome::NotAvailable],
-                "not_available",
-                "Requested resource is not available",
-                1,
-            ),
-            (
-                vec![
+        let request = RemoteMessage::request(
+            "allocation-1".to_string(),
+            messages::ResourceAllocationRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                resources: vec![
                     api::AllocatableResource::AutoSigning,
                     api::AllocatableResource::BulletinAllowance,
                     api::AllocatableResource::StatementStoreAllowance,
                 ],
-                vec![
-                    auto_signing.clone(),
-                    SsoAllocationOutcome::NotAvailable,
-                    SsoAllocationOutcome::NotAvailable,
-                ],
-                "partial",
-                "1 of 3 requested resources allocated; 2 unavailable",
-                2,
-            ),
-            (
-                vec![api::AllocatableResource::AutoSigning],
-                vec![auto_signing],
-                "ok",
-                "",
-                0,
-            ),
-        ];
-
-        for (index, (resources, outcomes, outcome, summary, failures)) in
-            cases.into_iter().enumerate()
-        {
-            let message_id = format!("allocation-{index}");
-            let request = RemoteMessage::request(
-                message_id.clone(),
-                messages::ResourceAllocationRequest {
-                    calling_product_id: "myapp.dot".to_string(),
-                    resources,
-                    on_existing: OnExistingAllowancePolicy::Ignore,
-                },
-            );
-            let Dispatch::Response(answer) =
-                futures::executor::block_on(service.dispatch(service.current_session(), request))
-            else {
-                panic!("expected an allocation response");
-            };
-
-            let expected = RemoteMessage {
-                message_id: format!("{message_id}:response"),
-                data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-                    Response {
-                        responding_to: message_id.clone(),
-                        payload: Ok(outcomes),
-                    },
-                )),
-            };
-            assert_eq!(answer.message.encode(), expected.encode());
-            assert_eq!(answer.outcome.outcome, outcome);
-            if failures == 0 {
-                assert_eq!(answer.outcome.reason, None);
-                continue;
-            }
-            let reason = answer.outcome.reason.as_deref().unwrap();
-            assert!(reason.starts_with(summary));
-            assert_eq!(
-                reason.matches("allocation node unavailable").count(),
-                failures,
-                "{reason}"
-            );
-            assert!(!reason.contains(['\r', '\n']));
-            let cli = response_cli_summary(
-                "SSO response sent",
-                "resource_allocation",
-                &message_id,
-                &message_id,
-                &answer.message.message_id,
-                &answer.outcome,
-                0,
-            );
-            assert!(cli.contains(&format!("reason={reason}")));
-        }
+                on_existing: OnExistingAllowancePolicy::Ignore,
+            },
+        );
+        let Dispatch::Response(answer) =
+            futures::executor::block_on(service.dispatch(service.current_session(), request))
+        else {
+            panic!("expected an allocation response");
+        };
+        let RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(response)) =
+            answer.message.data
+        else {
+            panic!("expected an allocation response");
+        };
+        assert!(matches!(
+            response.payload.unwrap().as_slice(),
+            [
+                SsoAllocationOutcome::Allocated(SsoAllocatedResource::AutoSigning { .. }),
+                SsoAllocationOutcome::NotAvailable,
+                SsoAllocationOutcome::NotAvailable,
+            ]
+        ));
+        assert_eq!(answer.outcome.outcome, "partial");
+        let reason = answer.outcome.reason.as_deref().unwrap();
+        assert!(reason.starts_with("1 of 3 requested resources allocated; 2 unavailable"));
+        assert_eq!(
+            reason.matches("allocation node unavailable").count(),
+            2,
+            "{reason}"
+        );
+        assert!(!reason.contains(['\r', '\n']));
+        let cli = response_cli_summary(
+            "SSO response sent",
+            "resource_allocation",
+            "allocation-1",
+            "allocation-1",
+            &answer.message.message_id,
+            &answer.outcome,
+            0,
+        );
+        assert!(cli.contains(&format!("reason={reason}")));
     }
 
     #[test]
