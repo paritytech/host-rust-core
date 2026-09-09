@@ -4,7 +4,9 @@
 //! signature. Responses share the [`Response`] envelope; the request identifies
 //! the response variant even when different operations have identical payload types.
 
-use truapi::v01::HostAccountSignVrfError;
+use core::fmt::Display;
+
+use truapi::latest::HostAccountSignVrfError;
 
 use super::messages::{RemoteMessage, RemoteMessageData, Response, RingVrfError, v1};
 
@@ -23,54 +25,28 @@ pub trait SsoRequest: Sized {
 }
 
 /// Failure payload that can express "no signing session".
-pub trait SsoError {
+pub trait SsoError: Display {
     /// The signing host has no active session to serve the request with.
     fn not_connected() -> Self;
-    /// Single-line description for transcripts.
-    fn reason(&self) -> String;
 }
 
 impl SsoError for String {
     fn not_connected() -> Self {
         "signing host session is not active".to_string()
     }
-
-    fn reason(&self) -> String {
-        self.clone()
-    }
 }
 
 impl SsoError for RingVrfError {
     fn not_connected() -> Self {
-        RingVrfError::Unknown {
+        Self::Unknown {
             reason: String::not_connected(),
-        }
-    }
-
-    fn reason(&self) -> String {
-        match self {
-            RingVrfError::RingNotFound => "RingNotFound".to_string(),
-            RingVrfError::NotMember => "NotMember".to_string(),
-            RingVrfError::KeyNotRegistered => "KeyNotRegistered".to_string(),
-            RingVrfError::KeyNotInRing => "KeyNotInRing".to_string(),
-            RingVrfError::NotAllowlisted => "NotAllowlisted".to_string(),
-            RingVrfError::Rejected => "Rejected".to_string(),
-            RingVrfError::Unknown { reason } => format!("Unknown: {reason}"),
         }
     }
 }
 
 impl SsoError for HostAccountSignVrfError {
     fn not_connected() -> Self {
-        HostAccountSignVrfError::NotConnected
-    }
-
-    fn reason(&self) -> String {
-        match self {
-            HostAccountSignVrfError::NotConnected => "NotConnected".to_string(),
-            HostAccountSignVrfError::Rejected => "Rejected".to_string(),
-            HostAccountSignVrfError::Unknown { reason } => reason.clone(),
-        }
+        Self::NotConnected
     }
 }
 
@@ -85,7 +61,7 @@ pub struct ResponseOutcome {
 
 impl ResponseOutcome {
     /// Classify a plain payload: `ok`, or `error` with the failure's reason.
-    pub fn from_payload<T, E: SsoError>(payload: &Result<T, E>) -> Self {
+    pub fn from_payload<T, E: Display>(payload: &Result<T, E>) -> Self {
         match payload {
             Ok(_) => Self {
                 outcome: "ok",
@@ -93,7 +69,7 @@ impl ResponseOutcome {
             },
             Err(err) => Self {
                 outcome: "error",
-                reason: Some(err.reason()),
+                reason: Some(err.to_string()),
             },
         }
     }

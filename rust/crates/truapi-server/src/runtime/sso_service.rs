@@ -1,10 +1,12 @@
 //! Context and reply types shared by SSO handlers and generated dispatch.
 
+use core::fmt::Display;
+
 use truapi::{CallContext, RequestId};
 
 use super::authority::AuthoritySession;
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
-use crate::host_logic::sso::wire::{ResponseOutcome, SsoError};
+use crate::host_logic::sso::wire::ResponseOutcome;
 
 /// Per-request context handed to every service method.
 pub(crate) struct SsoRequestContext {
@@ -67,7 +69,7 @@ impl<P> SsoReply<P> {
     }
 }
 
-impl<T, E: SsoError> SsoReply<Result<T, E>> {
+impl<T, E: Display> SsoReply<Result<T, E>> {
     /// Address the reply and wrap it in the response variant selected by the request.
     pub(crate) fn finish(
         self,

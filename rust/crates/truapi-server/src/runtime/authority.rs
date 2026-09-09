@@ -13,13 +13,12 @@ use truapi::latest::{
     HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
     HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
     HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
-    HostAccountRingVrfSignResponse, HostCreateTransactionResponse,
+    HostAccountRingVrfSignResponse, HostAccountSignVrfRequest, HostCreateTransactionResponse,
     HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
     HostSignPayloadRequest, HostSignPayloadResponse, HostSignPayloadWithLegacyAccountRequest,
     HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
-    ProductAccountId, ProductAccountTxPayload,
+    ProductAccountId, ProductAccountTxPayload, VrfSignature,
 };
-use truapi::v01::{HostAccountSignVrfRequest, VrfSignature};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;

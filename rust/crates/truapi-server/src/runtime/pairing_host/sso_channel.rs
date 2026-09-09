@@ -26,7 +26,7 @@ use crate::host_logic::statement_store::parse_new_statements_result;
 use futures::FutureExt;
 use futures::future::{AbortHandle, Abortable};
 use tracing::{debug, instrument, warn};
-use truapi::{CallContext, latest, v01};
+use truapi::{CallContext, latest};
 
 /// Active peer-disconnect watcher for one SSO session; aborts on drop.
 pub(super) struct SsoDisconnectMonitor {
@@ -266,8 +266,8 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         calling_product_id: String,
-        request: v01::HostAccountSignVrfRequest,
-    ) -> Result<v01::VrfSignature, AuthorityError> {
+        request: latest::HostAccountSignVrfRequest,
+    ) -> Result<latest::VrfSignature, AuthorityError> {
         self.call(
             cx,
             session,
@@ -279,9 +279,11 @@ impl PairingHost {
         .await
         .map_err(remote_authority_error)?
         .map_err(|err| match err {
-            v01::HostAccountSignVrfError::NotConnected => AuthorityError::Disconnected,
-            v01::HostAccountSignVrfError::Rejected => AuthorityError::Rejected,
-            v01::HostAccountSignVrfError::Unknown { reason } => AuthorityError::Unknown { reason },
+            latest::HostAccountSignVrfError::NotConnected => AuthorityError::Disconnected,
+            latest::HostAccountSignVrfError::Rejected => AuthorityError::Rejected,
+            latest::HostAccountSignVrfError::Unknown { reason } => {
+                AuthorityError::Unknown { reason }
+            }
         })
     }
 

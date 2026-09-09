@@ -25,10 +25,10 @@ use core::fmt;
 use parity_scale_codec::{Decode, Encode};
 use truapi::latest::{
     AccountId, AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
-    HostSignPayloadRequest, HostSignPayloadResponse, HostSignRawRequest, LegacyAccountTxPayload,
-    ProductAccountTxPayload, RawPayload,
+    HostAccountSignVrfError, HostSignPayloadRequest, HostSignPayloadResponse, HostSignRawRequest,
+    LegacyAccountTxPayload, ProductAccountTxPayload, RawPayload, RegisteredRingVrfKey,
+    VrfSignature,
 };
-use truapi::v01::{HostAccountSignVrfError, VrfSignature};
 
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::pairing::{
@@ -164,7 +164,7 @@ pub type SignRawWithLegacyAccountResponse = Result<Vec<u8>, String>;
 pub type SignVrfResponse = Result<VrfSignature, HostAccountSignVrfError>;
 
 /// Failure returned by the Account Holder for RFC-0024 ring-VRF operations.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, derive_more::Display)]
 pub enum RingVrfError {
     /// The `RingLocation` did not resolve to a known ring.
     RingNotFound,
@@ -179,6 +179,7 @@ pub enum RingVrfError {
     /// User or Account Holder rejected the request.
     Rejected,
     /// Catch-all failure, carrying a diagnostic reason.
+    #[display("Unknown: {reason}")]
     Unknown {
         /// Diagnostic failure description.
         reason: String,
@@ -192,7 +193,7 @@ pub type GetAccountAliasResponse = Result<HostAccountGetAliasResponse, RingVrfEr
 pub type RegisterRingVrfKeyResponse = Result<[u8; 32], RingVrfError>;
 
 /// Response returned by the Account Holder for registry listing.
-pub type ListRingVrfKeysResponse = Result<Vec<truapi::v01::RegisteredRingVrfKey>, RingVrfError>;
+pub type ListRingVrfKeysResponse = Result<Vec<RegisteredRingVrfKey>, RingVrfError>;
 
 /// Response returned by the Account Holder for direct ring-VRF signing.
 pub type RingVrfSignResponse = Result<Vec<u8>, RingVrfError>;

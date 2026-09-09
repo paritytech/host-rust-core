@@ -57,14 +57,14 @@ pub mod latest {
         ContextualAlias, DerivationIndex, GenericError, HostAccountCreateProofRequest,
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
-        HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData, NotificationId,
-        OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
+        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
+        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
         RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
         RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
         RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
         RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
         SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension,
+        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension, VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.

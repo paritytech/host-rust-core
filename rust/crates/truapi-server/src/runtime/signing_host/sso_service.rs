@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use tracing::warn;
 use truapi::latest as api;
-use truapi::v01;
 use truapi_platform::{
     CreateTransactionReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
     UserConfirmationReview,
@@ -435,15 +434,15 @@ impl SigningHostSsoService {
             )
             .await
             .map_err(|err| match err {
-                AuthorityError::Disconnected => v01::HostAccountSignVrfError::NotConnected,
-                AuthorityError::Rejected => v01::HostAccountSignVrfError::Rejected,
-                AuthorityError::Cancelled(err) => v01::HostAccountSignVrfError::Unknown {
+                AuthorityError::Disconnected => api::HostAccountSignVrfError::NotConnected,
+                AuthorityError::Rejected => api::HostAccountSignVrfError::Rejected,
+                AuthorityError::Cancelled(err) => api::HostAccountSignVrfError::Unknown {
                     reason: err.to_string(),
                 },
                 AuthorityError::Unavailable { reason }
                 | AuthorityError::NotSupported { reason }
                 | AuthorityError::Unknown { reason } => {
-                    v01::HostAccountSignVrfError::Unknown { reason }
+                    api::HostAccountSignVrfError::Unknown { reason }
                 }
             })
     }
