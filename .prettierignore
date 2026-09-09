@@ -1,6 +1,7 @@
 node_modules/
 target/
 hosts/dotli/
+hosts/ios/
 playground/.next/
 playground/out/
 playground/node_modules/

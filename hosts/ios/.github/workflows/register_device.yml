@@ -1,0 +1,36 @@
+name: Register device
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_name:
+        description: "Device name (e.g. John's iPhone)"
+        required: true
+        type: string
+      device_udid:
+        description: "Device UDID (40-char hex or 24-char with dash for newer devices)"
+        required: true
+        type: string
+
+jobs:
+  register_device:
+    runs-on: macos-26
+    if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup iOS Environment
+        uses: ./.github/actions/install
+
+      - name: Register device
+        run: bundle exec fastlane register name:"$DEVICE_NAME" udid:"$DEVICE_UDID"
+        env:
+          DEVICE_NAME: ${{ inputs.device_name }}
+          DEVICE_UDID: ${{ inputs.device_udid }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
