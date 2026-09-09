@@ -1,0 +1,335 @@
+package io.paritytech.polkadotapp.feature_products_impl.di
+
+import dagger.Binds
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.components.SingletonComponent
+import dagger.multibindings.IntoSet
+import io.paritytech.polkadotapp.common.presentation.AppInitializer
+import io.paritytech.polkadotapp.common.utils.FeatureOption
+import io.paritytech.polkadotapp.common.utils.isEnabled
+import io.paritytech.polkadotapp.feature_chats_api.domain.extension.ExternalExtensionProvider
+import io.paritytech.polkadotapp.feature_chats_api.domain.search.ChatSearchResultProvider
+import io.paritytech.polkadotapp.feature_dotns_api.presentation.DotNsServingHostResolver
+import io.paritytech.polkadotapp.feature_products_api.domain.FundingDomainProvider
+import io.paritytech.polkadotapp.feature_products_api.domain.ProductAccountIdProvider
+import io.paritytech.polkadotapp.feature_products_api.domain.ProductRequestAccountResolver
+import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.AccountsProtocol
+import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.MembersRingLocator
+import io.paritytech.polkadotapp.feature_products_api.domain.browser.ProductSessionController
+import io.paritytech.polkadotapp.feature_products_api.domain.deriveEntropy.DeriveEntropyUseCase
+import io.paritytech.polkadotapp.feature_products_api.domain.sponsoring.PreimageSubmitSponsoring
+import io.paritytech.polkadotapp.feature_products_api.domain.sponsoring.StatementStoreSubmissionSponsoring
+import io.paritytech.polkadotapp.feature_products_api.domain.sponsoring.TransactionSponsoring
+import io.paritytech.polkadotapp.feature_products_api.presentation.spaHost.SpaHost
+import io.paritytech.polkadotapp.feature_products_impl.data.config.RemoteConfigFundingDomainProvider
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.BrowserTabRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductFundingOperationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductIntegrationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.RealBrowserTabRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.RealProductFundingOperationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.RealProductIntegrationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.RealProductRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.RealRingVrfKeyRegistrationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.RealTopUpRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.RingVrfKeyRegistrationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.repository.TopUpRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.scheduledNotification.RealScheduledProductNotificationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.scheduledNotification.ScheduledProductNotificationRepository
+import io.paritytech.polkadotapp.feature_products_impl.data.storage.AssetContainerScriptProvider
+import io.paritytech.polkadotapp.feature_products_impl.data.storage.ContainerScriptProvider
+import io.paritytech.polkadotapp.feature_products_impl.data.storage.ProductLocalStorage
+import io.paritytech.polkadotapp.feature_products_impl.data.storage.RealProductLocalStorage
+import io.paritytech.polkadotapp.feature_products_impl.data.storage.RealTopUpSourceStorage
+import io.paritytech.polkadotapp.feature_products_impl.data.storage.TopUpSourceStorage
+import io.paritytech.polkadotapp.feature_products_impl.domain.ProductAccountDerivationUseCase
+import io.paritytech.polkadotapp.feature_products_impl.domain.RealProductRequestAccountResolver
+import io.paritytech.polkadotapp.feature_products_impl.domain.accountsProtocol.RealAccountsProtocol
+import io.paritytech.polkadotapp.feature_products_impl.domain.accountsProtocol.RealRingVrfKeySource
+import io.paritytech.polkadotapp.feature_products_impl.domain.accountsProtocol.RingVrfKeySource
+import io.paritytech.polkadotapp.feature_products_impl.domain.accountsProtocol.locator.RealMembersRingLocator
+import io.paritytech.polkadotapp.feature_products_impl.domain.accountsProtocol.registry.RealRingVrfKeyRegistry
+import io.paritytech.polkadotapp.feature_products_impl.domain.accountsProtocol.registry.RingVrfKeyRegistry
+import io.paritytech.polkadotapp.feature_products_impl.domain.bot.external.ProductExternalExtensionProvider
+import io.paritytech.polkadotapp.feature_products_impl.domain.bot.menu.ProductChatMenuInteractor
+import io.paritytech.polkadotapp.feature_products_impl.domain.bot.menu.RealProductChatMenuInteractor
+import io.paritytech.polkadotapp.feature_products_impl.domain.browser.RealProductSessionController
+import io.paritytech.polkadotapp.feature_products_impl.domain.deriveEntropy.RealDeriveEntropyUseCase
+import io.paritytech.polkadotapp.feature_products_impl.domain.exploreProducts.ExploreProductsService
+import io.paritytech.polkadotapp.feature_products_impl.domain.exploreProducts.RealExploreProductsService
+import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.AllowanceKeyStorage
+import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.RealAllowanceKeyStorage
+import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.sponsoring.RealStatementStoreSubmissionSponsoring
+import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.sponsoring.SponsorPreimageWithBulletin
+import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.sponsoring.SponsorReviveCallsWithPgas
+import io.paritytech.polkadotapp.feature_products_impl.domain.notifications.ProductNotificationScheduler
+import io.paritytech.polkadotapp.feature_products_impl.domain.notifications.RealProductNotificationScheduler
+import io.paritytech.polkadotapp.feature_products_impl.domain.operation.ProductOperationService
+import io.paritytech.polkadotapp.feature_products_impl.domain.operation.RealProductOperationService
+import io.paritytech.polkadotapp.feature_products_impl.domain.origin.ProductAccountOrigins
+import io.paritytech.polkadotapp.feature_products_impl.domain.origin.RealProductAccountOrigins
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.AutoAllowProductPermissionRequester
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionGuard
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionRepository
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionRequester
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.RealProductPermissionGuard
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.RealProductPermissionRepository
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.RealProductPermissionRequester
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.RealWhitelistedProductsProvider
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.WhitelistedProductsProvider
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.AccountAccessPermissionHandler
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.BalanceAccessPermissionHandler
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.DeviceCapabilityPermissionHandler
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.ProductPermissionHandler
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.RemotePermissionHandler
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.UserIdentityAccessPermissionHandler
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission
+import io.paritytech.polkadotapp.feature_products_impl.domain.product.ProductRegistrar
+import io.paritytech.polkadotapp.feature_products_impl.domain.product.ProductScriptResolver
+import io.paritytech.polkadotapp.feature_products_impl.domain.product.RealProductRegistrar
+import io.paritytech.polkadotapp.feature_products_impl.domain.product.RealProductScriptResolver
+import io.paritytech.polkadotapp.feature_products_impl.domain.productBotManagement.ProductBotManagementInteractor
+import io.paritytech.polkadotapp.feature_products_impl.domain.productBotManagement.RealProductBotManagementInteractor
+import io.paritytech.polkadotapp.feature_products_impl.domain.search.ProductChatSearchResultProvider
+import io.paritytech.polkadotapp.feature_products_impl.domain.serialization.JsWidgetSerializer
+import io.paritytech.polkadotapp.feature_products_impl.domain.serialization.ScaleWidgetSerializer
+import io.paritytech.polkadotapp.feature_products_impl.domain.spaBrowser.RealSpaBrowserInteractor
+import io.paritytech.polkadotapp.feature_products_impl.domain.spaBrowser.SpaBrowserInteractor
+import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.ExecuteTopUpUseCase
+import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.RealExecuteTopUpUseCase
+import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.RealTopUpService
+import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.TopUpService
+import io.paritytech.polkadotapp.feature_products_impl.domain.usecase.RealResolveProductUseCase
+import io.paritytech.polkadotapp.feature_products_impl.domain.usecase.ResolveProductUseCase
+import io.paritytech.polkadotapp.feature_products_impl.domain.webView.ProductServingHostResolver
+import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorkerRefCounter
+import io.paritytech.polkadotapp.feature_products_impl.domain.worker.RealProductWorkerRefCounter
+import io.paritytech.polkadotapp.feature_products_impl.domain.worker.RealWorkerBootFactory
+import io.paritytech.polkadotapp.feature_products_impl.domain.worker.WorkerBootFactory
+import io.paritytech.polkadotapp.feature_products_impl.presentation.initialization.ProductWorkerInitializer
+import io.paritytech.polkadotapp.feature_products_impl.presentation.initialization.TopUpResumeInitializer
+import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
+import io.paritytech.polkadotapp.feature_products_impl.presentation.spaHost.RealSpaHost
+import javax.inject.Singleton
+
+@Module
+@InstallIn(SingletonComponent::class)
+internal interface ProductsModule {
+    @Binds
+    @Singleton
+    fun bindWidgetSerializer(impl: ScaleWidgetSerializer): JsWidgetSerializer
+
+    @Binds
+    @Singleton
+    fun bindProductSessionController(impl: RealProductSessionController): ProductSessionController
+
+    @Binds
+    @Singleton
+    fun bindBrowserTabRepository(impl: RealBrowserTabRepository): BrowserTabRepository
+
+    @Binds
+    @Singleton
+    fun bindSpaHost(impl: RealSpaHost): SpaHost
+
+    @Binds
+    @Singleton
+    fun bindProductAccountIdProvider(impl: ProductAccountDerivationUseCase): ProductAccountIdProvider
+
+    @Binds
+    @Singleton
+    fun bindProductRepository(impl: RealProductRepository): ProductRepository
+
+    @Binds
+    @Singleton
+    fun bindResolveProductUseCase(impl: RealResolveProductUseCase): ResolveProductUseCase
+
+    @Binds
+    @Singleton
+    fun bindServingHostResolver(impl: ProductServingHostResolver): DotNsServingHostResolver
+
+    @Binds
+    @Singleton
+    fun bindContainerScriptProvider(impl: AssetContainerScriptProvider): ContainerScriptProvider
+
+    @Binds
+    @Singleton
+    fun bindProductBotManagementInteractor(impl: RealProductBotManagementInteractor): ProductBotManagementInteractor
+
+    @Binds
+    @IntoSet
+    fun bindProductExternalExtensionProvider(impl: ProductExternalExtensionProvider): ExternalExtensionProvider
+
+    @Binds
+    fun bindProductLocalStorage(impl: RealProductLocalStorage): ProductLocalStorage
+
+    @Binds
+    fun bindTopUpSourceStorage(impl: RealTopUpSourceStorage): TopUpSourceStorage
+
+    @Binds
+    fun bindTopUpRepository(impl: RealTopUpRepository): TopUpRepository
+
+    @Binds
+    @Singleton
+    fun bindProductWorkerRefCounter(impl: RealProductWorkerRefCounter): ProductWorkerRefCounter
+
+    @Binds
+    fun bindWorkerBootFactory(impl: RealWorkerBootFactory): WorkerBootFactory
+
+    @Binds
+    @Singleton
+    fun bindProductOperationService(impl: RealProductOperationService): ProductOperationService
+
+    @Binds
+    fun bindProductFundingOperationRepository(impl: RealProductFundingOperationRepository): ProductFundingOperationRepository
+
+    @Binds
+    @IntoSet
+    fun bindProductWorkerInitializer(impl: ProductWorkerInitializer): AppInitializer
+
+    @Binds
+    @IntoSet
+    fun bindTopUpResumeInitializer(impl: TopUpResumeInitializer): AppInitializer
+
+    @Binds
+    fun bindProductAccountOrigins(impl: RealProductAccountOrigins): ProductAccountOrigins
+
+    @Binds
+    fun bindMembersRingLocator(impl: RealMembersRingLocator): MembersRingLocator
+
+    @Binds
+    fun bindRingVrfKeyRegistrationRepository(
+        impl: RealRingVrfKeyRegistrationRepository
+    ): RingVrfKeyRegistrationRepository
+
+    @Binds
+    fun bindRingVrfKeyRegistry(impl: RealRingVrfKeyRegistry): RingVrfKeyRegistry
+
+    @Binds
+    fun bindRingVrfKeySource(impl: RealRingVrfKeySource): RingVrfKeySource
+
+    @Binds
+    @Singleton
+    fun bindProductPermissionRepository(impl: RealProductPermissionRepository): ProductPermissionRepository
+
+    @Binds
+    fun bindProductPermissionGuard(impl: RealProductPermissionGuard): ProductPermissionGuard
+
+    @Binds
+    fun bindRemotePermissionHandler(
+        impl: RemotePermissionHandler,
+    ): ProductPermissionHandler<ProductPermission.RemotePermission>
+
+    @Binds
+    fun bindAccountAccessPermissionHandler(
+        impl: AccountAccessPermissionHandler,
+    ): ProductPermissionHandler<ProductPermission.AccountAccess>
+
+    @Binds
+    fun bindBalanceAccessPermissionHandler(
+        impl: BalanceAccessPermissionHandler,
+    ): ProductPermissionHandler<ProductPermission.BalanceAccess>
+
+    @Binds
+    fun bindDeviceCapabilityPermissionHandler(
+        impl: DeviceCapabilityPermissionHandler,
+    ): ProductPermissionHandler<ProductPermission.DeviceCapability>
+
+    @Binds
+    fun bindUserIdentityAccessPermissionHandler(
+        impl: UserIdentityAccessPermissionHandler,
+    ): ProductPermissionHandler<ProductPermission.UserIdentityAccess>
+
+    @Binds
+    @Singleton
+    fun bindProductScriptResolver(impl: RealProductScriptResolver): ProductScriptResolver
+
+    @Binds
+    @Singleton
+    fun bindProductRegistrar(impl: RealProductRegistrar): ProductRegistrar
+
+    @Binds
+    @Singleton
+    fun bindProductIntegrationRepository(impl: RealProductIntegrationRepository): ProductIntegrationRepository
+
+    @Binds
+    fun bindSpaBrowserInteractor(impl: RealSpaBrowserInteractor): SpaBrowserInteractor
+
+    @Binds
+    fun bindProductChatMenuInteractor(impl: RealProductChatMenuInteractor): ProductChatMenuInteractor
+
+    @Binds
+    @Singleton
+    fun bindAllowanceKeyStorage(impl: RealAllowanceKeyStorage): AllowanceKeyStorage
+
+    @Binds
+    @Singleton
+    fun bindAccountsProtocol(impl: RealAccountsProtocol): AccountsProtocol
+
+    @Binds
+    fun bindTransactionSponsoring(impl: SponsorReviveCallsWithPgas): TransactionSponsoring
+
+    @Binds
+    fun bindPreimageSubmitSponsoring(impl: SponsorPreimageWithBulletin): PreimageSubmitSponsoring
+
+    @Binds
+    fun bindStatementStoreSubmissionSponsoring(impl: RealStatementStoreSubmissionSponsoring): StatementStoreSubmissionSponsoring
+
+    @Binds
+    fun bindExploreProductsService(impl: RealExploreProductsService): ExploreProductsService
+
+    @Binds
+    @Singleton
+    fun bindScheduledProductNotificationRepository(
+        impl: RealScheduledProductNotificationRepository,
+    ): ScheduledProductNotificationRepository
+
+    @Binds
+    @Singleton
+    fun bindProductNotificationScheduler(impl: RealProductNotificationScheduler): ProductNotificationScheduler
+
+    @Binds
+    fun bindProductRequestAccountResolver(impl: RealProductRequestAccountResolver): ProductRequestAccountResolver
+
+    @Binds
+    @Singleton
+    fun bindFundingDomainProvider(impl: RemoteConfigFundingDomainProvider): FundingDomainProvider
+
+    @Binds
+    fun bindWhitelistedProductsProvider(impl: RealWhitelistedProductsProvider): WhitelistedProductsProvider
+
+    @Binds
+    fun bindDeriveEntropyUseCase(impl: RealDeriveEntropyUseCase): DeriveEntropyUseCase
+
+    @Binds
+    fun bindExecuteTopUpUseCase(impl: RealExecuteTopUpUseCase): ExecuteTopUpUseCase
+
+    @Binds
+    @Singleton
+    fun bindTopUpService(impl: RealTopUpService): TopUpService
+
+    companion object {
+        @Provides
+        @Singleton
+        fun providePermissionRequester(
+            real: RealProductPermissionRequester,
+            whitelistedProductsProvider: WhitelistedProductsProvider,
+        ): ProductPermissionRequester {
+            return AutoAllowProductPermissionRequester(whitelistedProductsProvider, real)
+        }
+
+        @Provides
+        @IntoSet
+        fun provideProductChatSearchResultProvider(
+            productRepository: ProductRepository,
+            productsRouter: ProductsRouter,
+        ): ChatSearchResultProvider {
+            return ProductChatSearchResultProvider(
+                arbitraryProductsEnabled = FeatureOption.ARBITRARY_PRODUCTS.isEnabled,
+                productRepository = productRepository,
+                productsRouter = productsRouter,
+            )
+        }
+    }
+}
