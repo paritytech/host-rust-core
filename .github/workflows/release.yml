@@ -73,7 +73,7 @@ jobs:
             # Trim whitespace around comma-separated targets.
             target="${target#"${target%%[![:space:]]*}"}"
             target="${target%"${target##*[![:space:]]}"}"
-            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/truapi-debugger|@parity/ios-host|@parity/android-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/truapi-provider|@parity/truapi-debugger|@parity/ios-host|@parity/android-host)[[:space:]]+([^[:space:]]+)$ ]]; then
               echo "::error::Unsupported release target '${target}' in subject: ${subject}"
               exit 1
             fi
