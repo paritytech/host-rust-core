@@ -6,4 +6,5 @@ mod payment;
 mod platform;
 mod preimage;
 mod resources;
+mod scarcity;
 mod signing;

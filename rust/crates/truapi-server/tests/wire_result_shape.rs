@@ -522,6 +522,29 @@ fn subscription_start_receive_stop_through_wire_boundary() {
     );
 }
 
+/// The NFT pocket answers `Unsupported` until the signing host's pocket
+/// engine lands, so products degrade instead of retrying a transient failure.
+#[test]
+fn scarcity_list_reports_unsupported_on_the_wire() {
+    let core = make_core();
+    let request =
+        truapi::versioned::scarcity::HostScarcityListRequest::V1(v01::HostScarcityListRequest {
+            collections: Some(vec![7]),
+        });
+    let ids = request_ids("scarcity_list").expect("known request method");
+    let frame = ProtocolMessage {
+        request_id: "p:pocket".into(),
+        payload: Payload {
+            id: ids.request_id,
+            value: request.encode(),
+        },
+    };
+    let response = dispatch(&core, frame);
+    assert_eq!(response.payload.id, ids.response_id);
+    // [V1 disc=0x00][Err disc=0x01][CallError::Unsupported=0x02], and nothing more.
+    assert_eq!(response.payload.value, vec![0x00u8, 0x01u8, 0x02u8]);
+}
+
 /// Coin Payment answers `Unsupported` rather than the trait default's
 /// `HostFailure`, which a product's retry logic reads as transient.
 #[test]

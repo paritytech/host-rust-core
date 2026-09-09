@@ -50,7 +50,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "43581e5572c0315a";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "f24bf5bf74ae94ca";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: RequestFrameIds = RequestFrameIds {
@@ -516,6 +516,26 @@ pub const LOCALE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
     receive_id: 197,
 };
 
+/// Wire discriminants for `scarcity_list`.
+pub const SCARCITY_LIST: RequestFrameIds = RequestFrameIds {
+    request_id: 198,
+    response_id: 199,
+};
+
+/// Wire discriminants for `scarcity_request_receive_address`.
+pub const SCARCITY_REQUEST_RECEIVE_ADDRESS: RequestFrameIds = RequestFrameIds {
+    request_id: 200,
+    response_id: 201,
+};
+
+/// Wire discriminants for `scarcity_transfer`.
+pub const SCARCITY_TRANSFER: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 202,
+    stop_id: 203,
+    interrupt_id: 204,
+    receive_id: 205,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -806,5 +826,17 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "locale_subscribe",
         kind: WireKind::Subscription(LOCALE_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "scarcity_list",
+        kind: WireKind::Request(SCARCITY_LIST),
+    },
+    WireEntry {
+        method: "scarcity_request_receive_address",
+        kind: WireKind::Request(SCARCITY_REQUEST_RECEIVE_ADDRESS),
+    },
+    WireEntry {
+        method: "scarcity_transfer",
+        kind: WireKind::Subscription(SCARCITY_TRANSFER),
     },
 ];

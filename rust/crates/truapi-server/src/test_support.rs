@@ -1582,6 +1582,10 @@ impl UserConfirmation for StubPlatform {
                     .push(review);
                 (None, !self.product_subtree_denied)
             }
+            // The pocket engine is not wired yet; approve so pocket tests can
+            // exercise the paths that follow consent.
+            UserConfirmationReview::ScarcityAccess(_)
+            | UserConfirmationReview::ScarcityTransfer(_) => (None, true),
         };
         if let Some(reason) = error {
             return Err(v01::GenericError {

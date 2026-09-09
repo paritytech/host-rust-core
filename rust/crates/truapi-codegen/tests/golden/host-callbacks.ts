@@ -399,6 +399,51 @@ export interface ResourceAllocationReview {
 }
 
 /**
+ * Review shown before a product may list the NFTs in the user's pocket.
+ */
+export interface ScarcityAccessReview {
+  /**
+   * Product asking to see the pocket.
+   */
+  productId: string;
+
+  /**
+   * Collections the grant is scoped to; ``undefined`` covers the whole pocket.
+   */
+  collections?: Array<number>;
+}
+
+/**
+ * Review shown before the host moves one pocket NFT for a product.
+ */
+export interface ScarcityTransferReview {
+  /**
+   * Product asking for the move.
+   */
+  productId: string;
+
+  /**
+   * Instance to move.
+   */
+  instance: bigint;
+
+  /**
+   * Collection the instance belongs to.
+   */
+  collection: number;
+
+  /**
+   * Item definition within the collection.
+   */
+  item: number;
+
+  /**
+   * Destination purse key.
+   */
+  to: Uint8Array;
+}
+
+/**
  * Decoded session fields a host shell needs to render account UI without
  * parsing the opaque session blob the core persists through `CoreStorage`.
  */
@@ -554,7 +599,15 @@ export type UserConfirmationReview =
   /**
    * Resolve a product's own account subtree over SSO.
    */
-  | { tag: "ProductSubtree"; value: ProductSubtreeReview };
+  | { tag: "ProductSubtree"; value: ProductSubtreeReview }
+  /**
+   * Allow a product to list the NFTs in the user's pocket.
+   */
+  | { tag: "ScarcityAccess"; value: ScarcityAccessReview }
+  /**
+   * Move one pocket NFT on a product's behalf.
+   */
+  | { tag: "ScarcityTransfer"; value: ScarcityTransferReview };
 
 /**
  * Review shown before a product asks to access another product account.
@@ -811,6 +864,31 @@ export const ResourceAllocationReview: S.Codec<ResourceAllocationReview> =
   );
 
 /**
+ * Review shown before a product may list the NFTs in the user's pocket.
+ */
+export const ScarcityAccessReview: S.Codec<ScarcityAccessReview> = S.lazy(
+  (): S.Codec<ScarcityAccessReview> =>
+    S.Struct({
+      productId: S.str,
+      collections: S.Option(S.Vector(S.u32)),
+    }) as S.Codec<ScarcityAccessReview>,
+);
+
+/**
+ * Review shown before the host moves one pocket NFT for a product.
+ */
+export const ScarcityTransferReview: S.Codec<ScarcityTransferReview> = S.lazy(
+  (): S.Codec<ScarcityTransferReview> =>
+    S.Struct({
+      productId: S.str,
+      instance: S.u64,
+      collection: S.u32,
+      item: S.u32,
+      to: S.Bytes(32),
+    }) as S.Codec<ScarcityTransferReview>,
+);
+
+/**
  * Decoded session fields a host shell needs to render account UI without
  * parsing the opaque session blob the core persists through `CoreStorage`.
  */
@@ -893,6 +971,8 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
       AccountAccess: AccountAccessReview,
       SignVrf: SignVrfReview,
       ProductSubtree: ProductSubtreeReview,
+      ScarcityAccess: ScarcityAccessReview,
+      ScarcityTransfer: ScarcityTransferReview,
     }),
 );
 

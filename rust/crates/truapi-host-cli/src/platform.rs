@@ -867,6 +867,30 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
                 review.product_id
             ),
         ),
+        UserConfirmationReview::ScarcityAccess(review) => (
+            "list your collectibles",
+            match &review.collections {
+                Some(collections) => format!(
+                    "Product {} requested to see your collectibles from collections {:?}.",
+                    review.product_id, collections
+                ),
+                None => format!(
+                    "Product {} requested to see every collectible in your pocket.",
+                    review.product_id
+                ),
+            },
+        ),
+        UserConfirmationReview::ScarcityTransfer(review) => (
+            "send a collectible",
+            format!(
+                "Product {} requested to send collectible #{} (collection {}, item {}) to 0x{}.",
+                review.product_id,
+                review.instance,
+                review.collection,
+                review.item,
+                hex::encode(review.to)
+            ),
+        ),
     }
 }
 

@@ -25,6 +25,7 @@ use truapi::api::{
     Permissions,
     Preimage,
     ResourceAllocation,
+    Scarcity,
     Signing,
     StatementStore,
     System,
@@ -60,6 +61,7 @@ where
     register_permissions(dispatcher, host.clone());
     register_preimage(dispatcher, host.clone());
     register_resource_allocation(dispatcher, host.clone());
+    register_scarcity(dispatcher, host.clone());
     register_signing(dispatcher, host.clone());
     register_statement_store(dispatcher, host.clone());
     register_system(dispatcher, host.clone());
@@ -2096,6 +2098,120 @@ where
                         target_version,
                     ),
                 ))
+            })
+        });
+    }
+}
+
+fn register_scarcity<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Scarcity + Send + Sync + 'static,
+{
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::SCARCITY_LIST, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::scarcity::HostScarcityListRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::scarcity::HostScarcityListError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::scarcity::HostScarcityListError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let response: versioned::scarcity::HostScarcityListResponse = match host.list(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(
+                            downgrade_call_error(err, target_version),
+                            target_version,
+                        ));
+                    }
+                };
+                // Downgraded to the caller's version: a handler answers in
+                // latest terms, and a peer that asked in an older version
+                // cannot decode a newer variant.
+                Ok(encode_versioned_ok_payload(
+                    <versioned::scarcity::HostScarcityListResponse as truapi::versioned::FromLatest>::from_latest(
+                        truapi::versioned::IntoLatest::into_latest(response),
+                        target_version,
+                    ),
+                ))
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::SCARCITY_REQUEST_RECEIVE_ADDRESS, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::scarcity::HostScarcityRequestReceiveAddressRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::scarcity::HostScarcityRequestReceiveAddressError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::scarcity::HostScarcityRequestReceiveAddressError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let response: versioned::scarcity::HostScarcityRequestReceiveAddressResponse = match host.request_receive_address(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(
+                            downgrade_call_error(err, target_version),
+                            target_version,
+                        ));
+                    }
+                };
+                // Downgraded to the caller's version: a handler answers in
+                // latest terms, and a peer that asked in an older version
+                // cannot decode a newer variant.
+                Ok(encode_versioned_ok_payload(
+                    <versioned::scarcity::HostScarcityRequestReceiveAddressResponse as truapi::versioned::FromLatest>::from_latest(
+                        truapi::versioned::IntoLatest::into_latest(response),
+                        target_version,
+                    ),
+                ))
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_subscription(wire_table::SCARCITY_TRANSFER, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::scarcity::HostScarcityTransferRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::scarcity::HostScarcityTransferError> =
+                            truapi::CallError::MalformedFrame {
+                                reason: err.to_string(),
+                            };
+                        return Err(encode_versioned_interrupt_payload(
+                            error,
+                            <versioned::scarcity::HostScarcityTransferError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let stream = match host.transfer(&cx, request).await {
+                    Ok(sub) => sub,
+                    Err(err) => {
+                        return Err(encode_versioned_interrupt_payload(err, target_version));
+                    }
+                };
+                Ok(subscription_stream::<versioned::scarcity::HostScarcityTransferItem, _>(stream))
             })
         });
     }

@@ -2726,6 +2726,32 @@ pub struct AccountAccessReview {
     pub target_product_id: String,
 }
 
+/// Review shown before a product may list the NFTs in the user's pocket.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct ScarcityAccessReview {
+    /// Product asking to see the pocket.
+    pub product_id: String,
+    /// Collections the grant is scoped to; `None` covers the whole pocket.
+    pub collections: Option<Vec<u32>>,
+}
+
+/// Review shown before the host moves one pocket NFT for a product.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct ScarcityTransferReview {
+    /// Product asking for the move.
+    pub product_id: String,
+    /// Instance to move.
+    pub instance: u64,
+    /// Collection the instance belongs to.
+    pub collection: u32,
+    /// Item definition within the collection.
+    pub item: u32,
+    /// Destination purse key.
+    pub to: [u8; 32],
+}
+
 /// Review shown before a product learns the user's primary identity.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -2780,6 +2806,10 @@ pub enum UserConfirmationReview {
     SignVrf(SignVrfReview),
     /// Resolve a product's own account subtree over SSO.
     ProductSubtree(ProductSubtreeReview),
+    /// Allow a product to list the NFTs in the user's pocket.
+    ScarcityAccess(ScarcityAccessReview),
+    /// Move one pocket NFT on a product's behalf.
+    ScarcityTransfer(ScarcityTransferReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.
