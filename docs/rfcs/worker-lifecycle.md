@@ -23,7 +23,7 @@ is closed, and every modality that calls a worker needs one rule for when it run
 1. **Single.** A product has one worker process, however many modalities call it.
 2. **Demand-driven.** The worker runs only while the host has work that only the worker can do.
 3. **Stoppable.** The host may stop an unreferenced worker at any time and the product keeps working.
-4. **Setup.** An acknowledged product gets a run before anything calls its worker.
+4. **Setup.** A product gets a run before anything calls its worker.
 5. **Additive.** Nothing is added to the TrUAPI protocol.
 
 ## Approach
