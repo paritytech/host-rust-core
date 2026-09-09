@@ -94,6 +94,7 @@ jobs:
                 cli_version="${declared_version}"
                 ;;
               @parity/truapi-host) path="js/packages/truapi-host" ;;
+              @parity/truapi-provider) path="js/packages/truapi-provider" ;;
               @parity/truapi-debugger) path="js/packages/truapi-debugger" ;;
               @parity/ios-host)
                 if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
@@ -241,7 +242,7 @@ jobs:
         run: npm ci
 
       - name: Install wasm-pack
-        if: steps.version.outputs.proceed == 'true' && contains(steps.version.outputs.packages, '@parity/truapi-host|')
+        if: steps.version.outputs.proceed == 'true' && (contains(steps.version.outputs.packages, '@parity/truapi-host|') || contains(steps.version.outputs.packages, '@parity/truapi-provider|'))
         run: cargo install wasm-pack --version 0.14.0 --locked
 
       - name: Build packages
@@ -258,6 +259,11 @@ jobs:
           # publish would still report success.
           if grep -q '^@parity/truapi-debugger|' <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"; then
             npm run build --prefix js/packages/truapi-debugger
+          fi
+          # Same reason as the debugger above: the provider ships `files: ["dist"]`
+          # and `dist/` is the gitignored wasm-pack output.
+          if grep -q '^@parity/truapi-provider|' <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"; then
+            npm run build --prefix js/packages/truapi-provider
           fi
         env:
           STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
