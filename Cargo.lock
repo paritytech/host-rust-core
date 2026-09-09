@@ -5293,7 +5293,7 @@ dependencies = [
 
 [[package]]
 name = "truapi"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "async-trait",
  "derive_more 2.1.1",
@@ -5320,7 +5320,7 @@ dependencies = [
 
 [[package]]
 name = "truapi-host-cli"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5329,6 +5329,7 @@ dependencies = [
  "bip39",
  "clap",
  "crossterm",
+ "derive_more 2.1.1",
  "flate2",
  "fs2",
  "futures",
@@ -5389,6 +5390,7 @@ dependencies = [
 name = "truapi-provider"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "blake2b_simd",
  "derive_more 2.1.1",
  "futures",
@@ -5399,6 +5401,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
+ "log",
  "pin-project",
  "rand 0.8.7",
  "send_wrapper",
@@ -5428,6 +5431,7 @@ name = "truapi-server"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "blake2b_simd",
  "chacha20poly1305",
  "console_error_panic_hook",

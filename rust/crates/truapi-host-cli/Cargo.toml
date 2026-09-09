@@ -1,6 +1,6 @@
 [package]
 name = "truapi-host-cli"
-version = "0.13.0"
+version = "0.13.1"
 edition.workspace = true
 description = "Headless TrUAPI hosts: a signing-host companion and a pairing host that pair over the real People-chain statement store, for end-to-end testing without an external signer service"
 license = "MIT"
@@ -26,6 +26,7 @@ base64 = "0.22"
 bip39 = { version = "2", features = ["rand"] }
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
+derive_more = { version = "2", features = ["debug", "display", "error"] }
 flate2 = "1"
 futures = "0.3"
 futures-util = "0.3"

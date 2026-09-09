@@ -20,6 +20,19 @@ js/packages/
                           `.` (shared host types), `/web` (iframe + Web
                           Worker), `/worker-runtime` (Worker entry).
                           WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+  truapi-debugger/        @parity/truapi-debugger (published to npm): the debugger.
+                          Owns all decoding of the wire frames the Rust host tap
+                          (truapi-server's DebugSink) streams out, and decodes
+                          every frame by default (no denylist, no reveal toggle).
+                          Holds the trace, envelope-decode, and value-decode
+                          engines, the shared view model + renderers, and two
+                          mounts over them: server.ts (standalone WS+HTTP app on
+                          127.0.0.1:9231 that hosts dial into, `npm run serve`;
+                          endpoints /, /op-list, /op, /view, /channels, /stats,
+                          /traces, /frame) and in-app.ts (createInAppDebugger:
+                          same-page host, no server, no dial). @parity/truapi has
+                          no debug seam. Where the app ultimately lives is still
+                          an open decision.
 js/container/              TS lockdown container for the iOS host web view; `npm run build`
                            bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
 ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);
@@ -82,29 +95,40 @@ scripts/truapi-host-installer.sh
   `wasm32-unknown-unknown` to guard the wasm bridge and its offline subxt
   surface, but does not build or publish the packaged bundle; run `make wasm`
   locally before relying on the browser host.
-- After changing UniFFI-exposed types or native bindings, run
-  `./ios/truapi-host/scripts/rebuild.sh` and commit the generated bindings and
-  container output. When only the bindings changed, `make uniffi &&
-  ./ios/truapi-host/scripts/sync-bindings.sh` does that part without Xcode. CI
-  enforces it: the `ios-bindings` job regenerates and diffs the committed
-  bindings, and the `ios-swift` job compiles the package and its test target on
-  pull requests touching `ios/`, `Package.swift`, the `Makefile` or `native*`,
-  which is what catches a hand-written conformer that missed a new protocol
-  requirement. On the Kotlin side the `ci-android` job compiles
+- The UniFFI bindings and the container bundle are gitignored build outputs.
+  After changing UniFFI-exposed types or native bindings, run
+  `./ios/truapi-host/scripts/rebuild.sh` to refresh them locally; when only the
+  bindings changed, `make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh`
+  does that part without Xcode. Because nothing is committed, CI regenerates
+  rather than diffs: the `ios-bindings` job proves every UniFFI-exposed type
+  still has a binding representation, and the `ios-swift` job generates the
+  package's Swift sources and container resource and then compiles the package
+  and its test target, which is what catches a hand-written conformer that
+  missed a new protocol requirement. `ios-swift` is path-filtered, and the
+  filter has to name every crate the bindings are generated from, since a
+  protocol change no longer leaves an `ios/` diff to key on. On the Kotlin side
+  the `ci-android` job compiles
   `TrUAPIHost.kt` against freshly generated bindings on pull requests touching
   `android/` or the native crates, which catches the same class of drift;
   `make android-check` does it locally. The embedding apps are compiled by
   neither.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
-  To publish the binary, include `@parity/ios-host <version>`
-  in the `release:` PR title. The release workflow rebuilds and simulator-tests
-  the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
-  only after the asset is live. When the title also names an npm package, the
-  iOS job waits on that publish being confirmed on npm.
-  `publish.sh <version>` is the manual fallback.
-  Keep `useLocalBinary = false` in committed manifests; `true` is for local
-  testing against the rebuilt XCFramework only.
+  To publish, include `@parity/ios-host <version>` in the `release:` PR title.
+  `release-ios.yml` rebuilds and simulator-tests the XCFramework, uploads it,
+  then cuts the plain semver tag `<version>` whose commit carries the generated
+  sources and a manifest pointing at that asset. That tag is the SwiftPM
+  contract: consumers pin `exact("<version>")`, and a branch cannot be consumed
+  directly because the generated sources are ignored there. The job clones and
+  compiles the tag before pushing it, then opens a pull request against the
+  release branch that points `Package.swift` at the new asset. Dispatching
+  `release-ios` manually with a pre-release version cuts a tag for app-side
+  testing of an unmerged change without touching any branch. When the title
+  also names an npm package, the iOS job waits on that publish being confirmed
+  on npm. `publish.sh <version>` is the manual fallback.
+  `Package.swift` reads `TRUAPI_USE_LOCAL_BINARY` from the environment to build
+  against the rebuilt XCFramework; the tag script refuses a manifest that pins
+  the local binary.
 
 ## Code style
 

@@ -14,6 +14,7 @@
 //!   extensions with `AsResources` carrying `Some(AsResourcesInfo)`.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use frame_metadata::RuntimeMetadata;
 use frame_metadata::RuntimeMetadataPrefixed;
@@ -201,6 +202,15 @@ pub struct Metadata {
     storage_values: HashMap<(String, String), u32>,
     constants: HashMap<(String, String), Vec<u8>>,
     calls: HashMap<String, (u8, u32)>,
+    view_functions: HashMap<(String, String), ViewFunctionDef>,
+    view_values: Mutex<HashMap<[u8; 32], u32>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ViewFunctionDef {
+    pub(super) id: [u8; 32],
+    pub(super) inputs: usize,
+    pub(super) output_type: u32,
 }
 
 /// The transaction-extension version to encode with: the highest the runtime
@@ -237,20 +247,9 @@ fn encoding_extension_indexes(
     )
 }
 
-/// Collect extensions, type registry, storage value types, and pallet constants
-/// from decoded metadata; `$set` is the version's `StorageEntryType`.
-macro_rules! collect_metadata {
+/// Collect the pallet surface shared by every supported metadata version.
+macro_rules! collect_pallets {
     ($m:expr, $set:path) => {{
-        let extensions = $m
-            .extrinsic
-            .signed_extensions
-            .iter()
-            .map(|e| ExtensionDef {
-                identifier: e.identifier.clone(),
-                extra_type: e.ty.id,
-                additional_signed_type: e.additional_signed.id,
-            })
-            .collect();
         let mut storage_values = HashMap::new();
         let mut constants = HashMap::new();
         let mut calls = HashMap::new();
@@ -276,7 +275,34 @@ macro_rules! collect_metadata {
                 storage_values.insert((pallet.name.clone(), entry.name.clone()), value_type);
             }
         }
-        (extensions, 0u8, $m.types, storage_values, constants, calls)
+        (storage_values, constants, calls)
+    }};
+}
+
+/// Collect extensions, type registry, storage value types, and pallet constants
+/// from decoded metadata; `$set` is the version's `StorageEntryType`.
+macro_rules! collect_metadata {
+    ($m:expr, $set:path) => {{
+        let extensions = $m
+            .extrinsic
+            .signed_extensions
+            .iter()
+            .map(|e| ExtensionDef {
+                identifier: e.identifier.clone(),
+                extra_type: e.ty.id,
+                additional_signed_type: e.additional_signed.id,
+            })
+            .collect();
+        let (storage_values, constants, calls) = collect_pallets!($m, $set);
+        (
+            extensions,
+            0u8,
+            $m.types,
+            storage_values,
+            constants,
+            calls,
+            HashMap::new(),
+        )
     }};
 }
 
@@ -301,29 +327,19 @@ macro_rules! collect_metadata_v16 {
                 additional_signed_type: e.implicit.id,
             })
             .collect();
-        let mut storage_values = HashMap::new();
-        let mut constants = HashMap::new();
-        let mut calls = HashMap::new();
+        let (storage_values, constants, calls) =
+            collect_pallets!($m, frame_metadata::v16::StorageEntryType);
+        let mut view_functions = HashMap::new();
         for pallet in &$m.pallets {
-            if let Some(pallet_calls) = &pallet.calls {
-                calls.insert(pallet.name.clone(), (pallet.index, pallet_calls.ty.id));
-            }
-            for constant in &pallet.constants {
-                constants.insert(
-                    (pallet.name.clone(), constant.name.clone()),
-                    constant.value.clone(),
+            for function in &pallet.view_functions {
+                view_functions.insert(
+                    (pallet.name.clone(), function.name.clone()),
+                    ViewFunctionDef {
+                        id: function.id,
+                        inputs: function.inputs.len(),
+                        output_type: function.output.id,
+                    },
                 );
-            }
-            let Some(storage) = &pallet.storage else {
-                continue;
-            };
-            for entry in &storage.entries {
-                use frame_metadata::v16::StorageEntryType as EntryType;
-                let value_type = match &entry.ty {
-                    EntryType::Plain(ty) => ty.id,
-                    EntryType::Map { value, .. } => value.id,
-                };
-                storage_values.insert((pallet.name.clone(), entry.name.clone()), value_type);
             }
         }
         (
@@ -333,6 +349,7 @@ macro_rules! collect_metadata_v16 {
             storage_values,
             constants,
             calls,
+            view_functions,
         )
     }};
 }
@@ -345,22 +362,29 @@ impl Metadata {
         let prefixed =
             RuntimeMetadataPrefixed::decode(&mut &bytes[..]).map_err(MetadataError::Decode)?;
         let metadata_version = prefixed.1.version();
-        let (extensions, extension_version, registry, storage_values, constants, calls) =
-            match prefixed.1 {
-                RuntimeMetadata::V14(m) => {
-                    collect_metadata!(m, frame_metadata::v14::StorageEntryType)
+        let (
+            extensions,
+            extension_version,
+            registry,
+            storage_values,
+            constants,
+            calls,
+            view_functions,
+        ) = match prefixed.1 {
+            RuntimeMetadata::V14(m) => {
+                collect_metadata!(m, frame_metadata::v14::StorageEntryType)
+            }
+            RuntimeMetadata::V15(m) => {
+                collect_metadata!(m, frame_metadata::v15::StorageEntryType)
+            }
+            RuntimeMetadata::V16(m) => collect_metadata_v16!(m),
+            other => {
+                return Err(MetadataError::UnsupportedVersion {
+                    version: other.version(),
                 }
-                RuntimeMetadata::V15(m) => {
-                    collect_metadata!(m, frame_metadata::v15::StorageEntryType)
-                }
-                RuntimeMetadata::V16(m) => collect_metadata_v16!(m),
-                other => {
-                    return Err(MetadataError::UnsupportedVersion {
-                        version: other.version(),
-                    }
-                    .into());
-                }
-            };
+                .into());
+            }
+        };
         Ok(Self {
             extensions,
             metadata_version,
@@ -369,6 +393,8 @@ impl Metadata {
             storage_values,
             constants,
             calls,
+            view_functions,
+            view_values: Mutex::new(HashMap::new()),
         })
     }
 
@@ -407,6 +433,38 @@ impl Metadata {
         self.constants
             .get(&(pallet.to_string(), name.to_string()))
             .map(Vec::as_slice)
+    }
+
+    pub(super) fn view_function(&self, pallet: &str, function: &str) -> Option<ViewFunctionDef> {
+        self.view_functions
+            .get(&(pallet.to_string(), function.to_string()))
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_view_function(
+        &mut self,
+        pallet: &str,
+        function: &str,
+        definition: ViewFunctionDef,
+    ) {
+        self.view_functions
+            .insert((pallet.to_string(), function.to_string()), definition);
+    }
+
+    pub(super) fn cached_view_u32(&self, id: &[u8; 32]) -> Option<u32> {
+        self.view_values
+            .lock()
+            .expect("view function cache mutex poisoned")
+            .get(id)
+            .copied()
+    }
+
+    pub(super) fn cache_view_u32(&self, id: [u8; 32], value: u32) {
+        self.view_values
+            .lock()
+            .expect("view function cache mutex poisoned")
+            .insert(id, value);
     }
 
     /// Resolve `pallet::call` by name to its `[pallet_index, call_index]`
@@ -858,7 +916,7 @@ mod tests {
         call
     }
 
-    /// V16 metadata captured from paseo-next-v2 (spec 1000032), the version the
+    /// V16 metadata captured from paseo-next-v2 (spec 3000000), the version the
     /// runtime API serves. Distinct from `FIXTURE`, which is the V14 the legacy
     /// RPC answers with and predates the `revision` field.
     const FIXTURE_V16: &[u8] =
@@ -891,11 +949,6 @@ mod tests {
                     .unwrap(),
             ),
             ((0x02, 0x01), (0x03, 0x01)),
-        );
-        assert!(
-            metadata
-                .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
-                .is_some()
         );
     }
 

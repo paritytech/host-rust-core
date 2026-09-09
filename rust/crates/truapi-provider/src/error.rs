@@ -14,7 +14,7 @@ use truapi::latest::GenericError;
 /// (e.g. `MissingRuntime` is native-WebSocket only), so the enum as a whole
 /// allows dead variants rather than cfg-gating each one.
 #[allow(dead_code)]
-#[derive(Debug, derive_more::Display)]
+#[derive(Debug, derive_more::Display, derive_more::Error)]
 pub(crate) enum ProviderError {
     /// No backend is registered — and no bundled network defines — this
     /// genesis hash.
@@ -78,8 +78,6 @@ pub(crate) fn redacted(url: &url::Url) -> String {
     let _ = stripped.set_password(None);
     stripped.to_string()
 }
-
-impl std::error::Error for ProviderError {}
 
 impl From<ProviderError> for GenericError {
     fn from(error: ProviderError) -> Self {

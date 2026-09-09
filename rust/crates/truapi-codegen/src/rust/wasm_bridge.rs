@@ -6,9 +6,9 @@ use indoc::{formatdoc, writedoc};
 
 use crate::platform::{PlatformDefinition, PlatformInner, PlatformMethod, PlatformTrait};
 use crate::platform_callbacks::{
-    callback_namespace, composed_traits, optional_trait_names, platform_trait_names,
-    raw_callback_field_name, raw_callback_name, raw_callback_wire_name, snake_case, stream_item,
-    trait_object_return_name,
+    callback_namespace, collect_local_bridge_payload_types, composed_traits, optional_trait_names,
+    platform_trait_names, raw_callback_field_name, raw_callback_name, raw_callback_wire_name,
+    snake_case, stream_item, trait_object_return_name,
 };
 use crate::rustdoc::{ApiDefinition, TypeDef, TypeDefKind, TypeRef, VariantFields};
 
@@ -364,19 +364,15 @@ fn emit_plain_method(method: &PlatformMethod, ok: &TypeRef, ctx: &BridgeCtx<'_>)
 }
 
 fn emit_unit_method(method: &PlatformMethod, ctx: &BridgeCtx<'_>) -> Result<String> {
-    let args = js_arg_vec(method, ctx)?;
     let params = rust_params(method, ctx)?;
     let body = if method.return_shape.is_async {
+        let args = js_arg_vec(method, ctx)?;
         format!(
             "if let Err(reason) = {}\n    .await\n{{\n    web_sys::console::error_1(&JsValue::from_str(&reason));\n}}",
             bridge_call("invoke_unit", &method.name, &args, &[])
         )
     } else {
-        let args = if args == "Vec::new()" {
-            "&[]".to_string()
-        } else {
-            format!("&{args}")
-        };
+        let args = format!("&[{}]", js_args(method, ctx)?.join(", "));
         format!(
             "if let Err(reason) = {} {{\n    web_sys::console::error_1(&JsValue::from_str(&reason));\n}}",
             bridge_call("call_js_function", &method.name, &args, &[])
@@ -564,12 +560,16 @@ fn rust_type(ty: &TypeRef, ctx: &BridgeCtx<'_>) -> Result<String> {
     }
 }
 
-fn js_arg_vec(method: &PlatformMethod, ctx: &BridgeCtx<'_>) -> Result<String> {
-    let args = method
+fn js_args(method: &PlatformMethod, ctx: &BridgeCtx<'_>) -> Result<Vec<String>> {
+    method
         .params
         .iter()
         .map(|param| js_arg_expr(&param.name, &param.type_ref, ctx))
-        .collect::<Result<Vec<_>>>()?;
+        .collect()
+}
+
+fn js_arg_vec(method: &PlatformMethod, ctx: &BridgeCtx<'_>) -> Result<String> {
+    let args = js_args(method, ctx)?;
     if args.is_empty() {
         Ok("Vec::new()".to_string())
     } else if args.len() == 1 {
@@ -807,103 +807,4 @@ fn indent_body(body: &str, spaces: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn collect_local_bridge_payload_types(definition: &PlatformDefinition) -> BTreeSet<&str> {
-    let local: BTreeSet<&str> = definition.types.iter().map(|ty| ty.name.as_str()).collect();
-    let mut out = BTreeSet::new();
-    for trait_def in &definition.traits {
-        for method in &trait_def.methods {
-            for param in &method.params {
-                collect_local_from_type(&param.type_ref, &local, &mut out);
-            }
-            match &method.return_shape.inner {
-                PlatformInner::Result { ok, .. } | PlatformInner::Plain(ok) => {
-                    collect_local_from_type(ok, &local, &mut out);
-                }
-                PlatformInner::Stream(item) => {
-                    collect_local_from_type(stream_item(item), &local, &mut out)
-                }
-                PlatformInner::Unit | PlatformInner::TraitObject(_) => {}
-            }
-        }
-    }
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let referenced = definition
-            .types
-            .iter()
-            .filter(|ty| out.contains(ty.name.as_str()))
-            .collect::<Vec<_>>();
-        for type_def in referenced {
-            let before = out.len();
-            collect_local_from_type_def(type_def, &local, &mut out);
-            changed |= out.len() != before;
-        }
-    }
-    out
-}
-
-fn collect_local_from_type_def<'a>(
-    type_def: &'a TypeDef,
-    local: &BTreeSet<&'a str>,
-    out: &mut BTreeSet<&'a str>,
-) {
-    match &type_def.kind {
-        TypeDefKind::Alias(type_ref) => collect_local_from_type(type_ref, local, out),
-        TypeDefKind::Struct(fields) => {
-            for field in fields {
-                collect_local_from_type(&field.type_ref, local, out);
-            }
-        }
-        TypeDefKind::TupleStruct(fields) => {
-            for field in fields {
-                collect_local_from_type(field, local, out);
-            }
-        }
-        TypeDefKind::Enum(variants) => {
-            for variant in variants {
-                match &variant.fields {
-                    VariantFields::Unit => {}
-                    VariantFields::Unnamed(types) => {
-                        for ty in types {
-                            collect_local_from_type(ty, local, out);
-                        }
-                    }
-                    VariantFields::Named(fields) => {
-                        for field in fields {
-                            collect_local_from_type(&field.type_ref, local, out);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn collect_local_from_type<'a>(
-    ty: &'a TypeRef,
-    local: &BTreeSet<&'a str>,
-    out: &mut BTreeSet<&'a str>,
-) {
-    match ty {
-        TypeRef::Named { name, args } => {
-            if local.contains(name.as_str()) {
-                out.insert(name);
-            }
-            for arg in args {
-                collect_local_from_type(arg, local, out);
-            }
-        }
-        TypeRef::Vec(inner) | TypeRef::Option(inner) | TypeRef::Array(inner, _) => {
-            collect_local_from_type(inner, local, out);
-        }
-        TypeRef::Tuple(items) => {
-            for item in items {
-                collect_local_from_type(item, local, out);
-            }
-        }
-        TypeRef::Primitive(_) | TypeRef::Generic(_) | TypeRef::Unit => {}
-    }
 }

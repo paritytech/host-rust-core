@@ -1,5 +1,11 @@
 # @parity/truapi
 
+## 0.13.1
+
+### Patch Changes
+
+- Follow the previewnet and paseo-next-v2 testnet wipes: the well-known chain genesis hashes, the `truapi-host` CLI preset, and the bundled light-client chain specs match the live chains again.
+
 ## 0.13.0
 
 ### Minor Changes

@@ -36,6 +36,12 @@ The package is public, so any authenticated GitHub identity can read it. In GitH
 
 The consuming app must declare `android.permission.INTERNET` — the localhost WebSocket bridge binds a `127.0.0.1` TCP socket, which requires it even for loopback.
 
+`HostRuntimeConfig.networkSuffix` is required. Supply the bare TLD (`dot`,
+`paseo`, or `testnet`) from the same network configuration used by onboarding
+and the People/Bulletin genesis hashes. It must match the People chain's
+`NetworkSuffix.NetworkSuffix`. Include this configuration update in the
+embedding app's package upgrade.
+
 ### Compatibility
 
 - **minSdk**: 29 (Android 10). Aligns with the polkadot-app-android-v2 floor.
@@ -96,6 +102,7 @@ val runtime = TrUAPIHostRuntime(
         hostName = "My Chat Host",
         peopleChainGenesisHash = peopleChainGenesisHash,   // exactly 32 bytes
         bulletinChainGenesisHash = bulletinChainGenesisHash,
+        networkSuffix = "dot",
     ),
 )
 // Chat needs an active session; without one every Chat call answers `Denied`.
@@ -332,6 +339,7 @@ val runtimeConfig = HostRuntimeConfig(
     hostIcon = "https://host.example/icon.png",
     peopleChainGenesisHash = ByteArray(32),
     bulletinChainGenesisHash = ByteArray(32),
+    networkSuffix = "dot",
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.
     localSessionSecret = null,

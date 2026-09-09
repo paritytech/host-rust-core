@@ -5,9 +5,10 @@
 // catalog — consumed as SPM git dependencies (the manifest must live at the repo
 // root for that). Package sources live under ios/truapi-host/ and
 // ios/truapi-provider/. The two products are independent and release on separate
-// tags. For both, the uniffi-generated bindings are committed build outputs
-// (regenerate with the package's scripts/rebuild.sh) while the xcframework is
-// gitignored and distributed as a GitHub release asset (scripts/publish.sh).
+// tags. For both, the uniffi-generated bindings, the container resource and the
+// xcframework are gitignored build outputs: regenerate them with the package's
+// scripts/rebuild.sh, and publish the xcframework as a GitHub release asset
+// with scripts/publish.sh.
 
 import Foundation
 import PackageDescription
@@ -38,9 +39,7 @@ let binaryTarget: Target = useLocalBinary
 let useLocalProviderBinary =
     ProcessInfo.processInfo.environment["TRUAPI_PROVIDER_USE_LOCAL_BINARY"] == "1"
 
-// Set by ios/truapi-provider/scripts/publish.sh. No release exists yet, so remote
-// resolution fails on the checksum until the first publish.
-
+// Set by ios/truapi-provider/scripts/publish.sh.
 let providerBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-provider%400.7.0/truapi_provider.xcframework.zip"
 let providerBinaryChecksum = "04fd47522fad5b12048396efae5d34c40f049623678066215654a3c9166d2bb3"
 

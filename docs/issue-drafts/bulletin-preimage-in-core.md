@@ -303,7 +303,7 @@ the inclusion watch so the provider cannot spin the worker.
 - `truapi-server/src/runtime/bulletin_rpc.rs` — the submit flow (follow ->
   metadata -> nonce -> dry-run -> broadcast -> watch -> events) and its typed
   errors.
-- `truapi-server/src/runtime.rs` — `Preimage::submit` ordering + refresh/retry;
+- `truapi-server/src/runtime/capabilities/preimage.rs` — `Preimage::submit` ordering + refresh/retry;
   `lookup_subscribe` cache + integrity check.
 - `truapi-platform` — `PreimageHost` keeps only `lookupPreimage`;
   `BulletinAllowanceKey` is zeroized on drop; configs gain an optional Bulletin

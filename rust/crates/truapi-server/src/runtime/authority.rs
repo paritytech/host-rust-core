@@ -125,7 +125,7 @@ impl AuthoritySession {
 }
 
 /// Typed account-authority failure before it is mapped to an API-specific error.
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 pub(crate) enum AuthorityError {
     /// User or authority rejected the request.
     #[display("Rejected")]
@@ -160,7 +160,7 @@ impl From<AuthorityError> for RingVrfError {
 }
 
 /// Cancellation cause for an account-authority call.
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 #[display(
     "Account authority request {reason}{}",
     if request_id.is_empty() { String::new() } else { format!(" for {request_id}") }

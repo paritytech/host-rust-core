@@ -283,12 +283,16 @@ Commands:
 - `debug`
 - `trace`
 
-The default is `info`. `TRUAPI_HOST_LOG` supplies an environment default. The
-option is global and is accepted before or after a subcommand.
+The option is global and is accepted before or after a subcommand.
+`TRUAPI_HOST_LOG` supplies the same per-process override. Without either, the
+CLI restores the level saved by `/log` under `<base-path>/v2`, then falls
+back to `info`. Command-line and environment overrides do not rewrite the saved
+level.
 
-If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup.
-The interactive `/log` command later replaces the active filter with the
-selected CLI level.
+If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
+and the status bar shows its trimmed value. The interactive `/log` command
+atomically saves the selected CLI level, replaces the active filter, and
+updates the status bar to that level.
 
 ## 5. `pairing-host`
 
@@ -301,7 +305,7 @@ truapi-host pairing-host [options]
 | `--script <path>` | none | Run one JS/TS product script and exit with its status. |
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
-| `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
+| `--base-path <path>` | section 12.1 | Base directory; managed state lives under its `v2/` subdirectory. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
@@ -340,7 +344,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--session <name>` | remembered session | Restore or create a managed session. |
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
 | `--reserved-username <label>` | none | Full-person base name a newly created auto account reserves on dotNS alongside its lite username (§12.3). |
-| `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
+| `--base-path <path>` | section 12.1 | Base directory; managed state lives under its `v2/` subdirectory. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
@@ -456,7 +460,7 @@ When no command follows `--`, it serves the host until stopped.
 | `--network <preset>` | `paseo-next-v2` | Select the complete network preset. |
 | `--session <name>` | remembered session | Restore or create a persistent signing-host session. |
 | `--mnemonic <phrase>` | none | Use a disposable testnet signer instead of the managed session. `HOST_CLI_SIGNER_MNEMONIC` supplies the same value. |
-| `--base-path <path>` | section 12.1 | Root for account, session, core, and product state. |
+| `--base-path <path>` | section 12.1 | Base directory; managed state lives under its `v2/` subdirectory. |
 
 The product includes a development-only blocking tag before product code:
 
@@ -544,7 +548,7 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
 | `/session --clear <name>` | no | yes | Permanently clear one network-scoped signing session. |
 | `/session --clear-all` | no | yes | Permanently clear all signing sessions for the current network. |
-| `/log <level>` | yes | yes | Replace the runtime log filter. |
+| `/log <level>` | yes | yes | Save and replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
 | `/clear` | yes | yes | Clear the retained visible transcript. |
 | `/copy` | yes | yes | Copy the retained, redacted transcript. TUI only. |
@@ -623,16 +627,16 @@ scrollable transcript
 
 command completion list, when open
 › command input or idle placeholder
-TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product>
+TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product> · log <value>
 ```
 
 The role label is omitted at narrow widths so user, network, and product remain
 visible. Values are ellipsized to fit, with the product consuming the remaining
-space after the user and network. Session and log level are not shown. Idle
-command guidance appears as a dim placeholder inside the empty prompt instead
-of consuming status-bar space. Operational hints temporarily use the right side
-of the status line while a command, approval, completion menu, or scroll is
-active.
+space after the user, network, and fixed log value. The session name is not shown
+separately from the resolved user. Idle command guidance appears as a dim
+placeholder inside the empty prompt instead of consuming status-bar space.
+Operational hints temporarily use the right side of the status line while a
+command, approval, completion menu, or scroll is active.
 
 The composer:
 
@@ -951,9 +955,9 @@ Before a signing host answers a link, it:
 
 1. ensures a signer;
 2. decodes the V2 handshake;
-3. derives its RFC-0022 `uid.dot` identity account;
+3. derives its RFC-0022 `uid.<tld>` identity account;
 4. reads the pairing device Statement Store account from the proposal;
-5. finds the signer's rings through the pairing-attestation bootstrap `peopl.dot`
+5. finds the signer's rings through the pairing-attestation bootstrap `peopl.<tld>`
    keys, index 0 for `People` and index 1 for `LitePeople`, scanning back from
    the current ring in each (RFC-0024 operational key selection uses the
    registry instead);
@@ -1026,8 +1030,16 @@ Host commands choose their base path in this order:
 4. `$HOME/.local/state/truapi-host`; or
 5. `.truapi-host`.
 
-The signing session catalog converts a relative base path to an absolute path
-at startup. Pairing storage uses the supplied/default path directly.
+The CLI appends `v2` to the selected base path before accessing any managed
+state, including accounts, sessions, pairings, core and product storage,
+managed scripts, and log preferences. This applies to custom base paths too.
+The signing session catalog converts the resulting relative path to an
+absolute path at startup. Pairing storage uses the resulting path directly.
+
+Previous state outside `v2` is left untouched and unused. The CLI starts normal
+onboarding with fresh identities and pairings because the previous `.dot`
+identities cannot be reused with network-specific reserved keys. There is no
+state migration; see the [state directory guide](README.md#state-directory).
 
 ### 12.2 Signer selection
 
@@ -1063,7 +1075,7 @@ A new auto account:
 
 1. acquires `accounts.json.lock`;
 2. generates a 12-word mnemonic;
-3. derives the RFC-0022 `uid.dot` index-0 sr25519 identity account;
+3. derives the RFC-0022 `uid.<tld>` index-0 sr25519 identity account;
 4. chooses `auto-<n>` as its local name;
 5. checks that the requested Lite username base has an available numerical
    alias;
@@ -1084,7 +1096,7 @@ attempts. Identity-backend HTTP clients use a 30-second timeout.
 
 The backend's username routes are bearer-gated. Unless
 `HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies one, the CLI mints an access token
-for the mnemonic's RFC-0022 `uid.dot` account. It takes a challenge from
+for the mnemonic's RFC-0022 `uid.<tld>` account. It takes a challenge from
 `auth/challenges`. It answers `auth/token` with an sr25519 proof over
 `SHA256(challenge || clientId || SHA256(body))`, signed by that identity key.
 The backend requires the JWT subject to equal `candidateAccountId` on
@@ -1164,11 +1176,7 @@ user-selectable and is omitted from session completion and listing.
 When a managed session has no connected user, startup and bare `/session` add
 an actionable transcript notice directing the user to `/session <name>`.
 
-`/session --list` includes:
-
-- legacy directories under `signing-host/sessions/`; and
-- network directories ending in `_signing_host`.
-
+`/session --list` includes the network directories ending in `_signing_host`.
 The active session is marked with `*`.
 
 `/session <name>` provisions the target before replacing the current runtime:
@@ -1192,7 +1200,7 @@ may remain.
 `/session --mnemonic "<phrase>"` is an import-only flow:
 
 1. parse and normalize the BIP-39 phrase;
-2. derive the RFC-0022 `uid.dot` identity;
+2. derive the RFC-0022 `uid.<tld>` identity;
 3. read its optional full or Lite dotNS username from Asset Hub;
 4. when no dotNS mirror exists, search the identity backend's assigned username
    records for the derived candidate account;
@@ -1218,12 +1226,11 @@ phrase is not written locally until the replacement runtime activates
 successfully.
 
 `/session --clear <name>` removes the durable name shown by `/session --list`,
-its identity or legacy session directory, any separate legacy product storage,
-and the matching network account cached in the compatibility account store.
-`/session --clear-all` removes every such session, the network's signing-host
-bootstrap state, and every compatibility account record for that network. It
-does not remove pairing-host state, another network's records, externally
-referenced scripts, or on-chain usernames.
+its identity directory, and the matching network account cached in the
+compatibility account store. `/session --clear-all` removes every such session,
+the network's signing-host bootstrap state, and every compatibility account
+record for that network. It does not remove pairing-host state, another
+network's records, externally referenced scripts, or on-chain usernames.
 
 The interactive UI describes the data loss and uses the existing `[y/N]`
 approval. `exec` executes these explicit one-shot commands without another
@@ -1240,9 +1247,10 @@ unavailable in explicit-mnemonic mode.
 The layout may contain compatibility paths as well as identity-owned paths:
 
 ```text
-<base-path>/
+<base-path>/v2/
   accounts.json
   accounts.json.lock
+  log-level
 
   <network>/
     signing-host/
@@ -1255,15 +1263,14 @@ The layout may contain compatibility paths as well as identity-owned paths:
       storage/
         default/
           <product-file>.json
-      sessions/                       # accepted legacy session layout
-        <legacy-name>/
 
     pairing-host/
       current-user
       session.json                    # bootstrap script metadata, when used
       core-storage.json               # bootstrap auth/core state
       scripts/
-      storage/                        # or legacy storage/default/
+      storage/
+        <product-file>.json
 
     <username>_signing_host/
       accounts.json
@@ -1383,11 +1390,6 @@ The version `1` JSON document is:
 The core has already removed its product namespace before the CLI stores the
 raw key. Identity and host role are isolated by the parent directory.
 
-Legacy combined `product-storage.json` keys are decoded with
-`ProductStorageKey` and split into per-product files. A fully safe migration is
-retained as `product-storage.v1.json.migrated`. An undecodable legacy key or
-document prevents the backup rename.
-
 Noncanonical product filenames, unsupported versions, invalid ids, and invalid
 hex values are ignored with warnings.
 
@@ -1408,13 +1410,13 @@ state, and other role-owned runtime data.
 
 ### 13.7 Account store
 
-`accounts.json` is versioned and stores records containing:
+`accounts.json` is version `1` and stores records containing:
 
 - local name;
 - network id;
 - plaintext BIP-39 mnemonic;
 - final Lite username;
-- RFC-0022 `uid.dot` index-0 public key and address;
+- RFC-0022 `uid.<tld>` index-0 public key and address;
 - creation timestamp;
 - attested state; and
 - exhausted Statement Store periods.
@@ -1435,11 +1437,12 @@ Product and core storage writes:
 
 Session metadata, paired-host records, and current-user/session pointers use
 temporary-file rename but do not apply the account file's explicit secret
-permissions.
+permissions. The saved log level also uses temporary-file rename.
 
 Malformed account, session, or paired-host JSON is a startup or command error
 when that data is loaded. Malformed core JSON is warned about and loaded as
-empty. Malformed product files are warned about and skipped.
+empty. Malformed product files are warned about and skipped. A malformed saved
+log level produces a warning and falls back to the selected override or `info`.
 
 There is no session-wide process lock. Account and paired-host mutations use
 separate lock files, but simultaneous processes can still race on session,
@@ -1464,11 +1467,11 @@ registration fails.
 | --- | --- |
 | Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
-| People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
+| People genesis | `0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
-| Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
+| Asset Hub genesis | `0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a` |
 
 #### `previewnet`
 
@@ -1480,11 +1483,11 @@ on-chain testing.
 | --- | --- |
 | Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
+| People genesis | `0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
+| Bulletin genesis | `0xea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
+| Asset Hub genesis | `0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
@@ -1812,6 +1815,12 @@ Fallback SSO summary text is still shown when structured fields are absent.
 
 ### 18.4 Log filtering
 
+Startup selects an explicit `--log-level` or `TRUAPI_HOST_LOG` value first,
+then the level saved by `/log`, then `info`. A valid `RUST_LOG` replaces that
+scoped startup filter, and its trimmed value replaces the selected level in the
+status bar. `/log` replaces the startup filter and status value with the
+selected level, then saves it under `<base-path>/v2` for later launches.
+
 Without `RUST_LOG`, the selected CLI level applies to:
 
 - `truapi`
@@ -1842,7 +1851,8 @@ truapi-host identity-check \
 The command derives and queries two accounts:
 
 - root; and
-- RFC-0022 `//product//uid.dot/index_bytes(0)`.
+- RFC-0022 `//product//uid.<tld>/index_bytes(0)`, `<tld>` being the selected
+  network's dotNS TLD (`paseo` for `paseo-next-v2`, `testnet` for `previewnet`).
 
 For each it prints one of:
 
@@ -1866,7 +1876,7 @@ truapi-host register-name \
 ```
 
 Registers `label` as the full-person username of the mnemonic's RFC-0022
-`uid.dot` identity account, through `DotnsGateway.register_name` on Asset Hub.
+`uid.<tld>` identity account, through `DotnsGateway.register_name` on Asset Hub.
 The account must be a recognized full person: its ring-VRF key must be built
 into a People-collection ring root on People, and Asset Hub's
 `members-subscriber` must already hold that root revision (the command waits for
@@ -1968,7 +1978,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 
 | Variable | Scope |
 | --- | --- |
-| `TRUAPI_HOST_LOG` | Default `--log-level`. |
+| `TRUAPI_HOST_LOG` | Per-process `--log-level` override. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |
@@ -1978,8 +1988,8 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_RELEASE_BASE_URL` | Release host for the installer and the updater, for mirrors and tests. |
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
-| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
-| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
+| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.<tld>` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress`, used directly when `protocolRegistry()` answers on it, otherwise resolved through `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |

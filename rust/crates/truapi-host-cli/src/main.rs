@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -80,6 +80,8 @@ use crate::terminal_ui::{
 const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 /// Deeplink scheme advertised by the pairing host.
 const DEEPLINK_SCHEME: &str = "polkadotapp";
+const LOG_LEVEL_FILE: &str = "log-level";
+const STATE_VERSION: &str = "v2";
 
 #[derive(Parser)]
 #[command(
@@ -88,20 +90,16 @@ const DEEPLINK_SCHEME: &str = "polkadotapp";
     version = update::CURRENT_VERSION
 )]
 struct Cli {
-    /// Log verbosity. `RUST_LOG` takes precedence when set.
-    #[arg(
-        long,
-        global = true,
-        value_enum,
-        env = "TRUAPI_HOST_LOG",
-        default_value = "info"
-    )]
-    log_level: LogLevel,
+    /// Log verbosity. Defaults to the saved `/log` level, then `info`.
+    /// `RUST_LOG` takes precedence when set.
+    #[arg(long, global = true, value_enum, env = "TRUAPI_HOST_LOG")]
+    log_level: Option<LogLevel>,
     #[command(subcommand)]
     command: Command,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, derive_more::Display)]
+#[display(rename_all = "lowercase")]
 enum LogLevel {
     Error,
     Warn,
@@ -146,19 +144,56 @@ impl FromStr for LogLevel {
     }
 }
 
-impl fmt::Display for LogLevel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_filter())
+fn resolve_log_level(selected: Option<LogLevel>, saved: Option<LogLevel>) -> LogLevel {
+    selected.or(saved).unwrap_or(LogLevel::Info)
+}
+
+fn startup_filter(
+    rust_log: Option<&str>,
+    log_level: LogLevel,
+) -> (tracing_subscriber::EnvFilter, String) {
+    if let Some(value) = rust_log.map(str::trim).filter(|value| !value.is_empty())
+        && let Ok(filter) = tracing_subscriber::EnvFilter::try_new(value)
+    {
+        return (filter, value.to_string());
     }
+    (
+        tracing_subscriber::EnvFilter::new(log_level.scoped_filter()),
+        log_level.to_string(),
+    )
+}
+
+fn load_log_level(base_path: &Path) -> Result<Option<LogLevel>> {
+    let path = base_path.join(LOG_LEVEL_FILE);
+    let value = match std::fs::read_to_string(&path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    value
+        .trim()
+        .parse()
+        .map(Some)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("read saved log level from {}", path.display()))
+}
+
+fn store_log_level(base_path: &Path, level: LogLevel) -> Result<()> {
+    let path = base_path.join(LOG_LEVEL_FILE);
+    platform::atomic_write(&path, format!("{level}\n").as_bytes())
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("persist saved log level {}", path.display()))
 }
 
 #[derive(Clone)]
 struct LogController {
     reload: Arc<dyn Fn(LogLevel) -> Result<(), String> + Send + Sync>,
+    base_path: PathBuf,
 }
 
 impl LogController {
     fn set(&self, level: LogLevel) -> Result<()> {
+        store_log_level(&self.base_path, level)?;
         (self.reload)(level).map_err(anyhow::Error::msg)
     }
 }
@@ -304,7 +339,7 @@ struct PairingHostArgs {
     /// private per-process Unix-domain socket.
     #[arg(long)]
     frame_listen: Option<SocketAddr>,
-    /// Root directory for CLI-managed host state.
+    /// Base directory; CLI-managed state lives in its v2 subdirectory.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
     /// Network preset that supplies all RPC/backend/genesis config.
@@ -344,7 +379,7 @@ struct DevArgs {
     /// so the connected product can sign anything: testnet keys only.
     #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
     mnemonic: Option<String>,
-    /// Root directory for CLI-managed account and host state.
+    /// Base directory; CLI-managed state lives in its v2 subdirectory.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
     /// Development command to run once the host is ready, after `--`.
@@ -387,7 +422,7 @@ struct SigningHostArgs {
     /// alongside its lite username, to claim later as a full person.
     #[arg(long = "reserved-username")]
     reserved_username: Option<String>,
-    /// Root directory for CLI-managed account and host state.
+    /// Base directory; CLI-managed state lives in its v2 subdirectory.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
     /// Network preset that supplies all RPC/backend/genesis config.
@@ -421,6 +456,22 @@ enum SigningHostAction {
     },
 }
 
+fn command_base_path(command: &Command) -> PathBuf {
+    let base_path = match command {
+        Command::PairingHost(args) => args.base_path.clone(),
+        Command::Dev(args) => args.base_path.clone(),
+        Command::SigningHost(args) => args.base_path.clone(),
+        _ => None,
+    };
+    state_base_path(base_path)
+}
+
+fn state_base_path(base_path: Option<PathBuf>) -> PathBuf {
+    base_path
+        .unwrap_or_else(default_base_path)
+        .join(STATE_VERSION)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install a rustls crypto provider so `wss://` chain connections work;
@@ -428,8 +479,14 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cli = Cli::parse();
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli.log_level.scoped_filter()));
+    let base_path = command_base_path(&cli.command);
+    let (saved_log_level, saved_log_level_error) = match load_log_level(&base_path) {
+        Ok(level) => (level, None),
+        Err(error) => (None, Some(error)),
+    };
+    let log_level = resolve_log_level(cli.log_level, saved_log_level);
+    let rust_log = std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).ok();
+    let (filter, log_filter) = startup_filter(rust_log.as_deref(), log_level);
     let (filter, reload) = tracing_subscriber::reload::Layer::new(filter);
     let log_controller = LogController {
         reload: Arc::new(move |level| {
@@ -437,6 +494,7 @@ async fn main() -> Result<()> {
                 .reload(tracing_subscriber::EnvFilter::new(level.scoped_filter()))
                 .map_err(|error| error.to_string())
         }),
+        base_path,
     };
     let log_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
@@ -453,6 +511,10 @@ async fn main() -> Result<()> {
         .with(log_layer)
         .init();
 
+    if let Some(error) = saved_log_level_error {
+        tracing::warn!(%error, "could not restore saved log level; using fallback");
+    }
+
     // A background check runs alongside the command rather than delaying it, and
     // reports through `tracing`, which the terminal UI renders in its transcript
     // so it cannot corrupt the full-screen display. The command then waits for
@@ -462,7 +524,7 @@ async fn main() -> Result<()> {
         tokio::spawn(update::run_background_check())
     });
 
-    let outcome = dispatch(cli.command, cli.log_level, log_controller).await;
+    let outcome = dispatch(cli.command, log_filter, log_controller).await;
 
     if let Some(check) = check {
         update::finish_background_check(check).await;
@@ -476,19 +538,21 @@ async fn main() -> Result<()> {
 /// `main` free to always wait for the update check it started.
 async fn dispatch(
     command: Command,
-    log_level: LogLevel,
+    log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
     match command {
         Command::Update => update::run_update_command().await,
-        Command::PairingHost(args) => run_pairing_host(args, log_level, log_controller).await,
-        Command::Dev(args) => run_dev(args, log_level, log_controller).await,
-        Command::SigningHost(args) => run_signing_host(args, log_level, log_controller, None).await,
+        Command::PairingHost(args) => run_pairing_host(args, log_filter, log_controller).await,
+        Command::Dev(args) => run_dev(args, log_filter, log_controller).await,
+        Command::SigningHost(args) => {
+            run_signing_host(args, log_filter, log_controller, None).await
+        }
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
                 .to_entropy();
-            attestation::check_identity(network.config().asset_hub_ws, &entropy).await
+            attestation::check_identity(network.config(), &entropy).await
         }
         Command::RegisterName {
             mnemonic,
@@ -555,7 +619,7 @@ async fn run_pgas_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.network_suffix);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; a claim has to credit an account");
@@ -583,6 +647,9 @@ async fn run_pgas_check(
         .await
         .map_err(anyhow::Error::msg)?;
     let asset_hub_state = alloc::fetch_chain_state(&asset_hub_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let network_suffix = alloc::slot::read_network_suffix(&asset_hub_rpc)
         .await
         .map_err(anyhow::Error::msg)?;
     println!(
@@ -658,6 +725,7 @@ async fn run_pgas_check(
         &asset_hub_metadata,
         ring.collection,
         membership.entropy,
+        &network_suffix,
         day,
         &[],
     )
@@ -681,6 +749,7 @@ async fn run_pgas_check(
         people_rpc: &people_rpc,
         people_metadata: &people_metadata,
         entropy: membership.entropy,
+        network_suffix: &network_suffix,
         target: &target,
         ring: &membership.ring,
     })
@@ -713,7 +782,7 @@ async fn run_alloc_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.network_suffix);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; the all-zero default is read-only");
@@ -736,6 +805,9 @@ async fn run_alloc_check(
         .await
         .map_err(anyhow::Error::msg)?;
     let chain_state = alloc::fetch_chain_state(&rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let network_suffix = alloc::slot::read_network_suffix(&rpc)
         .await
         .map_err(anyhow::Error::msg)?;
     println!(
@@ -784,16 +856,33 @@ async fn run_alloc_check(
             continue;
         }
         print!("{}: ", candidate.collection);
-        report_slot_scan(&rpc, &metadata, *candidate, period, &target, now).await?;
+        report_slot_scan(
+            &rpc,
+            &metadata,
+            *candidate,
+            &network_suffix,
+            period,
+            &target,
+            now,
+        )
+        .await?;
     }
 
     if submit {
         if memberships.is_empty() {
             bail!("cannot submit: member not in any ring");
         }
-        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
-            .await
-            .map_err(anyhow::Error::msg)?;
+        let scans = alloc::scan_collections(
+            &rpc,
+            &metadata,
+            &candidates,
+            &network_suffix,
+            period,
+            &target,
+            true,
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
         match alloc::register_statement_account_pooled(
             &rpc,
             &metadata,
@@ -803,6 +892,7 @@ async fn run_alloc_check(
             alloc::PooledRegistrationParams {
                 target: &target,
                 period,
+                network_suffix: &network_suffix,
                 reuse_existing: true,
                 // A diagnostic that submits behaves as it did before pooling,
                 // where a full table was replaced rather than reported.
@@ -836,6 +926,7 @@ async fn report_slot_scan(
     rpc: &alloc::rpc::RpcClient,
     metadata: &alloc::extension::Metadata,
     candidate: alloc::CollectionCandidate,
+    network_suffix: &[u8],
     period: u32,
     target: &[u8; 32],
     now: u64,
@@ -846,6 +937,7 @@ async fn report_slot_scan(
         alloc::slot::SlotScan {
             collection: candidate.collection,
             entropy: candidate.entropy,
+            network_suffix,
             period,
             target,
             excluded: &[],
@@ -860,7 +952,7 @@ async fn report_slot_scan(
         }
         Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
-            let cooldown = alloc::slot::replacement_cooldown(metadata)?;
+            let cooldown = alloc::slot::replacement_cooldown(rpc, metadata).await?;
             // The runtime judges ages against its own clock, which trails ours.
             let chain_now = alloc::slot::read_chain_now_seconds(rpc).await?;
             println!(
@@ -931,7 +1023,7 @@ fn platform_info() -> PlatformInfo {
 
 async fn run_pairing_host(
     args: PairingHostArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
     let interactive = args.script.is_none();
@@ -941,14 +1033,14 @@ async fn run_pairing_host(
         );
     }
     let network = args.network.config();
-    let base_path = args.base_path.unwrap_or_else(default_base_path);
+    let base_path = state_base_path(args.base_path);
     let product =
         frame_server::ProductSelection::new(args.product_id, args.execution_kind.context())?;
     let product_id = product.current();
     let storage_paths = CliStoragePaths::pairing(base_path.join(network.id));
     let (terminal_ui, ui_handle) = if interactive {
         let (ui, handle) =
-            TerminalUi::new_pairing(network.id, product_id.clone(), initial_log_level);
+            TerminalUi::new_pairing(network.id, product_id.clone(), initial_log_filter);
         (Some(ui.enter()?), Some(handle))
     } else {
         (None, None)
@@ -1028,7 +1120,7 @@ async fn run_pairing_host(
 
 async fn run_signing_host(
     args: SigningHostArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
     dev_command: Option<Vec<String>>,
 ) -> Result<()> {
@@ -1054,7 +1146,7 @@ async fn run_signing_host(
     )?;
     let product_id = product.current();
     let network = args.network.config();
-    let base_path = args.base_path.clone().unwrap_or_else(default_base_path);
+    let base_path = state_base_path(args.base_path.clone());
     let session_catalog = SessionCatalog::new(base_path.clone(), network.id)?;
     let initial_session_name = initial_session_name(&args, &session_catalog);
     if normalized(args.mnemonic.clone()).is_none() {
@@ -1067,7 +1159,7 @@ async fn run_signing_host(
             product_id,
             initial_session_name.clone(),
             initial_session_names,
-            initial_log_level,
+            initial_log_filter,
         );
         (Some(ui.enter()?), Some(handle))
     } else {
@@ -1342,9 +1434,7 @@ async fn start_signing_host(
             reserved_username: None,
         })
         .await?;
-        match attestation::registered_lite_username(network.asset_hub_ws, &explicit_signer.entropy)
-            .await
-        {
+        match attestation::registered_lite_username(network, &explicit_signer.entropy).await {
             Ok(user_id) => explicit_signer.lite_username = Some(user_id),
             Err(error) => {
                 tracing::warn!(%error, "explicit signer has no resolvable dotNS username")
@@ -1445,6 +1535,7 @@ fn build_signing_runtime(
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.network_suffix.to_string(),
     )
     .context("invalid signing host config")?;
     let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
@@ -1737,7 +1828,7 @@ const INTERRUPTED_EXIT_CODE: i32 = 130;
 /// process from the endpoint it just bound.
 async fn run_dev(
     args: DevArgs,
-    initial_log_level: LogLevel,
+    initial_log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
     let product_id = args
@@ -1757,7 +1848,7 @@ async fn run_dev(
         ..Default::default()
     };
     let command = (!args.command.is_empty()).then_some(args.command);
-    run_signing_host(signing, initial_log_level, log_controller, command).await
+    run_signing_host(signing, initial_log_filter, log_controller, command).await
 }
 
 /// Run the wrapped development command, returning the code to exit with.
@@ -3715,8 +3806,8 @@ mod cli_tests {
         let after = Cli::try_parse_from(["truapi-host", "signing-host", "--log-level", "trace"])
             .expect("global log level after subcommand should parse");
 
-        assert_eq!(before.log_level, LogLevel::Trace);
-        assert_eq!(after.log_level, LogLevel::Trace);
+        assert_eq!(before.log_level, Some(LogLevel::Trace));
+        assert_eq!(after.log_level, Some(LogLevel::Trace));
         assert_eq!(LogLevel::Trace.as_filter(), "trace");
         assert_eq!(
             LogLevel::Trace.scoped_filter(),
@@ -4070,5 +4161,133 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
             validate_signing_args(&args).unwrap_err().to_string(),
             "paired-device management is unavailable when launched with --mnemonic"
         );
+    }
+
+    #[test]
+    fn saved_log_level_is_the_default_but_explicit_selection_wins() {
+        assert_eq!(
+            [
+                resolve_log_level(None, None),
+                resolve_log_level(None, Some(LogLevel::Debug)),
+                resolve_log_level(Some(LogLevel::Trace), Some(LogLevel::Debug)),
+            ],
+            [LogLevel::Info, LogLevel::Debug, LogLevel::Trace]
+        );
+    }
+
+    #[test]
+    fn log_levels_display_in_lowercase() {
+        assert_eq!(
+            [
+                LogLevel::Error,
+                LogLevel::Warn,
+                LogLevel::Info,
+                LogLevel::Debug,
+                LogLevel::Trace,
+            ]
+            .map(|level| level.to_string()),
+            ["error", "warn", "info", "debug", "trace"]
+        );
+    }
+
+    #[test]
+    fn valid_rust_log_value_replaces_the_resolved_level() {
+        let (filter, displayed) = startup_filter(Some(" warn,truapi=trace "), LogLevel::Info);
+        let (_, fallback) = startup_filter(Some("truapi=verbose"), LogLevel::Debug);
+
+        assert_eq!(
+            (filter.to_string(), displayed, fallback),
+            (
+                "truapi=trace,warn".to_string(),
+                "warn,truapi=trace".to_string(),
+                "debug".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn log_preference_uses_the_selected_host_base_path() {
+        for arguments in [
+            vec!["truapi-host", "pairing-host", "--base-path", "custom-state"],
+            vec!["truapi-host", "signing-host", "--base-path", "custom-state"],
+            vec!["truapi-host", "dev", "--base-path", "custom-state"],
+        ] {
+            let cli = Cli::try_parse_from(arguments).expect("host command should parse");
+
+            assert_eq!(
+                command_base_path(&cli.command),
+                PathBuf::from("custom-state/v2")
+            );
+        }
+    }
+
+    #[test]
+    fn log_level_preference_round_trips() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+
+        assert_eq!(load_log_level(temporary.path())?, None);
+        store_log_level(temporary.path(), LogLevel::Debug)?;
+        store_log_level(temporary.path(), LogLevel::Trace)?;
+
+        assert_eq!(load_log_level(temporary.path())?, Some(LogLevel::Trace));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_saved_log_level_is_reported() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join(LOG_LEVEL_FILE), "verbose\n")?;
+
+        let error = format!("{:#}", load_log_level(temporary.path()).unwrap_err());
+
+        assert!(error.contains("invalid log level `verbose`"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn log_controller_persists_successful_updates() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let reloaded = Arc::new(std::sync::Mutex::new(None));
+        let observed = reloaded.clone();
+        let controller = LogController {
+            reload: Arc::new(move |level| {
+                *observed.lock().expect("reload observation lock") = Some(level);
+                Ok(())
+            }),
+            base_path: temporary.path().to_path_buf(),
+        };
+
+        controller.set(LogLevel::Debug)?;
+
+        assert_eq!(
+            (
+                *reloaded.lock().expect("reload observation lock"),
+                load_log_level(temporary.path())?,
+            ),
+            (Some(LogLevel::Debug), Some(LogLevel::Debug))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn log_controller_does_not_reload_when_persistence_fails() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let base_path = temporary.path().join("not-a-directory");
+        std::fs::write(&base_path, "occupied")?;
+        let reloaded = Arc::new(std::sync::Mutex::new(None));
+        let observed = reloaded.clone();
+        let controller = LogController {
+            reload: Arc::new(move |level| {
+                *observed.lock().expect("reload observation lock") = Some(level);
+                Ok(())
+            }),
+            base_path,
+        };
+
+        let error = controller.set(LogLevel::Debug).unwrap_err().to_string();
+
+        assert!(error.contains("persist saved log level"), "{error}");
+        assert_eq!(*reloaded.lock().expect("reload observation lock"), None);
+        Ok(())
     }
 }

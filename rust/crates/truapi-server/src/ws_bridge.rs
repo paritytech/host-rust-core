@@ -522,6 +522,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            "paseo".to_string(),
         )
         .expect("test signing host config is valid");
         let runtime = Arc::new(SigningHostRuntime::new(platform, config, test_spawner()));
