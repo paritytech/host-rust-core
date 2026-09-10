@@ -10,7 +10,9 @@ This repo is the single source of truth for the TrUAPI protocol. It vendors `dot
 rust/crates/
   truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2 (canonical)
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
-  truapi-macros/         #[wire(id = N)] proc-macro
+  truapi-macros/         #[wire(id = N)] proc-macro; #[sso_service] for
+                         truapi-server's inter-host SSO protocol
+                         One implementation module per macro; lib.rs holds entry points
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
