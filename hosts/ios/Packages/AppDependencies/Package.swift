@@ -1,5 +1,22 @@
 // swift-tools-version: 6.0
+import Foundation
 import PackageDescription
+
+// This app is built two ways: vendored into the host monorepo, where the shared
+// core sits in the same tree, and checked out on its own, where the core is a
+// published dependency. Detect which by looking for the core's crates, the same
+// marker the Android host checks for.
+//
+// The path is derived from #filePath rather than the working directory, which is
+// not guaranteed to be the package root while the manifest is evaluated.
+let corePath = "../../../.."
+let coreIsInTree: Bool = {
+    var root = URL(fileURLWithPath: #filePath)
+    for _ in 0 ..< 5 { root.deleteLastPathComponent() }
+    return FileManager.default.fileExists(
+        atPath: root.appendingPathComponent("rust/crates/truapi-server").path
+    )
+}()
 
 let dependencyConfigs: [DependencyConfig] = [
     .init(
@@ -118,8 +135,8 @@ let dependencyConfigs: [DependencyConfig] = [
     ),
     .init(
         name: "host-rust-core",
-        url: "https://github.com/paritytech/host-rust-core",
-        version: .exact("0.12.0"),
+        url: coreIsInTree ? corePath : "https://github.com/paritytech/host-rust-core",
+        version: coreIsInTree ? .local : .exact("0.12.0"),
         products: ["TrUAPIHost"]
     ),
     .init(
@@ -200,7 +217,10 @@ extension DependencyConfig {
         case let .branch(name):
             .package(url: url, branch: name)
         case .local:
-            .package(path: url)
+            // The name has to be declared. Swift Package Manager otherwise
+            // derives a path dependency's identity from its directory, which is
+            // the checkout folder, so `.product(package:)` would not match.
+            .package(name: name, path: url)
         }
     }
 

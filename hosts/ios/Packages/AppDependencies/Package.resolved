@@ -164,15 +164,6 @@
       }
     },
     {
-      "identity" : "host-rust-core",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/paritytech/host-rust-core",
-      "state" : {
-        "revision" : "7e0284cef81c4ca025d613428d02defd0f80b863",
-        "version" : "0.12.0"
-      }
-    },
-    {
       "identity" : "interop-ios-for-google-sdks",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/google/interop-ios-for-google-sdks.git",
