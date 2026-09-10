@@ -1706,6 +1706,79 @@ mod tests {
         (authority.services(), authority)
     }
 
+    /// The grant admits `ring_vrf_sign`, not only `create_proof`.
+    ///
+    /// #655 lists this as untested and it was: the other grant tests here all
+    /// drive `create_proof`. Both authorities call the same
+    /// `require_ring_vrf_key_access` from both methods, so the code was
+    /// covered — but a scope that admits one call and not the other is exactly
+    /// the kind of half-wired gate this issue exists to fix, and nothing
+    /// asserted the second half.
+    ///
+    /// Driven at the authority, where the wire path also arrives, so this
+    /// covers the paired case as well. Success is the owner's own signature:
+    /// the grant lets `dim2.dot` produce what `peopl.dot` would have.
+    #[test]
+    fn a_context_grant_lets_a_foreign_product_sign_with_the_owners_key() {
+        let granted = foreign_ring_vrf_sign_through_the_authority(Some(r#"{"dim2":["context"]}"#));
+        let owners_own = foreign_ring_vrf_sign_through_the_authority_as(
+            Some(r#"{"dim2":["context"]}"#),
+            "peopl.dot",
+        );
+        assert!(
+            granted.is_ok(),
+            "a granted cross-product ring-VRF signature must be produced, got {granted:?}"
+        );
+        assert_eq!(
+            granted, owners_own,
+            "the grant must yield the owner's own signature, not a caller-derived one"
+        );
+    }
+
+    /// The same call with no grant.
+    #[test]
+    fn a_foreign_ring_vrf_sign_is_refused_when_the_owner_granted_nothing() {
+        assert_eq!(
+            foreign_ring_vrf_sign_through_the_authority(None).err(),
+            Some(RingVrfError::NotAllowlisted)
+        );
+    }
+
+    fn foreign_ring_vrf_sign_through_the_authority(
+        trusted_products: Option<&str>,
+    ) -> Result<Vec<u8>, RingVrfError> {
+        foreign_ring_vrf_sign_through_the_authority_as(trusted_products, "dim2.dot")
+    }
+
+    /// Drive `ring_vrf_sign` straight at the authority with `caller` naming
+    /// `peopl.dot`'s key handle, bypassing the frontend exactly as
+    /// `sso_responder` does.
+    fn foreign_ring_vrf_sign_through_the_authority_as(
+        trusted_products: Option<&str>,
+        caller: &str,
+    ) -> Result<Vec<u8>, RingVrfError> {
+        let platform = Arc::new(StubPlatform::default());
+        if let Some(trusted_products) = trusted_products {
+            cache_grant(&platform, "peopl.dot", trusted_products);
+        }
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        register_full_person_key(&authority, &session, &full_person_ring_location());
+
+        futures::executor::block_on(authority.ring_vrf_sign(
+            &CallContext::default(),
+            &session,
+            RingVrfSignAuthorityRequest {
+                calling_product_id: caller.to_string(),
+                key_handle: full_person_key_handle(),
+                message: b"sign me".to_vec(),
+            },
+        ))
+    }
+
     fn foreign_proof_through_the_authority(
         trusted_products: Option<&str>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
