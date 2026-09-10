@@ -1268,10 +1268,23 @@ impl ProductRuntime {
         // would poison this mutex and every later `receive_frame` would then panic
         // here, which is exactly the production-host-killing shape the debug tap
         // above was fixed for.
-        self.in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(dispatch_id, abort_handle);
+        //
+        // The disposed check above is only a fast path: `dispose` can swap it true
+        // and drain `in_flight` at any point after that check returns and before
+        // this insert runs. Re-checking here, under the same lock `dispose` holds
+        // for its own swap-and-drain, closes that window - whichever runs first is
+        // what the other observes, so a dispatch that loses the race is turned away
+        // instead of running past a disposal that already happened.
+        {
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.disposed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            in_flight.insert(dispatch_id, abort_handle);
+        }
 
         let transport: Arc<dyn Transport> = self.transport.clone();
         let _ = Abortable::new(self.core.dispatch(message, transport), abort_registration).await;
@@ -1362,17 +1375,28 @@ impl ProductRuntime {
     /// futures, and cancels active subscriptions.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.dispose"))]
     pub fn dispose(&self) {
+        // Already-disposed callers answer without taking the lock, which the
+        // authoritative swap below holds across an abort loop that can run
+        // arbitrary waker code.
+        if self.disposed.load(Ordering::Acquire) {
+            return;
+        }
+        // The swap and the drain share `in_flight`'s lock with `receive_frame`'s own
+        // disposed-check-then-insert, so whichever of the two critical sections runs
+        // first is what the other observes: a dispatch that inserted before this
+        // drain is caught by it, and one that hasn't inserted yet sees `disposed`
+        // already true and turns itself away instead of dispatching past disposal.
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if self.disposed.swap(true, Ordering::AcqRel) {
             return;
         }
-        for (_, handle) in self
-            .in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain()
-        {
+        for (_, handle) in in_flight.drain() {
             handle.abort();
         }
+        drop(in_flight);
         self.admin.product_runtime.detach_chat();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();

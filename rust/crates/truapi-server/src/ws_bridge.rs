@@ -11,7 +11,16 @@
 //! `{port, token}` endpoint on the one shared port, and
 //! [`SharedWsBridge::revoke`] tears down only that execution's connections
 //! when it closes, leaving the listener and every other execution's
-//! connections untouched.
+//! connections untouched. Off the shared executor, `revoke` blocks until
+//! every connection it aborted has been joined, matching what
+//! [`WsBridge::stop`] gives for the whole listener. Joining a task is not a
+//! barrier on everything inside it: the destructor that disposes a
+//! connection's `ProductRuntime` usually runs before the join resolves but
+//! is not ordered against it, and tasks those connections detached — the
+//! outbound pump, any dispatch already handed to the core — are cancelled by
+//! that disposal rather than awaited. The wait is also unbounded, so a
+//! connection wedged in non-yielding work blocks the caller until it
+//! unwedges.
 //!
 //! Security model: the listener binds to `127.0.0.1` only, and every
 //! connection must present its registered per-execution 256-bit token
@@ -21,21 +30,29 @@
 //! duplicated `t=` parameter, so timing does not reveal which token (if any)
 //! matched. Revoking a token removes it from the registry before existing
 //! connections are aborted, so a handshake that has not yet matched a token
-//! when it is revoked is rejected outright; a handshake that matched just
+//! when it is revoked is rejected outright. A handshake that matched just
 //! before the revocation may still receive an already-committed upgrade
-//! response, but is aborted immediately afterward, before any wire traffic
-//! flows. Tokens are handed only to the host's embedded WebView, so the
-//! bridge does not also pin the `Origin` header (the WebView's origin is not
-//! known a priori). Inbound messages are size-capped, and both the
-//! per-execution and process-wide outbound queue and connection counts are
-//! bounded to contain a misbehaving local peer. Each accepted connection's
-//! handshake runs in its own task (bounded by [`HANDSHAKE_TIMEOUT`]), so a
-//! peer that never completes one only ever stalls its own connection, never
-//! the shared accept loop, another execution's connections, or the
-//! listener's shutdown; the connection-count caps are reserved with a
-//! compare-and-swap loop precisely because handshakes now run concurrently.
+//! response, but its connection is never served: the revocation flag is read
+//! under the same lock that would register the connection, and the task that
+//! would read from the socket is spawned only on the branch that finds the
+//! execution live, so a revoked token cannot carry a single frame.
+//!
+//! Tokens are handed only to the host's embedded WebView, so the bridge does
+//! not also pin the `Origin` header (the WebView's origin is not known a
+//! priori). Inbound messages are size-capped and each connection's outbound
+//! queue is bounded, as are the per-execution and listener-wide counts of
+//! admitted connections. A peer that never presents a token is invisible to
+//! those counts, so the number of handshakes in flight is bounded separately
+//! ([`MAX_PENDING_HANDSHAKES`]); worst-case sockets is the sum of the two
+//! bounds. Each accepted connection's handshake runs in its own task
+//! (bounded by [`HANDSHAKE_TIMEOUT`]) and a full handshake backlog evicts
+//! its oldest entry rather than refusing the newcomer, so a peer that never
+//! completes one only ever stalls its own connection, never the shared
+//! accept loop, another execution's connections, or the listener's shutdown.
+//! Because handshakes resolve concurrently, the connection-count caps are
+//! reserved with a compare-and-swap loop rather than a read-then-increment.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,6 +84,16 @@ const MAX_WS_CONNECTIONS_PER_EXECUTION: usize = 32;
 /// Widget, Chat/Worker) while still bounding total resource use from a
 /// misbehaving peer amplifying across many registered tokens.
 const MAX_TOTAL_WS_CONNECTIONS: usize = 64;
+
+/// Maximum handshakes the listener will carry at once, counted separately
+/// from [`MAX_TOTAL_WS_CONNECTIONS`]: a connection occupies a slot here only
+/// until its handshake resolves, and one there only once a token has
+/// matched. Worst-case sockets is therefore the sum of the two, not either
+/// alone. The bound exists because a peer that never presents a token is
+/// invisible to the connection caps, which are reserved inside the
+/// handshake. Reaching it evicts the oldest handshake rather than turning
+/// the newcomer away (see [`accept_loop`]).
+const MAX_PENDING_HANDSHAKES: usize = 64;
 
 /// Bound on the per-connection outbound frame queue. A peer that stops reading
 /// cannot make the core buffer responses without limit; once the queue fills
@@ -203,12 +230,12 @@ struct RegistryEntry {
 }
 
 /// A connection can finish its handshake against an entry that is revoked a
-/// moment later, before the accept loop gets to record its handle here. The
-/// `revoked` flag and the handle list share one lock so revocation and
-/// registration serialize against each other: whichever happens first is
-/// what the other observes, so a connection admitted in that window is
-/// always either recorded for the abort that already ran, or told to abort
-/// itself immediately rather than being left running with no owner.
+/// moment later. The `revoked` flag and the handle list share one lock, and
+/// `connection_setup` both reads the flag and spawns the connection under a
+/// single acquisition of it, so revocation and registration serialize:
+/// whichever happens first is what the other observes. A revocation that
+/// wins turns the connection away before any task reads from its socket; one
+/// that loses finds the handle already recorded and aborts it.
 #[derive(Default)]
 struct EntryConnections {
     revoked: bool,
@@ -239,19 +266,20 @@ impl WsBridgeRegistry {
     }
 
     /// Remove `token`'s entry, mark it revoked, and abort its live
-    /// connections. A handshake that matched this token just before the
-    /// removal, but has not yet registered its handle, observes the
-    /// `revoked` flag (set under the same lock as the abort loop below) and
-    /// aborts itself instead of registering. No-op for an unknown or
-    /// already-revoked token.
-    fn revoke(&self, token: &str) {
+    /// connections, handing their handles back so a caller can choose to
+    /// wait for them to actually finish unwinding. A handshake that matched
+    /// this token just before the removal, but has not yet registered its
+    /// handle, observes the `revoked` flag (set under the same lock as the
+    /// abort loop below) and aborts itself instead of registering. No-op
+    /// (empty result) for an unknown or already-revoked token.
+    fn revoke(&self, token: &str) -> Vec<tokio::task::JoinHandle<()>> {
         let Some(entry) = self
             .entries
             .lock()
             .expect("ws bridge registry mutex poisoned")
             .remove(token)
         else {
-            return;
+            return Vec::new();
         };
         let mut state = entry
             .connections
@@ -261,6 +289,7 @@ impl WsBridgeRegistry {
         for handle in state.handles.iter() {
             handle.abort();
         }
+        std::mem::take(&mut state.handles)
     }
 
     /// Find the entry whose token matches `path_and_query`'s `?t=` value.
@@ -342,35 +371,59 @@ impl SharedWsBridge {
         runtime_factory: Arc<dyn WsProductRuntimeFactory>,
         logger: BridgeLogger,
     ) -> Result<WsBridgeEndpoint, WsBridgeStartError> {
-        let mut guard = self.inner.lock().expect("shared ws bridge mutex poisoned");
-        if guard.is_none() {
-            *guard = Some(WsBridge::start(bind_port, logger.clone())?);
-        } else if bind_port != 0 {
-            let running_port = guard.as_ref().expect("just checked Some").port;
-            if bind_port != running_port {
-                logger(
-                    "truapi.ws_bridge.bind_port_ignored",
-                    &format!("requested={bind_port} running={running_port}"),
-                );
+        // Every logger call below is deferred until after this lock is
+        // released. A host logger that blocks or calls back into
+        // `register`/`revoke` would otherwise stall or deadlock every other
+        // execution sharing this bridge, since this lock is the one thing
+        // every one of their `register`/`revoke` calls must take too.
+        let mut pending_logs: Vec<(&'static str, String)> = Vec::new();
+        let endpoint = {
+            let mut guard = self.inner.lock().expect("shared ws bridge mutex poisoned");
+            if guard.is_none() {
+                let (bridge, logs) = WsBridge::start(bind_port, logger.clone())?;
+                *guard = Some(bridge);
+                pending_logs = logs;
+            } else if bind_port != 0 {
+                let running_port = guard.as_ref().expect("just checked Some").port;
+                if bind_port != running_port {
+                    pending_logs.push((
+                        "truapi.ws_bridge.bind_port_ignored",
+                        format!("requested={bind_port} running={running_port}"),
+                    ));
+                }
             }
+            guard
+                .as_ref()
+                .expect("shared bridge just inserted")
+                .register(runtime_factory)
+        };
+        for (event, detail) in &pending_logs {
+            logger(event, detail);
         }
-        Ok(guard
-            .as_ref()
-            .expect("shared bridge just inserted")
-            .register(runtime_factory))
+        Ok(endpoint)
     }
 
     /// Revoke one execution's token. No-op if the listener was never
     /// started or the token is unknown.
+    ///
+    /// Off the shared executor, this blocks until every one of that
+    /// execution's connection tasks has been joined — the same wait `stop`
+    /// performs for the whole bridge, scoped here to one execution. Joining
+    /// is not a barrier on the destructors inside those tasks, so a caller
+    /// cannot treat this returning as proof that every resource the
+    /// connection held is already released. From a task already running on
+    /// the shared executor, waiting is skipped to avoid deadlocking that
+    /// worker; the abort already happened, so those connections still unwind
+    /// on their own.
     pub fn revoke(&self, token: &str) {
-        if let Some(bridge) = self
-            .inner
-            .lock()
-            .expect("shared ws bridge mutex poisoned")
-            .as_ref()
-        {
-            bridge.revoke(token);
-        }
+        let wait = {
+            let guard = self.inner.lock().expect("shared ws bridge mutex poisoned");
+            match guard.as_ref() {
+                Some(bridge) => bridge.revoke(token),
+                None => return,
+            }
+        };
+        wait.block_until_finished();
     }
 }
 
@@ -391,7 +444,15 @@ struct WsBridge {
 impl WsBridge {
     /// Bind a localhost listener and start the accept loop on the shared
     /// native executor.
-    fn start(bind_port: u16, logger: BridgeLogger) -> io::Result<Self> {
+    ///
+    /// `logger` is still used for the accept loop's own ongoing (async,
+    /// lock-free) lifecycle events; the one-time startup events below are
+    /// instead returned for the caller to emit once it is no longer holding
+    /// [`SharedWsBridge::inner`]'s lock.
+    fn start(
+        bind_port: u16,
+        logger: BridgeLogger,
+    ) -> io::Result<(Self, Vec<(&'static str, String)>)> {
         // Bind synchronously so we can surface bind errors and discover the
         // actual port before returning.
         let std_listener =
@@ -402,15 +463,6 @@ impl WsBridge {
         let (executor, initialized) = shared_native_executor()?;
         let handle = executor.handle();
         let runtime_id = handle.id();
-        if initialized {
-            logger(
-                "truapi.native.executor.started",
-                &format!(
-                    "runtime_id={runtime_id} worker_threads={}",
-                    executor.worker_threads()
-                ),
-            );
-        }
 
         // Register the listener with the shared runtime's I/O driver before
         // returning so a successful start always yields a ready endpoint.
@@ -418,6 +470,21 @@ impl WsBridge {
             let _entered = handle.enter();
             TcpListener::from_std(std_listener)?
         };
+
+        // Queued only past the last fallible step. The executor is a process
+        // -wide `OnceLock`, so `initialized` is true for exactly one caller in
+        // the process; dropping its event on an error return would lose it for
+        // good rather than delay it.
+        let mut pending_logs: Vec<(&'static str, String)> = Vec::new();
+        if initialized {
+            pending_logs.push((
+                "truapi.native.executor.started",
+                format!(
+                    "runtime_id={runtime_id} worker_threads={}",
+                    executor.worker_threads()
+                ),
+            ));
+        }
         let registry = Arc::new(WsBridgeRegistry::default());
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let (stopped_tx, stopped_rx) = std::sync::mpsc::channel::<()>();
@@ -428,19 +495,22 @@ impl WsBridge {
             let _ = stopped_tx.send(());
         });
 
-        logger(
+        pending_logs.push((
             "truapi.ws_bridge.started",
-            &format!("port={port} runtime_id={runtime_id}"),
-        );
+            format!("port={port} runtime_id={runtime_id}"),
+        ));
 
-        Ok(Self {
-            shutdown: Some(shutdown_tx),
-            stopped: Some(stopped_rx),
-            accept_task: Some(accept_task),
-            runtime_id,
-            registry,
-            port,
-        })
+        Ok((
+            Self {
+                shutdown: Some(shutdown_tx),
+                stopped: Some(stopped_rx),
+                accept_task: Some(accept_task),
+                runtime_id,
+                registry,
+                port,
+            },
+            pending_logs,
+        ))
     }
 
     /// Register one execution's runtime factory, minting a fresh token.
@@ -455,9 +525,21 @@ impl WsBridge {
         }
     }
 
-    /// Revoke one execution's token and abort its live connections.
-    fn revoke(&self, token: &str) {
-        self.registry.revoke(token);
+    /// Revoke one execution's token and abort its live connections, without
+    /// blocking. The caller decides whether and how to wait for their tasks
+    /// to be joined, via the returned [`RevokeWait`].
+    fn revoke(&self, token: &str) -> RevokeWait {
+        let connections = self.registry.revoke(token);
+        if connections.is_empty() {
+            return RevokeWait::Nothing;
+        }
+        // A task already running on this bridge's own executor must not block
+        // waiting on it: the connections still unwind on their own once
+        // aborted, so a caller here gets only a best-effort sweep.
+        if Handle::try_current().is_ok_and(|current| current.id() == self.runtime_id) {
+            return RevokeWait::Nothing;
+        }
+        RevokeWait::Handles(connections)
     }
 
     /// Signal the accept loop to exit and abort every tracked connection
@@ -517,6 +599,42 @@ impl Drop for WsBridge {
     }
 }
 
+/// What, if anything, a [`WsBridge::revoke`] caller should wait for.
+enum RevokeWait {
+    /// Nothing was aborted, or waiting would block this bridge's own
+    /// executor.
+    Nothing,
+    /// These connections were just aborted; block until each of their tasks
+    /// has been joined.
+    Handles(Vec<tokio::task::JoinHandle<()>>),
+}
+
+impl RevokeWait {
+    /// Block the calling thread until every aborted connection's task has
+    /// been joined, if any. Spawns a small joiner task on the shared executor
+    /// and blocks on a synchronous channel rather than awaiting directly,
+    /// since this is called from ordinary host threads with no executor of
+    /// their own. There is no deadline: a connection wedged in non-yielding
+    /// work holds the caller for as long as it stays wedged.
+    fn block_until_finished(self) {
+        let handles = match self {
+            RevokeWait::Nothing => return,
+            RevokeWait::Handles(handles) => handles,
+        };
+        let Ok((executor, _)) = shared_native_executor() else {
+            return;
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        executor.handle().spawn(async move {
+            for handle in handles {
+                let _ = handle.await;
+            }
+            let _ = done_tx.send(());
+        });
+        let _ = done_rx.recv();
+    }
+}
+
 async fn accept_loop(
     listener: TcpListener,
     registry: Arc<WsBridgeRegistry>,
@@ -525,10 +643,12 @@ async fn accept_loop(
 ) {
     // Each accepted connection's handshake runs in its own task (see
     // `connection_setup`) so a stalled or hostile peer never blocks another
-    // connection's setup, only its own. This loop just tracks those setup
-    // tasks so shutdown can cancel and await whichever haven't resolved yet,
-    // in addition to draining every connection already registered.
-    let mut setup_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // connection's setup, only its own. This loop tracks those setup tasks so
+    // shutdown can cancel and await whichever haven't resolved yet, in
+    // addition to draining every connection already registered, and so a full
+    // backlog can evict its oldest entry. Accept order is insertion order, so
+    // the front is the longest-running handshake.
+    let mut setup_tasks: VecDeque<tokio::task::JoinHandle<()>> = VecDeque::new();
     loop {
         tokio::select! {
             _ = &mut shutdown => {
@@ -560,9 +680,24 @@ async fn accept_loop(
                     }
                 };
                 setup_tasks.retain(|task| !task.is_finished());
+                // A peer that never presents a token holds a task and a file
+                // descriptor for up to `HANDSHAKE_TIMEOUT` without ever
+                // reaching the connection caps, which are reserved inside the
+                // handshake. Bound that backlog by evicting its oldest entry
+                // rather than refusing this peer: a real localhost handshake
+                // resolves in well under a millisecond, so the oldest of a
+                // full backlog is one that has stalled, while refusing the
+                // newcomer would let a peer holding every slot lock the whole
+                // shared listener out for every execution.
+                if setup_tasks.len() >= MAX_PENDING_HANDSHAKES
+                    && let Some(oldest) = setup_tasks.pop_front()
+                {
+                    oldest.abort();
+                    logger("truapi.ws_bridge.handshake_backlog_evicted", &peer.to_string());
+                }
                 let registry = registry.clone();
                 let logger = logger.clone();
-                setup_tasks.push(tokio::spawn(async move {
+                setup_tasks.push_back(tokio::spawn(async move {
                     connection_setup(stream, peer, registry, logger).await;
                 }));
             }
@@ -576,13 +711,13 @@ async fn accept_loop(
 /// blocks only this task, never another connection's setup, another
 /// execution's connections, or the accept loop's ability to keep accepting.
 ///
-/// Because handshakes now run concurrently rather than one at a time, the
+/// Handshakes therefore resolve concurrently, which is why the
 /// connection-count caps inside `authenticate_and_upgrade`'s handshake
 /// callback are reserved with a compare-and-swap loop (`try_reserve`) rather
-/// than a plain load-then-increment. The registration race this used to
-/// avoid by serializing handshakes — a token revoked between a successful
-/// handshake and its registration — is instead closed by the `revoked` flag
-/// check below, which holds regardless of how many handshakes run at once.
+/// than a plain load-then-increment, and why the `revoked` flag below is read
+/// under the same lock that registers the connection: a token revoked while
+/// this handshake was resolving must not end up with a task reading from its
+/// socket, however many handshakes are in flight.
 async fn connection_setup(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
@@ -603,24 +738,39 @@ async fn connection_setup(
     }) else {
         return;
     };
-    let conn_logger = logger.clone();
-    let conn_entry = entry.clone();
-    let handle = tokio::spawn(async move {
-        let _guard = guard;
-        connection_lifecycle(ws, peer, conn_entry, conn_logger).await;
-    });
-    let mut state = entry
-        .connections
-        .lock()
-        .expect("ws bridge registry entry mutex poisoned");
-    state.handles.retain(|h| !h.is_finished());
-    if state.revoked {
-        // The execution was revoked between this connection's successful
-        // handshake and this registration step; abort it now instead of
-        // leaving it running with no owner to revoke it later.
-        handle.abort();
-    } else {
-        state.handles.push(handle);
+    // Read the revocation flag and spawn the connection under one acquisition
+    // of the lock `revoke` takes for its own flag-and-abort pass, so the two
+    // serialize: an execution revoked while this handshake was resolving never
+    // gets a task reading from the socket, and one still live cannot be
+    // revoked between the spawn and the handle landing in its list, where it
+    // would be left running with no owner. `tokio::spawn` only queues the
+    // task, so nothing host-supplied runs under the lock here.
+    let revoked = {
+        let mut state = entry
+            .connections
+            .lock()
+            .expect("ws bridge registry entry mutex poisoned");
+        state.handles.retain(|h| !h.is_finished());
+        if state.revoked {
+            true
+        } else {
+            let conn_logger = logger.clone();
+            let conn_entry = entry.clone();
+            state.handles.push(tokio::spawn(async move {
+                let _guard = guard;
+                connection_lifecycle(ws, peer, conn_entry, conn_logger).await;
+            }));
+            false
+        }
+    };
+    // Logged after the lock is released: the logger is a host callback, and one
+    // that blocks or re-enters would otherwise stall every `revoke` and
+    // shutdown pass that needs this entry's lock.
+    if revoked {
+        logger(
+            "truapi.ws_bridge.connection_revoked_during_setup",
+            &peer.to_string(),
+        );
     }
 }
 
@@ -735,8 +885,8 @@ async fn authenticate_and_upgrade(
         // Reserve both caps' slots here, inside the synchronous handshake
         // callback, so an over-cap peer is rejected at the HTTP upgrade
         // rather than allowed to open a socket that gets dropped right
-        // after. Handshakes now run concurrently (one task per connection),
-        // so each reservation is a compare-and-swap, not a plain increment.
+        // after. Each reservation is a compare-and-swap because one task per
+        // connection means concurrent reservations against the same counter.
         if !try_reserve(&entry.connection_count, MAX_WS_CONNECTIONS_PER_EXECUTION) {
             auth_logger(
                 "truapi.ws_bridge.connection_limit_execution",
@@ -1059,7 +1209,7 @@ mod tests {
 
     #[test]
     fn drop_from_shared_executor_does_not_block_worker() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let (executor, _) = shared_native_executor().expect("shared native executor");
         let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
 
@@ -1079,7 +1229,7 @@ mod tests {
     /// `feature_supported` response.
     #[test]
     fn round_trip_feature_supported_through_bridge() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let endpoint = bridge.register(test_runtime_factory());
         let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
 
@@ -1136,7 +1286,7 @@ mod tests {
     /// execution's runtime, never the other's.
     #[test]
     fn two_executions_share_one_port_with_isolated_tokens() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let first = bridge.register(test_runtime_factory());
         let second = bridge.register(test_runtime_factory());
 
@@ -1155,7 +1305,7 @@ mod tests {
     /// rejected outright.
     #[test]
     fn wrong_or_unknown_token_is_rejected_at_handshake() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let endpoint = bridge.register(test_runtime_factory());
         let _second = bridge.register(test_runtime_factory());
 
@@ -1180,9 +1330,45 @@ mod tests {
     /// Revoking one execution's token closes only its own connections and
     /// rejects future handshakes against it, while a sibling execution on
     /// the same shared listener keeps working.
+    /// A peer holding every handshake slot open must not be able to lock a
+    /// legitimate connection out of the shared listener: a full backlog evicts
+    /// its oldest entry instead of refusing the newcomer.
+    #[test]
+    fn a_full_handshake_backlog_does_not_lock_out_a_new_connection() {
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
+        let endpoint = bridge.register(test_runtime_factory());
+
+        // Raw TCP connections that never send a byte, so each one occupies a
+        // handshake slot until it is evicted or times out.
+        let addr = format!("127.0.0.1:{}", endpoint.port);
+        let mut stalled = Vec::new();
+        for _ in 0..MAX_PENDING_HANDSHAKES {
+            stalled.push(std::net::TcpStream::connect(&addr).expect("stall the backlog"));
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
+        rt.block_on(async {
+            let (mut ws, _) = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                tokio_tungstenite::connect_async(&url),
+            )
+            .await
+            .expect("a full backlog must not stall a new connection")
+            .expect("dial past a full backlog");
+            ws.close(None).await.expect("close client");
+        });
+
+        drop(stalled);
+        drop(bridge);
+    }
+
     #[test]
     fn revoking_one_token_leaves_another_operational() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let revoked = bridge.register(test_runtime_factory());
         let survives = bridge.register(test_runtime_factory());
 
@@ -1245,7 +1431,7 @@ mod tests {
     /// of the old one.
     #[test]
     fn reconnecting_after_revoke_gets_a_fresh_token() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let first = bridge.register(test_runtime_factory());
         bridge.revoke(&first.token);
 
@@ -1272,7 +1458,7 @@ mod tests {
     /// registered execution's connections, not just one.
     #[test]
     fn host_shutdown_closes_every_registered_execution() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let first = bridge.register(test_runtime_factory());
         let second = bridge.register(test_runtime_factory());
 
@@ -1339,7 +1525,7 @@ mod tests {
     /// though the shared listener's own total cap has plenty of room left.
     #[test]
     fn per_execution_cap_rejects_the_connection_past_the_limit() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let endpoint = bridge.register(test_runtime_factory());
         let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
 
@@ -1382,7 +1568,7 @@ mod tests {
     /// this exercises the exact same check with far less real I/O.
     #[test]
     fn total_cap_rejects_the_connection_even_for_a_fresh_execution() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let extra = bridge.register(test_runtime_factory());
         bridge
             .registry
@@ -1423,7 +1609,7 @@ mod tests {
                 panic!("intentional test panic: simulating a failing product execution")
             });
 
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let failing = bridge.register(panicking_factory);
         let healthy = bridge.register(test_runtime_factory());
 
@@ -1472,7 +1658,7 @@ mod tests {
     /// blocked every other execution's connections too.
     #[test]
     fn a_stalled_handshake_does_not_block_a_sibling_connection() {
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let stalled = bridge.register(test_runtime_factory());
         let healthy = bridge.register(test_runtime_factory());
 
@@ -1519,7 +1705,7 @@ mod tests {
             })
         }
 
-        let bridge = WsBridge::start(0, no_log()).expect("start bridge");
+        let bridge = WsBridge::start(0, no_log()).expect("start bridge").0;
         let calls: Vec<Arc<AtomicUsize>> = (0..3).map(|_| Arc::new(AtomicUsize::new(0))).collect();
         let endpoints: Vec<WsBridgeEndpoint> = calls
             .iter()
