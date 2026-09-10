@@ -171,7 +171,16 @@ impl RuntimeServices {
 
     /// The Asset Hub dotNS reads run against, when one is configured.
     ///
-    /// An all-zero hash is how a host says it has no Asset Hub.
+    /// Taken by construction, so the chain a grant is adjudicated against
+    /// cannot move under a running product. It is deliberately not sourced from
+    /// `supported_chains()`, which is an uncached per-call host syscall
+    /// answering a different question, "which chains do I serve RPC for?", the
+    /// product-facing `get_chain_info` advertisement, rather than "which Asset
+    /// Hub is dotNS deployed on?". Taking it from there would let the anchor
+    /// change between two calls, at host discretion, with nothing recording it.
+    ///
+    /// An all-zero hash is how a host says it has no Asset Hub. `None` fails
+    /// every manifest lookup closed: grants are refused rather than assumed.
     pub(crate) fn asset_hub_chain_genesis_hash(&self) -> Option<[u8; 32]> {
         Some(self.asset_hub_chain_genesis_hash).filter(|hash| *hash != [0u8; 32])
     }
