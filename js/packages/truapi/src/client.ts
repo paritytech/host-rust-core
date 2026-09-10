@@ -38,6 +38,27 @@ const UNANSWERED_WIRE_IDS = new Set<number>(
     "response" in ids ? [ids.response] : [ids.stop, ids.interrupt, ids.receive],
   ),
 );
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
+/** A request received no matching response before its transport deadline. */
+export class RequestTimeoutError extends Error {
+  /** Transport-assigned request identifier. */
+  readonly requestId: string;
+  /** Wire discriminant of the unanswered request. */
+  readonly discriminant: number;
+  /** Configured request deadline in milliseconds. */
+  readonly timeoutMs: number;
+
+  constructor(requestId: string, discriminant: number, timeoutMs: number) {
+    super(
+      `TrUAPI request ${requestId} (wire ${discriminant}) timed out after ${timeoutMs}ms`,
+    );
+    this.name = "RequestTimeoutError";
+    this.requestId = requestId;
+    this.discriminant = discriminant;
+    this.timeoutMs = timeoutMs;
+  }
+}
 
 /**
  * Version overrides used when constructing a transport.
@@ -51,6 +72,13 @@ export interface CreateTransportOptions {
    * `TRUAPI_CODEC_VERSION` directly.
    */
   codecVersion?: number;
+  /**
+   * Maximum time to wait for a matching response before rejecting the request.
+   *
+   * Defaults to 120 seconds. This bounds dead hosts and missed transport
+   * handshakes while leaving interactive approval flows enough time to finish.
+   */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -182,17 +210,21 @@ export function createTransport(
   options: CreateTransportOptions = {},
 ): TrUApiTransport {
   const codecVersion = options.codecVersion ?? TRUAPI_CODEC_VERSION;
+  const requestTimeoutMs =
+    options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
+    throw new RangeError("requestTimeoutMs must be a positive finite number");
+  }
   let idCounter = 0;
   let closedError: Error | null = null;
-  const pending = new Map<
-    string,
-    {
-      ids: RequestFrameIds;
-      resolve: (value: Uint8Array) => void;
-      resolveUnsupported: () => void;
-      reject: (error: Error) => void;
-    }
-  >();
+  type PendingRequest = {
+    ids: RequestFrameIds;
+    resolve: (value: Uint8Array) => void;
+    resolveUnsupported: () => void;
+    reject: (error: Error) => void;
+    cancelTimeout: () => void;
+  };
+  const pending = new Map<string, PendingRequest>();
   const subscriptions = new Map<
     string,
     {
@@ -222,6 +254,15 @@ export function createTransport(
     return error instanceof Error ? error : new Error(String(error));
   }
 
+  /** Remove a pending request and cancel its deadline. */
+  function takePending(requestId: string): PendingRequest | undefined {
+    const entry = pending.get(requestId);
+    if (!entry) return undefined;
+    pending.delete(requestId);
+    entry.cancelTimeout();
+    return entry;
+  }
+
   /**
    * Close the transport once, rejecting pending requests and notifying live
    * subscriptions.
@@ -234,9 +275,8 @@ export function createTransport(
 
     closedError = nextError;
 
-    for (const [requestId, entry] of pending) {
-      pending.delete(requestId);
-      entry.reject(nextError);
+    for (const requestId of pending.keys()) {
+      takePending(requestId)?.reject(nextError);
     }
 
     for (const [requestId, subscription] of subscriptions) {
@@ -278,8 +318,7 @@ export function createTransport(
 
       const request = pending.get(requestId);
       if (request?.ids.request === discriminant) {
-        pending.delete(requestId);
-        request.resolveUnsupported();
+        takePending(requestId)?.resolveUnsupported();
         return;
       }
 
@@ -352,7 +391,7 @@ export function createTransport(
 
     const p = pending.get(requestId);
     if (p && payload.id === p.ids.response) {
-      pending.delete(requestId);
+      takePending(requestId);
       try {
         p.resolve(payload.value);
       } catch (error) {
@@ -523,8 +562,12 @@ export function createTransport(
           reject(closedError);
           return;
         }
-
         const requestId = `p:${++idCounter}`;
+        const timeout = setTimeout(() => {
+          takePending(requestId)?.reject(
+            new RequestTimeoutError(requestId, ids.request, requestTimeoutMs),
+          );
+        }, requestTimeoutMs);
         pending.set(requestId, {
           ids,
           resolve: (response) => resolve(decodeResponse(response)),
@@ -534,6 +577,7 @@ export function createTransport(
               value: { tag: "Unsupported" },
             }),
           reject,
+          cancelTimeout: () => clearTimeout(timeout),
         });
         try {
           send({
@@ -544,7 +588,7 @@ export function createTransport(
             },
           });
         } catch (error) {
-          pending.delete(requestId);
+          takePending(requestId);
           reject(toError(error));
         }
       });
@@ -618,7 +662,9 @@ export function createTransport(
       bufferCapacity,
     }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
       if (hostRoutes.has(ids.start)) {
-        throw new Error(`host-initiated subscription ${ids.start} is already registered`);
+        throw new Error(
+          `host-initiated subscription ${ids.start} is already registered`,
+        );
       }
       const route: HostRoute = {
         ids,

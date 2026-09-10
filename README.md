@@ -59,6 +59,9 @@ const result = await truapi.accountManagement.accountGet({
 });
 ```
 
+The transport retries iframe bootstrap until the host channel arrives and rejects unanswered
+requests after a bounded deadline; pass `requestTimeoutMs` to `createTransport` to override it.
+
 See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full client reference.
 
 ## Repository layout
