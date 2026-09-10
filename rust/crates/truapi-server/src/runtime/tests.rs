@@ -62,6 +62,7 @@ use truapi_platform::{
 use super::product_manifest::{CachedManifest, MANIFEST_TTL_SECS};
 use super::*;
 use crate::host_logic::product_account::index_bytes;
+use crate::host_logic::product_manifest::test_manifest_json;
 use crate::host_logic::sso::messages::{
     RemoteMessage, RemoteMessageData, RingVrfAliasResponse, RingVrfProofResponse, v1,
 };
@@ -204,70 +205,83 @@ fn a_storage_key_is_namespaced_under_its_owner() {
 }
 
 #[test]
-fn an_unaddressed_read_reaches_the_callers_own_storage() {
-    // `product: None` is what every v0.1 read meant, so it must not become
-    // a foreign read and must not consult a grant.
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
-    assert!(read_storage(&host, None, "k").is_ok());
-}
-
-#[test]
-fn a_read_naming_the_caller_itself_is_not_a_foreign_read() {
-    // Addressing your own id explicitly is the same call as omitting it.
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+fn a_read_naming_the_caller_however_it_is_spelled_reaches_its_own_storage() {
+    // `product: None` is what every v0.1 read meant, naming your own id is the
+    // same call, and casing is normalized before the comparison. None of the
+    // three is a cross-product access, so none consults a grant.
+    let platform = stub_platform();
+    let storage = platform.clone();
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
     let own = host.product_id();
-    assert!(read_storage(&host, Some(&own), "k").is_ok());
-}
-
-#[test]
-fn a_read_naming_the_caller_in_another_spelling_is_still_its_own() {
-    // Normalized before comparison, so casing cannot turn an own-storage
-    // read into a refusal.
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
-    let shouted = host.product_id().to_uppercase();
-    assert!(read_storage(&host, Some(&shouted), "k").is_ok());
-}
-
-#[test]
-fn a_foreign_read_is_refused_when_no_grant_can_be_established() {
-    // A host with no Asset Hub configured cannot resolve a manifest, so no
-    // grant exists and the read is refused. The refusal must be the
-    // dedicated variant, not a generic error a product would retry.
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
-    assert_eq!(
-        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
-        CallError::Domain(HostLocalStorageReadError::V2(
-            v02::HostLocalStorageReadError::AccessNotGranted
-        ))
+    storage.local_storage.lock().expect("mutex").insert(
+        ProductStorageKey::new(&own, "k")
+            .expect("the owner normalizes")
+            .encode(),
+        b"my own value".to_vec(),
     );
+
+    for spelling in [None, Some(own.clone()), Some(own.to_uppercase())] {
+        let answered = read_storage(&host, spelling.as_deref(), "k")
+            .unwrap_or_else(|err| panic!("{spelling:?} must reach own storage: {err:?}"));
+        let HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value }) =
+            answered
+        else {
+            panic!("a v2 request answers with a v2 response");
+        };
+        assert_eq!(
+            value.as_deref(),
+            Some(&b"my own value"[..]),
+            "spelling {spelling:?}"
+        );
+    }
 }
 
 #[test]
 fn an_unresolvable_product_is_refused_identically_to_an_ungranted_one() {
     // One answer for every reason, so the call cannot be used to probe which
-    // products exist.
+    // products exist. Two of these are not product ids at all and the third is
+    // a perfectly good one; on a host that reaches no chain none of them
+    // resolves, and the caller cannot tell that apart from a refused grant.
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
-    let refusal = CallError::Domain(HostLocalStorageReadError::V2(
+    for target in ["not a product", "", "wallet.dot"] {
+        assert_eq!(
+            read_storage(&host, Some(target), "k").unwrap_err(),
+            access_not_granted(),
+            "target {target:?}"
+        );
+    }
+}
+
+/// The one refusal every unmet grant answers with.
+fn access_not_granted() -> CallError<HostLocalStorageReadError> {
+    CallError::Domain(HostLocalStorageReadError::V2(
         v02::HostLocalStorageReadError::AccessNotGranted,
-    ));
-    assert_eq!(
-        read_storage(&host, Some("not a product"), "k").unwrap_err(),
-        refusal
-    );
-    assert_eq!(read_storage(&host, Some(""), "k").unwrap_err(), refusal);
-    assert_eq!(
-        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
-        refusal
+    ))
+}
+
+/// Reads `owner`'s stored value at `k`, requiring the grant to admit it.
+fn granted_value(host: &ProductRuntimeHost, owner: &str) -> Option<Vec<u8>> {
+    let HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value }) =
+        read_storage(host, Some(owner), "k").expect("the grant admits the read")
+    else {
+        panic!("a v2 request answers with a v2 response");
+    };
+    value
+}
+
+/// Seeds `owner`'s storage with a value only a granted read can reach.
+fn seed_owner_value(platform: &StubPlatform, owner: &str) {
+    platform.local_storage.lock().expect("mutex").insert(
+        ProductStorageKey::new(owner, "k")
+            .expect("the owner normalizes")
+            .encode(),
+        b"wallet's own value".to_vec(),
     );
 }
 
 /// Seeds `owner`'s cached manifest, so a grant resolves without a chain.
 fn cache_manifest(platform: &StubPlatform, owner: &str, trusted: &str, age_secs: u64) {
-    let json = format!(
-        r#"{{"$v":1,"displayName":"D","description":"d",
-                "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted}}}"#
-    );
-    cache_manifest_entry(platform, owner, Some(json), age_secs);
+    cache_manifest_entry(platform, owner, Some(test_manifest_json(trusted)), age_secs);
 }
 
 /// Seeds `owner`'s cached lookup, `None` standing for "publishes no manifest".
@@ -293,35 +307,36 @@ fn a_cached_grant_reads_the_granting_products_storage() {
     // keying the read off the caller instead would miss the value entirely.
     let platform = stub_platform();
     cache_manifest(&platform, "wallet.dot", r#"{"unknown":["storage"]}"#, 0);
-    platform.local_storage.lock().expect("mutex").insert(
-        ProductStorageKey::new("wallet.dot", "k")
-            .expect("the owner normalizes")
-            .encode(),
-        b"wallet's own value".to_vec(),
-    );
+    seed_owner_value(&platform, "wallet.dot");
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
-    let HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value }) =
-        read_storage(&host, Some("wallet.dot"), "k").expect("the grant admits the read")
-    else {
-        panic!("a v2 request answers with a v2 response");
-    };
-    assert_eq!(value.as_deref(), Some(&b"wallet's own value"[..]));
+    assert_eq!(
+        granted_value(&host, "wallet.dot").as_deref(),
+        Some(&b"wallet's own value"[..])
+    );
 }
 
 #[test]
 fn all_satisfies_a_storage_read() {
     let platform = stub_platform();
     cache_manifest(&platform, "wallet.dot", r#"{"unknown":["all"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
-    assert!(read_storage(&host, Some("wallet.dot"), "k").is_ok());
+    assert_eq!(
+        granted_value(&host, "wallet.dot").as_deref(),
+        Some(&b"wallet's own value"[..])
+    );
 }
 
 #[test]
 fn a_grant_to_another_product_does_not_admit_this_caller() {
     let platform = stub_platform();
     cache_manifest(&platform, "wallet.dot", r#"{"stash":["storage"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
-    assert!(read_storage(&host, Some("wallet.dot"), "k").is_err());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
 }
 
 #[test]
@@ -331,12 +346,11 @@ fn a_cached_miss_refuses_without_returning_to_the_chain() {
     // target that has a manifest from one that does not.
     let platform = stub_platform();
     cache_manifest_entry(&platform, "wallet.dot", None, 0);
+    seed_owner_value(&platform, "wallet.dot");
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
     assert_eq!(
         read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
-        CallError::Domain(HostLocalStorageReadError::V2(
-            v02::HostLocalStorageReadError::AccessNotGranted
-        ))
+        access_not_granted()
     );
 }
 
@@ -351,8 +365,12 @@ fn a_grant_of_some_other_scope_does_not_open_storage() {
         r#"{"unknown":["storage-write"]}"#,
         0,
     );
+    seed_owner_value(&platform, "wallet.dot");
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
-    assert!(read_storage(&host, Some("wallet.dot"), "k").is_err());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
 }
 
 #[test]
@@ -366,8 +384,12 @@ fn a_cached_grant_stops_being_honoured_once_it_expires() {
         r#"{"unknown":["storage"]}"#,
         MANIFEST_TTL_SECS + 1,
     );
+    seed_owner_value(&platform, "wallet.dot");
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
-    assert!(read_storage(&host, Some("wallet.dot"), "k").is_err());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
 }
 
 #[test]

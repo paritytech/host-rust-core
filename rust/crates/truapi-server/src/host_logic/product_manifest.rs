@@ -29,6 +29,14 @@ pub enum Granted {
     Unrecognised,
 }
 
+/// Manifest JSON for tests. Only `$v` and `trustedProducts` are modelled, so a
+/// fixture carrying the display name, description and icon a publisher also
+/// writes would be exercising serde's tolerance rather than this parser.
+#[cfg(test)]
+pub(crate) fn test_manifest_json(trusted: &str) -> String {
+    format!(r#"{{"$v":1,"trustedProducts":{trusted}}}"#)
+}
+
 /// The product-wide manifest published at a base name's `manifest` text record.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RootManifest {
@@ -107,11 +115,7 @@ mod tests {
     use super::*;
 
     fn manifest(trusted: &str) -> RootManifest {
-        RootManifest::parse(&format!(
-            r#"{{"$v":1,"displayName":"D","description":"d",
-                "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted}}}"#
-        ))
-        .expect("fixture parses")
+        RootManifest::parse(&test_manifest_json(trusted)).expect("fixture parses")
     }
 
     #[test]

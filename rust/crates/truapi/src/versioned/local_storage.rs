@@ -126,18 +126,6 @@ mod tests {
     }
 
     #[test]
-    fn the_latest_variant_survives_the_upgrade_unchanged() {
-        let latest = v02::HostLocalStorageReadRequest {
-            product: Some("wallet.dot".to_string()),
-            key: "k".to_string(),
-        };
-        assert_eq!(
-            HostLocalStorageReadRequest::V2(latest.clone()).into_latest(),
-            latest
-        );
-    }
-
-    #[test]
     fn a_refusal_reaches_a_v02_peer_as_itself() {
         assert_eq!(
             HostLocalStorageReadError::from_latest(
@@ -208,6 +196,8 @@ mod tests {
 
     #[test]
     fn v1_keeps_codec_index_zero_so_the_new_version_is_additive() {
+        // Not the derive's behaviour under test but the wire's: reordering the
+        // variants would renumber V1 and break every deployed v0.1 peer.
         use parity_scale_codec::Encode;
 
         let v1 = HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest {
