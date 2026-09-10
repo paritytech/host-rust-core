@@ -48,6 +48,8 @@ ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFF
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
+hosts/ios/                 iOS host app; resolves the core from this tree
+hosts/android/             Android host app
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate

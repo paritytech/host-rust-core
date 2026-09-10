@@ -180,6 +180,13 @@ IOS_HOST_PLAYGROUND_NAME ?= Host Playground
 IOS_HOST_PLAYGROUND_URL ?= http://127.0.0.1:3101
 IOS_APP := $(abspath $(IOS_DERIVED_DATA)/Build/Products/$(IOS_CONFIGURATION)-iphonesimulator/polkadot-app.app)
 
+ios-bootstrap: ## Generate everything hosts/ios needs before Xcode can load its package graph (SIM_ONLY=1 for simulator slices only).
+	./scripts/codegen.sh
+	./ios/truapi-host/scripts/rebuild.sh
+	$(MAKE) provider-swift
+	sh ios/truapi-provider/scripts/sync-bindings.sh
+	@echo "hosts/ios can now be opened in Xcode."
+
 ios-build: ## Rebuild the local Rust package and the TestFlight-configured iOS simulator app.
 	@test -d "$(IOS_HOST)/.git" || { \
 		echo "Missing iOS checkout at $(IOS_HOST); set IOS_HOST to polkadot-app-ios-v2"; \

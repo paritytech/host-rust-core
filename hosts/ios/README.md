@@ -38,7 +38,10 @@
 <summary>Prerequisites</summary>
 
 - **Xcode** with the iOS 17.0+ SDK
-- Swift Package Manager dependencies resolve automatically on first build
+- `make ios-bootstrap` from the repository root, once per clone, before opening
+  the project. The shared core resolves from this tree, and its bindings are
+  gitignored build outputs, so the package graph cannot load until they exist.
+- Other Swift Package Manager dependencies resolve automatically on first build
 
 </details>
 
