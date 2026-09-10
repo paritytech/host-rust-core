@@ -2,6 +2,8 @@
 //! browser host: each configured chain is served at `ws://LISTEN/<name>`, and
 //! every inbound WebSocket connection is multiplexed onto one provider connection
 //! per chain so all clients share one Statement Store gossip view.
+//! Accepted local statements are also fanned out immediately to active
+//! subscriptions; later upstream echoes are suppressed.
 //!
 //! dotli's `rpc-gateway` backend can point at this process via its
 //! `dotli:gateway-rpc-base` setting (e.g. `ws://127.0.0.1:9944`), which routes
@@ -42,7 +44,7 @@ async fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -124,10 +126,25 @@ mod imp {
         }
     }
 
+    enum PendingAction {
+        None,
+        StatementSubscribe,
+        StatementSubmit(String),
+        StatementUnsubscribe(String),
+    }
+
+    struct PendingRequest {
+        client: u64,
+        original_id: Value,
+        action: PendingAction,
+    }
+
     struct SharedChain {
         connection: Arc<dyn JsonRpcConnection>,
         clients: Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>,
-        pending: Mutex<HashMap<String, (u64, Value)>>,
+        pending: Mutex<HashMap<String, PendingRequest>>,
+        statement_subscriptions: Mutex<HashMap<String, u64>>,
+        local_fanout: Mutex<HashSet<(String, String)>>,
         next_client: AtomicU64,
         next_request: AtomicU64,
     }
@@ -138,6 +155,8 @@ mod imp {
                 connection,
                 clients: Mutex::new(HashMap::new()),
                 pending: Mutex::new(HashMap::new()),
+                statement_subscriptions: Mutex::new(HashMap::new()),
+                local_fanout: Mutex::new(HashSet::new()),
                 next_client: AtomicU64::new(1),
                 next_request: AtomicU64::new(1),
             }
@@ -152,6 +171,10 @@ mod imp {
 
         fn unregister(&self, client: u64) {
             self.clients.lock().unwrap().remove(&client);
+            self.statement_subscriptions
+                .lock()
+                .unwrap()
+                .retain(|_, owner| *owner != client);
         }
 
         fn forward(&self, client: u64, text: String) {
@@ -172,13 +195,37 @@ mod imp {
                     }
                 }
                 Value::Object(object) => {
+                    let action = match object.get("method").and_then(Value::as_str) {
+                        Some("statement_subscribeStatement") => PendingAction::StatementSubscribe,
+                        Some("statement_submit") => object
+                            .get("params")
+                            .and_then(Value::as_array)
+                            .and_then(|params| params.first())
+                            .and_then(Value::as_str)
+                            .map(|statement| PendingAction::StatementSubmit(statement.to_owned()))
+                            .unwrap_or(PendingAction::None),
+                        Some("statement_unsubscribeStatement") => object
+                            .get("params")
+                            .and_then(Value::as_array)
+                            .and_then(|params| params.first())
+                            .and_then(Value::as_str)
+                            .map(|subscription| {
+                                PendingAction::StatementUnsubscribe(subscription.to_owned())
+                            })
+                            .unwrap_or(PendingAction::None),
+                        _ => PendingAction::None,
+                    };
                     if let Some(id) = object.get_mut("id") {
                         let request = self.next_request.fetch_add(1, Ordering::Relaxed);
                         let namespaced = format!("gateway:{client}:{request}");
-                        self.pending
-                            .lock()
-                            .unwrap()
-                            .insert(namespaced.clone(), (client, id.clone()));
+                        self.pending.lock().unwrap().insert(
+                            namespaced.clone(),
+                            PendingRequest {
+                                client,
+                                original_id: id.clone(),
+                                action,
+                            },
+                        );
                         *id = Value::String(namespaced);
                     }
                 }
@@ -199,7 +246,14 @@ mod imp {
                     ),
                 );
             } else {
-                self.broadcast(Message::Text(text));
+                if self.suppress_local_fanout_echo(&mut response) {
+                    return;
+                }
+                if let Some(client) = self.statement_notification_client(&response) {
+                    self.send_to(client, Message::Text(response.to_string()));
+                } else {
+                    self.broadcast(Message::Text(text));
+                }
             }
         }
 
@@ -217,13 +271,116 @@ mod imp {
                     client
                 }
                 Value::Object(object) => {
-                    let id = object.get_mut("id")?;
-                    let namespaced = id.as_str()?;
-                    let (client, original) = self.pending.lock().unwrap().remove(namespaced)?;
-                    *id = original;
-                    Some(client)
+                    let namespaced = object.get("id")?.as_str()?.to_owned();
+                    let pending = self.pending.lock().unwrap().remove(&namespaced)?;
+                    object.insert("id".to_owned(), pending.original_id);
+                    match pending.action {
+                        PendingAction::None => {}
+                        PendingAction::StatementSubscribe => {
+                            if let Some(subscription) = object.get("result").and_then(Value::as_str)
+                            {
+                                self.statement_subscriptions
+                                    .lock()
+                                    .unwrap()
+                                    .insert(subscription.to_owned(), pending.client);
+                            }
+                        }
+                        PendingAction::StatementSubmit(statement) => {
+                            let accepted = object
+                                .get("result")
+                                .and_then(|result| result.get("status"))
+                                .and_then(Value::as_str)
+                                .is_some_and(|status| matches!(status, "new" | "known"));
+                            if accepted {
+                                self.fanout_statement(statement);
+                            }
+                        }
+                        PendingAction::StatementUnsubscribe(subscription) => {
+                            if object.get("result").and_then(Value::as_bool) == Some(true) {
+                                self.statement_subscriptions
+                                    .lock()
+                                    .unwrap()
+                                    .remove(&subscription);
+                            }
+                        }
+                    }
+                    Some(pending.client)
                 }
                 _ => None,
+            }
+        }
+
+        fn suppress_local_fanout_echo(&self, value: &mut Value) -> bool {
+            if value.get("method").and_then(Value::as_str) != Some("statement_statement") {
+                return false;
+            }
+            let Some(subscription) = value
+                .get("params")
+                .and_then(|params| params.get("subscription"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
+                return false;
+            };
+            let Some(statements) = value
+                .get_mut("params")
+                .and_then(|params| params.get_mut("result"))
+                .and_then(|result| result.get_mut("data"))
+                .and_then(|data| data.get_mut("statements"))
+                .and_then(Value::as_array_mut)
+            else {
+                return false;
+            };
+            let mut local_fanout = self.local_fanout.lock().unwrap();
+            statements.retain(|statement| {
+                let Some(statement) = statement.as_str() else {
+                    return true;
+                };
+                !local_fanout.remove(&(subscription.clone(), statement.to_owned()))
+            });
+            statements.is_empty()
+        }
+
+        fn statement_notification_client(&self, value: &Value) -> Option<u64> {
+            if value.get("method").and_then(Value::as_str) != Some("statement_statement") {
+                return None;
+            }
+            let subscription = value
+                .get("params")
+                .and_then(|params| params.get("subscription"))
+                .and_then(Value::as_str)?;
+            self.statement_subscriptions
+                .lock()
+                .unwrap()
+                .get(subscription)
+                .copied()
+        }
+
+        fn fanout_statement(&self, statement: String) {
+            let subscriptions = self
+                .statement_subscriptions
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(subscription, client)| (subscription.clone(), *client))
+                .collect::<Vec<_>>();
+            for (subscription, client) in subscriptions {
+                self.local_fanout
+                    .lock()
+                    .unwrap()
+                    .insert((subscription.clone(), statement.clone()));
+                let notification = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "statement_statement",
+                    "params": {
+                        "subscription": subscription,
+                        "result": {
+                            "event": "newStatements",
+                            "data": { "statements": [statement] }
+                        }
+                    }
+                });
+                self.send_to(client, Message::Text(notification.to_string()));
             }
         }
 
