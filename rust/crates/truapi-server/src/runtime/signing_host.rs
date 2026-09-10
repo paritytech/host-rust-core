@@ -1423,12 +1423,12 @@ mod tests {
         );
 
         let platform = Arc::new(StubPlatform::default());
-        let granted = futures::executor::block_on(crate::runtime::manifest_grants_scope(
+        let granted = futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
             &services,
             platform.as_ref(),
             "dim2.dot",
             "peopl.dot",
-            crate::runtime::GrantedScope::Context,
+            crate::host_logic::product_manifest::Granted::Context,
         ));
         // Documentation, not a guard, and labelled so nobody reads it as one:
         // with no cached manifest and no reachable chain this is false whether
@@ -1555,8 +1555,8 @@ mod tests {
             r#"{{"$v":1,"displayName":"D","description":"d",
                  "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted_products}}}"#
         );
-        let entry = crate::runtime::CachedManifest {
-            fetched_at_secs: crate::runtime::unix_time_secs().expect("clock is after the epoch"),
+        let entry = crate::runtime::product_manifest::CachedManifest {
+            fetched_at_secs: crate::host_logic::statement_store::current_unix_secs(),
             json: Some(json),
         };
         futures::executor::block_on(

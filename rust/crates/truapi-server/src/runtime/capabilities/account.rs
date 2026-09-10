@@ -314,10 +314,7 @@ impl Account for ProductRuntimeHost {
             )));
         };
         if self
-            .cross_product_scope_target(
-                &request.key_handle.dot_ns_identifier,
-                Granted::Context,
-            )
+            .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
             .await
             .is_none()
         {

@@ -22,8 +22,8 @@ use crate::host_logic::dotns_gateway::{
     decode_address, decode_string, discover_pop_controller, namehash_under, network_tld,
     protocol_component, tld_node,
 };
-use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
 use crate::host_logic::permissions::PermissionsService;
+use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
 use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::statement_store::current_unix_secs;
 use crate::runtime::dotns_lookup::DotnsLookup;
