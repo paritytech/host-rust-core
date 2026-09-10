@@ -1648,6 +1648,14 @@ mod tests {
     /// and nothing else changed it succeeds. So the admitting fact is the
     /// manifest the authority resolved for itself, not any field the caller
     /// set.
+    ///
+    /// What makes this cover the wire path is an invariant, not a convention:
+    /// the authority has exactly one behaviour, shared by both doors, because
+    /// nothing it reads records which door a request came through. Should a
+    /// door-dependent relaxation ever land — a dev allowlist consulted only
+    /// for local callers, say — that invariant is gone, and this test has to
+    /// declare the paired-peer door explicitly or it silently stops covering
+    /// it. Whoever adds the distinction owns updating this.
     #[test]
     fn a_request_cannot_substitute_for_the_owners_manifest() {
         let refusal = foreign_proof_through_the_authority(None);
