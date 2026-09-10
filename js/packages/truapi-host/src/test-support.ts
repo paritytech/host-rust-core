@@ -100,6 +100,17 @@ export function makeHostCallbacks(
           },
         }
       : {}),
+    // And for Pocket: the default fixture is a host that keeps no card
+    // collection, so Pocket calls are answered `Unsupported`.
+    ...(overrides.pocket
+      ? {
+          pocket: {
+            async *subscribePocketCards() {},
+            removePocketCard: async () => {},
+            ...overrides.pocket,
+          },
+        }
+      : {}),
   };
 }
 

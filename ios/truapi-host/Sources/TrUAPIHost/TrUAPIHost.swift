@@ -391,6 +391,26 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     func listRooms() throws -> [ChatRoom]
 }
 
+/// Native Pocket collection surface. Implement and pass to
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``
+/// when the host has a Pocket surface; hosts without one pass nothing. Called
+/// from the process-wide dispatch pool shared by every product execution:
+/// implementations must be safe to enter concurrently, and one that blocks
+/// stalls the others.
+///
+/// Throw ``HostRejection`` (or an error conforming to `LocalizedError`) to
+/// decline a call.
+public protocol PocketHostBridge: AnyObject, Sendable {
+    /// Return the product's cards as this host holds them, each carrying
+    /// whether the host pinned it. The core reads this to refuse the removal
+    /// of a privileged card itself, so `removeCard` is only asked for a
+    /// removable one.
+    func listCards() throws -> [PocketCard]
+
+    /// Remove one non-privileged card this host holds for the product.
+    func removeCard(cardId: String) throws
+}
+
 public extension HostBridge {
     /// Default no-op logger. Override to plumb into your logging framework.
     func onCoreLog(marker: String, detail: String) {}
@@ -452,6 +472,34 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
 
     func listRooms() throws -> [ChatRoom] {
         try withHostRejection { try bridge.listRooms() }
+    }
+
+    private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
+        do {
+            return try operation()
+        } catch let error as HostRejection {
+            throw error
+        } catch {
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
+        }
+    }
+}
+
+/// Adapter that bridges the public `PocketHostBridge` to the generated UniFFI
+/// `NativePocketCallbacks` protocol.
+private final class PocketCallbackAdapter: NativePocketCallbacks, @unchecked Sendable {
+    private let bridge: PocketHostBridge
+
+    init(bridge: PocketHostBridge) {
+        self.bridge = bridge
+    }
+
+    func listCards() throws -> [PocketCard] {
+        try withHostRejection { try bridge.listCards() }
+    }
+
+    func removeCard(cardId: String) throws {
+        try withHostRejection { try bridge.removeCard(cardId: cardId) }
     }
 
     private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
@@ -679,23 +727,28 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
 
     /// Open one executable connection with a host-assigned immutable context.
     /// Pass `chat` to install the host's Chat adapter; hosts without the Chat
-    /// modality omit it.
+    /// modality omit it. Pass `pocket` to install the card collection, and
+    /// omit that where the host has no Pocket surface.
     public func openProductExecution(
         bridge: HostBridge,
         configuration: ProductExecutionConfig,
-        chat: ChatHostBridge? = nil
+        chat: ChatHostBridge? = nil,
+        pocket: PocketHostBridge? = nil
     ) throws -> TrUAPIProductExecution {
         let adapter = HostCallbackAdapter(bridge: bridge)
         let chatAdapter = chat.map { ChatCallbackAdapter(bridge: $0) }
+        let pocketAdapter = pocket.map { PocketCallbackAdapter(bridge: $0) }
         let execution = try inner.openProductExecution(
             callbacks: adapter,
             chatCallbacks: chatAdapter,
+            pocketCallbacks: pocketAdapter,
             executionConfig: configuration.native
         )
         return TrUAPIProductExecution(
             inner: execution,
             callbackRetainer: adapter,
-            chatRetainer: chatAdapter
+            chatRetainer: chatAdapter,
+            pocketRetainer: pocketAdapter
         )
     }
 
@@ -833,6 +886,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func notifyChainClosed(connectionId: UInt32)
     func notifyChatRoomsChanged(rooms: [ChatRoom])
     func sessionChatIdentityKey() throws -> Data?
+    func notifyPocketCardsChanged(cards: [PocketCard])
 }
 
 /// One App, Widget, or Worker executable connected to a shared host runtime.
@@ -840,15 +894,18 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks
     private let chatRetainer: NativeChatCallbacks?
+    private let pocketRetainer: NativePocketCallbacks?
 
     fileprivate init(
         inner: NativeProductExecution,
         callbackRetainer: HostCallbacks,
-        chatRetainer: NativeChatCallbacks?
+        chatRetainer: NativeChatCallbacks?,
+        pocketRetainer: NativePocketCallbacks?
     ) {
         self.inner = inner
         self.callbackRetainer = callbackRetainer
         self.chatRetainer = chatRetainer
+        self.pocketRetainer = pocketRetainer
     }
 
     deinit {
@@ -884,6 +941,10 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
                 observer: observer
             )
         }
+    }
+
+    public func notifyPocketCardsChanged(cards: [PocketCard]) {
+        inner.notifyPocketCardsChanged(cards: cards)
     }
 
     public func permissionAuthorizationStatus(

@@ -51,7 +51,8 @@ playground/                Next.js interactive playground; deploys to the truapi
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
-scripts/battery.sh         run the generated battery against both headless CLI host roles
+scripts/battery.sh         run the generated battery against both headless CLI host roles,
+                           plus the Pocket phase a Worker execution serves
 scripts/truapi-host-installer.sh
                            one-liner installer for the prebuilt truapi-host CLI
 .github/consumers.json     maps each released package to the repos notified by a bump issue

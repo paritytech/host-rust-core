@@ -15,6 +15,7 @@ import {
   CHAT_DIAGNOSIS_REFRESH_ACTION,
   ChatDiagnosis,
 } from "./diagnosis";
+import { servePocket } from "./pocket";
 
 const ROOM_ID = "truapi-playground";
 const ROOM_NAME = "TrUAPI Playground";
@@ -55,6 +56,8 @@ const diagnosis = new ChatDiagnosis(() => {
 });
 
 chat.onCustomMessageRender(handleRenderRequest);
+
+servePocket(client.pocket);
 
 chat.actionSubscribe().subscribe({
   next(action) {

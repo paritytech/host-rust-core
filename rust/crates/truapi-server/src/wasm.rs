@@ -28,7 +28,7 @@ use truapi::v01;
 use truapi_platform::SigningHostConfig;
 use truapi_platform::{
     ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
-    PermissionStatusHost, PlatformInfo, ProductContext, ProductExecutionKind,
+    PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
     RuntimeConfigValidationError,
 };
 use wasm_bindgen::JsCast;
@@ -831,19 +831,23 @@ struct WasmPlatformAdapters {
     platform: Arc<WasmPlatform>,
     chat_platform: Option<Arc<dyn ChatPlatform>>,
     status_host: Option<Arc<dyn PermissionStatusHost>>,
+    pocket_platform: Option<Arc<dyn PocketPlatform>>,
 }
 
 /// Build the platform and the optional capability adapters supplied by the host.
 fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     let has_chat = bridge.has_chat();
     let has_permission_status = bridge.has_permission_status();
+    let has_pocket = bridge.has_pocket();
     let platform = Arc::new(WasmPlatform::new(bridge));
     let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
     let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
+    let pocket = has_pocket.then(|| platform.clone() as Arc<dyn PocketPlatform>);
     WasmPlatformAdapters {
         platform,
         chat_platform: chat,
         status_host: status,
+        pocket_platform: pocket,
     }
 }
 
@@ -869,6 +873,7 @@ impl WasmPairingHostRuntime {
             platform,
             chat_platform,
             status_host,
+            pocket_platform,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
@@ -878,6 +883,9 @@ impl WasmPairingHostRuntime {
             PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
         if let Some(status_host) = status_host {
             runtime.set_permission_status_host(status_host);
+        }
+        if let Some(pocket_platform) = pocket_platform {
+            runtime.set_pocket_platform(pocket_platform);
         }
         Ok(Self {
             runtime: Rc::new(runtime),
@@ -1245,17 +1253,21 @@ impl WasmProductRuntime {
             platform,
             chat_platform,
             status_host,
+            pocket_platform,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let (host_config, product) = runtime_config_from_js(&runtime_config)?;
-        // The status adapter installs on the host runtime the product hangs off,
-        // not on the product runtime itself.
+        // The optional adapters install on the host runtime the product hangs
+        // off, not on the product runtime itself.
         let pairing =
             PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
         if let Some(status_host) = status_host {
             pairing.set_permission_status_host(status_host);
+        }
+        if let Some(pocket_platform) = pocket_platform {
+            pairing.set_pocket_platform(pocket_platform);
         }
         let core = pairing.product_runtime(product, frame_sink);
         Ok(Self::from_parts(core, channel.dispose))

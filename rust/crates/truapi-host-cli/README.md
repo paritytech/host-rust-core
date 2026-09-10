@@ -541,6 +541,8 @@ Six scripts ship under `js/scripts/`:
   make e2e-signing-cli                  # direct phase only
   make e2e-pairing-cli                  # paired phase only
   make e2e-chat-cli                     # chat phase only
+  scripts/battery.sh --pocket-host      # Pocket phase only
+  make e2e-pocket-cli                   # Pocket phase only
   scripts/battery.sh --release          # release binary
   scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
   ```
@@ -548,6 +550,13 @@ Six scripts ship under `js/scripts/`:
   `BATTERY_PHASE_TIMEOUT` (default 900s) bounds each phase and
   `BATTERY_PAIRING_TIMEOUT` (default 120s) bounds the wait for the pairing link.
   Per-phase host transcripts land in `target/battery/`.
+
+  The Pocket phase runs its product as a Worker execution, because that is the
+  only execution Pocket is served to. It seeds the in-memory Pocket host from
+  `TRUAPI_POCKET_CARDS` (`loyalty,humanity:privileged`), so one card is
+  removable and one privileged, and records every removal the host is asked for
+  in `TRUAPI_POCKET_LOG`. The cases read that transcript, so a pass means the
+  host and the product agree rather than resting on the product's word.
 
   The paired phase gives its pairing host a throwaway `--base-path` under
   `target/battery/pairing-host-state`, so it performs a real handshake on every

@@ -89,7 +89,8 @@ playground/                Interactive Next.js playground (truapi-playground dot
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
-scripts/battery.sh         Run the generated battery against both headless CLI host roles
+scripts/battery.sh         Run the generated battery against both headless CLI host roles,
+                           plus the Pocket phase a Worker execution serves
 ```
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
@@ -190,7 +191,18 @@ scripts/battery.sh --pairing-host   # paired phase only
 make e2e-signing-cli                # same direct signing-host phase
 make e2e-pairing-cli                # same paired pairing-host phase
 make e2e-chat-cli                   # chat content screening against a chat signing-host
+make e2e-pocket-cli                 # Pocket protocol check against a Pocket signing-host
 ```
+
+The Pocket phase runs its product as a Worker execution, the only execution
+Pocket is served to. It seeds the CLI's in-memory Pocket host from
+`TRUAPI_POCKET_CARDS` (`loyalty,humanity:privileged`), which is what makes one
+card removable and one privileged, and records every removal it is asked for in
+the transcript named by `TRUAPI_POCKET_LOG`. The cases read that transcript, so
+a pass means the host and the product agree on what happened rather than
+resting on the product's word. The report lands at
+`explorer/diagnosis-reports/pocket/signing-host-cli.md` and feeds the explorer's
+Pocket compatibility matrix.
 
 To run the playground locally in a plain browser tab, against a signing host on
 your own machine:

@@ -37,6 +37,9 @@ pub(crate) struct RuntimeServices {
     /// startup by a host that can read it. Unset leaves device grants
     /// resolving from stored state alone.
     permission_status: OnceLock<Arc<dyn PermissionStatusHost>>,
+    /// Host Pocket adapter, installed once at startup by a host with a Pocket
+    /// surface. Unset leaves every product Pocket call `Unsupported`.
+    pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -86,6 +89,7 @@ impl RuntimeServices {
             host_info,
             chat_platform: None,
             permission_status: OnceLock::new(),
+            pocket_platform: OnceLock::new(),
             chain,
             statement_store,
             bulletin,
@@ -138,6 +142,23 @@ impl RuntimeServices {
     /// The host's live OS permission-status adapter, when one is installed.
     pub(crate) fn permission_status_host(&self) -> Option<Arc<dyn PermissionStatusHost>> {
         self.permission_status.get().cloned()
+    }
+
+    /// Install the host's Pocket adapter.
+    ///
+    /// Set-once, like every optional capability, so the card collection cannot
+    /// change hands under a running product. Returns whether this call
+    /// installed it.
+    pub(crate) fn install_pocket_platform(
+        &self,
+        platform: Arc<dyn truapi_platform::PocketPlatform>,
+    ) -> bool {
+        self.pocket_platform.set(platform).is_ok()
+    }
+
+    /// The host's Pocket adapter, when one is installed.
+    pub(crate) fn pocket_platform(&self) -> Option<Arc<dyn truapi_platform::PocketPlatform>> {
+        self.pocket_platform.get().cloned()
     }
 
     /// This device's persisted X25519 encryption secret, created on first use.

@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost};
+use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -272,6 +272,16 @@ impl PairingHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_permission_status_host"))]
     pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
         self.services.install_permission_status_host(host)
+    }
+
+    /// Install the host's [`PocketPlatform`], which owns the card collection.
+    ///
+    /// Set-once, so the collection cannot change hands under a running
+    /// product. Returns whether this call installed it. Call it before serving
+    /// any product runtime.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_pocket_platform"))]
+    pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
+        self.services.install_pocket_platform(platform)
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -592,6 +602,16 @@ impl SigningHostRuntime {
         self.services.install_permission_status_host(host)
     }
 
+    /// Install the host's [`PocketPlatform`], which owns the card collection.
+    ///
+    /// Set-once, so the collection cannot change hands under a running
+    /// product. Returns whether this call installed it. Call it before serving
+    /// any product runtime.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_pocket_platform"))]
+    pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
+        self.services.install_pocket_platform(platform)
+    }
+
     /// Build a product-facing runtime from this signing host.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_runtime"))]
     pub fn product_runtime(
@@ -871,6 +891,9 @@ impl SigningHostRuntime {
 /// Adapters scoped to one product connection: the platform serving its
 /// syscalls, the optional native Chat adapter, and the connection's Chat
 /// stream state. Non-native connections use [`Self::from_services`].
+///
+/// `pocket_platform` is the same kind of optional adapter for the card
+/// collection.
 #[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
@@ -881,6 +904,7 @@ pub(crate) struct ConnectionAdapters {
     /// same one that presents the prompt.
     pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
     pub(crate) chat: Arc<ChatConnection>,
+    pub(crate) pocket_platform: Option<Arc<dyn PocketPlatform>>,
 }
 
 impl ConnectionAdapters {
@@ -891,6 +915,7 @@ impl ConnectionAdapters {
             chat_platform: services.chat_platform.clone(),
             permission_status: services.permission_status_host(),
             chat: Arc::new(ChatConnection::new()),
+            pocket_platform: services.pocket_platform(),
         }
     }
 }

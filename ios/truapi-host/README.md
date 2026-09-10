@@ -172,6 +172,41 @@ carries back, so it must name that message for as long as the host stores it.
 Ids arriving _in_ a `Reaction` or `ReactionRemoved` are product-chosen and
 untrusted: they may name a message in another room, or one that never existed.
 
+## Pocket
+
+A host with a Pocket surface owns the card collection and implements
+`PocketHostBridge`, passed as `pocket:` to `openProductExecution`. Only a
+Worker execution reaches Pocket. Hosts without the bridge pass nothing and
+Pocket calls answer unsupported.
+
+```swift
+final class MyPocketBridge: PocketHostBridge, @unchecked Sendable {
+    private let store: PocketStore
+
+    init(store: PocketStore) { self.store = store }
+
+    // `privileged` marks a card this host pinned. The core reads it to refuse
+    // the product's own removal request, so `removeCard` is only ever called
+    // for a removable card this list reported.
+    func listCards() throws -> [PocketCard] { store.cards() }
+
+    func removeCard(cardId: String) throws { store.remove(cardId) }
+}
+
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(productId: "game.dot", executionKind: .worker),
+    pocket: MyPocketBridge(store: pocketStore)
+)
+
+// Republish after the host's own collection changes.
+execution.notifyPocketCardsChanged(cards: pocketStore.cards())
+```
+
+A card's face does not cross this bridge. The host keeps each card's newest
+face itself: that is what the card shows while the worker is down, and at cold
+start before the worker answers.
+
 On the execution: `publishChatAction` delivers a user's action back to the
 product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
 republishes the room list; `renderCustomMessage` returns a stream of typed UI

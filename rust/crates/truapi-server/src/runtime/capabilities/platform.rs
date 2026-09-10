@@ -75,11 +75,13 @@ impl System for ProductRuntimeHost {
                     v01::HostNavigateToError::Unknown { reason },
                 )));
             }
-            // dotNS and localhost resolve back into the host's own product
-            // surface, which is already gated by the product sandbox. Neither
-            // reaches an arbitrary internet host, so neither consumes a grant.
+            // dotNS, localhost and a host-handled Pocket target all resolve
+            // back into the host's own product surface, which is already gated
+            // by the product sandbox. None reaches an arbitrary internet host,
+            // so none consumes a grant.
             NavigateDecision::DotName { canonical_url, .. }
-            | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
+            | NavigateDecision::Localhost { canonical_url, .. }
+            | NavigateDecision::Pocket { canonical_url, .. } => canonical_url,
             // An `http(s)` URL hands an arbitrary host the referrer, the shape
             // of the URL, and whatever the product put in it, so it needs the
             // same per-domain grant that gates outbound access to that host.

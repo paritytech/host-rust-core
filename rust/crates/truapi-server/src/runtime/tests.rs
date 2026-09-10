@@ -619,6 +619,227 @@ fn chat_register_bot_reaches_the_installed_adapter() {
     );
 }
 
+/// Records what reaches the host's Pocket adapter and answers from a fixed
+/// card set.
+struct RecordingPocketPlatform {
+    cards: Vec<v01::PocketCard>,
+    removed: Mutex<Vec<String>>,
+}
+
+impl RecordingPocketPlatform {
+    fn with_cards(cards: Vec<(&str, bool)>) -> Self {
+        Self {
+            cards: cards
+                .into_iter()
+                .map(|(card_id, privileged)| v01::PocketCard {
+                    card_id: card_id.to_string(),
+                    privileged,
+                })
+                .collect(),
+            removed: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[truapi::async_trait]
+impl truapi_platform::PocketPlatform for RecordingPocketPlatform {
+    fn subscribe_pocket_cards(
+        &self,
+        _product: &ProductContext,
+    ) -> futures::stream::BoxStream<
+        'static,
+        Result<truapi::latest::HostPocketListSubscribeItem, truapi::latest::GenericError>,
+    > {
+        let cards = self.cards.clone();
+        Box::pin(futures::stream::iter([
+            Ok(truapi::latest::HostPocketListSubscribeItem { cards }),
+            Err(truapi::latest::GenericError {
+                reason: "host list failed".to_string(),
+            }),
+        ]))
+    }
+
+    async fn remove_pocket_card(
+        &self,
+        _product: &ProductContext,
+        request: truapi::latest::HostPocketRemoveCardRequest,
+    ) -> Result<(), truapi::latest::HostPocketRemoveCardError> {
+        if self
+            .cards
+            .iter()
+            .any(|card| card.card_id == request.card_id && card.privileged)
+        {
+            return Err(truapi::latest::HostPocketRemoveCardError::Privileged);
+        }
+        self.removed
+            .lock()
+            .expect("removed mutex poisoned")
+            .push(request.card_id);
+        Ok(())
+    }
+}
+
+fn pocket_host(
+    kind: truapi_platform::ProductExecutionKind,
+    pocket: Option<Arc<RecordingPocketPlatform>>,
+    with_session: bool,
+) -> ProductRuntimeHost {
+    let (host_config, _) = runtime_config("pocket.dot");
+    let product = ProductContext::new_with_execution("pocket.dot".to_string(), kind)
+        .expect("test pocket product context is valid");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    adapters.pocket_platform =
+        pocket.map(|pocket| pocket as Arc<dyn truapi_platform::PocketPlatform>);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    if with_session {
+        install_pairing_session(&host, session_info());
+    }
+    host
+}
+
+fn remove_card(
+    host: &ProductRuntimeHost,
+    card_id: &str,
+) -> Result<HostPocketRemoveCardResponse, CallError<HostPocketRemoveCardError>> {
+    futures::executor::block_on(Pocket::remove_card(
+        host,
+        &CallContext::default(),
+        HostPocketRemoveCardRequest::V1(v01::HostPocketRemoveCardRequest {
+            card_id: card_id.to_string(),
+        }),
+    ))
+}
+
+#[test]
+fn pocket_list_subscribe_forwards_the_host_list_and_drops_stream_errors() {
+    let pocket = Arc::new(RecordingPocketPlatform::with_cards(vec![
+        ("loyalty", false),
+        ("humanity", true),
+    ]));
+    let host = pocket_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        Some(pocket),
+        true,
+    );
+
+    let mut items =
+        futures::executor::block_on(Pocket::list_subscribe(&host, &CallContext::default()));
+    let HostPocketListSubscribeItem::V1(first) =
+        futures::executor::block_on(items.next()).expect("the host list is forwarded");
+    assert_eq!(first.cards.len(), 2);
+    assert!(
+        first
+            .cards
+            .iter()
+            .any(|card| card.card_id == "humanity" && card.privileged)
+    );
+    // The platform error is logged and dropped, so the stream simply ends
+    // rather than handing the product a half-typed failure.
+    assert!(futures::executor::block_on(items.next()).is_none());
+}
+
+#[test]
+fn pocket_remove_card_normalizes_the_id_and_maps_domain_errors() {
+    let pocket = Arc::new(RecordingPocketPlatform::with_cards(vec![
+        ("loyalty", false),
+        ("humanity", true),
+    ]));
+    let host = pocket_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        Some(pocket.clone()),
+        true,
+    );
+
+    // Trimmed and NFC-normalized before the host sees it, so the host stores
+    // one spelling of a card id however the product spells it.
+    assert_eq!(
+        remove_card(&host, "  loyalty  ").expect("removal succeeds"),
+        HostPocketRemoveCardResponse::V1
+    );
+    assert_eq!(
+        pocket
+            .removed
+            .lock()
+            .expect("removed mutex poisoned")
+            .as_slice(),
+        ["loyalty"]
+    );
+
+    assert!(matches!(
+        remove_card(&host, "humanity"),
+        Err(CallError::Domain(HostPocketRemoveCardError::V1(
+            v01::HostPocketRemoveCardError::Privileged
+        )))
+    ));
+    assert!(matches!(
+        remove_card(&host, ""),
+        Err(CallError::Domain(HostPocketRemoveCardError::V1(
+            v01::HostPocketRemoveCardError::Unknown { .. }
+        )))
+    ));
+    assert_eq!(
+        pocket.removed.lock().expect("removed mutex poisoned").len(),
+        1,
+        "a rejected card id never reaches the host"
+    );
+}
+
+#[test]
+fn pocket_is_denied_to_apps_and_sessionless_workers_and_unsupported_without_an_adapter() {
+    let pocket = Arc::new(RecordingPocketPlatform::with_cards(vec![]));
+    let app = pocket_host(
+        truapi_platform::ProductExecutionKind::App,
+        Some(pocket.clone()),
+        true,
+    );
+    assert!(matches!(
+        remove_card(&app, "loyalty"),
+        Err(CallError::Denied)
+    ));
+    assert!(
+        futures::executor::block_on(
+            futures::executor::block_on(Pocket::list_subscribe(&app, &CallContext::default()))
+                .next()
+        )
+        .is_none()
+    );
+
+    let no_session = pocket_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        Some(pocket),
+        false,
+    );
+    assert!(matches!(
+        remove_card(&no_session, "loyalty"),
+        Err(CallError::Denied)
+    ));
+
+    let no_adapter = pocket_host(truapi_platform::ProductExecutionKind::Worker, None, true);
+    assert!(matches!(
+        remove_card(&no_adapter, "loyalty"),
+        Err(CallError::Unsupported)
+    ));
+    assert!(
+        futures::executor::block_on(
+            futures::executor::block_on(Pocket::list_subscribe(
+                &no_adapter,
+                &CallContext::default()
+            ))
+            .next()
+        )
+        .is_none()
+    );
+}
+
 #[test]
 fn chain_follow_ids_are_scoped_per_product_core() {
     let (host_config, product) = runtime_config("same.dot");

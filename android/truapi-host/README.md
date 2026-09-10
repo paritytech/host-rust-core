@@ -60,6 +60,7 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
 - `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
 - `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
+- `PocketHostBridge` - the host's Pocket card collection, implemented by hosts with a Pocket surface and passed as `pocket` to `openProductExecution`. The execution then offers `notifyPocketCardsChanged`. Hosts without it pass nothing and Pocket calls answer unsupported.
 
 ## Chat
 

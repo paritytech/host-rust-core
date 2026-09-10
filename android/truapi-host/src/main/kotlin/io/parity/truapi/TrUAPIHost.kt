@@ -42,6 +42,7 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostLocaleSubscribeItem
 import uniffi.truapi.HostPlatform
+import uniffi.truapi.PocketCard
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.HostThemeSubscribeItem
@@ -56,6 +57,7 @@ import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatCallbacks
+import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativeCustomRendererObserver
 import uniffi.truapi_server.NativeDevicePermissionStatus
 import uniffi.truapi_server.NativeProductExecution
@@ -417,6 +419,30 @@ interface ChatHostBridge {
 }
 
 /**
+ * Native Pocket collection surface. Implement and pass to
+ * [TrUAPIHostRuntime.openProductExecution] when the host has a Pocket surface;
+ * hosts without one pass nothing.
+ *
+ * Threading: these run inline on the process-wide dispatch pool shared by
+ * every product execution, so implementations must be safe to enter
+ * concurrently and one that blocks stalls the others.
+ */
+interface PocketHostBridge {
+    /**
+     * Return the product's cards as this host holds them, each carrying
+     * whether the host pinned it. The core reads this to refuse the removal of
+     * a privileged card itself, so [removeCard] is only asked for a removable
+     * one.
+     */
+    @Throws(HostRejection::class)
+    fun listCards(): List<PocketCard>
+
+    /** Remove one non-privileged card this host holds for the product. */
+    @Throws(HostRejection::class)
+    fun removeCard(cardId: String)
+}
+
+/**
  * Adapter from the public [HostBridge] surface to the generated UniFFI
  * [HostCallbacks] interface. Keeps the public API stable even if uniffi-bindgen
  * renames generated symbols.
@@ -574,6 +600,16 @@ private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeCh
         withHostRejection { bridge.postMessage(roomId, content) }
 
     override fun listRooms(): List<ChatRoom> = withHostRejection { bridge.listRooms() }
+}
+
+/**
+ * Adapter from the public [PocketHostBridge] surface to the generated UniFFI
+ * [NativePocketCallbacks] interface.
+ */
+private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : NativePocketCallbacks {
+    override fun listCards(): List<PocketCard> = withHostRejection { bridge.listCards() }
+
+    override fun removeCard(cardId: String) = withHostRejection { bridge.removeCard(cardId) }
 }
 
 /**
@@ -751,18 +787,27 @@ class TrUAPIHostRuntime private constructor(
     /**
      * Open one executable connection with a host-assigned immutable context.
      * Pass [chat] to install the host's Chat adapter; hosts without the Chat
-     * modality omit it.
+     * modality omit it. Pass [pocket] to install the card collection, and omit
+     * that where the host has no Pocket surface.
      */
     @Throws(NativeRuntimeConfigException::class)
     fun openProductExecution(
         bridge: HostBridge,
         configuration: ProductExecutionConfig,
         chat: ChatHostBridge? = null,
+        pocket: PocketHostBridge? = null,
     ): TrUAPIProductExecution {
         val adapter = HostCallbackAdapter(bridge)
         val chatAdapter = chat?.let { ChatCallbackAdapter(it) }
-        val execution = inner.openProductExecution(adapter, chatAdapter, configuration.toNative())
-        return TrUAPIProductExecution(execution, adapter, chatAdapter)
+        val pocketAdapter = pocket?.let { PocketCallbackAdapter(it) }
+        val execution =
+            inner.openProductExecution(
+                adapter,
+                chatAdapter,
+                pocketAdapter,
+                configuration.toNative(),
+            )
+        return TrUAPIProductExecution(execution, adapter, chatAdapter, pocketAdapter)
     }
 
     /** Core-owned logout for the process-wide authentication session. */
@@ -843,6 +888,7 @@ class TrUAPIProductExecution internal constructor(
     private val inner: NativeProductExecution,
     private val callbackRetainer: HostCallbacks,
     private val chatRetainer: NativeChatCallbacks?,
+    private val pocketRetainer: NativePocketCallbacks?,
 ) : AutoCloseable {
     private val shutDown = AtomicBoolean(false)
 
@@ -912,6 +958,14 @@ class TrUAPIProductExecution internal constructor(
                 subscription.close()
             }
         }.conflate()
+
+    /**
+     * Republish the product-scoped card list. Call it whenever the host's own
+     * collection changes, including after the user removes a card.
+     */
+    fun notifyPocketCardsChanged(cards: List<PocketCard>) {
+        inner.notifyPocketCardsChanged(cards)
+    }
 
     /** Read the active session's X25519 chat identity private key, if any. */
     @Throws(HostRejection::class)

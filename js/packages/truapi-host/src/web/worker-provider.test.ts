@@ -220,7 +220,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       kind: "init",
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
-      capabilities: { chat: false, permissionStatus: false },
+      capabilities: { chat: false, permissionStatus: false, pocket: false },
       debuggerUrl: null,
     });
 
@@ -254,6 +254,28 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
       chat: true,
       permissionStatus: false,
+      pocket: false,
+    });
+  });
+
+  it("reports the pocket capability to the worker when the host serves it", async () => {
+    const worker = new FakeWorker();
+    void createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        pocket: { removePocketCard: async () => {} },
+      }),
+      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+    );
+
+    worker.emit({ kind: "loaded" });
+
+    // Without this the worker never builds the pocket callbacks, so a host
+    // that serves Pocket is answered `Unsupported` anyway.
+    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
+      chat: false,
+      permissionStatus: false,
+      pocket: true,
     });
   });
 

@@ -56,14 +56,18 @@ revokes the grant.
   chat bots, post messages into rooms, and stream the product's room list.
 - `PermissionStatusHost`: report the OS status of a device capability without
   prompting, so a stored grant can be revalidated before it is acted on.
+- `PocketPlatform`: stream the product's Pocket card collection and remove a
+  card from it. The host owns the collection and decides which cards are
+  privileged.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above except `ChatPlatform` and `PermissionStatusHost`, which
-`OptionalPlatform` lists instead: a host supplies each only when it can serve
-it. Codegen reads `OptionalPlatform` to emit each listed capability as an
-optional group on the host-callback surface.
+traits above except `ChatPlatform`, `PermissionStatusHost` and
+`PocketPlatform`, which `OptionalPlatform` lists instead: a host supplies each
+only when it can serve it. Codegen reads `OptionalPlatform` to emit each listed
+capability as an optional group on the host-callback surface.
 
-Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`.
+Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`, and
+omitting `PocketPlatform` does the same for Pocket calls.
 Omitting `PermissionStatusHost` leaves device grants resolving from stored
 state alone, which is what a host with no OS permission model does anyway.
 Serving it gates both halves of the surface: a device permission request and a

@@ -37,7 +37,8 @@ use truapi::latest::{
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostLocaleSubscribeItem, HostNavigateToError, HostPlatform, HostPushNotificationRequest,
+    HostLocaleSubscribeItem, HostNavigateToError, HostPlatform, HostPocketListSubscribeItem,
+    HostPocketRemoveCardError, HostPocketRemoveCardRequest, HostPushNotificationRequest,
     HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
     HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
     LegacyAccountTxPayload, NotificationId, ProductAccountId, ProductAccountTxPayload,
@@ -2874,6 +2875,29 @@ pub trait ChatPlatform: Send + Sync {
     ) -> BoxStream<'static, Result<HostChatListSubscribeItem, GenericError>>;
 }
 
+/// Host-implemented adapter through which product Pocket calls reach the
+/// host's card collection. Optional: a host that omits it leaves Pocket
+/// requests answered `Unsupported`. See [`OptionalPlatform`].
+///
+/// The host owns the collection: it decides which cards are privileged and
+/// keeps each card's newest face. A face does not cross this boundary.
+#[async_trait]
+pub trait PocketPlatform: Send + Sync {
+    /// Emit the calling product's current cards and every later replacement.
+    fn subscribe_pocket_cards(
+        &self,
+        product: &ProductContext,
+    ) -> BoxStream<'static, Result<HostPocketListSubscribeItem, GenericError>>;
+
+    /// Remove one of the calling product's cards. Removing an absent card
+    /// succeeds; a privileged card is refused with `Privileged`.
+    async fn remove_pocket_card(
+        &self,
+        product: &ProductContext,
+        request: HostPocketRemoveCardRequest,
+    ) -> Result<(), HostPocketRemoveCardError>;
+}
+
 /// What the operating system currently says about a device capability.
 ///
 /// Distinct from [`PermissionAuthorizationStatus`], which is the product-scoped
@@ -2958,6 +2982,6 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost {}
+pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost {}
+impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}
