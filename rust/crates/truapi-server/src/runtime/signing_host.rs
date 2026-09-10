@@ -1430,9 +1430,16 @@ mod tests {
             "peopl.dot",
             crate::runtime::GrantedScope::Context,
         ));
+        // Documentation, not a guard, and labelled so nobody reads it as one:
+        // with no cached manifest and no reachable chain this is false whether
+        // or not #660 installed a hash, so no mutation of the production path
+        // can turn it red. The load-bearing assertion in this test is the one
+        // above; the granted path is guarded by
+        // `a_context_grant_lets_a_foreign_product_prove_with_the_owners_key`
+        // and its M14 pair.
         assert!(
             !granted,
-            "with no cached manifest and no reachable chain the grant must fail closed"
+            "the closed default: no manifest reachable means no grant"
         );
     }
 
