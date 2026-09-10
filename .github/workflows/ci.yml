@@ -671,30 +671,57 @@ jobs:
         e2e,
       ]
     steps:
-      - name: Check all jobs
+      # The results come from the needs context itself rather than a second list
+      # of `needs.<job>.result` expressions, so the set of jobs checked cannot
+      # drift from the set depended on. `required` is the one list to maintain:
+      # a job present here but absent from the run reported nothing, which is
+      # how a gate gets deleted without anyone noticing, and a job in the run
+      # that is absent here means this list went stale.
+      #
+      # A job skipped by its path filter counts as a pass, which is what stops a
+      # gate stalling a pull request it does not apply to.
+      - name: Check every required job reported and passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED: >-
+            rust wasm-provider licenses codegen ios-bindings changes ios-swift
+            android-bindings ts-client ts-host ts-debugger playground explorer
+            e2e
         run: |
-          results=(
-            "${{ needs.rust.result }}"
-            "${{ needs.wasm-provider.result }}"
-            "${{ needs.licenses.result }}"
-            "${{ needs.codegen.result }}"
-            "${{ needs.ios-bindings.result }}"
-            # changes is listed because a failure there skips every gated
-            # job, and skipped counts as a pass below.
-            "${{ needs.changes.result }}"
-            "${{ needs.ios-swift.result }}"
-            "${{ needs.android-bindings.result }}"
-            "${{ needs.ts-client.result }}"
-            "${{ needs.ts-host.result }}"
-            "${{ needs.ts-debugger.result }}"
-            "${{ needs.playground.result }}"
-            "${{ needs.explorer.result }}"
-            "${{ needs.e2e.result }}"
-          )
-          for r in "${results[@]}"; do
-            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
-              echo "::error::One or more CI jobs failed or were cancelled."
-              exit 1
-            fi
+          set -euo pipefail
+
+          failed=()
+          missing=()
+          undeclared=()
+
+          for job in $REQUIRED; do
+            result="$(jq -r --arg j "$job" '.[$j].result // "ABSENT"' <<<"$NEEDS")"
+            case "$result" in
+              success | skipped) ;;
+              ABSENT) missing+=("$job") ;;
+              *) failed+=("$job=$result") ;;
+            esac
           done
-          echo "All CI jobs passed."
+
+          while read -r job; do
+            [ -n "$job" ] && undeclared+=("$job")
+          done < <(jq -r --arg req "$REQUIRED" \
+            '($req | split(" ") | map(select(length > 0))) as $r | (keys - $r)[]' \
+            <<<"$NEEDS")
+
+          status=0
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::CI jobs did not pass: ${failed[*]}"
+            status=1
+          fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Required jobs reported nothing, so a gate is missing from this workflow: ${missing[*]}"
+            status=1
+          fi
+          if [ ${#undeclared[@]} -gt 0 ]; then
+            echo "::error::Jobs are depended on but not listed in REQUIRED, so this gate is stale: ${undeclared[*]}"
+            status=1
+          fi
+          [ "$status" -eq 0 ] || exit 1
+
+          echo "All $(wc -w <<<"$REQUIRED" | tr -d ' ') required jobs reported and passed."
