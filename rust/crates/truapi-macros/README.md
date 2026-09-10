@@ -38,10 +38,16 @@ impl SigningHostSsoService {
 
 The method `get_account_alias` selects `GetAccountAliasRequest`; parameter types
 can be canonical payloads or generic wrappers without request aliases.
-The return type's name selects the wire response
-variant, including when two handlers share one variant. Distinct variants may
+The return type's name selects the wire response variant. For example,
+`create_transaction` and `create_transaction_with_legacy_account` both return
+`CreateTransactionResponse`, so request and response stems need not match. Distinct variants may
 carry identical result types; conversion belongs to the request, so those
 responses remain distinguishable. Constructors and helpers belong in a separate impl.
+
+Handler signatures define the protocol pairing. Changing a selected response
+variant is a protocol change even when its Rust payload type matches another
+variant. The compiler checks coverage and payload compatibility; it cannot infer
+the intended operation from structurally identical types.
 
 Handler signatures expand to native async methods returning `SsoReply<Payload>`.
 Bodies return the named `Result` or an explicit reply with a local transcript
@@ -73,8 +79,11 @@ to the server implementation.
 
 The [compiler tests](tests/sso.rs) exercise the macro against minimal versions of
 those contracts. They cover valid handlers, shared and explicit response pairing,
-boxed payloads, wire helpers, and invalid declarations:
+boxed payloads, wire helpers, and invalid declarations. The `.stderr` snapshots
+track CI's current stable rustc diagnostics; older compilers can report the same
+errors with different wording. Run them with an up-to-date stable toolchain:
 
 ```sh
-cargo test -p truapi-macros --locked
+rustup update stable
+cargo +stable test -p truapi-macros --locked
 ```
