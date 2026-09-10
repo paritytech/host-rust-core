@@ -1399,6 +1399,43 @@ mod tests {
         }
     }
 
+    /// #660 and #655 join here: the hash the signing role installs is the one
+    /// the grant path adjudicates against.
+    ///
+    /// Worth pinning because the two halves are testable apart and were built
+    /// apart. #660's own tests prove the hash is installed; #655's grant tests
+    /// seed the manifest **cache**, and `root_manifest` reads the cache before
+    /// it ever needs a genesis hash — so every one of them would pass with
+    /// #660 absent. This asserts the seam itself: the grant path's chain
+    /// lookup has an Asset Hub to run against on a role whose config used to
+    /// carry none.
+    ///
+    /// A cache miss still refuses, because the stub reaches no chain. That is
+    /// the closed default, and it is why this seam needs its own test rather
+    /// than being visible in a refusal.
+    #[test]
+    fn the_signing_role_adjudicates_grants_against_the_asset_hub_it_installed() {
+        let (services, _authority) = signing_runtime();
+        assert_eq!(
+            services.asset_hub_chain_genesis_hash(),
+            Some([0xcc; 32]),
+            "#660 must install the config's Asset Hub, or #655 resolves no manifest here"
+        );
+
+        let platform = Arc::new(StubPlatform::default());
+        let granted = futures::executor::block_on(crate::runtime::manifest_grants_scope(
+            &services,
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            crate::runtime::GrantedScope::Context,
+        ));
+        assert!(
+            !granted,
+            "with no cached manifest and no reachable chain the grant must fail closed"
+        );
+    }
+
     fn signing_runtime() -> (Arc<RuntimeServices>, Arc<SigningHostRole>) {
         // Auto-confirm raw signing so the role-neutral confirmation gate does
         // not reject before reaching the signing authority.
