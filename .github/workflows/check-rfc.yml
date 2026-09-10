@@ -73,18 +73,29 @@ jobs:
             fi
           done
 
-          # What a file is judged on. A new RFC is judged whole, for the same
-          # reason it is held to the template at all. An edit is judged on the
-          # lines it adds: the RFCs written before the template carry
-          # placeholders and open TBDs, and a change that touches one for an
-          # unrelated reason is not the change that introduced them.
+          # What a file is judged on: the lines it adds. The RFCs written before
+          # the template carry placeholders and open TBDs, and a change that
+          # touches one for an unrelated reason is not the change that
+          # introduced them. A new RFC is still judged whole, because for an
+          # added file every line is an added line.
+          #
+          # Both paths go to the diff so a rename keeps its pre-image. Restricted
+          # to the new path alone a rename has no old side, git calls the whole
+          # file added, and a renamed legacy RFC fails on TBDs it did not write.
+          #
+          # `--output-indicator-new` moves added lines off `+` so the filter
+          # cannot eat content: a file line starting with `++`, such as the `+++`
+          # of TOML frontmatter, is indistinguishable from the `+++` header once
+          # the diff has added its own prefix.
+          RENAMED_FROM=$(git diff --name-status --find-renames --diff-filter=R \
+            "$MERGE_BASE" HEAD -- 'docs/rfcs/*.md' "${EXCLUDE[@]}")
+
           subject() {
-            if printf '%s\n' $ADDED | grep -qxF -- "$1"; then
-              cat -- "$1"
-            else
-              git diff -U0 "$MERGE_BASE" HEAD -- "$1" \
-                | grep '^+' | grep -v '^+++' | cut -c2- || true
-            fi
+            local old
+            old=$(printf '%s\n' "$RENAMED_FROM" | awk -v new="$1" '$3 == new { print $2 }')
+            git diff -U0 --find-renames --output-indicator-new='>' \
+              "$MERGE_BASE" HEAD -- "$1" ${old:+"$old"} \
+              | grep '^>' | cut -c2- || true
           }
 
           for file in $CHANGED; do
