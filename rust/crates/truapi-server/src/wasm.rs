@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};
 use futures::stream::{self, BoxStream, Stream, StreamExt};
-use js_sys::{Array, Function, Reflect, Uint8Array};
+use js_sys::{Array, Function, Object, Reflect, Uint8Array};
 use parity_scale_codec::{Decode, Encode};
 use send_wrapper::SendWrapper;
 use truapi::latest::HostPlatform;
@@ -822,6 +822,41 @@ fn generic_error_to_js(err: v01::GenericError) -> JsValue {
     JsValue::from_str(&err.reason)
 }
 
+/// JS shape of one NFT-pocket item: 64-bit values as decimal strings, the
+/// address as `0x` hex.
+#[cfg(feature = "wasm-signing-host")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PocketItemJs {
+    instance: String,
+    collection: u32,
+    item: u32,
+    address: String,
+    state_nonce: String,
+    minted_at: String,
+    last_moved: String,
+    transferability: &'static str,
+}
+
+#[cfg(feature = "wasm-signing-host")]
+impl From<&truapi::latest::ScarcityItem> for PocketItemJs {
+    fn from(item: &truapi::latest::ScarcityItem) -> Self {
+        Self {
+            instance: item.instance.to_string(),
+            collection: item.collection,
+            item: item.item,
+            address: format!("0x{}", hex::encode(item.address)),
+            state_nonce: item.state_nonce.to_string(),
+            minted_at: item.minted_at.to_string(),
+            last_moved: item.last_moved.to_string(),
+            transferability: match item.transferability {
+                truapi::latest::ScarcityTransferability::Transferable => "Transferable",
+                truapi::latest::ScarcityTransferability::Soulbound => "Soulbound",
+            },
+        }
+    }
+}
+
 struct WasmCoreInner {
     core: ProductRuntime,
     dispose_fn: SendWrapper<Function>,
@@ -1233,6 +1268,88 @@ impl WasmSigningHostRuntime {
         self.runtime
             .activate_local_session_with_identity(secret, lite_username)
             .await
+            .map_err(generic_error_to_js)
+    }
+
+    /// Every NFT purse the wallet holds, its own (`nfts.dot`) first.
+    ///
+    /// Resolves to `string[]` of product ids.
+    #[wasm_bindgen(js_name = pocketPurses)]
+    pub async fn pocket_purses(&self) -> Result<JsValue, JsValue> {
+        let purses = self
+            .runtime
+            .pocket_purses()
+            .await
+            .map_err(generic_error_to_js)?;
+        serde_wasm_bindgen::to_value(&purses).map_err(|err| JsValue::from_str(&err.to_string()))
+    }
+
+    /// The items in `product_id`'s NFT purse, read from the chain.
+    ///
+    /// Resolves to an array of `{ instance, collection, item, address,
+    /// stateNonce, mintedAt, lastMoved, transferability }`; 64-bit values are
+    /// decimal strings, `address` is `0x`-prefixed hex, `transferability` is
+    /// `"Transferable"` or `"Soulbound"`.
+    #[wasm_bindgen(js_name = pocketList)]
+    pub async fn pocket_list(&self, product_id: String) -> Result<JsValue, JsValue> {
+        let items = self
+            .runtime
+            .pocket_list(&product_id)
+            .await
+            .map_err(generic_error_to_js)?;
+        let items: Vec<PocketItemJs> = items.iter().map(PocketItemJs::from).collect();
+        serde_wasm_bindgen::to_value(&items).map_err(|err| JsValue::from_str(&err.to_string()))
+    }
+
+    /// A fresh receive key in `product_id`'s NFT purse, as `0x`-prefixed hex.
+    /// The same `idempotency_key` returns the same key.
+    #[wasm_bindgen(js_name = pocketReceiveAddress)]
+    pub async fn pocket_receive_address(
+        &self,
+        product_id: String,
+        idempotency_key: String,
+    ) -> Result<String, JsValue> {
+        self.runtime
+            .pocket_receive_address(&product_id, &idempotency_key)
+            .await
+            .map(|address| format!("0x{}", hex::encode(address)))
+            .map_err(generic_error_to_js)
+    }
+
+    /// Move one NFT from `from_product_id`'s purse into a fresh key in
+    /// `to_product_id`'s. `on_progress` is called with `"Started"`, then
+    /// `{ InBlock: "0x…" }`; the promise resolves to the including block hash
+    /// once ownership is verified there, or rejects with
+    /// `"<ScarcityError>: <reason>"`.
+    #[wasm_bindgen(js_name = pocketMoveToProduct)]
+    pub async fn pocket_move_to_product(
+        &self,
+        instance: u64,
+        from_product_id: String,
+        to_product_id: String,
+        on_progress: Function,
+    ) -> Result<String, JsValue> {
+        let on_progress = SendWrapper::new(on_progress);
+        let progress = move |status: truapi::latest::ScarcityTransferStatus| {
+            let value = match status {
+                truapi::latest::ScarcityTransferStatus::Started => JsValue::from_str("Started"),
+                truapi::latest::ScarcityTransferStatus::InBlock { block } => {
+                    let object = Object::new();
+                    let _ = Reflect::set(
+                        &object,
+                        &JsValue::from_str("InBlock"),
+                        &JsValue::from_str(&format!("0x{}", hex::encode(block))),
+                    );
+                    object.into()
+                }
+                other => JsValue::from_str(&format!("{other:?}")),
+            };
+            let _ = on_progress.call1(&JsValue::NULL, &value);
+        };
+        self.runtime
+            .pocket_move_to_product(instance, &from_product_id, &to_product_id, &progress)
+            .await
+            .map(|block| format!("0x{}", hex::encode(block)))
             .map_err(generic_error_to_js)
     }
 

@@ -87,6 +87,12 @@ impl From<StatementAllowanceError> for TransferError {
 }
 
 impl TransferError {
+    /// A one-line reason for hosts, prefixed with the service error's name so
+    /// a wallet UI can branch on it without a second type.
+    pub(crate) fn to_service_error_reason(&self) -> String {
+        format!("{:?}: {self}", self.to_service_error())
+    }
+
     /// The service's view of this failure.
     pub(crate) fn to_service_error(&self) -> truapi::latest::ScarcityError {
         use truapi::latest::ScarcityError;

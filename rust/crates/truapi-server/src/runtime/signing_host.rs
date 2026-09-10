@@ -622,6 +622,102 @@ impl SigningHost {
         Ok(())
     }
 
+    /// The wallet's own view of the NFT pocket: every purse the host has
+    /// allocated in, the wallet's own first.
+    pub(crate) async fn pocket_purses(
+        &self,
+    ) -> Result<Vec<String>, crate::runtime::scarcity::PocketAuthorityError> {
+        let session = self.pocket_session()?;
+        let mut purses = vec![crate::host_logic::pocket::WALLET_PURSE_PRODUCT_ID.to_string()];
+        for purse in self.pocket.known_purses(session.public_key).await? {
+            if !purses.contains(&purse) {
+                purses.push(purse);
+            }
+        }
+        Ok(purses)
+    }
+
+    /// The items `product_id`'s purse holds, for the wallet's own view.
+    pub(crate) async fn pocket_list(
+        &self,
+        product_id: &str,
+    ) -> Result<Vec<truapi::latest::ScarcityItem>, crate::runtime::scarcity::PocketAuthorityError>
+    {
+        let session = self.pocket_session()?;
+        let entropy = self.root_entropy()?;
+        Ok(self
+            .pocket
+            .list(&entropy, session.public_key, product_id, None)
+            .await?)
+    }
+
+    /// A fresh receive key in `product_id`'s purse, requested by the wallet.
+    pub(crate) async fn pocket_receive_address(
+        &self,
+        product_id: &str,
+        idempotency_key: &str,
+    ) -> Result<[u8; 32], crate::runtime::scarcity::PocketAuthorityError> {
+        let session = self.pocket_session()?;
+        let entropy = self.root_entropy()?;
+        Ok(self
+            .pocket
+            .request_receive_address(
+                &entropy,
+                session.public_key,
+                product_id,
+                crate::host_logic::pocket::WALLET_PURSE_PRODUCT_ID,
+                idempotency_key,
+            )
+            .await?)
+    }
+
+    /// Move `instance` from one product's purse into a fresh key in another's:
+    /// the cross-purse move the wallet performs on the user's tap. The tap is
+    /// the consent, so no review is shown.
+    pub(crate) async fn pocket_move_to_product(
+        &self,
+        instance: u64,
+        from_product_id: &str,
+        to_product_id: &str,
+        progress: &(dyn Fn(truapi::latest::ScarcityTransferStatus) + Send + Sync),
+    ) -> Result<[u8; 32], crate::runtime::scarcity::transfer::TransferError> {
+        use crate::runtime::scarcity::PocketError;
+        let session = self.pocket_session().map_err(|err| PocketError::Unknown {
+            reason: err.to_string(),
+        })?;
+        let entropy = self.root_entropy().map_err(|err| PocketError::Unknown {
+            reason: err.to_string(),
+        })?;
+        let to = self
+            .pocket
+            .request_receive_address(
+                &entropy,
+                session.public_key,
+                to_product_id,
+                crate::host_logic::pocket::WALLET_PURSE_PRODUCT_ID,
+                &format!("move:{instance}:{from_product_id}->{to_product_id}"),
+            )
+            .await?;
+        self.pocket
+            .transfer(
+                &entropy,
+                session.public_key,
+                from_product_id,
+                instance,
+                to,
+                progress,
+            )
+            .await
+    }
+
+    fn pocket_session(
+        &self,
+    ) -> Result<AuthoritySession, crate::runtime::scarcity::PocketAuthorityError> {
+        self.current_local_session()
+            .ok_or(AuthorityError::Disconnected)
+            .map_err(Into::into)
+    }
+
     pub(crate) async fn ring_vrf_providers(
         &self,
         ring: &v01::RingLocation,
