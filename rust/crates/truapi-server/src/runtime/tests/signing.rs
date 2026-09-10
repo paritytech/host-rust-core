@@ -269,10 +269,9 @@ fn sign_raw_accepts_confirmation_then_returns_sso_response() {
     assert!(matches!(
         &message.data,
         crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request)
-        ) if matches!(
-            request.as_ref(),
-            crate::host_logic::sso::messages::SignRequest::Raw(_)
+            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(
+                crate::host_logic::sso::messages::SignRequest::Raw(_)
+            )
         )
     ));
     let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
@@ -532,10 +531,9 @@ fn sign_payload_accepts_confirmation_then_returns_sso_response() {
     assert!(matches!(
         &message.data,
         crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request)
-        ) if matches!(
-            request.as_ref(),
-            crate::host_logic::sso::messages::SignRequest::Payload(_)
+            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(
+                crate::host_logic::sso::messages::SignRequest::Payload(_)
+            )
         )
     ));
 }
@@ -691,7 +689,7 @@ fn legacy_sign_raw_accepts_derived_ss58_then_returns_sso_response() {
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SignRequest::Raw(request) = *request else {
+    let crate::host_logic::sso::messages::SignRequest::Raw(request) = request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(
@@ -744,7 +742,7 @@ fn legacy_sign_raw_accepts_derived_hex_then_returns_sso_response() {
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SignRequest::Raw(request) = *request else {
+    let crate::host_logic::sso::messages::SignRequest::Raw(request) = request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(

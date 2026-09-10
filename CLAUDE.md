@@ -73,9 +73,9 @@ scripts/truapi-host-installer.sh
   rather than importing a concrete protocol version. Runtime crates may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
-- Inter-host SSO uses `SsoWire` and `#[sso_service]` as described
+- Inter-host SSO uses `#[sso_service]` as described
   in the [macro guide](rust/crates/truapi-macros/README.md). Keep per-variant pairing,
-  dispatch, and correlation in those macros; do not add manual per-variant catalogs.
+  dispatch, and correlation in that macro; do not add manual per-variant catalogs.
   Requests with a caller share `ProductRequest<P>` around canonical payloads;
   handler method names select request variants. Responses share `Response<P>`;
   handler signatures name their result payload

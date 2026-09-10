@@ -10,7 +10,6 @@ use truapi::latest::{
     HostAccountCreateProofRequest, HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
     HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest, HostAccountSignVrfRequest,
 };
-use truapi_macros::SsoWire;
 
 use super::{
     CreateAccountProofResponse, CreateTransactionRequest, CreateTransactionResponse,
@@ -25,12 +24,12 @@ use super::{
 ///
 /// The variant order is part of the SCALE wire protocol used inside
 /// statement-store session statements.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, SsoWire)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum RemoteMessage {
     /// The peer is ending the SSO session.
     Disconnected,
     /// Ask the signing host to sign a payload or raw data with a product account.
-    SignRequest(Box<SignRequest>),
+    SignRequest(SignRequest),
     /// Signing host's answer to [`RemoteMessage::SignRequest`].
     SignResponse(Response<SignResponse>),
     /// Ask the Account Holder for a contextual alias.
