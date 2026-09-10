@@ -457,19 +457,68 @@ pub struct DotnsIdentity {
     pub full_username: Option<String>,
 }
 
+/// Which generation of `DotnsPopController` a deployment runs.
+///
+/// dotns#275 changed the contract in two ways the read path depends on: lite
+/// names are stored dotted (`alice.42`) instead of flattened (`alice42`),
+/// and `isPopIssued(string)` records issuance provenance. A deployment that
+/// predates it has neither — the selector is absent, so the call reverts for
+/// every label, issued or not, and its storage is flattened. The two facts
+/// travel together, so one probe decides both how to gate and how to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PopControllerGeneration {
+    /// dotns#275 or later: provenance is readable, lite names are dotted.
+    Provenance,
+    /// Before dotns#275: no provenance read, lite names are flattened.
+    Legacy,
+}
+
+/// Probes `controller` once for `isPopIssued(string)`.
+///
+/// A revert is the contract answering — it ran and has no such function —
+/// and means [`PopControllerGeneration::Legacy`]. A transport failure is not
+/// an answer and is returned as the error it is, so a flaky node never gets
+/// mistaken for an old contract.
+async fn pop_controller_generation<T: DotnsTransport + ?Sized>(
+    transport: &mut T,
+    controller: &[u8; 20],
+) -> Result<PopControllerGeneration, String> {
+    match transport
+        .view(controller, call_string("isPopIssued(string)", "x"))
+        .await
+    {
+        Ok(_) => Ok(PopControllerGeneration::Provenance),
+        Err(DotnsViewError::Reverted(_)) => Ok(PopControllerGeneration::Legacy),
+        Err(DotnsViewError::Failed(err)) => Err(format!(
+            "DotnsPopController.isPopIssued(string) probe: {err}"
+        )),
+    }
+}
+
 /// Classifies bare contract labels into lite and full usernames.
 ///
-/// Only labels the PoP controller actually issued become usernames:
-/// `DotnsPopController.isPopIssued(label)` is the provenance authority, so a
-/// public registration, an incoming transfer, or a subname under a digit-only
-/// parent never fills a username slot no matter its shape. A label matching
-/// [`is_dotted_lite_username`] (`alice.42`, stored dotted) is the lite
-/// username verbatim; any other issued canonical DNS label is the full
-/// username. Anything that is not one of those shapes — oversized, non-ASCII,
-/// control characters, markup, other dotted strings — is skipped before the
-/// provenance read, so no unscreened contract string is even asked about.
-/// First hit per slot wins. Labels are expected bare: [`resolve_labels`]
-/// strips the network TLD.
+/// On a [`PopControllerGeneration::Provenance`] controller only labels it
+/// actually issued become usernames: `DotnsPopController.isPopIssued(label)`
+/// is the provenance authority, so a public registration, an incoming
+/// transfer, or a subname under a digit-only parent never fills a username
+/// slot no matter its shape. A label matching [`is_dotted_lite_username`]
+/// (`alice.42`, stored dotted) is the lite username verbatim; any other
+/// issued canonical DNS label is the full username.
+///
+/// On a [`PopControllerGeneration::Legacy`] controller there is no
+/// provenance to ask for and storage is flattened, so classification is by
+/// shape alone, as it was before dotns#275: `alice42` is re-dotted into the
+/// lite username `alice.42`, any other DNS label is the full username.
+/// Without this, a person the People chain has already attested is
+/// discarded by every caller waiting on `lite_username`, two layers away
+/// from the cause.
+///
+/// Either way, anything that is not one of the accepted shapes — oversized,
+/// non-ASCII, control characters, markup, other dotted strings — is skipped
+/// before any contract read, so no unscreened contract string is even asked
+/// about. First hit per slot wins. Labels are expected bare:
+/// [`resolve_labels`] strips the network TLD. The generation probe runs
+/// lazily, once, on the first label that passes the shape screen.
 pub async fn classify_labels<T, I>(
     transport: &mut T,
     controller: &[u8; 20],
@@ -481,23 +530,47 @@ where
     I::Item: AsRef<str>,
 {
     let mut identity = DotnsIdentity::default();
+    let mut generation = None;
     for label in labels {
         let label = label.as_ref();
         let shape_ok = is_dotted_lite_username(label) || is_dns_label(label);
         if !shape_ok {
             continue;
         }
-        if !is_pop_issued(transport, controller, label).await? {
-            continue;
-        }
-        if is_dotted_lite_username(label) {
-            identity
-                .lite_username
-                .get_or_insert_with(|| label.to_string());
-        } else {
-            identity
-                .full_username
-                .get_or_insert_with(|| label.to_string());
+        let generation = match generation {
+            Some(generation) => generation,
+            None => *generation.insert(pop_controller_generation(transport, controller).await?),
+        };
+        match generation {
+            PopControllerGeneration::Provenance => {
+                if !is_pop_issued(transport, controller, label).await? {
+                    continue;
+                }
+                if is_dotted_lite_username(label) {
+                    identity
+                        .lite_username
+                        .get_or_insert_with(|| label.to_string());
+                } else {
+                    identity
+                        .full_username
+                        .get_or_insert_with(|| label.to_string());
+                }
+            }
+            PopControllerGeneration::Legacy => {
+                if let Some((stem, digits)) = flattened_lite_username(label) {
+                    identity
+                        .lite_username
+                        .get_or_insert_with(|| format!("{stem}.{digits}"));
+                } else if is_dotted_lite_username(label) {
+                    identity
+                        .lite_username
+                        .get_or_insert_with(|| label.to_string());
+                } else {
+                    identity
+                        .full_username
+                        .get_or_insert_with(|| label.to_string());
+                }
+            }
         }
     }
     Ok(identity)
@@ -580,6 +653,23 @@ pub fn is_registrable_full_label(label: &str) -> bool {
 /// spelling.
 pub fn is_dotted_lite_username(value: &str) -> bool {
     is_lite_label(value) && value.len() <= MAX_BASE_LABEL_LEN
+}
+
+/// Splits a flattened lite username (`alice01`) into its stem and two-digit
+/// tail — the spelling a [`PopControllerGeneration::Legacy`] controller
+/// stores. Returns `None` for any other label, so a full username never
+/// takes the lite slot. The dotted form must itself pass
+/// [`is_dotted_lite_username`], which keeps the letters-only stem rule and
+/// the pallet's byte bound identical across both generations.
+fn flattened_lite_username(label: &str) -> Option<(&str, &str)> {
+    if !is_dns_label(label) || label.len() <= 2 {
+        return None;
+    }
+    let (stem, digits) = label.split_at(label.len() - 2);
+    let lite = is_dns_label(stem)
+        && digits.chars().all(|c| c.is_ascii_digit())
+        && is_dotted_lite_username(&format!("{stem}.{digits}"));
+    lite.then_some((stem, digits))
 }
 
 /// Page size for `LabelStore.getLabels`.
@@ -1550,6 +1640,88 @@ mod tests {
                     DotnsIdentity::default()
                 );
             }
+        });
+    }
+
+    /// A controller from before dotns#275 has no `isPopIssued(string)`: the
+    /// call reverts for every label, and storage is flattened. Measured on
+    /// previewnet, where the identical address answers on paseo-next.
+    #[test]
+    fn legacy_controller_classifies_by_shape_and_re_dots_flattened_lite_names() {
+        futures::executor::block_on(async {
+            struct NoProvenanceRead {
+                probes: usize,
+            }
+            #[truapi_platform::async_trait]
+            impl DotnsTransport for NoProvenanceRead {
+                async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+                    unreachable!("classify_labels reads no storage")
+                }
+                async fn view(
+                    &mut self,
+                    _dest: &[u8; 20],
+                    input: Vec<u8>,
+                ) -> Result<Vec<u8>, DotnsViewError> {
+                    assert_eq!(&input[..4], &selector("isPopIssued(string)"));
+                    self.probes += 1;
+                    Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+                        detail: "(empty)".to_string(),
+                    }))
+                }
+            }
+            let controller = [0xAA; 20];
+            let mut legacy = NoProvenanceRead { probes: 0 };
+
+            let identity = classify_labels(
+                &mut legacy,
+                &controller,
+                ["squatter", "alice01", "alice.01", "myproject", "a2b34"],
+            )
+            .await
+            .unwrap();
+            // Flattened storage is re-dotted; the first lite hit wins over a
+            // later dotted one, a non-lite stem stays out of the slot, and
+            // the first plain DNS label is the full username.
+            assert_eq!(identity.lite_username.as_deref(), Some("alice.01"));
+            assert_eq!(identity.full_username.as_deref(), Some("squatter"));
+            // One probe decides the generation; no per-label reads follow,
+            // so a reverting controller is asked exactly once.
+            assert_eq!(legacy.probes, 1);
+
+            // Shape screening still runs before the probe.
+            let mut untouched = NoProvenanceRead { probes: 0 };
+            let identity = classify_labels(&mut untouched, &controller, ["Upper", "a\0b"])
+                .await
+                .unwrap();
+            assert_eq!(identity, DotnsIdentity::default());
+            assert_eq!(untouched.probes, 0);
+        });
+    }
+
+    /// A transport failure is not the contract answering: it is returned as
+    /// the error it is, never read as "legacy" and never swallowed.
+    #[test]
+    fn transport_failure_on_the_provenance_probe_is_an_error() {
+        futures::executor::block_on(async {
+            struct FlakyNode;
+            #[truapi_platform::async_trait]
+            impl DotnsTransport for FlakyNode {
+                async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+                    unreachable!("classify_labels reads no storage")
+                }
+                async fn view(
+                    &mut self,
+                    _dest: &[u8; 20],
+                    _input: Vec<u8>,
+                ) -> Result<Vec<u8>, DotnsViewError> {
+                    Err(DotnsViewError::Failed("connection reset".to_string()))
+                }
+            }
+            let err = classify_labels(&mut FlakyNode, &[0xAA; 20], ["alice.01"])
+                .await
+                .unwrap_err();
+            assert!(err.contains("isPopIssued(string) probe"), "{err}");
+            assert!(err.contains("connection reset"), "{err}");
         });
     }
 
