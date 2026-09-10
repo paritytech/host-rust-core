@@ -13,7 +13,7 @@ use tracing::instrument;
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::dotns_gateway::{
     DotnsTransport, DotnsViewError, call_bytes32, call_no_args, decode_address, decode_string,
-    dispatcher_address_key, namehash_under, network_tld, registry_key, tld_node,
+    discover_pop_controller, namehash_under, network_tld, registry_key, tld_node,
 };
 use crate::host_logic::product_manifest::bare_product_label;
 use crate::runtime::dotns_lookup::DotnsLookup;
@@ -84,19 +84,23 @@ pub(crate) async fn fetch_root_manifest(
     Ok(Some(manifest))
 }
 
-/// The deployment's `DotnsProtocolRegistry`, found through the gateway's
-/// dispatcher. `Ok(None)` when the gateway is not deployed.
+/// The deployment's `DotnsProtocolRegistry`, read from the controller.
+/// `Ok(None)` when the gateway is not deployed.
+///
+/// [`discover_pop_controller`] resolves the controller, because
+/// `DotnsGateway.DispatcherAddress` holds either the controller or a
+/// `RootGatewayDispatcher` that fronts it, and both are in service. Calling
+/// `protocolRegistry()` on the stored address directly reverts on a chain that
+/// still keeps its dispatcher, which would refuse every grant on that chain
+/// while username resolution kept working.
 async fn protocol_registry<T: DotnsTransport + ?Sized>(
     transport: &mut T,
 ) -> Result<Option<[u8; 20]>, String> {
-    let Some(dispatcher) = transport.storage(dispatcher_address_key()).await? else {
+    let Some(controller) = discover_pop_controller(transport).await? else {
         return Ok(None);
     };
-    let dispatcher: [u8; 20] = dispatcher.try_into().map_err(|value: Vec<u8>| {
-        format!("DotnsGateway.DispatcherAddress is {} bytes", value.len())
-    })?;
     let output = transport
-        .view(&dispatcher, call_no_args("protocolRegistry()"))
+        .view(&controller, call_no_args("protocolRegistry()"))
         .await
         .map_err(|err| format!("DotnsPopController.protocolRegistry(): {err}"))?;
     decode_address(&output)

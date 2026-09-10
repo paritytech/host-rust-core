@@ -91,6 +91,7 @@ use crate::host_logic::session::SessionInfo;
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::sso::pairing::x25519_public_key;
+use crate::host_logic::statement_store::current_unix_secs;
 #[cfg(test)]
 use crate::subscription::Spawner;
 
@@ -281,19 +282,6 @@ pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> 
     .encode()
 }
 
-/// Seconds since the Unix epoch, or `None` on a clock before it.
-fn unix_time_secs() -> Option<u64> {
-    #[cfg(not(target_arch = "wasm32"))]
-    use std::time::{SystemTime, UNIX_EPOCH};
-    #[cfg(target_arch = "wasm32")]
-    use web_time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|since| since.as_secs())
-}
-
 /// Scopes `target`'s published manifest grants `caller_id`.
 ///
 /// A grant that cannot be established answers `false` whatever the reason — the
@@ -346,7 +334,7 @@ async fn root_manifest(
     let key = CoreStorageKey::ProductManifest {
         product_id: target.to_string(),
     };
-    let now = unix_time_secs()?;
+    let now = current_unix_secs();
     if let Ok(Some(bytes)) = platform.read_core_storage(key.clone()).await
         && let Ok(cached) = CachedManifest::decode(&mut bytes.as_slice())
         && now.saturating_sub(cached.fetched_at_secs) < MANIFEST_TTL_SECS

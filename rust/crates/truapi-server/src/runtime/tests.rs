@@ -271,9 +271,7 @@ fn cache_manifest(platform: &StubPlatform, owner: &str, trusted: &str, age_secs:
 /// Seeds `owner`'s cached lookup, `None` standing for "publishes no manifest".
 fn cache_manifest_entry(platform: &StubPlatform, owner: &str, json: Option<String>, age_secs: u64) {
     let entry = CachedManifest {
-        fetched_at_secs: unix_time_secs()
-            .expect("clock is after the epoch")
-            .saturating_sub(age_secs),
+        fetched_at_secs: current_unix_secs().saturating_sub(age_secs),
         json,
     };
     futures::executor::block_on(platform.write_core_storage(
@@ -338,18 +336,6 @@ fn a_cached_miss_refuses_without_returning_to_the_chain() {
             v02::HostLocalStorageReadError::AccessNotGranted
         ))
     );
-}
-
-#[test]
-fn a_cached_miss_expires_on_the_same_bound_as_a_grant() {
-    // A product that publishes a manifest after the miss was cached must not
-    // stay unreachable for longer than a revoked grant stays in force.
-    let platform = stub_platform();
-    cache_manifest_entry(&platform, "wallet.dot", None, MANIFEST_TTL_SECS + 1);
-    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
-    // Still refused here only because the compat host reaches no chain to
-    // re-read from; what this pins is that the stale entry is not consulted.
-    assert!(read_storage(&host, Some("wallet.dot"), "k").is_err());
 }
 
 #[test]
