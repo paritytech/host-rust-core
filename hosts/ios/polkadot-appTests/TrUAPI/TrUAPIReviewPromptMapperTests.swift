@@ -22,6 +22,18 @@ struct TrUAPIReviewPromptMapperTests {
     }
 
     @Test
+    func mapsChatAuthorityToDedicatedPermission() {
+        let request = mapper.makePermissionRequest(
+            from: ChatAuthorityReview(productId: "chat.dot")
+        )
+
+        #expect(request == TrUAPIPermissionRequest(
+            productId: "chat.dot",
+            permissions: [.chatAuthority]
+        ))
+    }
+
+    @Test
     func mapsPreimageSubmitToHostProductPermission() {
         let request = mapper.makePermissionRequest(from: PreimageSubmitReview(size: 1_024))
 

@@ -992,15 +992,15 @@ mod tests {
 
     #[test]
     fn product_device_chat_messages_pin_mobile_wire_indices() {
-        let request = product_device_chat_message(
-            "request".to_string(),
-            "egui-chat.paseo".to_string(),
-            SsoProductDeviceChatOperation::Bind {
+        let chat_request = ProductRequest {
+            calling_product_id: "egui-chat.paseo".to_string(),
+            payload: SsoProductDeviceChatOperation::Bind {
                 derivation_index: DerivationIndex::Index(0),
                 peer_identity_account_id: [0x55; 32],
                 peer_chat_public_key: [0x66; 32],
             },
-        );
+        };
+        let request = RemoteMessage::request("request".to_string(), chat_request);
         let encoded_request = request.encode();
         assert_eq!(encoded_request[9], 24);
         assert_eq!(
@@ -1008,25 +1008,26 @@ mod tests {
             request
         );
 
-        let product_response = ProductDeviceChatResponse {
-            responding_to: "request".to_string(),
-            payload: Ok(v01::HostProductDeviceChatResponse::Sealed {
+        let product_response: ProductDeviceChatResponse =
+            Ok(v01::HostProductDeviceChatResponse::Sealed {
                 combined_ciphertext: vec![0x77; 28],
-            }),
+            });
+        let response_envelope = Response {
+            responding_to: "request".to_string(),
+            payload: product_response,
         };
         let response = RemoteMessage {
             message_id: "response".to_string(),
             data: RemoteMessageData::V1(v1::RemoteMessage::ProductDeviceChatResponse(
-                product_response.clone(),
+                response_envelope.clone(),
             )),
         };
         let encoded_response = response.encode();
         assert_eq!(encoded_response[10], 25);
+        let RemoteMessageData::V1(data) = response.data;
         assert_eq!(
-            remote_response_for_message(response, "request"),
-            Some(SsoRemoteResponse::ProductDeviceChat(Box::new(
-                product_response
-            )))
+            ProductRequest::<SsoProductDeviceChatOperation>::response_from_message(data),
+            Some(response_envelope)
         );
     }
 

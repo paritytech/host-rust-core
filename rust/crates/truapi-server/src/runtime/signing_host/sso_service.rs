@@ -511,7 +511,7 @@ impl SigningHostSsoService {
             &calling_product_id,
         );
         if permissions
-            .check_or_prompt_identity_disclosure()
+            .check_or_prompt_chat_authority()
             .await
             .map_err(|error| v01::HostProductDeviceChatError::Unknown {
                 reason: error.reason,

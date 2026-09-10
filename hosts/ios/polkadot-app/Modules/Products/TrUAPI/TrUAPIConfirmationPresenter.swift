@@ -56,6 +56,10 @@ private extension TrUAPIConfirmationPresenter {
             await confirmPermission(
                 promptMapper.makePermissionRequest(from: identityReview)
             )
+        case let .chatAuthority(chatReview):
+            await confirmPermission(
+                promptMapper.makePermissionRequest(from: chatReview)
+            )
         case let .preimageSubmit(preimageReview):
             await confirmPermission(
                 promptMapper.makePermissionRequest(from: preimageReview)
