@@ -50,7 +50,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "f24bf5bf74ae94ca";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "e827ead5231786bc";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: RequestFrameIds = RequestFrameIds {
@@ -536,6 +536,14 @@ pub const SCARCITY_TRANSFER: SubscriptionFrameIds = SubscriptionFrameIds {
     receive_id: 205,
 };
 
+/// Wire discriminants for `scarcity_list_subscribe`.
+pub const SCARCITY_LIST_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 212,
+    stop_id: 213,
+    interrupt_id: 214,
+    receive_id: 215,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -838,5 +846,9 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "scarcity_transfer",
         kind: WireKind::Subscription(SCARCITY_TRANSFER),
+    },
+    WireEntry {
+        method: "scarcity_list_subscribe",
+        kind: WireKind::Subscription(SCARCITY_LIST_SUBSCRIBE),
     },
 ];

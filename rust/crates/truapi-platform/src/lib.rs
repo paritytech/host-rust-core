@@ -1034,6 +1034,16 @@ pub enum PermissionAuthorizationRequest {
         /// Product whose account context may be accessed.
         target_product_id: String,
     },
+    /// Product-scoped permission to list its own NFT purse and allocate
+    /// receive keys in it.
+    ScarcityAccess,
+    /// Product-scoped permission to allocate NFT receive keys in another
+    /// product's purse, so it can mint or send items into that product's
+    /// collectibles.
+    ScarcityReceiveFor {
+        /// Product whose purse receives the items.
+        target_product_id: String,
+    },
 }
 
 /// Authorization status for a permission request.
@@ -1296,6 +1306,23 @@ pub enum CoreStorageKey {
         /// Pairing peer's X25519 public key.
         peer_encryption_public_key: [u8; 32],
     },
+    /// The NFT pocket's durable records for one wallet: every purse's index
+    /// counter, reserved receive keys, and held items.
+    ///
+    /// One slot so a write is atomic; the value is a versioned snapshot owned
+    /// by the core and holds no secret material.
+    #[codec(index = 12)]
+    ScarcityPocket {
+        /// Root public key of the wallet the purses derive from.
+        root_public_key: [u8; 32],
+    },
+    /// The NFT pocket's write-ahead log of in-flight transfers for one wallet,
+    /// written before broadcast and drained by the recovery sweep.
+    #[codec(index = 13)]
+    ScarcityPocketWal {
+        /// Root public key of the wallet the purses derive from.
+        root_public_key: [u8; 32],
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1348,6 +1375,8 @@ pub fn describe_core_storage_key(
         CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
         CoreStorageKey::DeviceEncryptionKey => ("DeviceEncryptionKey", None),
         CoreStorageKey::SsoResponderRequestLedger { .. } => ("SsoResponderRequestLedger", None),
+        CoreStorageKey::ScarcityPocket { .. } => ("ScarcityPocket", None),
+        CoreStorageKey::ScarcityPocketWal { .. } => ("ScarcityPocketWal", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }
@@ -1409,6 +1438,25 @@ impl CoreStorageKey {
         Self::PermissionAuthorization {
             product_id: product_id.to_string(),
             request: PermissionAuthorizationRequest::AccountAccess {
+                target_product_id: target_product_id.to_string(),
+            },
+        }
+    }
+
+    /// Persisted authorization key for a product listing its own NFT purse.
+    pub fn scarcity_access_authorization(product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::ScarcityAccess,
+        }
+    }
+
+    /// Persisted authorization key for a product allocating NFT receive keys
+    /// in another product's purse.
+    pub fn scarcity_receive_for_authorization(product_id: &str, target_product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::ScarcityReceiveFor {
                 target_product_id: target_product_id.to_string(),
             },
         }
@@ -2104,6 +2152,41 @@ mod tests {
     }
 
     #[test]
+    fn scarcity_pocket_storage_keys_have_stable_encodings() {
+        let mut pocket = vec![12];
+        pocket.extend([0x44; 32]);
+        assert_eq!(
+            CoreStorageKey::ScarcityPocket {
+                root_public_key: [0x44; 32]
+            }
+            .encode(),
+            pocket
+        );
+        let mut wal = vec![13];
+        wal.extend([0x44; 32]);
+        assert_eq!(
+            CoreStorageKey::ScarcityPocketWal {
+                root_public_key: [0x44; 32]
+            }
+            .encode(),
+            wal
+        );
+        // Appended `PermissionAuthorizationRequest` variants keep the earlier
+        // discriminants stable: Device 0, Remote 1, IdentityDisclosure 2,
+        // AccountAccess 3, ScarcityAccess 4, ScarcityReceiveFor 5.
+        assert_eq!(PermissionAuthorizationRequest::ScarcityAccess.encode(), [4]);
+        let mut receive_for = vec![5];
+        receive_for.extend("seity.dot".encode());
+        assert_eq!(
+            PermissionAuthorizationRequest::ScarcityReceiveFor {
+                target_product_id: "seity.dot".to_string()
+            }
+            .encode(),
+            receive_for
+        );
+    }
+
+    #[test]
     fn product_context_encoding_matches_the_generated_host_codec() {
         // The generated TS host codec is
         // `S.Struct({productId: S.str, executionKind: S.Status("App", "Widget", "Worker")})`,
@@ -2726,13 +2809,15 @@ pub struct AccountAccessReview {
     pub target_product_id: String,
 }
 
-/// Review shown before a product may list the NFTs in the user's pocket.
+/// Review shown before a product may list its own NFT purse and allocate
+/// receive keys in it.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ScarcityAccessReview {
-    /// Product asking to see the pocket.
+    /// Product asking to see its purse.
     pub product_id: String,
-    /// Collections the grant is scoped to; `None` covers the whole pocket.
+    /// Collections the first request named, for the sheet's wording only; the
+    /// grant covers the product's whole purse.
     pub collections: Option<Vec<u32>>,
 }
 
@@ -2750,6 +2835,20 @@ pub struct ScarcityTransferReview {
     pub item: u32,
     /// Destination purse key.
     pub to: [u8; 32],
+    /// Product whose purse `to` belongs to, when the host derived it; a host
+    /// names the product on the sheet instead of the raw key.
+    pub to_product_id: Option<String>,
+}
+
+/// Review shown before a product may allocate NFT receive keys in another
+/// product's purse, placing items into that product's collectibles.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct ScarcityReceiveForReview {
+    /// Product asking to place items.
+    pub product_id: String,
+    /// Product whose purse will receive them.
+    pub target_product_id: String,
 }
 
 /// Review shown before a product learns the user's primary identity.
@@ -2810,6 +2909,8 @@ pub enum UserConfirmationReview {
     ScarcityAccess(ScarcityAccessReview),
     /// Move one pocket NFT on a product's behalf.
     ScarcityTransfer(ScarcityTransferReview),
+    /// Allow a product to place NFTs into another product's purse.
+    ScarcityReceiveFor(ScarcityReceiveForReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.

@@ -193,7 +193,20 @@ export type CoreStorageKey =
         peerStatementAccountId: Uint8Array;
         peerEncryptionPublicKey: Uint8Array;
       };
-    };
+    }
+  /**
+   * The NFT pocket's durable records for one wallet: every purse's index
+   * counter, reserved receive keys, and held items.
+   *
+   * One slot so a write is atomic; the value is a versioned snapshot owned
+   * by the core and holds no secret material.
+   */
+  | { tag: "ScarcityPocket"; value: { rootPublicKey: Uint8Array } }
+  /**
+   * The NFT pocket's write-ahead log of in-flight transfers for one wallet,
+   * written before broadcast and drained by the recovery sweep.
+   */
+  | { tag: "ScarcityPocketWal"; value: { rootPublicKey: Uint8Array } };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -314,7 +327,18 @@ export type PermissionAuthorizationRequest =
   /**
    * Product-scoped permission to access another product's account context.
    */
-  | { tag: "AccountAccess"; value: { targetProductId: string } };
+  | { tag: "AccountAccess"; value: { targetProductId: string } }
+  /**
+   * Product-scoped permission to list its own NFT purse and allocate
+   * receive keys in it.
+   */
+  | { tag: "ScarcityAccess"; value?: undefined }
+  /**
+   * Product-scoped permission to allocate NFT receive keys in another
+   * product's purse, so it can mint or send items into that product's
+   * collectibles.
+   */
+  | { tag: "ScarcityReceiveFor"; value: { targetProductId: string } };
 
 /**
  * Authorization status for a permission request.
@@ -399,18 +423,36 @@ export interface ResourceAllocationReview {
 }
 
 /**
- * Review shown before a product may list the NFTs in the user's pocket.
+ * Review shown before a product may list its own NFT purse and allocate
+ * receive keys in it.
  */
 export interface ScarcityAccessReview {
   /**
-   * Product asking to see the pocket.
+   * Product asking to see its purse.
    */
   productId: string;
 
   /**
-   * Collections the grant is scoped to; ``undefined`` covers the whole pocket.
+   * Collections the first request named, for the sheet's wording only; the
+   * grant covers the product's whole purse.
    */
   collections?: Array<number>;
+}
+
+/**
+ * Review shown before a product may allocate NFT receive keys in another
+ * product's purse, placing items into that product's collectibles.
+ */
+export interface ScarcityReceiveForReview {
+  /**
+   * Product asking to place items.
+   */
+  productId: string;
+
+  /**
+   * Product whose purse will receive them.
+   */
+  targetProductId: string;
 }
 
 /**
@@ -441,6 +483,12 @@ export interface ScarcityTransferReview {
    * Destination purse key.
    */
   to: Uint8Array;
+
+  /**
+   * Product whose purse `to` belongs to, when the host derived it; a host
+   * names the product on the sheet instead of the raw key.
+   */
+  toProductId?: string;
 }
 
 /**
@@ -607,7 +655,11 @@ export type UserConfirmationReview =
   /**
    * Move one pocket NFT on a product's behalf.
    */
-  | { tag: "ScarcityTransfer"; value: ScarcityTransferReview };
+  | { tag: "ScarcityTransfer"; value: ScarcityTransferReview }
+  /**
+   * Allow a product to place NFTs into another product's purse.
+   */
+  | { tag: "ScarcityReceiveFor"; value: ScarcityReceiveForReview };
 
 /**
  * Review shown before a product asks to access another product account.
@@ -695,6 +747,12 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         rootPublicKey: Uint8Array;
         peerStatementAccountId: Uint8Array;
         peerEncryptionPublicKey: Uint8Array;
+      }>,
+      ScarcityPocket: S.Struct({ rootPublicKey: S.Bytes(32) }) as S.Codec<{
+        rootPublicKey: Uint8Array;
+      }>,
+      ScarcityPocketWal: S.Struct({ rootPublicKey: S.Bytes(32) }) as S.Codec<{
+        rootPublicKey: Uint8Array;
       }>,
     }),
 );
@@ -790,6 +848,10 @@ export const PermissionAuthorizationRequest: S.Codec<PermissionAuthorizationRequ
         AccountAccess: S.Struct({ targetProductId: S.str }) as S.Codec<{
           targetProductId: string;
         }>,
+        ScarcityAccess: S._void,
+        ScarcityReceiveFor: S.Struct({ targetProductId: S.str }) as S.Codec<{
+          targetProductId: string;
+        }>,
       }),
   );
 
@@ -864,7 +926,8 @@ export const ResourceAllocationReview: S.Codec<ResourceAllocationReview> =
   );
 
 /**
- * Review shown before a product may list the NFTs in the user's pocket.
+ * Review shown before a product may list its own NFT purse and allocate
+ * receive keys in it.
  */
 export const ScarcityAccessReview: S.Codec<ScarcityAccessReview> = S.lazy(
   (): S.Codec<ScarcityAccessReview> =>
@@ -873,6 +936,19 @@ export const ScarcityAccessReview: S.Codec<ScarcityAccessReview> = S.lazy(
       collections: S.Option(S.Vector(S.u32)),
     }) as S.Codec<ScarcityAccessReview>,
 );
+
+/**
+ * Review shown before a product may allocate NFT receive keys in another
+ * product's purse, placing items into that product's collectibles.
+ */
+export const ScarcityReceiveForReview: S.Codec<ScarcityReceiveForReview> =
+  S.lazy(
+    (): S.Codec<ScarcityReceiveForReview> =>
+      S.Struct({
+        productId: S.str,
+        targetProductId: S.str,
+      }) as S.Codec<ScarcityReceiveForReview>,
+  );
 
 /**
  * Review shown before the host moves one pocket NFT for a product.
@@ -885,6 +961,7 @@ export const ScarcityTransferReview: S.Codec<ScarcityTransferReview> = S.lazy(
       collection: S.u32,
       item: S.u32,
       to: S.Bytes(32),
+      toProductId: S.Option(S.str),
     }) as S.Codec<ScarcityTransferReview>,
 );
 
@@ -973,6 +1050,7 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
       ProductSubtree: ProductSubtreeReview,
       ScarcityAccess: ScarcityAccessReview,
       ScarcityTransfer: ScarcityTransferReview,
+      ScarcityReceiveFor: ScarcityReceiveForReview,
     }),
 );
 

@@ -2186,7 +2186,7 @@ where
         });
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_subscription(wire_table::SCARCITY_TRANSFER, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
@@ -2212,6 +2212,36 @@ where
                     }
                 };
                 Ok(subscription_stream::<versioned::scarcity::HostScarcityTransferItem, _>(stream))
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_subscription(wire_table::SCARCITY_LIST_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::scarcity::HostScarcityListSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::scarcity::HostScarcityListSubscribeError> =
+                            truapi::CallError::MalformedFrame {
+                                reason: err.to_string(),
+                            };
+                        return Err(encode_versioned_interrupt_payload(
+                            error,
+                            <versioned::scarcity::HostScarcityListSubscribeError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let stream = match host.list_subscribe(&cx, request).await {
+                    Ok(sub) => sub,
+                    Err(err) => {
+                        return Err(encode_versioned_interrupt_payload(err, target_version));
+                    }
+                };
+                Ok(subscription_stream::<versioned::scarcity::HostScarcityListSubscribeItem, _>(stream))
             })
         });
     }

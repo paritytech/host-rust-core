@@ -7,9 +7,10 @@ use tracing::instrument;
 use truapi::api::Scarcity;
 use truapi::versioned::scarcity::{
     HostScarcityListError, HostScarcityListRequest, HostScarcityListResponse,
-    HostScarcityRequestReceiveAddressError, HostScarcityRequestReceiveAddressRequest,
-    HostScarcityRequestReceiveAddressResponse, HostScarcityTransferError, HostScarcityTransferItem,
-    HostScarcityTransferRequest,
+    HostScarcityListSubscribeError, HostScarcityListSubscribeItem,
+    HostScarcityListSubscribeRequest, HostScarcityRequestReceiveAddressError,
+    HostScarcityRequestReceiveAddressRequest, HostScarcityRequestReceiveAddressResponse,
+    HostScarcityTransferError, HostScarcityTransferItem, HostScarcityTransferRequest,
 };
 use truapi::{CallContext, CallError, Subscription};
 
@@ -44,6 +45,18 @@ impl Scarcity for ProductRuntimeHost {
         _cx: &CallContext,
         _request: HostScarcityTransferRequest,
     ) -> Result<Subscription<HostScarcityTransferItem>, CallError<HostScarcityTransferError>> {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "scarcity.list_subscribe"))]
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostScarcityListSubscribeRequest,
+    ) -> Result<
+        Subscription<HostScarcityListSubscribeItem>,
+        CallError<HostScarcityListSubscribeError>,
+    > {
         Err(CallError::Unsupported)
     }
 }

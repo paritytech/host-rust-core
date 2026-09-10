@@ -1,15 +1,28 @@
 //! NFT pocket types for the `Scarcity` service.
 //!
-//! The pocket is one wallet-owned keyring for `pallet-scarcity` NFTs. The
-//! pallet keeps one NFT per account key (`NftsByOwner`), so every item the
-//! pocket holds sits in its own host-derived purse key. Products see items,
-//! never keys: they list what the user holds, ask for a fresh empty purse to
-//! receive into, and ask the host to move an item they name.
+//! The pocket is a set of wallet-owned purses for `pallet-scarcity` NFTs, one
+//! purse per product plus the wallet's own. The pallet keeps one NFT per
+//! account key (`NftsByOwner`), so every item sits in its own host-derived
+//! purse key. Custody is context: an item belongs to whichever product's purse
+//! holds it. Products see items, never keys: they list their own purse, ask
+//! for a fresh empty key to receive into, and ask the host to move an item
+//! they hold.
 
 use parity_scale_codec::{Decode, Encode};
 
 /// A 32-byte Substrate account id, the purse key an NFT sits in.
 pub type ScarcityAccountId = [u8; 32];
+
+/// Whether an item definition lets its holder move instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum ScarcityTransferability {
+    /// The holder may transfer the instance to another purse key.
+    Transferable,
+    /// The instance is bound to the purse key it was minted into; only the
+    /// collection owner can move or burn it.
+    Soulbound,
+}
 
 /// One live NFT held in the pocket, as read from `Scarcity.NftsByOwner`.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -29,20 +42,38 @@ pub struct ScarcityItem {
     pub minted_at: u64,
     /// Unix seconds of the last move; equals `minted_at` until the first transfer.
     pub last_moved: u64,
+    /// Whether the holder may move it; read from the item definition.
+    pub transferability: ScarcityTransferability,
 }
 
-/// Request to list the NFTs the pocket holds.
+/// Request to list the NFTs in the caller's purse.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostScarcityListRequest {
-    /// Restrict the listing to these collections. `None` asks for everything
-    /// the pocket holds; the consent the host records is scoped the same way.
+    /// Restrict the listing to these collections. `None` lists the whole
+    /// purse. A convenience filter, not a grant scope: the grant covers the
+    /// caller's purse.
     pub collections: Option<Vec<u32>>,
 }
 
-/// The NFTs the pocket holds that the caller was granted to see.
+/// The NFTs in the caller's purse.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostScarcityListResponse {
-    /// Live items, in pocket derivation order.
+    /// Live items, in purse derivation order.
+    pub items: Vec<ScarcityItem>,
+}
+
+/// Request to follow the NFTs in the caller's purse.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostScarcityListSubscribeRequest {
+    /// Restrict the stream to these collections; `None` follows the whole purse.
+    pub collections: Option<Vec<u32>>,
+}
+
+/// The caller's purse contents: the whole set on subscribe and after every
+/// change the host observes.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostScarcityListSubscribeItem {
+    /// Live items, in purse derivation order.
     pub items: Vec<ScarcityItem>,
 }
 
@@ -50,8 +81,13 @@ pub struct HostScarcityListResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostScarcityRequestReceiveAddressRequest {
     /// Caller-chosen key. Repeating a key returns the same address instead of
-    /// allocating another purse, so a retried request never strands a key.
+    /// allocating another purse key, so a retried request never strands one.
     pub idempotency_key: String,
+    /// Purse to allocate in. `None` is the caller's own purse. A product id
+    /// names that product's purse instead, so a minting surface can place an
+    /// item straight into another product's collectibles; the host asks the
+    /// user once per caller and target.
+    pub target: Option<String>,
 }
 
 /// A purse key that holds nothing and may receive one NFT.
@@ -107,6 +143,11 @@ pub enum ScarcityError {
     StateMismatch,
     /// The host serves no chain carrying the `Scarcity` pallet.
     ChainNotServed,
+    /// The item definition binds the instance to its purse key; the holder
+    /// cannot move it.
+    Soulbound,
+    /// The named target purse is not a product this host can allocate for.
+    UnknownTarget,
     /// Catch-all.
     Unknown {
         /// Human-readable failure reason.
