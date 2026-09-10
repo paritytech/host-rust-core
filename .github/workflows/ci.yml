@@ -653,6 +653,11 @@ jobs:
     name: CI Status
     if: always()
     runs-on: ubuntu-latest
+    # Writing the sticky summary needs more than the workflow's read-only
+    # default. Nothing else here writes anything.
+    permissions:
+      contents: read
+      pull-requests: write
     needs:
       [
         rust,
@@ -671,6 +676,75 @@ jobs:
         e2e,
       ]
     steps:
+      # A pull request that builds three hosts produces a long list of checks,
+      # and a reviewer reads all of them to answer one question. This renders
+      # the same needs context into one verdict, written to the run summary and
+      # upserted as a single pull request comment.
+      - name: Render the run summary
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          total="$(jq 'length' <<<"$NEEDS")"
+          not_passed="$(jq -r '
+            to_entries
+            | map(select(.value.result != "success" and .value.result != "skipped"))
+            | .[].key' <<<"$NEEDS")"
+
+          {
+            if [ -z "$not_passed" ]; then
+              echo "**CI Status: all $total jobs reported and passed.**"
+            else
+              count="$(printf '%s\n' "$not_passed" | grep -c .)"
+              echo "**CI Status: $count of $total jobs did not pass.**"
+              echo
+              while read -r job; do
+                [ -n "$job" ] || continue
+                result="$(jq -r --arg j "$job" '.[$j].result' <<<"$NEEDS")"
+                echo "- \`$job\`: $result"
+              done <<<"$not_passed"
+            fi
+            echo
+            echo "<details><summary>All job results</summary>"
+            echo
+            echo "| job | result |"
+            echo "| --- | --- |"
+            jq -r 'to_entries | sort_by(.key) | .[] | "| \(.key) | \(.value.result) |"' <<<"$NEEDS"
+            echo
+            echo "</details>"
+          } > "$RUNNER_TEMP/ci-summary.md"
+
+          cat "$RUNNER_TEMP/ci-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Upsert rather than post, so a pull request carries one comment however
+      # many times CI runs. A pull request from a fork gets a read-only token
+      # and cannot comment, so a failure here is tolerated; the run summary
+      # above is always written either way.
+      - name: Upsert the pull request comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          marker="<!-- ci-status-summary -->"
+          { echo "$marker"; cat "$RUNNER_TEMP/ci-summary.md"; } > "$RUNNER_TEMP/body.md"
+
+          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq "[.[] | select(.body | startswith(\"$marker\")) | .id] | first // empty")"
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+              -F body=@"$RUNNER_TEMP/body.md" >/dev/null
+            echo "updated comment $existing"
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" \
+              -F body=@"$RUNNER_TEMP/body.md" >/dev/null
+            echo "created a comment"
+          fi
+
       # The results come from the needs context itself rather than a second list
       # of `needs.<job>.result` expressions, so the set of jobs checked cannot
       # drift from the set depended on. `required` is the one list to maintain:
