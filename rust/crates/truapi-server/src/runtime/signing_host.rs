@@ -1751,6 +1751,71 @@ mod tests {
         );
     }
 
+    /// Casing cannot turn a product's own key into a refusal — on the wire
+    /// path too, not only at the frontend.
+    ///
+    /// `3f6ec081`'s message says "the handle is normalized before the
+    /// comparison, so casing still cannot turn a product's own key into a
+    /// refusal". That was true of the frontend, which normalizes before
+    /// delegating, and false of `sso_responder`, which hands a wire request to
+    /// the authority untouched. The two doors have to agree here, because the
+    /// authority is the component that decides.
+    #[test]
+    fn an_owner_naming_its_own_key_in_another_spelling_is_admitted_over_the_wire() {
+        // Past the gate: not `NotAllowlisted`. It stops one layer further on,
+        // at `KeyNotRegistered`, because the registry lookup and
+        // `derive_ring_vrf_entropy` (`:426`) still read the raw handle — a
+        // separate, pre-existing wire-path gap that #655 does not own and that
+        // would derive a different key rather than refuse. Asserted exactly,
+        // so this test fails loudly in both directions: red if the gate
+        // regresses, and red again when that gap is closed, which is when this
+        // should become `is_ok()`.
+        assert_eq!(
+            ring_vrf_sign_at_the_authority("peopl.dot", "PEOPL.DOT").err(),
+            Some(RingVrfError::KeyNotRegistered),
+            "the gate must admit an owner's own key however it is spelled"
+        );
+    }
+
+    /// A handle that does not normalize names no product, so it takes the same
+    /// refusal as a product that granted nothing rather than a distinguishable
+    /// error the caller could probe with.
+    #[test]
+    fn a_handle_that_does_not_normalize_takes_the_uniform_refusal() {
+        assert_eq!(
+            ring_vrf_sign_at_the_authority("peopl.dot", "not a product").err(),
+            Some(RingVrfError::NotAllowlisted)
+        );
+    }
+
+    /// Drive `ring_vrf_sign` at the authority with an arbitrary caller/handle
+    /// spelling, bypassing the frontend as `sso_responder` does.
+    fn ring_vrf_sign_at_the_authority(
+        caller: &str,
+        handle_owner: &str,
+    ) -> Result<Vec<u8>, RingVrfError> {
+        let platform = Arc::new(StubPlatform::default());
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        register_full_person_key(&authority, &session, &full_person_ring_location());
+
+        futures::executor::block_on(authority.ring_vrf_sign(
+            &CallContext::default(),
+            &session,
+            RingVrfSignAuthorityRequest {
+                calling_product_id: caller.to_string(),
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: handle_owner.to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                message: b"sign me".to_vec(),
+            },
+        ))
+    }
+
     fn foreign_ring_vrf_sign_through_the_authority(
         trusted_products: Option<&str>,
     ) -> Result<Vec<u8>, RingVrfError> {
