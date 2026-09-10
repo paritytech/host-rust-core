@@ -40,6 +40,7 @@ pub mod locale;
 pub mod notifications;
 pub mod payment;
 pub mod permissions;
+pub mod pocket;
 pub mod preimage;
 pub mod resource_allocation;
 pub mod signing;

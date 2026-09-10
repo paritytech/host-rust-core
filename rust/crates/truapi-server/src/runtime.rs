@@ -56,7 +56,7 @@ pub(crate) use signing_host::{
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 use tracing::{instrument, warn};
-use truapi::api::Chat;
+use truapi::api::{Chat, Pocket};
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
@@ -1025,6 +1025,12 @@ impl Chat for ProductRuntimeHost {
         self.chat.subscribe_actions()
     }
 }
+
+// The trait defaults answer `Unavailable` and empty streams until a host
+// surface backs the collection.
+#[truapi::async_trait]
+impl Pocket for ProductRuntimeHost {}
+
 /// Report a rejected chat bot field as a bot-registration domain error.
 fn chat_register_bot_field_error(
     error: truapi_platform::ChatFieldError,
