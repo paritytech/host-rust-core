@@ -148,6 +148,9 @@ pub enum ScarcityError {
     Soulbound,
     /// The named target purse is not a product this host can allocate for.
     UnknownTarget,
+    /// No account-authority session is active, so there is no wallet root to
+    /// derive purses from.
+    NotConnected,
     /// Catch-all.
     Unknown {
         /// Human-readable failure reason.

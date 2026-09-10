@@ -460,6 +460,47 @@ pub(crate) trait ProductAuthority: Send + Sync {
         payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError>;
 
+    /// Whether this authority serves the NFT pocket at all. Only a signing
+    /// host holds the root entropy purse keys derive from; a product on any
+    /// other host gets `Unsupported` before a session is even consulted.
+    fn supports_scarcity(&self) -> bool {
+        false
+    }
+
+    /// List `product_id`'s NFT purse: the items its host-derived keys hold.
+    ///
+    /// Only a signing host holds the root entropy the purse keys derive from;
+    /// other authorities report `NotSupported`.
+    async fn scarcity_list(
+        &self,
+        _cx: &CallContext,
+        _session: &AuthoritySession,
+        _product_id: String,
+        _collections: Option<Vec<u32>>,
+    ) -> Result<Vec<truapi::latest::ScarcityItem>, crate::runtime::scarcity::PocketAuthorityError>
+    {
+        Err(AuthorityError::NotSupported {
+            reason: "this host holds no NFT purses".to_string(),
+        }
+        .into())
+    }
+
+    /// Allocate, or replay, a receive key in `target_product_id`'s purse for
+    /// `requested_by`.
+    async fn scarcity_request_receive_address(
+        &self,
+        _cx: &CallContext,
+        _session: &AuthoritySession,
+        _target_product_id: String,
+        _requested_by: String,
+        _idempotency_key: String,
+    ) -> Result<[u8; 32], crate::runtime::scarcity::PocketAuthorityError> {
+        Err(AuthorityError::NotSupported {
+            reason: "this host holds no NFT purses".to_string(),
+        }
+        .into())
+    }
+
     /// Derive product-scoped entropy for a connected session.
     fn derive_entropy(
         &self,

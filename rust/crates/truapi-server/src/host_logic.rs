@@ -13,6 +13,7 @@ pub mod entropy;
 pub mod extrinsic;
 pub mod features;
 pub mod permissions;
+pub mod pocket;
 pub mod product_account;
 pub mod session;
 pub mod session_store;

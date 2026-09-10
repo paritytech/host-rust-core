@@ -18,9 +18,11 @@ use std::sync::Mutex;
 
 use frame_metadata::RuntimeMetadata;
 use frame_metadata::RuntimeMetadataPrefixed;
+use frame_metadata::v14::StorageHasher;
 use parity_scale_codec::{Compact, Decode, Encode};
 use scale_info::form::PortableForm;
 use scale_info::{PortableRegistry, TypeDef, TypeDefPrimitive, TypeDefVariant};
+use sp_crypto_hashing::{blake2_128, blake2_256, twox_64, twox_128, twox_256};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
@@ -272,11 +274,58 @@ pub struct EncodedExtension {
     pub additional_signed: Vec<u8>,
 }
 
+/// One storage-map key hasher, as declared in metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageHasherKind {
+    /// `blake2_128(key)`.
+    Blake2_128,
+    /// `blake2_256(key)`.
+    Blake2_256,
+    /// `blake2_128(key) ‖ key`.
+    Blake2_128Concat,
+    /// `twox_128(key)`.
+    Twox128,
+    /// `twox_256(key)`.
+    Twox256,
+    /// `twox_64(key) ‖ key`.
+    Twox64Concat,
+    /// `key` verbatim.
+    Identity,
+}
+
+impl StorageHasherKind {
+    fn from_metadata(hasher: &StorageHasher) -> Self {
+        match hasher {
+            StorageHasher::Blake2_128 => Self::Blake2_128,
+            StorageHasher::Blake2_256 => Self::Blake2_256,
+            StorageHasher::Blake2_128Concat => Self::Blake2_128Concat,
+            StorageHasher::Twox128 => Self::Twox128,
+            StorageHasher::Twox256 => Self::Twox256,
+            StorageHasher::Twox64Concat => Self::Twox64Concat,
+            StorageHasher::Identity => Self::Identity,
+        }
+    }
+
+    /// Hash one SCALE-encoded map key component.
+    pub fn hash(self, key: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Blake2_128 => blake2_128(key).to_vec(),
+            Self::Blake2_256 => blake2_256(key).to_vec(),
+            Self::Blake2_128Concat => [blake2_128(key).as_slice(), key].concat(),
+            Self::Twox128 => twox_128(key).to_vec(),
+            Self::Twox256 => twox_256(key).to_vec(),
+            Self::Twox64Concat => [twox_64(key).as_slice(), key].concat(),
+            Self::Identity => key.to_vec(),
+        }
+    }
+}
+
 /// Decoded metadata: the ordered signed-extension defs, the type registry,
-/// each storage entry's value type id (`(pallet, entry) -> type id`), pallet
-/// constants, and each pallet's `(index, call enum type id)`.
+/// each storage entry's value type id (`(pallet, entry) -> type id`) and map
+/// hashers, pallet constants, and each pallet's `(index, call enum type id)`.
 pub struct Metadata {
     extensions: Vec<ExtensionDef>,
+    storage_hashers: HashMap<(String, String), Vec<StorageHasherKind>>,
     metadata_version: u32,
     extension_version: u8,
     registry: PortableRegistry,
@@ -332,6 +381,7 @@ fn encoding_extension_indexes(
 macro_rules! collect_pallets {
     ($m:expr, $set:path) => {{
         let mut storage_values = HashMap::new();
+        let mut storage_hashers = HashMap::new();
         let mut constants = HashMap::new();
         let mut calls = HashMap::new();
         for pallet in &$m.pallets {
@@ -349,14 +399,21 @@ macro_rules! collect_pallets {
             };
             for entry in &storage.entries {
                 use $set as EntryType;
-                let value_type = match &entry.ty {
-                    EntryType::Plain(ty) => ty.id,
-                    EntryType::Map { value, .. } => value.id,
+                let (value_type, hashers) = match &entry.ty {
+                    EntryType::Plain(ty) => (ty.id, Vec::new()),
+                    EntryType::Map { value, hashers, .. } => (
+                        value.id,
+                        hashers
+                            .iter()
+                            .map(StorageHasherKind::from_metadata)
+                            .collect(),
+                    ),
                 };
                 storage_values.insert((pallet.name.clone(), entry.name.clone()), value_type);
+                storage_hashers.insert((pallet.name.clone(), entry.name.clone()), hashers);
             }
         }
-        (storage_values, constants, calls)
+        (storage_values, storage_hashers, constants, calls)
     }};
 }
 
@@ -374,12 +431,13 @@ macro_rules! collect_metadata {
                 additional_signed_type: e.additional_signed.id,
             })
             .collect();
-        let (storage_values, constants, calls) = collect_pallets!($m, $set);
+        let (storage_values, storage_hashers, constants, calls) = collect_pallets!($m, $set);
         (
             extensions,
             0u8,
             $m.types,
             storage_values,
+            storage_hashers,
             constants,
             calls,
             HashMap::new(),
@@ -408,7 +466,7 @@ macro_rules! collect_metadata_v16 {
                 additional_signed_type: e.implicit.id,
             })
             .collect();
-        let (storage_values, constants, calls) =
+        let (storage_values, storage_hashers, constants, calls) =
             collect_pallets!($m, frame_metadata::v16::StorageEntryType);
         let mut view_functions = HashMap::new();
         for pallet in &$m.pallets {
@@ -428,6 +486,7 @@ macro_rules! collect_metadata_v16 {
             extension_version,
             $m.types,
             storage_values,
+            storage_hashers,
             constants,
             calls,
             view_functions,
@@ -448,6 +507,7 @@ impl Metadata {
             extension_version,
             registry,
             storage_values,
+            storage_hashers,
             constants,
             calls,
             view_functions,
@@ -472,6 +532,7 @@ impl Metadata {
             extension_version,
             registry,
             storage_values,
+            storage_hashers,
             constants,
             calls,
             view_functions,
@@ -507,6 +568,26 @@ impl Metadata {
         self.storage_values
             .get(&(pallet.to_string(), entry.to_string()))
             .copied()
+    }
+
+    /// The full storage key of map entry `pallet::entry` for the SCALE-encoded
+    /// key components `keys`, hashed the way the runtime declares, or `None`
+    /// when the entry is unknown or takes a different number of keys. Plain
+    /// entries take no keys.
+    pub fn storage_key(&self, pallet: &str, entry: &str, keys: &[&[u8]]) -> Option<Vec<u8>> {
+        let hashers = self
+            .storage_hashers
+            .get(&(pallet.to_string(), entry.to_string()))?;
+        if hashers.len() != keys.len() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(32 + keys.iter().map(|k| k.len() + 16).sum::<usize>());
+        out.extend_from_slice(&twox_128(pallet.as_bytes()));
+        out.extend_from_slice(&twox_128(entry.as_bytes()));
+        for (hasher, key) in hashers.iter().zip(keys) {
+            out.extend(hasher.hash(key));
+        }
+        Some(out)
     }
 
     /// The SCALE-encoded value bytes of pallet constant `pallet::name`.
@@ -1048,6 +1129,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The Scarcity pallet's maps hash the way individuality declares them, and
+    /// a metadata-built key matches the hand-built form the rest of this crate
+    /// uses for `Blake2_128Concat` entries.
+    #[test]
+    fn storage_keys_follow_metadata_hashers() {
+        let metadata = test_fixtures::asset_hub();
+        let who = [0x42u8; 32];
+        let key = metadata
+            .storage_key("Scarcity", "NftsByOwner", &[&who])
+            .expect("Scarcity.NftsByOwner is a map on Asset Hub");
+        assert_eq!(
+            key,
+            [
+                twox_128(b"Scarcity").as_slice(),
+                twox_128(b"NftsByOwner").as_slice(),
+                blake2_128(&who).as_slice(),
+                &who,
+            ]
+            .concat()
+        );
+        let instance = 34u64.encode();
+        let by_instance = metadata
+            .storage_key("Scarcity", "Instances", &[&instance])
+            .expect("Scarcity.Instances is a map on Asset Hub");
+        assert_eq!(
+            by_instance,
+            [
+                twox_128(b"Scarcity").as_slice(),
+                twox_128(b"Instances").as_slice(),
+                twox_64(&instance).as_slice(),
+                &instance,
+            ]
+            .concat()
+        );
+        assert!(
+            metadata
+                .storage_key("Scarcity", "NftsByOwner", &[])
+                .is_none()
+        );
+        assert!(
+            metadata
+                .storage_key("Scarcity", "NoSuchEntry", &[&who])
+                .is_none()
+        );
     }
 
     fn fixture_state() -> ChainState {

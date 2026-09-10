@@ -63,8 +63,10 @@ pub mod latest {
         RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
         RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
         RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension, VrfSignature,
+        ScarcityAccountId, ScarcityError, ScarcityItem, ScarcityTransferStatus,
+        ScarcityTransferability, SignedStatement, Statement, StatementProof, StorageQueryItem,
+        StorageQueryType, StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension,
+        VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.

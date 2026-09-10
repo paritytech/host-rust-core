@@ -522,8 +522,9 @@ fn subscription_start_receive_stop_through_wire_boundary() {
     );
 }
 
-/// The NFT pocket answers `Unsupported` until the signing host's pocket
-/// engine lands, so products degrade instead of retrying a transient failure.
+/// A pairing host holds no purse keys, so the NFT pocket answers
+/// `Unsupported` there before consulting any session, and products degrade
+/// instead of retrying a transient failure.
 #[test]
 fn scarcity_list_reports_unsupported_on_the_wire() {
     let core = make_core();

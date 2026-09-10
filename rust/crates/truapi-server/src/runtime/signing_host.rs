@@ -138,6 +138,8 @@ pub(crate) struct SigningHost {
     local_grants: Mutex<LocalGrantState>,
     /// Durable RFC-0024 registry, scoped by the active wallet root.
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
+    /// The NFT pocket: per-product `pallet-scarcity` purses over root entropy.
+    pocket: crate::runtime::scarcity::ScarcityPocket,
     /// Serializes replay-ledger updates within each wallet and peer scope.
     sso_replay_locks: SsoReplayLocks,
     #[cfg(not(target_arch = "wasm32"))]
@@ -150,6 +152,7 @@ impl SigningHost {
     pub(crate) fn new(services: Arc<RuntimeServices>, network_suffix: String) -> Arc<Self> {
         let platform = services.platform.clone();
         let ring_resolver = ChainRingResolver::new(services.chain.clone());
+        let pocket = crate::runtime::scarcity::ScarcityPocket::new(services.clone());
         Arc::new(Self {
             services,
             platform: platform.clone(),
@@ -160,6 +163,7 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
+            pocket,
             sso_replay_locks: SsoReplayLocks::default(),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
@@ -192,6 +196,7 @@ impl SigningHost {
             [0xbb; 32],
             crate::test_support::test_spawner(),
         );
+        let pocket = crate::runtime::scarcity::ScarcityPocket::new(services.clone());
         Arc::new(Self {
             services,
             platform: platform.clone(),
@@ -202,6 +207,7 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
+            pocket,
             sso_replay_locks: SsoReplayLocks::default(),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
@@ -1194,6 +1200,53 @@ impl ProductAuthority for SigningHost {
             }
         }
         Ok(v01::HostRequestResourceAllocationResponse { outcomes })
+    }
+
+    fn supports_scarcity(&self) -> bool {
+        true
+    }
+
+    async fn scarcity_list(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+        collections: Option<Vec<u32>>,
+    ) -> Result<Vec<truapi::latest::ScarcityItem>, crate::runtime::scarcity::PocketAuthorityError>
+    {
+        self.require_current_session(session)?;
+        let entropy = self.root_entropy()?;
+        Ok(self
+            .pocket
+            .list(
+                &entropy,
+                session.public_key,
+                &product_id,
+                collections.as_deref(),
+            )
+            .await?)
+    }
+
+    async fn scarcity_request_receive_address(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        target_product_id: String,
+        requested_by: String,
+        idempotency_key: String,
+    ) -> Result<[u8; 32], crate::runtime::scarcity::PocketAuthorityError> {
+        self.require_current_session(session)?;
+        let entropy = self.root_entropy()?;
+        Ok(self
+            .pocket
+            .request_receive_address(
+                &entropy,
+                session.public_key,
+                &target_product_id,
+                &requested_by,
+                &idempotency_key,
+            )
+            .await?)
     }
 
     async fn statement_store_allowance_key(
