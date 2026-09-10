@@ -112,6 +112,16 @@ export type AuthState =
   | { tag: "Authenticating"; value?: undefined };
 
 /**
+ * Review shown before a product binds or uses wallet-held Chat identity authority.
+ */
+export interface ChatAuthorityReview {
+  /**
+   * Product requesting the Chat identity operation.
+   */
+  productId: string;
+}
+
+/**
  * Core-owned host-private storage slots. Products never address these slots;
  * the host chooses the backing store for each slot.
  *
@@ -314,7 +324,11 @@ export type PermissionAuthorizationRequest =
   /**
    * Product-scoped permission to access another product's account context.
    */
-  | { tag: "AccountAccess"; value: { targetProductId: string } };
+  | { tag: "AccountAccess"; value: { targetProductId: string } }
+  /**
+   * Product-scoped permission to bind and use wallet-held Chat identity authority.
+   */
+  | { tag: "ChatAuthority"; value?: undefined };
 
 /**
  * Authorization status for a permission request.
@@ -554,7 +568,11 @@ export type UserConfirmationReview =
   /**
    * Resolve a product's own account subtree over SSO.
    */
-  | { tag: "ProductSubtree"; value: ProductSubtreeReview };
+  | { tag: "ProductSubtree"; value: ProductSubtreeReview }
+  /**
+   * Allow a product to bind and use wallet-held Chat identity authority.
+   */
+  | { tag: "ChatAuthority"; value: ChatAuthorityReview };
 
 /**
  * Review shown before a product asks to access another product account.
@@ -596,6 +614,14 @@ export const AuthState: S.Codec<AuthState> = S.lazy(
       }) as S.Codec<{ kind: LoginFailureKind; reason: string }>,
       Authenticating: S._void,
     }),
+);
+
+/**
+ * Review shown before a product binds or uses wallet-held Chat identity authority.
+ */
+export const ChatAuthorityReview: S.Codec<ChatAuthorityReview> = S.lazy(
+  (): S.Codec<ChatAuthorityReview> =>
+    S.Struct({ productId: S.str }) as S.Codec<ChatAuthorityReview>,
 );
 
 /**
@@ -737,6 +763,7 @@ export const PermissionAuthorizationRequest: S.Codec<PermissionAuthorizationRequ
         AccountAccess: S.Struct({ targetProductId: S.str }) as S.Codec<{
           targetProductId: string;
         }>,
+        ChatAuthority: S._void,
       }),
   );
 
@@ -893,6 +920,7 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
       AccountAccess: AccountAccessReview,
       SignVrf: SignVrfReview,
       ProductSubtree: ProductSubtreeReview,
+      ChatAuthority: ChatAuthorityReview,
     }),
 );
 
