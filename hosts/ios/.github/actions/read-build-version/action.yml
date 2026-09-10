@@ -5,7 +5,7 @@ inputs:
   pbxproj_path:
     description: "Path to project.pbxproj"
     required: false
-    default: "polkadot-app.xcodeproj/project.pbxproj"
+    default: "hosts/ios/polkadot-app.xcodeproj/project.pbxproj"
   config_name:
     description: "Xcode configuration to read MARKETING_VERSION from (Release, Nightly or Safetynet)"
     required: false
@@ -47,7 +47,7 @@ runs:
         CONFIG_NAME: ${{ inputs.config_name }}
       run: |
         set -euo pipefail
-        python3 .github/scripts/read_versions.py "${PBXPROJ_PATH}" \
+        python3 hosts/ios/.github/scripts/read_versions.py "${PBXPROJ_PATH}" \
           --config-name "${CONFIG_NAME}" \
           --output-format env | grep "marketing_version=" >> "$GITHUB_OUTPUT"
 
@@ -60,6 +60,7 @@ runs:
         ASC_KEY_ID: ${{ inputs.asc_key_id }}
         ASC_ISSUER_ID: ${{ inputs.asc_issuer_id }}
         ASC_KEY_BASE64: ${{ inputs.asc_key_base64 }}
+      working-directory: hosts/ios
       run: |
         set -euo pipefail
         CURRENT=$(bundle exec fastlane get_testflight_build_number 2>&1 | grep -oE "Latest TestFlight build number: [0-9]+" | grep -oE "[0-9]+")

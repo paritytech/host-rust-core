@@ -28,7 +28,7 @@ permissions:
   actions: write
 
 env:
-  PBXPROJ_PATH: polkadot-app.xcodeproj/project.pbxproj
+  PBXPROJ_PATH: hosts/ios/polkadot-app.xcodeproj/project.pbxproj
   SOURCE_REF: ${{ inputs.source_ref }}
   MAIN_BRANCH: main
 
@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           TMP_DIR="$(mktemp -d)"
-          cp -R .github/scripts "${TMP_DIR}/scripts"
+          cp -R hosts/ios/.github/scripts "${TMP_DIR}/scripts"
           echo "SCRIPTS_DIR=${TMP_DIR}/scripts" >> "$GITHUB_ENV"
           echo "Cached scripts at ${TMP_DIR}/scripts"
 
