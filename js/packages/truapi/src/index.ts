@@ -25,7 +25,7 @@ export {
   decodeWireMessage,
   encodeWireMessage,
 } from "./transport.js";
-export { createTransport } from "./client.js";
+export { RequestTimeoutError, createTransport } from "./client.js";
 export * as scale from "./scale.js";
 export type { Codec, HexString } from "./scale.js";
 export * from "./generated/index.js";

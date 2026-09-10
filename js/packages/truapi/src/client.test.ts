@@ -1,7 +1,7 @@
 import type { Result } from "neverthrow";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 
-import { createTransport } from "./client.js";
+import { RequestTimeoutError, createTransport } from "./client.js";
 import {
     CallError,
     indexedTaggedUnion,
@@ -298,6 +298,45 @@ describe("generated client transport", () => {
         const result = await response;
         expect(result.isErr()).toBe(true);
         expect(result._unsafeUnwrapErr()).toEqual({ tag: "Domain", value: reason });
+    });
+
+    it("rejects an unanswered request at the configured deadline", async () => {
+        let fireTimeout: (() => void) | undefined;
+        const timeoutSpy = spyOn(globalThis, "setTimeout").mockImplementation((handler) => {
+            if (typeof handler !== "function") throw new Error("expected a timeout callback");
+            fireTimeout = handler;
+            return 1;
+        });
+        try {
+            const fixture = providerFixture();
+            const transport = createTransport(fixture.provider, { requestTimeoutMs: 25 });
+            const response = transport.request<undefined, CallErrorValue<never>>({
+                ids: { request: 194, response: 195 },
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true, value: undefined }),
+            });
+            if (!fireTimeout) throw new Error("request deadline was not scheduled");
+            fireTimeout();
+
+            try {
+                await response;
+                throw new Error("unanswered request unexpectedly resolved");
+            } catch (error) {
+                expect(error).toBeInstanceOf(RequestTimeoutError);
+                const timeoutError = error as RequestTimeoutError;
+                expect({
+                    requestId: timeoutError.requestId,
+                    discriminant: timeoutError.discriminant,
+                    timeoutMs: timeoutError.timeoutMs,
+                }).toEqual({
+                    requestId: "p:1",
+                    discriminant: 194,
+                    timeoutMs: 25,
+                });
+            }
+        } finally {
+            timeoutSpy.mockRestore();
+        }
     });
 
     it("settles an unknown API request as unsupported from a correlated protocol error", async () => {
