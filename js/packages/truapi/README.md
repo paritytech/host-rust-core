@@ -38,6 +38,9 @@ const account: HostAccountGetResponse = result.value;
 
 Request methods take the inner request value directly. The transport adds the wire-level version wrapper and unwraps versioned responses before the generated method returns.
 
+Requests reject with `RequestTimeoutError` when no matching response arrives within 120 seconds.
+Pass `{ requestTimeoutMs }` to `createTransport` to select a different positive deadline.
+
 ## Subscriptions
 
 Streaming methods return a small Observable-compatible object:
@@ -82,8 +85,9 @@ sub.unsubscribe();
 ## Sandbox bootstrap
 
 `@parity/truapi/sandbox` wires up a client for browser-embedded hosts: it detects whether the app
-runs inside a TrUAPI host (iframe or webview), builds the matching provider, and caches the
-resulting client. Use it instead of assembling `createTransport` / `createClient` by hand.
+runs inside a TrUAPI host, repeatedly announces iframe readiness until the host transfers a channel,
+builds the matching provider, and caches the resulting client. Use it instead of assembling
+`createTransport` / `createClient` by hand.
 
 ```ts
 import {

@@ -26,11 +26,8 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 
-use crate::runtime::authority::{
-    AccountAliasAuthorityRequest, CreateProofAuthorityRequest, ListRingVrfKeysAuthorityRequest,
-    ProductDeviceChatAuthorityRequest, RegisterRingVrfKeyAuthorityRequest,
-    RingVrfSignAuthorityRequest,
-};
+use crate::host_logic::sso::messages::ProductRequest;
+use crate::runtime::authority::ProductDeviceChatAuthorityRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     product_device_chat_account_authority_error, product_device_chat_authority_error,
@@ -129,18 +126,15 @@ impl Account for ProductRuntimeHost {
         cx: &CallContext,
         request: HostAccountGetAliasRequest,
     ) -> Result<HostAccountGetAliasResponse, CallError<HostAccountGetAliasError>> {
-        let HostAccountGetAliasRequest::V1(v01::HostAccountGetAliasRequest {
-            key_handle,
-            context,
-            ring_location,
-        }) = request;
-        let key_handle = Self::normalize_product_account_id(key_handle).map_err(|()| {
-            CallError::Domain(HostAccountGetAliasError::V1(
-                v01::HostAccountGetAliasError::Unknown {
-                    reason: "Invalid key handle".to_string(),
-                },
-            ))
-        })?;
+        let HostAccountGetAliasRequest::V1(mut request) = request;
+        request.key_handle =
+            Self::normalize_product_account_id(request.key_handle).map_err(|()| {
+                CallError::Domain(HostAccountGetAliasError::V1(
+                    v01::HostAccountGetAliasError::Unknown {
+                        reason: "Invalid key handle".to_string(),
+                    },
+                ))
+            })?;
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountGetAliasError::V1(
                 v01::HostAccountGetAliasError::Rejected,
@@ -154,11 +148,9 @@ impl Account for ProductRuntimeHost {
             self.authority.account_alias(
                 &cx,
                 &session,
-                AccountAliasAuthorityRequest {
+                ProductRequest {
                     calling_product_id,
-                    key_handle,
-                    context,
-                    ring_location,
+                    payload: request,
                 },
             ),
         )
@@ -173,20 +165,16 @@ impl Account for ProductRuntimeHost {
         cx: &CallContext,
         request: HostAccountCreateProofRequest,
     ) -> Result<HostAccountCreateProofResponse, CallError<HostAccountCreateProofError>> {
-        let HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
-            key_handle,
-            context,
-            ring_location,
-            message,
-        }) = request;
-        let key_handle = Self::normalize_product_account_id(key_handle).map_err(|()| {
-            CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::Unknown {
-                    reason: "Invalid key handle".to_string(),
-                },
-            ))
-        })?;
-        if key_handle.dot_ns_identifier != self.product_id() {
+        let HostAccountCreateProofRequest::V1(mut request) = request;
+        request.key_handle =
+            Self::normalize_product_account_id(request.key_handle).map_err(|()| {
+                CallError::Domain(HostAccountCreateProofError::V1(
+                    v01::HostAccountCreateProofError::Unknown {
+                        reason: "Invalid key handle".to_string(),
+                    },
+                ))
+            })?;
+        if request.key_handle.dot_ns_identifier != self.product_id() {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::NotAllowlisted,
             )));
@@ -205,12 +193,9 @@ impl Account for ProductRuntimeHost {
             self.authority.create_proof(
                 &cx,
                 &session,
-                CreateProofAuthorityRequest {
+                ProductRequest {
                     calling_product_id,
-                    key_handle,
-                    context,
-                    ring_location,
-                    message,
+                    payload: request,
                 },
             ),
         )
@@ -228,10 +213,7 @@ impl Account for ProductRuntimeHost {
         request: HostAccountRegisterRingVrfKeyRequest,
     ) -> Result<HostAccountRegisterRingVrfKeyResponse, CallError<HostAccountRegisterRingVrfKeyError>>
     {
-        let HostAccountRegisterRingVrfKeyRequest::V1(v01::HostAccountRegisterRingVrfKeyRequest {
-            index,
-            ring,
-        }) = request;
+        let HostAccountRegisterRingVrfKeyRequest::V1(request) = request;
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountRegisterRingVrfKeyError::V1(
                 v01::HostAccountRegisterRingVrfKeyError::NotConnected,
@@ -244,10 +226,9 @@ impl Account for ProductRuntimeHost {
             self.authority.register_ring_vrf_key(
                 &cx,
                 &session,
-                RegisterRingVrfKeyAuthorityRequest {
+                ProductRequest {
                     calling_product_id,
-                    index,
-                    ring,
+                    payload: request,
                 },
             ),
         )
@@ -267,16 +248,13 @@ impl Account for ProductRuntimeHost {
         request: HostAccountListRingVrfKeysRequest,
     ) -> Result<HostAccountListRingVrfKeysResponse, CallError<HostAccountListRingVrfKeysError>>
     {
-        let HostAccountListRingVrfKeysRequest::V1(v01::HostAccountListRingVrfKeysRequest {
-            owner,
-            disclosure,
-        }) = request;
+        let HostAccountListRingVrfKeysRequest::V1(mut request) = request;
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountListRingVrfKeysError::V1(
                 v01::HostAccountListRingVrfKeysError::NotConnected,
             )));
         };
-        let owner = normalize_product_identifier(&owner).map_err(|err| {
+        request.owner = normalize_product_identifier(&request.owner).map_err(|err| {
             CallError::Domain(HostAccountListRingVrfKeysError::V1(
                 v01::HostAccountListRingVrfKeysError::Unknown {
                     reason: err.to_string(),
@@ -290,10 +268,9 @@ impl Account for ProductRuntimeHost {
             self.authority.list_ring_vrf_keys(
                 &cx,
                 &session,
-                ListRingVrfKeysAuthorityRequest {
+                ProductRequest {
                     calling_product_id,
-                    owner,
-                    disclosure,
+                    payload: request,
                 },
             ),
         )
@@ -338,10 +315,9 @@ impl Account for ProductRuntimeHost {
             self.authority.ring_vrf_sign(
                 &cx,
                 &session,
-                RingVrfSignAuthorityRequest {
+                ProductRequest {
                     calling_product_id,
-                    key_handle: request.key_handle,
-                    message: request.message,
+                    payload: request,
                 },
             ),
         )

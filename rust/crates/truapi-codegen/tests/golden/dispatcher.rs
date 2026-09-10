@@ -91,7 +91,7 @@ where
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = host.connection_status_subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::account::HostAccountConnectionStatusSubscribeItem, _>(stream))
             })
@@ -114,7 +114,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostAccountGetResponse = match host.get_account(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -153,7 +153,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostAccountGetAliasResponse = match host.get_account_alias(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -192,7 +192,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostAccountCreateProofResponse = match host.create_account_proof(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -231,7 +231,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostAccountSignVrfResponse = match host.sign_vrf(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -270,7 +270,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostAccountRegisterRingVrfKeyResponse = match host.register_ring_vrf_key(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -309,7 +309,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostAccountListRingVrfKeysResponse = match host.list_ring_vrf_keys(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -348,7 +348,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostAccountRingVrfSignResponse = match host.ring_vrf_sign(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -426,7 +426,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostGetLegacyAccountsResponse = match host.get_legacy_accounts(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -465,7 +465,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostGetUserIdResponse = match host.get_user_id(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -504,7 +504,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::account::HostRequestLoginResponse = match host.request_login(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -541,7 +541,7 @@ where
                     Ok(request) => request,
                     Err(_) => return Err(Vec::new()),
                 };
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = host.follow_head_subscribe(&cx, request).await;
                 Ok(subscription_stream::<versioned::chain::RemoteChainHeadFollowItem, _>(stream))
             })
@@ -564,7 +564,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainHeadHeaderResponse = match host.get_head_header(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -603,7 +603,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainHeadBodyResponse = match host.get_head_body(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -642,7 +642,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainHeadStorageResponse = match host.get_head_storage(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -681,7 +681,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainHeadCallResponse = match host.call_head(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -720,7 +720,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainHeadUnpinResponse = match host.unpin_head(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -759,7 +759,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainHeadContinueResponse = match host.continue_head(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -798,7 +798,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainHeadStopOperationResponse = match host.stop_head_operation(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -837,7 +837,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainSpecGenesisHashResponse = match host.get_spec_genesis_hash(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -876,7 +876,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainSpecChainNameResponse = match host.get_spec_chain_name(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -915,7 +915,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainSpecPropertiesResponse = match host.get_spec_properties(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -954,7 +954,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainTransactionBroadcastResponse = match host.broadcast_transaction(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -993,7 +993,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainTransactionStopResponse = match host.stop_transaction(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1032,7 +1032,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::chain::RemoteChainInfoResponse = match host.get_chain_info(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1078,7 +1078,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 if !execution_allowed {
                     let error: truapi::CallError<versioned::chat::HostChatCreateRoomError> =
                         truapi::CallError::Denied;
@@ -1123,7 +1123,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 if !execution_allowed {
                     let error: truapi::CallError<versioned::chat::HostChatRegisterBotError> =
                         truapi::CallError::Denied;
@@ -1157,7 +1157,7 @@ where
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 if !execution_allowed { return Err(Vec::new()); }
                 let stream = host.list_subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::chat::HostChatListSubscribeItem, _>(stream))
@@ -1182,7 +1182,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 if !execution_allowed {
                     let error: truapi::CallError<versioned::chat::HostChatPostMessageError> =
                         truapi::CallError::Denied;
@@ -1216,7 +1216,7 @@ where
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 if !execution_allowed { return Err(Vec::new()); }
                 let stream = host.action_subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::chat::HostChatActionSubscribeItem, _>(stream))
@@ -1246,7 +1246,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::coin_payment::HostCoinPaymentCreatePurseResponse = match host.create_purse(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1285,7 +1285,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::coin_payment::HostCoinPaymentQueryPurseResponse = match host.query_purse(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1326,7 +1326,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.rebalance_purse(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -1356,7 +1356,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.delete_purse(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -1384,7 +1384,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::coin_payment::HostCoinPaymentCreateReceivableResponse = match host.create_receivable(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1423,7 +1423,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::coin_payment::HostCoinPaymentCreateChequeResponse = match host.create_cheque(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1464,7 +1464,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.deposit(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -1494,7 +1494,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.refund(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -1524,7 +1524,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.listen_for_payment(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -1558,7 +1558,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::entropy::HostDeriveEntropyResponse = match host.derive(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1603,7 +1603,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::local_storage::HostLocalStorageReadResponse = match host.read(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1642,7 +1642,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::local_storage::HostLocalStorageWriteResponse = match host.write(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1681,7 +1681,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::local_storage::HostLocalStorageClearResponse = match host.clear(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1715,7 +1715,7 @@ where
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = host.subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::locale::HostLocaleSubscribeItem, _>(stream))
             })
@@ -1744,7 +1744,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::notifications::HostPushNotificationResponse = match host.send_push_notification(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1783,7 +1783,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::notifications::HostPushNotificationCancelResponse = match host.cancel_push_notification(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1830,7 +1830,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.balance_subscribe(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -1858,7 +1858,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::payment::HostPaymentResponse = match host.request(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1899,7 +1899,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.status_subscribe(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -1927,7 +1927,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::payment::HostPaymentTopUpResponse = match host.top_up(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -1972,7 +1972,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::permissions::HostDevicePermissionResponse = match host.request_device_permission(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2011,7 +2011,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::permissions::RemotePermissionResponse = match host.request_remote_permission(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2048,7 +2048,7 @@ where
                     Ok(request) => request,
                     Err(_) => return Err(Vec::new()),
                 };
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = host.lookup_subscribe(&cx, request).await;
                 Ok(subscription_stream::<versioned::preimage::RemotePreimageLookupSubscribeItem, _>(stream))
             })
@@ -2071,7 +2071,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::preimage::RemotePreimageSubmitResponse = match host.submit(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2116,7 +2116,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::resource_allocation::HostRequestResourceAllocationResponse = match host.request(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2161,7 +2161,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::signing::HostCreateTransactionResponse = match host.create_transaction(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2200,7 +2200,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::signing::HostCreateTransactionWithLegacyAccountResponse = match host.create_transaction_with_legacy_account(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2239,7 +2239,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::signing::HostSignRawWithLegacyAccountResponse = match host.sign_raw_with_legacy_account(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2278,7 +2278,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::signing::HostSignPayloadWithLegacyAccountResponse = match host.sign_payload_with_legacy_account(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2317,7 +2317,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::signing::HostSignRawResponse = match host.sign_raw(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2356,7 +2356,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::signing::HostSignPayloadResponse = match host.sign_payload(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2403,7 +2403,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = match host.subscribe(&cx, request).await {
                     Ok(sub) => sub,
                     Err(err) => {
@@ -2431,7 +2431,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::statement_store::RemoteStatementStoreCreateProofResponse = match host.create_proof(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2470,7 +2470,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::statement_store::RemoteStatementStoreCreateProofAuthorizedResponse = match host.create_proof_authorized(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2509,7 +2509,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 match host.submit(&cx, request).await {
                     Ok(()) => Ok(encode_versioned_unit_ok_payload(target_version)),
                     Err(err) => {
@@ -2542,7 +2542,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::system::HostHandshakeResponse = match host.handshake(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2581,7 +2581,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::system::HostFeatureSupportedResponse = match host.feature_supported(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2620,7 +2620,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::system::HostNavigateToResponse = match host.navigate_to(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2659,7 +2659,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::system::HostInfoResponse = match host.host_info(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2698,7 +2698,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let response: versioned::system::HostGetProductContextResponse = match host.get_product_context(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -2732,7 +2732,7 @@ where
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
-                let cx = CallContext::with_request_id(request_id.clone());
+                let cx = CallContext::with_request_id(request_id);
                 let stream = host.subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::theme::HostThemeSubscribeItem, _>(stream))
             })

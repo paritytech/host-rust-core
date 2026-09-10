@@ -11,6 +11,7 @@ import { describe, expect, it } from "bun:test";
 import { str } from "./scale.js";
 import { decodeWireMessage, encodeWireMessage } from "./transport.js";
 import * as W from "./generated/wire-table.js";
+import { HostSignPayloadRequest } from "./generated/types.js";
 
 function toHex(u: Uint8Array): string {
     return Array.from(u)
@@ -38,6 +39,43 @@ function unwrap<T>(result: Result<T, { message: string }>, message: string): T {
 }
 
 describe("encodeWireMessage / decodeWireMessage wire equality", () => {
+    it("matches Rust signing bytes for absent, true, and false transaction flags", () => {
+        for (const [flag, byte] of [
+            [undefined, "00"],
+            [true, "01"],
+            [false, "02"],
+        ] as const) {
+            const request: HostSignPayloadRequest = {
+                account: {
+                    dotNsIdentifier: "myapp.dot",
+                    derivationIndex: { tag: "Index", value: 7 },
+                },
+                payload: {
+                    blockHash: "0x",
+                    blockNumber: "0x",
+                    era: "0x",
+                    genesisHash: "0x",
+                    method: "0x",
+                    nonce: "0x",
+                    specVersion: "0x",
+                    tip: "0x",
+                    transactionVersion: "0x",
+                    signedExtensions: [],
+                    version: 4,
+                    assetId: undefined,
+                    metadataHash: undefined,
+                    mode: undefined,
+                    withSignedTransaction: flag,
+                },
+            };
+            const encoded = HostSignPayloadRequest.enc(request);
+            expect(toHex(encoded)).toBe(
+                `246d796170702e646f7400070000000000000000000000000004000000000000${byte}`,
+            );
+            expect(HostSignPayloadRequest.dec(encoded)).toEqual(request);
+        }
+    });
+
     it("encodes handshake_request (discriminant 0) to match the Rust reference", () => {
         const inner = new Uint8Array([0x00, 0x01]); // V1 variant + codec_version=1
         const encoded = unwrap(

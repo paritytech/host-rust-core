@@ -400,13 +400,14 @@ pub struct VrfSignature {
 }
 
 /// Error returned when VRF signing fails.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, derive_more::Display)]
 pub enum HostAccountSignVrfError {
     /// User is not logged in.
     NotConnected,
     /// User or host rejected the signing confirmation.
     Rejected,
     /// Catch-all.
+    #[display("{reason}")]
     Unknown {
         /// Human-readable failure reason.
         reason: String,
@@ -499,17 +500,22 @@ pub enum HostProductDeviceChatResponse {
 }
 
 /// Product-device Chat v2 identity failure.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, derive_more::Display)]
 pub enum HostProductDeviceChatError {
     /// No account-authority session is connected.
+    #[display("not connected")]
     NotConnected,
     /// The user or Host rejected the operation.
+    #[display("rejected")]
     Rejected,
     /// The peer X25519 public key is invalid.
+    #[display("invalid peer key")]
     InvalidPeerKey,
     /// The ciphertext failed structural or authentication checks.
+    #[display("invalid ciphertext")]
     InvalidCiphertext,
     /// The Host could not complete the operation.
+    #[display("unknown: {reason}")]
     Unknown {
         /// Human-readable failure reason.
         reason: String,

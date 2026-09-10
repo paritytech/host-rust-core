@@ -250,6 +250,32 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 session/SSO crypto, key derivation, and permission policy, while all I/O
 (statement-store RPC, storage, prompts, chain RPC) stays in the layers above.
 
+### Inter-host SSO
+
+`PairingHost::call(request)` sends typed requests to
+[`SigningHostSsoService`](src/runtime/signing_host/sso_service.rs). Handlers own
+consent and business logic; `sso_responder.rs` owns the transport loop and shared
+allowance helpers. Resource consent is bound to the request's signing session:
+account changes, disconnects, and reactivation invalidate pending approval before
+allocation or key return. Allocation failure details stay in local transcripts.
+Allocation requests use the canonical `truapi::latest::AllocatableResource` type.
+Signing uses canonical request and result types. Product-scoped VRF requests use
+`ProductRequest<P>` to attach the caller to a canonical payload. Both product and
+SSO signing encode `with_signed_transaction` with the one-byte `OptionBool` codec.
+
+The `host_logic::sso::messages::v1::RemoteMessage` enum owns the SCALE wire
+contract. Its response variants wrap named result payloads in `Response<P>`,
+which carries `responding_to` once. Macros generate request/response pairing
+and dispatch; see the
+[macro guide](../truapi-macros/README.md) for handler signatures and reply handling.
+A new operation needs payload definitions, wire variants, a handler, and a typed
+client call.
+
+Rust consumers must update renamed SSO types and helpers even when SCALE encoding
+is unchanged. Use `RemoteMessage::request(message_id, request)` to construct
+requests. Decoded `SsoSessionStatement::RemoteMessages` preserves message order;
+match variants directly or use the request's `SsoRequest::response_from_message`.
+
 ## Wire envelope
 
 Every frame on the wire is encoded as:

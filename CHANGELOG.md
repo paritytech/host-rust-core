@@ -28,10 +28,42 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 - return a decode error instead of trapping when subscription helpers receive a
   request descriptor
 
-## [0.13.1] - 2026-09-02
+## [0.14.0] - 2026-09-10
+
+### Added
+
+- warm start on every client (#629)
+- wire trace engine, standalone inspector, and in-app panel (#536)
+- payload-blind wire-debug tap, sinks, and the codegen decode surface (#295)
+- persist /log level (#583)
+
+### Changed
+
+- Clarify TrUAPI README and documentation paths (#721)
+- move the request id into the call context (#718)
+- @parity/truapi-provider 0.1.0 (#662)
+- consolidate Rust boilerplate and move runtime modules (#617)
+- speed up UniFFI binding generation (#590)
 
 ### Fixed
 
+- run the bootnode health check when a dispatch asks for it (#691)
+- version the persisted session blob and decode the older layouts (#647)
+- read lite PoP names in both their dotted and flattened forms (#602)
+- derive the reserved person and identity keys under the network suffix (#627)
+- remove legacy compatibility fallbacks (#585)
+- adopt current People proof contexts (#587)
+- announce the boot auth state after the initial session restore (#571)
+
+## [0.13.1] - 2026-09-02
+
+### Changed
+
+- @parity/truapi 0.13.1, @parity/truapi-host 0.10.1, @parity/ios-host 0.13.1 (#581)
+
+### Fixed
+
+- strip the provider xcframework modulemaps (#553)
 - resolve the dotNS controller whether the gateway stores a dispatcher or the controller (#564)
 - follow previewnet and paseo-next-v2 through their wipes (#579)
 - read Resources parameters through view functions (#577)
