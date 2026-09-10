@@ -222,6 +222,11 @@ impl SessionStoreSync {
 
 /// Remote account authority for a pairing host.
 pub(crate) struct PairingHost {
+    /// Shared runtime services. Held, not just borrowed at construction, so
+    /// this role can resolve a product manifest for itself when it adjudicates
+    /// a cross-product grant. `RuntimeServices` does not hold the pairing host
+    /// back — `host_core` owns both — so this is not a cycle.
+    services: Arc<RuntimeServices>,
     /// Host platform backing all syscalls.
     pub(super) platform: Arc<dyn Platform>,
     /// Pairing configuration supplied by the embedding host.
@@ -266,6 +271,7 @@ impl PairingHost {
         let platform = services.platform.clone();
         let auth_state = AuthStateMachine::new(platform.clone());
         Arc::new_cyclic(|weak_self| Self {
+            services: services.clone(),
             platform,
             host_config,
             chain: services.chain.clone(),
@@ -1906,19 +1912,23 @@ impl PairingHost {
         subtrees.retain(|(key, _), _| *key != session_key);
     }
 
-    fn require_owned_ring_vrf_key(
+    /// Whether `calling_product_id` may act on `handle`'s ring-VRF key.
+    ///
+    /// Delegates to [`crate::runtime::ring_vrf_key_access_granted`], which
+    /// resolves the owner's manifest here rather than trusting the request: on
+    /// this role the request can have arrived over the pairing wire.
+    async fn require_ring_vrf_key_access(
+        &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
     ) -> Result<(), RingVrfError> {
-        let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
-            RingVrfError::Unknown {
-                reason: error.to_string(),
-            }
-        })?;
-        if caller != handle.dot_ns_identifier {
-            return Err(RingVrfError::NotAllowlisted);
-        }
-        Ok(())
+        crate::runtime::product_manifest::ring_vrf_key_access_granted(
+            &self.services,
+            self.platform.as_ref(),
+            calling_product_id,
+            handle,
+        )
+        .await
     }
 
     async fn local_ring_vrf_entropy(
@@ -2121,7 +2131,12 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(
+                &request.calling_product_id,
+                &request.payload.key_handle,
+            )
+            .await?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy_for_ring(
@@ -2259,7 +2274,12 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(
+                &request.calling_product_id,
+                &request.payload.key_handle,
+            )
+            .await?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy(&private_session, &request.payload.key_handle)

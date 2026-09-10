@@ -163,6 +163,13 @@ impl SigningHost {
         })
     }
 
+    /// The shared services this role was built over, for tests that also need
+    /// to build a product runtime against the same platform and cache.
+    #[cfg(test)]
+    fn services(&self) -> Arc<RuntimeServices> {
+        self.services.clone()
+    }
+
     #[cfg(test)]
     fn new_with_ring_resolver(
         platform: Arc<dyn Platform>,
@@ -524,19 +531,23 @@ impl SigningHost {
         })
     }
 
-    fn require_owned_ring_vrf_key(
+    /// Whether `calling_product_id` may act on `handle`'s ring-VRF key.
+    ///
+    /// Delegates to [`crate::runtime::ring_vrf_key_access_granted`], which
+    /// resolves the owner's manifest here rather than trusting the request: on
+    /// this role the request can have arrived over the pairing wire.
+    async fn require_ring_vrf_key_access(
+        &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
     ) -> Result<(), RingVrfError> {
-        let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
-            RingVrfError::Unknown {
-                reason: error.to_string(),
-            }
-        })?;
-        if caller != handle.dot_ns_identifier {
-            return Err(RingVrfError::NotAllowlisted);
-        }
-        Ok(())
+        crate::runtime::product_manifest::ring_vrf_key_access_granted(
+            &self.services,
+            self.platform.as_ref(),
+            calling_product_id,
+            handle,
+        )
+        .await
     }
 
     pub(crate) async fn ring_vrf_providers(
@@ -895,7 +906,12 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(
+                &request.calling_product_id,
+                &request.payload.key_handle,
+            )
+            .await?;
         let entropy = self
             .resolve_ring_vrf_key_for_ring(
                 session,
@@ -1001,7 +1017,12 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         self.require_current_session(session)?;
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(
+                &request.calling_product_id,
+                &request.payload.key_handle,
+            )
+            .await?;
         let entropy = self
             .resolve_registered_ring_vrf_key(session, &request.payload.key_handle)
             .await?;
@@ -1481,6 +1502,220 @@ mod tests {
                 members: vec![full_member],
             },
         })
+    }
+
+    /// Seed `owner`'s cached manifest so a grant lookup resolves without a
+    /// chain. Mirrors `runtime::tests::cache_manifest`.
+    fn cache_grant(platform: &StubPlatform, owner: &str, trusted_products: &str) {
+        let json = format!(
+            r#"{{"$v":1,"displayName":"D","description":"d",
+                 "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted_products}}}"#
+        );
+        let entry = crate::runtime::CachedManifest {
+            fetched_at_secs: crate::runtime::unix_time_secs().expect("clock is after the epoch"),
+            json: Some(json),
+        };
+        futures::executor::block_on(
+            <StubPlatform as truapi_platform::CoreStorage>::write_core_storage(
+                platform,
+                truapi_platform::CoreStorageKey::ProductManifest {
+                    product_id: owner.to_string(),
+                },
+                parity_scale_codec::Encode::encode(&entry),
+            ),
+        )
+        .expect("stub core storage accepts the entry");
+    }
+
+    /// Persist a user refusal of `caller`'s access to `target`'s account.
+    fn deny_account_access(platform: &StubPlatform, caller: &str, target: &str) {
+        futures::executor::block_on(
+            crate::host_logic::permissions::PermissionsService::new(platform, platform, caller)
+                .set_authorization_status(
+                    &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
+                        target_product_id: target.to_string(),
+                    },
+                    truapi_platform::PermissionAuthorizationStatus::Denied,
+                ),
+        )
+        .expect("stub core storage accepts the decision");
+    }
+
+    /// A `context` grant lets a foreign product prove with the owner's key.
+    ///
+    /// The test whose absence let the inert scope ship. The earlier
+    /// `a_cached_context_grant_lets_a_foreign_proof_through` asserted
+    /// `Rejected` with no session, which only proved the call reached the
+    /// session guard — the authority, one layer down, would have refused it
+    /// anyway. This one runs the whole stack with a live session and a
+    /// registered key, so a proof actually comes back.
+    #[test]
+    fn a_context_grant_lets_a_foreign_product_prove_with_the_owners_key() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        let host = product_runtime_for(services, authority.clone(), "dim2.dot");
+        let proof = futures::executor::block_on(host.create_account_proof(
+            &CallContext::default(),
+            foreign_proof_request(&ring_location),
+        ));
+        assert!(
+            proof.is_ok(),
+            "a granted cross-product proof must succeed, got {proof:?}"
+        );
+    }
+
+    /// The same call with no grant. Same fixture, one line different.
+    #[test]
+    fn a_foreign_proof_is_refused_when_the_owner_granted_nothing() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"someone-else":["context"]}"#);
+        let (services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        let host = product_runtime_for(services, authority.clone(), "dim2.dot");
+        let proof = futures::executor::block_on(host.create_account_proof(
+            &CallContext::default(),
+            foreign_proof_request(&ring_location),
+        ));
+        assert_eq!(
+            proof.err(),
+            Some(CallError::Domain(
+                truapi::versioned::account::HostAccountCreateProofError::V1(
+                    v01::HostAccountCreateProofError::NotAllowlisted
+                )
+            ))
+        );
+    }
+
+    /// **The one that matters.** Nothing in the request can stand in for the
+    /// manifest.
+    ///
+    /// This drives the authority directly, the way `sso_responder` does for a
+    /// request arriving over the pairing wire — the frontend, and its grant
+    /// check, are not on this path at all. The request names `dim2.dot` as the
+    /// caller and `peopl.dot`'s key as the handle, which is the most a peer can
+    /// assert. With no grant published it is refused; with the grant published
+    /// and nothing else changed it succeeds. So the admitting fact is the
+    /// manifest the authority resolved for itself, not any field the caller
+    /// set.
+    #[test]
+    fn a_request_cannot_substitute_for_the_owners_manifest() {
+        let refusal = foreign_proof_through_the_authority(None);
+        assert_eq!(
+            refusal.err(),
+            Some(RingVrfError::NotAllowlisted),
+            "with no manifest grant the authority must refuse, whatever the request says"
+        );
+
+        let granted = foreign_proof_through_the_authority(Some(r#"{"dim2":["context"]}"#));
+        assert!(
+            granted.is_ok(),
+            "the identical request must succeed once the owner's manifest grants it, \
+             which is what proves the manifest is the deciding input; got {granted:?}"
+        );
+    }
+
+    /// A grant never overrides a refusal the user already gave.
+    ///
+    /// The stored `AccountAccess` decision is read before the manifest, and
+    /// read-only: a grant lookup must not raise the prompt that would settle a
+    /// `NotDetermined` one.
+    #[test]
+    fn a_stored_denial_survives_a_context_grant_at_the_authority() {
+        let refusal =
+            foreign_proof_through_the_authority_with(Some(r#"{"dim2":["context"]}"#), |platform| {
+                deny_account_access(platform, "dim2.dot", "peopl.dot")
+            });
+        assert_eq!(refusal.err(), Some(RingVrfError::NotAllowlisted));
+    }
+
+    /// `all` is a superset, so it satisfies `context` at the runtime seam and
+    /// not only in the manifest parser.
+    #[test]
+    fn a_grant_of_all_satisfies_context_at_the_authority() {
+        let granted = foreign_proof_through_the_authority(Some(r#"{"dim2":["all"]}"#));
+        assert!(
+            granted.is_ok(),
+            "`all` must satisfy `context`, got {granted:?}"
+        );
+    }
+
+    fn signing_runtime_with_ring_resolver(
+        platform: Arc<StubPlatform>,
+        ring_resolver: Arc<StubRingResolver>,
+    ) -> (Arc<RuntimeServices>, Arc<SigningHostRole>) {
+        let authority = SigningHostRole::new_with_ring_resolver(platform, ring_resolver);
+        (authority.services(), authority)
+    }
+
+    fn foreign_proof_through_the_authority(
+        trusted_products: Option<&str>,
+    ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
+        foreign_proof_through_the_authority_with(trusted_products, |_| {})
+    }
+
+    /// Drive `create_proof` straight at the authority, bypassing the frontend,
+    /// with `dim2.dot` naming `peopl.dot`'s key handle.
+    fn foreign_proof_through_the_authority_with(
+        trusted_products: Option<&str>,
+        seed: impl FnOnce(&StubPlatform),
+    ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
+        let platform = Arc::new(StubPlatform::default());
+        if let Some(trusted_products) = trusted_products {
+            cache_grant(&platform, "peopl.dot", trusted_products);
+        }
+        seed(&platform);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        futures::executor::block_on(authority.create_proof(
+            &CallContext::default(),
+            &session,
+            CreateProofAuthorityRequest {
+                calling_product_id: "dim2.dot".to_string(),
+                key_handle: full_person_key_handle(),
+                context: v01::ProductProofContext {
+                    product_id: "dim2.dot".to_string(),
+                    suffix: v01::DerivationIndex::Index(0),
+                },
+                ring_location,
+                message: b"prove me".to_vec(),
+            },
+        ))
+    }
+
+    fn foreign_proof_request(
+        ring_location: &v01::RingLocation,
+    ) -> truapi::versioned::account::HostAccountCreateProofRequest {
+        truapi::versioned::account::HostAccountCreateProofRequest::V1(
+            v01::HostAccountCreateProofRequest {
+                key_handle: full_person_key_handle(),
+                context: v01::ProductProofContext {
+                    product_id: "dim2.dot".to_string(),
+                    suffix: v01::DerivationIndex::Index(0),
+                },
+                ring_location: ring_location.clone(),
+                message: b"prove me".to_vec(),
+            },
+        )
     }
 
     fn full_person_ring_location() -> v01::RingLocation {

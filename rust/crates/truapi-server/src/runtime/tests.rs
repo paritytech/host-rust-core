@@ -372,6 +372,21 @@ fn a_grant_of_some_other_scope_does_not_open_storage() {
 }
 
 #[test]
+fn a_context_grant_does_not_open_storage() {
+    // Scopes are independent, and `context` is the case worth pinning rather
+    // than an unrecognised value: it is a scope this core does honour, just
+    // not for storage.
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
+}
+
+#[test]
 fn a_cached_grant_stops_being_honoured_once_it_expires() {
     // The lifetime is the revocation bound. Past it the entry is ignored,
     // and with no Asset Hub to re-read from the grant is gone.
@@ -387,6 +402,73 @@ fn a_cached_grant_stops_being_honoured_once_it_expires() {
     assert_eq!(
         read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
         access_not_granted()
+    );
+}
+
+/// With no session, every proof refusal is the same refusal.
+///
+/// This is the ordering hazard closed. `create_account_proof` consults the
+/// session before the grant, so a granting target, a non-granting target and
+/// the caller's own key all answer `Rejected` — and the pair of refusals stops
+/// being a probe for who granted whom. The grant path itself is covered
+/// end-to-end, with a live session, in
+/// `runtime::signing_host::tests::a_context_grant_lets_a_foreign_product_prove_with_the_owners_key`.
+#[test]
+fn with_no_session_a_proof_refusal_never_discloses_whether_a_grant_exists() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "granting.dot", r#"{"unknown":["context"]}"#, 0);
+    cache_manifest(
+        &platform,
+        "silent.dot",
+        r#"{"someone-else":["context"]}"#,
+        0,
+    );
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let sessionless = Some(CallError::Domain(HostAccountCreateProofError::V1(
+        v01::HostAccountCreateProofError::Rejected,
+    )));
+
+    assert_eq!(proof_refusal(&host, "granting.dot"), sessionless);
+    assert_eq!(proof_refusal(&host, "silent.dot"), sessionless);
+    assert_eq!(proof_refusal(&host, &host.product_id()), sessionless);
+}
+
+fn proof_refusal(
+    host: &ProductRuntimeHost,
+    product: &str,
+) -> Option<CallError<HostAccountCreateProofError>> {
+    futures::executor::block_on(
+        host.create_account_proof(&CallContext::default(), create_proof_request(product)),
+    )
+    .err()
+}
+
+#[test]
+fn a_proof_naming_the_caller_in_another_spelling_is_still_its_own() {
+    // Normalized before comparison, so casing cannot turn a product's own
+    // key into a cross-product refusal.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    let shouted = host.product_id().to_uppercase();
+    assert_eq!(
+        proof_refusal(&host, &shouted),
+        Some(CallError::Domain(HostAccountCreateProofError::V1(
+            v01::HostAccountCreateProofError::Rejected
+        )))
+    );
+}
+
+#[test]
+fn an_unresolvable_product_cannot_reach_a_foreign_key() {
+    // An id that does not normalize is not the caller, so it takes the same
+    // refusal as a product that granted nothing.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    assert_eq!(
+        proof_refusal(&host, "not a product"),
+        Some(CallError::Domain(HostAccountCreateProofError::V1(
+            v01::HostAccountCreateProofError::Unknown {
+                reason: "Invalid key handle".to_string()
+            }
+        )))
     );
 }
 

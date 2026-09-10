@@ -25,6 +25,7 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 
+use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::sso::messages::ProductRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
@@ -171,17 +172,29 @@ impl Account for ProductRuntimeHost {
                     },
                 ))
             })?;
-        if request.key_handle.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::NotAllowlisted,
-            )));
-        }
-
+        // The session is consulted before the grant, matching `ring_vrf_sign`.
+        // The other order makes the pair of refusals a probe for who granted
+        // whom: with no session a granting target answers `Rejected` and a
+        // non-granting one `NotAllowlisted`, which is exactly what the uniform
+        // cross-product refusal exists to prevent.
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::Rejected,
             )));
         };
+
+        // Proving against another product's key uses that product's account and
+        // the identity derived from it, so it needs that product's `context`
+        // grant. One refusal covers every reason it is not held.
+        let Some(owner) = self
+            .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
+            .await
+        else {
+            return Err(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::NotAllowlisted,
+            )));
+        };
+        request.key_handle.dot_ns_identifier = owner;
 
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
@@ -300,7 +313,14 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if request.key_handle.dot_ns_identifier != self.product_id() {
+        if self
+            .cross_product_scope_target(
+                &request.key_handle.dot_ns_identifier,
+                Granted::Context,
+            )
+            .await
+            .is_none()
+        {
             return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
                 v01::HostAccountRingVrfSignError::NotAllowlisted,
             )));

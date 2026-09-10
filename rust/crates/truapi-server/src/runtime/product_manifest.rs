@@ -9,8 +9,12 @@
 //! [manifest]: ../../../../docs/rfcs/product-manifest.md
 
 use parity_scale_codec::{Decode, Encode};
-use tracing::{instrument, warn};
-use truapi_platform::{CoreStorageKey, HostChainSet, Platform};
+use tracing::{debug, instrument, warn};
+use truapi::v01;
+use truapi_platform::{
+    CoreStorageKey, HostChainSet, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
+    Platform, normalize_product_identifier,
+};
 
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::dotns_gateway::{
@@ -19,6 +23,8 @@ use crate::host_logic::dotns_gateway::{
     protocol_component, tld_node,
 };
 use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
+use crate::host_logic::permissions::PermissionsService;
+use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::statement_store::current_unix_secs;
 use crate::runtime::dotns_lookup::DotnsLookup;
 use crate::runtime::services::RuntimeServices;
@@ -232,6 +238,13 @@ pub(crate) async fn grants_scope(
     target: &str,
     scope: Granted,
 ) -> bool {
+    // A publisher's grant waives the publisher's own prompt. It does not reach
+    // a refusal the user already gave, so the stored decision is consulted
+    // first, read-only: raising the prompt here would turn a grant into a way
+    // to ask again.
+    if scope == Granted::Context && user_denied_account_access(platform, caller_id, target).await {
+        return false;
+    }
     let Some(json) = root_manifest(services, platform, target).await else {
         return false;
     };
@@ -321,6 +334,89 @@ fn asset_hub_agreement(chains: &HostChainSet, configured: [u8; 32]) -> AssetHubA
         Some(served) => AssetHubAgreement::Diverges { served },
         None => AssetHubAgreement::NotServed,
     }
+}
+
+/// Whether the user has already refused `caller_id` access to `target`'s account.
+///
+/// Reads the stored decision without raising a prompt: `NotDetermined` is not a
+/// refusal, and the prompt that would settle it belongs to the call the user
+/// actually made, not to a grant lookup.
+async fn user_denied_account_access(
+    platform: &dyn Platform,
+    caller_id: &str,
+    target: &str,
+) -> bool {
+    let request = PermissionAuthorizationRequest::AccountAccess {
+        target_product_id: target.to_string(),
+    };
+    let service = PermissionsService::new(platform, platform, caller_id);
+    matches!(
+        service.authorization_status(&request).await,
+        Ok(PermissionAuthorizationStatus::Denied)
+    )
+}
+
+/// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
+/// by the component that holds the key.
+///
+/// The caller owns the key, or the owner's published manifest grants the caller
+/// `context` and the user has not already refused, resolved against the chain
+/// here rather than accepted from the request. On a paired host the request
+/// arrives over the wire, and a verdict relayed by the caller would take the
+/// manifest out of this decision entirely: the peer would reach every handle on
+/// the device by setting one field, instead of only the handles a publisher
+/// really granted.
+///
+/// The owner check runs first and costs nothing, so a product proving with its
+/// own key never touches the network. Everything after it is a cross-product
+/// access, and every reason it is refused answers the same way.
+pub(crate) async fn ring_vrf_key_access_granted(
+    services: &RuntimeServices,
+    platform: &dyn Platform,
+    calling_product_id: &str,
+    handle: &v01::ProductAccountId,
+) -> Result<(), RingVrfError> {
+    let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
+        RingVrfError::Unknown {
+            reason: error.to_string(),
+        }
+    })?;
+    // The handle is normalized here, not only at the frontend. The frontend
+    // does it before delegating, but `sso_responder` hands a wire request
+    // straight to the authority unnormalized, so without this the two doors
+    // disagree: an owner naming its own key `PEOPL.DOT` over the wire is
+    // refused where the same request from a local product runtime succeeds.
+    //
+    // A handle that does not normalize names no product, so it owns no key and
+    // no manifest can grant it: it takes the same refusal as a product that
+    // granted nothing, rather than a distinguishable error.
+    let Ok(owner) = normalize_product_identifier(&handle.dot_ns_identifier) else {
+        return Err(RingVrfError::NotAllowlisted);
+    };
+    if caller == owner {
+        return Ok(());
+    }
+    if grants_scope(services, platform, &caller, &owner, Granted::Context).await {
+        return Ok(());
+    }
+    // The wire answer is one refusal for every reason, so the reason lives here
+    // or nowhere. Which door the request came through is not repeated: the
+    // enclosing span already says it (`account.*` for a local product runtime,
+    // `sso_responder.*` for a paired peer).
+    //
+    // That span is also what says how far to trust `caller`. Under `account.*`
+    // it is the product id the host bound to the connection. Under
+    // `sso_responder.*` it is `calling_product_id` as decoded from the peer's
+    // message: what the authenticated paired host said, not something this host
+    // verified. The refusal is sound either way, because the grant is resolved
+    // from the owner's manifest and never from this field, but an operator
+    // reading the line should not take it as proof of who asked.
+    debug!(
+        caller = %caller,
+        owner = %owner,
+        "ring-VRF key access refused: no context grant"
+    );
+    Err(RingVrfError::NotAllowlisted)
 }
 
 /// `target`'s root manifest JSON, from cache when it is younger than
