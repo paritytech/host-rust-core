@@ -1,6 +1,7 @@
 //! Local WebSocket gateway exposing [`EmbeddedChainProvider`] chains to a
 //! browser host: each configured chain is served at `ws://LISTEN/<name>`, and
-//! every inbound WebSocket connection becomes one provider connection.
+//! every inbound WebSocket connection is multiplexed onto one provider connection
+//! per chain so all clients share one Statement Store gossip view.
 //!
 //! dotli's `rpc-gateway` backend can point at this process via its
 //! `dotli:gateway-rpc-base` setting (e.g. `ws://127.0.0.1:9944`), which routes
@@ -43,14 +44,16 @@ async fn main() {
 mod imp {
     use std::collections::HashMap;
     use std::net::SocketAddr;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use futures::{SinkExt, StreamExt};
     use serde_json::Value;
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::mpsc;
     use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-    use truapi_platform::ChainProvider;
+    use truapi_platform::{ChainProvider, JsonRpcConnection};
     use truapi_provider::{ChainSource, EmbeddedChainProvider};
 
     pub(super) async fn run() {
@@ -91,8 +94,25 @@ mod imp {
             routes.insert(format!("/{name}"), genesis);
         }
 
-        let provider = Arc::new(builder.build());
-        let routes = Arc::new(routes);
+        let provider = builder.build();
+        let mut shared_routes = HashMap::new();
+        for (path, genesis) in routes {
+            let connection = provider.connect(genesis).await.unwrap_or_else(|err| {
+                panic!("gateway connection for {path} failed: {}", err.reason)
+            });
+            let mut responses = connection.responses();
+            let shared = Arc::new(SharedChain::new(Arc::from(connection)));
+            let response_chain = Arc::clone(&shared);
+            tokio::spawn(async move {
+                while let Some(text) = responses.next().await {
+                    response_chain.dispatch(text);
+                }
+                response_chain.close_clients();
+            });
+            shared_routes.insert(path, shared);
+        }
+
+        let routes = Arc::new(shared_routes);
         let listener = TcpListener::bind(&listen)
             .await
             .expect("the gateway must bind its listen address");
@@ -100,21 +120,139 @@ mod imp {
 
         loop {
             let (stream, peer) = listener.accept().await.expect("accept must succeed");
-            tokio::spawn(serve(
-                stream,
-                peer,
-                Arc::clone(&provider),
-                Arc::clone(&routes),
-            ));
+            tokio::spawn(serve(stream, peer, Arc::clone(&routes)));
         }
     }
 
-    /// Bridge one WebSocket connection to one provider connection.
+    struct SharedChain {
+        connection: Arc<dyn JsonRpcConnection>,
+        clients: Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>,
+        pending: Mutex<HashMap<String, (u64, Value)>>,
+        next_client: AtomicU64,
+        next_request: AtomicU64,
+    }
+
+    impl SharedChain {
+        fn new(connection: Arc<dyn JsonRpcConnection>) -> Self {
+            Self {
+                connection,
+                clients: Mutex::new(HashMap::new()),
+                pending: Mutex::new(HashMap::new()),
+                next_client: AtomicU64::new(1),
+                next_request: AtomicU64::new(1),
+            }
+        }
+
+        fn register(&self) -> (u64, mpsc::UnboundedReceiver<Message>) {
+            let client = self.next_client.fetch_add(1, Ordering::Relaxed);
+            let (sender, receiver) = mpsc::unbounded_channel();
+            self.clients.lock().unwrap().insert(client, sender);
+            (client, receiver)
+        }
+
+        fn unregister(&self, client: u64) {
+            self.clients.lock().unwrap().remove(&client);
+        }
+
+        fn forward(&self, client: u64, text: String) {
+            let Ok(mut request) = serde_json::from_str::<Value>(&text) else {
+                self.connection.send(text);
+                return;
+            };
+            self.namespace_ids(client, &mut request);
+            self.connection
+                .send(serde_json::to_string(&request).expect("JSON-RPC request must serialize"));
+        }
+
+        fn namespace_ids(&self, client: u64, value: &mut Value) {
+            match value {
+                Value::Array(items) => {
+                    for item in items {
+                        self.namespace_ids(client, item);
+                    }
+                }
+                Value::Object(object) => {
+                    if let Some(id) = object.get_mut("id") {
+                        let request = self.next_request.fetch_add(1, Ordering::Relaxed);
+                        let namespaced = format!("gateway:{client}:{request}");
+                        self.pending
+                            .lock()
+                            .unwrap()
+                            .insert(namespaced.clone(), (client, id.clone()));
+                        *id = Value::String(namespaced);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn dispatch(&self, text: String) {
+            let Ok(mut response) = serde_json::from_str::<Value>(&text) else {
+                self.broadcast(Message::Text(text));
+                return;
+            };
+            if let Some(client) = self.restore_ids(&mut response) {
+                self.send_to(
+                    client,
+                    Message::Text(
+                        serde_json::to_string(&response).expect("JSON-RPC response must serialize"),
+                    ),
+                );
+            } else {
+                self.broadcast(Message::Text(text));
+            }
+        }
+
+        fn restore_ids(&self, value: &mut Value) -> Option<u64> {
+            match value {
+                Value::Array(items) => {
+                    let mut client = None;
+                    for item in items {
+                        let item_client = self.restore_ids(item)?;
+                        if client.is_some_and(|current| current != item_client) {
+                            return None;
+                        }
+                        client = Some(item_client);
+                    }
+                    client
+                }
+                Value::Object(object) => {
+                    let id = object.get_mut("id")?;
+                    let namespaced = id.as_str()?;
+                    let (client, original) = self.pending.lock().unwrap().remove(namespaced)?;
+                    *id = original;
+                    Some(client)
+                }
+                _ => None,
+            }
+        }
+
+        fn send_to(&self, client: u64, message: Message) {
+            if let Some(sender) = self.clients.lock().unwrap().get(&client) {
+                let _ = sender.send(message);
+            }
+        }
+
+        fn broadcast(&self, message: Message) {
+            self.clients
+                .lock()
+                .unwrap()
+                .retain(|_, sender| sender.send(message.clone()).is_ok());
+        }
+
+        fn close_clients(&self) {
+            self.broadcast(Message::Close(None));
+            self.clients.lock().unwrap().clear();
+        }
+    }
+
+    /// Bridge every downstream client onto the route's one live provider
+    /// connection. One smoldot chain must own both peers: separately added
+    /// chains do not gossip statements to each other inside the process.
     async fn serve(
         stream: TcpStream,
         peer: SocketAddr,
-        provider: Arc<EmbeddedChainProvider>,
-        routes: Arc<HashMap<String, [u8; 32]>>,
+        routes: Arc<HashMap<String, Arc<SharedChain>>>,
     ) {
         let mut path = String::new();
         let websocket = match tokio_tungstenite::accept_hdr_async(
@@ -136,30 +274,20 @@ mod imp {
             }
         };
 
-        let Some(genesis) = routes.get(&path) else {
+        let Some(chain) = routes.get(&path).cloned() else {
             eprintln!("[gateway] {peer}: unknown route {path}");
             return;
         };
-        let connection = match provider.connect(*genesis).await {
-            Ok(connection) => connection,
-            Err(err) => {
-                eprintln!(
-                    "[gateway] {peer}: connect for {path} failed: {}",
-                    err.reason
-                );
-                return;
-            }
-        };
+        let (client, mut responses) = chain.register();
         println!("[gateway] {peer}: connected to {path}");
 
         let (mut outbound, mut inbound) = websocket.split();
-        let mut responses = connection.responses();
         loop {
             tokio::select! {
                 frame = inbound.next() => match frame {
-                    Some(Ok(Message::Text(text))) => connection.send(text),
+                    Some(Ok(Message::Text(text))) => chain.forward(client, text),
                     Some(Ok(Message::Binary(bytes))) => match String::from_utf8(bytes) {
-                        Ok(text) => connection.send(text),
+                        Ok(text) => chain.forward(client, text),
                         Err(_) => eprintln!("[gateway] {peer}: dropping non-UTF-8 frame"),
                     },
                     Some(Ok(Message::Close(_))) | None => break,
@@ -170,9 +298,9 @@ mod imp {
                         break;
                     }
                 },
-                response = responses.next() => match response {
-                    Some(text) => {
-                        if outbound.send(Message::Text(text)).await.is_err() {
+                response = responses.recv() => match response {
+                    Some(message) => {
+                        if outbound.send(message).await.is_err() {
                             break;
                         }
                     }
@@ -181,7 +309,7 @@ mod imp {
             }
         }
 
-        connection.close();
+        chain.unregister(client);
         let _ = outbound.close().await;
         println!("[gateway] {peer}: disconnected from {path}");
     }
