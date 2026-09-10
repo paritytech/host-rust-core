@@ -1,0 +1,2466 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "action.chat.reserve.tattoo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select and Reserve a Unique Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige y reserva un tatuaje único"
+          }
+        }
+      }
+    },
+    "action.provide.photo.evidence": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2/2 Take Photo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2/2 Tomar foto"
+          }
+        }
+      }
+    },
+    "action.provide.video.evidence": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1/2 Film Documentation Video"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1/2 Grabar video de documentación"
+          }
+        }
+      }
+    },
+    "camera.not.allowed.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please, allow camera access in the Setting to proceed with the video recording"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permite el acceso a la cámara en Configuración para continuar con la grabación del video"
+          }
+        }
+      }
+    },
+    "camera.not.allowed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Camera Access Restricted"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Acceso a la cámara restringido"
+          }
+        }
+      }
+    },
+    "commit.action.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proceed with this Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuar con este tatuaje"
+          }
+        }
+      }
+    },
+    "commit.already.reserved.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This tattoo is already reserved, select again"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este tatuaje ya está reservado, elige otro"
+          }
+        }
+      }
+    },
+    "commit.busy.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Too many ongoing judgements. Please, try again later"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hay demasiados veredictos en curso. Inténtalo de nuevo más tarde"
+          }
+        }
+      }
+    },
+    "commit.failed.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tattoo commit failed. Please, try again later"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo confirmar el tatuaje. Inténtalo de nuevo más tarde"
+          }
+        }
+      }
+    },
+    "confirm.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Be sure you’re happy with your choice, as the tattoo design can’t be changed after confirmation."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Asegúrate de estar conforme con tu elección, ya que el diseño del tatuaje no se puede cambiar después de confirmar."
+          }
+        }
+      }
+    },
+    "confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm Polkadot Peer Tattoo Reservation"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirmar la reserva del tatuaje de Polkadot Peer"
+          }
+        }
+      }
+    },
+    "days.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%1$(value)lld day"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%1$(value)lld days"
+                }
+              }
+            }
+          }
+        },
+        "es-ES": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%1$(value)lld día"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%1$(value)lld días"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "deposit.apply.actionTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generate Personal Tattoos"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generar tatuajes personales"
+          }
+        }
+      }
+    },
+    "deposit.apply.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select and Reserve\nany Available Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige y reserva\ncualquier tatuaje disponible"
+          }
+        }
+      }
+    },
+    "deposit.label.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deposit %@"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Depositar %@"
+          }
+        }
+      }
+    },
+    "deposit.received.amount.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Deposit Received"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Depósito de %@ recibido"
+          }
+        }
+      }
+    },
+    "discard.photo.action.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar"
+          }
+        }
+      }
+    },
+    "discard.photo.action.discard": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descartar"
+          }
+        }
+      }
+    },
+    "discard.photo.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leaving now will lose the filmed photo evidence. If you want to re-take your photo proceed with discard option."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si sales ahora perderás la evidencia fotográfica tomada. Si quieres volver a tomar la foto, continúa con la opción de descartar."
+          }
+        }
+      }
+    },
+    "discard.photo.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Proof of Ink Photo Evidence?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Descartar la evidencia fotográfica del tatuaje?"
+          }
+        }
+      }
+    },
+    "discard.video.action.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar"
+          }
+        }
+      }
+    },
+    "discard.video.action.discard": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save and Discard"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar y descartar"
+          }
+        }
+      }
+    },
+    "discard.video.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leaving now will not lose the filmed video evidence. If you want to re-take your video proceed with discard option."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si sales ahora no perderás la evidencia en video grabada. Si quieres volver a grabar el video, continúa con la opción de descartar."
+          }
+        }
+      }
+    },
+    "discard.video.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Filmed Proof of Ink Documentation Video Evidence?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Descartar el video de documentación del tatuaje grabado?"
+          }
+        }
+      }
+    },
+    "evidence.action.learnMore": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Learn More"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más información"
+          }
+        }
+      }
+    },
+    "evidence.action.main": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provide Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entregar evidencia"
+          }
+        }
+      }
+    },
+    "evidence.lowBattery.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your phone's battery must be at least 50% charged to record evidence. Otherwise, the recording session may be interrupted if your phone shuts down."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La batería de tu teléfono debe estar cargada al menos al 50% para grabar la evidencia. De lo contrario, la sesión de grabación podría interrumpirse si tu teléfono se apaga."
+          }
+        }
+      }
+    },
+    "evidence.lowBattery.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please Charge Your Phone"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Carga tu teléfono"
+          }
+        }
+      }
+    },
+    "evidence.lowStorage.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your phone storage needs to have at least 100MB of free space for filming evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu teléfono necesita al menos 100 MB de espacio libre para grabar la evidencia"
+          }
+        }
+      }
+    },
+    "evidence.lowStorage.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Phone Storage Is Full"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El almacenamiento de tu teléfono está lleno"
+          }
+        }
+      }
+    },
+    "evidence.message.photo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia fotográfica"
+          }
+        }
+      }
+    },
+    "evidence.message.uploadBeginsAfterPhoto": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uploading begins after tattoo photo evidence is submitted"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La subida comienza después de enviar la evidencia fotográfica del tatuaje"
+          }
+        }
+      }
+    },
+    "evidence.message.video": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Documentation Video"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video de documentación"
+          }
+        }
+      }
+    },
+    "evidence.photo.action.done": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listo"
+          }
+        }
+      }
+    },
+    "evidence.photo.action.outlines": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tattoo Outlines"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contornos del tatuaje"
+          }
+        }
+      }
+    },
+    "evidence.photo.action.tips": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo Tips"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consejos para la foto"
+          }
+        }
+      }
+    },
+    "evidence.photo.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close up picture of the fresh tattoo exposed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Foto de cerca del tatuaje recién hecho y descubierto"
+          }
+        }
+      }
+    },
+    "evidence.photo.provided": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provided"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entregada"
+          }
+        }
+      }
+    },
+    "evidence.photo.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Final Tattoo Photo "
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Foto final del tatuaje "
+          }
+        }
+      }
+    },
+    "evidence.photo.title.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Final Tattoo Photo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Foto final del tatuaje"
+          }
+        }
+      }
+    },
+    "evidence.photo.title.prefix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2/2"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2/2"
+          }
+        }
+      }
+    },
+    "evidence.preview.photo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia fotográfica"
+          }
+        }
+      }
+    },
+    "evidence.preview.video": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia en video"
+          }
+        }
+      }
+    },
+    "evidence.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the in-app camera to provide the two proofs of tattoo evidence required"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usa la cámara de la app para entregar las dos pruebas de evidencia del tatuaje que se requieren"
+          }
+        }
+      }
+    },
+    "evidence.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provide Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entregar evidencia"
+          }
+        }
+      }
+    },
+    "evidence.video.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start filming 3-minute video when 90%% complete of the tattoo is complete"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empieza a grabar el video de 3 minutos cuando el tatuaje esté 90%% terminado"
+          }
+        }
+      }
+    },
+    "evidence.video.file.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video recording failed due to file system error. Please, try again later."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La grabación del video falló por un error del sistema de archivos. Inténtalo de nuevo más tarde."
+          }
+        }
+      }
+    },
+    "evidence.video.next": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siguiente evidencia"
+          }
+        }
+      }
+    },
+    "evidence.video.provided": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provided"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entregada"
+          }
+        }
+      }
+    },
+    "evidence.video.recorder.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video recording failed due to camera error. Please, try again later."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La grabación del video falló por un error de la cámara. Inténtalo de nuevo más tarde."
+          }
+        }
+      }
+    },
+    "evidence.video.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Documentation Video"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video de documentación"
+          }
+        }
+      }
+    },
+    "evidence.video.title.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Documentation video"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Video de documentación"
+          }
+        }
+      }
+    },
+    "evidence.video.title.prefix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1/2"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1/2"
+          }
+        }
+      }
+    },
+    "existing.video.action.new": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Film"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grabar de nuevo"
+          }
+        }
+      }
+    },
+    "existing.video.action.proceed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proceed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuar"
+          }
+        }
+      }
+    },
+    "existing.video.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provide previously filmed evidence or record a new one?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Entregar la evidencia grabada anteriormente o grabar una nueva?"
+          }
+        }
+      }
+    },
+    "existing.video.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proceed with Recorded Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuar con la evidencia grabada"
+          }
+        }
+      }
+    },
+    "filming.tips": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filming Tips"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consejos para grabar"
+          }
+        }
+      }
+    },
+    "instruction.photo.primaryButton": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Camera"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir la cámara"
+          }
+        }
+      }
+    },
+    "instruction.sheet.photo.step1.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Take the photo directly through the app's built-in camera."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toma la foto directamente con la cámara integrada de la app."
+          }
+        }
+      }
+    },
+    "instruction.sheet.photo.step1.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the In-App Camera"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usa la cámara de la app"
+          }
+        }
+      }
+    },
+    "instruction.sheet.photo.step2.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make sure the entire tattoo is clearly visible in the photo."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Asegúrate de que todo el tatuaje se vea con claridad en la foto."
+          }
+        }
+      }
+    },
+    "instruction.sheet.photo.step2.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show the Full Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el tatuaje completo"
+          }
+        }
+      }
+    },
+    "instruction.sheet.photo.step3.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You may ask someone to take the photo for you or take it yourself—what matters most is that the tattoo is fully visible."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puedes pedirle a alguien que te tome la foto o tomarla tú mismo; lo importante es que el tatuaje se vea completo."
+          }
+        }
+      }
+    },
+    "instruction.sheet.photo.step3.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get Assistance if Needed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pide ayuda si la necesitas"
+          }
+        }
+      }
+    },
+    "instruction.sheet.photo.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tattoo Photo Instructions"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instrucciones para la foto del tatuaje"
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step1.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Record the video while the tattoo is being executed, not before or after."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graba el video mientras te hacen el tatuaje, no antes ni después."
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step1.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Film During the Tattoo Session"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graba durante la sesión de tatuaje"
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step2.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The tattoo must be in progress—the stencil and the partially inked design must both be clearly visible."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El tatuaje debe estar en proceso: la plantilla y el diseño parcialmente tatuado deben verse con claridad."
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step2.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show a Partially Completed Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el tatuaje parcialmente terminado"
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step3.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All footage must be recorded directly through the app's built-in camera."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todo el material debe grabarse directamente con la cámara integrada de la app."
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step3.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the In-App Camera"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usa la cámara de la app"
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step4.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your video must be filmed without any pauses or cuts. If you stop, the recording will restart from the beginning."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu video debe grabarse sin pausas ni cortes. Si te detienes, la grabación empezará desde el principio."
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step4.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Record in One Continuous Take"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graba en una sola toma continua"
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step5.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You may film in any style you prefer, as long as the tattoo execution and the overall design are clearly shown."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puedes grabar con el estilo que prefieras, siempre y cuando el proceso del tatuaje y el diseño se vean con claridad."
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step5.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Your Filming Style"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige tu estilo de grabación"
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step6.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can ask someone to help you film, or record it yourself."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puedes pedirle a alguien que te ayude a grabar o grabarlo tú mismo."
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.step6.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get Assistance if Needed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pide ayuda si la necesitas"
+          }
+        }
+      }
+    },
+    "instruction.sheet.video.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tattoo Documentation Video Instructions"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instrucciones para el video de documentación del tatuaje"
+          }
+        }
+      }
+    },
+    "instruction.video.primaryButton": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Filming"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empezar a grabar"
+          }
+        }
+      }
+    },
+    "list.personal.families.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Procedural designs based on a your unique citizenship number or account address. The designs use algorithmic rules to map the input (e.g., a number or address) into specific aesthetic designs, ensuring both uniqueness and relevance to your individual data."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diseños procedurales basados en tu número único de ciudadanía o en la dirección de tu cuenta. Los diseños usan reglas algorítmicas para convertir el dato de entrada (por ejemplo, un número o una dirección) en diseños estéticos específicos, garantizando que sean únicos y relevantes para tus datos personales."
+          }
+        }
+      }
+    },
+    "list.personal.families.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personalized Designs"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diseños personalizados"
+          }
+        }
+      }
+    },
+    "list.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select the design\nfor your tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige el diseño\nde tu tatuaje"
+          }
+        }
+      }
+    },
+    "message.commit.detail.1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You've reserved your unique tattoo design, now it's time to make it happen!\nShare the design PDF with anyone you consider to do the tattoo, discuss the details, and make sure to capture video evidence of the process."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ya reservaste tu diseño de tatuaje único, ¡ahora es momento de hacerlo realidad!\nComparte el PDF del diseño con quien consideres para hacer el tatuaje, platiquen los detalles y asegúrate de grabar la evidencia en video del proceso."
+          }
+        }
+      }
+    },
+    "message.commit.detail.2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "💸  Don't forget, tattoo expenses will be reimbursed, so go ahead and spend your funds; you'll get them back once your evidence is approved."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "💸  No olvides que los gastos del tatuaje se te reembolsarán, así que adelante, gasta tus fondos; los recuperarás cuando tu evidencia sea aprobada."
+          }
+        }
+      }
+    },
+    "message.commit.evidence.instructions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Provide Photo and Video Documentation**\n\n🤳 Film the process while getting a tattoo. You can either ask for assistance or use the in-app camera to film yourself.\n🎦 Begin filming once the majority of the tattoo has been completed, ensuring that the chosen design is clearly visible.\n⏱️ Film closer moments when making tattoo lines over the stencil image\n🔄 Film 3 minute video without breaks\n📸 Take a picture of the fresh tattoo exposed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Entrega documentación en foto y video**\n\n🤳 Graba el proceso mientras te hacen el tatuaje. Puedes pedir ayuda o usar la cámara de la app para grabarte tú mismo.\n🎦 Empieza a grabar cuando la mayor parte del tatuaje esté terminada, asegurándote de que el diseño elegido se vea con claridad.\n⏱️ Graba tomas de cerca cuando se hagan las líneas del tatuaje sobre la plantilla\n🔄 Graba un video de 3 minutos sin interrupciones\n📸 Toma una foto del tatuaje recién hecho y descubierto"
+          }
+        }
+      }
+    },
+    "message.commit.evidence.video": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🎦 Evidence 1 / 2. The documentation video comes first. Press the \"provide\" button when you're at the tattoo studio and ready to start filming with the in-app camera."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🎦 Evidencia 1 / 2. El video de documentación va primero. Presiona el botón «entregar» cuando estés en el estudio de tatuajes y listo para empezar a grabar con la cámara de la app."
+          }
+        }
+      }
+    },
+    "message.commit.preview": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tattoo committed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tatuaje confirmado"
+          }
+        }
+      }
+    },
+    "message.evidence.approved.reimbursement": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A reimbursement of $200 for tattoo expenses has been sent to your dollar account."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se envió un reembolso de $200 por los gastos del tatuaje a tu cuenta en dólares."
+          }
+        }
+      }
+    },
+    "message.evidence.approved.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**You're a Polkadot Peer!** Discover Apps Exclusively Available for Polkadot Peers"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**¡Ya eres Polkadot Peer!** Descubre las apps disponibles exclusivamente para los Polkadot Peers"
+          }
+        }
+      }
+    },
+    "message.evidence.photo.next": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "📸 Evidence 2/2. Photo Evidence.\nTake a picture of the fresh tattoo exposed using inapp camera"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "📸 Evidencia 2/2. Evidencia fotográfica.\nToma una foto del tatuaje recién hecho y descubierto con la cámara de la app"
+          }
+        }
+      }
+    },
+    "notification.check.update.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "notification.check.update.body"
+          }
+        }
+      }
+    },
+    "notification.check.update.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "notification.check.update.title"
+          }
+        }
+      }
+    },
+    "notification.state.changed.photo.reviewed.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your photo has been successfully reviewed. Check more details."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu foto se revisó correctamente. Consulta más detalles."
+          }
+        }
+      }
+    },
+    "notification.state.changed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status has changed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El estado cambió"
+          }
+        }
+      }
+    },
+    "notification.state.changed.video.reviewed.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your video has been successfully reviewed. Check more details."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu video se revisó correctamente. Consulta más detalles."
+          }
+        }
+      }
+    },
+    "pdf.text.manual": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Here’re additional PDF instructions how to provide photo and video evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aquí tienes instrucciones adicionales en PDF sobre cómo entregar la evidencia en foto y video"
+          }
+        }
+      }
+    },
+    "pdf.text.stencil": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send PDF with stencil to any tattoo artist you want"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Envía el PDF con la plantilla al tatuador que quieras"
+          }
+        }
+      }
+    },
+    "registering.tattoo.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your evidence has been confirmed. Issuance of a Web3 Citizenship can take some time."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu evidencia fue confirmada. La emisión de la Ciudadanía Web3 puede tardar un poco."
+          }
+        }
+      }
+    },
+    "report.issue.messagePrefix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hi\nI've encountered following issue when testing W3C App:\n"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hola\nEncontré el siguiente problema al probar la app W3C:\n"
+          }
+        }
+      }
+    },
+    "report.issue.subject": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "W3C App - Issue Report"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App W3C - Reporte de problema"
+          }
+        }
+      }
+    },
+    "required.amount.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deposit %@ to Choose the Tattoo and Provide Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deposita %@ para elegir el tatuaje y entregar la evidencia"
+          }
+        }
+      }
+    },
+    "sendInquiry.action.edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Message"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editar mensaje"
+          }
+        }
+      }
+    },
+    "sendInquiry.action.send": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enviar"
+          }
+        }
+      }
+    },
+    "sendInquiry.defaultMessage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I hope this message finds you well. I've been admiring your work for a while now, and I'm interested in getting a custom tattoo from you.\n\nI have a specific design  that I'd like to have placed on inner part of the upper left arm.\n\nAdditionally, I would like to document the last three minutes of the tattooing process.\n\nCould we possibly schedule a consultation to discuss the design, placement, and the filming aspect?\n\nI'm attaching PDF with more information and details regarding the Tattoo Stencil, Placement, and Evidence video.\n\nLooking forward to the possibility of working with you."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Espero que estés muy bien. He admirado tu trabajo desde hace tiempo y me interesa hacerme un tatuaje personalizado contigo.\n\nTengo un diseño específico  que me gustaría colocar en la parte interna del brazo izquierdo, arriba.\n\nAdemás, me gustaría documentar los últimos tres minutos del proceso del tatuaje.\n\n¿Podríamos agendar una consulta para platicar sobre el diseño, la ubicación y la parte de la grabación?\n\nTe adjunto un PDF con más información y detalles sobre la plantilla del tatuaje, la ubicación y el video de evidencia.\n\nOjalá podamos trabajar juntos."
+          }
+        }
+      }
+    },
+    "sendInquiry.pdfTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PDF attachment"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivo PDF adjunto"
+          }
+        }
+      }
+    },
+    "sendInquiry.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Inquiry"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enviar solicitud"
+          }
+        }
+      }
+    },
+    "take.risk.proceed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Take the Risk and Proceed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aceptar el riesgo y continuar"
+          }
+        }
+      }
+    },
+    "tips.evidence.step1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1"
+          }
+        }
+      }
+    },
+    "tips.evidence.step2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2"
+          }
+        }
+      }
+    },
+    "tips.evidence.step3": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3"
+          }
+        }
+      }
+    },
+    "tips.evidence.step4": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "4"
+          }
+        }
+      }
+    },
+    "tips.photo.step1.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable or disable viewfinder in the camera UI"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activa o desactiva el visor en la interfaz de la cámara"
+          }
+        }
+      }
+    },
+    "tips.photo.step1.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Place the Tattoo Inside the Viewfinder"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coloca el tatuaje dentro del visor"
+          }
+        }
+      }
+    },
+    "tips.photo.step2.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mind the distance in a way right upper arm is visible"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuida la distancia para que se vea la parte superior del brazo derecho"
+          }
+        }
+      }
+    },
+    "tips.photo.step2.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tattoo location should be clear"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La ubicación del tatuaje debe verse clara"
+          }
+        }
+      }
+    },
+    "tips.photo.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proof of Ink Photo Tips"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consejos para la foto del tatuaje"
+          }
+        }
+      }
+    },
+    "tips.video.step1.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The best moment would be once there're already some lines inked over the stencil image"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El mejor momento es cuando ya hay algunas líneas tatuadas sobre la plantilla"
+          }
+        }
+      }
+    },
+    "tips.video.step1.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start filming once most of the tattoo has been performed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empieza a grabar cuando la mayor parte del tatuaje esté hecha"
+          }
+        }
+      }
+    },
+    "tips.video.step2.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Film closer moments when making tattoo lines over the stencil image"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graba tomas de cerca cuando se hagan las líneas del tatuaje sobre la plantilla"
+          }
+        }
+      }
+    },
+    "tips.video.step2.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needle Engaged in Work"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La aguja en acción"
+          }
+        }
+      }
+    },
+    "tips.video.step3.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom out a bit so the partially performed tattoo will be visible in the frame"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aléjate un poco para que el tatuaje parcialmente hecho se vea en el cuadro"
+          }
+        }
+      }
+    },
+    "tips.video.step3.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showcasing the Entire Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el tatuaje completo"
+          }
+        }
+      }
+    },
+    "tips.video.step4.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Don't stop until the length is filled"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No te detengas hasta completar la duración"
+          }
+        }
+      }
+    },
+    "tips.video.step4.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filming Without Breaks"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graba sin interrupciones"
+          }
+        }
+      }
+    },
+    "tips.video.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proof of Ink Video Tips"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consejos para el video del tatuaje"
+          }
+        }
+      }
+    },
+    "uploading.accepted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidence Accepted"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia aceptada"
+          }
+        }
+      }
+    },
+    "uploading.closing.app.warning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Closing the app will pause the upload"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si cierras la app, la subida se pausará"
+          }
+        }
+      }
+    },
+    "uploading.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web 3 Citizenship will be issued once both pieces of evidence are uploaded and reviewed."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La Ciudadanía Web3 se emitirá cuando ambas evidencias se suban y se revisen."
+          }
+        }
+      }
+    },
+    "uploading.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uploading Failed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La subida falló"
+          }
+        }
+      }
+    },
+    "uploading.failed.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your evidence is safe. Press retry to upload again."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu evidencia está a salvo. Presiona reintentar para subirla de nuevo."
+          }
+        }
+      }
+    },
+    "uploading.in.review": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidence in Review..."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia en revisión..."
+          }
+        }
+      }
+    },
+    "uploading.in.review.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The review time can take from %@ to %@"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La revisión puede tardar de %@ a %@"
+          }
+        }
+      }
+    },
+    "uploading.info.number.1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 / 2"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 / 2"
+          }
+        }
+      }
+    },
+    "uploading.info.number.2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 / 2"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 / 2"
+          }
+        }
+      }
+    },
+    "uploading.keep.app.opened": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep the app opened"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantén la app abierta"
+          }
+        }
+      }
+    },
+    "uploading.photo.evidence": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia fotográfica"
+          }
+        }
+      }
+    },
+    "uploading.progress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uploading %@%%"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subiendo %@%%"
+          }
+        }
+      }
+    },
+    "uploading.queued.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uploading will begin once the Photo Evidence Review is complete"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La subida comenzará cuando termine la revisión de la evidencia fotográfica"
+          }
+        }
+      }
+    },
+    "uploading.requesting.storage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requesting Storage..."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solicitando almacenamiento..."
+          }
+        }
+      }
+    },
+    "uploading.requesting.storage.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requesting additional storage to upload the video. It may take one or two minutes."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estamos solicitando almacenamiento adicional para subir el video. Puede tardar uno o dos minutos."
+          }
+        }
+      }
+    },
+    "uploading.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidence Provided"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia entregada"
+          }
+        }
+      }
+    },
+    "uploading.video.evidence": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia en video"
+          }
+        }
+      }
+    },
+    "uploading.waiting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting..."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando..."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.1"
+}

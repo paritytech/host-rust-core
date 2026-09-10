@@ -13,6 +13,8 @@ type MessageListener = (event: MessageEvent) => void;
 
 function installFakeIframeWindow(options: { referrer?: string; ancestorOrigins?: string[] }) {
     const listeners = new Set<MessageListener>();
+    const intervals = new Map<number, () => void>();
+    let intervalId = 0;
     const priorWindow = globalThis.window;
     const priorDocument = globalThis.document;
     const parentPostMessage = mock((_message: unknown, _origin: string) => {});
@@ -31,6 +33,14 @@ function installFakeIframeWindow(options: { referrer?: string; ancestorOrigins?:
         removeEventListener(name: string, callback: EventListener) {
             if (name === "message") listeners.delete(callback as MessageListener);
         },
+        setInterval(handler: TimerHandler) {
+            intervalId += 1;
+            intervals.set(intervalId, handler as () => void);
+            return intervalId;
+        },
+        clearInterval(id: number) {
+            intervals.delete(id);
+        },
     } as unknown as Window & typeof globalThis;
 
     globalThis.window = win;
@@ -47,6 +57,9 @@ function installFakeIframeWindow(options: { referrer?: string; ancestorOrigins?:
             for (const listener of [...listeners]) {
                 listener({ ports: [], ...event } as MessageEvent);
             }
+        },
+        runIntervals() {
+            for (const callback of [...intervals.values()]) callback();
         },
         restore() {
             if (priorWindow === undefined) {
@@ -134,6 +147,29 @@ describe("sandbox iframe MessagePort handshake", () => {
         });
         await Promise.resolve();
         expect(currentWindow.win.__HOST_API_PORT__).toBe(accepted.port1);
+        expect(currentWindow.listeners.size).toBe(0);
+    });
+
+    it("retries ready until the host transfers a port, then stops", async () => {
+        currentWindow = installFakeIframeWindow({
+            referrer: "https://host.example/product",
+        });
+        const sandbox = await importSandbox();
+
+        expect(sandbox.getClientSync()).not.toBeNull();
+        currentWindow.runIntervals();
+        expect(currentWindow.parentPostMessage.mock.calls).toHaveLength(2);
+
+        const accepted = trackChannel();
+        currentWindow.dispatch({
+            source: currentWindow.parent,
+            origin: "https://host.example",
+            data: { type: "truapi-init" },
+            ports: [accepted.port1],
+        });
+        currentWindow.runIntervals();
+
+        expect(currentWindow.parentPostMessage.mock.calls).toHaveLength(2);
         expect(currentWindow.listeners.size).toBe(0);
     });
 

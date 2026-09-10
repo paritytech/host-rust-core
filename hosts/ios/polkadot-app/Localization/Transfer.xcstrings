@@ -1,0 +1,414 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "balance.info.available.now.info.section1.detail1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is the amount you can use for a payment right away."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este es el monto que puedes usar para un pago de inmediato."
+          }
+        }
+      }
+    },
+    "balance.info.available.now.info.section1.detail2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It may include funds that are already ready for private sending, funds that can be prepared instantly for a payment, and funds that can be sent now with slightly less privacy."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puede incluir fondos que ya están listos para envío privado, fondos que pueden prepararse al instante para un pago y fondos que pueden enviarse ahora con un poco menos de privacidad."
+          }
+        }
+      }
+    },
+    "balance.info.available.now.info.section1.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What does “Available now” mean?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué significa “Disponible ahora”?"
+          }
+        }
+      }
+    },
+    "balance.info.available.now.info.section2.detail1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some funds are ready to send, but have not completed all privacy preparation steps yet. If you use them now, they may reveal a little more on-chain information than fully private funds."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Algunos fondos están listos para enviarse, pero aún no completan todos los pasos de preparación de privacidad. Si los usas ahora, podrían revelar un poco más de información en la cadena que los fondos totalmente privados."
+          }
+        }
+      }
+    },
+    "balance.info.available.now.info.section2.detail2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To make them private, you don’t need to do anything. Just wait — they will become private-ready automatically."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Para hacerlos privados no necesitas hacer nada. Solo espera: estarán listos para envío privado automáticamente."
+          }
+        }
+      }
+    },
+    "balance.info.available.now.info.section2.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why are some funds less private?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Por qué algunos fondos son menos privados?"
+          }
+        }
+      }
+    },
+    "balance.info.available.soon.info.detail1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These funds are still being made private and cannot be sent yet."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estos fondos aún se están haciendo privados y todavía no pueden enviarse."
+          }
+        }
+      }
+    },
+    "balance.info.available.soon.info.detail2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "They may include funds from recent payments that are still settling, or change that is being made ready for future private sends."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pueden incluir fondos de pagos recientes que aún se están liquidando, o cambio que se está preparando para futuros envíos privados."
+          }
+        }
+      }
+    },
+    "balance.info.available.soon.info.detail3": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "They will become available automatically once processing is complete. Usually takes around 1-5 minutes."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estarán disponibles automáticamente cuando termine el procesamiento. Normalmente tarda entre 1 y 5 minutos."
+          }
+        }
+      }
+    },
+    "balance.info.available.soon.info.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What does “Available soon” mean?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué significa “Disponible pronto”?"
+          }
+        }
+      }
+    },
+    "balance.info.available.now.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Funds you can use for payments right away"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondos que puedes usar para pagos de inmediato"
+          }
+        }
+      }
+    },
+    "balance.info.available.now.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available now"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible ahora"
+          }
+        }
+      }
+    },
+    "balance.info.available.soon.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Funds being made private. Processing usually takes around 1-5 minutes"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondos que se están haciendo privados. El procesamiento suele tardar entre 1 y 5 minutos"
+          }
+        }
+      }
+    },
+    "balance.info.available.soon.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available soon"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible pronto"
+          }
+        }
+      }
+    },
+    "balance.info.low.privacy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "— Low privacy"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "— Privacidad baja"
+          }
+        }
+      }
+    },
+    "balance.info.secured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "— Secured"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "— Protegido"
+          }
+        }
+      }
+    },
+    "balance.info.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "See what makes up your balance"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consulta cómo se compone tu saldo"
+          }
+        }
+      }
+    },
+    "balance.info.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balance details"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detalles del saldo"
+          }
+        }
+      }
+    },
+    "balance.info.total.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Everything in your balance"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todo lo que hay en tu saldo"
+          }
+        }
+      }
+    },
+    "balance.info.total.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total balance"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saldo total"
+          }
+        }
+      }
+    },
+    "privacy.cost.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extra %@ is spendable, but at the risk of reducing your privacy"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se pueden gastar %@ más, pero con el riesgo de reducir tu privacidad"
+          }
+        }
+      }
+    },
+    "privacy.confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This payment might reduce your privacy"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este pago podría reducir tu privacidad"
+          }
+        }
+      }
+    },
+    "privacy.confirm.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In this payment you are using funds that have not yet been fully processed by the privacy system."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En este pago estás usando fondos que aún no han sido completamente procesados por el sistema de privacidad."
+          }
+        }
+      }
+    },
+    "privacy.confirm.send.anyway": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send %@ anyway"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enviar %@ de todos modos"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.1"
+}
