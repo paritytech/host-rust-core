@@ -1,0 +1,430 @@
+name: Reusable Build and Distribute
+
+on:
+  workflow_call:
+    inputs:
+      release_branch:
+        required: true
+        type: string
+      release_pr_number:
+        # Empty means a direct build (no release PR): release notes fall back to a
+        # generic message, PR comment and commit status steps are skipped.
+        required: false
+        type: string
+        default: ""
+      increment_step:
+        # Used only for direct builds; PR builds read it from the PR-body metadata.
+        required: false
+        type: string
+        default: ""
+      build_configuration:
+        required: true
+        type: string
+      distribute_to_external_group:
+        required: false
+        type: boolean
+        default: false
+      external_group_name:
+        required: false
+        type: string
+        default: ""
+      s3_static_subdir:
+        required: true
+        type: string
+      run_allure_tests:
+        description: "Trigger the Allure TestOps launch. One launch per run — a caller invoking this workflow twice must enable it on a single leg."
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      build_number:
+        value: ${{ jobs.prepare_build_metadata.outputs.build_number }}
+      marketing_version:
+        value: ${{ jobs.prepare_build_metadata.outputs.marketing_version }}
+      release_notes:
+        value: ${{ jobs.prepare_build_metadata.outputs.release_notes }}
+      pr_list_markdown:
+        value: ${{ jobs.prepare_build_metadata.outputs.pr_list_markdown }}
+      succeeded:
+        value: ${{ jobs.check_default_build.outputs.succeeded }}
+
+env:
+  MAIN_BRANCH: main
+  CI_FAILURE_TELEGRAM_CHAT_IDS: "-1002068063370"
+  ALLURE_TESTPLAN_ID: "734"
+  ALLURE_LAUNCH_NAME: "iOS TestFlight Tests"
+  # Safetynet ships as a separate app (`.safety` suffix, see Configs/base.safetynet.xcconfig),
+  # so it has its own App Store Connect record, Match profiles and Firebase app. Every other
+  # configuration builds the production app. The identity follows the configuration, not the
+  # nightly/release axis — a nightly run builds both Nightly and Safetynet.
+  # Workflow-level env cannot reference other env vars, hence the repeated suffix expression.
+  IOS_BUNDLE_ID: "io.parity.polkadotapp${{ inputs.build_configuration == 'Safetynet' && '.safety' || '' }}"
+  IOS_EXTENSION_BUNDLE_ID: "io.parity.polkadotapp${{ inputs.build_configuration == 'Safetynet' && '.safety' || '' }}.NotificationServiceExtension"
+  PROVISIONING_PROFILE_SPECIFIER: "match AppStore io.parity.polkadotapp${{ inputs.build_configuration == 'Safetynet' && '.safety' || '' }}"
+  EXTENSION_PROVISIONING_PROFILE_SPECIFIER: "match AppStore io.parity.polkadotapp${{ inputs.build_configuration == 'Safetynet' && '.safety' || '' }}.NotificationServiceExtension"
+  CODE_SIGN_IDENTITY: "Apple Distribution"
+  EXPORT_METHOD: "app-store"
+  RUN_IN_CI: true
+  S3_BUCKET: s3://polkadot-app-artefacts
+  S3_REGION: fr-par
+  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+jobs:
+  prepare_build_metadata:
+    name: Prepare Build Metadata
+    runs-on: macos-26
+    outputs:
+      build_number: ${{ steps.build_version.outputs.build_number }}
+      marketing_version: ${{ steps.build_version.outputs.marketing_version }}
+      release_notes: ${{ steps.release_notes.outputs.notes }}
+      pr_list_markdown: ${{ steps.collect_prs_markdown.outputs.release_notes }}
+    steps:
+      - name: Security Check - Verify bot-initiated workflow
+        uses: actions/github-script@v8
+        env:
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const eventName = context.eventName;
+            console.log(`Event: ${eventName}`);
+            console.log(`Release branch: ${process.env.RELEASE_BRANCH}`);
+
+            if (eventName === 'workflow_dispatch') {
+              const triggeringActor = process.env.TRIGGERING_ACTOR;
+              console.log(`Triggering actor: ${triggeringActor}`);
+              if (triggeringActor !== 'github-actions[bot]') {
+                core.setFailed(`Security: workflow_dispatch must be triggered by github-actions[bot], got: ${triggeringActor}`);
+                return;
+              }
+              console.log('Actor verification passed for workflow_dispatch');
+            } else if (eventName === 'pull_request') {
+              const prUser = process.env.PR_AUTHOR;
+              console.log(`PR author: ${prUser}`);
+              if (prUser !== 'github-actions[bot]') {
+                core.setFailed(`Security: PR must be created by github-actions[bot], got: ${prUser}`);
+                return;
+              }
+              console.log('PR author verification passed');
+            }
+            console.log('Security checks passed!');
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_branch }}
+          fetch-depth: 0
+
+      - name: Prepare TestFlight release notes
+        id: release_notes
+        uses: actions/github-script@v8
+        env:
+          RELEASE_PR_NUMBER: ${{ inputs.release_pr_number }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          INCREMENT_STEP_INPUT: ${{ inputs.increment_step }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const prNumberRaw = process.env.RELEASE_PR_NUMBER || '';
+            if (!prNumberRaw) {
+              console.log('No release PR — direct build, using generic release notes');
+              core.setOutput('notes', `Release build from ${process.env.RELEASE_BRANCH}.`);
+              core.setOutput('increment_step', process.env.INCREMENT_STEP_INPUT || '');
+              return;
+            }
+
+            const prNumber = parseInt(prNumberRaw, 10);
+            console.log(`Fetching PR #${prNumber}`);
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            const prBody = pr.body || '';
+
+            const incrementStepMatch = prBody.match(/<!--\s*RELEASE_METADATA:.*?increment_step=(\d*).*?-->/);
+            const incrementStep = incrementStepMatch ? incrementStepMatch[1] : '';
+            console.log(`Increment step: ${incrementStep || '(empty, will default to 1)'}`);
+
+            let releaseNotes = prBody
+              .replace(/\n---\s*[\s\S]*$/, '')
+              .trim();
+
+            console.log('='.repeat(50));
+            console.log('RELEASE NOTES FOR TESTFLIGHT:');
+            console.log(releaseNotes);
+            console.log('='.repeat(50));
+
+            core.setOutput('notes', releaseNotes);
+            core.setOutput('increment_step', incrementStep);
+
+      - name: Setup iOS Environment
+        uses: ./.github/actions/install
+
+      - name: Read version and build number
+        id: build_version
+        uses: ./.github/actions/read-build-version
+        with:
+          increment_step: ${{ steps.release_notes.outputs.increment_step }}
+          # Safetynet has its own App Store Connect record, so it carries a TestFlight
+          # build-number sequence independent of the production app's.
+          ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
+          config_name: ${{ inputs.build_configuration }}
+          asc_key_id: ${{ secrets.ASC_KEY_ID }}
+          asc_issuer_id: ${{ secrets.ASC_ISSUER_ID }}
+          asc_key_base64: ${{ secrets.ASC_KEY_BASE64 }}
+
+      - name: Collect merged PRs (markdown for notification)
+        id: collect_prs_markdown
+        uses: novasamatech/github-actions/collect-prs@v5
+        with:
+          github_token: ${{ github.token }}
+          src_ref: ${{ inputs.release_branch }}
+          dst_ref: ${{ env.MAIN_BRANCH }}
+          release_notes_format: markdown
+
+  check_and_build:
+    # The configuration is part of the name so that a caller invoking this workflow
+    # twice in one run (nightly_distribution builds Nightly and Release together)
+    # produces distinct job names — check-job-conclusion matches by name suffix and
+    # would otherwise resolve both lookups to the same leg.
+    name: Check and Build TestFlight (${{ inputs.build_configuration }} / ${{ matrix.variant.name }})
+    runs-on: macos-26
+    needs: prepare_build_metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        # WARNING: only ONE variant may have upload_to_testflight: true —
+        # multiple TestFlight uploads cause version conflicts.
+        variant:
+          - name: "default"
+            extra_swift_flags: ""
+            s3_suffix: ""
+            upload_to_testflight: true
+          - name: "no-auth"
+            extra_swift_flags: "-DDISABLE_AUTH"
+            s3_suffix: "-no-auth"
+            upload_to_testflight: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_branch }}
+          fetch-depth: 0
+
+      - name: Add extra Swift flags to xcconfig
+        if: matrix.variant.extra_swift_flags != ''
+        env:
+          # The leaf xcconfig is named after the configuration being built.
+          BUILD_CONFIGURATION: ${{ inputs.build_configuration }}
+        run: |
+          set -euo pipefail
+          config_name=$(echo "${BUILD_CONFIGURATION}" | tr '[:upper:]' '[:lower:]')
+          python3 .github/scripts/add_swift_flags.py \
+            "polkadot-app/Configs/polkadot-app.${config_name}.xcconfig" \
+            "${{ matrix.variant.extra_swift_flags }}"
+
+      - name: Setup iOS Environment
+        uses: ./.github/actions/install
+        with:
+          match_auth_required: "true"
+          match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
+
+      - name: Distribute TestFlight build
+        if: matrix.variant.upload_to_testflight
+        uses: ./.github/actions/distribute-testflight
+        with:
+          ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
+          ios_extension_bundle_id: ${{ env.IOS_EXTENSION_BUNDLE_ID }}
+          provisioning_profile_specifier: ${{ env.PROVISIONING_PROFILE_SPECIFIER }}
+          extension_provisioning_profile_specifier: ${{ env.EXTENSION_PROVISIONING_PROFILE_SPECIFIER }}
+          code_sign_identity: ${{ env.CODE_SIGN_IDENTITY }}
+          run_in_ci: ${{ env.RUN_IN_CI }}
+          perform_checkout: "false"
+          release_notes: ${{ needs.prepare_build_metadata.outputs.release_notes }}
+          distribute_to_external_group: ${{ inputs.distribute_to_external_group }}
+          external_group_name: ${{ inputs.external_group_name }}
+          build_number: ${{ needs.prepare_build_metadata.outputs.build_number }}
+          build_configuration: ${{ inputs.build_configuration }}
+          asc_key_id: ${{ secrets.ASC_KEY_ID }}
+          asc_issuer_id: ${{ secrets.ASC_ISSUER_ID }}
+          asc_key_base64: ${{ secrets.ASC_KEY_BASE64 }}
+          keychain_password: ${{ secrets.KEYCHAIN_PASSWORD }}
+          match_password: ${{ secrets.MATCH_PASSWORD }}
+          google_service_info_dev_base64: ${{ secrets.GOOGLE_SERVICE_INFO_DEV_BASE64 }}
+          google_service_info_release_base64: ${{ inputs.build_configuration == 'Safetynet' && secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 || secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
+          sentry_dsn: ${{ secrets.SENTRY_DSN }}
+          meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+
+      - name: Configure Google services for non-TestFlight build
+        if: ${{ !matrix.variant.upload_to_testflight }}
+        uses: ./.github/actions/configure-google-services
+        with:
+          google_service_info_base64: ${{ inputs.build_configuration == 'Safetynet' && secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 || secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
+          expected_bundle_id: ${{ env.IOS_BUNDLE_ID }}
+
+      - name: Configure secrets for non-TestFlight build
+        if: ${{ !matrix.variant.upload_to_testflight }}
+        uses: ./.github/actions/configure-secrets
+        with:
+          sentry_dsn: ${{ secrets.SENTRY_DSN }}
+          meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+
+      - name: Build without TestFlight distribution
+        if: ${{ !matrix.variant.upload_to_testflight }}
+        env:
+          FASTLANE_CONFIGURATION: ${{ inputs.build_configuration }}
+          BUILD_NUMBER: ${{ needs.prepare_build_metadata.outputs.build_number }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+        run: |
+          bundle exec fastlane build_app_ci
+
+      - name: Upload to S3
+        uses: novasamatech/github-actions/s3-upload@v5
+        with:
+          s3_region: ${{ env.S3_REGION }}
+          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
+          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
+          s3_bucket: ${{ env.S3_BUCKET }}
+          source_path: polkadot-app.ipa
+          # Subdir keeps each configuration's archive in its own namespace: a nightly run
+          # writes two different apps, whose build numbers come from independent counters.
+          destination_path: /ios/${{ inputs.s3_static_subdir }}/polkadot-app-${{ needs.prepare_build_metadata.outputs.marketing_version }}-${{ needs.prepare_build_metadata.outputs.build_number }}${{ matrix.variant.s3_suffix }}.ipa
+
+      - name: Upload to S3 (static path)
+        uses: novasamatech/github-actions/s3-upload@v5
+        with:
+          s3_region: ${{ env.S3_REGION }}
+          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
+          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
+          s3_bucket: ${{ env.S3_BUCKET }}
+          source_path: polkadot-app.ipa
+          destination_path: /ios/${{ inputs.s3_static_subdir }}/polkadot-app${{ matrix.variant.s3_suffix }}.ipa
+
+      - name: Comment on PR with build info
+        if: matrix.variant.upload_to_testflight && inputs.release_pr_number != ''
+        uses: actions/github-script@v8
+        env:
+          BUILD_NUMBER: ${{ needs.prepare_build_metadata.outputs.build_number }}
+          MARKETING_VERSION: ${{ needs.prepare_build_metadata.outputs.marketing_version }}
+          RELEASE_PR_NUMBER: ${{ inputs.release_pr_number }}
+          BUILD_CONFIGURATION: ${{ inputs.build_configuration }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const buildNumber = process.env.BUILD_NUMBER;
+            const marketingVersion = process.env.MARKETING_VERSION;
+            const configuration = process.env.BUILD_CONFIGURATION;
+            const prNumber = parseInt(process.env.RELEASE_PR_NUMBER, 10);
+
+            const comment = `### ${configuration} TestFlight Build Done
+
+            - **Version:** ${marketingVersion}
+            - **Build number:** ${buildNumber}
+
+            The build will be available in TestFlight shortly.`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: comment
+            });
+
+      - name: Setting commit status for PR
+        if: >-
+          matrix.variant.upload_to_testflight &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.release_pr_number != ''
+        uses: actions/github-script@v8
+        env:
+          RELEASE_PR_NUMBER: ${{ inputs.release_pr_number }}
+          # Statuses are keyed by context, so each configuration needs its own — a nightly
+          # run builds two configurations against the same PR head SHA.
+          STATUS_CONTEXT: "Check and Build TestFlight (${{ inputs.build_configuration }})"
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const prNumber = parseInt(process.env.RELEASE_PR_NUMBER, 10);
+            const statusContext = process.env.STATUS_CONTEXT;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            const sha = pr.head.sha;
+            console.log(`Setting commit status for PR #${prNumber}, SHA: ${sha}`);
+            try {
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: sha,
+                state: 'success',
+                context: statusContext,
+                description: 'Build uploaded to TestFlight successfully',
+                target_url: `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+              });
+              console.log('Commit status created successfully');
+            } catch (error) {
+              core.warning(`Failed to set commit status for PR #${prNumber}: ${error.message}`);
+            }
+
+  check_default_build:
+    name: Check default variant build result
+    runs-on: ubuntu-latest
+    needs: [prepare_build_metadata, check_and_build]
+    permissions:
+      contents: read
+      actions: read
+    if: ${{ !cancelled() && needs.prepare_build_metadata.result == 'success' }}
+    outputs:
+      succeeded: ${{ steps.check.outputs.succeeded }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Check default matrix leg conclusion
+        id: check
+        uses: ./.github/actions/check-job-conclusion
+        with:
+          job_name: "Check and Build TestFlight (${{ inputs.build_configuration }} / default)"
+          github_token: ${{ github.token }}
+
+  trigger_allure_tests:
+    name: Trigger Allure TestOps
+    runs-on: ubuntu-latest
+    needs: check_default_build
+    if: >-
+      ${{ !cancelled() && inputs.run_allure_tests &&
+      needs.check_default_build.outputs.succeeded == 'true' }}
+    steps:
+      - name: Trigger Allure TestOps Job
+        uses: novasamatech/github-actions/trigger-allure-testops@v5
+        with:
+          testplan_id: ${{ env.ALLURE_TESTPLAN_ID }}
+          launch_name: ${{ env.ALLURE_LAUNCH_NAME }}
+          allure_token: ${{ secrets.ALLURE_TOKEN }}
+
+  send_failure_notification:
+    name: Send Failure Notification
+    runs-on: ubuntu-latest
+    needs: [prepare_build_metadata, check_and_build, check_default_build]
+    if: failure()
+    steps:
+      - name: Send failure notification
+        uses: novasamatech/github-actions/send-notification@v5
+        with:
+          message: |
+            ❌ iOS ${{ inputs.build_configuration }} build failed
+            Branch: ${{ inputs.release_branch }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          html_message: |
+            ❌ <b>iOS ${{ inputs.build_configuration }} build failed</b>
+            Branch: <code>${{ inputs.release_branch }}</code>
+            <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a>
+          bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
+          bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
+          telegram_chat_ids: ${{ env.CI_FAILURE_TELEGRAM_CHAT_IDS }}
