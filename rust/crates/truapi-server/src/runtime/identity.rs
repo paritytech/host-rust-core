@@ -141,7 +141,7 @@ async fn lookup_and_apply(
 }
 
 /// Resolves `account_id`'s usernames from the dotNS contracts at a fresh Asset
-/// Hub head. Each step carries [`OPERATION_TIMEOUT`]; the caller's
+/// Hub head. Each step carries the lookup transport's own step timeout; the caller's
 /// [`LOOKUP_BUDGET`] bounds the whole resolution. Returns `None` when the
 /// gateway is not deployed. Also returns `None` when the account holds no
 /// labels.

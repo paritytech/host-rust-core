@@ -28,9 +28,9 @@ use crate::host_logic::dotns_gateway::{
 
 /// Budget for one step of a lookup: opening the follow, one storage read, one
 /// contract view. A step that stalls this long is not going to answer.
-pub(crate) const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Budget for the best-block hash the follow opens on.
-pub(crate) const BEST_BLOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const BEST_BLOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Monotonic salt for follow ids, so concurrent lookups do not collide.
 static DOTNS_LOOKUP_COUNTER: AtomicU64 = AtomicU64::new(1);

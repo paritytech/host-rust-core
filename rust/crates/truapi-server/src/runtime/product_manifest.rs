@@ -14,8 +14,9 @@ use truapi_platform::{CoreStorageKey, Platform};
 
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::dotns_gateway::{
-    DotnsTransport, DotnsViewError, call_bytes32, call_no_args, decode_address, decode_string,
-    discover_pop_controller, namehash_under, network_tld, registry_key, tld_node,
+    DotnsTransport, DotnsViewError, call_bytes32, call_bytes32_string, call_no_args,
+    decode_address, decode_string, discover_pop_controller, namehash_under, network_tld,
+    protocol_component, tld_node,
 };
 use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
 use crate::host_logic::statement_store::current_unix_secs;
@@ -69,7 +70,10 @@ pub(crate) async fn fetch_root_manifest(
     }
 
     let manifest_output = match lookup
-        .view(&resolver, call_text_record(&node, MANIFEST_RECORD_KEY))
+        .view(
+            &resolver,
+            call_bytes32_string("text(bytes32,string)", &node, MANIFEST_RECORD_KEY),
+        )
         .await
     {
         Ok(output) => output,
@@ -110,42 +114,6 @@ async fn protocol_registry<T: DotnsTransport + ?Sized>(
     decode_address(&output)
         .map(Some)
         .map_err(|err| format!("DotnsPopController.protocolRegistry(): {err}"))
-}
-
-/// One component address out of the protocol registry's address book, so a
-/// rotated implementation is picked up without a change here.
-async fn protocol_component<T: DotnsTransport + ?Sized>(
-    transport: &mut T,
-    protocol_registry: &[u8; 20],
-    name: &str,
-) -> Result<[u8; 20], String> {
-    let output = transport
-        .view(
-            protocol_registry,
-            call_bytes32("get(bytes32)", &registry_key(name)),
-        )
-        .await
-        .map_err(|err| format!("ProtocolRegistry.get({name}): {err}"))?;
-    decode_address(&output).map_err(|err| format!("ProtocolRegistry.get({name}): {err}"))
-}
-
-/// ABI calldata for `text(bytes32 node, string key)`.
-///
-/// The key is a dynamic argument, so it is passed by offset with its length
-/// ahead of the padded bytes.
-fn call_text_record(node: &[u8; 32], key: &str) -> Vec<u8> {
-    let mut input = crate::host_logic::dotns_gateway::selector("text(bytes32,string)").to_vec();
-    input.extend_from_slice(node);
-    let mut offset = [0u8; 32];
-    offset[24..].copy_from_slice(&64u64.to_be_bytes());
-    input.extend_from_slice(&offset);
-    let mut length = [0u8; 32];
-    length[24..].copy_from_slice(&(key.len() as u64).to_be_bytes());
-    input.extend_from_slice(&length);
-    let mut padded = key.as_bytes().to_vec();
-    padded.resize(key.len().div_ceil(32) * 32, 0);
-    input.extend_from_slice(&padded);
-    input
 }
 
 #[cfg(test)]
@@ -189,7 +157,7 @@ mod tests {
 
     #[test]
     fn a_text_call_encodes_the_key_as_a_dynamic_argument() {
-        let call = call_text_record(&[0x11; 32], "manifest");
+        let call = call_bytes32_string("text(bytes32,string)", &[0x11; 32], "manifest");
         // selector, node, offset, length, one padded word for an 8-byte key.
         assert_eq!(call.len(), 4 + 32 * 4);
         assert_eq!(&call[4..36], &[0x11; 32]);

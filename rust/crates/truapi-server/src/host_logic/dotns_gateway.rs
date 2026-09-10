@@ -160,13 +160,10 @@ pub fn call_no_args(signature: &str) -> Vec<u8> {
     selector(signature).to_vec()
 }
 
-/// Calldata for a view function taking one `string` argument.
-pub fn call_string(signature: &str, value: &str) -> Vec<u8> {
+/// Appends a dynamic `string` tail: its length, then its bytes padded to a
+/// whole number of words. The caller has already written the head offset.
+fn append_dynamic_string(data: &mut Vec<u8>, value: &str) {
     let bytes = value.as_bytes();
-    let mut data = call_no_args(signature);
-    let mut word = [0u8; 32];
-    word[31] = 0x20;
-    data.extend_from_slice(&word);
     let mut len = [0u8; 32];
     len[24..].copy_from_slice(&(bytes.len() as u64).to_be_bytes());
     data.extend_from_slice(&len);
@@ -175,7 +172,51 @@ pub fn call_string(signature: &str, value: &str) -> Vec<u8> {
         0u8,
         bytes.len().div_ceil(32) * 32 - bytes.len(),
     ));
+}
+
+/// Head word holding the byte offset a dynamic argument's tail starts at,
+/// counted from the end of the selector. `head_words` is how many words the
+/// head occupies.
+fn dynamic_offset(head_words: usize) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[24..].copy_from_slice(&((head_words * 32) as u64).to_be_bytes());
+    word
+}
+
+/// Calldata for a view function taking one `string` argument.
+pub(crate) fn call_string(signature: &str, value: &str) -> Vec<u8> {
+    let mut data = call_no_args(signature);
+    data.extend_from_slice(&dynamic_offset(1));
+    append_dynamic_string(&mut data, value);
     data
+}
+
+/// Calldata for a view function taking a `bytes32` and a `string`, such as
+/// `text(bytes32 node, string key)`. The string is dynamic, so the head holds
+/// its offset and the tail follows.
+pub(crate) fn call_bytes32_string(signature: &str, word: &[u8; 32], value: &str) -> Vec<u8> {
+    let mut data = call_no_args(signature);
+    data.extend_from_slice(word);
+    data.extend_from_slice(&dynamic_offset(2));
+    append_dynamic_string(&mut data, value);
+    data
+}
+
+/// One component address out of the protocol registry's address book, so a
+/// rotated implementation is picked up without a change here.
+pub(crate) async fn protocol_component<T: DotnsTransport + ?Sized>(
+    transport: &mut T,
+    protocol_registry: &[u8; 20],
+    name: &str,
+) -> Result<[u8; 20], String> {
+    let output = transport
+        .view(
+            protocol_registry,
+            call_bytes32("get(bytes32)", &registry_key(name)),
+        )
+        .await
+        .map_err(|err| format!("ProtocolRegistry.get({name}): {err}"))?;
+    decode_address(&output).map_err(|err| format!("ProtocolRegistry.get({name}): {err}"))
 }
 
 /// Calldata for a view function taking one `address` argument.
@@ -803,7 +844,7 @@ fn bare_store_label<'a>(label: &'a str, tld: &str) -> Option<&'a str> {
 
 /// The TLD of networks whose `DotnsProtocolRegistry` has no `tld()` view;
 /// previewnet is one.
-pub const TLD_WITHOUT_VIEW: &str = ".dot";
+const TLD_WITHOUT_VIEW: &str = ".dot";
 
 /// The network TLD with its leading dot (`.paseo`), read from
 /// `ProtocolRegistry.tld()`. A registry without that view reverts; the fall
@@ -811,7 +852,7 @@ pub const TLD_WITHOUT_VIEW: &str = ".dot";
 /// `DotnsRegistry.recordExists(namehash("dot"))` must hold the TLD's own
 /// record, or the resolution errors. Any other failure is an error: a wrong
 /// TLD would drop every label carrying the real one.
-pub async fn network_tld<T: DotnsTransport + ?Sized>(
+pub(crate) async fn network_tld<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     registry: &[u8; 20],
 ) -> Result<String, String> {
@@ -851,7 +892,7 @@ pub async fn network_tld<T: DotnsTransport + ?Sized>(
 }
 
 /// The node of the network TLD: `namehash(tld)` for a single-label TLD.
-pub fn tld_node(tld: &str) -> [u8; 32] {
+pub(crate) fn tld_node(tld: &str) -> [u8; 32] {
     namehash_under(&[0u8; 32], tld.trim_start_matches('.'))
 }
 

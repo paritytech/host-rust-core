@@ -69,13 +69,6 @@ impl FromLatest for HostLocalStorageReadResponse {
     }
 }
 
-/// Reason text a v0.1 peer sees in place of a refusal it has no variant for.
-///
-/// A v0.1 caller cannot address foreign storage — its request carries no
-/// product — so it cannot provoke a refusal and should never receive this. It
-/// exists because the downgrade has to be total.
-const REFUSAL_AS_V01_REASON: &str = "the owning product grants no read access to its storage";
-
 impl IntoLatest for HostLocalStorageReadError {
     fn into_latest(self) -> Self::Latest {
         match self {
@@ -98,9 +91,12 @@ impl FromLatest for HostLocalStorageReadError {
             v02::HostLocalStorageReadError::Unknown { reason } => {
                 v01::HostLocalStorageReadError::Unknown { reason }
             }
-            v02::HostLocalStorageReadError::AccessNotGranted => {
+            // A v0.1 caller cannot address foreign storage — its request
+            // carries no product — so it never provokes this. The downgrade
+            // still has to be total, and the variant's own text says it.
+            refusal @ v02::HostLocalStorageReadError::AccessNotGranted => {
                 v01::HostLocalStorageReadError::Unknown {
-                    reason: REFUSAL_AS_V01_REASON.to_string(),
+                    reason: refusal.to_string(),
                 }
             }
         })
@@ -169,7 +165,7 @@ mod tests {
             assert_eq!(
                 downgraded,
                 HostLocalStorageReadError::V1(v01::HostLocalStorageReadError::Unknown {
-                    reason: REFUSAL_AS_V01_REASON.to_string(),
+                    reason: v02::HostLocalStorageReadError::AccessNotGranted.to_string(),
                 })
             );
         }

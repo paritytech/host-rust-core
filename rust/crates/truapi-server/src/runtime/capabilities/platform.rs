@@ -219,7 +219,10 @@ impl LocalStorage for ProductRuntimeHost {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
         self.platform
-            .write(self.product_storage_key(&self.product_id(), key), value)
+            .write(
+                self.product_storage_key(self.product.product_id.as_str(), key),
+                value,
+            )
             .await
             .map(|()| HostLocalStorageWriteResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageWriteError::V1(err)))
@@ -233,7 +236,7 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Result<HostLocalStorageClearResponse, CallError<HostLocalStorageClearError>> {
         let HostLocalStorageClearRequest::V1(v01::HostLocalStorageClearRequest { key }) = request;
         self.platform
-            .clear(self.product_storage_key(&self.product_id(), key))
+            .clear(self.product_storage_key(self.product.product_id.as_str(), key))
             .await
             .map(|()| HostLocalStorageClearResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageClearError::V1(err)))
