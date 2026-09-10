@@ -1,0 +1,120 @@
+name: Safetynet Distribution
+
+# On-demand Safetynet build from an arbitrary branch.
+#
+# Safetynet is what Release ships — release feature set — running against the nightly
+# environment, under its own bundle id so it installs alongside the real app. See
+# Configs/base.safetynet.xcconfig.
+#
+# The nightly pipeline already builds Safetynet as a leg of nightly_distribution.yml;
+# this workflow exists for ad-hoc builds outside that pipeline. It deliberately does not
+# reuse _build_distribute.yml: that workflow's security gate fails any workflow_dispatch
+# not triggered by github-actions[bot], which is exactly the human-triggered case here.
+# The scope is correspondingly narrower — one variant, no release PR, no Allure launch,
+# no release notification.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.source_branch }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: "Branch, tag or SHA to build from"
+        required: false
+        type: string
+        default: develop
+      increment_step:
+        description: "Build number increment step (1 if empty)"
+        required: false
+        type: string
+        default: ""
+
+env:
+  # Safetynet ships as a separate app (`.safety` suffix), so it has its own App Store
+  # Connect record, Match profiles and Firebase app.
+  IOS_BUNDLE_ID: "io.parity.polkadotapp.safety"
+  IOS_EXTENSION_BUNDLE_ID: "io.parity.polkadotapp.safety.NotificationServiceExtension"
+  PROVISIONING_PROFILE_SPECIFIER: "match AppStore io.parity.polkadotapp.safety"
+  EXTENSION_PROVISIONING_PROFILE_SPECIFIER: "match AppStore io.parity.polkadotapp.safety.NotificationServiceExtension"
+  CODE_SIGN_IDENTITY: "Apple Distribution"
+  EXPORT_METHOD: "app-store"
+  RUN_IN_CI: true
+  S3_BUCKET: s3://polkadot-app-artefacts
+  S3_REGION: fr-par
+  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+jobs:
+  build_safetynet:
+    name: Build and distribute Safetynet
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_branch }}
+          fetch-depth: 0
+
+      - name: Setup iOS Environment
+        uses: ./.github/actions/install
+        with:
+          match_auth_required: "true"
+          match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
+
+      - name: Read version and build number
+        id: build_version
+        uses: ./.github/actions/read-build-version
+        with:
+          increment_step: ${{ inputs.increment_step }}
+          ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
+          config_name: "Safetynet"
+          asc_key_id: ${{ secrets.ASC_KEY_ID }}
+          asc_issuer_id: ${{ secrets.ASC_ISSUER_ID }}
+          asc_key_base64: ${{ secrets.ASC_KEY_BASE64 }}
+
+      - name: Distribute TestFlight build
+        uses: ./.github/actions/distribute-testflight
+        with:
+          ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
+          ios_extension_bundle_id: ${{ env.IOS_EXTENSION_BUNDLE_ID }}
+          provisioning_profile_specifier: ${{ env.PROVISIONING_PROFILE_SPECIFIER }}
+          extension_provisioning_profile_specifier: ${{ env.EXTENSION_PROVISIONING_PROFILE_SPECIFIER }}
+          code_sign_identity: ${{ env.CODE_SIGN_IDENTITY }}
+          run_in_ci: ${{ env.RUN_IN_CI }}
+          perform_checkout: "false"
+          release_notes: "Safetynet build from ${{ inputs.source_branch }}."
+          distribute_to_external_group: false
+          external_group_name: ""
+          build_number: ${{ steps.build_version.outputs.build_number }}
+          build_configuration: "Safetynet"
+          asc_key_id: ${{ secrets.ASC_KEY_ID }}
+          asc_issuer_id: ${{ secrets.ASC_ISSUER_ID }}
+          asc_key_base64: ${{ secrets.ASC_KEY_BASE64 }}
+          keychain_password: ${{ secrets.KEYCHAIN_PASSWORD }}
+          match_password: ${{ secrets.MATCH_PASSWORD }}
+          google_service_info_dev_base64: ${{ secrets.GOOGLE_SERVICE_INFO_DEV_BASE64 }}
+          google_service_info_release_base64: ${{ secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 }}
+          sentry_dsn: ${{ secrets.SENTRY_DSN }}
+          meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+
+      - name: Upload to S3
+        uses: novasamatech/github-actions/s3-upload@v5
+        with:
+          s3_region: ${{ env.S3_REGION }}
+          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
+          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
+          s3_bucket: ${{ env.S3_BUCKET }}
+          destination_path: /ios/safetynet/polkadot-app-${{ steps.build_version.outputs.marketing_version }}-${{ steps.build_version.outputs.build_number }}.ipa
+          source_path: polkadot-app.ipa
+
+      - name: Upload to S3 (static path)
+        uses: novasamatech/github-actions/s3-upload@v5
+        with:
+          s3_region: ${{ env.S3_REGION }}
+          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
+          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
+          s3_bucket: ${{ env.S3_BUCKET }}
+          destination_path: /ios/safetynet/polkadot-app.ipa
+          source_path: polkadot-app.ipa

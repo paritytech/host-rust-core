@@ -1,6 +1,7 @@
 node_modules/
 target/
 hosts/dotli/
+hosts/ios/
 playground/.next/
 playground/out/
 playground/node_modules/
@@ -9,3 +10,4 @@ playground/tsconfig.tsbuildinfo
 js/packages/truapi/dist/
 js/packages/truapi/node_modules/
 REVIEW_TODO*.md
+hosts/android/

@@ -104,14 +104,17 @@ scripts/truapi-host-installer.sh
   still has a binding representation, and the `ios-swift` job generates the
   package's Swift sources and container resource and then compiles the package
   and its test target, which is what catches a hand-written conformer that
-  missed a new protocol requirement. `ios-swift` is path-filtered, and the
-  filter has to name every crate the bindings are generated from, since a
-  protocol change no longer leaves an `ios/` diff to key on. On the Kotlin side
-  the `ci-android` job compiles
-  `TrUAPIHost.kt` against freshly generated bindings on pull requests touching
-  `android/` or the native crates, which catches the same class of drift;
-  `make android-check` does it locally. The embedding apps are compiled by
-  neither.
+  missed a new protocol requirement. On the Kotlin side the `android-bindings`
+  job compiles `TrUAPIHost.kt` against freshly generated bindings, which catches
+  the same class of drift; `make android-check` does it locally. The embedding
+  apps are compiled by neither.
+- Both compile gates are path-filtered from one place. The `changes` job in
+  `ci.yml` computes `sdk_swift` and `sdk_kotlin`, and each gated job reads the
+  output. Because neither binding set is committed, a filter has to name every
+  crate its bindings are generated from, since a protocol change leaves no
+  `ios/` or `android/` diff to key on. Every job in `ci.yml` is aggregated by
+  `ci-status`, which is the check worth requiring: a job skipped by its filter
+  counts as a pass, so a gate cannot stall a PR it does not apply to.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
   To publish, include `@parity/ios-host <version>` in the `release:` PR title.

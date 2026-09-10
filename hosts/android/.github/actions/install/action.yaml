@@ -1,0 +1,96 @@
+name: Install dependencies for Android build
+description: Contains all dependencies for Android build
+
+runs:
+  using: "composite"
+  steps:
+    - name: System Diagnostics
+      shell: bash
+      run: |
+        echo "=== DISK SPACE ==="
+        df -h
+
+        echo ""
+        echo "=== MEMORY INFO ==="
+        free -h
+        echo "Total RAM: $(grep MemTotal /proc/meminfo | awk '{print $2 $3}')"
+        echo "Available RAM: $(grep MemAvailable /proc/meminfo | awk '{print $2 $3}')"
+
+        echo ""
+        echo "=== CPU INFO ==="
+        echo "CPU cores: $(nproc)"
+        echo "CPU model: $(grep -m 1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^ *//')"
+        grep -c ^processor /proc/cpuinfo
+        echo "CPU architecture: $(uname -m)"
+
+        echo ""
+        echo "=== SYSTEM INFO ==="
+        echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+        echo "Kernel: $(uname -r)"
+
+    - name: ☕️ Install Java
+      uses: actions/setup-java@v4.0.0
+      with:
+        distribution: "temurin"
+        java-version: "21"
+        cache: "gradle"
+
+    - name: 📱 Install Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: 📦 Install Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "24"
+
+    - name: 🐍 Install Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.13"
+
+    - name: 🐙 Install GitHub CLI
+      shell: bash
+      run: |
+        if command -v gh &> /dev/null; then
+          echo "gh already installed: $(gh --version | head -1)"
+        else
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            | sudo tee /etc/apt/sources.list.d/github-cli.list
+          sudo apt-get update
+          sudo apt-get install -y gh
+        fi
+
+    - name: Add execute permissions to gradle
+      run: chmod +x gradlew
+      shell: bash
+
+    - name: 🛠️ Install NDK
+      id: setup-ndk
+      uses: nttld/setup-ndk@v1.4.2
+      with:
+        ndk-version: "r29"
+
+    - name: Set ndk.dir in local.properties
+      run: echo "ndk.dir=${{ steps.setup-ndk.outputs.ndk-path }}" >> ./local.properties
+      shell: bash
+
+    - name: 🔨 Install Clang
+      uses: ./.github/actions/setup-clang
+      with:
+        clang-version: "21"
+
+    - name: 🦀 Install Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+        components: rustfmt, clippy
+
+    - name: Add targets
+      run: |
+        rustup target add armv7-linux-androideabi
+        rustup target add i686-linux-android
+        rustup target add x86_64-linux-android
+        rustup target add aarch64-linux-android
+      shell: bash

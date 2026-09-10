@@ -424,7 +424,7 @@ impl MethodEmission {
         };
         writeln!(
             out,
-            "                let cx = CallContext::with_request_id(request_id.clone());"
+            "                let cx = CallContext::with_request_id(request_id);"
         )
         .unwrap();
         self.write_request_execution_check(out, target_version_expr.as_deref())?;
@@ -591,7 +591,7 @@ impl MethodEmission {
         };
         writeln!(
             out,
-            "                let cx = CallContext::with_request_id(request_id.clone());"
+            "                let cx = CallContext::with_request_id(request_id);"
         )
         .unwrap();
         if self.required_execution.is_some() && is_result_sub {
