@@ -157,6 +157,83 @@ pub enum MetadataError {
     },
 }
 
+/// Transaction mortality, the `CheckMortality` extension's `extra`.
+///
+/// Mirrors Substrate's `sp_runtime::generic::Era`. An immortal transaction
+/// stays valid forever and is implicitly bound to the genesis hash; a mortal
+/// one is valid for `period` blocks from its birth block and is bound to that
+/// block's hash instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Era {
+    /// Never expires.
+    Immortal,
+    /// Valid for `period` blocks after the birth block `current - phase`.
+    Mortal {
+        /// Validity window in blocks, a power of two in `[4, 65536]`.
+        period: u64,
+        /// Quantized offset of the birth block within the period.
+        phase: u64,
+        /// Hash of the birth block; the extension's implicit.
+        birth_hash: [u8; 32],
+    },
+}
+
+impl Era {
+    /// Substrate `Era::mortal(period, current)`: rounds `period` up to a power
+    /// of two clamped to `[4, 65536]` and quantizes the phase the way the
+    /// runtime decodes it, so the encoded era names exactly the birth block
+    /// [`Self::birth_block`] returns. `birth_hash` must be that block's hash.
+    pub fn mortal(period: u64, current_block: u64, birth_hash: [u8; 32]) -> Self {
+        let period = period
+            .checked_next_power_of_two()
+            .unwrap_or(1 << 16)
+            .clamp(4, 1 << 16);
+        let phase = current_block % period;
+        let quantize_factor = (period >> 12).max(1);
+        let phase = phase / quantize_factor * quantize_factor;
+        Self::Mortal {
+            period,
+            phase,
+            birth_hash,
+        }
+    }
+
+    /// The block number a mortal era built from `current_block` is anchored
+    /// to; callers fetch its hash before constructing the era. For periods up
+    /// to 4096 blocks the phase is not quantized and the birth block is
+    /// `current_block` itself. Immortal eras have no birth block.
+    pub fn birth_block(period: u64, current_block: u64) -> u64 {
+        let Self::Mortal { period, phase, .. } = Self::mortal(period, current_block, [0; 32])
+        else {
+            unreachable!("Era::mortal always builds a mortal era");
+        };
+        (current_block.max(phase) - phase) / period * period + phase
+    }
+
+    /// SCALE `extra` bytes: `0x00` for immortal, the two-byte packed period and
+    /// phase for mortal.
+    pub fn encode_extra(&self) -> Vec<u8> {
+        match self {
+            Self::Immortal => vec![0x00],
+            Self::Mortal { period, phase, .. } => {
+                let quantize_factor = (period >> 12).max(1);
+                let encoded = (period.trailing_zeros() - 1).clamp(1, 15) as u16
+                    | ((phase / quantize_factor) << 4) as u16;
+                encoded.to_le_bytes().to_vec()
+            }
+        }
+    }
+
+    /// The extension's implicit: the genesis hash for immortal transactions,
+    /// the birth block hash for mortal ones.
+    pub fn implicit(&self, genesis_hash: [u8; 32]) -> Vec<u8> {
+        match self {
+            Self::Immortal => genesis_hash.to_vec(),
+            Self::Mortal { birth_hash, .. } => birth_hash.to_vec(),
+        }
+    }
+}
+
 /// Chain state needed to fill the standard signed extensions.
 #[derive(Debug, Clone, Copy)]
 pub struct ChainState {
@@ -173,6 +250,10 @@ pub struct ChainState {
     /// on Asset Hub. It is part of both the signed digest and the extrinsic
     /// body, so it lives here to keep the two in lockstep.
     pub restrict_origins: bool,
+    /// `CheckMortality` extra and implicit. Allowance registration stays
+    /// immortal; purse-key transactions must be mortal with an era shorter
+    /// than the pallet's failure lock.
+    pub era: Era,
 }
 
 /// A signed extension's identifier plus the type ids of its `extra` and
@@ -759,8 +840,10 @@ impl Metadata {
             "CheckSpecVersion" => (Vec::new(), state.spec_version.to_le_bytes().to_vec()),
             "CheckTxVersion" => (Vec::new(), state.transaction_version.to_le_bytes().to_vec()),
             "CheckGenesis" => (Vec::new(), state.genesis_hash.to_vec()),
-            // extra = Era::Immortal (0x00); implicit = genesis hash.
-            "CheckMortality" => (vec![0x00], state.genesis_hash.to_vec()),
+            "CheckMortality" => (
+                state.era.encode_extra(),
+                state.era.implicit(state.genesis_hash),
+            ),
             // extra = first variant `Disabled` (void) = 0x00.
             "VerifyMultiSignature" => (vec![0x00], Vec::new()),
             // extra = { tip: compact(0), asset_id: None } = 0x00 0x00.
@@ -897,6 +980,76 @@ mod tests {
     const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
 
     /// The known-answer chain state frozen alongside the fixture.
+    /// Substrate `generic::Era` golden vectors: `mortal(64, 42)` and the
+    /// quantized long period from `sp_runtime`'s own tests, plus the immortal
+    /// byte the allowance path has always emitted.
+    #[test]
+    fn era_encodes_like_substrate() {
+        assert_eq!(Era::Immortal.encode_extra(), vec![0x00]);
+        let short = Era::mortal(64, 42, [0x11; 32]);
+        assert_eq!(
+            short,
+            Era::Mortal {
+                period: 64,
+                phase: 42,
+                birth_hash: [0x11; 32]
+            }
+        );
+        assert_eq!(short.encode_extra(), vec![5 + 42 % 16 * 16, 42 / 16]);
+        // Below the quantization threshold the birth block is the current block.
+        assert_eq!(Era::birth_block(64, 42), 42);
+        assert_eq!(Era::birth_block(64, 100), 100);
+        // Long periods quantize the phase, so the birth block can trail current.
+        assert_eq!(Era::birth_block(32768, 20003), 20000);
+        let long = Era::mortal(32768, 20000, [0; 32]);
+        assert_eq!(
+            long.encode_extra(),
+            vec![(14 + 2500 % 16 * 16) as u8, (2500 / 16) as u8]
+        );
+        // Periods round up to a power of two and clamp to [4, 65536].
+        assert!(matches!(
+            Era::mortal(6, 0, [0; 32]),
+            Era::Mortal { period: 8, .. }
+        ));
+        assert!(matches!(
+            Era::mortal(1, 0, [0; 32]),
+            Era::Mortal { period: 4, .. }
+        ));
+        assert!(matches!(
+            Era::mortal(1 << 20, 0, [0; 32]),
+            Era::Mortal { period: 65536, .. }
+        ));
+    }
+
+    /// A mortal state binds `CheckMortality` to the birth block, not genesis,
+    /// and leaves every other extension untouched.
+    #[test]
+    fn mortal_state_changes_only_check_mortality() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let immortal = fixture_state();
+        let mortal = ChainState {
+            era: Era::mortal(8, 1000, [0x77; 32]),
+            ..immortal
+        };
+        let a = metadata.encode_signed_extensions(&immortal);
+        let b = metadata.encode_signed_extensions(&mortal);
+        let idx = metadata.extension_index("CheckMortality").unwrap();
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            if i == idx {
+                assert_eq!(x.extra, vec![0x00]);
+                assert_eq!(x.additional_signed, immortal.genesis_hash.to_vec());
+                assert_eq!(y.extra, Era::mortal(8, 1000, [0x77; 32]).encode_extra());
+                assert_eq!(y.additional_signed, vec![0x77; 32]);
+            } else {
+                assert_eq!(x.extra, y.extra, "extension {i} extra");
+                assert_eq!(
+                    x.additional_signed, y.additional_signed,
+                    "extension {i} implicit"
+                );
+            }
+        }
+    }
+
     fn fixture_state() -> ChainState {
         ChainState {
             spec_version: 1_000_000,
@@ -904,6 +1057,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         }
     }
 

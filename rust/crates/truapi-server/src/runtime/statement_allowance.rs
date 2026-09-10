@@ -19,9 +19,13 @@ pub mod slot;
 pub(crate) mod test_fixtures;
 pub mod view;
 
+use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use futures::FutureExt;
 use parity_scale_codec::{Decode, Encode};
@@ -31,7 +35,7 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 use collection::PersonhoodCollection;
-use extension::{ChainState, Metadata, MetadataError};
+use extension::{ChainState, Era, Metadata, MetadataError};
 use ring::RingParams;
 use rpc::RpcClient;
 use slot::{SlotError, SlotSelection};
@@ -218,6 +222,7 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
         genesis_hash,
         nonce: 0,
         restrict_origins: false,
+        era: Era::Immortal,
     })
 }
 
@@ -323,6 +328,7 @@ impl ChainContextCache {
                 genesis_hash,
                 nonce: 0,
                 restrict_origins: false,
+                era: Era::Immortal,
             },
         };
         self.entries
@@ -1643,6 +1649,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -1729,6 +1736,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let memberships = pooled_memberships();
         let candidates = pooled_candidates();
@@ -1772,6 +1780,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let memberships = pooled_memberships();
         let candidates = pooled_candidates();
@@ -2278,6 +2287,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -2338,6 +2348,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -2396,6 +2407,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -2447,6 +2459,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {

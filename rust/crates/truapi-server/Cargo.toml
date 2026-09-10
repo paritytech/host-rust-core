@@ -61,6 +61,10 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 sha2 = "0.10"
 merlin = "3"
 parking_lot = "0.12"
+# Runtime metadata decoding for host-built extrinsics; needed on wasm too,
+# where the signing host builds and signs pocket transactions itself.
+frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
+scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 
 tracing = "0.1"
 # `registry` + `std` only: pulls the Registry + per-layer filter/reload, but
@@ -78,8 +82,6 @@ tokio-tungstenite = { version = "0.21", default-features = false, features = ["h
 uniffi.workspace = true
 subxt = { version = "0.50.3", default-features = false, features = ["native"] }
 subxt-rpcs = { version = "0.50.3", default-features = false, features = ["jsonrpsee", "native"] }
-frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
-scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 base64 = { version = "0.22", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

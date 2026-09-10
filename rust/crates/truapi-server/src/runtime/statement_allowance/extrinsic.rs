@@ -261,6 +261,7 @@ pub fn build_unsigned_extrinsic_with_extra(
 mod tests {
     use parity_scale_codec::Compact;
 
+    use super::super::extension::Era;
     use super::super::test_fixtures;
     use super::*;
 
@@ -273,6 +274,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         }
     }
 

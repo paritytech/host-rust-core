@@ -491,11 +491,6 @@ impl SigningHost {
             .to_string()
     }
 
-    /// Register a new SSO pairing-responder task bound to the current
-    /// activation, returning the [`futures::future::AbortRegistration`] it
-    /// must wrap its work in.
-    ///
-
     fn ring_vrf_entropy(
         &self,
         session: &AuthoritySession,

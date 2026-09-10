@@ -562,7 +562,7 @@ pub(crate) mod tests {
     use subxt::utils::H256;
 
     use crate::runtime::statement_allowance::extension::{
-        ChainState, Metadata as AllowanceMetadata,
+        ChainState, Era, Metadata as AllowanceMetadata,
     };
 
     /// Everything needed to build transactions offline for one chain at one
@@ -830,6 +830,7 @@ pub(crate) mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         }
     }
 

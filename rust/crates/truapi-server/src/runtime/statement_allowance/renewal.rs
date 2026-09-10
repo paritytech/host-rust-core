@@ -378,7 +378,7 @@ mod tests {
         use subxt_rpcs::RpcClient as HostRpcClient;
 
         use crate::runtime::statement_allowance::CollectionMembership;
-        use crate::runtime::statement_allowance::extension::ChainState;
+        use crate::runtime::statement_allowance::extension::{ChainState, Era};
         use crate::runtime::statement_allowance::proof;
         use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
@@ -402,6 +402,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         // One collection, so this stays a test of cross-target protection rather
@@ -480,7 +481,7 @@ mod tests {
         use subxt_rpcs::RpcClient as HostRpcClient;
 
         use crate::runtime::statement_allowance::CollectionMembership;
-        use crate::runtime::statement_allowance::extension::ChainState;
+        use crate::runtime::statement_allowance::extension::{ChainState, Era};
         use crate::runtime::statement_allowance::proof;
         use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
@@ -500,6 +501,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         let memberships = [CollectionMembership {
@@ -577,7 +579,7 @@ mod tests {
         use subxt_rpcs::RpcClient as HostRpcClient;
 
         use crate::runtime::statement_allowance::CollectionMembership;
-        use crate::runtime::statement_allowance::extension::ChainState;
+        use crate::runtime::statement_allowance::extension::{ChainState, Era};
         use crate::runtime::statement_allowance::proof;
         use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
@@ -600,6 +602,7 @@ mod tests {
             genesis_hash: [0xab; 32],
             nonce: 0,
             restrict_origins: false,
+            era: Era::Immortal,
         };
         let entropy = [0x11; 32];
         let memberships = [CollectionMembership {

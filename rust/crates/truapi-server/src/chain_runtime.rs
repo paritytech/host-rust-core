@@ -663,7 +663,8 @@ impl ChainRuntime {
     }
 
     /// Raw JSON-RPC client for the chain identified by `genesis_hash`.
-    #[cfg(not(target_arch = "wasm32"))]
+    // Consumed on wasm by the signing host's NFT pocket engine once it lands.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) async fn rpc_client(
         &self,
         method: &'static str,
