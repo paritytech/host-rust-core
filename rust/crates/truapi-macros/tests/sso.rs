@@ -1,4 +1,4 @@
-//! Compiler contracts for the SSO derives and handler attribute.
+//! Compiler contracts for the SSO handler attribute.
 
 #[test]
 fn sso_handler_contracts() {

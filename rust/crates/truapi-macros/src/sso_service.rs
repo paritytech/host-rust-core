@@ -1,4 +1,4 @@
-//! Request/response pairing and dispatch for an inherent SSO handler implementation.
+//! Request/response conversions, wire helpers, and dispatch from SSO handlers.
 
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
@@ -52,6 +52,8 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
     let reply = quote!(#runtime::SsoReply);
     let mut impls = Vec::new();
     let mut arms = Vec::new();
+    let mut name_arms = Vec::new();
+    let mut responses = Vec::new();
     for entry in &mut item.items {
         let ImplItem::Fn(method) = entry else {
             return Err(syn::Error::new_spanned(
@@ -66,6 +68,9 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
             (async move #body).await.into()
         });
         let response_variant = last_segment(&response_ty)?;
+        if !responses.contains(&response_variant) {
+            responses.push(response_variant.clone());
+        }
         let name = &method.sig.ident;
         let method_name = name.unraw().to_string();
         let stem: String = method_name
@@ -100,13 +105,12 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 }
 
                 fn into_message(self) -> #message {
-                    use crate::host_logic::sso::messages::v1::AnyRequest;
-                    AnyRequest::#variant(self).into()
+                    #message::#variant(self)
                 }
             }
         });
         arms.push(quote! {
-            AnyRequest::#variant(request) => {
+            #message::#variant(request) => {
                 let reply = match &cx {
                     Some(cx) => self.#name(cx, request).await,
                     None => Err(#wire::SsoError::not_connected()).into(),
@@ -114,12 +118,32 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 reply.finish(&message_id, <#request_ty as #wire::SsoRequest>::response_into_message)
             }
         });
+        name_arms.push(quote! { Self::#variant(_) => #method_name });
     }
     if arms.is_empty() {
         return Err(syn::Error::new_spanned(
             &item.self_ty,
             "the annotated implementation declares no SSO handlers",
         ));
+    }
+
+    let mut responding_to_arms = Vec::new();
+    let mut retarget_arms = Vec::new();
+    for variant in responses {
+        let name = variant.to_string();
+        arms.push(quote! {
+            #message::#variant(_) => return #runtime::Dispatch::NotARequest(#name),
+        });
+        name_arms.push(quote! { Self::#variant(_) => #name });
+        responding_to_arms.push(quote! {
+            Self::#variant(response) => Some(&response.responding_to),
+        });
+        retarget_arms.push(quote! {
+            Self::#variant(mut response) => {
+                response.responding_to = responding_to;
+                Self::#variant(response)
+            }
+        });
     }
 
     item.items.push(syn::parse_quote! {
@@ -132,16 +156,11 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
             session: Option<crate::runtime::authority::AuthoritySession>,
             message: crate::host_logic::sso::messages::RemoteMessage,
         ) -> #runtime::Dispatch {
-            use crate::host_logic::sso::messages::v1::{AnyRequest, Incoming, classify};
             let crate::host_logic::sso::messages::RemoteMessageData::V1(data) = message.data;
-            let request = match classify(data) {
-                Incoming::Request(request) => request,
-                Incoming::Response(name) => return #runtime::Dispatch::NotARequest(name),
-                Incoming::Disconnected => return #runtime::Dispatch::Disconnected,
-            };
             let message_id = message.message_id;
             let cx = session.map(|session| #runtime::SsoRequestContext::new(&message_id, session));
-            let answer = match request {
+            let answer = match data {
+                #message::Disconnected => return #runtime::Dispatch::Disconnected,
                 #(#arms)*
             };
             #runtime::Dispatch::Response(Box::new(answer))
@@ -150,6 +169,32 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
     Ok(quote! {
         #item
         #(#impls)*
+
+        impl #message {
+            /// Service method name for requests; variant name for other messages.
+            pub(crate) fn name(&self) -> &'static str {
+                match self {
+                    Self::Disconnected => "Disconnected",
+                    #(#name_arms,)*
+                }
+            }
+
+            /// Request id answered by a response; `None` for other messages.
+            pub(crate) fn responding_to(&self) -> Option<&str> {
+                match self {
+                    #(#responding_to_arms)*
+                    _ => None,
+                }
+            }
+
+            /// Re-address a response; other messages pass through unchanged.
+            pub(crate) fn with_responding_to(self, responding_to: String) -> Self {
+                match self {
+                    #(#retarget_arms,)*
+                    other => other,
+                }
+            }
+        }
     })
 }
 

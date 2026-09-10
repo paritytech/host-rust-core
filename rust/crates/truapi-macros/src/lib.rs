@@ -5,7 +5,6 @@
 
 mod service;
 mod sso_service;
-mod sso_wire;
 mod versioned_type;
 mod wire;
 
@@ -72,24 +71,17 @@ pub fn versioned_type(item: TokenStream) -> TokenStream {
     versioned_type::expand(item)
 }
 
-/// Classify the SSO wire enum's request, response, and disconnect variants.
-///
-/// Emits crate-private `AnyRequest`, `Incoming`, `classify()`, request wrapping,
-/// and the enum's `name()`, `responding_to()`, and `with_responding_to()` next to
-/// the enum. Request/response pairing comes from `#[sso_service]`. Only valid
-/// inside `truapi-server`.
-#[proc_macro_derive(SsoWire)]
-pub fn derive_sso_wire(item: TokenStream) -> TokenStream {
-    sso_wire::expand(item)
-}
-
 /// Define SSO handlers in a dedicated inherent implementation.
 ///
 /// Every method must be `async fn name(&self, cx: &SsoRequestContext, request:
 /// <Request>) -> <Response>`, where the named response aliases its `Result`
 /// payload and selects the wire variant. The method name selects the request
-/// variant; its payload type can be generic. Each signature supplies `SsoRequest` pairing;
-/// the macro generates an exhaustive `dispatch` method on the service type.
+/// variant; the parameter must match its payload type, which can be generic.
+/// Each signature supplies `SsoRequest` pairing. The macro generates `dispatch`
+/// on the service and naming/correlation helpers on the existing wire enum.
+/// Dispatch matches the wire enum exhaustively, so every request needs a handler
+/// and every response must be selected by a handler. Multiple handlers may share
+/// a response variant. Wire encoding remains owned by the codec derives.
 /// Handler return types expand to `SsoReply<Payload>`, and bodies return
 /// ordinary `Result` payloads or explicit replies with a transcript outcome.
 /// An inner async block preserves `return` and `?` semantics. Constructors and

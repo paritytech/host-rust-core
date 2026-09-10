@@ -1,3 +1,5 @@
+#![deny(unreachable_patterns)]
+
 include!("../support/wire.rs");
 include!("../support/runtime.rs");
 
@@ -32,6 +34,10 @@ impl Service {
     async fn bar(&self, _: &SsoRequestContext, _: BarRequest) -> FooResponse {
         SsoReply::<FooResponse>::from(Ok(2)).with_outcome(ResponseOutcome)
     }
+
+    async fn baz(&self, _: &SsoRequestContext, _: Box<Request<bool>>) -> BarResponse {
+        Ok(3)
+    }
 }
 
 fn main() {
@@ -43,13 +49,31 @@ fn main() {
     assert!(matches!(response, v1::RemoteMessage::BarResponse(_)));
     assert!(BarRequest::response_from_message(response).is_none());
 
+    // Two handlers can share a response without duplicating generated match arms.
+    let response = Box::<Request<bool>>::response_into_message(Response {
+        responding_to: "m-2".into(),
+        payload: Ok(8),
+    });
+    assert_eq!(response.name(), "BarResponse");
+    assert_eq!(response.responding_to(), Some("m-2"));
+    let response = response.with_responding_to("m-3".into());
+    assert_eq!(response.responding_to(), Some("m-3"));
+    assert!(Request::<u32>::response_from_message(response).is_some());
+
+    let request = Request(1_u32).into_message();
+    assert_eq!(request.name(), "foo");
+    assert_eq!(request.responding_to(), None);
+    assert!(matches!(request, v1::RemoteMessage::FooRequest(Request(1))));
+    assert_eq!(v1::RemoteMessage::Disconnected.name(), "Disconnected");
+    assert_eq!(v1::RemoteMessage::Disconnected.responding_to(), None);
+
     fn require_send(_: impl core::future::Future + Send) {}
     let service = Service::new();
     require_send(service.dispatch(
         None,
         RemoteMessage {
             message_id: "m-1".into(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::FooRequest(Box::new(Request(1)))),
+            data: RemoteMessageData::V1(request),
         },
     ));
 }

@@ -5,7 +5,7 @@ use host_logic::sso::messages::*;
 use runtime::sso_service::SsoRequestContext;
 
 struct Service;
-struct BazRequest;
+struct MissingRequest;
 
 #[truapi_macros::sso_service]
 impl Service {
@@ -17,8 +17,12 @@ impl Service {
         Ok(2)
     }
 
-    async fn baz(&self, _: &SsoRequestContext, _request: BazRequest) -> FooResponse {
+    async fn baz(&self, _: &SsoRequestContext, _request: Box<Request<bool>>) -> FooResponse {
         Ok(3)
+    }
+
+    async fn missing(&self, _: &SsoRequestContext, _request: MissingRequest) -> FooResponse {
+        Ok(4)
     }
 }
 

@@ -1,7 +1,7 @@
 include!("../support/wire.rs");
 include!("../support/runtime.rs");
 
-use host_logic::sso::messages::{FooResponse, Request};
+use host_logic::sso::messages::{BarResponse, FooResponse, Request};
 use runtime::sso_service::SsoRequestContext;
 
 struct Service;
@@ -10,6 +10,10 @@ struct Service;
 impl Service {
     async fn foo(&self, _: &SsoRequestContext, _request: Request<u32>) -> FooResponse {
         Ok(1)
+    }
+
+    async fn baz(&self, _: &SsoRequestContext, _request: Box<Request<bool>>) -> BarResponse {
+        Ok(3)
     }
 }
 

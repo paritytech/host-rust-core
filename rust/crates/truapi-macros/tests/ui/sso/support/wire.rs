@@ -55,13 +55,13 @@ mod host_logic {
             pub mod v1 {
                 use super::*;
 
-                #[derive(truapi_macros::SsoWire)]
                 pub enum RemoteMessage {
                     Disconnected,
-                    FooRequest(Box<Request<u32>>),
+                    FooRequest(Request<u32>),
                     FooResponse(Response<FooResponse>),
                     BarRequest(BarRequest),
                     BarResponse(Response<BarResponse>),
+                    BazRequest(Box<Request<bool>>),
                 }
             }
         }
