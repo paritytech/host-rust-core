@@ -714,21 +714,25 @@ truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 
 Both hosts take `--network`, either `paseo-next-v2` (default) or `previewnet`.
 The network preset owns the identity backend URL, the People, Bulletin and Asset
-Hub RPCs, and their genesis hashes; there is
-no public `--statement-store` flag. Pick `previewnet` when a product's runtime
-descriptors target previewnet, so its statements, its host chain routes and its
-own chain reads all land on one network. The CLI mints the identity backend's
-bearer token itself (SPEC.md §12.3). Sessions are per preset, so each network
-gets its own signer identity on the same machine.
-`HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
-the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
-supplies its bearer token instead of the CLI minting one. For username
-registration, an injected token's subject must match the session's `uid.<tld>`
-candidate account. The automatically minted token uses that identity; and
-`HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
-discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
-to opt into a TCP product-frame WebSocket; without it, the CLI creates and
-cleans up a unique temporary Unix socket.
+Hub RPCs, and their genesis hashes; there is no public `--statement-store`
+flag. Pick `previewnet` when a product's runtime descriptors target previewnet,
+so its statements, its host chain routes and its own chain reads all land on
+one network. The CLI mints the identity backend's bearer token itself
+(SPEC.md §12.3). Sessions are per preset, so each network gets its own signer
+identity on the same machine.
+
+`HOST_CLI_PEOPLE_WS` replaces the selected preset's People endpoint without
+changing its genesis or network suffix. It is intended for a source-bound local
+light-client gateway shared by E2E participants; the override becomes both the
+SSO fallback and the route for the real People genesis.
+`HOST_CLI_IDENTITY_BACKEND_BASE` swaps only the identity backend (for a local
+one); `HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies its bearer token instead of the
+CLI minting one. For username registration, an injected token's subject must
+match the session's `uid.<tld>` candidate account. The automatically minted
+token uses that identity; and `HOST_CLI_DOTNS_POP_CONTROLLER` overrides
+on-chain `DotnsPopController` discovery (see SPEC.md §21). Both hosts also
+accept `--frame-listen <address>` to opt into a TCP product-frame WebSocket;
+without it, the CLI creates and cleans up a unique temporary Unix socket.
 
 ## Serving a dev server (one process, no terminal)
 

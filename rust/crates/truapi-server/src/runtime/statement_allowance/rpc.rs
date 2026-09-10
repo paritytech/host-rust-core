@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use futures::{FutureExt, pin_mut};
 use serde_json::{Value, json};
 use subxt_rpcs::RpcClient as HostRpcClient;
-use subxt_rpcs::client::{RpcClient as NativeRpcClient, RpcParams, rpc_params};
+use subxt_rpcs::client::{RawValue, RpcClient as NativeRpcClient, rpc_params};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
@@ -85,21 +85,35 @@ impl RpcClient {
     }
 
     /// Call `method` with JSON-array `params`, returning the result value.
+    ///
+    /// The raw request preserves an explicit `params: []` for zero-argument
+    /// calls. Smoldot rejects an omitted `params` field for methods such as
+    /// `state_getRuntimeVersion`, while jsonrpsee accepts either shape.
     pub async fn call(
         &self,
         method: &str,
         params: Value,
     ) -> Result<Value, StatementAllowanceError> {
-        self.inner
-            .request(method, value_to_params(params)?)
+        let Value::Array(_) = params else {
+            return Err(RpcError::ParamsNotArray.into());
+        };
+        let params = RawValue::from_string(params.to_string())
+            .map_err(|err| RpcError::ParamEncode(subxt_rpcs::Error::Deserialization(err)))?;
+        let result = self
+            .inner
+            .request_raw(method, Some(params))
             .await
-            .map_err(|err| {
-                RpcError::Request {
-                    method: method.to_string(),
-                    source: err,
-                }
-                .into()
-            })
+            .map_err(|err| RpcError::Request {
+                method: method.to_string(),
+                source: err,
+            })?;
+        serde_json::from_str(result.get()).map_err(|err| {
+            RpcError::Request {
+                method: method.to_string(),
+                source: subxt_rpcs::Error::Deserialization(err),
+            }
+            .into()
+        })
     }
 
     /// `state_getStorage(key)` at the current best block -> raw value bytes,
@@ -274,17 +288,6 @@ fn extrinsic_status(status: &Value) -> ExtrinsicStatus {
     ExtrinsicStatus::Pending
 }
 
-fn value_to_params(value: Value) -> Result<RpcParams, StatementAllowanceError> {
-    let Value::Array(values) = value else {
-        return Err(RpcError::ParamsNotArray.into());
-    };
-    let mut params = RpcParams::new();
-    for value in values {
-        params.push(value).map_err(RpcError::ParamEncode)?;
-    }
-    Ok(params)
-}
-
 fn decode_hex(value: &str) -> Result<Vec<u8>, StatementAllowanceError> {
     hex::decode(value.strip_prefix("0x").unwrap_or(value))
         .map_err(|err| RpcError::StorageHex(err).into())
@@ -294,8 +297,9 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, StatementAllowanceError> {
 pub(crate) mod testing {
     //! Scripted JSON-RPC transport for exercising request shapes in tests.
 
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
+    use parking_lot::Mutex;
     use subxt_rpcs::client::{RawRpcFuture, RawRpcSubscription, RawValue, RpcClientT};
 
     /// Records every request as `(method, params)` and replays canned JSON
@@ -306,6 +310,7 @@ pub(crate) mod testing {
     #[derive(Default)]
     struct Inner {
         calls: Mutex<Vec<(String, String)>>,
+        request_params_present: Mutex<Vec<bool>>,
         responses: Mutex<Vec<String>>,
         subscription_batches: Mutex<Vec<Vec<String>>>,
         subscription_errors: Mutex<Vec<String>>,
@@ -315,8 +320,7 @@ pub(crate) mod testing {
         /// A script answering requests with `responses`, in order.
         pub(crate) fn new<'a>(responses: impl IntoIterator<Item = &'a str>) -> Self {
             let scripted = Self::default();
-            *scripted.0.responses.lock().unwrap() =
-                responses.into_iter().map(str::to_owned).collect();
+            *scripted.0.responses.lock() = responses.into_iter().map(str::to_owned).collect();
             scripted
         }
 
@@ -326,20 +330,24 @@ pub(crate) mod testing {
             self.0
                 .subscription_batches
                 .lock()
-                .unwrap()
                 .push(items.into_iter().map(str::to_owned).collect());
         }
 
         /// Fail the next `n` subscriptions with `message`, as the node does when
         /// it rejects a submission outright.
         pub(crate) fn script_subscription_errors(&self, message: &str, count: usize) {
-            *self.0.subscription_errors.lock().unwrap() =
+            *self.0.subscription_errors.lock() =
                 std::iter::repeat_n(message.to_owned(), count).collect();
         }
 
         /// The `(method, params)` pairs seen so far.
         pub(crate) fn calls(&self) -> Vec<(String, String)> {
-            self.0.calls.lock().unwrap().clone()
+            self.0.calls.lock().clone()
+        }
+
+        /// Whether each ordinary request carried a JSON-RPC `params` field.
+        pub(crate) fn request_params_present(&self) -> Vec<bool> {
+            self.0.request_params_present.lock().clone()
         }
     }
 
@@ -353,12 +361,12 @@ pub(crate) mod testing {
             method: &'a str,
             params: Option<Box<RawValue>>,
         ) -> RawRpcFuture<'a, Box<RawValue>> {
+            self.0.request_params_present.lock().push(params.is_some());
             self.0
                 .calls
                 .lock()
-                .unwrap()
                 .push((method.to_owned(), params_json(params)));
-            let mut responses = self.0.responses.lock().unwrap();
+            let mut responses = self.0.responses.lock();
             assert!(!responses.is_empty(), "unscripted request `{method}`");
             let response = responses.remove(0);
             Box::pin(async move {
@@ -375,17 +383,16 @@ pub(crate) mod testing {
             self.0
                 .calls
                 .lock()
-                .unwrap()
                 .push((sub.to_owned(), params_json(params)));
             let failure = {
-                let mut errors = self.0.subscription_errors.lock().unwrap();
+                let mut errors = self.0.subscription_errors.lock();
                 (!errors.is_empty()).then(|| errors.remove(0))
             };
             if let Some(message) = failure {
                 return Box::pin(async move { Err(subxt_rpcs::Error::Client(message.into())) });
             }
             let batch = {
-                let mut batches = self.0.subscription_batches.lock().unwrap();
+                let mut batches = self.0.subscription_batches.lock();
                 if batches.is_empty() {
                     Vec::new()
                 } else {
@@ -450,6 +457,17 @@ mod tests {
                 ExtrinsicStatus::Rejected("finalityTimeout".to_string()),
             ],
         );
+    }
+
+    #[test]
+    fn zero_argument_calls_preserve_an_explicit_params_array() {
+        let scripted = ScriptedRpc::new([r#""0xfeed""#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        let head = futures::executor::block_on(rpc.finalized_head()).unwrap();
+
+        assert_eq!(head, "0xfeed");
+        assert_eq!(scripted.request_params_present(), vec![true]);
     }
 
     #[test]

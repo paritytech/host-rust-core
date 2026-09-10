@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use clap::ValueEnum;
 use truapi::latest::ChainIdentifier;
 use truapi_platform::{HostChainEntry, HostChainSet};
@@ -22,13 +24,25 @@ pub enum Network {
 
 /// Env var overriding the identity backend base URL for every command. The URL
 /// includes `/api/v1`, for instance a local backend at
-/// `http://localhost:8080/api/v1`. Chain endpoints stay on the preset.
+/// `http://localhost:8080/api/v1`.
 pub const IDENTITY_BACKEND_BASE_ENV: &str = "HOST_CLI_IDENTITY_BACKEND_BASE";
+
+/// Env var overriding the People-chain WebSocket endpoint. This lets a
+/// headless host share a local light-client gateway with another host while
+/// retaining the selected preset's genesis hashes and network suffix.
+pub const PEOPLE_WS_ENV: &str = "HOST_CLI_PEOPLE_WS";
+
+static IDENTITY_BACKEND_BASE_OVERRIDE: LazyLock<Option<String>> =
+    LazyLock::new(|| read_environment_override(IDENTITY_BACKEND_BASE_ENV));
+static PEOPLE_WS_OVERRIDE: LazyLock<Option<String>> =
+    LazyLock::new(|| read_environment_override(PEOPLE_WS_ENV));
 
 impl Network {
     /// Preset resolved with any environment overrides applied.
     pub fn config(self) -> NetworkConfig {
-        apply_backend_override(self.preset(), std::env::var(IDENTITY_BACKEND_BASE_ENV).ok())
+        let config =
+            apply_backend_override(self.preset(), IDENTITY_BACKEND_BASE_OVERRIDE.as_deref());
+        apply_people_override(config, PEOPLE_WS_OVERRIDE.as_deref())
     }
 
     /// The unmodified preset values.
@@ -62,15 +76,32 @@ impl Network {
     }
 }
 
-/// Replaces the preset's identity backend base with `base` when it carries a
-/// non-empty URL. Trailing slashes are stripped so path joins stay clean. The
-/// override string is leaked; the CLI reads it a handful of times per process.
-fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> NetworkConfig {
+/// Read and normalize one process-wide URL override.
+fn read_environment_override(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| normalize_override(&value))
+}
+
+fn normalize_override(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+/// Replaces the preset's identity backend base with a normalized URL.
+fn apply_backend_override(mut config: NetworkConfig, base: Option<&'static str>) -> NetworkConfig {
     if let Some(base) = base {
-        let trimmed = base.trim().trim_end_matches('/');
-        if !trimmed.is_empty() {
-            config.identity_backend_base = Box::leak(trimmed.to_string().into_boxed_str());
-        }
+        config.identity_backend_base = base;
+    }
+    config
+}
+
+/// Replaces the preset's People endpoint with a normalized URL.
+fn apply_people_override(
+    mut config: NetworkConfig,
+    endpoint: Option<&'static str>,
+) -> NetworkConfig {
+    if let Some(endpoint) = endpoint {
+        config.people_ws = endpoint;
     }
     config
 }
@@ -611,18 +642,45 @@ mod tests {
     #[test]
     fn backend_override_replaces_only_the_backend_base() {
         let preset = Network::PaseoNextV2.preset();
-        let overridden =
-            apply_backend_override(preset, Some("http://localhost:8080/api/v1/".to_string()));
+        let overridden = apply_backend_override(preset, Some("http://localhost:8080/api/v1"));
 
         assert_eq!(
-            overridden.identity_backend_base, "http://localhost:8080/api/v1",
-            "trailing slash is stripped"
+            overridden.identity_backend_base,
+            "http://localhost:8080/api/v1",
         );
         assert_eq!(overridden.asset_hub_ws, preset.asset_hub_ws);
         assert_eq!(
-            apply_backend_override(preset, Some("  ".to_string())).identity_backend_base,
+            apply_backend_override(preset, None).identity_backend_base,
             preset.identity_backend_base,
-            "a blank override keeps the preset"
+            "no override keeps the preset"
         );
+    }
+
+    #[test]
+    fn people_override_replaces_only_the_people_endpoint() {
+        let preset = Network::PaseoNextV2.preset();
+        let overridden = apply_people_override(preset, Some("ws://127.0.0.1:9944/people"));
+
+        assert_eq!(overridden.people_ws, "ws://127.0.0.1:9944/people");
+        assert_eq!(
+            overridden.identity_backend_base,
+            preset.identity_backend_base
+        );
+        assert_eq!(overridden.bulletin_ws, preset.bulletin_ws);
+        assert_eq!(overridden.asset_hub_ws, preset.asset_hub_ws);
+        assert_eq!(
+            apply_people_override(preset, None).people_ws,
+            preset.people_ws,
+            "no override keeps the preset"
+        );
+    }
+
+    #[test]
+    fn environment_override_normalization_trims_and_rejects_blank_values() {
+        assert_eq!(
+            normalize_override(" ws://localhost:9944/people/ "),
+            Some("ws://localhost:9944/people".to_string())
+        );
+        assert_eq!(normalize_override("  "), None);
     }
 }

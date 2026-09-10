@@ -37,9 +37,21 @@ pub struct WsChainProvider {
 }
 
 impl WsChainProvider {
-    pub fn new(fallback_url: impl Into<String>, live_chain_endpoints: &[ChainEndpoint]) -> Self {
+    pub fn new(
+        fallback_url: impl Into<String>,
+        fallback_genesis: [u8; 32],
+        live_chain_endpoints: &[ChainEndpoint],
+    ) -> Self {
         let live_chain_routing = std::env::var("E2E_LIVE_CHAIN").as_deref() == Ok("1");
-        Self::with_live_chain_routing(fallback_url, live_chain_endpoints, live_chain_routing)
+        let mut provider =
+            Self::with_live_chain_routing(fallback_url, live_chain_endpoints, live_chain_routing);
+        // The fallback is the People endpoint used by host-internal SSO. It may
+        // be an explicit local gateway, so it must replace the preset table's
+        // route for the real People genesis as well as the all-zero sentinel.
+        provider
+            .by_genesis
+            .insert(fallback_genesis, provider.fallback_url.clone());
+        provider
     }
 
     fn with_live_chain_routing(
@@ -280,5 +292,21 @@ mod tests {
             optional[0].ws,
             "and included with it"
         );
+    }
+
+    #[test]
+    fn explicit_people_endpoint_replaces_the_preset_route() {
+        const PEOPLE: [u8; 32] = [0x4a; 32];
+        const GATEWAY: &str = "ws://127.0.0.1:9944/people";
+        let endpoints = [ChainEndpoint {
+            genesis: PEOPLE,
+            ws: "wss://remote.invalid",
+            required_for_host: true,
+        }];
+
+        let provider = WsChainProvider::new(GATEWAY, PEOPLE, &endpoints);
+
+        assert_eq!(provider.url_for(&PEOPLE), GATEWAY);
+        assert!(provider.routes(&PEOPLE));
     }
 }

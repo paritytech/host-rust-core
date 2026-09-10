@@ -1499,19 +1499,21 @@ itself through the backend's `auth/challenges` → `auth/token` handshake
 (§12.3), or takes one from `HOST_CLI_IDENTITY_BACKEND_TOKEN`, so auto-managed
 account creation works here.
 
-There are no public endpoint override flags. `HOST_CLI_IDENTITY_BACKEND_BASE`
-replaces only the identity backend base URL (§21).
+There are no public endpoint override flags.
+`HOST_CLI_IDENTITY_BACKEND_BASE` replaces only the identity backend base URL.
+`HOST_CLI_PEOPLE_WS` replaces only the selected preset's People endpoint,
+without changing its genesis hash or network suffix (§21). The latter supports
+source-bound E2E runs in which every participant shares one local light-client
+gateway.
 
-Every role the preset serves — People, Bulletin and Asset Hub — is always routed,
-because host internals require all three: statement-store traffic addressed to the
-People genesis, preimage submission, and PGAS claims plus dotNS username reads
-respectively. The SSO sentinel is
-a separate case — it is an unmapped genesis and reaches People through the fallback
-below, not through People's own route. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
-preset carries without serving them as a role, of which neither preset has any.
-
-The all-zero SSO sentinel and every genesis hash not present in the active
-route map fall back to the People RPC.
+Every role the preset serves — People, Bulletin and Asset Hub — is always
+routed, because host internals require all three: statement-store traffic,
+preimage submission, and PGAS claims plus dotNS username reads respectively.
+When `HOST_CLI_PEOPLE_WS` is set, that endpoint replaces both the all-zero SSO
+fallback and the route for the preset's real People genesis. Otherwise the
+all-zero sentinel and every unmapped genesis fall back to the preset's People
+RPC. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the preset carries
+without serving them as a role, of which neither preset has any.
 
 A rustls ring crypto provider is installed at process startup for `wss://`
 connections.
@@ -1987,7 +1989,8 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_VERSION` | Version the installer installs, instead of the current stable one. |
 | `TRUAPI_HOST_RELEASE_BASE_URL` | Release host for the installer and the updater, for mirrors and tests. |
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
-| `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
+| `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. |
+| `HOST_CLI_PEOPLE_WS` | People-chain WebSocket override for the selected preset. Replaces both the SSO fallback and the real People-genesis route; intended for a shared local light-client gateway in source-bound E2E runs. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.<tld>` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
 | `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress`, used directly when `protocolRegistry()` answers on it, otherwise resolved through `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |

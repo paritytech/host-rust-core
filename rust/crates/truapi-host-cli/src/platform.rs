@@ -170,7 +170,11 @@ impl CliPlatform {
             .unwrap_or_default();
 
         Arc::new(Self {
-            chain: WsChainProvider::new(network.people_ws, network.live_chain_endpoints),
+            chain: WsChainProvider::new(
+                network.people_ws,
+                network.people_genesis,
+                network.live_chain_endpoints,
+            ),
             chains: network.host_chain_set(),
             product_storage: Mutex::new(product_storage),
             core_storage: Mutex::new(core_storage),
