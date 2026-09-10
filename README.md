@@ -115,6 +115,10 @@ returning a typed outcome: response bytes to post back, a disconnect marker, or
 ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
+See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
+for typed handlers, canonical resource types, and consent bound to the signing session.
+Product and SSO signing share canonical payloads and the one-byte `OptionBool`
+encoding for `with_signed_transaction`.
 
 ### JS Host SDKs
 

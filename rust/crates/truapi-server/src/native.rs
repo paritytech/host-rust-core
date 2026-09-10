@@ -3517,7 +3517,7 @@ mod tests {
             panic!("expected a product subtree response payload");
         };
         assert_eq!(payload.responding_to, "m9");
-        assert!(payload.product_public_key.is_ok());
+        assert!(payload.payload.is_ok());
     }
 
     #[test]

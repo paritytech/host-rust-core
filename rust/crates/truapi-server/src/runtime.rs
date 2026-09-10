@@ -27,6 +27,7 @@ mod signing_host;
 pub(crate) mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
 pub(crate) mod sso_remote;
+pub(crate) mod sso_service;
 /// Native Statement Store and Bulletin allowance allocation.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod statement_allowance;
@@ -51,7 +52,7 @@ pub(crate) use services::RuntimeServices;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, establish_pairing,
+    LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, establish_pairing,
     respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
@@ -751,17 +752,7 @@ fn validate_vrf_transcript(request: &v01::HostAccountSignVrfRequest) -> Result<(
 }
 
 fn vrf_call_error(err: AuthorityError) -> CallError<HostAccountSignVrfError> {
-    let error = match err {
-        AuthorityError::Disconnected => v01::HostAccountSignVrfError::NotConnected,
-        AuthorityError::Rejected => v01::HostAccountSignVrfError::Rejected,
-        AuthorityError::Cancelled(err) => v01::HostAccountSignVrfError::Unknown {
-            reason: err.to_string(),
-        },
-        AuthorityError::Unavailable { reason }
-        | AuthorityError::NotSupported { reason }
-        | AuthorityError::Unknown { reason } => v01::HostAccountSignVrfError::Unknown { reason },
-    };
-    CallError::Domain(HostAccountSignVrfError::V1(error))
+    CallError::Domain(HostAccountSignVrfError::V1(err.into()))
 }
 fn account_get_authority_error(err: AuthorityError) -> CallError<HostAccountGetError> {
     let error = match err {

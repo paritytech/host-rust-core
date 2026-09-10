@@ -33,6 +33,7 @@ ws-bridge = ["dep:tokio", "dep:tokio-tungstenite", "dep:rand", "dep:base64"]
 [dependencies]
 truapi = { path = "../truapi" }
 truapi-platform = { path = "../truapi-platform" }
+truapi-macros = { path = "../truapi-macros" }
 async-trait = "0.1"
 derive_more = { version = "2", features = ["debug", "display", "error", "from"] }
 futures = "0.3"

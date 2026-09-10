@@ -75,6 +75,14 @@ scripts/truapi-host-installer.sh
   rather than importing a concrete protocol version. Runtime crates may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
+- Inter-host SSO uses `#[sso_service]` as described
+  in the [macro guide](rust/crates/truapi-macros/README.md). Keep per-variant pairing,
+  dispatch, and correlation in that macro; do not add manual per-variant catalogs.
+  Requests with a caller share `ProductRequest<P>` around canonical payloads;
+  handler method names select request variants. Responses share `Response<P>`;
+  handler signatures name their result payload
+  and response variant. Transcript classification belongs in shared reply handling
+  or the handler; request context carries only the call and signing session.
 - Native bindings expose canonical Rust domain and protocol types directly.
   Add feature-gated UniFFI derives to those types and custom conversions for
   unsupported leaf values instead of defining parallel `Native*` mirrors.
