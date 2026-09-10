@@ -1249,6 +1249,50 @@ impl ProductAuthority for SigningHost {
             .await?)
     }
 
+    async fn scarcity_transfer(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+        instance: u64,
+        to: [u8; 32],
+        progress: Arc<dyn Fn(truapi::latest::ScarcityTransferStatus) + Send + Sync>,
+    ) -> Result<[u8; 32], crate::runtime::scarcity::transfer::TransferError> {
+        self.require_current_session(session).map_err(|err| {
+            crate::runtime::scarcity::PocketError::Unknown {
+                reason: err.to_string(),
+            }
+        })?;
+        let entropy =
+            self.root_entropy()
+                .map_err(|err| crate::runtime::scarcity::PocketError::Unknown {
+                    reason: err.to_string(),
+                })?;
+        self.pocket
+            .transfer(
+                &entropy,
+                session.public_key,
+                &product_id,
+                instance,
+                to,
+                progress.as_ref(),
+            )
+            .await
+    }
+
+    async fn scarcity_purse_of(
+        &self,
+        session: &AuthoritySession,
+        address: [u8; 32],
+    ) -> Result<Option<String>, crate::runtime::scarcity::PocketAuthorityError> {
+        self.require_current_session(session)?;
+        let entropy = self.root_entropy()?;
+        Ok(self
+            .pocket
+            .purse_of(&entropy, session.public_key, &address)
+            .await?)
+    }
+
     async fn statement_store_allowance_key(
         &self,
         _cx: &CallContext,

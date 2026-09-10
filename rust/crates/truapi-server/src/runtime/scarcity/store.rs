@@ -53,10 +53,43 @@ pub(crate) enum PocketStoreError {
     Corrupt(String),
 }
 
+/// One in-flight transfer, written before its transaction is broadcast so a
+/// restart can find out what became of it.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct WalEntry {
+    /// Monotonic id within the wallet.
+    pub id: u64,
+    /// Purse the item is leaving.
+    pub from_product_id: String,
+    /// Index of the holding key within that purse.
+    pub from_index: u32,
+    /// Instance being moved.
+    pub instance: u64,
+    /// Destination purse key.
+    pub to: [u8; 32],
+    /// Ownership-state revision the authorization named.
+    pub state_nonce: u64,
+    /// Block the mortal era is anchored to.
+    pub birth_block: u32,
+    /// Era length in blocks; past `birth_block + period` the transaction can
+    /// no longer be included.
+    pub period: u32,
+}
+
+/// The write-ahead log of in-flight transfers for one wallet root.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct WalSnapshot {
+    /// Next entry id.
+    pub next_id: u64,
+    /// Entries awaiting resolution, in creation order.
+    pub entries: Vec<WalEntry>,
+}
+
 /// Cache-fronted, guard-serialized pocket store.
 pub(crate) struct PocketStore {
     platform: Arc<dyn Platform>,
     cache: Mutex<HashMap<[u8; 32], PocketSnapshot>>,
+    wal_cache: Mutex<HashMap<[u8; 32], WalSnapshot>>,
     storage_guard: futures::lock::Mutex<()>,
 }
 
@@ -66,6 +99,7 @@ impl PocketStore {
         Arc::new(Self {
             platform,
             cache: Mutex::new(HashMap::new()),
+            wal_cache: Mutex::new(HashMap::new()),
             storage_guard: futures::lock::Mutex::new(()),
         })
     }
@@ -151,6 +185,108 @@ impl PocketStore {
             return Ok(());
         }
         self.persist_under_guard(root_public_key, snapshot).await
+    }
+
+    /// Every transfer written but not yet resolved.
+    pub(crate) async fn wal_entries(
+        &self,
+        root_public_key: [u8; 32],
+    ) -> Result<Vec<WalEntry>, PocketStoreError> {
+        let _guard = self.storage_guard.lock().await;
+        Ok(self.load_wal_under_guard(root_public_key).await?.entries)
+    }
+
+    /// Record a transfer about to be broadcast; returns its id.
+    pub(crate) async fn wal_append(
+        &self,
+        root_public_key: [u8; 32],
+        mut entry: WalEntry,
+    ) -> Result<u64, PocketStoreError> {
+        let _guard = self.storage_guard.lock().await;
+        let mut wal = self.load_wal_under_guard(root_public_key).await?;
+        entry.id = wal.next_id;
+        wal.next_id = wal
+            .next_id
+            .checked_add(1)
+            .ok_or_else(|| PocketStoreError::Storage("transfer log id space exhausted".into()))?;
+        let id = entry.id;
+        wal.entries.push(entry);
+        self.persist_wal_under_guard(root_public_key, wal).await?;
+        Ok(id)
+    }
+
+    /// Drop a resolved transfer.
+    pub(crate) async fn wal_remove(
+        &self,
+        root_public_key: [u8; 32],
+        id: u64,
+    ) -> Result<(), PocketStoreError> {
+        let _guard = self.storage_guard.lock().await;
+        let mut wal = self.load_wal_under_guard(root_public_key).await?;
+        let before = wal.entries.len();
+        wal.entries.retain(|entry| entry.id != id);
+        if wal.entries.len() == before {
+            return Ok(());
+        }
+        self.persist_wal_under_guard(root_public_key, wal).await
+    }
+
+    async fn load_wal_under_guard(
+        &self,
+        root_public_key: [u8; 32],
+    ) -> Result<WalSnapshot, PocketStoreError> {
+        if let Some(wal) = self
+            .wal_cache
+            .lock()
+            .expect("pocket wal cache mutex poisoned")
+            .get(&root_public_key)
+            .cloned()
+        {
+            return Ok(wal);
+        }
+        let key = CoreStorageKey::ScarcityPocketWal { root_public_key };
+        let wal = match self
+            .platform
+            .read_core_storage(key.clone())
+            .await
+            .map_err(|err| PocketStoreError::Storage(err.reason))?
+        {
+            Some(blob) => {
+                let mut input = blob.as_slice();
+                match WalSnapshot::decode(&mut input) {
+                    Ok(wal) if input.is_empty() => wal,
+                    _ => {
+                        let _ = self.platform.clear_core_storage(key).await;
+                        return Err(PocketStoreError::Corrupt("transfer log".into()));
+                    }
+                }
+            }
+            None => WalSnapshot::default(),
+        };
+        self.wal_cache
+            .lock()
+            .expect("pocket wal cache mutex poisoned")
+            .insert(root_public_key, wal.clone());
+        Ok(wal)
+    }
+
+    async fn persist_wal_under_guard(
+        &self,
+        root_public_key: [u8; 32],
+        wal: WalSnapshot,
+    ) -> Result<(), PocketStoreError> {
+        self.platform
+            .write_core_storage(
+                CoreStorageKey::ScarcityPocketWal { root_public_key },
+                wal.encode(),
+            )
+            .await
+            .map_err(|err| PocketStoreError::Storage(err.reason))?;
+        self.wal_cache
+            .lock()
+            .expect("pocket wal cache mutex poisoned")
+            .insert(root_public_key, wal);
+        Ok(())
     }
 
     fn cached(&self, root_public_key: [u8; 32]) -> Option<PocketSnapshot> {
@@ -342,6 +478,34 @@ mod tests {
             assert!(platform.read_core_storage(key).await.unwrap().is_none());
             // The next read starts from an empty pocket.
             assert!(store.snapshot(ROOT).await.unwrap().purses.is_empty());
+        });
+    }
+
+    #[test]
+    fn the_transfer_log_appends_ids_and_forgets_resolved_entries() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform::default());
+            let store = PocketStore::new(platform.clone());
+            let entry = |instance: u64| WalEntry {
+                id: 0,
+                from_product_id: "cardclash.dot".into(),
+                from_index: 1,
+                instance,
+                to: [9; 32],
+                state_nonce: 0,
+                birth_block: 100,
+                period: 8,
+            };
+            let a = store.wal_append(ROOT, entry(34)).await.unwrap();
+            let b = store.wal_append(ROOT, entry(35)).await.unwrap();
+            assert_eq!((a, b), (0, 1));
+            store.wal_remove(ROOT, a).await.unwrap();
+            let entries = store.wal_entries(ROOT).await.unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].instance, 35);
+            // A fresh store reads the same log and keeps allocating ids forward.
+            let again = PocketStore::new(platform);
+            assert_eq!(again.wal_append(ROOT, entry(36)).await.unwrap(), 2);
         });
     }
 

@@ -6,6 +6,7 @@
 //! `Unsupported` before any session is consulted.
 
 use core::time::Duration;
+use std::sync::Arc;
 
 use tracing::instrument;
 use truapi::api::Scarcity;
@@ -19,7 +20,7 @@ use truapi::versioned::scarcity::{
 use truapi::{CallContext, CallError, Subscription, v01};
 use truapi_platform::{
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform, ScarcityAccessReview,
-    ScarcityReceiveForReview, UserConfirmationReview,
+    ScarcityReceiveForReview, ScarcityTransferReview, UserConfirmationReview,
 };
 
 use crate::host_logic::permissions::PermissionsService;
@@ -241,10 +242,76 @@ impl Scarcity for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "scarcity.transfer"))]
     async fn transfer(
         &self,
-        _cx: &CallContext,
-        _request: HostScarcityTransferRequest,
+        cx: &CallContext,
+        request: HostScarcityTransferRequest,
     ) -> Result<Subscription<HostScarcityTransferItem>, CallError<HostScarcityTransferError>> {
-        Err(CallError::Unsupported)
+        let HostScarcityTransferRequest::V1(v01::HostScarcityTransferRequest { instance, to }) =
+            request;
+        let wrap = HostScarcityTransferError::V1;
+        let session = self.scarcity_session(wrap)?;
+        let product_id = self.product_id();
+        Self::scarcity_grant(
+            scarcity_access_authorization(self.platform.as_ref(), &product_id, None).await,
+            wrap,
+        )?;
+        // The sheet names the item, so it has to be in the caller's purse first.
+        let held = self
+            .authority
+            .scarcity_list(cx, &session, product_id.clone(), None)
+            .await
+            .map_err(|err| scarcity_call_error(err, wrap))?;
+        let item = held
+            .into_iter()
+            .find(|item| item.instance == instance)
+            .ok_or_else(|| CallError::Domain(wrap(v01::ScarcityError::NotFound)))?;
+        let to_product_id = self
+            .authority
+            .scarcity_purse_of(&session, to)
+            .await
+            .map_err(|err| scarcity_call_error(err, wrap))?;
+        // Every move asks; a stored grant never covers a transfer.
+        let approved = self
+            .platform
+            .confirm_user_action(UserConfirmationReview::ScarcityTransfer(
+                ScarcityTransferReview {
+                    product_id: product_id.clone(),
+                    instance,
+                    collection: item.collection,
+                    item: item.item,
+                    to,
+                    to_product_id,
+                },
+            ))
+            .await
+            .map_err(|err| {
+                CallError::Domain(wrap(v01::ScarcityError::Unknown { reason: err.reason }))
+            })?;
+        if !approved {
+            return Err(CallError::Domain(wrap(v01::ScarcityError::Rejected)));
+        }
+
+        let (sender, receiver) = futures::channel::mpsc::unbounded();
+        let progress_sender = sender.clone();
+        let progress: Arc<dyn Fn(v01::ScarcityTransferStatus) + Send + Sync> =
+            Arc::new(move |status| {
+                let _ = progress_sender.unbounded_send(HostScarcityTransferItem::V1(status));
+            });
+        let authority = self.authority.clone();
+        let cx = CallContext::with_request_id(cx.request_id().to_string());
+        (self.services.spawner)(Box::pin(async move {
+            let outcome = authority
+                .scarcity_transfer(&cx, &session, product_id, instance, to, progress)
+                .await;
+            let terminal = match outcome {
+                Ok(_) => v01::ScarcityTransferStatus::Landed,
+                Err(err) => v01::ScarcityTransferStatus::Failed {
+                    error: err.to_service_error(),
+                },
+            };
+            let _ = sender.unbounded_send(HostScarcityTransferItem::V1(terminal));
+            // Dropping the sender closes the stream after the terminal item.
+        }));
+        Ok(Subscription::new(Box::pin(receiver)))
     }
 
     #[instrument(skip_all, fields(runtime.method = "scarcity.list_subscribe"))]

@@ -10,6 +10,7 @@
 
 pub(crate) mod chain;
 pub(crate) mod store;
+pub(crate) mod transfer;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -134,8 +135,7 @@ impl ScarcityPocket {
         Self { services, store }
     }
 
-    /// The durable allocation records.
-    #[cfg(test)]
+    /// The durable allocation and transfer records.
     pub(crate) fn store(&self) -> &PocketStore {
         &self.store
     }
@@ -174,6 +174,11 @@ impl ScarcityPocket {
         product_id: &str,
     ) -> Result<Vec<HeldItem>, PocketError> {
         let hub = self.asset_hub().await?;
+        transfer::recover(self, &hub, entropy, root_public_key)
+            .await
+            .map_err(|err| PocketError::Unknown {
+                reason: format!("transfer log recovery: {err}"),
+            })?;
         self.scan_purse_with(&hub, entropy, root_public_key, product_id)
             .await
     }
@@ -319,6 +324,53 @@ impl ScarcityPocket {
             .allocate(root_public_key, &target, requested_by, idempotency_key)
             .await?;
         Ok(derive_purse_public_key(entropy, &target, index)?)
+    }
+
+    /// Move `instance` out of `from_product_id`'s purse to `to`, reporting
+    /// progress, and return the including block hash once ownership is
+    /// verified there.
+    pub(crate) async fn transfer(
+        &self,
+        entropy: &[u8],
+        root_public_key: [u8; 32],
+        from_product_id: &str,
+        instance: u64,
+        to: [u8; 32],
+        progress: &(dyn Fn(truapi::latest::ScarcityTransferStatus) + Send + Sync),
+    ) -> Result<[u8; 32], transfer::TransferError> {
+        let hub = self.asset_hub().await?;
+        transfer::recover(self, &hub, entropy, root_public_key).await?;
+        transfer::execute(
+            self,
+            &hub,
+            entropy,
+            root_public_key,
+            transfer::TransferSpec {
+                from_product_id,
+                instance,
+                to,
+            },
+            progress,
+        )
+        .await
+    }
+
+    /// The purse a key belongs to, if the host derived it: searched over every
+    /// key allocated so far in every known purse.
+    pub(crate) async fn purse_of(
+        &self,
+        entropy: &[u8],
+        root_public_key: [u8; 32],
+        address: &[u8; 32],
+    ) -> Result<Option<String>, PocketError> {
+        for purse in self.store.snapshot(root_public_key).await?.purses {
+            for index in 0..purse.next_index {
+                if derive_purse_public_key(entropy, &purse.product_id, index)? == *address {
+                    return Ok(Some(purse.product_id));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Product ids of every purse the host has allocated in, for the wallet's

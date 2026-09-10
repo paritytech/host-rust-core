@@ -501,6 +501,33 @@ pub(crate) trait ProductAuthority: Send + Sync {
         .into())
     }
 
+    /// Move `instance` out of `product_id`'s purse to `to`, reporting progress
+    /// through `progress`, and return the including block once ownership is
+    /// verified there.
+    async fn scarcity_transfer(
+        &self,
+        _cx: &CallContext,
+        _session: &AuthoritySession,
+        _product_id: String,
+        _instance: u64,
+        _to: [u8; 32],
+        _progress: Arc<dyn Fn(truapi::latest::ScarcityTransferStatus) + Send + Sync>,
+    ) -> Result<[u8; 32], crate::runtime::scarcity::transfer::TransferError> {
+        Err(crate::runtime::scarcity::PocketError::Unknown {
+            reason: "this host holds no NFT purses".to_string(),
+        }
+        .into())
+    }
+
+    /// The product whose purse holds `address`, when the host derived that key.
+    async fn scarcity_purse_of(
+        &self,
+        _session: &AuthoritySession,
+        _address: [u8; 32],
+    ) -> Result<Option<String>, crate::runtime::scarcity::PocketAuthorityError> {
+        Ok(None)
+    }
+
     /// Derive product-scoped entropy for a connected session.
     fn derive_entropy(
         &self,

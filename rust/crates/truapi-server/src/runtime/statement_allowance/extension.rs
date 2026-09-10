@@ -38,6 +38,10 @@ pub const AS_RESOURCES: &str = "AsResources";
 /// authorization on Asset Hub.
 pub const AS_DOTNS_GATEWAY: &str = "AsDotnsGateway";
 
+/// Signed-extension identifier that carries the `AsScarcity` purse-key
+/// authorization on Asset Hub.
+pub const AS_SCARCITY: &str = "AsScarcity";
+
 /// Error while decoding runtime metadata or resolving allowance-specific
 /// metadata entries.
 #[derive(Debug, Error)]
@@ -904,7 +908,6 @@ impl Metadata {
     }
 
     /// The signed-extension identifiers, in metadata order.
-    #[cfg(test)]
     pub fn extension_ids(&self) -> Vec<&str> {
         self.extensions
             .iter()
