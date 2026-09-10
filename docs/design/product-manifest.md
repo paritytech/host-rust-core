@@ -29,7 +29,8 @@ type Icon = {
 
 type Granted =            // v1 grants; unrecognised values are tolerated, not fatal
   | "all"                 // wildcard: every mediated interaction, present and future
-  | "storage";            // read this product's host-local storage
+  | "storage"             // read this product's host-local storage
+  | "context";            // read this product's account and the identity behind it
 ```
 
 ### Executable Manifest
@@ -165,7 +166,7 @@ Each entry's value list scopes the grant:
 trustedProducts: {
   "wallet":  ["all"],                  → every mediated interaction, now and later
   "tracker": ["storage"],              → storage reads promptless; account reads still prompt
-  "hub":     ["all", "storage"]        → just ["all"]; a narrow value never carves into the wildcard
+  "hub":     ["storage", "context"]    → both, and no more when a fourth scope is defined
 }
 ```
 
