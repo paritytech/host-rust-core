@@ -1,0 +1,75 @@
+name: Run instrumental tests
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  APPLICATION_ID: ${{ vars.APPLICATION_ID }}
+  APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+  CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
+  GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
+  LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
+  PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
+  REFERRAL_WEB_HOST: ${{ vars.REFERRAL_WEB_HOST }}
+  SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+  SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+  SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+  TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  check-instrumental-label:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check_run_instrumental.outputs.run_tests }}
+    steps:
+      - name: Check for run-instrumental-tests label
+        id: check_run_instrumental
+        uses: actions/github-script@v5
+        with:
+          script: |
+            const payload = context.payload.pull_request || context.payload;
+            const labels = payload.labels.map(label => label.name);
+            const runTests = labels.includes('run-instrumental-tests');
+            core.setOutput('run_tests', runTests.toString());
+
+  test:
+    name: Run instrumental tests
+    runs-on: macos-latest
+    needs: check-instrumental-label
+    if: needs.check-instrumental-label.outputs.skip == 'true'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install dependencies
+        uses: ./.github/actions/install/
+
+      - name: Prepare Android build files
+        uses: ./.github/actions/prepare-android-build
+        with:
+          google_services_json_base64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          keystore_file_base64: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+          keystore_path: develop_key.jks
+
+      - name: Run tests
+        env:
+          CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
+          CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
+          FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+          GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
+          GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
+          NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
+          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+            disable-animations: true
+            profile: Nexus 5X
+            api-level: 29
+            script: ./gradlew connectedGpDebugAndroidTest

@@ -1,0 +1,69 @@
+name: "Setup iOS Environment"
+description: "Installs Xcode"
+inputs:
+  xcode-version:
+    description: "The Xcode version to install"
+    required: true
+    default: "26.4.1"
+  match_repository_pat:
+    description: "Fine-grained GitHub PAT for the private Match repository"
+    required: false
+    default: ""
+  match_auth_required:
+    description: "Whether this job requires access to the Match repository"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configure Match repository authentication
+      if: ${{ inputs.match_auth_required == 'true' }}
+      shell: bash
+      env:
+        MATCH_REPOSITORY_PAT: ${{ inputs.match_repository_pat }}
+        MATCH_GIT_URL: "https://github.com/paritytech/fastlane-polkadotapp-develop.git"
+      run: |
+        set -euo pipefail
+
+        token_suffix="${MATCH_REPOSITORY_PAT#github_pat_}"
+        if [[ "$MATCH_REPOSITORY_PAT" != github_pat_* || -z "$token_suffix" || "$MATCH_REPOSITORY_PAT" =~ [[:space:]] ]]; then
+          echo "::error::Match repository credential must contain a fine-grained GitHub PAT (github_pat_...) without whitespace"
+          exit 1
+        fi
+
+        basic_auth="$(printf 'x-access-token:%s' "$MATCH_REPOSITORY_PAT" | base64 | tr -d '\n')"
+        echo "::add-mask::$basic_auth"
+
+        if ! (
+          cd "${RUNNER_TEMP:?}"
+          GIT_TERMINAL_PROMPT=0 git \
+            -c http.extraheader="Authorization: Basic $basic_auth" \
+            ls-remote --exit-code "$MATCH_GIT_URL" HEAD >/dev/null 2>&1
+        ); then
+          echo "::error::Match repository credential cannot read paritytech/fastlane-polkadotapp-develop; check its repository access, Contents permission, expiration, and organization approval"
+          exit 1
+        fi
+
+        printf 'MATCH_GIT_BASIC_AUTHORIZATION=%s\n' "$basic_auth" >> "$GITHUB_ENV"
+
+    - uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: ${{ inputs.xcode-version }}
+
+    - uses: ruby/setup-ruby@v1
+      with:
+        bundler-cache: true
+
+    - name: Install Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.13"
+
+    - name: Restore SPM cache
+      uses: actions/cache@v5
+      with:
+        path: source_packages
+        key: ${{ runner.os }}-xcode-${{ inputs.xcode-version }}-spm-${{ hashFiles('**/Package.resolved') }}
+        restore-keys: |
+          ${{ runner.os }}-xcode-${{ inputs.xcode-version }}-spm-

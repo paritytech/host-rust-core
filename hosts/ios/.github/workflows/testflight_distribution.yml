@@ -1,0 +1,127 @@
+name: Distribute TestFlight Build
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+
+env:
+  IOS_BUNDLE_ID: "io.parity.polkadotapp"
+  IOS_EXTENSION_BUNDLE_ID: "io.parity.polkadotapp.NotificationServiceExtension"
+  PROVISIONING_PROFILE_SPECIFIER: "match AppStore io.parity.polkadotapp"
+  EXTENSION_PROVISIONING_PROFILE_SPECIFIER: "match AppStore io.parity.polkadotapp.NotificationServiceExtension"
+  CODE_SIGN_IDENTITY: "Apple Distribution"
+  EXPORT_METHOD: "app-store"
+  RUN_IN_CI: true
+  DELIVER_ALTOOL_ADDITIONAL_UPLOAD_PARAMETERS: "--use-old-altool"
+  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+jobs:
+  distribute_testflight:
+    runs-on: macos-26
+    if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    name: Distribute TestFlight Build
+    outputs:
+      build_number: ${{ steps.read_marketing_version.outputs.build_number }}
+      marketing_version: ${{ steps.read_marketing_version.outputs.marketing_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup iOS Environment
+        uses: ./.github/actions/install
+        with:
+          match_auth_required: "true"
+          match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
+
+      - name: Read version and build number
+        id: read_marketing_version
+        uses: ./.github/actions/read-build-version
+        with:
+          ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
+          asc_key_id: ${{ secrets.ASC_KEY_ID }}
+          asc_issuer_id: ${{ secrets.ASC_ISSUER_ID }}
+          asc_key_base64: ${{ secrets.ASC_KEY_BASE64 }}
+
+      - name: Distribute TestFlight build
+        uses: ./.github/actions/distribute-testflight
+        with:
+          ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
+          ios_extension_bundle_id: ${{ env.IOS_EXTENSION_BUNDLE_ID }}
+          provisioning_profile_specifier: ${{ env.PROVISIONING_PROFILE_SPECIFIER }}
+          extension_provisioning_profile_specifier: ${{ env.EXTENSION_PROVISIONING_PROFILE_SPECIFIER }}
+          code_sign_identity: ${{ env.CODE_SIGN_IDENTITY }}
+          run_in_ci: ${{ env.RUN_IN_CI }}
+          build_number: ${{ steps.read_marketing_version.outputs.build_number }}
+          asc_key_id: ${{ secrets.ASC_KEY_ID }}
+          asc_issuer_id: ${{ secrets.ASC_ISSUER_ID }}
+          asc_key_base64: ${{ secrets.ASC_KEY_BASE64 }}
+          keychain_password: ${{ secrets.KEYCHAIN_PASSWORD }}
+          match_password: ${{ secrets.MATCH_PASSWORD }}
+          google_service_info_dev_base64: ${{ secrets.GOOGLE_SERVICE_INFO_DEV_BASE64 }}
+          google_service_info_release_base64: ${{ secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
+          sentry_dsn: ${{ secrets.SENTRY_DSN }}
+          meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+
+      - name: Upload IPA as artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: polkadot-app-release-ipa
+          path: "*.ipa"
+          retention-days: 7
+
+  upload-to-s3:
+    name: Upload IPA to S3
+    runs-on: ubuntu-latest
+    needs: distribute_testflight
+    if: success()
+    env:
+      S3_BUCKET: s3://polkadot-app-artefacts
+      S3_REGION: fr-par
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download built artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: polkadot-app-release-ipa
+          path: ipa
+
+      - name: Upload to S3
+        uses: novasamatech/github-actions/s3-upload@v5
+        with:
+          s3_region: ${{ env.S3_REGION }}
+          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
+          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
+          s3_bucket: ${{ env.S3_BUCKET }}
+          source_path: ipa/polkadot-app.ipa
+          destination_path: /ios/releases-manual/polkadot-app-${{ needs.distribute_testflight.outputs.marketing_version }}-${{ needs.distribute_testflight.outputs.build_number }}.ipa
+
+      - name: Upload to S3 (static path)
+        uses: novasamatech/github-actions/s3-upload@v5
+        with:
+          s3_region: ${{ env.S3_REGION }}
+          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
+          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
+          s3_bucket: ${{ env.S3_BUCKET }}
+          source_path: ipa/polkadot-app.ipa
+          destination_path: /ios/releases-manual/polkadot-app.ipa
+
+  trigger-allure-tests:
+    name: Trigger Allure TestOps
+    runs-on: ubuntu-latest
+    needs: upload-to-s3
+    if: success()
+
+    steps:
+      - name: Trigger Allure TestOps Job
+        uses: novasamatech/github-actions/trigger-allure-testops@v5
+        with:
+          testplan_id: '734'
+          launch_name: 'iOS TestFlight Tests'
+          allure_token: ${{ secrets.ALLURE_TOKEN }}

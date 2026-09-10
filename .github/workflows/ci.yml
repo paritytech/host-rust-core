@@ -192,44 +192,62 @@ jobs:
       - name: Generate TrUAPIProvider bindings
         run: make provider-swift
 
-  ios-changes:
-    name: iOS change filter
+  changes:
+    name: Change filter
     runs-on: ubuntu-latest
     outputs:
-      ios: ${{ steps.filter.outputs.ios }}
+      sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
+      sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
 
-      # Actions has no per-job paths filter, so compute it once here and gate
-      # ios-swift on the output. On pull_request the checkout is the merge
-      # commit, so HEAD^1 is the base. Other events always run the gate.
+      # Actions has no per-job paths filter, so compute every gate once here and
+      # have each gated job read an output. On pull_request the checkout is the
+      # merge commit, so HEAD^1 is the base. Other events always run every gate.
       #
-      # The bindings are generated, not committed, so a UniFFI surface change
-      # leaves no ios/ diff to key on. The list therefore names every crate the
-      # bindings are generated from, plus js/container, which is compiled into
-      # the TrUAPIHost target as a resource.
-      - name: Detect iOS-relevant changes
+      # Neither binding set is committed, so a UniFFI surface change leaves no
+      # ios/ or android/ diff to key on. Each list therefore names every input
+      # its gated job actually reads: the crates the bindings are generated
+      # from, the generator itself, the Makefile targets that drive it, and the
+      # manifest that pins each platform's toolchain, and the workspace manifest
+      # and lockfile, which is where the bindings generator version and the
+      # codegen profile live. js/container is in the
+      # Swift list because it is compiled into the TrUAPIHost target as a
+      # resource; the root Gradle files are in the Kotlin list because they pin
+      # AGP and Kotlin. Both lists name this workflow, so editing a filter
+      # exercises the jobs that filter gates.
+      - name: Detect which areas changed
         id: filter
         run: |
           set -euo pipefail
+
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "ios=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "sdk_swift=true"
+              echo "sdk_kotlin=true"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --name-only HEAD^1 HEAD \
-            | grep -qE '^(ios/|Package\.swift$|Makefile$|js/container/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/)'; then
-            echo "ios=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ios=false" >> "$GITHUB_OUTPUT"
-          fi
+
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          gate() {
+            if grep -qE "$2" <<<"$changed"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
   ios-swift:
     name: iOS package (swift compile)
-    needs: [ios-changes, codegen]
-    if: needs.ios-changes.outputs.ios == 'true'
+    needs: [changes, codegen]
+    if: needs.changes.outputs.sdk_swift == 'true'
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -331,6 +349,49 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIProviderDerivedData" \
             CODE_SIGNING_ALLOWED=NO
+
+  # Compile gate for the Android host module: regenerates the UniFFI Kotlin
+  # bindings and compiles the shell against them. No cross-compile, no
+  # publishing.
+  android-bindings:
+    name: Android host (kotlin compile)
+    needs: changes
+    if: needs.changes.outputs.sdk_kotlin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # codegen.sh formats its generated Rust with `cargo +nightly fmt`.
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+          components: rustfmt
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+        with:
+          shared-key: android-bindings-gate
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: "8.9"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      # truapi-server declares its generated modules unconditionally and they are
+      # gitignored, so the crate does not compile until codegen has run.
+      - name: Generate the Rust codegen output
+        run: |
+          npm ci --ignore-scripts
+          TRUAPI_SKIP_PACKAGE_BUILD=1 ./scripts/codegen.sh
+      - name: Generate UniFFI Kotlin bindings
+        run: make uniffi-kotlin
+      - name: Compile the shell against the bindings
+        run: gradle :truapi-host:assembleRelease
 
   ts-client:
     name: "@parity/truapi"
@@ -599,8 +660,9 @@ jobs:
         licenses,
         codegen,
         ios-bindings,
-        ios-changes,
+        changes,
         ios-swift,
+        android-bindings,
         ts-client,
         ts-host,
         ts-debugger,
@@ -609,29 +671,57 @@ jobs:
         e2e,
       ]
     steps:
-      - name: Check all jobs
+      # The results come from the needs context itself rather than a second list
+      # of `needs.<job>.result` expressions, so the set of jobs checked cannot
+      # drift from the set depended on. `required` is the one list to maintain:
+      # a job present here but absent from the run reported nothing, which is
+      # how a gate gets deleted without anyone noticing, and a job in the run
+      # that is absent here means this list went stale.
+      #
+      # A job skipped by its path filter counts as a pass, which is what stops a
+      # gate stalling a pull request it does not apply to.
+      - name: Check every required job reported and passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED: >-
+            rust wasm-provider licenses codegen ios-bindings changes ios-swift
+            android-bindings ts-client ts-host ts-debugger playground explorer
+            e2e
         run: |
-          results=(
-            "${{ needs.rust.result }}"
-            "${{ needs.wasm-provider.result }}"
-            "${{ needs.licenses.result }}"
-            "${{ needs.codegen.result }}"
-            "${{ needs.ios-bindings.result }}"
-            # ios-changes is listed because a failure there skips ios-swift,
-            # and skipped counts as a pass below.
-            "${{ needs.ios-changes.result }}"
-            "${{ needs.ios-swift.result }}"
-            "${{ needs.ts-client.result }}"
-            "${{ needs.ts-host.result }}"
-            "${{ needs.ts-debugger.result }}"
-            "${{ needs.playground.result }}"
-            "${{ needs.explorer.result }}"
-            "${{ needs.e2e.result }}"
-          )
-          for r in "${results[@]}"; do
-            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
-              echo "::error::One or more CI jobs failed or were cancelled."
-              exit 1
-            fi
+          set -euo pipefail
+
+          failed=()
+          missing=()
+          undeclared=()
+
+          for job in $REQUIRED; do
+            result="$(jq -r --arg j "$job" '.[$j].result // "ABSENT"' <<<"$NEEDS")"
+            case "$result" in
+              success | skipped) ;;
+              ABSENT) missing+=("$job") ;;
+              *) failed+=("$job=$result") ;;
+            esac
           done
-          echo "All CI jobs passed."
+
+          while read -r job; do
+            [ -n "$job" ] && undeclared+=("$job")
+          done < <(jq -r --arg req "$REQUIRED" \
+            '($req | split(" ") | map(select(length > 0))) as $r | (keys - $r)[]' \
+            <<<"$NEEDS")
+
+          status=0
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::CI jobs did not pass: ${failed[*]}"
+            status=1
+          fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Required jobs reported nothing, so a gate is missing from this workflow: ${missing[*]}"
+            status=1
+          fi
+          if [ ${#undeclared[@]} -gt 0 ]; then
+            echo "::error::Jobs are depended on but not listed in REQUIRED, so this gate is stale: ${undeclared[*]}"
+            status=1
+          fi
+          [ "$status" -eq 0 ] || exit 1
+
+          echo "All $(wc -w <<<"$REQUIRED" | tr -d ' ') required jobs reported and passed."

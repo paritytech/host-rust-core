@@ -1,0 +1,37 @@
+name: Prepare Nightly
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Source ref to create release branch from (existing branch name or commit SHA)"
+        type: string
+        required: false
+        default: develop
+      increment_step:
+        description: "Build number increment step (1 if empty)"
+        type: string
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 16 * * 1-5" # 16:00 UTC Monday-Friday
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/_prepare_pipeline.yml
+    with:
+      is_nightly: true
+      bump_level: "no-bump"
+      source_ref: ${{ inputs.source_ref || 'develop' }}
+      increment_step: ${{ inputs.increment_step || '' }}
+      distribution_workflow: nightly_distribution.yml
+    secrets: inherit
