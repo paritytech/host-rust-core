@@ -59,11 +59,13 @@ use truapi_platform::{
     AuthState, CoreStorage as PlatformCoreStorage, CoreStorageKey, PermissionAuthorizationRequest,
 };
 
+use super::product_manifest::{CachedManifest, MANIFEST_TTL_SECS};
 use super::*;
 use crate::host_logic::product_account::index_bytes;
 use crate::host_logic::sso::messages::{
     RemoteMessage, RemoteMessageData, RingVrfAliasResponse, RingVrfProofResponse, v1,
 };
+use crate::host_logic::statement_store::current_unix_secs;
 use crate::test_support::*;
 
 fn test_product_subtree(product_id: &str) -> [u8; 32] {

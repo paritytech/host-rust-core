@@ -19,7 +19,7 @@ mod dotns_lookup;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
-mod product_manifest;
+pub(crate) mod product_manifest;
 mod product_subtree;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
@@ -49,7 +49,6 @@ use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
-use parity_scale_codec::{Decode, Encode};
 pub(crate) use services::RuntimeServices;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
@@ -70,11 +69,10 @@ use truapi::versioned::chat::{
 use truapi::versioned::preimage::RemotePreimageSubmitError;
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 use truapi_platform::{
-    AccountAccessReview, ChatFieldError, CoreStorageKey, IdentityDisclosureReview,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform, ProductContext,
-    ProductStorageKey, SessionUiInfo, UserConfirmationReview, normalize_chat_identifier,
-    normalize_product_identifier, validate_chat_icon, validate_chat_message_content,
-    validate_chat_name,
+    AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, Platform, ProductContext, ProductStorageKey, SessionUiInfo,
+    UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    validate_chat_icon, validate_chat_message_content, validate_chat_name,
 };
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
@@ -85,13 +83,12 @@ use crate::host_logic::permissions::PermissionsService;
 use crate::host_logic::product_account::{
     derivation_index_bytes, derive_product_public_key, public_key_from_address,
 };
-use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
+use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::sso::pairing::x25519_public_key;
-use crate::host_logic::statement_store::current_unix_secs;
 #[cfg(test)]
 use crate::subscription::Spawner;
 
@@ -230,150 +227,6 @@ where
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {
     AuthorityError::Cancelled(AuthorityCancelError::new(cx.request_id(), reason))
-}
-
-/// How long a cached root manifest is honoured.
-///
-/// This is a revocation bound, not a performance knob: dotNS attaches no signal
-/// to a record edit, so a grant a publisher withdraws stays in force until the
-/// manifest is read again.
-const MANIFEST_TTL_SECS: u64 = 24 * 60 * 60;
-
-/// A cached root manifest lookup and when it was made.
-///
-/// The document is stored verbatim rather than reduced to the grants this core
-/// reads today, so a later consumer needs no cache migration.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-struct CachedManifest {
-    /// Seconds since the Unix epoch at which the lookup was made.
-    fetched_at_secs: u64,
-    /// The manifest JSON exactly as published, or `None` where the chain
-    /// answered that the product publishes none.
-    ///
-    /// A miss is cached because refusing is the common outcome: without it every
-    /// refused call reopens a chainHead follow and re-reads the contracts, and
-    /// the round trip tells the caller which targets have a manifest and which
-    /// do not — the distinction one uniform refusal exists to hide.
-    json: Option<String>,
-}
-
-/// Encode a root manifest the way the core caches it, for a host that seeds a
-/// grant instead of resolving one.
-///
-/// Write the bytes under [`CoreStorageKey::ProductManifest`] for the product the
-/// manifest belongs to. The core reads that entry before it consults the Asset
-/// Hub, so a seeded manifest answers a grant on a host with no dotNS access at
-/// all — which is what makes a cross-product flow reachable locally, before
-/// either product is deployed.
-///
-/// `json` is `None` for a product that publishes no manifest, the outcome the
-/// core caches for the same lifetime as a document. `fetched_at_secs` is when
-/// the lookup counts as having happened: the current time for a live entry, or
-/// something older than the cache lifetime to exercise a grant expiring.
-///
-/// A development and testing seam. Nothing enforces that a seeded manifest
-/// matches what the product actually publishes, so a host offering this owes
-/// the developer a way to tell the two apart.
-pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> Vec<u8> {
-    CachedManifest {
-        fetched_at_secs,
-        json: json.map(str::to_string),
-    }
-    .encode()
-}
-
-/// Scopes `target`'s published manifest grants `caller_id`.
-///
-/// A grant that cannot be established answers `false` whatever the reason — the
-/// product does not resolve, it published no manifest, the fetch failed, or the
-/// manifest names this caller with a narrower scope. Callers turn that into one
-/// refusal, so the outcome never reveals which of those it was. Failing closed
-/// also means an unreachable chain withdraws grants rather than assuming them.
-///
-/// A free function rather than a runtime method so that the authority holding
-/// the keys can adjudicate the same grant for itself: on a paired host the
-/// request arrives over the wire, so a decision relayed from the caller is a
-/// decision the caller could forge.
-pub(crate) async fn manifest_grants_scope(
-    services: &RuntimeServices,
-    platform: &dyn Platform,
-    caller_id: &str,
-    target: &str,
-    scope: GrantedScope,
-) -> bool {
-    let Some(json) = root_manifest(services, platform, target).await else {
-        return false;
-    };
-    let Ok(manifest) = RootManifest::parse(&json) else {
-        return false;
-    };
-    manifest.grants(
-        bare_product_label(caller_id),
-        match scope {
-            GrantedScope::Storage => Granted::Storage,
-        },
-    )
-}
-
-/// `target`'s root manifest JSON, from cache when it is younger than
-/// [`MANIFEST_TTL_SECS`] and from dotNS otherwise.
-///
-/// A freshly read manifest is cached even though the caller may not be granted
-/// anything by it: the document describes the product, not the asker. So is the
-/// chain's answer that there is no manifest, which is authoritative for the same
-/// TTL.
-///
-/// A failed lookup is not cached. It says nothing about the product, only that
-/// the chain could not be read, and holding that for a day would turn one blip
-/// into a day of withdrawn grants.
-async fn root_manifest(
-    services: &RuntimeServices,
-    platform: &dyn Platform,
-    target: &str,
-) -> Option<String> {
-    let key = CoreStorageKey::ProductManifest {
-        product_id: target.to_string(),
-    };
-    let now = current_unix_secs();
-    if let Ok(Some(bytes)) = platform.read_core_storage(key.clone()).await
-        && let Ok(cached) = CachedManifest::decode(&mut bytes.as_slice())
-        && now.saturating_sub(cached.fetched_at_secs) < MANIFEST_TTL_SECS
-    {
-        return cached.json;
-    }
-
-    let genesis_hash = services.asset_hub_chain_genesis_hash()?;
-    let json =
-        match product_manifest::fetch_root_manifest(&services.chain, genesis_hash, target).await {
-            Ok(json) => json,
-            Err(reason) => {
-                warn!(%target, %reason, "root manifest lookup failed");
-                return None;
-            }
-        };
-    let _ = platform
-        .write_core_storage(
-            key,
-            CachedManifest {
-                fetched_at_secs: now,
-                json: json.clone(),
-            }
-            .encode(),
-        )
-        .await;
-    json
-}
-
-/// A scope a publisher pre-approves for another product in the manifest's
-/// `trustedProducts`.
-///
-/// `all` is a superset rather than a peer, so a grant of `all` satisfies every
-/// variant here. The core decides which calls each scope gates; the manifest
-/// only carries the grant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GrantedScope {
-    /// Reading the granting product's host-local storage. Read-only.
-    Storage,
 }
 
 /// Product-scoped adapter that exposes a long-lived host runtime through the
@@ -587,13 +440,13 @@ impl ProductRuntimeHost {
     pub(crate) async fn cross_product_scope_target(
         &self,
         target: &str,
-        scope: GrantedScope,
+        scope: Granted,
     ) -> Option<String> {
         let normalized = normalize_product_identifier(target).ok()?;
         if normalized == self.product_id() {
             return Some(normalized);
         }
-        manifest_grants_scope(
+        product_manifest::grants_scope(
             &self.services,
             &*self.platform,
             &self.product_id(),

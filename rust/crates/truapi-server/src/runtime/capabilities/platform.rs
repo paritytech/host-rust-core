@@ -31,7 +31,8 @@ use truapi_platform::PermissionAuthorizationStatus;
 
 use crate::host_logic::dotns::{NavigateDecision, external_host, parse_navigate};
 use crate::host_logic::features::feature_supported;
-use crate::runtime::{GrantedScope, ProductRuntimeHost};
+use crate::host_logic::product_manifest::Granted;
+use crate::runtime::ProductRuntimeHost;
 
 #[truapi::async_trait]
 impl System for ProductRuntimeHost {
@@ -182,7 +183,7 @@ impl LocalStorage for ProductRuntimeHost {
         let owner = match product {
             Some(target) => {
                 match self
-                    .cross_product_scope_target(&target, GrantedScope::Storage)
+                    .cross_product_scope_target(&target, Granted::Storage)
                     .await
                 {
                     Some(owner) => owner,

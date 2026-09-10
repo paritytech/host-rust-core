@@ -65,6 +65,12 @@ impl RootManifest {
     /// of a `trustedProducts` key. A key written with a suffix names a product
     /// that does not resolve, so it grants nothing.
     pub fn grants(&self, caller: &str, wanted: Granted) -> bool {
+        // A value this core does not recognise is not a scope anyone can be
+        // granted. Without this an unrecognised entry in the manifest would
+        // satisfy a query for one, which is the opposite of ignoring it.
+        if wanted == Granted::Unrecognised {
+            return false;
+        }
         self.trusted_products.get(caller).is_some_and(|granted| {
             granted
                 .iter()
@@ -133,6 +139,18 @@ mod tests {
     fn an_entry_of_only_unrecognised_grants_grants_nothing() {
         let m = manifest(r#"{"dim2":["storage-write"]}"#);
         assert!(!m.grants("dim2", Granted::Storage));
+    }
+
+    #[test]
+    fn an_unrecognised_scope_is_never_granted() {
+        // The runtime asks with a `Granted`, so nothing in the type system stops
+        // it asking for `Unrecognised`. A manifest full of values this core does
+        // not know must still answer no.
+        let m = manifest(r#"{"dim2":["storage-write"]}"#);
+        assert!(!m.grants("dim2", Granted::Unrecognised));
+
+        let wildcard = manifest(r#"{"dim2":["all"]}"#);
+        assert!(!wildcard.grants("dim2", Granted::Unrecognised));
     }
 
     #[test]
