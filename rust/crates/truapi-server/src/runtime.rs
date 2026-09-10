@@ -256,6 +256,31 @@ struct CachedManifest {
     json: Option<String>,
 }
 
+/// Encode a root manifest the way the core caches it, for a host that seeds a
+/// grant instead of resolving one.
+///
+/// Write the bytes under [`CoreStorageKey::ProductManifest`] for the product the
+/// manifest belongs to. The core reads that entry before it consults the Asset
+/// Hub, so a seeded manifest answers a grant on a host with no dotNS access at
+/// all — which is what makes a cross-product flow reachable locally, before
+/// either product is deployed.
+///
+/// `json` is `None` for a product that publishes no manifest, the outcome the
+/// core caches for the same lifetime as a document. `fetched_at_secs` is when
+/// the lookup counts as having happened: the current time for a live entry, or
+/// something older than the cache lifetime to exercise a grant expiring.
+///
+/// A development and testing seam. Nothing enforces that a seeded manifest
+/// matches what the product actually publishes, so a host offering this owes
+/// the developer a way to tell the two apart.
+pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> Vec<u8> {
+    CachedManifest {
+        fetched_at_secs,
+        json: json.map(str::to_string),
+    }
+    .encode()
+}
+
 /// Seconds since the Unix epoch, or `None` on a clock before it.
 fn unix_time_secs() -> Option<u64> {
     #[cfg(not(target_arch = "wasm32"))]

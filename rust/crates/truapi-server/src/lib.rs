@@ -68,7 +68,7 @@ pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;
-pub use runtime::{PairedSsoPeer, ResponderExit};
+pub use runtime::{PairedSsoPeer, ResponderExit, encode_cached_root_manifest};
 pub use truapi_platform::{
     CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
     PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
