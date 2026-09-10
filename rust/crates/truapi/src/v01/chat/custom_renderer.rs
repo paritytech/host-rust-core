@@ -1,3 +1,4 @@
+use alloc::{string::String, vec::Vec};
 use parity_scale_codec::{Compact, Decode, Encode, OptionBool};
 
 /// A size/dimension value (logical pixels) used across the custom renderer.

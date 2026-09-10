@@ -139,6 +139,12 @@ jobs:
       - name: Run codegen
         run: ./scripts/codegen.sh
 
+      - name: Check generated Rust output is committed
+        run: |
+          git diff --exit-code -- \
+            rust/crates/truapi-client/src/generated.rs \
+            rust/crates/truapi-server/src/generated \
+            rust/crates/truapi-server/src/wasm/generated_bridge.rs
       - name: Check Rust/TS wire table parity
         run: TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity
 

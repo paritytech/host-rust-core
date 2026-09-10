@@ -69,11 +69,13 @@ See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full 
 ```
 rust/crates/
   truapi/                Rust traits, versioned envelopes, and latest payload re-exports
+  truapi-client/         generated transport-neutral no-std client codecs and execution catalogs
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         TrUAPI wire annotations and inter-host SSO proc macros
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
+  truapi-polkavm-host/   Optional native composition of truapi-server and a pinned PolkaVM runtime
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
@@ -97,6 +99,14 @@ docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
+
+The PolkaVM application runtime, GPU/UI wire contracts, and browser runtime
+live in
+[`paritytech/polkavm-host-runtime`](https://github.com/paritytech/polkavm-host-runtime).
+Native hosts that need both runtimes link the optional `truapi-polkavm-host`
+composition crate; the base `truapi-server` remains PolkaVM-free. Browser hosts
+consume `@parity/polkavm-browser-runtime` directly; browser assets are not
+shipped from this repository.
 
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
 
@@ -159,8 +169,8 @@ control of quota and of whether the bytes are backed up or encrypted.
 ## How it works
 
 1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each method tagged `#[wire(id = N)]` for a stable byte-level dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
-2. `truapi-codegen` reads rustdoc JSON for that crate and generates the TypeScript client under git-ignored paths in `js/packages/truapi/`.
-3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
+2. `truapi-codegen` reads rustdoc JSON for that crate and generates the TypeScript client, Rust host dispatcher, and the transport-neutral `no_std` Rust client. The Rust client exports typed method markers plus complete App, Widget, Worker, and Worker-only catalogs from the same wire schema.
+3. Higher-level SDKs wrap the generated client; each runtime provides only its native frame transport. Browser products use `MessagePort` (or `postMessage` in iframe mode), while sandboxed runtimes such as PolkaVM supply explicit host imports.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
 Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions. Discriminant 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.

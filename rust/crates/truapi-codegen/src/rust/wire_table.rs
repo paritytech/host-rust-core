@@ -132,7 +132,12 @@ fn method_entry(trait_def: &TraitDef, method: &MethodDef) -> Result<MethodEntry>
     }
 }
 
-fn infer_id(explicit: Option<u8>, anchor: u8, offset: u8, method_name: &str) -> Result<u8> {
+pub(super) fn infer_id(
+    explicit: Option<u8>,
+    anchor: u8,
+    offset: u8,
+    method_name: &str,
+) -> Result<u8> {
     if let Some(id) = explicit {
         return Ok(id);
     }

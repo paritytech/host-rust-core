@@ -14,10 +14,12 @@ use convert_case::{Case, Casing};
 use crate::platform::PlatformDefinition;
 use crate::rustdoc::*;
 
+mod client;
 mod dispatcher;
 mod wasm_bridge;
 mod wire_table;
 
+pub use client::generate_client;
 pub use dispatcher::generate_dispatcher;
 pub use wasm_bridge::generate_wasm_bridge;
 pub use wire_table::generate_wire_table;
@@ -215,6 +217,50 @@ mod tests {
             .into_iter()
             .map(versioned_test_type)
             .collect()
+    }
+
+    #[test]
+    fn test_client_catalog_rejects_request_id_overflow() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "System".to_string(),
+                module_path: Vec::new(),
+                methods: vec![make_request_method("handshake", u8::MAX)],
+                docs: None,
+            }],
+            public_trait_order: vec!["System".to_string()],
+            types: versioned_request_test_types(),
+            framework_types: Vec::new(),
+        };
+
+        let error = generate_client(&api, "testhash")
+            .expect_err("an inferred response id beyond u8 must be rejected");
+        assert!(
+            error.to_string().contains("wire id overflow"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_client_catalog_rejects_subscription_id_overflow() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Account".to_string(),
+                module_path: Vec::new(),
+                methods: vec![make_subscription_method("connection_status_subscribe", 253)],
+                docs: None,
+            }],
+            public_trait_order: vec!["Account".to_string()],
+            types: Vec::new(),
+            framework_types: Vec::new(),
+        };
+
+        let error = generate_client(&api, "testhash")
+            .expect_err("an inferred receive id beyond u8 must be rejected");
+        assert!(
+            error.to_string().contains("wire id overflow"),
+            "unexpected error: {error}"
+        );
     }
 
     fn parse_entries(src: &str) -> Vec<(u8, String)> {

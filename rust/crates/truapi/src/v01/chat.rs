@@ -1,3 +1,5 @@
+use alloc::{string::String, vec::Vec};
+
 /// UI tree types for host-rendered custom chat messages.
 pub mod custom_renderer;
 pub use custom_renderer::*;

@@ -38,6 +38,7 @@ cargo run -p truapi-codegen -- \
   --playground-output js/packages/truapi/src/playground \
   --client-examples-output playground/test/generated/examples \
   --rust-output rust/crates/truapi-server/src/generated \
+  --rust-client-output rust/crates/truapi-client/src/generated.rs \
   --platform-input target/doc/truapi_platform.json \
   --platform-ts-output js/packages/truapi-host/src/generated \
   --platform-wasm-adapter-output js/packages/truapi-host/src/generated \
@@ -46,6 +47,7 @@ cargo run -p truapi-codegen -- \
   --codec-version 1
 
 rustfmt +"$NIGHTLY_TOOLCHAIN" --edition 2024 \
+  rust/crates/truapi-client/src/generated.rs \
   rust/crates/truapi-server/src/generated/dispatcher.rs \
   rust/crates/truapi-server/src/generated/wire_table.rs \
   rust/crates/truapi-server/src/wasm/generated_bridge.rs
@@ -82,5 +84,6 @@ echo "Generated client at js/packages/truapi/src/generated/"
 echo "Generated playground metadata at js/packages/truapi/src/playground/codegen/"
 echo "Generated client examples at playground/test/generated/examples/"
 echo "Generated Rust dispatcher at rust/crates/truapi-server/src/generated/"
+echo "Generated no-std Rust client catalog at rust/crates/truapi-client/src/generated.rs"
 echo "Generated host-callbacks WASM adapter at js/packages/truapi-host/src/generated/"
 echo "Generated Rust WASM bridge at rust/crates/truapi-server/src/wasm/generated_bridge.rs"
