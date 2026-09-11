@@ -467,6 +467,7 @@ mod tests {
             },
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             test_spawner(),
         );
         let signing_host = SigningHostRole::new(services.clone(), "paseo".to_string());

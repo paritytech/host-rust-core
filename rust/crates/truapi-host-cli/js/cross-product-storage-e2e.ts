@@ -2,9 +2,13 @@
 //
 // One product writes to its own storage and another reads it, which the manifest
 // grant is the only thing permitting. The host resolves that grant from the
-// `trustedProducts` in a local product config, so the flow runs before either
-// product is deployed and without any chain — see `--product-config` and
-// `truapi-host-cli/src/product_config.rs`.
+// `trustedProducts` in a local product config, which seeds the manifest cache,
+// so the granted read runs before either product is deployed and without a
+// chain — see `--product-config` and `truapi-host-cli/src/product_config.rs`.
+//
+// A target with no seeded entry is not chain-free: the cache miss goes to dotNS
+// on Asset Hub before refusing, so the `read-missing` phase does reach the
+// network.
 //
 // The runner serves one product per host process, so `scripts/cross-product-storage-e2e.sh`
 // invokes this once per phase with `E2E_PHASE` set, pointing every run at the

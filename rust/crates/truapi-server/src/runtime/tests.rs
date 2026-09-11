@@ -492,6 +492,7 @@ fn chat_post_message_screens_content_before_it_reaches_a_host() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -635,6 +636,7 @@ fn chat_room_ids_agree_across_create_and_post() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -719,6 +721,7 @@ fn chat_register_bot_rejects_unsafe_product_fields() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -803,6 +806,7 @@ fn chat_register_bot_reaches_the_installed_adapter() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -850,6 +854,7 @@ fn chain_follow_ids_are_scoped_per_product_core() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let pairing_host = PairingHost::new(services.clone(), host_config);

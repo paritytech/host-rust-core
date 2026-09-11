@@ -60,6 +60,7 @@ impl TrUApiCore {
             host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
+            host_config.asset_hub_chain_genesis_hash,
             spawner.clone(),
         );
         let pairing_host = PairingHostRole::new(services.clone(), host_config);
@@ -311,6 +312,49 @@ mod tests {
             product,
             test_spawner(),
         )
+    }
+
+    #[test]
+    fn the_core_constructor_hands_its_services_the_asset_hub_hash() {
+        // `from_platform_with_config` feeds three adjacent same-typed `[u8; 32]`
+        // into `RuntimeServices::new` positionally, and of the three constructor
+        // paths it is the only one nothing pins. A transposition here compiles,
+        // and manifest resolution then dials People or Bulletin, where no dotNS
+        // contract is deployed, so every uncached `trustedProducts` grant is
+        // refused indistinguishably from the other product granting nothing.
+        // That is #660's failure mode one line over.
+        let platform = Arc::new(StubPlatform {
+            // Ends the follow rather than waiting out `OPERATION_TIMEOUT`; this
+            // asserts which chain was dialled, not that the lookup succeeded.
+            chain_responses_end: true,
+            ..StubPlatform::default()
+        });
+        // people [0; 32], bulletin [0xbb; 32], asset hub [0xcc; 32].
+        let (host_config, product) = runtime_config("dotli.dot");
+        let core = TrUApiCore::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+        );
+        // Nothing is cached for `wallet.dot`, so the read has to resolve a
+        // manifest, which is the only thing that reaches a chain with this hash.
+        let request = truapi::versioned::local_storage::HostLocalStorageReadRequest::V2(
+            truapi::v02::HostLocalStorageReadRequest {
+                product: Some("wallet.dot".to_string()),
+                key: "k".to_string(),
+            },
+        );
+        let _ = run_request(&core, "local_storage_read", request.encode());
+        assert_eq!(
+            platform
+                .chain_connects
+                .lock()
+                .expect("chain connect mutex poisoned")
+                .clone(),
+            vec![[0xcc; 32]],
+            "the core dials Asset Hub, not People ([0; 32]) or Bulletin ([0xbb; 32])"
+        );
     }
 
     #[test]

@@ -187,6 +187,7 @@ impl SigningHost {
             },
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             crate::test_support::test_spawner(),
         );
         Arc::new(Self {
@@ -1401,6 +1402,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             TEST_NETWORK_SUFFIX.to_string(),
         )
         .expect("signing host config is valid");
@@ -1409,6 +1411,7 @@ mod tests {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
         let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);

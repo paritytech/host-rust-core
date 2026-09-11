@@ -879,9 +879,15 @@ pub(super) async fn allocate_statement_store_allowance(
 /// nothing: PGAS pre-warms a balance on an account the host already controls, so
 /// there is no key to hand back.
 ///
-/// Asset Hub is resolved through the host's chain set rather than a configured
-/// hash, so a host that does not serve it says so instead of claiming against
-/// whatever chain a stale hash happens to reach.
+/// Asset Hub is resolved here through the host's chain set rather than a
+/// configured hash, so a host that does not serve it says so instead of
+/// claiming against whatever chain a stale hash happens to reach.
+///
+/// Note that this is no longer the only rule on this role. Manifest resolution
+/// takes the Asset Hub hash from `SigningHostConfig::asset_hub` instead, so the
+/// two paths can disagree — see
+/// `product_manifest::warn_if_asset_hub_disagrees_with_chain_set`, which makes
+/// that divergence audible but deliberately does not pick a winner.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_smart_contract_allowance(
     services: &RuntimeServices,
@@ -1049,6 +1055,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             NETWORK_SUFFIX.to_string(),
         )
         .expect("signing host config is valid");
@@ -1057,6 +1064,7 @@ mod tests {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
         let signing_host = SigningHost::new(services.clone(), config.network_suffix);

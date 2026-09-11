@@ -188,6 +188,15 @@ pub struct NativeHostRuntimeConfig {
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
+    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Must be
+    /// exactly 32 bytes.
+    ///
+    /// Product manifests are read from dotNS, so this is what makes a
+    /// `trustedProducts` grant resolvable. Pass 32 zero bytes to say this host
+    /// has no Asset Hub; no manifest then resolves, so every cross-product
+    /// grant is refused — except one already in the manifest cache, which is
+    /// served without consulting this and stays honoured until it expires.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
     /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
     /// `testnet`). The wallet's reserved identities are derived under it:
     /// `uid.<suffix>` for the identity account, `peopl.<suffix>` for the person
@@ -274,6 +283,39 @@ pub enum NativeRuntimeConfigError {
         /// Activation failure reason.
         reason: String,
     },
+    /// Asset Hub genesis hash was not exactly 32 bytes.
+    ///
+    /// Appended rather than grouped with the other genesis-hash variants: these
+    /// map to FFI discriminants by declaration order, and nothing in the UniFFI
+    /// checksum covers that order, so inserting mid-enum silently renumbers
+    /// every variant below it.
+    ///
+    /// Record fields are positional too, and nothing here protects them either:
+    /// `String` and `Vec<u8>` are both an i32 length followed by that many
+    /// bytes, so the two are wire-identical. A shifted field that reads a
+    /// `String` where a hash was written usually fails, but only because
+    /// `String::try_read` runs `from_utf8` and 32 random bytes are rarely valid
+    /// UTF-8 — an accident of the value, not a guarantee. The other direction,
+    /// reading `Vec<u8>` where a `String` was written, always succeeds and
+    /// lies. What keeps the config record honest is regenerating the bindings
+    /// with the lib (`make uniffi`), not its field order.
+    #[error("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
+    InvalidAssetHubChainGenesisHash {
+        /// Supplied byte length.
+        actual: u64,
+    },
+    /// Product id was longer than `PRODUCT_ID_MAX_BYTES` after normalization.
+    ///
+    /// Appended for the same reason as the variant above. Carries lengths and
+    /// not the id: an id that trips this is unbounded in size, and this error
+    /// reaches the wire and the logs.
+    #[error("product_id must be at most {limit} bytes, got {actual}")]
+    ProductIdTooLong {
+        /// Accepted maximum, in bytes.
+        limit: u64,
+        /// Normalized length, in bytes.
+        actual: u64,
+    },
 }
 
 impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
@@ -292,6 +334,12 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                     actual: config.bulletin_chain_genesis_hash.len() as u64,
                 }
             })?;
+        let asset_hub_chain_genesis_hash =
+            <[u8; 32]>::try_from(config.asset_hub_chain_genesis_hash.as_slice()).map_err(|_| {
+                NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash {
+                    actual: config.asset_hub_chain_genesis_hash.len() as u64,
+                }
+            })?;
         let signing = SigningHostConfig::new(
             HostInfo {
                 name: config.host_name,
@@ -305,6 +353,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             },
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             config.network_suffix,
         )?;
         Ok(Self {
@@ -343,6 +392,12 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             }
             RuntimeConfigValidationError::InvalidProductId { product_id } => {
                 Self::InvalidProductId { product_id }
+            }
+            RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => {
+                Self::ProductIdTooLong {
+                    limit: limit as u64,
+                    actual: actual as u64,
+                }
             }
             RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
                 Self::InvalidNetworkSuffix { network_suffix }
@@ -2180,6 +2235,7 @@ mod tests {
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
+            asset_hub_chain_genesis_hash: vec![0xcc; 32],
             network_suffix: "paseo".to_string(),
             local_session_secret: Some(vec![7; 32]),
             local_session_lite_username: Some("alice".to_string()),
@@ -3000,6 +3056,49 @@ mod tests {
             err,
             NativeRuntimeConfigError::InvalidPeopleChainGenesisHash { actual: 31 }
         ));
+    }
+
+    #[test]
+    fn each_configured_genesis_hash_reaches_its_own_field() {
+        // Three adjacent `Vec<u8>` at the boundary feeding three adjacent
+        // `[u8; 32]` in a positional constructor: transposing any two compiles
+        // and, without this, passes every test. Getting Asset Hub wrong sends
+        // manifest resolution to a chain with no dotNS contracts, which refuses
+        // every grant indistinguishably from a product that granted nothing.
+        let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            people_chain_genesis_hash: vec![0xa1; 32],
+            bulletin_chain_genesis_hash: vec![0xb2; 32],
+            asset_hub_chain_genesis_hash: vec![0xc3; 32],
+            ..native_host_runtime_config()
+        })
+        .expect("config is valid");
+
+        assert_eq!(resolved.signing.people_chain_genesis_hash, [0xa1; 32]);
+        assert_eq!(resolved.signing.bulletin_chain_genesis_hash, [0xb2; 32]);
+        assert_eq!(resolved.signing.asset_hub_chain_genesis_hash, [0xc3; 32]);
+    }
+
+    #[test]
+    fn a_wrong_size_asset_hub_genesis_hash_is_rejected_as_its_own_field() {
+        // Names the field it rejects and reports that field's length, so a
+        // copy-paste of a sibling's validation cannot pass unnoticed. An empty
+        // vec must be an error, never a silent all-zero "no Asset Hub".
+        for len in [0usize, 31, 33] {
+            let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+                asset_hub_chain_genesis_hash: vec![0; len],
+                ..native_host_runtime_config()
+            })
+            .unwrap_err();
+
+            assert!(
+                matches!(
+                    err,
+                    NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash { actual }
+                        if actual == len as u64
+                ),
+                "{len}-byte Asset Hub hash reported as {err:?}"
+            );
+        }
     }
 
     #[test]

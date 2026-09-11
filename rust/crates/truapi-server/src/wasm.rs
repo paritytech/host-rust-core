@@ -581,6 +581,7 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+    let asset_hub = get_required_object(value, "assetHub", "runtimeConfig.assetHub")?;
     let network_suffix =
         get_required_string_at(value, "networkSuffix", "runtimeConfig.networkSuffix")?;
 
@@ -612,6 +613,11 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
             &bulletin,
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
+        )?,
+        get_required_bytes32_at(
+            &asset_hub,
+            "genesisHash",
+            "runtimeConfig.assetHub.genesisHash",
         )?,
         network_suffix,
     )
@@ -678,6 +684,11 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
                 "runtimeConfig.networkSuffix must be a supported dotNS TLD, got {network_suffix:?}"
             ))
         }
+        // By length, never by value: an id that trips this is unbounded in
+        // size, and this string reaches the product's console.
+        RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => JsValue::from_str(
+            &format!("runtimeConfig.productId must be at most {limit} bytes, got {actual}"),
+        ),
     }
 }
 
