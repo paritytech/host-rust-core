@@ -467,13 +467,9 @@ mod tests {
             },
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             test_spawner(),
         );
-        // Built directly rather than through `SigningHostRuntime`, so the
-        // install that constructor performs has to be repeated. This fixture
-        // does build a `ProductRuntimeHost` below, so manifest resolution is
-        // reachable from it and would otherwise refuse every grant.
-        services.install_asset_hub_genesis_hash([0xcc; 32]);
         let signing_host = SigningHostRole::new(services.clone(), "paseo".to_string());
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");

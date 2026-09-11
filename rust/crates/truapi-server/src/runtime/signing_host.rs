@@ -187,12 +187,9 @@ impl SigningHost {
             },
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             crate::test_support::test_spawner(),
         );
-        // Same reason as the other fixtures that build services directly: this
-        // bypasses `SigningHostRuntime::new`, so without this every test built
-        // from it keeps the pre-#660 behaviour of resolving no manifest at all.
-        services.install_asset_hub_genesis_hash([0xcc; 32]);
         Arc::new(Self {
             services,
             platform: platform.clone(),
@@ -1414,13 +1411,9 @@ mod tests {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
-        // This fixture builds services directly rather than through
-        // `SigningHostRuntime`, so it has to do what that constructor does.
-        // Without it the config's Asset Hub is taken and dropped, and a fixture
-        // that reads as configured resolves no manifest at all.
-        services.install_asset_hub_genesis_hash(config.asset_hub_chain_genesis_hash);
         let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
         (services, signing_host)
     }

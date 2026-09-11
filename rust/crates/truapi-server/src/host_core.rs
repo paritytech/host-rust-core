@@ -254,6 +254,7 @@ impl PairingHostRuntime {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             spawner.clone(),
             chat_platform,
         );
@@ -573,13 +574,10 @@ impl SigningHostRuntime {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             spawner,
             chat_platform,
         );
-        // Manifest resolution reads dotNS on Asset Hub, so without this the
-        // signing role resolves no manifest and refuses every cross-product
-        // grant. The pairing role installs it in `PairingHostRole::new`.
-        services.install_asset_hub_genesis_hash(config.asset_hub_chain_genesis_hash);
         if let Some(configured) = services.asset_hub_chain_genesis_hash() {
             // Spawned, not awaited: this is a diagnostic, and on the native
             // hosts `supported_chains` is a synchronous UniFFI callback with no
@@ -2613,15 +2611,39 @@ mod tests {
             signing_config_with_asset_hub([0; 32]),
             test_spawner(),
         );
-        // Asserting only `None` would pass with the install deleted, since an
-        // empty slot also reads `None` — the two states this test exists to
-        // separate. A refused second install is what proves the zeros were
-        // really written, and pins the set-once semantics with them.
-        assert!(
-            !runtime.services.install_asset_hub_genesis_hash([0xcc; 32]),
-            "zeros occupied the set-once slot, so no later hash can replace them"
-        );
+        // This used to also assert that a second install was refused, to tell
+        // "zeros were written" apart from "nothing was ever written". The hash
+        // is a constructor argument now, so the second state does not exist and
+        // there is nothing left to separate: reading `None` here can only mean
+        // the configured zeros.
         assert_eq!(runtime.services.asset_hub_chain_genesis_hash(), None);
+    }
+
+    #[test]
+    fn the_asset_hub_argument_reaches_the_asset_hub_slot() {
+        // `RuntimeServices::new` now takes three adjacent `[u8; 32]` by
+        // position, which is the shape that hides a transposition: swapping two
+        // compiles and every type still lines up. People and Bulletin are
+        // consumed into their RPC clients and are not readable back, so this
+        // pins the one slot that is, which is also the one this PR added.
+        let services = crate::runtime::services::RuntimeServices::new(
+            Arc::new(StubPlatform::default()),
+            truapi_platform::HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            [0xaa; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+            test_spawner(),
+        );
+        assert_eq!(
+            services.asset_hub_chain_genesis_hash(),
+            Some([0xcc; 32]),
+            "the third hash is Asset Hub, not People ([0xaa; 32]) or Bulletin ([0xbb; 32])"
+        );
     }
 
     /// What a manifest lookup did: the RPC the core sent, and the genesis

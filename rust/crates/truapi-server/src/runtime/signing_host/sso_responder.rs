@@ -1064,12 +1064,9 @@ mod tests {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
-        // As in `signing_host::tests`: services are built directly here, so the
-        // install `SigningHostRuntime` performs has to be repeated, or the
-        // config's Asset Hub is taken and dropped.
-        services.install_asset_hub_genesis_hash(config.asset_hub_chain_genesis_hash);
         let signing_host = SigningHost::new(services.clone(), config.network_suffix);
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
