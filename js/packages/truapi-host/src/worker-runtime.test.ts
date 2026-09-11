@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   coreWireSchemaHash,
   createDebuggerLink,
+  withDebugTap,
   isLoopbackWsUrl,
   type DebuggerSocket,
 } from "./worker-runtime.js";
@@ -361,6 +362,104 @@ describe("debugger link: reconnect", () => {
     h.live().fire("close");
     h.link.emit("app.dot", "out", FRAME);
     expect(h.timers[0]?.delayMs).toBe(200);
+  });
+});
+
+describe("debugger link: close", () => {
+  test("closes the socket", () => {
+    const h = harness();
+    h.live().fire("open");
+    h.link.close();
+    expect(h.live().closed).toBe(true);
+  });
+
+  // The tap upstream stays installed - a core's `debugEmit` is decided once, when
+  // the core is built - so every frame of the remaining session still arrives
+  // here. Asserted through the drop warning because that is the only externally
+  // visible consequence: without the guard those frames are base64-encoded and
+  // pushed onto a queue nothing will ever drain, which is an unbounded leak for
+  // the life of the tab. `sent` cannot see it - a closed link has no socket to
+  // send on either way, so that assertion passes with or without the guard.
+  test("a closed link does not keep queueing the frames still arriving", () => {
+    const warn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      const h = harness();
+      h.link.close();
+      // Comfortably past MAX_QUEUE, where a still-queueing link starts shedding.
+      for (let i = 0; i < 1100; i++) h.link.emit("app.dot", "out", FRAME);
+      expect(warnings).toHaveLength(0);
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  test("a reconnect armed before the close does not redial after it", () => {
+    const h = harness();
+    h.live().fire("close");
+    // Arm the backoff timer the way a live session would.
+    h.link.emit("app.dot", "out", FRAME);
+    expect(h.timers.length).toBe(1);
+    const dials = h.sockets.length;
+
+    h.link.close();
+    h.tick();
+
+    // The timer still fires; it must find the link closed and not dial. A detach
+    // that leaves a pending timer reconnects seconds later to a debugger nobody
+    // is reading, and the tap looks stuck on rather than off.
+    expect(h.sockets.length).toBe(dials);
+  });
+
+  // close() also empties the queue. That is memory hygiene with no behavioural
+  // consequence once the guard above holds - nothing drains a closed link either
+  // way - so it is deliberately left unasserted rather than covered by a test
+  // that would pass without it.
+});
+
+describe("withDebugTap", () => {
+  const FRAME_A = new Uint8Array([9]);
+
+  // Absent, not a no-op: the Rust host installs its DebugSink because the key is
+  // there at all, so an inert stub would still arm a sink in production.
+  test("omits debugEmit entirely when the session is not armed", () => {
+    const out = withDebugTap({ emitFrame() {} }, false, () => {});
+    expect("debugEmit" in out).toBe(false);
+  });
+
+  test("adds debugEmit when armed", () => {
+    const out = withDebugTap({ emitFrame() {} }, true, () => {});
+    expect(typeof (out as { debugEmit?: unknown }).debugEmit).toBe("function");
+  });
+
+  // The regression that makes `__truapi.debugger.attach()` meaningful. A core
+  // built while detached must still reach whatever link exists at emit time; if
+  // the link were captured when the core was built, attaching later would appear
+  // to succeed and stream nothing for every core already running.
+  test("calls through on every frame, so a link attached later is reached", () => {
+    let link: { emit: (c: string, d: string, f: Uint8Array) => void } | null =
+      null;
+    const seen: string[] = [];
+    const out = withDebugTap({ emitFrame() {} }, true, (c, d, f) => {
+      link?.emit(c, d, f);
+    }) as {
+      debugEmit: (c: string, d: string, f: Uint8Array) => void;
+    };
+
+    // Detached at the time the core was built: no link, and no throw.
+    expect(() => out.debugEmit("app.dot", "out", FRAME_A)).not.toThrow();
+    expect(seen).toHaveLength(0);
+
+    link = {
+      emit: (c, d) => {
+        seen.push(`${c}/${d}`);
+      },
+    };
+    out.debugEmit("app.dot", "out", FRAME_A);
+    expect(seen).toEqual(["app.dot/out"]);
   });
 });
 

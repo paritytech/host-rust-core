@@ -238,7 +238,14 @@ installed, which §9's enablement rules govern.
 
 - The web host reads its debugger URL behind a build-time DEV condition, so a
   production bundle returns no URL and a stray `localStorage` key cannot turn the
-  tap on. With no URL the host installs no emit callback, so the core installs no
+  tap on. The URL has two sources, both inside that condition: a `localStorage`
+  key, and a value the dev build carries. A key set by hand **MUST** win, so a
+  build's value is a default rather than an override, and the host **MUST** report
+  which source it used - an ignored key is otherwise indistinguishable from a key
+  that was never read. Winning includes turning the dial **off**: a key that is
+  present but empty **MUST** resolve to off rather than falling through to the
+  build, or a build that carries a URL has no off switch short of being rebuilt.
+  With no URL the host installs no emit callback, so the core installs no
   sink. The condition **MUST** be the bare token the bundler substitutes
   (`import.meta.env.DEV`) — no alias, no optional chaining. A bundler replaces
   that exact token and nothing else; an aliased read survives into the bundle,
@@ -327,39 +334,55 @@ between host and viewer (§6). That exposure is unmitigated.
 
 ## 9. Enablement
 
-A dev build is told to dial by a host-specific switch: a browser host reads a
-per-origin store, a native host takes an injected value. Neither is a URL
-parameter.
+A dev build is told to dial by a value the embedding host supplies: a browser
+host takes it as a runtime option, a native host takes it as a flag or an
+environment variable. Neither is a URL parameter, and neither is a store the
+library reads on the host's behalf.
 
-The browser store is read in the realm that creates the host runtime — the shell
-page in one embedding, an iframe realm in another — and is per-origin, so a value
-set on any other origin is invisible.
+The embedder is the one party that knows whether this build should be
+observable, and the only one that can offer a switch in its own UI. A library
+that instead reads an ambient per-origin store decides for it: the host cannot
+refuse the dial, cannot surface it, and cannot explain it, while the value stays
+invisible across origins and browser profiles. A dev build **MAY** also carry a
+value it was compiled with; the host's own value **MUST** win over it, so the
+build's is a default and never an override, and an explicit "no dial" from the
+host **MUST** be distinguishable from the host saying nothing.
 
-Reading whether the switch is set is distinct from reading what it holds (§7).
-The production message below depends on the first surviving into a production
-build; the dial depends on the second, which does not.
+More than one switch **MUST** resolve to one value and the report **MUST** name
+which supplied it: a stale exported variable beating an explicit flag is
+otherwise silent. A value that is not a loopback `ws://` target (§6) **MUST**
+fail the host at the point it is read, not at first dial - a host that starts
+without the debugger it was asked for presents, from the debugger's side,
+exactly as a host nobody switched on.
+
+A browser host **MUST** also let a running session be repointed without a
+reload, and **MUST** publish that control where a developer finds it by
+inspection rather than by documentation. Enablement is otherwise a property of a
+page load, and the most common question - "is anything attached, and to what?" -
+has no answer from inside the running host.
+
+Whether a session may carry a tap at all is decided once, by the build gate, and
+is **NOT** the same decision as whether a dial is currently set. A host that
+resolves no dial at startup but could carry one **MUST** still install the tap,
+or attaching later reaches only the cores created afterwards - which presents as
+a debugger that connects and then shows nothing for the session already running.
+
+Reading whether a dial is configured is distinct from reading what it holds
+(§7).
 
 A host with a dial path **MUST** report it: one that does not dial says so once,
-one that does says where, each naming the source it read. Today only the web host
-has such a path - the native sink has no host wiring it up - so this binds the web
-host now and every host as its dial path lands. The debugger's own viewer
-holds a socket, so its socket count moves whether or not a host connected, and an
-empty board with a live socket is indistinguishable from a host nobody switched
-on. The message **MUST NOT** appear in a production build, with one exception: a
-host whose switch is **set** while the build is production **MUST** say so once.
+one that does says where, each naming the source it read. Today the web host and
+the headless CLI have such a path, so this binds those now and every host as its
+dial path lands. The debugger's own viewer holds a socket, so its socket count
+moves whether or not a host connected, and an empty board with a live socket is
+indistinguishable from a host nobody switched on.
 
-Silence is only safe when nobody asked, and the switch being set is the record
-that someone asked. The dial is behind a build-time DEV condition, and a host may
-have no dev-mode build in its local workflow at all: dot.li ships `build` and
-`preview` scripts and no dev server, so its normal local build compiles the dial
-out. Setting the documented per-origin value on such a build then produces no dial
-and no message, which reads as a broken debugger rather than a build that cannot
-carry one.
-
-The switch is what separates the two cases, so it is what the rule keys on. A
-production build nobody is debugging has no switch set and stays silent; a
-production build someone is trying to debug has one, and gets told why nothing
-dialled. The message must not assert _why_ the condition failed: a host cannot
+A production build whose dial nobody configured **MUST** stay silent, where the
+message would be noise. One that WAS configured **MUST** say so once: a build
+carries its compiled-in value into a production bundle, so dropping the dev flag
+from a build command is easy and leaves an empty board, no console line and no
+error - which reads as a broken debugger rather than a build that compiled the
+dial out. The message **MUST NOT** assert _why_ the gate refused: a host cannot
 distinguish a production build from a bundler that never substituted the token,
 since both leave the condition false.
 

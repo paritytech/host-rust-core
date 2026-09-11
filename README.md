@@ -156,6 +156,28 @@ host owns where the bytes live. The crate stores nothing itself: a host implemen
 `StorageClient` over storage it already owns, on web and native alike, so it keeps
 control of quota and of whether the bytes are backed up or encrypted.
 
+### Wire debugger
+
+[`@parity/truapi-debugger`](js/packages/truapi-debugger) is the consumer for the
+payload-blind frame tap in `truapi-server`. The core streams raw SCALE frames out
+of two choke points; the debugger correlates them into per-operation traces,
+decodes envelopes and values behind a `TRUAPI_WIRE_SCHEMA_HASH` match, and renders
+them through one of two mounts:
+
+- `startDebugServer(...)` is a standalone Bun WS+HTTP server on `127.0.0.1:9231`
+  that hosts dial into, so frames from any host reach one inspector.
+- `createInAppDebugger(...)` mounts the same engine inside the host page, with no
+  server and no dial.
+
+All decoding lives in this package; `@parity/truapi` has no debug seam. Its
+[README](js/packages/truapi-debugger/README.md) carries the endpoint list and the
+per-host enablement recipe.
+
+`make debugger` brings up the inspector on `:9231` alongside a dot.li host and the
+playground. It builds the host with `NODE_ENV=development` on purpose: the dial
+sits behind `import.meta.env.DEV`, which a production bundle replaces with `false`,
+so `make dev` leaves the board empty with no error.
+
 ## How it works
 
 1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each trait tagged `#[wire_trait(id = N)]` and each method tagged `#[wire(id = N)]` for a stable byte-level `(trait, method)` dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
