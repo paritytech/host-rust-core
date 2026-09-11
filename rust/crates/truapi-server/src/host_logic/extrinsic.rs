@@ -104,12 +104,17 @@ impl Signer<SubstrateConfig> for Sr25519Signer {
     }
 }
 
-/// The V4 signer payload: `call_data ++ Σextra ++ Σadditional_signed`, replaced
-/// by its blake2_256 hash only when it exceeds 256 bytes.
+/// The V4 signer payload before the length rule:
+/// `call_data ++ Σextra ++ Σadditional_signed`.
 ///
 /// Note the order differs from the extrinsic body (which puts `extra` before
-/// the call): the call comes first here, extras next, implicits last.
-fn v4_signer_payload(call_data: &[u8], extensions: &[TxPayloadExtension]) -> Vec<u8> {
+/// the call): the call comes first here, extras next, implicits last. Callers
+/// that sign elsewhere carry this form and apply [`v4_signer_digest`] at the
+/// signer, so both sides hash identically.
+pub(crate) fn v4_signer_payload_unhashed(
+    call_data: &[u8],
+    extensions: &[TxPayloadExtension],
+) -> Vec<u8> {
     let mut payload = Vec::with_capacity(call_data.len());
     payload.extend_from_slice(call_data);
     for ext in extensions {
@@ -118,10 +123,16 @@ fn v4_signer_payload(call_data: &[u8], extensions: &[TxPayloadExtension]) -> Vec
     for ext in extensions {
         payload.extend_from_slice(&ext.additional_signed);
     }
-    if payload.len() > 256 {
-        sp_crypto_hashing::blake2_256(&payload).to_vec()
+    payload
+}
+
+/// What a V4 signer actually signs: the unhashed payload itself, or its
+/// blake2_256 once it exceeds 256 bytes.
+pub(crate) fn v4_signer_digest(unhashed: Vec<u8>) -> Vec<u8> {
+    if unhashed.len() > 256 {
+        sp_crypto_hashing::blake2_256(&unhashed).to_vec()
     } else {
-        payload
+        unhashed
     }
 }
 
@@ -148,7 +159,9 @@ pub(crate) fn build_signed_extrinsic_v4(
     call_data: &[u8],
     extensions: &[TxPayloadExtension],
 ) -> Vec<u8> {
-    let signature = signer.sign(&v4_signer_payload(call_data, extensions));
+    let signature = signer.sign(&v4_signer_digest(v4_signer_payload_unhashed(
+        call_data, extensions,
+    )));
     build_signed_extrinsic_v4_with_signature(signer.account_id(), &signature, call_data, extensions)
 }
 
@@ -766,6 +779,22 @@ pub(crate) mod tests {
             public
                 .verify_simple(SR25519_SIGNING_CONTEXT, &raw, &sig)
                 .is_err()
+        );
+    }
+
+    /// The length rule turns over at exactly 256 bytes: that many sign as-is,
+    /// one more signs as a hash.
+    #[test]
+    fn v4_signer_digest_hashes_only_past_256_bytes() {
+        let at_limit = v4_signer_payload_unhashed(&[7u8; 256], &[]);
+        assert_eq!(at_limit.len(), 256);
+        assert_eq!(v4_signer_digest(at_limit.clone()), at_limit);
+
+        let over = v4_signer_payload_unhashed(&[7u8; 256], &[ext("One", &[1], &[])]);
+        assert_eq!(over.len(), 257);
+        assert_eq!(
+            v4_signer_digest(over.clone()),
+            sp_crypto_hashing::blake2_256(&over).to_vec()
         );
     }
 
