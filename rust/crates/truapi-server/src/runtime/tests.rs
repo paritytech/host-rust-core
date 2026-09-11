@@ -289,9 +289,7 @@ fn cache_manifest_entry(platform: &StubPlatform, owner: &str, json: Option<Strin
         json,
     };
     futures::executor::block_on(platform.write_core_storage(
-        CoreStorageKey::ProductManifest {
-            product_id: owner.to_string(),
-        },
+        crate::runtime::product_manifest::manifest_cache_key(owner),
         entry.encode(),
     ))
     .expect("stub core storage accepts the entry");
@@ -4143,4 +4141,28 @@ fn a_grant_lookup_obeys_the_callers_deadline() {
         "the grant lookup must be bounded by the caller's deadline, not by the \
          dotNS operation timeout; took {elapsed:?}"
     );
+}
+
+/// Subnames of one product share one cached manifest, because they are one
+/// dotNS node holding one document.
+///
+/// The cache used to be keyed by the full product id while the document is
+/// resolved by the bare label, so `app.peopl.dot` and `worker.peopl.dot` each
+/// drove a fresh chain resolution and a fresh durable write for a document the
+/// host already held, with nothing bounding how many spellings a caller could
+/// name. On the pairing wire that id comes from the peer.
+#[test]
+fn subnames_of_one_product_share_one_cached_manifest() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "peopl.dot", r#"{"unknown":["storage"]}"#, 0);
+    seed_owner_value(&platform, "peopl.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+
+    // Seeded once under `peopl.dot`; every executable beneath it reads it.
+    for spelling in ["peopl.dot", "app.peopl.dot", "worker.peopl.dot"] {
+        assert!(
+            read_storage(&host, Some(spelling), "k").is_ok(),
+            "{spelling} must resolve the one manifest cached for its product"
+        );
+    }
 }
