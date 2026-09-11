@@ -265,7 +265,7 @@ fn assert_subscription_start_interrupts_error<Wrapper: Encode>(
 }
 
 #[test]
-fn foreign_account_proof_refuses_without_confirmation() {
+fn foreign_account_proof_encodes_a_domain_refusal() {
     let core = make_core();
     let request = v01::HostAccountCreateProofRequest {
         key_handle: v01::ProductAccountId {
@@ -304,6 +304,12 @@ fn foreign_account_proof_refuses_without_confirmation() {
     // RFC-0024 forbids a prompt fallback for a bearer proof made with a foreign
     // key. What this pins is the wire shape of the refusal: an encoded domain
     // error rather than a transport failure or a success.
+    //
+    // It does NOT pin "without confirmation", which the old name claimed. The
+    // stub platform answers `confirm_user_action` with `Ok(false)` and records
+    // nothing, and the test holds no handle to it, so a confirmation could be
+    // asked and denied and this would still pass. That property is asserted in
+    // `runtime::signing_host::tests` against a recording platform.
     //
     // It does NOT pin which refusal. `create_account_proof` consults the session
     // before the grant (#655), so with no session this is the session guard's

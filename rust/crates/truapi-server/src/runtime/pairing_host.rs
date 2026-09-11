@@ -268,6 +268,19 @@ pub(crate) struct PairingHost {
 impl PairingHost {
     /// Build a pairing host over the shared runtime services.
     pub(crate) fn new(services: Arc<RuntimeServices>, host_config: PairingHostConfig) -> Arc<Self> {
+        if services.asset_hub_chain_genesis_hash().is_none() {
+            // Said once at startup rather than inferred from every grant
+            // refusing, matching the signing role. Cross-product refusals are
+            // deliberately indistinguishable from a product that granted
+            // nothing, so a pairing host with no Asset Hub resolves no manifest
+            // and refuses every grant while looking exactly like one whose
+            // publishers granted nothing. The hash itself now arrives by
+            // construction, so there is nothing to install here, only to report.
+            tracing::warn!(
+                "no Asset Hub configured on the pairing role: no product manifest \
+                 will resolve, so every cross-product grant is refused"
+            );
+        }
         let platform = services.platform.clone();
         let auth_state = AuthStateMachine::new(platform.clone());
         Arc::new_cyclic(|weak_self| Self {

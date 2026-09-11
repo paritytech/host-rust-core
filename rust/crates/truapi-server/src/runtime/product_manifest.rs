@@ -9,7 +9,7 @@
 //! [manifest]: ../../../../docs/rfcs/product-manifest.md
 
 use parity_scale_codec::{Decode, Encode};
-use tracing::{debug, instrument, warn};
+use tracing::{info, instrument, warn};
 use truapi::v01;
 use truapi_platform::{
     CoreStorageKey, HostChainSet, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
@@ -238,26 +238,33 @@ pub(crate) async fn grants_scope(
     target: &str,
     scope: Granted,
 ) -> bool {
-    // A publisher's grant waives the publisher's own prompt. It does not reach
-    // a refusal the user already gave, so the stored decision is consulted
-    // first, read-only: raising the prompt here would turn a grant into a way
-    // to ask again.
-    // Scope-specific by design, and deliberately in this shared helper rather
-    // than in `ring_vrf_key_access_granted`: the stored decision is
-    // `AccountAccess`, so it answers about reaching another product's account
-    // and says nothing about its storage, while living in one place means both
-    // the frontend and the authority inherit it. A later scope that also
-    // implies account access has to name itself here; it does not inherit this.
-    if scope == Granted::Context && user_denied_account_access(platform, caller_id, target).await {
-        return false;
-    }
     let Some(json) = root_manifest(services, platform, target).await else {
         return false;
     };
     let Ok(manifest) = RootManifest::parse(&json) else {
         return false;
     };
-    manifest.grants(bare_product_label(caller_id), scope)
+    if !manifest.grants(bare_product_label(caller_id), scope) {
+        return false;
+    }
+    // A publisher's grant waives the publisher's own prompt. It does not reach a
+    // refusal the user already gave, so a stored decision still overrides it,
+    // read-only: raising the prompt here would turn a grant into a way to ask
+    // again.
+    //
+    // Read after the manifest rather than before it. The read is the same either
+    // way, but taking it first let a denied pair refuse without the chain lookup
+    // every other refusal pays for, and that difference in cost enumerates the
+    // user's stored denials to anyone who can ask. On the wire path the caller
+    // id is supplied by the peer, so that is anyone it chooses to name.
+    //
+    // Scope-specific by design, and in this shared helper rather than in
+    // `ring_vrf_key_access_granted`: the stored decision is `AccountAccess`, so
+    // it answers about reaching another product's account and says nothing about
+    // its storage, and keeping it here means the frontend and the authority
+    // inherit one implementation. A later scope that also implies account access
+    // has to name itself here; it does not inherit this.
+    !(scope == Granted::Context && user_denied_account_access(platform, caller_id, target).await)
 }
 
 /// Warn when the Asset Hub hash this host was *configured* with is not the one
@@ -432,7 +439,12 @@ pub(crate) async fn ring_vrf_key_access_granted(
     // verified. The refusal is sound either way, because the grant is resolved
     // from the owner's manifest and never from this field, but an operator
     // reading the line should not take it as proof of who asked.
-    debug!(
+    // `info!`, not `debug!`: this is the only per-event record that a
+    // cross-product key access was refused, and the wire deliberately answers
+    // one error for every reason. `logging.rs` installs `LevelFilter::OFF` and
+    // the CLI defaults to `info`, so at `debug` this reaches nobody on any
+    // shipped host and the refusal is invisible everywhere.
+    info!(
         caller = %caller,
         owner = %owner,
         "ring-VRF key access refused: no context grant"
