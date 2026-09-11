@@ -41,12 +41,7 @@ Request methods take the inner request value directly. The transport adds the wi
 Requests reject with `RequestTimeoutError` when no matching response arrives within 120 seconds.
 Pass `{ requestTimeoutMs }` to `createTransport` to select a different positive deadline.
 
-## Signing messages and temporary ownership proofs
-
-Use `signing.signRawWatermarked` for product accounts and `signing.signRawWatermarkedWithLegacyAccount` for legacy
-accounts. Both sign data inside a `<Bytes>…</Bytes>` envelope; data already enclosed in that envelope is signed
-unchanged. The old `signRaw` and `signRawWithLegacyAccount` names remain deprecated compatibility aliases with the same
-behavior and wire IDs.
+## Temporary ownership proofs
 
 Until the runtime accepts watermarked ownership proofs, the temporary `signRawDeprecatedIWillChangeThisLater` and
 `signRawDeprecatedIWillChangeThisLaterWithLegacyAccount` methods sign the decoded payload exactly as supplied. They
@@ -67,8 +62,8 @@ need support for the new unwatermarked requests; they never fall back to wrapped
 API definitions carry Rust `#[deprecated]` and TypeScript `@deprecated` notices. The temporary unwatermarked
 implementations log a warning linking to #612 when called.
 
-Once runtimes verify watermarked proofs, migrate to the watermarked methods. The temporary unwatermarked methods will
-then be removed, as tracked in [#612](https://github.com/paritytech/host-rust-core/issues/612).
+Once runtimes verify watermarked proofs, migrate back to `signRaw` or `signRawWithLegacyAccount`. The temporary APIs
+will then be removed, as tracked in [#612](https://github.com/paritytech/host-rust-core/issues/612).
 
 ## Subscriptions
 

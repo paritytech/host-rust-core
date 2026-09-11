@@ -51,8 +51,7 @@ fn signing_apis_preserve_exact_bytes_and_watermark_semantics() {
         ),
     ];
     for (payload, exact_bytes) in payloads {
-        // 0 = compatibility alias, 1 = canonical watermarked, 2 = unwatermarked.
-        for api in 0..3 {
+        for unwatermarked in [false, true] {
             for legacy in [false, true] {
                 let response = futures::executor::block_on(async {
                     if legacy {
@@ -63,18 +62,14 @@ fn signing_apis_preserve_exact_bytes_and_watermark_semantics() {
                                 payload: payload.clone(),
                             },
                         );
-                        let HostSignRawWithLegacyAccountResponse::V1(response) = match api {
-                            0 => runtime.sign_raw_with_legacy_account(&cx, request).await,
-                            1 => {
-                                runtime
-                                    .sign_raw_watermarked_with_legacy_account(&cx, request)
-                                    .await
-                            }
-                            _ => runtime
+                        let HostSignRawWithLegacyAccountResponse::V1(response) = if unwatermarked {
+                            runtime
                                 .sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
                                     &cx, request,
                                 )
-                                .await,
+                                .await
+                        } else {
+                            runtime.sign_raw_with_legacy_account(&cx, request).await
                         }
                         .unwrap();
                         response
@@ -83,20 +78,18 @@ fn signing_apis_preserve_exact_bytes_and_watermark_semantics() {
                             account: product_account(0),
                             payload: payload.clone(),
                         });
-                        let HostSignRawResponse::V1(response) = match api {
-                            0 => runtime.sign_raw(&cx, request).await,
-                            1 => runtime.sign_raw_watermarked(&cx, request).await,
-                            _ => {
-                                runtime
-                                    .sign_raw_deprecated_i_will_change_this_later(&cx, request)
-                                    .await
-                            }
+                        let HostSignRawResponse::V1(response) = if unwatermarked {
+                            runtime
+                                .sign_raw_deprecated_i_will_change_this_later(&cx, request)
+                                .await
+                        } else {
+                            runtime.sign_raw(&cx, request).await
                         }
                         .unwrap();
                         response
                     }
                 });
-                let expected = if api == 2 || exact_bytes.starts_with(b"<Bytes>") {
+                let expected = if unwatermarked || exact_bytes.starts_with(b"<Bytes>") {
                     exact_bytes.clone()
                 } else {
                     [b"<Bytes>".as_slice(), &exact_bytes, b"</Bytes>"].concat()

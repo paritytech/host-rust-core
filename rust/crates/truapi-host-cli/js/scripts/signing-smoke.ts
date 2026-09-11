@@ -3,15 +3,11 @@ export {};
 
 const login = await truapi.account.requestLogin({ reason: undefined });
 if (!login.isOk() || login.value !== "AlreadyConnected") {
-  throw new Error(
-    `requestLogin failed: ${login.isOk() ? login.value : JSON.stringify(login.error)}`,
-  );
+  throw new Error(`requestLogin failed: ${login.isOk() ? login.value : JSON.stringify(login.error)}`);
 }
 
 const account = host.productAccount();
-const accountResult = await truapi.account.getAccount({
-  productAccountId: account,
-});
+const accountResult = await truapi.account.getAccount({ productAccountId: account });
 accountResult.match(
   (value) => console.log(`ACCOUNT ${value.account.publicKey.slice(0, 18)}`),
   (error) => {
@@ -19,7 +15,7 @@ accountResult.match(
   },
 );
 
-const signatureResult = await truapi.signing.signRawWatermarked({
+const signatureResult = await truapi.signing.signRaw({
   account,
   payload: { tag: "Bytes", value: { bytes: "0xdeadbeef" } },
 });

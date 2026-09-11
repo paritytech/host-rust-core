@@ -130,9 +130,7 @@ pub trait Signing: Send + Sync {
         Err(CallError::unavailable())
     }
 
-    /// Compatibility alias for [`Signing::sign_raw_watermarked_with_legacy_account`].
-    ///
-    /// @deprecated Use `signRawWatermarkedWithLegacyAccount`; this method signs watermarked data.
+    /// Sign raw bytes with a non-product account.
     ///
     /// ```ts
     /// const accountsResult = await truapi.account.getLegacyAccounts();
@@ -152,45 +150,8 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRawWithLegacyAccount failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[deprecated(
-        note = "Use sign_raw_watermarked_with_legacy_account; this method signs <Bytes>-watermarked data."
-    )]
     #[wire(request_id = 34, sensitive)]
     async fn sign_raw_with_legacy_account(
-        &self,
-        cx: &CallContext,
-        request: HostSignRawWithLegacyAccountRequest,
-    ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
-    {
-        self.sign_raw_watermarked_with_legacy_account(cx, request)
-            .await
-    }
-
-    /// Sign raw bytes with a non-product account.
-    ///
-    /// Signs the payload in a `<Bytes>…</Bytes>` envelope. An already
-    /// watermarked payload is signed unchanged, without adding another envelope.
-    ///
-    /// ```ts
-    /// const accountsResult = await truapi.account.getLegacyAccounts();
-    /// assert(accountsResult.isOk(), "getLegacyAccounts failed:", accountsResult);
-    /// const identityAccount =
-    ///   accountsResult.value.accounts.find((account) => account.name === "Identity") ??
-    ///   accountsResult.value.accounts[0];
-    /// assert(identityAccount, "no legacy accounts available");
-    ///
-    /// const result = await truapi.signing.signRawWatermarkedWithLegacyAccount({
-    ///   signer: identityAccount.publicKey,
-    ///   payload: {
-    ///     tag: "Bytes",
-    ///     value: { bytes: "0x48656c6c6f" },
-    ///   },
-    /// });
-    /// assert(result.isOk(), "signRawWatermarkedWithLegacyAccount failed:", result);
-    /// console.log("raw bytes signed:", result.value);
-    /// ```
-    #[wire(request_id = 174, sensitive)]
-    async fn sign_raw_watermarked_with_legacy_account(
         &self,
         _cx: &CallContext,
         _request: HostSignRawWithLegacyAccountRequest,
@@ -247,9 +208,7 @@ pub trait Signing: Send + Sync {
         Err(CallError::unavailable())
     }
 
-    /// Compatibility alias for [`Signing::sign_raw_watermarked`].
-    ///
-    /// @deprecated Use `signRawWatermarked`; this method signs watermarked data.
+    /// Sign raw bytes or a message.
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
@@ -267,39 +226,8 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRaw failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[deprecated(note = "Use sign_raw_watermarked; this method signs <Bytes>-watermarked data.")]
     #[wire(request_id = 114, sensitive)]
     async fn sign_raw(
-        &self,
-        cx: &CallContext,
-        request: HostSignRawRequest,
-    ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
-        self.sign_raw_watermarked(cx, request).await
-    }
-
-    /// Sign raw bytes or a message.
-    ///
-    /// Signs the payload in a `<Bytes>…</Bytes>` envelope. An already
-    /// watermarked payload is signed unchanged, without adding another envelope.
-    ///
-    /// ```ts
-    /// const productContext = await truapi.system.getProductContext();
-    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
-    ///
-    /// const result = await truapi.signing.signRawWatermarked({
-    ///   account: { dotNsIdentifier: productContext.value.productId, derivationIndex: { tag: "Index", value: 0 } },
-    ///   payload: {
-    ///     tag: "Bytes",
-    ///     value: {
-    ///       bytes: "0x48656c6c6f2c20776f726c6421",
-    ///     },
-    ///   },
-    /// });
-    /// assert(result.isOk(), "signRawWatermarked failed:", result);
-    /// console.log("raw bytes signed:", result.value);
-    /// ```
-    #[wire(request_id = 176, sensitive)]
-    async fn sign_raw_watermarked(
         &self,
         _cx: &CallContext,
         _request: HostSignRawRequest,
@@ -373,7 +301,7 @@ pub trait Signing: Send + Sync {
     #[deprecated(
         note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
     )]
-    #[wire(request_id = 178, sensitive)]
+    #[wire(request_id = 174, sensitive)]
     async fn sign_raw_deprecated_i_will_change_this_later(
         &self,
         _cx: &CallContext,
@@ -413,7 +341,7 @@ pub trait Signing: Send + Sync {
     #[deprecated(
         note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
     )]
-    #[wire(request_id = 180, sensitive)]
+    #[wire(request_id = 176, sensitive)]
     async fn sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
         &self,
         _cx: &CallContext,

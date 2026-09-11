@@ -803,8 +803,8 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
             "A product requested a signature without the <Bytes> watermark. This can authorize transaction data. The payload is hidden here.".to_string(),
         ),
         UserConfirmationReview::SignRaw(_) => (
-            "sign watermarked data",
-            "A product requested a signature with the <Bytes> watermark. The payload is hidden here.".to_string(),
+            "sign raw data",
+            "A product requested a raw-data signature. The payload is hidden here.".to_string(),
         ),
         UserConfirmationReview::SignVrf(review) => (
             "sign VRF transcript",
@@ -1799,7 +1799,7 @@ mod tests {
         let unwatermarked = UserConfirmationReview::SignRaw(
             truapi_platform::SignRawReview::ProductUnwatermarkedDeprecated(request),
         );
-        assert_eq!(approval_summary(&watermarked).0, "sign watermarked data");
+        assert_eq!(approval_summary(&watermarked).0, "sign raw data");
         let (action, detail) = approval_summary(&unwatermarked);
         assert_eq!(action, "sign unwatermarked data (deprecated)");
         assert!(detail.contains("can authorize transaction data"));

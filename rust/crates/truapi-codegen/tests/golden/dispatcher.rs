@@ -2224,45 +2224,6 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_WATERMARKED_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
-            let host = host.clone();
-            Box::pin(async move {
-                let request: versioned::signing::HostSignRawWithLegacyAccountRequest = match Decode::decode(&mut &bytes[..]) {
-                    Ok(request) => request,
-                    Err(err) => {
-                        let error: truapi::CallError<versioned::signing::HostSignRawWithLegacyAccountError> =
-                            truapi::CallError::MalformedFrame { reason: err.to_string() };
-                        return Ok(encode_versioned_err_payload(
-                            error,
-                            <versioned::signing::HostSignRawWithLegacyAccountError as Versioned>::LATEST,
-                        ));
-                    }
-                };
-                let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
-                let response: versioned::signing::HostSignRawWithLegacyAccountResponse = match host.sign_raw_watermarked_with_legacy_account(&cx, request).await {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return Ok(encode_versioned_err_payload(
-                            downgrade_call_error(err, target_version),
-                            target_version,
-                        ));
-                    }
-                };
-                // Downgraded to the caller's version: a handler answers in
-                // latest terms, and a peer that asked in an older version
-                // cannot decode a newer variant.
-                Ok(encode_versioned_ok_payload(
-                    <versioned::signing::HostSignRawWithLegacyAccountResponse as truapi::versioned::FromLatest>::from_latest(
-                        truapi::versioned::IntoLatest::into_latest(response),
-                        target_version,
-                    ),
-                ))
-            })
-        });
-    }
-    {
-        let host = host.clone();
         dispatcher.on_request(wire_table::SIGNING_SIGN_PAYLOAD_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
@@ -2319,45 +2280,6 @@ where
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id);
                 let response: versioned::signing::HostSignRawResponse = match host.sign_raw(&cx, request).await {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return Ok(encode_versioned_err_payload(
-                            downgrade_call_error(err, target_version),
-                            target_version,
-                        ));
-                    }
-                };
-                // Downgraded to the caller's version: a handler answers in
-                // latest terms, and a peer that asked in an older version
-                // cannot decode a newer variant.
-                Ok(encode_versioned_ok_payload(
-                    <versioned::signing::HostSignRawResponse as truapi::versioned::FromLatest>::from_latest(
-                        truapi::versioned::IntoLatest::into_latest(response),
-                        target_version,
-                    ),
-                ))
-            })
-        });
-    }
-    {
-        let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_WATERMARKED, move |request_id: String, bytes: Vec<u8>| {
-            let host = host.clone();
-            Box::pin(async move {
-                let request: versioned::signing::HostSignRawRequest = match Decode::decode(&mut &bytes[..]) {
-                    Ok(request) => request,
-                    Err(err) => {
-                        let error: truapi::CallError<versioned::signing::HostSignRawError> =
-                            truapi::CallError::MalformedFrame { reason: err.to_string() };
-                        return Ok(encode_versioned_err_payload(
-                            error,
-                            <versioned::signing::HostSignRawError as Versioned>::LATEST,
-                        ));
-                    }
-                };
-                let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
-                let response: versioned::signing::HostSignRawResponse = match host.sign_raw_watermarked(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
                         return Ok(encode_versioned_err_payload(

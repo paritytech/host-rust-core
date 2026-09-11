@@ -11,7 +11,7 @@ if (
   );
 }
 
-const signature = await truapi.signing.signRawWatermarked({
+const signature = await truapi.signing.signRaw({
   account: host.productAccount(),
   payload: { tag: "Bytes", value: { bytes: "0xdeadbeef" } },
 });

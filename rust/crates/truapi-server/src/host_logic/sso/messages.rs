@@ -131,7 +131,7 @@ pub struct ProductRequest<P> {
 pub enum SignRequest {
     /// Sign a full Substrate extrinsic payload.
     Payload(Box<HostSignPayloadRequest>),
-    /// Sign raw bytes or a string message with the `<Bytes>` watermark.
+    /// Sign raw bytes or a string message.
     Raw(HostSignRawRequest),
     /// Temporary unwatermarked product signing (#612). Appended so existing
     /// signing requests keep their SCALE discriminants and semantics.

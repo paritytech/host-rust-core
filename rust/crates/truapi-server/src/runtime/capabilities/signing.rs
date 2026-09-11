@@ -79,7 +79,7 @@ impl Signing for ProductRuntimeHost {
         .map_err(|reason| signing_call_error(HostSignPayloadError::V1, reason))
     }
 
-    async fn sign_raw_watermarked(
+    async fn sign_raw(
         &self,
         cx: &CallContext,
         request: HostSignRawRequest,
@@ -221,7 +221,7 @@ impl Signing for ProductRuntimeHost {
         .map_err(|reason| signing_call_error(HostSignPayloadWithLegacyAccountError::V1, reason))
     }
 
-    async fn sign_raw_watermarked_with_legacy_account(
+    async fn sign_raw_with_legacy_account(
         &self,
         cx: &CallContext,
         request: HostSignRawWithLegacyAccountRequest,

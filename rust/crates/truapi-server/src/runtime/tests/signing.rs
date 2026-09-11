@@ -266,7 +266,7 @@ fn sign_raw_rejects_invalid_product_account() {
         account: account_id("other.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(
@@ -284,7 +284,7 @@ fn sign_raw_rejects_without_session_after_valid_account() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Rejected))
@@ -307,7 +307,7 @@ fn sign_raw_denies_when_chain_submit_denied() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(
@@ -326,7 +326,7 @@ fn sign_raw_rejects_when_user_declines_confirmation() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Rejected))
@@ -355,7 +355,7 @@ fn sign_raw_accepts_confirmation_then_returns_sso_response() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let response = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap();
+    let response = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap();
     let HostSignRawResponse::V1(inner) = response;
     assert_eq!(inner.signature, vec![7, 7]);
     assert_eq!(inner.signed_transaction, None);
@@ -424,7 +424,7 @@ fn sign_raw_uses_call_context_timeout_for_sso_response_wait() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
 
     match err {
         CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Unknown { reason })) => {
@@ -467,7 +467,7 @@ fn sign_raw_cancellation_unsubscribes_sso_subscriptions() {
         payload: raw_payload(),
     });
     let handle = std::thread::spawn(move || {
-        futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err()
+        futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err()
     });
 
     wait_until(
@@ -526,7 +526,7 @@ fn sign_raw_peer_disconnect_clears_session_store_and_broadcasts() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
 
     assert!(matches!(
         err,
@@ -710,8 +710,7 @@ fn legacy_sign_raw_rejects_signer_mismatch() {
             payload: raw_payload(),
         });
     let err =
-        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
-            .unwrap_err();
+        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap_err();
     match err {
         CallError::Domain(HostSignRawWithLegacyAccountError::V1(
             v01::HostSignPayloadError::Unknown { reason },
@@ -739,8 +738,7 @@ fn legacy_sign_raw_denies_when_chain_submit_denied() {
             payload: raw_payload(),
         });
     let err =
-        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
-            .unwrap_err();
+        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawWithLegacyAccountError::V1(
@@ -774,8 +772,7 @@ fn legacy_sign_raw_accepts_derived_ss58_then_returns_sso_response() {
             payload: raw_payload(),
         });
     let response =
-        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
-            .unwrap();
+        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap();
     let HostSignRawWithLegacyAccountResponse::V1(inner) = response;
     assert_eq!(inner.signature, vec![9, 9]);
     assert_eq!(inner.signed_transaction, None);
@@ -828,8 +825,7 @@ fn legacy_sign_raw_accepts_derived_hex_then_returns_sso_response() {
             payload: raw_payload(),
         });
     let response =
-        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
-            .unwrap();
+        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap();
     let HostSignRawWithLegacyAccountResponse::V1(inner) = response;
     assert_eq!(inner.signature, vec![8, 8]);
 
@@ -878,8 +874,7 @@ fn legacy_sign_raw_accepts_identity_ss58_then_routes_legacy_request() {
         });
 
     let response =
-        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
-            .unwrap();
+        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap();
 
     let HostSignRawWithLegacyAccountResponse::V1(response) = response;
     assert_eq!(response.signature, vec![7, 7]);

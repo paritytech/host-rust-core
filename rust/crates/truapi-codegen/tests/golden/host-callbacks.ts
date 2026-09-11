@@ -462,11 +462,11 @@ export type SignPayloadReview =
  */
 export type SignRawReview =
   /**
-   * Product-account signing with the `<Bytes>` watermark.
+   * Product-account raw signing request.
    */
   | { tag: "Product"; value: HostSignRawRequest }
   /**
-   * Legacy-account signing with the `<Bytes>` watermark.
+   * Legacy-account raw signing request.
    */
   | { tag: "LegacyAccount"; value: HostSignRawWithLegacyAccountRequest }
   /**

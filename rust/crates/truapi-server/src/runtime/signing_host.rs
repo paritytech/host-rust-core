@@ -1852,8 +1852,7 @@ mod tests {
             },
         });
         let HostSignRawResponse::V1(response) =
-            futures::executor::block_on(runtime.sign_raw_watermarked(&cx, request))
-                .expect("sign_raw ok");
+            futures::executor::block_on(runtime.sign_raw(&cx, request)).expect("sign_raw ok");
         assert!(response.signed_transaction.is_none());
 
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
@@ -2318,8 +2317,8 @@ mod tests {
                 bytes: vec![1, 2, 3],
             },
         });
-        let err = futures::executor::block_on(runtime.sign_raw_watermarked(&cx, request))
-            .expect_err("no session");
+        let err =
+            futures::executor::block_on(runtime.sign_raw(&cx, request)).expect_err("no session");
         assert!(matches!(err, CallError::Domain(HostSignRawError::V1(_))));
     }
 
@@ -2618,8 +2617,7 @@ mod tests {
             },
         });
         let HostSignRawResponse::V1(response) =
-            futures::executor::block_on(runtime.sign_raw_watermarked(&cx, request))
-                .expect("sign_raw ok");
+            futures::executor::block_on(runtime.sign_raw(&cx, request)).expect("sign_raw ok");
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
         let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
         let signature =
