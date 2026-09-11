@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "c40be48215dfc079";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "1e79a62841340be8";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -440,6 +440,18 @@ pub const SIGNING_SIGN_PAYLOAD: MethodIds = MethodIds {
     method_id: 5,
 };
 
+/// Wire discriminants for `signing_sign_raw_unwatermarked_deprecated`.
+pub const SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED: MethodIds = MethodIds {
+    trait_id: 13,
+    method_id: 6,
+};
+
+/// Wire discriminants for `signing_sign_raw_unwatermarked_deprecated_with_legacy_account`.
+pub const SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT: MethodIds = MethodIds {
+    trait_id: 13,
+    method_id: 7,
+};
+
 /// Wire discriminants for `statement_store_subscribe`.
 pub const STATEMENT_STORE_SUBSCRIBE: MethodIds = MethodIds {
     trait_id: 14,
@@ -743,6 +755,14 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "signing_sign_payload",
         kind: WireKind::Request(SIGNING_SIGN_PAYLOAD),
+    },
+    WireEntry {
+        method: "signing_sign_raw_unwatermarked_deprecated",
+        kind: WireKind::Request(SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED),
+    },
+    WireEntry {
+        method: "signing_sign_raw_unwatermarked_deprecated_with_legacy_account",
+        kind: WireKind::Request(SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT),
     },
     WireEntry {
         method: "statement_store_subscribe",

@@ -272,4 +272,83 @@ pub trait Signing: Send + Sync {
     ) -> Result<HostSignPayloadResponse, CallError<HostSignPayloadError>> {
         Err(CallError::unavailable())
     }
+
+    /// Sign the supplied data without adding or removing a watermark.
+    ///
+    /// Temporary compatibility API for runtime ownership proofs, including the
+    /// 32-byte Resources alias used by Humanity. Payload decoding matches
+    /// watermarked signing, but the decoded bytes are signed exactly as supplied.
+    /// This permits transaction-shaped data and requires signing authorization
+    /// and explicit user confirmation.
+    ///
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612
+    ///
+    /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecated({
+    ///   account: { dotNsIdentifier: productContext.value.productId, derivationIndex: { tag: "Index", value: 0 } },
+    ///   payload: {
+    ///     tag: "Bytes",
+    ///     value: {
+    ///       bytes: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    ///     },
+    ///   },
+    /// });
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecated failed:", result);
+    /// console.log("raw bytes signed:", result.value);
+    /// ```
+    #[deprecated(
+        note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
+    )]
+    #[wire(id = 6)]
+    async fn sign_raw_unwatermarked_deprecated(
+        &self,
+        _cx: &CallContext,
+        _request: HostSignRawRequest,
+    ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
+        Err(CallError::unavailable())
+    }
+
+    /// Sign the supplied data without adding or removing a watermark.
+    ///
+    /// Temporary compatibility API for runtime ownership proofs, including the
+    /// 32-byte Resources alias used by Humanity. Payload decoding matches
+    /// watermarked signing, but the decoded bytes are signed exactly as supplied.
+    /// This permits transaction-shaped data and requires signing authorization
+    /// and explicit user confirmation.
+    ///
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612
+    ///
+    /// ```ts
+    /// const accountsResult = await truapi.account.getLegacyAccounts();
+    /// assert(accountsResult.isOk(), "getLegacyAccounts failed:", accountsResult);
+    /// const identityAccount =
+    ///   accountsResult.value.accounts.find((account) => account.name === "Identity") ??
+    ///   accountsResult.value.accounts[0];
+    /// assert(identityAccount, "no legacy accounts available");
+    ///
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecatedWithLegacyAccount({
+    ///   signer: identityAccount.publicKey,
+    ///   payload: {
+    ///     tag: "Bytes",
+    ///     value: { bytes: "0x1111111111111111111111111111111111111111111111111111111111111111" },
+    ///   },
+    /// });
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecatedWithLegacyAccount failed:", result);
+    /// console.log("raw bytes signed:", result.value);
+    /// ```
+    #[deprecated(
+        note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
+    )]
+    #[wire(id = 7)]
+    async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
+        &self,
+        _cx: &CallContext,
+        _request: HostSignRawWithLegacyAccountRequest,
+    ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
+    {
+        Err(CallError::unavailable())
+    }
 }

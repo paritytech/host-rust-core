@@ -743,6 +743,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         let (keypair, payload) = match request {
             SignRawAuthorityRequest::Product(request) => {
@@ -761,7 +762,7 @@ impl ProductAuthority for SigningHost {
             }
         };
         self.require_current_session(session)?;
-        let message = raw_payload_bytes(payload)?;
+        let message = raw_payload_bytes(payload, watermarked)?;
         let signature = keypair
             .secret
             .sign_simple(SR25519_SIGNING_CONTEXT, &message, &keypair.public)
@@ -1264,19 +1265,22 @@ async fn build_local_transaction(
     Ok(v01::HostCreateTransactionResponse { transaction })
 }
 
-/// Wrap raw sign-message bytes in the `<Bytes>…</Bytes>` envelope unless
-/// already wrapped, matching the polkadot-app raw-signing convention.
+/// Decode raw sign-message bytes, optionally adding the `<Bytes>…</Bytes>`
+/// envelope unless already wrapped, matching the polkadot-app raw-signing convention.
 ///
 /// String payloads follow the polkadot-app `isHex` rule: a `0x`-prefixed,
 /// even-length string is decoded from hex, and a corrupt hex body is a hard
 /// error (never silently signed as UTF-8); any other string is signed as its
 /// UTF-8 bytes.
-fn raw_payload_bytes(payload: v01::RawPayload) -> Result<Vec<u8>, AuthorityError> {
+fn raw_payload_bytes(
+    payload: v01::RawPayload,
+    watermarked: bool,
+) -> Result<Vec<u8>, AuthorityError> {
     let raw = match payload {
         v01::RawPayload::Bytes { bytes } => bytes,
         v01::RawPayload::Payload { payload } => decode_payload_string(payload)?,
     };
-    if raw.starts_with(BYTES_WRAP_PREFIX) && raw.ends_with(BYTES_WRAP_SUFFIX) {
+    if !watermarked || (raw.starts_with(BYTES_WRAP_PREFIX) && raw.ends_with(BYTES_WRAP_SUFFIX)) {
         return Ok(raw);
     }
     let mut wrapped =
@@ -1303,6 +1307,8 @@ fn decode_payload_string(payload: String) -> Result<Vec<u8>, AuthorityError> {
 
 #[cfg(test)]
 mod tests {
+    mod raw_signing;
+
     use std::sync::Arc;
 
     use super::super::authority::{
@@ -2269,6 +2275,7 @@ mod tests {
             &cx,
             &session,
             request(identity.public.to_bytes()),
+            true,
         ))
         .expect("identity raw signing succeeds");
         let signature = schnorrkel::Signature::from_bytes(&response.signature).unwrap();
@@ -2279,9 +2286,13 @@ mod tests {
                 .is_ok()
         );
 
-        let error =
-            futures::executor::block_on(authority.sign_raw(&cx, &session, request([0xff; 32])))
-                .expect_err("unknown legacy account is rejected");
+        let error = futures::executor::block_on(authority.sign_raw(
+            &cx,
+            &session,
+            request([0xff; 32]),
+            true,
+        ))
+        .expect_err("unknown legacy account is rejected");
         assert!(matches!(error, AuthorityError::Unavailable { .. }));
     }
 
@@ -2531,7 +2542,7 @@ mod tests {
 
     #[test]
     fn raw_payload_bytes_wraps_and_decodes() {
-        let ok = |p| raw_payload_bytes(p).expect("payload ok");
+        let ok = |p| raw_payload_bytes(p, true).expect("payload ok");
         // Bytes are <Bytes>-wrapped.
         assert_eq!(
             ok(v01::RawPayload::Bytes {
@@ -2575,9 +2586,12 @@ mod tests {
         // An even-length 0x string that is not valid hex is a hard error,
         // never silently signed as UTF-8 (matches polkadot-app abort).
         assert!(matches!(
-            raw_payload_bytes(v01::RawPayload::Payload {
-                payload: "0xZZ".to_string(),
-            }),
+            raw_payload_bytes(
+                v01::RawPayload::Payload {
+                    payload: "0xZZ".to_string(),
+                },
+                true
+            ),
             Err(AuthorityError::Unknown { .. }),
         ));
     }
@@ -2654,6 +2668,7 @@ mod tests {
             &cx,
             &stale,
             SignRawAuthorityRequest::Product(request),
+            true,
         ))
         .expect_err("stale snapshot rejected");
         assert_eq!(err, AuthorityError::Disconnected);
@@ -2681,6 +2696,7 @@ mod tests {
             &cx,
             &session,
             SignRawAuthorityRequest::Product(request),
+            true,
         ))
         .expect_err("no session after disconnect");
         assert_eq!(err, AuthorityError::Disconnected);

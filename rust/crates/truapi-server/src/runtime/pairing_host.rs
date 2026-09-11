@@ -2067,9 +2067,11 @@ impl PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         let session = self.current_private_session(session)?;
-        self.remote_sign_raw(cx, &session, request).await
+        self.remote_sign_raw(cx, &session, request, watermarked)
+            .await
     }
 
     async fn create_transaction(
@@ -2460,8 +2462,9 @@ impl ProductAuthority for PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
-        PairingHost::sign_raw(self, cx, session, request).await
+        PairingHost::sign_raw(self, cx, session, request, watermarked).await
     }
 
     async fn create_transaction(

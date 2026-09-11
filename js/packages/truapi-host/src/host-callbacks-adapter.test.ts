@@ -205,8 +205,9 @@ describe("createWasmRawCallbacks", () => {
               case "SignRaw":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.payload.tag === "Bytes" &&
-                  review.value.value.payload.value.bytes === "0x0304"
+                  review.value.value.watermarked === false &&
+                  review.value.value.request.payload.tag === "Bytes" &&
+                  review.value.value.request.payload.value.bytes === "0x0304"
                 );
               case "CreateTransaction":
                 return (
@@ -297,11 +298,14 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              account: PRODUCT_ACCOUNT,
-              payload: {
-                tag: "Bytes",
-                value: { bytes: "0x0304" },
+              request: {
+                account: PRODUCT_ACCOUNT,
+                payload: {
+                  tag: "Bytes",
+                  value: { bytes: "0x0304" },
+                },
               },
+              watermarked: false,
             },
           },
         }),
