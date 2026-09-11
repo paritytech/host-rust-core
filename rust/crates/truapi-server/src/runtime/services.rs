@@ -80,11 +80,23 @@ impl RuntimeServices {
     /// manifests are resolved from.
     ///
     /// The three genesis hashes are adjacent and same-typed, so transposing any
-    /// two compiles. `each_configured_genesis_hash_reaches_its_own_field` pins
-    /// them at the config boundary, and
-    /// `the_asset_hub_argument_reaches_the_asset_hub_slot` pins the Asset Hub
-    /// slot here. People and Bulletin are consumed into their RPC clients and
-    /// are not readable back, so this boundary has no guard for those two.
+    /// two compiles and type-checks. What pins them, and what does not:
+    ///
+    /// - `the_asset_hub_argument_reaches_the_asset_hub_slot` pins this
+    ///   function, calling it directly with three distinct literals.
+    /// - `each_configured_genesis_hash_reaches_its_own_field` pins the config
+    ///   boundary that feeds it.
+    /// - Each of the three *call sites* is pinned separately, because pinning
+    ///   the function says nothing about what a caller passes it:
+    ///   `a_signing_host_runtime_installs_its_asset_hub_for_manifest_resolution`
+    ///   and `a_pairing_host_runtime_installs_its_asset_hub_too` for the two in
+    ///   `host_core`, and `the_core_constructor_hands_its_services_the_asset_hub_hash`
+    ///   for `TrUApiCore::from_platform_with_config`.
+    ///
+    /// People and Bulletin are consumed into their RPC clients and are not
+    /// readable back off `RuntimeServices`, so only the Asset Hub slot is
+    /// directly observable; the call-site guards reach it through a manifest
+    /// lookup instead.
     pub(crate) fn new(
         platform: Arc<dyn Platform>,
         host_info: HostInfo,
