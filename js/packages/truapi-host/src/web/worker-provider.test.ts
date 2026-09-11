@@ -9,6 +9,7 @@ import {
 import { bytesToHex } from "@parity/truapi/scale";
 import type { GenericError, Result, ThemeVariant } from "@parity/truapi";
 
+import { resolveDebuggerEnablement } from "./create-worker-host-runtime.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import { AuthState, CoreStorageKey } from "../generated/host-callbacks.js";
 import type {
@@ -1274,5 +1275,59 @@ describe("debugger enablement reporting", () => {
     const worker = new FakeWorker();
     const logged = await withStubbedStorage(null, () => readyRuntime(worker));
     expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
+  });
+});
+
+// The dev-build branch, which the suite above cannot reach: it gates on
+// `import.meta.env.DEV`, a token a bundler substitutes and `bun test` leaves
+// undefined, so the live call always takes the production path here. The pure
+// seam is where the precedence design doc §9 fixes can actually be asserted.
+describe("debugger switch precedence (design doc §9)", () => {
+  const BUILD = "ws://127.0.0.1:9231";
+
+  it("dials the key over the build's value", () => {
+    expect(resolveDebuggerEnablement("ws://127.0.0.1:9300", BUILD)).toEqual({
+      url: "ws://127.0.0.1:9300",
+      reason: "enabled",
+    });
+  });
+
+  it("falls back to the build's value when no key is set", () => {
+    expect(resolveDebuggerEnablement(null, BUILD)).toEqual({
+      url: BUILD,
+      reason: "enabled-from-build",
+    });
+  });
+
+  // The regression this seam exists for. An empty key used to fold in with an
+  // absent one and fall through to the build, leaving a build that carries a URL
+  // with no way to stop dialling short of rebuilding it. §9 requires the store to
+  // win unconditionally, and "off" is a thing the store must be able to say.
+  it("treats an empty key as OFF, beating the build's value", () => {
+    expect(resolveDebuggerEnablement("", BUILD)).toEqual({
+      url: null,
+      reason: "off-by-key",
+    });
+  });
+
+  it("is off with neither switch set, and says which is missing", () => {
+    expect(resolveDebuggerEnablement(null, null)).toEqual({
+      url: null,
+      reason: "no-key",
+    });
+    expect(resolveDebuggerEnablement(undefined, null)).toEqual({
+      url: null,
+      reason: "no-storage",
+    });
+  });
+
+  // A realm with no store cannot opt out, so the build must still win there -
+  // otherwise `no-storage` would silently disable every build-configured host in
+  // a sandboxed iframe.
+  it("still uses the build's value when the realm has no storage", () => {
+    expect(resolveDebuggerEnablement(undefined, BUILD)).toEqual({
+      url: BUILD,
+      reason: "enabled-from-build",
+    });
   });
 });

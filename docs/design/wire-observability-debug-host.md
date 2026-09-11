@@ -242,7 +242,10 @@ installed, which §9's enablement rules govern.
   key, and a value the dev build carries. A key set by hand **MUST** win, so a
   build's value is a default rather than an override, and the host **MUST** report
   which source it used - an ignored key is otherwise indistinguishable from a key
-  that was never read. With no URL the host installs no emit callback, so the core installs no
+  that was never read. Winning includes turning the dial **off**: a key that is
+  present but empty **MUST** resolve to off rather than falling through to the
+  build, or a build that carries a URL has no off switch short of being rebuilt.
+  With no URL the host installs no emit callback, so the core installs no
   sink. The condition **MUST** be the bare token the bundler substitutes
   (`import.meta.env.DEV`) — no alias, no optional chaining. A bundler replaces
   that exact token and nothing else; an aliased read survives into the bundle,

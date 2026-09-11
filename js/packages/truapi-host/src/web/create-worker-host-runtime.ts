@@ -234,6 +234,7 @@ type DebuggerEnablement = {
     | "production-build"
     | "production-build-switch-set"
     | "enabled-from-build"
+    | "off-by-key"
     | "no-key"
     | "no-storage";
 };
@@ -283,7 +284,8 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
   // (tsc output run under Node, unit tests), where the access throws.
   let dev = false;
   try {
-    dev = (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
+    dev =
+      (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
   } catch {
     dev = false;
   }
@@ -312,13 +314,43 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
     };
   }
   const storage = globalThis.localStorage;
-  const url = storage?.getItem(DEV_DEBUGGER_URL_KEY) ?? null;
-  // A key set by hand wins, so a developer can always aim a build somewhere else
-  // without rebuilding it. The build-time value is the default, not an override.
-  if (url !== null && url !== "") return { url, reason: "enabled" };
-  const fromBuild = buildTimeDebuggerUrl();
-  if (fromBuild !== null) return { url: fromBuild, reason: "enabled-from-build" };
-  if (storage === undefined) return { url: null, reason: "no-storage" };
+  return resolveDebuggerEnablement(
+    storage === undefined
+      ? undefined
+      : (storage.getItem(DEV_DEBUGGER_URL_KEY) ?? null),
+    buildTimeDebuggerUrl(),
+  );
+}
+
+/**
+ * Resolve the two dev-build switches into one verdict. Pure, and exported so the
+ * precedence is testable: the caller reads `import.meta.env.DEV`, which a bundler
+ * substitutes and a test runner cannot, so the live path cannot reach this branch
+ * under `bun test` at all.
+ *
+ * `stored` is `undefined` when the realm has no `localStorage`, `null` when the
+ * key is absent, and a string when it is set - including the empty string.
+ *
+ * Precedence, per design doc §9 ("a store value MUST win over [the build's], so a
+ * build's value is a default and never an override"):
+ *
+ *  - key set to a URL  -> dial it, whatever the build says
+ *  - key set to empty  -> OFF, whatever the build says
+ *  - key absent        -> the build's value, if it carries one
+ *
+ * The empty case is the one that is easy to get wrong: treating `""` as "no key"
+ * falls through to the build, and a build that carries a URL then has no off
+ * switch short of rebuilding - the store losing to the build, which §9 forbids.
+ */
+export function resolveDebuggerEnablement(
+  stored: string | null | undefined,
+  fromBuild: string | null,
+): DebuggerEnablement {
+  if (stored === "") return { url: null, reason: "off-by-key" };
+  if (typeof stored === "string") return { url: stored, reason: "enabled" };
+  if (fromBuild !== null)
+    return { url: fromBuild, reason: "enabled-from-build" };
+  if (stored === undefined) return { url: null, reason: "no-storage" };
   return { url: null, reason: "no-key" };
 }
 
@@ -352,7 +384,9 @@ function reportDebuggerEnablement(e: DebuggerEnablement): void {
   }
   const origin = globalThis.location?.origin ?? "(unknown origin)";
   if (e.reason === "enabled") {
-    console.info(`[truapi] wire debugger: dialling ${e.url} (origin ${origin})`);
+    console.info(
+      `[truapi] wire debugger: dialling ${e.url} (origin ${origin})`,
+    );
     return;
   }
   if (e.reason === "enabled-from-build") {
@@ -362,6 +396,14 @@ function reportDebuggerEnablement(e: DebuggerEnablement): void {
     console.info(
       `[truapi] wire debugger: dialling ${e.url} from the build (origin ${origin}); ` +
         `set "${DEV_DEBUGGER_URL_KEY}" here to override`,
+    );
+    return;
+  }
+  if (e.reason === "off-by-key") {
+    console.info(
+      `[truapi] wire debugger: off (the "${DEV_DEBUGGER_URL_KEY}" key on origin ` +
+        `${origin} is empty, which turns the dial off even when the build carries ` +
+        "a URL; remove the key to go back to the build's default)",
     );
     return;
   }
@@ -1274,7 +1316,9 @@ function reportRenderFailure(
   cause: unknown,
 ): void {
   try {
-    sink.onError(cause instanceof Error ? cause : new Error(errorMessage(cause)));
+    sink.onError(
+      cause instanceof Error ? cause : new Error(errorMessage(cause)),
+    );
   } catch (err) {
     console.warn("[truapi worker] render onError threw:", err);
   }
