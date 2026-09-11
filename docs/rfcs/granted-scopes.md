@@ -43,10 +43,10 @@ type Granted = 'all' | 'storage' | 'context';
 
 Which calls each scope gates remains a Host runtime contract, as it already is for `all`. A grant is a standing answer, so a call it does not cover refuses rather than prompts wherever prompting would itself disclose something — a cross-product storage read answers one refusal for every reason, and a prompt naming the target would say the target exists.
 
-`context` gates `create_account_proof` and `ring_vrf_sign` on the granting product's keys. Both are adjudicated twice, in two different components, and both checks are load-bearing rather than one being a duplicate of the other:
+`context` gates `create_account_proof` and `ring_vrf_sign` on the granting product's keys. The decision is taken in two components, and they are not equals:
 
-- The **runtime frontend** refuses a cross-product caller before any authority is reached. The calling product id there is the one the Host bound to the connection, so this is the gate for a product running on this Host.
-- The **authority holding the keys** resolves the granting product's manifest again, for itself. On a paired Host the authority request arrives over the wire from another Host, which names the product it is acting for. Relaying the frontend's verdict as a flag would take the manifest out of that decision entirely and let a peer reach every handle on the device rather than only the ones a publisher really granted.
+- The **authority holding the keys** is the gate. It resolves the granting product's manifest for itself and derives the key from the identity it authorized, never from the spelling it was handed. On a paired Host the request arrives over the wire from another Host, which names the product it is acting for, so relaying a verdict to it would take the manifest out of the decision entirely and let a peer reach every handle on the device rather than only the ones a publisher really granted. This is the only gate on that path.
+- The **runtime frontend** refuses a cross-product caller before the authority is reached. For a product on this Host it computes the same answer from the same inputs, so it adds no decision the authority would not reach: what it adds is that a refusal costs no authority round-trip, and on a paired Host no wire traffic. Removing it is not a hole, because the authority still refuses; changing it to something other than the grant is a regression, and is what the tests pin.
 
 A grant never overrides a refusal the user already gave: the stored account-access decision is read before the manifest, and read-only, so a grant lookup never raises the prompt that would settle an undecided one.
 

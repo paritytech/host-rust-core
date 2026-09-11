@@ -4027,3 +4027,79 @@ fn feature_supported_encodes_response_to_known_bytes() {
 }
 
 mod signing;
+
+/// The pairing authority's cross-product gate, driven directly.
+///
+/// `pairing_host.rs` carried no `#[test]` at all: every grant test drove the
+/// signing role, and the e2e drives the signing-host CLI. Replacing the body of
+/// `PairingHost::require_ring_vrf_key_access` with `Ok(())` — any paired peer
+/// reaching any product's ring-VRF key by naming it — left the entire package
+/// green. That is the exact threat #655 gives as the reason the authority must
+/// adjudicate for itself rather than trust a relayed verdict, so it cannot be
+/// the one path with no coverage.
+///
+/// Driven at the authority, which is where a pairing-wire request arrives:
+/// `sso_responder` hands `calling_product_id` and `key_handle` straight here,
+/// both decoded from the peer's message.
+#[test]
+fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
+    let (host_config, product) = runtime_config("dim2.dot");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host.clone(), product);
+    install_pairing_session(&host, session_info());
+    let session = pairing_host
+        .current_session()
+        .expect("the pairing host has an active session");
+
+    let proof = futures::executor::block_on(ProductAuthority::create_proof(
+        &*pairing_host,
+        &CallContext::default(),
+        &session,
+        crate::runtime::authority::CreateProofAuthorityRequest {
+            calling_product_id: "dim2.dot".to_string(),
+            key_handle: v01::ProductAccountId {
+                dot_ns_identifier: "peopl.dot".to_string(),
+                derivation_index: v01::DerivationIndex::Index(0),
+            },
+            context: v01::ProductProofContext {
+                product_id: "dim2.dot".to_string(),
+                suffix: v01::DerivationIndex::Index(0),
+            },
+            ring_location: ring_location_fixture(),
+            message: b"prove me".to_vec(),
+        },
+    ));
+    assert_eq!(
+        proof.err(),
+        Some(RingVrfError::NotAllowlisted),
+        "the pairing authority must refuse a foreign key that no manifest granted"
+    );
+
+    let signed = futures::executor::block_on(ProductAuthority::ring_vrf_sign(
+        &*pairing_host,
+        &CallContext::default(),
+        &session,
+        crate::runtime::authority::RingVrfSignAuthorityRequest {
+            calling_product_id: "dim2.dot".to_string(),
+            key_handle: v01::ProductAccountId {
+                dot_ns_identifier: "peopl.dot".to_string(),
+                derivation_index: v01::DerivationIndex::Index(0),
+            },
+            message: b"sign me".to_vec(),
+        },
+    ));
+    assert_eq!(
+        signed.err(),
+        Some(RingVrfError::NotAllowlisted),
+        "and the same on the signing method, which arrives through the same door"
+    );
+}

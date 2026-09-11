@@ -185,6 +185,11 @@ pub(crate) struct StubPlatform {
     pub(crate) local_storage: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     /// When set, product/core storage reads fail with this reason.
     pub(crate) local_storage_error: Option<&'static str>,
+    /// When set, only `PermissionAuthorization` reads fail. Narrower than
+    /// `local_storage_error`, which fails every key: a test that needs the
+    /// manifest cache to answer while the stored permission decision is
+    /// unreadable cannot use the broad knob.
+    pub(crate) permission_storage_error: Option<&'static str>,
 }
 
 /// Scripted peer behavior for the recording connection's SSO exchange.
@@ -884,6 +889,13 @@ impl PlatformCoreStorage for StubPlatform {
             return Ok(self.session_blob.clone());
         }
         if let Some(reason) = self.local_storage_error {
+            return Err(v01::GenericError {
+                reason: reason.to_string(),
+            });
+        }
+        if let (CoreStorageKey::PermissionAuthorization { .. }, Some(reason)) =
+            (&key, self.permission_storage_error)
+        {
             return Err(v01::GenericError {
                 reason: reason.to_string(),
             });

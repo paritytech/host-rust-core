@@ -1771,6 +1771,59 @@ mod tests {
     /// delegating, and false of `sso_responder`, which hands a wire request to
     /// the authority untouched. The two doors have to agree here, because the
     /// authority is the component that decides.
+    /// An unreadable permission store refuses the grant rather than honouring it.
+    ///
+    /// The stored `AccountAccess` decision is the only thing that can override a
+    /// publisher's grant. Reading a storage fault as "not refused" would let a
+    /// locked keychain turn the user's explicit no into a yes, on the strength
+    /// of a manifest the publisher controls. `account_access_authorization`,
+    /// which writes that same decision, already fails closed; this is the read
+    /// side agreeing with it.
+    ///
+    /// The error is scoped to permission keys so the manifest cache still
+    /// answers: otherwise the call would refuse for want of a manifest and the
+    /// assertion would prove nothing.
+    #[test]
+    fn a_grant_is_refused_when_the_stored_decision_cannot_be_read() {
+        let platform = Arc::new(StubPlatform {
+            permission_storage_error: Some("keychain locked"),
+            ..StubPlatform::default()
+        });
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+
+        let granted = futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+            &services,
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            crate::host_logic::product_manifest::Granted::Context,
+        ));
+        assert!(
+            !granted,
+            "an unreadable permission store must refuse, not fall through to the manifest"
+        );
+
+        // Control: the identical grant, with the store readable, is honoured.
+        // Without this the assertion above would also pass if the grant never
+        // worked at all.
+        let readable = Arc::new(StubPlatform::default());
+        cache_grant(&readable, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(readable.clone(), full_person_ring_resolver());
+        assert!(
+            futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                &services,
+                readable.as_ref(),
+                "dim2.dot",
+                "peopl.dot",
+                crate::host_logic::product_manifest::Granted::Context,
+            )),
+            "control: the same grant must be honoured when the store reads cleanly"
+        );
+    }
+
     /// A grant lookup with nothing cached reaches the chain, and dials the
     /// Asset Hub the role was configured with.
     ///

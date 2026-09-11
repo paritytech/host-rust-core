@@ -356,9 +356,16 @@ async fn user_denied_account_access(
         target_product_id: target.to_string(),
     };
     let service = PermissionsService::new(platform, platform, caller_id);
-    matches!(
+    // Fails closed. `Ok(Denied)` is an explicit refusal; an `Err` is a storage
+    // fault, and reading that as "not refused" would let a locked keychain or a
+    // corrupt entry turn the user's "no" into "yes" on the strength of a
+    // publisher's manifest. `account_access_authorization`, which writes this
+    // same decision, already propagates its errors rather than assuming access.
+    // Only a decision we positively read as absent lets the grant through.
+    !matches!(
         service.authorization_status(&request).await,
-        Ok(PermissionAuthorizationStatus::Denied)
+        Ok(PermissionAuthorizationStatus::NotDetermined
+            | PermissionAuthorizationStatus::Authorized)
     )
 }
 
