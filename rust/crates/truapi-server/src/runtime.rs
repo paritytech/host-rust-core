@@ -701,7 +701,18 @@ async fn account_access_authorization(
     let request = PermissionAuthorizationRequest::AccountAccess {
         target_product_id: target_product_id.to_string(),
     };
-    let service = PermissionsService::new(platform, platform, requesting_product_id);
+    // Stored per product, not per executable, because that is the granularity a
+    // manifest grant uses: `dim2.dot`, `app.dim2.dot` and `worker.dim2.dot` are
+    // one grantee. A decision filed under the full id could be missed by the
+    // same product arriving under a subname it already owns, which would let a
+    // refused product keep a `context` grant by respelling itself. The prompt
+    // still names the id the user saw; only the slot it is filed under is the
+    // product's.
+    let service = PermissionsService::new(
+        platform,
+        platform,
+        crate::host_logic::product_manifest::bare_product_label(requesting_product_id),
+    );
     let cached = service
         .authorization_status(&request)
         .await

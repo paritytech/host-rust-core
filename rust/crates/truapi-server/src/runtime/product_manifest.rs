@@ -362,7 +362,14 @@ async fn user_denied_account_access(
     let request = PermissionAuthorizationRequest::AccountAccess {
         target_product_id: target.to_string(),
     };
-    let service = PermissionsService::new(platform, platform, caller_id);
+    // Keyed by the bare label, matching the grant this overrides. The manifest
+    // grants a product, not an executable: `dim2.dot`, `app.dim2.dot` and
+    // `worker.dim2.dot` are one grantee. Reading the refusal under the full id
+    // instead let any of those spellings miss a refusal recorded against
+    // another, so a product the user had refused re-entered under a subname it
+    // already owns and kept the grant. The two halves of "a grant never
+    // overrides a refusal the user already gave" have to name the same party.
+    let service = PermissionsService::new(platform, platform, bare_product_label(caller_id));
     // Fails closed. `Ok(Denied)` is an explicit refusal; an `Err` is a storage
     // fault, and reading that as "not refused" would let a locked keychain or a
     // corrupt entry turn the user's "no" into "yes" on the strength of a

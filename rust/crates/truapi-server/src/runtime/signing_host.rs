@@ -1583,13 +1583,17 @@ mod tests {
     /// Persist a user refusal of `caller`'s access to `target`'s account.
     fn deny_account_access(platform: &StubPlatform, caller: &str, target: &str) {
         futures::executor::block_on(
-            crate::host_logic::permissions::PermissionsService::new(platform, platform, caller)
-                .set_authorization_status(
-                    &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
-                        target_product_id: target.to_string(),
-                    },
-                    truapi_platform::PermissionAuthorizationStatus::Denied,
-                ),
+            crate::host_logic::permissions::PermissionsService::new(
+                platform,
+                platform,
+                crate::host_logic::product_manifest::bare_product_label(caller),
+            )
+            .set_authorization_status(
+                &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
+                    target_product_id: target.to_string(),
+                },
+                truapi_platform::PermissionAuthorizationStatus::Denied,
+            ),
         )
         .expect("stub core storage accepts the decision");
     }
@@ -1701,6 +1705,56 @@ mod tests {
                 deny_account_access(platform, "dim2.dot", "peopl.dot")
             });
         assert_eq!(refusal.err(), Some(RingVrfError::NotAllowlisted));
+    }
+
+    /// A refusal covers the product, not one spelling of it.
+    ///
+    /// The manifest grants a product and a product is all its executables, so a
+    /// refusal that overrides the grant has to name the same party. Keyed by the
+    /// full id instead, the user refusing `dim2.dot` left `app.dim2.dot` holding
+    /// the identical grant: the product re-entered under a subname it already
+    /// owns and the override was gone. Both halves now key by the bare label.
+    #[test]
+    fn a_refusal_covers_every_executable_of_the_refused_product() {
+        use crate::host_logic::product_manifest::Granted;
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        deny_account_access(&platform, "dim2.dot", "peopl.dot");
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+
+        let granted = |caller: &str| {
+            futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                &services,
+                platform.as_ref(),
+                caller,
+                "peopl.dot",
+                Granted::Context,
+            ))
+        };
+        for spelling in ["dim2.dot", "app.dim2.dot", "worker.dim2.dot", "dim2.paseo"] {
+            assert!(
+                !granted(spelling),
+                "{spelling} is the refused product wearing another name"
+            );
+        }
+
+        // Control: a product the user never refused still holds its own grant,
+        // so the assertions above are not passing because nothing is granted.
+        let clean = Arc::new(StubPlatform::default());
+        cache_grant(&clean, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(clean.clone(), full_person_ring_resolver());
+        assert!(
+            futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                &services,
+                clean.as_ref(),
+                "app.dim2.dot",
+                "peopl.dot",
+                Granted::Context,
+            )),
+            "control: with no refusal recorded the same subname is granted"
+        );
     }
 
     /// `all` is a superset, so it satisfies `context` at the runtime seam and
