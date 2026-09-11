@@ -283,15 +283,31 @@ fn cache_manifest(platform: &StubPlatform, owner: &str, trusted: &str, age_secs:
 }
 
 /// Seeds `owner`'s cached lookup, `None` standing for "publishes no manifest".
+/// Seed `owner`'s cached lookup with an explicit `fetched_at`, for tests about
+/// the freshness bound itself rather than about grants.
+fn cache_manifest_at(platform: &StubPlatform, owner: &str, trusted: &str, fetched_at_secs: u64) {
+    let json = format!(
+        r#"{{"$v":1,"displayName":"D","description":"d",
+                "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted}}}"#
+    );
+    let entry = CachedManifest {
+        fetched_at_secs,
+        json: Some(json),
+    };
+    futures::executor::block_on(platform.write_core_storage(
+        crate::runtime::product_manifest::manifest_cache_key(owner),
+        entry.encode(),
+    ))
+    .expect("stub core storage accepts the entry");
+}
+
 fn cache_manifest_entry(platform: &StubPlatform, owner: &str, json: Option<String>, age_secs: u64) {
     let entry = CachedManifest {
         fetched_at_secs: current_unix_secs().saturating_sub(age_secs),
         json,
     };
     futures::executor::block_on(platform.write_core_storage(
-        CoreStorageKey::ProductManifest {
-            product_id: owner.to_string(),
-        },
+        crate::runtime::product_manifest::manifest_cache_key(owner),
         entry.encode(),
     ))
     .expect("stub core storage accepts the entry");
@@ -372,6 +388,46 @@ fn a_grant_of_some_other_scope_does_not_open_storage() {
 }
 
 #[test]
+fn a_context_grant_does_not_open_storage() {
+    // Scopes are independent, and `context` is the case worth pinning rather
+    // than an unrecognised value: it is a scope this core does honour, just
+    // not for storage.
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
+}
+
+/// A cache entry stamped in the future is stale, not immortal.
+///
+/// The TTL is the revocation bound: a grant a publisher withdraws stays in force
+/// until the document is read again. An entry written while the device clock ran
+/// ahead used to satisfy the bound forever, because `saturating_sub` floors at
+/// zero, so that one entry could never be revoked.
+#[test]
+fn a_cache_entry_stamped_in_the_future_is_not_honoured() {
+    let platform = stub_platform();
+    // A year ahead: `saturating_sub` gives 0, which is below any TTL.
+    cache_manifest_at(
+        &platform,
+        "wallet.dot",
+        r#"{"unknown":["storage"]}"#,
+        crate::host_logic::statement_store::current_unix_secs() + 365 * 24 * 60 * 60,
+    );
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted(),
+        "a future-stamped entry must be re-read, not trusted forever"
+    );
+}
+
+#[test]
 fn a_cached_grant_stops_being_honoured_once_it_expires() {
     // The lifetime is the revocation bound. Past it the entry is ignored,
     // and with no Asset Hub to re-read from the grant is gone.
@@ -387,6 +443,73 @@ fn a_cached_grant_stops_being_honoured_once_it_expires() {
     assert_eq!(
         read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
         access_not_granted()
+    );
+}
+
+/// With no session, every proof refusal is the same refusal.
+///
+/// This is the ordering hazard closed. `create_account_proof` consults the
+/// session before the grant, so a granting target, a non-granting target and
+/// the caller's own key all answer `Rejected` — and the pair of refusals stops
+/// being a probe for who granted whom. The grant path itself is covered
+/// end-to-end, with a live session, in
+/// `runtime::signing_host::tests::a_context_grant_lets_a_foreign_product_prove_with_the_owners_key`.
+#[test]
+fn with_no_session_a_proof_refusal_never_discloses_whether_a_grant_exists() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "granting.dot", r#"{"unknown":["context"]}"#, 0);
+    cache_manifest(
+        &platform,
+        "silent.dot",
+        r#"{"someone-else":["context"]}"#,
+        0,
+    );
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let sessionless = Some(CallError::Domain(HostAccountCreateProofError::V1(
+        v01::HostAccountCreateProofError::Rejected,
+    )));
+
+    assert_eq!(proof_refusal(&host, "granting.dot"), sessionless);
+    assert_eq!(proof_refusal(&host, "silent.dot"), sessionless);
+    assert_eq!(proof_refusal(&host, &host.product_id()), sessionless);
+}
+
+fn proof_refusal(
+    host: &ProductRuntimeHost,
+    product: &str,
+) -> Option<CallError<HostAccountCreateProofError>> {
+    futures::executor::block_on(
+        host.create_account_proof(&CallContext::default(), create_proof_request(product)),
+    )
+    .err()
+}
+
+#[test]
+fn a_proof_naming_the_caller_in_another_spelling_is_still_its_own() {
+    // Normalized before comparison, so casing cannot turn a product's own
+    // key into a cross-product refusal.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    let shouted = host.product_id().to_uppercase();
+    assert_eq!(
+        proof_refusal(&host, &shouted),
+        Some(CallError::Domain(HostAccountCreateProofError::V1(
+            v01::HostAccountCreateProofError::Rejected
+        )))
+    );
+}
+
+#[test]
+fn an_unresolvable_product_cannot_reach_a_foreign_key() {
+    // An id that does not normalize is not the caller, so it takes the same
+    // refusal as a product that granted nothing.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    assert_eq!(
+        proof_refusal(&host, "not a product"),
+        Some(CallError::Domain(HostAccountCreateProofError::V1(
+            v01::HostAccountCreateProofError::Unknown {
+                reason: "Invalid key handle".to_string()
+            }
+        )))
     );
 }
 
@@ -3945,3 +4068,150 @@ fn feature_supported_encodes_response_to_known_bytes() {
 }
 
 mod signing;
+
+/// The pairing authority's cross-product gate, driven directly.
+///
+/// `pairing_host.rs` carried no `#[test]` at all: every grant test drove the
+/// signing role, and the e2e drives the signing-host CLI. Replacing the body of
+/// `PairingHost::require_ring_vrf_key_access` with `Ok(())` — any paired peer
+/// reaching any product's ring-VRF key by naming it — left the entire package
+/// green. That is the exact threat #655 gives as the reason the authority must
+/// adjudicate for itself rather than trust a relayed verdict, so it cannot be
+/// the one path with no coverage.
+///
+/// Driven at the authority, which is where a pairing-wire request arrives:
+/// `sso_responder` hands `calling_product_id` and `key_handle` straight here,
+/// both decoded from the peer's message.
+#[test]
+fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
+    let (host_config, product) = runtime_config("dim2.dot");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host.clone(), product);
+    install_pairing_session(&host, session_info());
+    let session = pairing_host
+        .current_session()
+        .expect("the pairing host has an active session");
+
+    let proof = futures::executor::block_on(ProductAuthority::create_proof(
+        &*pairing_host,
+        &CallContext::default(),
+        &session,
+        crate::host_logic::sso::messages::ProductRequest {
+            calling_product_id: "dim2.dot".to_string(),
+            payload: v01::HostAccountCreateProofRequest {
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                context: v01::ProductProofContext {
+                    product_id: "dim2.dot".to_string(),
+                    suffix: v01::DerivationIndex::Index(0),
+                },
+                ring_location: ring_location_fixture(),
+                message: b"prove me".to_vec(),
+            },
+        },
+    ));
+    assert_eq!(
+        proof.err(),
+        Some(RingVrfError::NotAllowlisted),
+        "the pairing authority must refuse a foreign key that no manifest granted"
+    );
+
+    let signed = futures::executor::block_on(ProductAuthority::ring_vrf_sign(
+        &*pairing_host,
+        &CallContext::default(),
+        &session,
+        crate::host_logic::sso::messages::ProductRequest {
+            calling_product_id: "dim2.dot".to_string(),
+            payload: v01::HostAccountRingVrfSignRequest {
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                message: b"sign me".to_vec(),
+            },
+        },
+    ));
+    assert_eq!(
+        signed.err(),
+        Some(RingVrfError::NotAllowlisted),
+        "and the same on the signing method, which arrives through the same door"
+    );
+}
+
+/// The grant lookup obeys the caller's deadline.
+///
+/// It can reach dotNS on the Asset Hub, which is several sequential chain
+/// operations each bounded only by `OPERATION_TIMEOUT` (10s). Run before
+/// `remote_authority_call` that cost sat outside the caller's deadline and
+/// ignored a cancel, so a product asking for a short timeout could wait far
+/// longer with no way to stop it. This pins that it now returns on the deadline:
+/// the stub answers no RPC, so an unscoped lookup would stall for the full
+/// operation timeout instead.
+#[test]
+fn a_grant_lookup_obeys_the_callers_deadline() {
+    let (host_config, product) = runtime_config("dim2.dot");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    install_pairing_session(&host, session_info());
+
+    let mut cx = CallContext::default();
+    cx.set_timeout(Duration::from_millis(1));
+    let started = std::time::Instant::now();
+    let result = futures::executor::block_on(
+        host.create_account_proof(&cx, create_proof_request("peopl.dot")),
+    );
+    let elapsed = started.elapsed();
+
+    assert!(result.is_err(), "a deadline that short cannot succeed");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the grant lookup must be bounded by the caller's deadline, not by the \
+         dotNS operation timeout; took {elapsed:?}"
+    );
+}
+
+/// Subnames of one product share one cached manifest, because they are one
+/// dotNS node holding one document.
+///
+/// The cache used to be keyed by the full product id while the document is
+/// resolved by the bare label, so `app.peopl.dot` and `worker.peopl.dot` each
+/// drove a fresh chain resolution and a fresh durable write for a document the
+/// host already held, with nothing bounding how many spellings a caller could
+/// name. On the pairing wire that id comes from the peer.
+#[test]
+fn subnames_of_one_product_share_one_cached_manifest() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "peopl.dot", r#"{"unknown":["storage"]}"#, 0);
+    seed_owner_value(&platform, "peopl.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+
+    // Seeded once under `peopl.dot`; every executable beneath it reads it.
+    for spelling in ["peopl.dot", "app.peopl.dot", "worker.peopl.dot"] {
+        assert!(
+            read_storage(&host, Some(spelling), "k").is_ok(),
+            "{spelling} must resolve the one manifest cached for its product"
+        );
+    }
+}

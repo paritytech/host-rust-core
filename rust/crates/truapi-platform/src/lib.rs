@@ -377,6 +377,11 @@ pub fn normalize_product_identifier(
             actual: normalized.len(),
         });
     }
+    if !has_well_formed_labels(&normalized) {
+        return Err(RuntimeConfigValidationError::InvalidProductId {
+            product_id: product_id.to_string(),
+        });
+    }
     if has_dotns_tld(&normalized)
         || normalized == "localhost"
         || normalized.starts_with("localhost:")
@@ -387,6 +392,53 @@ pub fn normalize_product_identifier(
             product_id: product_id.to_string(),
         })
     }
+}
+
+/// Whether every dot-separated label of a normalized id is well formed.
+///
+/// Only the suffix after the last `.` was ever inspected, so the rest of the id
+/// could be anything the transport carried. Three consequences, all reachable
+/// because a cross-product call takes this string from the wire where it is
+/// self-asserted:
+///
+/// - An empty label. `dim2..dot` and `.dot` both reduce to `""`, so distinct ids
+///   collapse onto one grant key and one manifest cache entry.
+/// - Control and format characters. A NUL or a right-to-left override survives
+///   into [`AccountAccessReview`], which renders the id verbatim in the only
+///   consent prompt this design has, and into every log line carrying it.
+/// - Whitespace and path separators, which let one product's id render like
+///   another's anywhere the comparison is not byte-exact.
+///
+/// Deliberately not an ASCII allowlist: dotNS names are internationalized, so
+/// `tést.dot` is a real id. What is rejected is the class of characters that
+/// carries no name and only confuses a reader or a key.
+fn has_well_formed_labels(normalized: &str) -> bool {
+    /// Zero-width and bidirectional formatting characters. Invisible in every
+    /// rendering, so they make two different ids look identical to a user.
+    fn is_invisible_format(c: char) -> bool {
+        matches!(c,
+            '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}')
+    }
+    let label_ok = |label: &str| {
+        !label.is_empty()
+            && !label.chars().any(|c| {
+                c.is_control()
+                    || c.is_whitespace()
+                    || is_invisible_format(c)
+                    || matches!(c, '/' | '\\')
+            })
+    };
+    if normalized == "localhost" {
+        return true;
+    }
+    if let Some(port) = normalized.strip_prefix("localhost:") {
+        return !port.is_empty() && port.chars().all(|c| c.is_ascii_digit());
+    }
+    normalized.split('.').all(label_ok)
 }
 
 /// Largest accepted length for a product-supplied chat identifier or display
@@ -2306,6 +2358,39 @@ mod tests {
         for label in REMOTE_PERMISSION_TRUSTED_LABELS {
             assert!(!label.contains('.'), "{label} must not carry a TLD");
             assert_eq!(*label, label.to_lowercase(), "{label} must be lowercase");
+        }
+    }
+
+    #[test]
+    fn an_identifier_carrying_no_name_is_rejected() {
+        // Each of these reached the manifest grant key, the cache key, the only
+        // consent prompt in this design and every log line, because only the
+        // suffix after the last dot was ever inspected.
+        for id in [
+            "dim2\u{0}.dot",        // NUL, into a prompt rendered verbatim
+            "\u{202e}dim2.dot",     // right-to-left override
+            "dim2\u{200b}.dot",     // zero width space
+            "a b c.dot",            // whitespace
+            "../../etc/passwd.dot", // path separators
+            "dim2..dot",            // empty label: collapses onto other ids
+            ".dot",                 // same empty label
+        ] {
+            assert!(
+                normalize_product_identifier(id).is_err(),
+                "{id:?} carries no product name and must not normalize"
+            );
+        }
+    }
+
+    #[test]
+    fn an_internationalized_identifier_is_still_an_identifier() {
+        // The rejection above is a hazard list, not an ASCII allowlist: dotNS
+        // names are internationalized and these are real ids.
+        for id in ["Tést.DOT", "münchen.dot", "dim2-two.dot", "localhost:3000"] {
+            assert!(
+                normalize_product_identifier(id).is_ok(),
+                "{id:?} is a legitimate product id"
+            );
         }
     }
 

@@ -25,7 +25,8 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 
-use crate::host_logic::sso::messages::ProductRequest;
+use crate::host_logic::product_manifest::Granted;
+use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
@@ -171,12 +172,11 @@ impl Account for ProductRuntimeHost {
                     },
                 ))
             })?;
-        if request.key_handle.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::NotAllowlisted,
-            )));
-        }
-
+        // The session is consulted before the grant, matching `ring_vrf_sign`.
+        // The other order makes the pair of refusals a probe for who granted
+        // whom: with no session a granting target answers `Rejected` and a
+        // non-granting one `NotAllowlisted`, which is exactly what the uniform
+        // cross-product refusal exists to prevent.
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::Rejected,
@@ -185,17 +185,35 @@ impl Account for ProductRuntimeHost {
 
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
-        remote_authority_call(
-            &cx,
-            self.authority.create_proof(
-                &cx,
-                &session,
-                ProductRequest {
-                    calling_product_id,
-                    payload: request,
-                },
-            ),
-        )
+        // The grant lookup runs *inside* `remote_authority_call`, not before it.
+        // It can reach dotNS on the Asset Hub, several sequential chain
+        // operations each bounded only by `OPERATION_TIMEOUT`; outside this
+        // scope that cost sits beyond the caller's deadline and ignores a
+        // cancel, so a product asking for a short timeout could wait far longer
+        // with no way to stop it. Inside, one deadline covers the whole call.
+        //
+        // The gate returns the normalized owner it decided about and the handle
+        // is rebuilt from it, so authorization and key derivation agree by
+        // construction rather than by a registry lookup happening to miss.
+        remote_authority_call(&cx, async {
+            let Some(owner) = self
+                .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
+                .await
+            else {
+                return Err(RingVrfError::NotAllowlisted);
+            };
+            request.key_handle.dot_ns_identifier = owner;
+            self.authority
+                .create_proof(
+                    &cx,
+                    &session,
+                    ProductRequest {
+                        calling_product_id,
+                        payload: request,
+                    },
+                )
+                .await
+        })
         .await
         .map(HostAccountCreateProofResponse::V1)
         .map_err(|err| {
@@ -300,24 +318,30 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if request.key_handle.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
-                v01::HostAccountRingVrfSignError::NotAllowlisted,
-            )));
-        }
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
-        remote_authority_call(
-            &cx,
-            self.authority.ring_vrf_sign(
-                &cx,
-                &session,
-                ProductRequest {
-                    calling_product_id,
-                    payload: request,
-                },
-            ),
-        )
+        // As in `create_account_proof`: inside the timeout and cancel scope, and
+        // the handle carried on is the normalized owner the gate decided about
+        // rather than the spelling the caller sent.
+        remote_authority_call(&cx, async {
+            let Some(owner) = self
+                .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
+                .await
+            else {
+                return Err(RingVrfError::NotAllowlisted);
+            };
+            request.key_handle.dot_ns_identifier = owner;
+            self.authority
+                .ring_vrf_sign(
+                    &cx,
+                    &session,
+                    ProductRequest {
+                        calling_product_id,
+                        payload: request,
+                    },
+                )
+                .await
+        })
         .await
         .map(HostAccountRingVrfSignResponse::V1)
         .map_err(|err| CallError::Domain(HostAccountRingVrfSignError::V1(ring_vrf_sign_error(err))))

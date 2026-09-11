@@ -143,14 +143,22 @@ pub trait Account: Send + Sync {
     ///   message: "0x48656c6c6f",
     /// });
     /// assert(result.isErr(), "foreign createAccountProof unexpectedly succeeded:", result);
+    /// // RFC-0024 forbids a prompt fallback for a bearer proof made with a
+    /// // foreign key, so the only correct outcome is a refusal. Which refusal
+    /// // depends on how far the call gets: the session is consulted before the
+    /// // grant, so a signed-out host answers `Rejected` and a signed-in one
+    /// // without a `context` grant answers `NotAllowlisted`. Both are refusals
+    /// // and neither asks the user anything, which is what this demonstrates.
+    /// const refusal =
+    ///   result.error.tag === "Domain" && result.error.value.tag === "V1"
+    ///     ? result.error.value.value.tag
+    ///     : result.error.tag;
     /// assert(
-    ///   result.error.tag === "Domain" &&
-    ///     result.error.value.tag === "V1" &&
-    ///     result.error.value.value.tag === "NotAllowlisted",
-    ///   "foreign createAccountProof did not return NotAllowlisted:",
+    ///   refusal === "NotAllowlisted" || refusal === "Rejected",
+    ///   "foreign createAccountProof was not refused:",
     ///   result,
     /// );
-    /// console.log("foreign account proof refused without prompting");
+    /// console.log(`foreign account proof refused without prompting: ${refusal}`);
     /// ```
     #[wire(id = 3)]
     async fn create_account_proof(

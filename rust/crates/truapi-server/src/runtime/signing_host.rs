@@ -163,6 +163,13 @@ impl SigningHost {
         })
     }
 
+    /// The shared services this role was built over, for tests that also need
+    /// to build a product runtime against the same platform and cache.
+    #[cfg(test)]
+    fn services(&self) -> Arc<RuntimeServices> {
+        self.services.clone()
+    }
+
     #[cfg(test)]
     fn new_with_ring_resolver(
         platform: Arc<dyn Platform>,
@@ -524,19 +531,27 @@ impl SigningHost {
         })
     }
 
-    fn require_owned_ring_vrf_key(
+    /// Whether `calling_product_id` may act on `handle`'s ring-VRF key.
+    ///
+    /// Delegates to [`crate::runtime::ring_vrf_key_access_granted`], which
+    /// resolves the owner's manifest here rather than trusting the request: on
+    /// this role the request can have arrived over the pairing wire.
+    async fn require_ring_vrf_key_access(
+        &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<(), RingVrfError> {
-        let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
-            RingVrfError::Unknown {
-                reason: error.to_string(),
-            }
-        })?;
-        if caller != handle.dot_ns_identifier {
-            return Err(RingVrfError::NotAllowlisted);
-        }
-        Ok(())
+    ) -> Result<v01::ProductAccountId, RingVrfError> {
+        let owner = crate::runtime::product_manifest::ring_vrf_key_access_granted(
+            &self.services,
+            self.platform.as_ref(),
+            calling_product_id,
+            handle,
+        )
+        .await?;
+        Ok(v01::ProductAccountId {
+            dot_ns_identifier: owner,
+            derivation_index: handle.derivation_index.clone(),
+        })
     }
 
     pub(crate) async fn ring_vrf_providers(
@@ -895,13 +910,29 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
+            .await?;
+        // A grant lets the caller act with the owner's key in the caller's own
+        // context. It does not let it choose whose pseudonym to mint: the
+        // contextual alias is a function of (owner key, context), so an
+        // unconstrained context would let a grantee produce the alias the owner
+        // presents to a third product that granted nothing. That third party
+        // cannot consent here and is not a party to the grant.
+        //
+        // The owner's own calls are unaffected; only a cross-product caller is
+        // held to its own context.
+        {
+            use crate::host_logic::product_manifest::bare_product_label as label;
+            let caller = label(&request.calling_product_id);
+            if label(&key_handle.dot_ns_identifier) != caller
+                && label(&request.payload.context.product_id) != caller
+            {
+                return Err(RingVrfError::NotAllowlisted);
+            }
+        }
         let entropy = self
-            .resolve_ring_vrf_key_for_ring(
-                session,
-                &request.payload.key_handle,
-                &request.payload.ring_location,
-            )
+            .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
             .await?;
         let candidate = self.ring_vrf_member_candidate(&entropy)?;
         let resolved = self
@@ -1001,9 +1032,11 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         self.require_current_session(session)?;
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
+            .await?;
         let entropy = self
-            .resolve_registered_ring_vrf_key(session, &request.payload.key_handle)
+            .resolve_registered_ring_vrf_key(session, &key_handle)
             .await?;
         sign_from_entropy(&entropy, &request.payload.message)
     }
@@ -1378,6 +1411,50 @@ mod tests {
         }
     }
 
+    /// #660 and #655 join here: the hash the signing role installs is the one
+    /// the grant path adjudicates against.
+    ///
+    /// Worth pinning because the two halves are testable apart and were built
+    /// apart. #660's own tests prove the hash is installed; #655's grant tests
+    /// seed the manifest **cache**, and `root_manifest` reads the cache before
+    /// it ever needs a genesis hash — so every one of them would pass with
+    /// #660 absent. This asserts the seam itself: the grant path's chain
+    /// lookup has an Asset Hub to run against on a role whose config used to
+    /// carry none.
+    ///
+    /// A cache miss still refuses, because the stub reaches no chain. That is
+    /// the closed default, and it is why this seam needs its own test rather
+    /// than being visible in a refusal.
+    #[test]
+    fn the_signing_role_adjudicates_grants_against_the_asset_hub_it_installed() {
+        let (services, _authority) = signing_runtime();
+        assert_eq!(
+            services.asset_hub_chain_genesis_hash(),
+            Some([0xcc; 32]),
+            "#660 must install the config's Asset Hub, or #655 resolves no manifest here"
+        );
+
+        let platform = Arc::new(StubPlatform::default());
+        let granted = futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+            &services,
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            crate::host_logic::product_manifest::Granted::Context,
+        ));
+        // Documentation, not a guard, and labelled so nobody reads it as one:
+        // with no cached manifest and no reachable chain this is false whether
+        // or not #660 installed a hash, so no mutation of the production path
+        // can turn it red. The load-bearing assertion in this test is the one
+        // above; the granted path is guarded by
+        // `a_context_grant_lets_a_foreign_product_prove_with_the_owners_key`
+        // and its M14 pair.
+        assert!(
+            !granted,
+            "the closed default: no manifest reachable means no grant"
+        );
+    }
+
     fn signing_runtime() -> (Arc<RuntimeServices>, Arc<SigningHostRole>) {
         // Auto-confirm raw signing so the role-neutral confirmation gate does
         // not reject before reaching the signing authority.
@@ -1481,6 +1558,599 @@ mod tests {
                 members: vec![full_member],
             },
         })
+    }
+
+    /// Seed `owner`'s cached manifest so a grant lookup resolves without a
+    /// chain. Mirrors `runtime::tests::cache_manifest`.
+    fn cache_grant(platform: &StubPlatform, owner: &str, trusted_products: &str) {
+        let json = format!(
+            r#"{{"$v":1,"displayName":"D","description":"d",
+                 "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted_products}}}"#
+        );
+        let entry = crate::runtime::product_manifest::CachedManifest {
+            fetched_at_secs: crate::host_logic::statement_store::current_unix_secs(),
+            json: Some(json),
+        };
+        futures::executor::block_on(
+            <StubPlatform as truapi_platform::CoreStorage>::write_core_storage(
+                platform,
+                crate::runtime::product_manifest::manifest_cache_key(owner),
+                parity_scale_codec::Encode::encode(&entry),
+            ),
+        )
+        .expect("stub core storage accepts the entry");
+    }
+
+    /// Persist a user refusal of `caller`'s access to `target`'s account.
+    fn deny_account_access(platform: &StubPlatform, caller: &str, target: &str) {
+        futures::executor::block_on(
+            crate::host_logic::permissions::PermissionsService::new(
+                platform,
+                platform,
+                crate::host_logic::product_manifest::bare_product_label(caller),
+            )
+            .set_authorization_status(
+                &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
+                    target_product_id: target.to_string(),
+                },
+                truapi_platform::PermissionAuthorizationStatus::Denied,
+            ),
+        )
+        .expect("stub core storage accepts the decision");
+    }
+
+    /// A `context` grant lets a foreign product prove with the owner's key.
+    ///
+    /// The test whose absence let the inert scope ship. The earlier
+    /// `a_cached_context_grant_lets_a_foreign_proof_through` asserted
+    /// `Rejected` with no session, which only proved the call reached the
+    /// session guard — the authority, one layer down, would have refused it
+    /// anyway. This one runs the whole stack with a live session and a
+    /// registered key, so a proof actually comes back.
+    #[test]
+    fn a_context_grant_lets_a_foreign_product_prove_with_the_owners_key() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        let host = product_runtime_for(services, authority.clone(), "dim2.dot");
+        let proof = futures::executor::block_on(host.create_account_proof(
+            &CallContext::default(),
+            foreign_proof_request(&ring_location),
+        ));
+        assert!(
+            proof.is_ok(),
+            "a granted cross-product proof must succeed, got {proof:?}"
+        );
+    }
+
+    /// The same call with no grant. Same fixture, one line different.
+    #[test]
+    fn a_foreign_proof_is_refused_when_the_owner_granted_nothing() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"someone-else":["context"]}"#);
+        let (services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        let host = product_runtime_for(services, authority.clone(), "dim2.dot");
+        let proof = futures::executor::block_on(host.create_account_proof(
+            &CallContext::default(),
+            foreign_proof_request(&ring_location),
+        ));
+        assert_eq!(
+            proof.err(),
+            Some(CallError::Domain(
+                truapi::versioned::account::HostAccountCreateProofError::V1(
+                    v01::HostAccountCreateProofError::NotAllowlisted
+                )
+            ))
+        );
+    }
+
+    /// **The one that matters.** Nothing in the request can stand in for the
+    /// manifest.
+    ///
+    /// This drives the authority directly, the way `sso_responder` does for a
+    /// request arriving over the pairing wire — the frontend, and its grant
+    /// check, are not on this path at all. The request names `dim2.dot` as the
+    /// caller and `peopl.dot`'s key as the handle, which is the most a peer can
+    /// assert. With no grant published it is refused; with the grant published
+    /// and nothing else changed it succeeds. So the admitting fact is the
+    /// manifest the authority resolved for itself, not any field the caller
+    /// set.
+    ///
+    /// What makes this cover the wire path is an invariant, not a convention:
+    /// the authority has exactly one behaviour, shared by both doors, because
+    /// nothing it reads records which door a request came through. Should a
+    /// door-dependent relaxation ever land — a dev allowlist consulted only
+    /// for local callers, say — that invariant is gone, and this test has to
+    /// declare the paired-peer door explicitly or it silently stops covering
+    /// it. Whoever adds the distinction owns updating this.
+    #[test]
+    fn a_request_cannot_substitute_for_the_owners_manifest() {
+        let refusal = foreign_proof_through_the_authority(None);
+        assert_eq!(
+            refusal.err(),
+            Some(RingVrfError::NotAllowlisted),
+            "with no manifest grant the authority must refuse, whatever the request says"
+        );
+
+        let granted = foreign_proof_through_the_authority(Some(r#"{"dim2":["context"]}"#));
+        assert!(
+            granted.is_ok(),
+            "the identical request must succeed once the owner's manifest grants it, \
+             which is what proves the manifest is the deciding input; got {granted:?}"
+        );
+    }
+
+    /// A grant never overrides a refusal the user already gave.
+    ///
+    /// The stored `AccountAccess` decision is read before the manifest, and
+    /// read-only: a grant lookup must not raise the prompt that would settle a
+    /// `NotDetermined` one.
+    #[test]
+    fn a_stored_denial_survives_a_context_grant_at_the_authority() {
+        let refusal =
+            foreign_proof_through_the_authority_with(Some(r#"{"dim2":["context"]}"#), |platform| {
+                deny_account_access(platform, "dim2.dot", "peopl.dot")
+            });
+        assert_eq!(refusal.err(), Some(RingVrfError::NotAllowlisted));
+    }
+
+    /// A grant does not let the grantee choose whose pseudonym to mint.
+    ///
+    /// The contextual alias is a function of (owner key, context), so with the
+    /// context unconstrained a `context` grant from `peopl.dot` let `dim2.dot`
+    /// produce the alias `peopl.dot` presents to `bank.dot` — a third product
+    /// that granted nothing, is not a party to the grant, and cannot consent
+    /// here. The grant is to act in the grantee's own context, not in anyone's.
+    ///
+    /// The owner's own calls are untouched: minting your own aliases in any
+    /// context is what the context parameter is for.
+    #[test]
+    fn a_grantee_cannot_mint_the_owners_alias_in_a_third_partys_context() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+
+        let mint = |caller: &str, context: &str| {
+            futures::executor::block_on(authority.create_proof(
+                &CallContext::default(),
+                &session,
+                ProductRequest {
+                    calling_product_id: caller.to_string(),
+                    payload: v01::HostAccountCreateProofRequest {
+                        key_handle: full_person_key_handle(),
+                        context: v01::ProductProofContext {
+                            product_id: context.to_string(),
+                            suffix: v01::DerivationIndex::Index(0),
+                        },
+                        ring_location: ring.clone(),
+                        message: b"m".to_vec(),
+                    },
+                },
+            ))
+        };
+
+        assert_eq!(
+            mint("dim2.dot", "bank.dot").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "the grantee must not mint the owner's pseudonym for a third product"
+        );
+        assert!(
+            mint("dim2.dot", "dim2.dot").is_ok(),
+            "the grant still admits the grantee acting in its own context"
+        );
+        assert!(
+            mint("peopl.dot", "bank.dot").is_ok(),
+            "the owner may still mint its own alias in any context"
+        );
+    }
+
+    /// A refusal covers the product, not one spelling of it.
+    ///
+    /// The manifest grants a product and a product is all its executables, so a
+    /// refusal that overrides the grant has to name the same party. Keyed by the
+    /// full id instead, the user refusing `dim2.dot` left `app.dim2.dot` holding
+    /// the identical grant: the product re-entered under a subname it already
+    /// owns and the override was gone. Both halves now key by the bare label.
+    #[test]
+    fn a_refusal_covers_every_executable_of_the_refused_product() {
+        use crate::host_logic::product_manifest::Granted;
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        deny_account_access(&platform, "dim2.dot", "peopl.dot");
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+
+        let granted = |caller: &str| {
+            futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                &services,
+                platform.as_ref(),
+                caller,
+                "peopl.dot",
+                Granted::Context,
+            ))
+        };
+        for spelling in ["dim2.dot", "app.dim2.dot", "worker.dim2.dot", "dim2.paseo"] {
+            assert!(
+                !granted(spelling),
+                "{spelling} is the refused product wearing another name"
+            );
+        }
+
+        // Control: a product the user never refused still holds its own grant,
+        // so the assertions above are not passing because nothing is granted.
+        let clean = Arc::new(StubPlatform::default());
+        cache_grant(&clean, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(clean.clone(), full_person_ring_resolver());
+        assert!(
+            futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                &services,
+                clean.as_ref(),
+                "app.dim2.dot",
+                "peopl.dot",
+                Granted::Context,
+            )),
+            "control: with no refusal recorded the same subname is granted"
+        );
+    }
+
+    /// `all` is a superset, so it satisfies `context` at the runtime seam and
+    /// not only in the manifest parser.
+    #[test]
+    fn a_grant_of_all_satisfies_context_at_the_authority() {
+        let granted = foreign_proof_through_the_authority(Some(r#"{"dim2":["all"]}"#));
+        assert!(
+            granted.is_ok(),
+            "`all` must satisfy `context`, got {granted:?}"
+        );
+    }
+
+    fn signing_runtime_with_ring_resolver(
+        platform: Arc<StubPlatform>,
+        ring_resolver: Arc<StubRingResolver>,
+    ) -> (Arc<RuntimeServices>, Arc<SigningHostRole>) {
+        let authority = SigningHostRole::new_with_ring_resolver(platform, ring_resolver);
+        (authority.services(), authority)
+    }
+
+    /// The grant admits `ring_vrf_sign`, not only `create_proof`.
+    ///
+    /// #655 lists this as untested and it was: the other grant tests here all
+    /// drive `create_proof`. Both authorities call the same
+    /// `require_ring_vrf_key_access` from both methods, so the code was
+    /// covered — but a scope that admits one call and not the other is exactly
+    /// the kind of half-wired gate this issue exists to fix, and nothing
+    /// asserted the second half.
+    ///
+    /// Driven at the authority, where the wire path also arrives, so this
+    /// covers the paired case as well. Success is the owner's own signature:
+    /// the grant lets `dim2.dot` produce what `peopl.dot` would have.
+    #[test]
+    fn a_context_grant_lets_a_foreign_product_sign_with_the_owners_key() {
+        let granted = foreign_ring_vrf_sign_through_the_authority(Some(r#"{"dim2":["context"]}"#));
+        let owners_own = foreign_ring_vrf_sign_through_the_authority_as(
+            Some(r#"{"dim2":["context"]}"#),
+            "peopl.dot",
+        );
+        assert!(
+            granted.is_ok(),
+            "a granted cross-product ring-VRF signature must be produced, got {granted:?}"
+        );
+        assert_eq!(
+            granted, owners_own,
+            "the grant must yield the owner's own signature, not a caller-derived one"
+        );
+    }
+
+    /// The same call with no grant.
+    #[test]
+    fn a_foreign_ring_vrf_sign_is_refused_when_the_owner_granted_nothing() {
+        assert_eq!(
+            foreign_ring_vrf_sign_through_the_authority(None).err(),
+            Some(RingVrfError::NotAllowlisted)
+        );
+    }
+
+    /// Casing cannot turn a product's own key into a refusal — on the wire
+    /// path too, not only at the frontend.
+    ///
+    /// `3f6ec081`'s message says "the handle is normalized before the
+    /// comparison, so casing still cannot turn a product's own key into a
+    /// refusal". That was true of the frontend, which normalizes before
+    /// delegating, and false of `sso_responder`, which hands a wire request to
+    /// the authority untouched. The two doors have to agree here, because the
+    /// authority is the component that decides.
+    /// An unreadable permission store refuses the grant rather than honouring it.
+    ///
+    /// The stored `AccountAccess` decision is the only thing that can override a
+    /// publisher's grant. Reading a storage fault as "not refused" would let a
+    /// locked keychain turn the user's explicit no into a yes, on the strength
+    /// of a manifest the publisher controls. `account_access_authorization`,
+    /// which writes that same decision, already fails closed; this is the read
+    /// side agreeing with it.
+    ///
+    /// The error is scoped to permission keys so the manifest cache still
+    /// answers: otherwise the call would refuse for want of a manifest and the
+    /// assertion would prove nothing.
+    #[test]
+    fn a_grant_is_refused_when_the_stored_decision_cannot_be_read() {
+        let platform = Arc::new(StubPlatform {
+            permission_storage_error: Some("keychain locked"),
+            ..StubPlatform::default()
+        });
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+
+        let granted = futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+            &services,
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            crate::host_logic::product_manifest::Granted::Context,
+        ));
+        assert!(
+            !granted,
+            "an unreadable permission store must refuse, not fall through to the manifest"
+        );
+
+        // Control: the identical grant, with the store readable, is honoured.
+        // Without this the assertion above would also pass if the grant never
+        // worked at all.
+        let readable = Arc::new(StubPlatform::default());
+        cache_grant(&readable, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(readable.clone(), full_person_ring_resolver());
+        assert!(
+            futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                &services,
+                readable.as_ref(),
+                "dim2.dot",
+                "peopl.dot",
+                crate::host_logic::product_manifest::Granted::Context,
+            )),
+            "control: the same grant must be honoured when the store reads cleanly"
+        );
+    }
+
+    /// A grant lookup with nothing cached reaches the chain, and dials the
+    /// Asset Hub the role was configured with.
+    ///
+    /// Every other grant test here seeds the manifest cache, and `root_manifest`
+    /// serves that before it consults the genesis hash — so the whole suite
+    /// passes on a role with no Asset Hub, and deleting the production install
+    /// would not turn any of it red. That is the blind spot #660 survived in.
+    /// This is the one case that takes the other branch: it asserts the dial
+    /// itself, so removing the install breaks it rather than going unnoticed.
+    ///
+    /// The stub answers no RPC, so the lookup fails closed and the call is
+    /// refused. What is pinned is that the chain was reached at all, and which
+    /// chain.
+    #[test]
+    fn a_grant_lookup_with_a_cold_cache_dials_the_configured_asset_hub() {
+        let platform = Arc::new(StubPlatform::default());
+        // Deliberately no `cache_grant`: this must take the chain branch.
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+
+        let granted = futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+            &services,
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            crate::host_logic::product_manifest::Granted::Context,
+        ));
+        assert!(
+            !granted,
+            "the stub answers no RPC, so the lookup must fail closed"
+        );
+
+        let dialled = platform
+            .chain_connects
+            .lock()
+            .expect("chain connect list mutex poisoned")
+            .clone();
+        assert!(
+            dialled.contains(&[0xcc; 32]),
+            "a cold-cache grant lookup must dial the configured Asset Hub; dialled {dialled:?}"
+        );
+    }
+
+    /// The gate and the key derivation act on one identity, by construction.
+    ///
+    /// Previously the gate normalized the handle to decide, then handed the
+    /// caller's own spelling on to derivation, and the only thing between an
+    /// authorization about `peopl.dot` and a key derived from `PEOPL.DOT` was a
+    /// registry lookup that happened to miss. A later "make the registry
+    /// case-insensitive" change would have turned that into key confusion with
+    /// nothing to catch it. The gate now returns the owner it decided about and
+    /// the authority derives from that, so the two cannot diverge.
+    #[test]
+    fn the_gate_and_the_derivation_act_on_the_same_identity() {
+        let signed = ring_vrf_sign_at_the_authority("peopl.dot", "PEOPL.DOT");
+        assert!(
+            signed.is_ok(),
+            "an owner's own key must sign however it is spelled, because the gate \
+             hands the normalized owner to the derivation; got {signed:?}"
+        );
+        assert_eq!(
+            signed.ok(),
+            ring_vrf_sign_at_the_authority("peopl.dot", "peopl.dot").ok(),
+            "the two spellings must produce the same signature, not merely both succeed"
+        );
+    }
+
+    #[test]
+    fn an_owner_naming_its_own_key_in_another_spelling_is_admitted_over_the_wire() {
+        // Past the gate: not `NotAllowlisted`. It stops one layer further on,
+        // at `KeyNotRegistered`, because the registry lookup and
+        // `derive_ring_vrf_entropy` (`:426`) still read the raw handle — a
+        // separate, pre-existing wire-path gap that #655 does not own and that
+        // would derive a different key rather than refuse. Asserted exactly,
+        // so this test fails loudly in both directions: red if the gate
+        // regresses, and red again when that gap is closed, which is when this
+        // should become `is_ok()`.
+        assert!(
+            ring_vrf_sign_at_the_authority("peopl.dot", "PEOPL.DOT").is_ok(),
+            "the gate must admit an owner's own key however it is spelled"
+        );
+    }
+
+    /// A handle that does not normalize names no product, so it takes the same
+    /// refusal as a product that granted nothing rather than a distinguishable
+    /// error the caller could probe with.
+    #[test]
+    fn a_handle_that_does_not_normalize_takes_the_uniform_refusal() {
+        assert_eq!(
+            ring_vrf_sign_at_the_authority("peopl.dot", "not a product").err(),
+            Some(RingVrfError::NotAllowlisted)
+        );
+    }
+
+    /// Drive `ring_vrf_sign` at the authority with an arbitrary caller/handle
+    /// spelling, bypassing the frontend as `sso_responder` does.
+    fn ring_vrf_sign_at_the_authority(
+        caller: &str,
+        handle_owner: &str,
+    ) -> Result<Vec<u8>, RingVrfError> {
+        let platform = Arc::new(StubPlatform::default());
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        register_full_person_key(&authority, &session, &full_person_ring_location());
+
+        futures::executor::block_on(authority.ring_vrf_sign(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: caller.to_string(),
+                payload: v01::HostAccountRingVrfSignRequest {
+                    key_handle: v01::ProductAccountId {
+                        dot_ns_identifier: handle_owner.to_string(),
+                        derivation_index: v01::DerivationIndex::Index(0),
+                    },
+                    message: b"sign me".to_vec(),
+                },
+            },
+        ))
+    }
+
+    fn foreign_ring_vrf_sign_through_the_authority(
+        trusted_products: Option<&str>,
+    ) -> Result<Vec<u8>, RingVrfError> {
+        foreign_ring_vrf_sign_through_the_authority_as(trusted_products, "dim2.dot")
+    }
+
+    /// Drive `ring_vrf_sign` straight at the authority with `caller` naming
+    /// `peopl.dot`'s key handle, bypassing the frontend exactly as
+    /// `sso_responder` does.
+    fn foreign_ring_vrf_sign_through_the_authority_as(
+        trusted_products: Option<&str>,
+        caller: &str,
+    ) -> Result<Vec<u8>, RingVrfError> {
+        let platform = Arc::new(StubPlatform::default());
+        if let Some(trusted_products) = trusted_products {
+            cache_grant(&platform, "peopl.dot", trusted_products);
+        }
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        register_full_person_key(&authority, &session, &full_person_ring_location());
+
+        futures::executor::block_on(authority.ring_vrf_sign(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: caller.to_string(),
+                payload: v01::HostAccountRingVrfSignRequest {
+                    key_handle: full_person_key_handle(),
+                    message: b"sign me".to_vec(),
+                },
+            },
+        ))
+    }
+
+    fn foreign_proof_through_the_authority(
+        trusted_products: Option<&str>,
+    ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
+        foreign_proof_through_the_authority_with(trusted_products, |_| {})
+    }
+
+    /// Drive `create_proof` straight at the authority, bypassing the frontend,
+    /// with `dim2.dot` naming `peopl.dot`'s key handle.
+    fn foreign_proof_through_the_authority_with(
+        trusted_products: Option<&str>,
+        seed: impl FnOnce(&StubPlatform),
+    ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
+        let platform = Arc::new(StubPlatform::default());
+        if let Some(trusted_products) = trusted_products {
+            cache_grant(&platform, "peopl.dot", trusted_products);
+        }
+        seed(&platform);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        futures::executor::block_on(authority.create_proof(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "dim2.dot".to_string(),
+                payload: v01::HostAccountCreateProofRequest {
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: "dim2.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location,
+                    message: b"prove me".to_vec(),
+                },
+            },
+        ))
+    }
+
+    fn foreign_proof_request(
+        ring_location: &v01::RingLocation,
+    ) -> truapi::versioned::account::HostAccountCreateProofRequest {
+        truapi::versioned::account::HostAccountCreateProofRequest::V1(
+            v01::HostAccountCreateProofRequest {
+                key_handle: full_person_key_handle(),
+                context: v01::ProductProofContext {
+                    product_id: "dim2.dot".to_string(),
+                    suffix: v01::DerivationIndex::Index(0),
+                },
+                ring_location: ring_location.clone(),
+                message: b"prove me".to_vec(),
+            },
+        )
     }
 
     fn full_person_ring_location() -> v01::RingLocation {

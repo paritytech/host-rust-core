@@ -265,7 +265,7 @@ fn assert_subscription_start_interrupts_error<Wrapper: Encode>(
 }
 
 #[test]
-fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
+fn foreign_account_proof_encodes_a_domain_refusal() {
     let core = make_core();
     let request = v01::HostAccountCreateProofRequest {
         key_handle: v01::ProductAccountId {
@@ -301,10 +301,27 @@ fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
     assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
-    // RFC-0024 forbids a prompt fallback for bearer proofs made with a foreign key.
+    // RFC-0024 forbids a prompt fallback for a bearer proof made with a foreign
+    // key. What this pins is the wire shape of the refusal: an encoded domain
+    // error rather than a transport failure or a success.
+    //
+    // It does NOT pin "without confirmation", which the old name claimed. The
+    // stub platform answers `confirm_user_action` with `Ok(false)` and records
+    // nothing, and the test holds no handle to it, so a confirmation could be
+    // asked and denied and this would still pass. That property is asserted in
+    // `runtime::signing_host::tests` against a recording platform.
+    //
+    // It does NOT pin which refusal. `create_account_proof` consults the session
+    // before the grant (#655), so with no session this is the session guard's
+    // answer and says nothing about allowlisting. Giving the core a session does
+    // not fix that either: the authority picks one up asynchronously, so the
+    // assertion would race the dispatch. That the grant is what refuses a
+    // foreign handle is asserted in
+    // `runtime::signing_host::tests::a_foreign_proof_is_refused_when_the_owner_granted_nothing`
+    // and end to end by `make e2e-cross-product-ringvrf`.
     let expected =
         versioned_result_err_payload(truapi::versioned::account::HostAccountCreateProofError::V1(
-            v01::HostAccountCreateProofError::NotAllowlisted,
+            v01::HostAccountCreateProofError::Rejected,
         ));
     assert_eq!(response.payload.value, expected);
 }
@@ -562,7 +579,7 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         },
     };
     futures::executor::block_on(core.dispatch(stop, dyn_transport));
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
     core.session_state()
         .set_session(truapi_server::host_logic::session::SessionInfo {
@@ -575,7 +592,7 @@ fn subscription_start_receive_stop_through_wire_boundary() {
             lite_username: None,
             full_username: None,
         });
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
     assert_eq!(
         transport.sent.lock().unwrap().len(),

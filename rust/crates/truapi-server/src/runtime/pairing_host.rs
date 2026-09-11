@@ -222,6 +222,11 @@ impl SessionStoreSync {
 
 /// Remote account authority for a pairing host.
 pub(crate) struct PairingHost {
+    /// Shared runtime services. Held, not just borrowed at construction, so
+    /// this role can resolve a product manifest for itself when it adjudicates
+    /// a cross-product grant. `RuntimeServices` does not hold the pairing host
+    /// back — `host_core` owns both — so this is not a cycle.
+    services: Arc<RuntimeServices>,
     /// Host platform backing all syscalls.
     pub(super) platform: Arc<dyn Platform>,
     /// Pairing configuration supplied by the embedding host.
@@ -263,9 +268,23 @@ pub(crate) struct PairingHost {
 impl PairingHost {
     /// Build a pairing host over the shared runtime services.
     pub(crate) fn new(services: Arc<RuntimeServices>, host_config: PairingHostConfig) -> Arc<Self> {
+        if services.asset_hub_chain_genesis_hash().is_none() {
+            // Said once at startup rather than inferred from every grant
+            // refusing, matching the signing role. Cross-product refusals are
+            // deliberately indistinguishable from a product that granted
+            // nothing, so a pairing host with no Asset Hub resolves no manifest
+            // and refuses every grant while looking exactly like one whose
+            // publishers granted nothing. The hash itself now arrives by
+            // construction, so there is nothing to install here, only to report.
+            tracing::warn!(
+                "no Asset Hub configured on the pairing role: no product manifest \
+                 will resolve, so every cross-product grant is refused"
+            );
+        }
         let platform = services.platform.clone();
         let auth_state = AuthStateMachine::new(platform.clone());
         Arc::new_cyclic(|weak_self| Self {
+            services: services.clone(),
             platform,
             host_config,
             chain: services.chain.clone(),
@@ -1906,19 +1925,27 @@ impl PairingHost {
         subtrees.retain(|(key, _), _| *key != session_key);
     }
 
-    fn require_owned_ring_vrf_key(
+    /// Whether `calling_product_id` may act on `handle`'s ring-VRF key.
+    ///
+    /// Delegates to [`crate::runtime::ring_vrf_key_access_granted`], which
+    /// resolves the owner's manifest here rather than trusting the request: on
+    /// this role the request can have arrived over the pairing wire.
+    async fn require_ring_vrf_key_access(
+        &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<(), RingVrfError> {
-        let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
-            RingVrfError::Unknown {
-                reason: error.to_string(),
-            }
-        })?;
-        if caller != handle.dot_ns_identifier {
-            return Err(RingVrfError::NotAllowlisted);
-        }
-        Ok(())
+    ) -> Result<v01::ProductAccountId, RingVrfError> {
+        let owner = crate::runtime::product_manifest::ring_vrf_key_access_granted(
+            &self.services,
+            self.platform.as_ref(),
+            calling_product_id,
+            handle,
+        )
+        .await?;
+        Ok(v01::ProductAccountId {
+            dot_ns_identifier: owner,
+            derivation_index: handle.derivation_index.clone(),
+        })
     }
 
     async fn local_ring_vrf_entropy(
@@ -2121,12 +2148,32 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
+            .await?;
+        // A grant lets the caller act with the owner's key in the caller's own
+        // context. It does not let it choose whose pseudonym to mint: the
+        // contextual alias is a function of (owner key, context), so an
+        // unconstrained context would let a grantee produce the alias the owner
+        // presents to a third product that granted nothing. That third party
+        // cannot consent here and is not a party to the grant.
+        //
+        // The owner's own calls are unaffected; only a cross-product caller is
+        // held to its own context.
+        {
+            use crate::host_logic::product_manifest::bare_product_label as label;
+            let caller = label(&request.calling_product_id);
+            if label(&key_handle.dot_ns_identifier) != caller
+                && label(&request.payload.context.product_id) != caller
+            {
+                return Err(RingVrfError::NotAllowlisted);
+            }
+        }
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy_for_ring(
                 &private_session,
-                &request.payload.key_handle,
+                &key_handle,
                 &request.payload.ring_location,
             )
             .await?
@@ -2259,10 +2306,12 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.payload.key_handle)?;
+        let key_handle = self
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
+            .await?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
-            .local_ring_vrf_entropy(&private_session, &request.payload.key_handle)
+            .local_ring_vrf_entropy(&private_session, &key_handle)
             .await?
         {
             self.current_private_session(session)?;
