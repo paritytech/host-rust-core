@@ -39,8 +39,8 @@ codegen-units = 16
 # largest remaining win on this path.
 incremental = true
 
-# smoldot's `lifecycle_unstable_follow` subscription only exists on the branch of
-# paritytech/smoldot#3353; the rev is that pull request's head.
+# `lifecycle_unstable_follow` is on smoldot's main branch and in no published
+# release yet, so the light client comes from git until one ships it.
 [patch.crates-io]
-smoldot = { git = "https://github.com/paritytech/smoldot", rev = "d26e32d378b3cbd6d01745a3f8313988420df497" }
-smoldot-light = { git = "https://github.com/paritytech/smoldot", rev = "d26e32d378b3cbd6d01745a3f8313988420df497" }
+smoldot = { git = "https://github.com/paritytech/smoldot", branch = "main" }
+smoldot-light = { git = "https://github.com/paritytech/smoldot", branch = "main" }
