@@ -79,6 +79,7 @@ impl Signing for ProductRuntimeHost {
         .map_err(|reason| signing_call_error(HostSignPayloadError::V1, reason))
     }
 
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw"))]
     async fn sign_raw(
         &self,
         cx: &CallContext,
@@ -87,6 +88,7 @@ impl Signing for ProductRuntimeHost {
         self.sign_raw_with_watermark(cx, request, true).await
     }
 
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_unwatermarked_deprecated"))]
     async fn sign_raw_unwatermarked_deprecated(
         &self,
         cx: &CallContext,
@@ -221,6 +223,7 @@ impl Signing for ProductRuntimeHost {
         .map_err(|reason| signing_call_error(HostSignPayloadWithLegacyAccountError::V1, reason))
     }
 
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_with_legacy_account"))]
     async fn sign_raw_with_legacy_account(
         &self,
         cx: &CallContext,
@@ -231,6 +234,7 @@ impl Signing for ProductRuntimeHost {
             .await
     }
 
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_unwatermarked_deprecated_with_legacy_account"))]
     async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
         &self,
         cx: &CallContext,
@@ -322,7 +326,6 @@ impl Signing for ProductRuntimeHost {
 }
 
 impl ProductRuntimeHost {
-    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw"))]
     async fn sign_raw_with_watermark(
         &self,
         cx: &CallContext,
@@ -352,9 +355,10 @@ impl ProductRuntimeHost {
         };
         let confirmed = self
             .platform
-            .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product(
-                inner.clone(),
-            )))
+            .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product {
+                request: inner.clone(),
+                watermarked,
+            }))
             .await
             .map_err(|err| CallError::HostFailure {
                 reason: format!("sign raw confirmation failed: {err:?}"),
@@ -379,7 +383,6 @@ impl ProductRuntimeHost {
         .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))
     }
 
-    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_with_legacy_account"))]
     async fn sign_raw_with_legacy_account_with_watermark(
         &self,
         cx: &CallContext,
@@ -408,7 +411,10 @@ impl ProductRuntimeHost {
         let confirmed = self
             .platform
             .confirm_user_action(UserConfirmationReview::SignRaw(
-                SignRawReview::LegacyAccount(inner.clone()),
+                SignRawReview::LegacyAccount {
+                    request: inner.clone(),
+                    watermarked,
+                },
             ))
             .await
             .map_err(|err| CallError::HostFailure {

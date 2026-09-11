@@ -2,6 +2,7 @@ import Foundation
 import TrUAPIHost
 import ChainRegistry
 import SubstrateSdk
+import SubstrateSdkExt
 
 protocol ProductsSignConfirmModelMaking {
     /// Build the confirmation view model from a signing review. No wallet
@@ -46,7 +47,8 @@ struct ProductsSignConfirmModelFactory: ProductsSignConfirmModelMaking {
                 requester: requester
             )
         case let .signRaw(review):
-            return try makeRawModel(payload: rawPayload(from: review), requester: requester)
+            let (payload, watermarked) = rawPayload(from: review)
+            return try makeRawModel(payload: payload, watermarked: watermarked, requester: requester)
         }
     }
 }
@@ -72,20 +74,21 @@ private extension ProductsSignConfirmModelFactory {
 
     func makeRawModel(
         payload: RawPayload,
+        watermarked: Bool,
         requester: PolkadotSigningRequester
     ) throws -> ProductsSignConfirmModel {
         let rawBytes: Data =
             switch payload {
-            case let .bytes(data): try renderer.wrappedBytes(data)
-            case let .payload(string): try renderer.wrappedBytes(fromString: string)
+            case let .bytes(data): data
+            case let .payload(string): string.isHex() ? try Data(hexString: string) : Data(string.utf8)
             }
+        let signingBytes = watermarked ? try renderer.wrappedBytes(rawBytes) : rawBytes
 
         return ProductsSignConfirmModel(
             requester: requester,
-            // Mirrors PolkadotParsedSigningRequest.descriptionText for raw bytes.
-            descriptionText: "Raw bytes",
-            detailsText: rawBytes.toHex(includePrefix: true),
-            isTransaction: false
+            descriptionText: watermarked ? "Raw bytes" : "Unprotected signature: may authorize transactions",
+            detailsText: signingBytes.toHex(includePrefix: true),
+            isTransaction: !watermarked
         )
     }
 
@@ -121,10 +124,10 @@ private extension ProductsSignConfirmModelFactory {
         }
     }
 
-    func rawPayload(from review: SignRawReview) -> RawPayload {
+    func rawPayload(from review: SignRawReview) -> (payload: RawPayload, watermarked: Bool) {
         switch review {
-        case let .product(request): request.payload
-        case let .legacyAccount(request): request.payload
+        case let .product(request, watermarked): (request.payload, watermarked)
+        case let .legacyAccount(request, watermarked): (request.payload, watermarked)
         }
     }
 }

@@ -65,7 +65,6 @@ impl SigningHostSsoService {
         cx: &SsoRequestContext,
         request: SignRequest,
     ) -> Result<api::HostSignPayloadResponse, String> {
-        let watermarked = matches!(&request, SignRequest::Raw(_));
         match request {
             SignRequest::Payload(request) => {
                 let request = *request;
@@ -80,28 +79,39 @@ impl SigningHostSsoService {
                         SignPayloadAuthorityRequest::Product(request),
                     )
                     .await
+                    .map_err(|err| err.to_string())
             }
-            SignRequest::Raw(request) | SignRequest::RawUnwatermarkedDeprecated(request) => {
-                self.confirm(UserConfirmationReview::SignRaw(SignRawReview::Product(
-                    request.clone(),
-                )))
-                .await?;
-                self.signing_host
-                    .sign_raw(
-                        &cx.call,
-                        &cx.session,
-                        SignRawAuthorityRequest::Product(request),
-                        watermarked,
-                    )
-                    .await
+            SignRequest::Raw(request) => self.serve_sign_raw(cx, request, true).await,
+            SignRequest::RawUnwatermarkedDeprecated(request) => {
+                self.serve_sign_raw(cx, request, false).await
             }
             SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request) => {
-                return self
-                    .serve_sign_raw_with_legacy_account(cx, request, false)
-                    .await;
+                self.serve_sign_raw_with_legacy_account(cx, request, false)
+                    .await
             }
         }
-        .map_err(|err| err.to_string())
+    }
+
+    async fn serve_sign_raw(
+        &self,
+        cx: &SsoRequestContext,
+        request: api::HostSignRawRequest,
+        watermarked: bool,
+    ) -> Result<api::HostSignPayloadResponse, String> {
+        self.confirm(UserConfirmationReview::SignRaw(SignRawReview::Product {
+            request: request.clone(),
+            watermarked,
+        }))
+        .await?;
+        self.signing_host
+            .sign_raw(
+                &cx.call,
+                &cx.session,
+                SignRawAuthorityRequest::Product(request),
+                watermarked,
+            )
+            .await
+            .map_err(|err| err.to_string())
     }
 
     async fn serve_sign_raw_with_legacy_account(
@@ -115,7 +125,10 @@ impl SigningHostSsoService {
             payload: request.data,
         };
         self.confirm(UserConfirmationReview::SignRaw(
-            SignRawReview::LegacyAccount(public_request.clone()),
+            SignRawReview::LegacyAccount {
+                request: public_request.clone(),
+                watermarked,
+            },
         ))
         .await?;
         self.signing_host
