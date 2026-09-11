@@ -34,7 +34,9 @@ use subxt::utils::{AccountId32, MultiSignature};
 pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
 pub use sso_responder::{PairedSsoPeer, ResponderExit};
-pub(crate) use sso_responder::{establish_pairing, respond_to_pairing, resume_pairing};
+pub(crate) use sso_responder::{
+    disconnect_paired_host, establish_pairing, respond_to_pairing, resume_pairing,
+};
 pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
