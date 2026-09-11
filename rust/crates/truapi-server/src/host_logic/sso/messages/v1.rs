@@ -18,6 +18,7 @@ use super::{
     RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse, Response,
     RingVrfSignResponse, SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse,
     SignRequest, SignResponse, SignVrfResponse, SsoProductDeviceChatOperation,
+    StatementStoreProductSignRequest, StatementStoreProductSignResponse,
 };
 
 /// v1 messages exchanged with the paired signing host over the encrypted SSO channel.
@@ -90,4 +91,10 @@ pub enum RemoteMessage {
     /// Account Holder's product-device Chat v2 response.
     #[codec(index = 25)]
     ProductDeviceChatResponse(Response<ProductDeviceChatResponse>),
+    /// Ask the Account Holder to sign an exact Statement Store product payload.
+    #[codec(index = 26)]
+    StatementStoreProductSignRequest(StatementStoreProductSignRequest),
+    /// Account Holder's product-account Statement Store signature.
+    #[codec(index = 27)]
+    StatementStoreProductSignResponse(Response<StatementStoreProductSignResponse>),
 }

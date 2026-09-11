@@ -2330,17 +2330,14 @@ impl PairingHost {
 
     async fn sign_statement_store_product_payload(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         session: &AuthoritySession,
-        _account: v01::ProductAccountId,
-        _payload: Vec<u8>,
+        account: v01::ProductAccountId,
+        payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError> {
-        self.current_private_session(session)?;
-        Err(AuthorityError::Unavailable {
-            reason: "pairing host: exact statement proof signing is not supported over the \
-                     current SSO raw-signing protocol"
-                .to_string(),
-        })
+        let session = self.current_private_session(session)?;
+        self.remote_sign_statement_store_product_payload(cx, &session, account, payload)
+            .await
     }
 
     fn derive_entropy(

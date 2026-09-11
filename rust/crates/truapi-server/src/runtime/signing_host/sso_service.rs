@@ -7,7 +7,8 @@ use tracing::warn;
 use truapi::{latest as api, v01};
 use truapi_platform::{
     CreateTransactionReview, PermissionAuthorizationStatus, ResourceAllocationReview,
-    SignPayloadReview, SignRawReview, UserConfirmationReview, normalize_product_identifier,
+    SignPayloadReview, SignRawReview, StatementStoreProductSignReview, UserConfirmationReview,
+    normalize_product_identifier,
 };
 
 use super::SigningHost;
@@ -28,9 +29,11 @@ use crate::host_logic::sso::messages::{
     RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse,
     RingVrfSignResponse, SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse,
     SignRequest, SignResponse, SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
-    SsoProductDeviceChatOperation,
+    SsoProductDeviceChatOperation, StatementStoreProductSignRequest,
+    StatementStoreProductSignResponse,
 };
 use crate::host_logic::sso::wire::ResponseOutcome;
+use crate::host_logic::statement_store::validate_unsigned_statement_signing_payload;
 use crate::runtime::authority::{
     AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
     ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
@@ -495,6 +498,36 @@ impl SigningHostSsoService {
             .ring_vrf_sign(&cx.call, &cx.session, request)
             .await
     }
+    /// Sign a canonical unsigned Statement Store payload with a product account.
+    async fn statement_store_product_sign(
+        &self,
+        cx: &SsoRequestContext,
+        request: StatementStoreProductSignRequest,
+    ) -> StatementStoreProductSignResponse {
+        let calling_product_id = normalize_product_identifier(&request.calling_product_id)
+            .map_err(|_| "invalid calling product identifier".to_string())?;
+        let mut account = request.account;
+        let account_product_id = normalize_product_identifier(&account.dot_ns_identifier)
+            .map_err(|_| "invalid product account identifier".to_string())?;
+        if account_product_id != calling_product_id {
+            return Err("product account does not belong to the calling product".to_string());
+        }
+        account.dot_ns_identifier = calling_product_id;
+        validate_unsigned_statement_signing_payload(&request.payload)
+            .map_err(|error| error.to_string())?;
+        self.confirm(UserConfirmationReview::StatementStoreProductSign(
+            StatementStoreProductSignReview {
+                account: account.clone(),
+                payload: request.payload.clone(),
+            },
+        ))
+        .await?;
+        self.signing_host
+            .sign_statement_store_product_payload(&cx.call, &cx.session, account, request.payload)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     /// Perform a Chat identity operation without exposing wallet key material.
     async fn product_device_chat(
         &self,

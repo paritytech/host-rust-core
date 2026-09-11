@@ -19,7 +19,8 @@ use crate::host_logic::sso::messages::{
     ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
     RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
     SsoAllocationOutcome, SsoProductDeviceChatOperation, SsoSessionStatement,
-    build_outgoing_request_statement, decode_sso_session_statement, v1,
+    StatementStoreProductSignRequest, build_outgoing_request_statement,
+    decode_sso_session_statement, v1,
 };
 use crate::host_logic::sso::wire::SsoRequest;
 use crate::host_logic::statement_store::parse_new_statements_result;
@@ -470,6 +471,28 @@ impl PairingHost {
         self.call(cx, session, request)
             .await
             .map_err(ring_vrf_transport_error)?
+    }
+    /// Forward exact Statement Store product-account signing to the Account Holder.
+    pub(super) async fn remote_sign_statement_store_product_payload(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        account: v01::ProductAccountId,
+        payload: Vec<u8>,
+    ) -> Result<[u8; 64], AuthorityError> {
+        let calling_product_id = account.dot_ns_identifier.clone();
+        self.call(
+            cx,
+            session,
+            StatementStoreProductSignRequest {
+                calling_product_id,
+                account,
+                payload,
+            },
+        )
+        .await
+        .map_err(remote_authority_error)?
+        .map_err(remote_authority_error)
     }
 
     /// Forward a product-device Chat v2 operation without exposing wallet key material.
