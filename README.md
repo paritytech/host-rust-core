@@ -84,7 +84,7 @@ js/packages/
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
-                           published to GitHub Packages as io.parity:truapi-host-android
+                           published to Maven Central as io.parity:truapi-host-android
                            (AAR with per-ABI cdylibs; see android/truapi-host/README.md)
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core

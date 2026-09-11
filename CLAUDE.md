@@ -41,7 +41,7 @@ ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over Un
                            second product of the root Package.swift, released on its
                            own tag (@parity/ios-provider@<v>) via its scripts/
 android/truapi-host/       truapi-host-android AAR (bindings + Kotlin shell + per-ABI
-                           cdylib), published to GitHub Packages by release-android;
+                           cdylib), published to Maven Central by release-android;
                            include `@parity/android-host <version>` in the `release:`
                            PR title
 android/truapi-provider/   truapi-provider-android AAR; bundles the cdylib the same way,

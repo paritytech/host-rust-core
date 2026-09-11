@@ -1,5 +1,5 @@
 # Builds and publishes the Android host AAR (io.parity:truapi-host-android) to
-# GitHub Packages. The AAR bundles the per-ABI Rust core (ws-bridge feature), the
+# Maven Central. The AAR bundles the per-ABI Rust core (ws-bridge feature), the
 # UniFFI Kotlin bindings generated from the same source, and the Kotlin shell.
 name: release-android
 
@@ -17,19 +17,44 @@ on:
         description: "Commit to build, since a called workflow does not inherit the caller's checkout"
         required: true
         type: string
-  # Manual escape hatch. There is deliberately no tag trigger: a tag push
-  # cannot use release.yml's workflow_run gate on green CI, so it would be an
-  # unverified path to the registry.
+      publishing_type:
+        description: "AUTOMATIC publishes once validated; USER_MANAGED parks the deployment for a person to release or drop"
+        required: false
+        default: AUTOMATIC
+        type: string
+    secrets:
+      MAVEN_CENTRAL_USERNAME:
+        required: true
+      MAVEN_CENTRAL_PASSWORD:
+        required: true
+      MAVEN_CENTRAL_SIGNING_KEY:
+        required: true
+      # Optional: an unprotected signing key has no passphrase.
+      MAVEN_CENTRAL_SIGNING_PASSPHRASE:
+        required: false
+  # Manual escape hatch, and the rehearsal path: a USER_MANAGED dispatch uploads
+  # a real bundle and stops at validation, so the pipeline can be proven without
+  # publishing a version Maven Central can never take back. There is
+  # deliberately no tag trigger: a tag push cannot use release.yml's
+  # workflow_run gate on green CI, so it would be an unverified path to the
+  # registry.
   workflow_dispatch:
     inputs:
       version:
         description: "Version to publish (e.g. 0.1.0 or 0.1.0-rc.1)"
         required: true
         type: string
+      publishing_type:
+        description: "Park the deployment for manual release, or publish once validated"
+        required: true
+        default: USER_MANAGED
+        type: choice
+        options:
+          - USER_MANAGED
+          - AUTOMATIC
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   publish:
@@ -87,11 +112,51 @@ jobs:
           done
           test -f android/truapi-host/src/main/kotlin/generated/uniffi/truapi_server/truapi_server.kt
 
-      - name: Publish to GitHub Packages
+      - name: Build the signed Central bundle
         env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.MAVEN_CENTRAL_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.MAVEN_CENTRAL_SIGNING_PASSPHRASE }}
+          VERSION: ${{ inputs.version }}
+        run: gradle :truapi-host:centralBundle -PtruapiHostVersion="${VERSION}"
+
+      # The Portal takes the whole repository layout as one zip and answers with
+      # a deployment id. Accepting the file is not publication; the confirm step
+      # below is what proves the version landed.
+      - name: Upload the bundle to the Central Portal
+        id: upload
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          PUBLISHING_TYPE: ${{ inputs.publishing_type }}
           VERSION: ${{ inputs.version }}
         run: |
-          gradle :truapi-host:publishReleasePublicationToGitHubPackagesRepository \
-            -PtruapiHostVersion="${VERSION}"
+          set -euo pipefail
+          bundle="android/truapi-host/build/central-bundle/truapi-host-android-${VERSION}-bundle.zip"
+          test -f "${bundle}" || { echo "::error::no bundle at ${bundle}"; exit 1; }
+          token="$(printf '%s:%s' "${MAVEN_CENTRAL_USERNAME}" "${MAVEN_CENTRAL_PASSWORD}" | base64 -w0)"
+          deployment="$(curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer ${token}" \
+            -F "bundle=@${bundle}" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=truapi-host-android-${VERSION}&publishingType=${PUBLISHING_TYPE}")"
+          test -n "${deployment}" || { echo "::error::the Portal accepted the upload but returned no deployment id"; exit 1; }
+          echo "deployment=${deployment}" >> "$GITHUB_OUTPUT"
+          echo "Uploaded ${bundle} as deployment ${deployment} (${PUBLISHING_TYPE})."
+
+      # A USER_MANAGED deployment stops at VALIDATED and waits for a person, so
+      # that is the state to confirm for a rehearsal; a release waits for
+      # PUBLISHED. Either way the Portal's own status is the only proof.
+      - name: Confirm the deployment
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          DEPLOYMENT: ${{ steps.upload.outputs.deployment }}
+          PUBLISHING_TYPE: ${{ inputs.publishing_type }}
+        run: |
+          set -euo pipefail
+          if [ "${PUBLISHING_TYPE}" = "USER_MANAGED" ]; then
+            target=VALIDATED
+          else
+            target=PUBLISHED
+          fi
+          node scripts/wait-for-central-publish.mjs \
+            --deployment "${DEPLOYMENT}" --target "${target}"

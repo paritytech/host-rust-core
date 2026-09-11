@@ -147,14 +147,26 @@ SwiftPM looks for. The job clones the tag and compiles it against the published
 asset before pushing, so a tag that cannot be resolved is never published.
 
 `@parity/android-host <version>` publishes the Android host AAR as
-`io.parity:truapi-host-android:<version>` to GitHub Packages. The job
+`io.parity:truapi-host-android:<version>` to Maven Central. The job
 cross-compiles `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64,
-regenerates the UniFFI Kotlin bindings from the same source, and publishes the
-AAR with the native libraries inside it, so consumers need only Gradle. Nothing
-in the tree records the Android version, so there is no manifest to bump: the
-release subject is the only place it appears. See
+regenerates the UniFFI Kotlin bindings from the same source, signs the AAR with
+the native libraries inside it, and uploads the repository layout to the Central
+Portal as one bundle. `scripts/wait-for-central-publish.mjs` then polls the
+Portal until the deployment reports `PUBLISHED`, because accepting an upload is
+not publication and the Portal's status is the only proof a version landed —
+the same reason `wait-for-npm-publish.mjs` exists. Consumers need only Gradle
+and `mavenCentral()`, with no credentials. Nothing in the tree records the
+Android version, so there is no manifest to bump: the release subject is the
+only place it appears. See
 [`android/truapi-host/README.md`](../android/truapi-host/README.md) for the
-consumer setup and the credentials a consumer needs.
+consumer setup.
+
+A manual `release-android` dispatch defaults to `USER_MANAGED`, which validates
+the bundle and parks it in the Portal for a person to release or drop. That is
+the rehearsal path: a published version cannot be withdrawn from Maven Central,
+but a validated deployment can be dropped, so the pipeline can be proven end to
+end without spending a version. The four `MAVEN_CENTRAL_*` secrets carry the
+Portal token and the armored signing key.
 
 Both native jobs are also reachable by a manual `workflow_dispatch` run with a
 version input. For iOS that is also how a pre-release is cut: dispatching
