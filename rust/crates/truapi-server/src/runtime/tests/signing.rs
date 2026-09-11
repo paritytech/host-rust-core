@@ -85,9 +85,9 @@ fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading(
         assert_eq!(reviews.len(), 1);
         assert!(matches!(
             (&reviews[0], signer_kind),
-            (SignRawReview::ProductUnwatermarkedDeprecated(_), "product")
+            (SignRawReview::Product(_), "product")
                 | (
-                    SignRawReview::LegacyAccountUnwatermarkedDeprecated(_),
+                    SignRawReview::LegacyAccount(_),
                     "legacy product" | "identity"
                 )
         ));

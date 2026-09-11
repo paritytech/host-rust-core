@@ -203,8 +203,7 @@ fn unwatermarked_signing_keeps_authorization_and_confirmation_gates() {
                 assert_eq!(reviews.len(), 1);
                 assert!(matches!(
                     (&reviews[0], legacy),
-                    (SignRawReview::ProductUnwatermarkedDeprecated(_), false)
-                        | (SignRawReview::LegacyAccountUnwatermarkedDeprecated(_), true)
+                    (SignRawReview::Product(_), false) | (SignRawReview::LegacyAccount(_), true)
                 ));
             }
         }
@@ -263,8 +262,7 @@ fn paired_signing_host_signs_unwatermarked_proofs_only_after_confirmation() {
             assert_eq!(reviews.len(), 1);
             assert!(matches!(
                 (&reviews[0], legacy),
-                (SignRawReview::ProductUnwatermarkedDeprecated(_), false)
-                    | (SignRawReview::LegacyAccountUnwatermarkedDeprecated(_), true)
+                (SignRawReview::Product(_), false) | (SignRawReview::LegacyAccount(_), true)
             ));
             if confirmed {
                 let response = response.payload.unwrap();

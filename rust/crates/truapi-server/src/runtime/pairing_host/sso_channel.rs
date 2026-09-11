@@ -316,55 +316,48 @@ impl PairingHost {
 
     /// Forward a raw-signing request to the paired signing host.
     #[instrument(skip_all, fields(account_kind = match &request {
-        SignRawAuthorityRequest::Product(_) | SignRawAuthorityRequest::ProductUnwatermarkedDeprecated(_) => "product",
-        SignRawAuthorityRequest::LegacyAccount { .. } | SignRawAuthorityRequest::LegacyAccountUnwatermarkedDeprecated { .. } => "legacy",
+        SignRawAuthorityRequest::Product(_) => "product",
+        SignRawAuthorityRequest::LegacyAccount { .. } => "legacy",
     }))]
     pub(super) async fn remote_sign_raw(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<latest::HostSignPayloadResponse, AuthorityError> {
         match request {
-            SignRawAuthorityRequest::ProductUnwatermarkedDeprecated(request) => self
+            SignRawAuthorityRequest::Product(request) => self
                 .call(
                     cx,
                     session,
-                    SignRequest::RawUnwatermarkedDeprecated(request),
+                    if watermarked {
+                        SignRequest::Raw(request)
+                    } else {
+                        SignRequest::RawUnwatermarkedDeprecated(request)
+                    },
                 )
-                .await
-                .map_err(remote_authority_error)?
-                .map_err(remote_authority_error),
-            SignRawAuthorityRequest::LegacyAccountUnwatermarkedDeprecated { account, request } => {
-                self.call(
-                    cx,
-                    session,
-                    SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(
-                        SignRawWithLegacyAccountRequest {
-                            account,
-                            data: request.payload,
-                        },
-                    ),
-                )
-                .await
-                .map_err(remote_authority_error)?
-                .map_err(remote_authority_error)
-            }
-            SignRawAuthorityRequest::Product(request) => self
-                .call(cx, session, SignRequest::Raw(request))
                 .await
                 .map_err(remote_authority_error)?
                 .map_err(remote_authority_error),
             SignRawAuthorityRequest::LegacyAccount { account, request } => {
+                let request = SignRawWithLegacyAccountRequest {
+                    account,
+                    data: request.payload,
+                };
+                if !watermarked {
+                    return self
+                        .call(
+                            cx,
+                            session,
+                            SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request),
+                        )
+                        .await
+                        .map_err(remote_authority_error)?
+                        .map_err(remote_authority_error);
+                }
                 let signature = self
-                    .call(
-                        cx,
-                        session,
-                        SignRawWithLegacyAccountRequest {
-                            account,
-                            data: request.payload,
-                        },
-                    )
+                    .call(cx, session, request)
                     .await
                     .map_err(remote_authority_error)?
                     .map_err(remote_authority_error)?;

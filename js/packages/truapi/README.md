@@ -55,9 +55,8 @@ const proof = await truapi.signing.signRawDeprecatedIWillChangeThisLaterWithLega
 });
 ```
 
-These methods retain account authorization, signing permission, and confirmation checks. Hosts receive a distinct
-unwatermarked confirmation variant because this operation can sign transaction data. Both ends of a paired connection
-need support for the new unwatermarked requests; they never fall back to wrapped signing.
+These methods retain account authorization, signing permission, and the existing confirmation flow. Both ends of a
+paired connection need support for the new unwatermarked requests; they never fall back to wrapped signing.
 
 API definitions carry Rust `#[deprecated]` and TypeScript `@deprecated` notices. The temporary unwatermarked
 implementations log a warning linking to #612 when called.

@@ -352,11 +352,9 @@ impl ProductRuntimeHost {
         };
         let confirmed = self
             .platform
-            .confirm_user_action(UserConfirmationReview::SignRaw(if watermarked {
-                SignRawReview::Product(inner.clone())
-            } else {
-                SignRawReview::ProductUnwatermarkedDeprecated(inner.clone())
-            }))
+            .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product(
+                inner.clone(),
+            )))
             .await
             .map_err(|err| CallError::HostFailure {
                 reason: format!("sign raw confirmation failed: {err:?}"),
@@ -372,11 +370,8 @@ impl ProductRuntimeHost {
             self.authority.sign_raw(
                 &cx,
                 &session,
-                if watermarked {
-                    SignRawAuthorityRequest::Product(inner)
-                } else {
-                    SignRawAuthorityRequest::ProductUnwatermarkedDeprecated(inner)
-                },
+                SignRawAuthorityRequest::Product(inner),
+                watermarked,
             ),
         )
         .await
@@ -412,11 +407,9 @@ impl ProductRuntimeHost {
         .await?;
         let confirmed = self
             .platform
-            .confirm_user_action(UserConfirmationReview::SignRaw(if watermarked {
-                SignRawReview::LegacyAccount(inner.clone())
-            } else {
-                SignRawReview::LegacyAccountUnwatermarkedDeprecated(inner.clone())
-            }))
+            .confirm_user_action(UserConfirmationReview::SignRaw(
+                SignRawReview::LegacyAccount(inner.clone()),
+            ))
             .await
             .map_err(|err| CallError::HostFailure {
                 reason: format!("sign raw confirmation failed: {err:?}"),
@@ -442,15 +435,8 @@ impl ProductRuntimeHost {
         };
         remote_authority_call(
             &cx,
-            self.authority.sign_raw(
-                &cx,
-                &session,
-                if watermarked {
-                    authority_request
-                } else {
-                    authority_request.without_watermark_deprecated()
-                },
-            ),
+            self.authority
+                .sign_raw(&cx, &session, authority_request, watermarked),
         )
         .await
         .map(HostSignRawWithLegacyAccountResponse::V1)
