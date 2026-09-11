@@ -183,6 +183,422 @@ fn get_chain_info_unserved_identifier_is_not_supported() {
     );
 }
 
+/// A picker whose contact list and answer are fixed at construction.
+struct StubContactsPlatform {
+    listed: Vec<truapi::latest::AccountId>,
+    pick: truapi_platform::HostContactPick,
+    failure: Option<&'static str>,
+    /// Products the picker was opened on behalf of, in order.
+    asked_for: Mutex<Vec<String>>,
+}
+
+impl StubContactsPlatform {
+    fn new(
+        listed: Vec<truapi::latest::AccountId>,
+        pick: truapi_platform::HostContactPick,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            listed,
+            pick,
+            failure: None,
+            asked_for: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn picking(account: truapi::latest::AccountId) -> Arc<Self> {
+        Self::new(
+            vec![account],
+            truapi_platform::HostContactPick::Picked { account },
+        )
+    }
+
+    fn dismissing() -> Arc<Self> {
+        Self::new(
+            vec![[10u8; 32]],
+            truapi_platform::HostContactPick::Dismissed,
+        )
+    }
+
+    fn empty() -> Arc<Self> {
+        Self::new(vec![], truapi_platform::HostContactPick::Dismissed)
+    }
+
+    fn without_a_picker() -> Arc<Self> {
+        Self::new(
+            vec![[10u8; 32]],
+            truapi_platform::HostContactPick::Unsupported,
+        )
+    }
+
+    fn failing(reason: &'static str) -> Arc<Self> {
+        Arc::new(Self {
+            listed: vec![[10u8; 32]],
+            pick: truapi_platform::HostContactPick::Dismissed,
+            failure: Some(reason),
+            asked_for: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[truapi::async_trait]
+impl truapi_platform::ContactsPlatform for StubContactsPlatform {
+    async fn contacts(
+        &self,
+    ) -> Result<truapi_platform::HostContactBook, truapi::latest::GenericError> {
+        if let Some(reason) = self.failure {
+            return Err(truapi::latest::GenericError {
+                reason: reason.to_string(),
+            });
+        }
+        Ok(truapi_platform::HostContactBook {
+            contacts: self
+                .listed
+                .iter()
+                .map(|account| truapi_platform::HostContact {
+                    account: *account,
+                    display_name: Some("alice".to_string()),
+                })
+                .collect(),
+        })
+    }
+
+    async fn pick_contact(
+        &self,
+        product: &ProductContext,
+    ) -> Result<truapi_platform::HostContactPick, truapi::latest::GenericError> {
+        self.asked_for
+            .lock()
+            .expect("asked_for mutex poisoned")
+            .push(product.product_id.clone());
+        match self.failure {
+            Some(reason) => Err(truapi::latest::GenericError {
+                reason: reason.to_string(),
+            }),
+            None => Ok(self.pick),
+        }
+    }
+}
+
+/// A picker-capable runtime for `product_id`, with a session unless
+/// `connected` is false.
+fn contacts_host(
+    product_id: &str,
+    platform: Arc<StubPlatform>,
+    contacts: Option<Arc<StubContactsPlatform>>,
+    connected: bool,
+) -> ProductRuntimeHost {
+    let (host_config, product) = runtime_config(product_id);
+    let services = RuntimeServices::with_platforms(
+        platform as Arc<dyn Platform>,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        test_spawner(),
+        None,
+        contacts.map(|contacts| contacts as Arc<dyn truapi_platform::ContactsPlatform>),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    if connected {
+        install_pairing_session(&host, session_info());
+    }
+    host
+}
+
+fn pick(
+    host: &ProductRuntimeHost,
+) -> Result<HostContactsPickResponse, CallError<HostContactsPickError>> {
+    futures::executor::block_on(Contacts::pick(
+        host,
+        &CallContext::default(),
+        HostContactsPickRequest::V1(v01::HostContactsPickRequest {}),
+    ))
+}
+
+/// A host that implements only the required `contacts` method.
+struct ListOnlyContactsPlatform;
+
+#[truapi::async_trait]
+impl truapi_platform::ContactsPlatform for ListOnlyContactsPlatform {
+    async fn contacts(
+        &self,
+    ) -> Result<truapi_platform::HostContactBook, truapi::latest::GenericError> {
+        Ok(truapi_platform::HostContactBook {
+            contacts: vec![truapi_platform::HostContact {
+                account: [10u8; 32],
+                display_name: None,
+            }],
+        })
+    }
+}
+
+#[test]
+fn a_host_that_only_lists_contacts_reports_unsupported() {
+    // `pick_contact` is defaulted so a host needs to write one method. The
+    // default is truthful: a product learns the picker will never work here,
+    // rather than a dismissal it would keep retrying.
+    let (host_config, product) = runtime_config("voting.dot");
+    let services = RuntimeServices::with_platforms(
+        stub_platform() as Arc<dyn Platform>,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        test_spawner(),
+        None,
+        Some(Arc::new(ListOnlyContactsPlatform)),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    install_pairing_session(&host, session_info());
+
+    assert_eq!(pick(&host).unwrap_err(), CallError::Unsupported);
+}
+
+#[test]
+fn contacts_pick_without_a_platform_is_unsupported() {
+    // No picker means no overlay, and nothing to ask the user.
+    let host = contacts_host("voting.dot", stub_platform(), None, true);
+    assert_eq!(pick(&host).unwrap_err(), CallError::Unsupported);
+}
+
+#[test]
+fn contacts_pick_without_a_session_reports_not_connected() {
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        false,
+    );
+
+    assert_eq!(
+        pick(&host).unwrap_err(),
+        CallError::Domain(HostContactsPickError::V1(
+            v01::HostContactsPickError::NotConnected
+        ))
+    );
+}
+
+#[test]
+fn contacts_pick_never_prompts_for_a_permission() {
+    // The user's selection is the consent, so there is no grant to request
+    // and nothing persisted per product.
+    let platform = stub_platform();
+    let host = contacts_host(
+        "voting.dot",
+        platform.clone(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        true,
+    );
+
+    pick(&host).expect("the picker opens");
+
+    assert!(
+        platform
+            .device_permission_requests
+            .lock()
+            .expect("device permission list mutex poisoned")
+            .is_empty(),
+        "a user-mediated picker must not also request a permission"
+    );
+}
+
+#[test]
+fn contacts_pick_tells_the_host_which_product_is_asking() {
+    // The host draws the overlay, so it has to be able to name the caller.
+    let contacts = StubContactsPlatform::picking([10u8; 32]);
+    let host = contacts_host("voting.dot", stub_platform(), Some(contacts.clone()), true);
+
+    pick(&host).expect("the picker opens");
+
+    assert_eq!(
+        *contacts.asked_for.lock().expect("asked_for mutex poisoned"),
+        vec!["voting.dot".to_string()]
+    );
+}
+
+#[test]
+fn the_handle_is_derived_from_the_sessions_secret_entropy_source() {
+    // The security property of the whole design, pinned end to end: the
+    // handle a product receives must be the one derived from this session's
+    // root entropy source. Keying on anything public (session.public_key is
+    // published on chain) or on a constant would satisfy every other test
+    // here, so this is the only thing standing between the design and a
+    // handle an adversary can recompute.
+    let account = [10u8; 32];
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking(account)),
+        true,
+    );
+
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+
+    let source = session_info()
+        .root_entropy_source
+        .expect("the test session carries an entropy source");
+    let expected = crate::runtime::contacts::contact_handle(
+        &crate::runtime::contacts::handle_key_from_root_source(&source),
+        &account,
+    );
+    assert_eq!(
+        handle, expected,
+        "the handle must key on the session's root entropy source"
+    );
+    // And is not what the public alternatives would have produced.
+    for public in [session_info().public_key, [0u8; 32]] {
+        assert_ne!(
+            handle,
+            crate::runtime::contacts::contact_handle(
+                &crate::runtime::contacts::handle_key_from_root_source(&public),
+                &account,
+            ),
+            "the handle must not be derivable from public material"
+        );
+    }
+}
+
+#[test]
+fn contacts_pick_returns_a_handle_and_never_the_account() {
+    let account = [10u8; 32];
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking(account)),
+        true,
+    );
+
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+    assert_ne!(
+        handle, account,
+        "the account must not be passed through as the handle"
+    );
+}
+
+#[test]
+fn a_dismissal_an_empty_list_and_no_picker_are_three_answers() {
+    // The distinction a product acts on: retry a dismissal, do not retry an
+    // empty list, and never retry a host that has no picker.
+    let dismissed = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::dismissing()),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) =
+        pick(&dismissed).expect("a dismissal is not an error");
+    assert_eq!(response.outcome, v01::ContactPickOutcome::Dismissed);
+
+    let empty = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::empty()),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) =
+        pick(&empty).expect("an empty list is not an error");
+    assert_eq!(response.outcome, v01::ContactPickOutcome::NoContacts);
+
+    let no_picker = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::without_a_picker()),
+        true,
+    );
+    assert_eq!(pick(&no_picker).unwrap_err(), CallError::Unsupported);
+}
+
+#[test]
+fn an_empty_list_is_never_offered_to_the_host_as_a_picker_call() {
+    // A host must not be asked to render an overlay with nothing in it.
+    let contacts = StubContactsPlatform::empty();
+    let host = contacts_host("voting.dot", stub_platform(), Some(contacts.clone()), true);
+
+    pick(&host).expect("the call succeeds");
+    assert!(
+        contacts
+            .asked_for
+            .lock()
+            .expect("asked_for mutex poisoned")
+            .is_empty(),
+        "pick_contact must not be called for an empty contact list"
+    );
+}
+
+#[test]
+fn contacts_pick_maps_a_platform_failure_to_unknown() {
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::failing("overlay unavailable")),
+        true,
+    );
+
+    assert_eq!(
+        pick(&host).unwrap_err(),
+        CallError::Domain(HostContactsPickError::V1(
+            v01::HostContactsPickError::Unknown {
+                reason: "overlay unavailable".to_string(),
+            }
+        ))
+    );
+}
+
+#[test]
+fn contacts_pick_is_available_to_an_app_execution() {
+    // Unlike Chat, the picker is not gated on an execution kind.
+    let (_, product) = runtime_config("voting.dot");
+    assert_eq!(
+        product.execution_kind,
+        truapi_platform::ProductExecutionKind::App
+    );
+
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) =
+        pick(&host).expect("an app product may open the picker");
+    assert!(matches!(
+        response.outcome,
+        v01::ContactPickOutcome::Picked { .. }
+    ));
+}
+
+#[test]
+fn two_products_receive_the_same_handle_for_one_contact() {
+    // The deliberate property: the handle is a durable shared id, so a
+    // product can be handed a recipient another product already knows.
+    let platform = stub_platform();
+    let account = [10u8; 32];
+
+    let handle_for = |product_id: &str| {
+        let host = contacts_host(
+            product_id,
+            platform.clone(),
+            Some(StubContactsPlatform::picking(account)),
+            true,
+        );
+        let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+        let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+            panic!("the user picked someone");
+        };
+        handle
+    };
+
+    assert_eq!(handle_for("voting.dot"), handle_for("games.dot"));
+}
+
 /// Records which `ChatPlatform` methods the runtime actually reached.
 #[derive(Default)]
 struct RecordingChatPlatform {

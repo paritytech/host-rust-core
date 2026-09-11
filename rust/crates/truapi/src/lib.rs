@@ -54,17 +54,18 @@ pub mod latest {
         AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
         ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
         ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
-        ContextualAlias, DerivationIndex, GenericError, HostAccountCreateProofRequest,
-        HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
-        HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
-        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
-        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
-        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
-        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension, VrfSignature,
+        ContactPickOutcome, ContextualAlias, DerivationIndex, GenericError,
+        HostAccountCreateProofRequest, HostAccountGetAliasRequest,
+        HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
+        HostAccountRingVrfSignRequest, HostAccountSignVrfError, HostAccountSignVrfRequest,
+        HostPlatform, HostSignPayloadData, NotificationId, OperationStartedResult,
+        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
+        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
+        RemoteStatementStoreSubscribeRequest, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey,
+        RuntimeApi, RuntimeSpec, RuntimeType, SignedStatement, Statement, StatementProof,
+        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeName, ThemeVariant,
+        TxPayloadExtension, VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -101,6 +102,12 @@ pub mod latest {
     /// Product-to-host custom renderer tree.
     pub type ProductChatCustomMessageRenderItem =
         LatestOf<versioned::chat::ProductChatCustomMessageRenderItem>;
+    /// Contact picker request.
+    pub type HostContactsPickRequest = LatestOf<versioned::contacts::HostContactsPickRequest>;
+    /// Contact picker outcome.
+    pub type HostContactsPickResponse = LatestOf<versioned::contacts::HostContactsPickResponse>;
+    /// Contact picker failure.
+    pub type HostContactsPickError = LatestOf<versioned::contacts::HostContactsPickError>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;

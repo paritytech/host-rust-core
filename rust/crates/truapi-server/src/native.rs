@@ -8,6 +8,12 @@
 //! dispatcher pipeline behaves identically to the WS-bridge and wasm flavors.
 //! A native host therefore owns the signer: there is no pairing flow here, and
 //! the pairing-host-only entry points are inert.
+//!
+//! Contacts is absent from this surface: there is no contacts callback trait and
+//! no channel to install a `ContactsPlatform`, so `contacts.pick` answers
+//! `Unsupported` on every UniFFI host. WASM hosts and Rust embedders
+//! (`SigningHostRuntime::with_platforms`) serve it. The contacts value types are
+//! in the generated bindings but are not yet callable.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

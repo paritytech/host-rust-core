@@ -968,6 +968,7 @@ export function createWebWorkerPairingHostRuntime(
           capabilities: {
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
+            contacts: host.contacts !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
         } satisfies MainToWorker);

@@ -15,6 +15,7 @@ mod authority;
 pub(crate) mod bulletin_rpc;
 mod capabilities;
 mod chat;
+pub(crate) mod contacts;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
@@ -44,6 +45,11 @@ use std::time::Instant;
 use authority::{AuthorityCancelError, AuthoritySession};
 pub(crate) use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
 pub(crate) use chat::{ChatConnection, chat_platform_for};
+pub(crate) use contacts::{ContactsAccess, contact_handle, contacts_platform_for};
+
+/// The host's contact picker plus the key its handles are minted under:
+/// everything one `contacts.pick` call needs from the connection.
+type ContactsPicker = (Arc<dyn truapi_platform::ContactsPlatform>, [u8; 32]);
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
@@ -57,13 +63,16 @@ pub(crate) use signing_host::{
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 use tracing::{instrument, warn};
-use truapi::api::Chat;
+use truapi::api::{Chat, Contacts};
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
     HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
     HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+};
+use truapi::versioned::contacts::{
+    HostContactsPickError, HostContactsPickRequest, HostContactsPickResponse,
 };
 use truapi::versioned::preimage::RemotePreimageSubmitError;
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
@@ -908,6 +917,109 @@ impl ProductRuntimeHost {
     ) -> Result<(), crate::host_core::ProductRuntimeError> {
         self.native_chat_platform()?;
         self.chat.publish_action(action)
+    }
+
+    /// The contact picker for this connection, plus the key its handles are
+    /// minted under.
+    ///
+    /// Ordered so a host that serves no picker answers `Unsupported` without an
+    /// overlay ever being raised. There is no permission step: the user
+    /// selecting a contact is the consent.
+    fn contacts_picker(&self) -> Result<ContactsPicker, CallError<v01::HostContactsPickError>> {
+        let session = self.authority.current_session();
+        let platform =
+            contacts_platform_for(session.is_some(), self.services.contacts_platform.as_ref())
+                .map_err(|error| match error {
+                    // A capability the host does not serve is a framework
+                    // answer; a missing session is one the product handles.
+                    ContactsAccess::Unsupported => CallError::Unsupported,
+                    ContactsAccess::NotConnected => {
+                        CallError::Domain(v01::HostContactsPickError::NotConnected)
+                    }
+                })?;
+        let session = session.expect("contacts_platform_for rejects a missing session; qed");
+        let handle_key =
+            self.authority
+                .contacts_handle_key(&session)
+                .map_err(|error| match error {
+                    AuthorityError::Disconnected => {
+                        CallError::Domain(v01::HostContactsPickError::NotConnected)
+                    }
+                    other => CallError::Domain(v01::HostContactsPickError::Unknown {
+                        reason: other.to_string(),
+                    }),
+                })?;
+        Ok((platform, handle_key))
+    }
+}
+
+#[truapi_platform::async_trait]
+impl Contacts for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "contacts.pick"))]
+    async fn pick(
+        &self,
+        _cx: &CallContext,
+        _request: HostContactsPickRequest,
+    ) -> Result<HostContactsPickResponse, CallError<HostContactsPickError>> {
+        let wrap = HostContactsPickError::V1;
+        let (platform, handle_key) = self
+            .contacts_picker()
+            .map_err(|error| contacts_error(error, wrap))?;
+
+        let unknown = |error: v01::GenericError| {
+            CallError::Domain(wrap(v01::HostContactsPickError::Unknown {
+                reason: error.reason,
+            }))
+        };
+
+        // Checked before presenting, so a host is never asked to render an
+        // empty overlay and the product learns there is nothing to pick.
+        if platform
+            .contacts()
+            .await
+            .map_err(unknown)?
+            .contacts
+            .is_empty()
+        {
+            return Ok(HostContactsPickResponse::V1(
+                v01::HostContactsPickResponse {
+                    outcome: v01::ContactPickOutcome::NoContacts,
+                },
+            ));
+        }
+
+        let outcome = match platform
+            .pick_contact(&self.product)
+            .await
+            .map_err(unknown)?
+        {
+            truapi_platform::HostContactPick::Picked { account } => {
+                v01::ContactPickOutcome::Picked {
+                    handle: contact_handle(&handle_key, &account),
+                }
+            }
+            truapi_platform::HostContactPick::Dismissed => v01::ContactPickOutcome::Dismissed,
+            // A host that lists contacts but cannot present them is a
+            // framework-level gap, not an outcome the user produced.
+            truapi_platform::HostContactPick::Unsupported => return Err(CallError::Unsupported),
+        };
+        Ok(HostContactsPickResponse::V1(
+            v01::HostContactsPickResponse { outcome },
+        ))
+    }
+}
+
+/// Re-wrap a latest-payload picker error into its versioned envelope.
+fn contacts_error<E>(
+    error: CallError<v01::HostContactsPickError>,
+    wrap: fn(v01::HostContactsPickError) -> E,
+) -> CallError<E> {
+    match error {
+        CallError::Domain(domain) => CallError::Domain(wrap(domain)),
+        CallError::Denied => CallError::Denied,
+        CallError::Unsupported => CallError::Unsupported,
+        CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
+        CallError::HostFailure { reason } => CallError::HostFailure { reason },
     }
 }
 

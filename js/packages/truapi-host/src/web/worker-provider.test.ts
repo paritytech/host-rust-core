@@ -220,7 +220,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       kind: "init",
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
-      capabilities: { chat: false, permissionStatus: false },
+      capabilities: { chat: false, permissionStatus: false, contacts: false },
       debuggerUrl: null,
     });
 
@@ -254,6 +254,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
       chat: true,
       permissionStatus: false,
+      contacts: false,
     });
   });
 
