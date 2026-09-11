@@ -24,8 +24,8 @@ use truapi::latest as api;
 use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionStatusHost, Permissions,
-    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, SignRawReview, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -794,6 +794,13 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
         UserConfirmationReview::SignPayload(_) => (
             "sign payload",
             "A product requested a SCALE payload signature.".to_string(),
+        ),
+        UserConfirmationReview::SignRaw(
+            SignRawReview::Product { watermarked: false, .. }
+            | SignRawReview::LegacyAccount { watermarked: false, .. },
+        ) => (
+            "sign unprotected data",
+            "Warning: this signature has no transaction-payload protection and may authorize transactions. The payload is hidden here.".to_string(),
         ),
         UserConfirmationReview::SignRaw(_) => (
             "sign raw data",

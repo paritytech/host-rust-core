@@ -85,50 +85,19 @@ impl Signing for ProductRuntimeHost {
         cx: &CallContext,
         request: HostSignRawRequest,
     ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
-        debug!("sign_raw: requesting signing-host signature");
-        let HostSignRawRequest::V1(mut inner) = request;
-        inner.account = Self::normalize_product_account_id(inner.account).map_err(|()| {
-            CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            ))
-        })?;
-        if !self.is_product_account_valid_for_caller(&inner.account.dot_ns_identifier) {
-            return Err(CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            )));
-        }
-        self.require_chain_submit(HostSignRawError::V1(
-            v01::HostSignPayloadError::PermissionDenied,
-        ))
-        .await?;
-        let Some(session) = self.authority.current_session() else {
-            return Err(CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::Rejected,
-            )));
-        };
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product(
-                inner.clone(),
-            )))
-            .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("sign raw confirmation failed: {err:?}"),
-            })?;
-        if !confirmed {
-            return Err(CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::Rejected,
-            )));
-        }
-        let cx = remote_authority_context(cx);
-        remote_authority_call(
-            &cx,
-            self.authority
-                .sign_raw(&cx, &session, SignRawAuthorityRequest::Product(inner)),
-        )
-        .await
-        .map(HostSignRawResponse::V1)
-        .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))
+        self.sign_raw_with_watermark(cx, request, true).await
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_unwatermarked_deprecated"))]
+    async fn sign_raw_unwatermarked_deprecated(
+        &self,
+        cx: &CallContext,
+        request: HostSignRawRequest,
+    ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
+        tracing::warn!(
+            "Temporary unwatermarked signing API is deprecated and will be removed: https://github.com/paritytech/host-rust-core/issues/612"
+        );
+        self.sign_raw_with_watermark(cx, request, false).await
     }
 
     #[instrument(skip_all, fields(runtime.method = "signing.create_transaction"))]
@@ -261,59 +230,22 @@ impl Signing for ProductRuntimeHost {
         request: HostSignRawWithLegacyAccountRequest,
     ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
     {
-        let HostSignRawWithLegacyAccountRequest::V1(inner) = request;
-        let Some(session) = self.authority.current_session() else {
-            return Err(CallError::Domain(HostSignRawWithLegacyAccountError::V1(
-                v01::HostSignPayloadError::Rejected,
-            )));
-        };
-        let signer = self
-            .classify_legacy_address_signer(cx, &session, &inner.signer)
+        self.sign_raw_with_legacy_account_with_watermark(cx, request, true)
             .await
-            .map_err(|err| {
-                CallError::Domain(HostSignRawWithLegacyAccountError::V1(
-                    err.into_host_error(LEGACY_ACCOUNT_UNAVAILABLE_REASON),
-                ))
-            })?;
-        self.require_chain_submit(HostSignRawWithLegacyAccountError::V1(
-            v01::HostSignPayloadError::PermissionDenied,
-        ))
-        .await?;
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::SignRaw(
-                SignRawReview::LegacyAccount(inner.clone()),
-            ))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_unwatermarked_deprecated_with_legacy_account"))]
+    async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
+        &self,
+        cx: &CallContext,
+        request: HostSignRawWithLegacyAccountRequest,
+    ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
+    {
+        tracing::warn!(
+            "Temporary unwatermarked signing API is deprecated and will be removed: https://github.com/paritytech/host-rust-core/issues/612"
+        );
+        self.sign_raw_with_legacy_account_with_watermark(cx, request, false)
             .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("sign raw confirmation failed: {err:?}"),
-            })?;
-        if !confirmed {
-            return Err(CallError::Domain(HostSignRawWithLegacyAccountError::V1(
-                v01::HostSignPayloadError::Rejected,
-            )));
-        }
-        let cx = remote_authority_context(cx);
-        let authority_request = match signer {
-            LegacySigner::Product => SignRawAuthorityRequest::Product(v01::HostSignRawRequest {
-                account: v01::ProductAccountId {
-                    dot_ns_identifier: self.product_id(),
-                    derivation_index: v01::DerivationIndex::Index(0),
-                },
-                payload: inner.payload,
-            }),
-            LegacySigner::Identity(account) => SignRawAuthorityRequest::LegacyAccount {
-                account,
-                request: inner,
-            },
-        };
-        remote_authority_call(
-            &cx,
-            self.authority.sign_raw(&cx, &session, authority_request),
-        )
-        .await
-        .map(HostSignRawWithLegacyAccountResponse::V1)
-        .map_err(|reason| signing_call_error(HostSignRawWithLegacyAccountError::V1, reason))
     }
 
     #[instrument(skip_all, fields(runtime.method = "signing.create_transaction_with_legacy_account"))]
@@ -390,5 +322,130 @@ impl Signing for ProductRuntimeHost {
         .map_err(|reason| {
             transaction_call_error(HostCreateTransactionWithLegacyAccountError::V1, reason)
         })
+    }
+}
+
+impl ProductRuntimeHost {
+    async fn sign_raw_with_watermark(
+        &self,
+        cx: &CallContext,
+        request: HostSignRawRequest,
+        watermarked: bool,
+    ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
+        debug!("sign_raw: requesting signing-host signature");
+        let HostSignRawRequest::V1(mut inner) = request;
+        inner.account = Self::normalize_product_account_id(inner.account).map_err(|()| {
+            CallError::Domain(HostSignRawError::V1(
+                v01::HostSignPayloadError::PermissionDenied,
+            ))
+        })?;
+        if !self.is_product_account_valid_for_caller(&inner.account.dot_ns_identifier) {
+            return Err(CallError::Domain(HostSignRawError::V1(
+                v01::HostSignPayloadError::PermissionDenied,
+            )));
+        }
+        self.require_chain_submit(HostSignRawError::V1(
+            v01::HostSignPayloadError::PermissionDenied,
+        ))
+        .await?;
+        let Some(session) = self.authority.current_session() else {
+            return Err(CallError::Domain(HostSignRawError::V1(
+                v01::HostSignPayloadError::Rejected,
+            )));
+        };
+        let confirmed = self
+            .platform
+            .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product {
+                request: inner.clone(),
+                watermarked,
+            }))
+            .await
+            .map_err(|err| CallError::HostFailure {
+                reason: format!("sign raw confirmation failed: {err:?}"),
+            })?;
+        if !confirmed {
+            return Err(CallError::Domain(HostSignRawError::V1(
+                v01::HostSignPayloadError::Rejected,
+            )));
+        }
+        let cx = remote_authority_context(cx);
+        remote_authority_call(
+            &cx,
+            self.authority.sign_raw(
+                &cx,
+                &session,
+                SignRawAuthorityRequest::Product(inner),
+                watermarked,
+            ),
+        )
+        .await
+        .map(HostSignRawResponse::V1)
+        .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))
+    }
+
+    async fn sign_raw_with_legacy_account_with_watermark(
+        &self,
+        cx: &CallContext,
+        request: HostSignRawWithLegacyAccountRequest,
+        watermarked: bool,
+    ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
+    {
+        let HostSignRawWithLegacyAccountRequest::V1(inner) = request;
+        let Some(session) = self.authority.current_session() else {
+            return Err(CallError::Domain(HostSignRawWithLegacyAccountError::V1(
+                v01::HostSignPayloadError::Rejected,
+            )));
+        };
+        let signer = self
+            .classify_legacy_address_signer(cx, &session, &inner.signer)
+            .await
+            .map_err(|err| {
+                CallError::Domain(HostSignRawWithLegacyAccountError::V1(
+                    err.into_host_error(LEGACY_ACCOUNT_UNAVAILABLE_REASON),
+                ))
+            })?;
+        self.require_chain_submit(HostSignRawWithLegacyAccountError::V1(
+            v01::HostSignPayloadError::PermissionDenied,
+        ))
+        .await?;
+        let confirmed = self
+            .platform
+            .confirm_user_action(UserConfirmationReview::SignRaw(
+                SignRawReview::LegacyAccount {
+                    request: inner.clone(),
+                    watermarked,
+                },
+            ))
+            .await
+            .map_err(|err| CallError::HostFailure {
+                reason: format!("sign raw confirmation failed: {err:?}"),
+            })?;
+        if !confirmed {
+            return Err(CallError::Domain(HostSignRawWithLegacyAccountError::V1(
+                v01::HostSignPayloadError::Rejected,
+            )));
+        }
+        let cx = remote_authority_context(cx);
+        let authority_request = match signer {
+            LegacySigner::Product => SignRawAuthorityRequest::Product(v01::HostSignRawRequest {
+                account: v01::ProductAccountId {
+                    dot_ns_identifier: self.product_id(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                payload: inner.payload,
+            }),
+            LegacySigner::Identity(account) => SignRawAuthorityRequest::LegacyAccount {
+                account,
+                request: inner,
+            },
+        };
+        remote_authority_call(
+            &cx,
+            self.authority
+                .sign_raw(&cx, &session, authority_request, watermarked),
+        )
+        .await
+        .map(HostSignRawWithLegacyAccountResponse::V1)
+        .map_err(|reason| signing_call_error(HostSignRawWithLegacyAccountError::V1, reason))
     }
 }

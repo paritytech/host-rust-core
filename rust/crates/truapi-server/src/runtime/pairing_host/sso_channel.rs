@@ -324,23 +324,40 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<latest::HostSignPayloadResponse, AuthorityError> {
         match request {
             SignRawAuthorityRequest::Product(request) => self
-                .call(cx, session, SignRequest::Raw(request))
+                .call(
+                    cx,
+                    session,
+                    if watermarked {
+                        SignRequest::Raw(request)
+                    } else {
+                        SignRequest::RawUnwatermarkedDeprecated(request)
+                    },
+                )
                 .await
                 .map_err(remote_authority_error)?
                 .map_err(remote_authority_error),
             SignRawAuthorityRequest::LegacyAccount { account, request } => {
+                let request = SignRawWithLegacyAccountRequest {
+                    account,
+                    data: request.payload,
+                };
+                if !watermarked {
+                    return self
+                        .call(
+                            cx,
+                            session,
+                            SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request),
+                        )
+                        .await
+                        .map_err(remote_authority_error)?
+                        .map_err(remote_authority_error);
+                }
                 let signature = self
-                    .call(
-                        cx,
-                        session,
-                        SignRawWithLegacyAccountRequest {
-                            account,
-                            data: request.payload,
-                        },
-                    )
+                    .call(cx, session, request)
                     .await
                     .map_err(remote_authority_error)?
                     .map_err(remote_authority_error)?;

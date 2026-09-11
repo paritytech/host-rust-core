@@ -84,7 +84,7 @@ struct ProductsSignConfirmModelFactoryTests {
         let bytes = try Data.randomOrError(of: 16)
         let account = TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0))
         let input = ProductsSignConfirmInput.signRaw(
-            .product(HostSignRawRequest(account: account, payload: .bytes(bytes: bytes)))
+            .product(request: HostSignRawRequest(account: account, payload: .bytes(bytes: bytes)), watermarked: true)
         )
 
         let model = try await makeFactory().makeModel(from: input, requester: requester)
@@ -96,7 +96,7 @@ struct ProductsSignConfirmModelFactoryTests {
 
     @Test func signRawStringPayloadWrapsForDisplay() async throws {
         let input = ProductsSignConfirmInput.signRaw(
-            .legacyAccount(HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "hello")))
+            .legacyAccount(request: HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "hello")), watermarked: true)
         )
 
         let model = try await makeFactory().makeModel(from: input, requester: requester)
@@ -105,14 +105,36 @@ struct ProductsSignConfirmModelFactoryTests {
         #expect(model.detailsText == Self.wrapped(Data("hello".utf8)).toHex(includePrefix: true))
     }
 
-    @Test func signRawInvalidHexPayloadThrows() async {
+    @Test(arguments: [false, true]) func signRawInvalidHexPayloadThrows(watermarked: Bool) async {
         let input = ProductsSignConfirmInput.signRaw(
-            .legacyAccount(HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "0xZZ")))
+            .legacyAccount(request: HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "0xZZ")), watermarked: watermarked)
         )
 
         await #expect(throws: (any Error).self) {
             _ = try await makeFactory().makeModel(from: input, requester: requester)
         }
+    }
+
+    @Test(arguments: [false, true]) func unwatermarkedSigningWarnsAndDisplaysExactBytes(legacy: Bool) async throws {
+        let bytes = Data(repeating: 0x11, count: 32)
+        let review: SignRawReview = legacy
+            ? .legacyAccount(
+                request: HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: bytes.toHex(includePrefix: true))),
+                watermarked: false
+            )
+            : .product(
+                request: HostSignRawRequest(
+                    account: TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0)),
+                    payload: .bytes(bytes: bytes)
+                ),
+                watermarked: false
+            )
+
+        let model = try await makeFactory().makeModel(from: .signRaw(review), requester: requester)
+
+        #expect(model.isTransaction)
+        #expect(model.descriptionText == "Unprotected signature: may authorize transactions")
+        #expect(model.detailsText == bytes.toHex(includePrefix: true))
     }
 }
 

@@ -357,6 +357,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<HostSignPayloadResponse, AuthorityError>;
 
     /// Build a transaction for a product account, signed unless the request

@@ -10,8 +10,8 @@ This repo is the single source of truth for the TrUAPI protocol. It vendors `dot
 rust/crates/
   truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2 (canonical)
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
-  truapi-macros/         #[wire(id = N)] proc-macro; #[sso_service] for
-                         truapi-server's inter-host SSO protocol
+  truapi-macros/         #[wire_trait(id = N)] and #[wire(id = N)] proc-macros;
+                         #[sso_service] for truapi-server's inter-host SSO protocol
                          One implementation module per macro; lib.rs holds entry points
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
@@ -345,7 +345,7 @@ __truapi.setLogLevel("debug");
 sessionStorage.setItem("dotli:truapi-debug", "1");
 ```
 
-Reload after setting the debug-panel flag. Watch for `Unknown wire discriminant`, missing
+Reload after setting the debug-panel flag. Watch for `unknown wire discriminant pair`, missing
 `@parity/truapi-host` imports, worker WASM instantiation failures, and
 debug-panel traffic disappearing when the login popup opens.
 
