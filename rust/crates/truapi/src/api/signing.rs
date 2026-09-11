@@ -12,10 +12,11 @@ use crate::versioned::signing::{
     HostSignRawResponse, HostSignRawWithLegacyAccountError, HostSignRawWithLegacyAccountRequest,
     HostSignRawWithLegacyAccountResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Signing operations.
+#[wire_trait(id = 13)]
 #[crate::async_trait]
 pub trait Signing: Send + Sync {
     /// Construct a transaction for a product account.
@@ -61,7 +62,7 @@ pub trait Signing: Send + Sync {
     ///   console.log(`${version} transaction created:`, result.value);
     /// }
     /// ```
-    #[wire(request_id = 30, sensitive)]
+    #[wire(id = 0)]
     async fn create_transaction(
         &self,
         _cx: &CallContext,
@@ -118,7 +119,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
     /// console.log("transaction created:", result.value);
     /// ```
-    #[wire(request_id = 32, sensitive)]
+    #[wire(id = 1)]
     async fn create_transaction_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -150,7 +151,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRawWithLegacyAccount failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 34, sensitive)]
+    #[wire(id = 2)]
     async fn sign_raw_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -196,7 +197,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayloadWithLegacyAccount failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 36, sensitive)]
+    #[wire(id = 3)]
     async fn sign_payload_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -226,7 +227,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRaw failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 114, sensitive)]
+    #[wire(id = 4)]
     async fn sign_raw(
         &self,
         _cx: &CallContext,
@@ -263,7 +264,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayload failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 116, sensitive)]
+    #[wire(id = 5)]
     async fn sign_payload(
         &self,
         _cx: &CallContext,
@@ -301,7 +302,7 @@ pub trait Signing: Send + Sync {
     #[deprecated(
         note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
     )]
-    #[wire(request_id = 174, sensitive)]
+    #[wire(id = 6)]
     async fn sign_raw_unwatermarked_deprecated(
         &self,
         _cx: &CallContext,
@@ -341,7 +342,7 @@ pub trait Signing: Send + Sync {
     #[deprecated(
         note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
     )]
-    #[wire(request_id = 176, sensitive)]
+    #[wire(id = 7)]
     async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
         &self,
         _cx: &CallContext,

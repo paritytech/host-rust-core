@@ -7,18 +7,12 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, ItemFn, LitInt, Token, TraitItemFn, parse_macro_input};
+use syn::{Ident, ItemFn, ItemTrait, LitInt, Token, TraitItemFn, parse_macro_input};
 
 #[derive(Default)]
 struct WireArgs {
     host_initiated: bool,
-    request_id: Option<u8>,
-    response_id: Option<u8>,
-    start_id: Option<u8>,
-    stop_id: Option<u8>,
-    interrupt_id: Option<u8>,
-    receive_id: Option<u8>,
-    sensitive: bool,
+    id: Option<u8>,
 }
 
 impl Parse for WireArgs {
@@ -33,25 +27,22 @@ impl Parse for WireArgs {
                     return Err(syn::Error::new(key.span(), "duplicate `host_initiated`"));
                 }
                 args.host_initiated = true;
-            } else if key == "sensitive" {
-                // `sensitive` is a bare flag with no `= N` value: it classifies
-                // the method's payloads as carrying key material or bearer
-                // secrets. The classification is folded into the wire
-                // schema-hash fingerprint, so a change in a frame's sensitivity
-                // is caught as contract drift. It suppresses no decoding: it
-                // reaches neither the generated TS nor any runtime.
-                if args.sensitive {
-                    return Err(syn::Error::new(key.span(), "duplicate `sensitive`"));
-                }
-                args.sensitive = true;
             } else {
+                if key != "id" {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "expected `id = N` or `host_initiated`",
+                    ));
+                }
                 input.parse::<Token![=]>()?;
                 let lit: LitInt = input.parse()?;
                 let value = lit.base10_parse().map_err(|err| {
                     syn::Error::new(lit.span(), format!("wire id must fit in a u8: {err}"))
                 })?;
 
-                set_id(&mut args, &key, value)?;
+                if args.id.replace(value).is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `id`"));
+                }
             }
 
             if input.is_empty() {
@@ -60,39 +51,12 @@ impl Parse for WireArgs {
             input.parse::<Token![,]>()?;
         }
 
-        if args.request_id.is_none() && args.start_id.is_none() {
-            return Err(input.error("missing `request_id = N` or `start_id = N`"));
+        if args.id.is_none() {
+            return Err(input.error("missing `id = N`"));
         }
 
         Ok(args)
     }
-}
-
-fn set_id(args: &mut WireArgs, key: &Ident, value: u8) -> syn::Result<()> {
-    let target = if key == "request_id" {
-        &mut args.request_id
-    } else if key == "response_id" {
-        &mut args.response_id
-    } else if key == "start_id" {
-        &mut args.start_id
-    } else if key == "stop_id" {
-        &mut args.stop_id
-    } else if key == "interrupt_id" {
-        &mut args.interrupt_id
-    } else if key == "receive_id" {
-        &mut args.receive_id
-    } else {
-        return Err(syn::Error::new(
-            key.span(),
-            "expected one of `request_id`, `response_id`, `start_id`, `stop_id`, `interrupt_id`, `receive_id`, `host_initiated`, `sensitive`",
-        ));
-    };
-
-    if target.replace(value).is_some() {
-        return Err(syn::Error::new(key.span(), format!("duplicate `{key}`")));
-    }
-
-    Ok(())
 }
 
 /// Parse the macro input and emit generated code or a compiler diagnostic.
@@ -123,22 +87,54 @@ pub(super) fn expand(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn wire_tags(args: &WireArgs) -> Vec<String> {
-    let mut tags: Vec<String> = [
-        ("request_id", args.request_id),
-        ("response_id", args.response_id),
-        ("start_id", args.start_id),
-        ("stop_id", args.stop_id),
-        ("interrupt_id", args.interrupt_id),
-        ("receive_id", args.receive_id),
-    ]
-    .into_iter()
-    .filter_map(|(name, value)| value.map(|id| format!("@wire_{name}={id}")))
-    .collect();
+    let mut tags = Vec::new();
+    if let Some(id) = args.id {
+        tags.push(format!("@wire_id={id}"));
+    }
     if args.host_initiated {
         tags.push("@wire_host_initiated".to_string());
     }
-    if args.sensitive {
-        tags.push("@wire_sensitive=true".to_string());
-    }
     tags
+}
+
+/// Arguments to `#[wire_trait(id = N)]`.
+struct WireTraitArgs {
+    id: u8,
+}
+
+impl Parse for WireTraitArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let key: Ident = input.parse()?;
+        if key != "id" {
+            return Err(syn::Error::new(key.span(), "expected `id = N`"));
+        }
+        input.parse::<Token![=]>()?;
+        let lit: LitInt = input.parse()?;
+        let id = lit.base10_parse().map_err(|err| {
+            syn::Error::new(lit.span(), format!("wire trait id must fit in a u8: {err}"))
+        })?;
+        if !input.is_empty() {
+            return Err(input.error("expected a single `id = N` argument"));
+        }
+        Ok(Self { id })
+    }
+}
+
+/// Parse `#[wire_trait(id = N)]` and re-emit the trait with its hidden tag.
+pub(super) fn expand_trait(args: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args as WireTraitArgs);
+    let tag = format!("@wire_trait_id={}", args.id);
+
+    match syn::parse::<ItemTrait>(item) {
+        Ok(mut item_trait) => {
+            item_trait.attrs.push(syn::parse_quote!(#[doc = #tag]));
+            quote!(#item_trait).into()
+        }
+        Err(_) => syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[wire_trait] can only be applied to traits",
+        )
+        .to_compile_error()
+        .into(),
+    }
 }

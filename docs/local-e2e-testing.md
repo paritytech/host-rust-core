@@ -241,7 +241,7 @@ iframe via `window.parent` and uses the iframe `postMessage` provider.
 If the connection chip stays on _Handshaking_, the handshake is
 failing. Check:
 
-- The dotli console for `Unknown wire tag` / `Unknown wire discriminant`
+- The dotli console for `Unknown wire tag` / `unknown wire discriminant pair`
   errors — wire-table mismatch between the dotli vendored copy of
   `@parity/truapi` and the just-built one.
 - The playground console for `decodeWireMessage` errors — the inbound

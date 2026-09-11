@@ -27,6 +27,7 @@ function frame(
     direction: role === "response" || role === "receive" ? "in" : "out",
     requestId: "req-1",
     frameId,
+    messageType: 0,
     role,
     byteLength: 8,
     timestamp,
@@ -56,9 +57,12 @@ function traceOf(
   };
 }
 
+// Fixture frames below carry an explicit `role`, never "unknown", so
+// `wireTraceToView` never falls back to resolving it from `kind` here - only
+// the method name lookup matters, and `kind` need only type-check.
 const methodNames: ReadonlyMap<number, WireMethodInfo> = new Map([
   [22, { method: "account.getAccount", kind: "request" }],
-  [23, { method: "account.getAccount", kind: "response" }],
+  [23, { method: "account.getAccount", kind: "request" }],
 ]);
 
 describe("wireTraceToView", () => {

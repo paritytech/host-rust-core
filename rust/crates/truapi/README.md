@@ -10,7 +10,7 @@ It defines:
 
 - **Versioned data types** under `v01` and `versioned`.
 - **Domain API traits** under `api/`, plus the composed `TrUApi` trait.
-- **Wire ids** via per-method `#[wire(id = N)]` annotations that pin the byte-level method table.
+- **Wire ids** via trait-level `#[wire_trait(id = N)]` and per-method `#[wire(id = N)]` annotations that pin the byte-level `(trait, method)` dispatch table.
 - **Subscription primitives** through `Subscription<T>` for streamed host responses.
 - **Authoring types** like `CallContext`, `CallError<D>`, and `CancellationToken`.
 
@@ -23,7 +23,7 @@ The crate has two layers:
 1. **Protocol types** under `v01`.
 2. **Unified host contract** under `api`, where each method takes a `CallContext`, a versioned request type, and returns a versioned response with `CallError<D>` or a `Subscription<T>`.
 
-Wire ids are part of the public protocol after F1: existing ids are append-only. Do not renumber or reuse them. The generated Rust dispatcher and the generated TypeScript wire table must stay byte-compatible with deployed products.
+Wire ids are part of the public protocol. Every frame carries a two-byte `(trait, method)` discriminant pair: the trait id comes from the trait-level `#[wire_trait(id = N)]` annotation and the method id from the method-level `#[wire(...)]` annotation. Trait ids and existing method ids are append-only **per trait**: never renumber or reuse an id within a trait, and never reassign a trait id. New methods take the next free method ids in their own trait without affecting any other trait. The generated Rust dispatcher and the generated TypeScript wire table must stay byte-compatible with deployed products.
 
 ## Key modules
 
