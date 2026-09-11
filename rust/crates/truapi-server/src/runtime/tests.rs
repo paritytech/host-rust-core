@@ -1917,9 +1917,9 @@ fn preimage_lookup_cache_hit_emits_once_and_stays_open() {
     let item = futures::executor::block_on(subscription.next()).expect("preimage item");
     assert_eq!(
         item,
-        RemotePreimageLookupSubscribeItem::V1(v01::RemotePreimageLookupSubscribeItem {
-            value: Some(value)
-        })
+        Ok(RemotePreimageLookupSubscribeItem::V1(
+            v01::RemotePreimageLookupSubscribeItem { value: Some(value) }
+        ))
     );
     // The subscription stays open (no completion/interrupt frame) after the
     // single cache-hit emission.
@@ -1948,9 +1948,9 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
     let item = futures::executor::block_on(subscription.next()).expect("preimage item");
     assert_eq!(
         item,
-        RemotePreimageLookupSubscribeItem::V1(v01::RemotePreimageLookupSubscribeItem {
-            value: None
-        })
+        Ok(RemotePreimageLookupSubscribeItem::V1(
+            v01::RemotePreimageLookupSubscribeItem { value: None }
+        ))
     );
 
     // Correct bytes pass the integrity check through.
@@ -1967,9 +1967,9 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
     let item = futures::executor::block_on(subscription.next()).expect("preimage item");
     assert_eq!(
         item,
-        RemotePreimageLookupSubscribeItem::V1(v01::RemotePreimageLookupSubscribeItem {
-            value: Some(value)
-        })
+        Ok(RemotePreimageLookupSubscribeItem::V1(
+            v01::RemotePreimageLookupSubscribeItem { value: Some(value) }
+        ))
     );
 }
 
@@ -1981,10 +1981,10 @@ fn theme_subscribe_maps_platform_values() {
     let item = futures::executor::block_on(subscription.next()).expect("theme item");
     assert_eq!(
         item,
-        HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
+        Ok(HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
             name: v01::ThemeName::Custom("midnight".to_string()),
             variant: v01::ThemeVariant::Dark,
-        })
+        }))
     );
 }
 

@@ -137,16 +137,19 @@ export interface ObservableLike<Item, Reason = never> {
 }
 
 /**
- * Observable source accepted by generated channel methods as the
- * product-to-host request stream. Structurally satisfied by RxJS subjects and
- * observables as well as generated `ObservableLike` values.
+ * Product-side handler for a subscription the native host initiates.
+ *
+ * It receives the decoded request and two callbacks: `send` delivers one item
+ * to the host, and `interrupt` ends the stream, cleanly when called with no
+ * argument and with the method's interrupt value otherwise. The returned
+ * teardown, if any, runs when the host stops the stream or the handler is
+ * replaced.
  **/
-export interface ObservableSource<Item> {
-  /**
-   * Start consuming the source until the returned handle unsubscribes.
-   **/
-  subscribe(observer: Partial<Observer<Item>>): { unsubscribe(): void };
-}
+export type HostInitiatedSubscriptionHandler<Request, Item, Reason = never> = (
+  request: Request,
+  send: (item: Item) => void,
+  interrupt: (reason?: Reason) => void,
+) => (() => void) | void;
 
 /**
  * Wire discriminant pair addressing a method. One id addresses a method
@@ -232,23 +235,26 @@ export interface SubscribeRawParams {
   onClose?: (error: Error) => void;
 }
 
-/**
- * Handler for a subscription initiated by the native host.
- **/
-export type HostInitiatedSubscriptionHandler<Request, Item> = (
-  request: Request,
-) => ObservableSource<Item>;
-
 /** Product-side registration for one host-initiated subscription method. **/
-export interface HostInitiatedSubscriptionRegistration<Request, Item> {
+export interface HostInitiatedSubscriptionRegistration<
+  Request,
+  Item,
+  Reason = never,
+> {
   /** Install or replace the handler used for future start frames. **/
-  setHandler(handler: HostInitiatedSubscriptionHandler<Request, Item>): {
+  setHandler(
+    handler: HostInitiatedSubscriptionHandler<Request, Item, Reason>,
+  ): {
     unsubscribe(): void;
   };
 }
 
 /** Options used to register a host-initiated subscription method. **/
-export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
+export interface RegisterHostInitiatedSubscriptionParams<
+  Request,
+  Item,
+  Reason = never,
+> {
   /** Wire discriminants for the host-initiated subscription. **/
   ids: MethodIds;
   /**
@@ -256,12 +262,19 @@ export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
    **/
   decodeRequest(payload: Uint8Array): Request;
   /**
-   * Encode one product renderer emission as a `Receive`-leg frame's raw
-   * payload bytes.
+   * Encode one product emission as a `Receive`-leg frame's raw payload bytes.
    **/
   encodeItem(item: Item): Uint8Array;
-  /** Exact payload used when the product declines a render instance. **/
-  interruptPayload: Uint8Array;
+  /**
+   * Encode an `Interrupt`-leg frame's raw payload bytes: the stream's clean
+   * end when `reason` is omitted, and the method's interrupt value otherwise.
+   **/
+  encodeInterrupt(reason?: Reason): Uint8Array;
+  /**
+   * Exact payload used when the transport ends a stream the product's handler
+   * never got to serve.
+   **/
+  declinePayload: Uint8Array;
   /** Number of starts retained before a handler is installed. **/
   bufferCapacity: number;
 }
@@ -283,9 +296,9 @@ export interface TrUApiTransport {
   subscribeRaw(params: SubscribeRawParams): Subscription;
 
   /** Register product-side handling for a host-initiated subscription. **/
-  registerHostInitiatedSubscription<Request, Item>(
-    params: RegisterHostInitiatedSubscriptionParams<Request, Item>,
-  ): HostInitiatedSubscriptionRegistration<Request, Item>;
+  registerHostInitiatedSubscription<Request, Item, Reason>(
+    params: RegisterHostInitiatedSubscriptionParams<Request, Item, Reason>,
+  ): HostInitiatedSubscriptionRegistration<Request, Item, Reason>;
 
   /**
    * Tear down the transport and release the listeners it registered on the

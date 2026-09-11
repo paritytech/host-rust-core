@@ -29,11 +29,9 @@ pub trait Payment: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostPaymentBalanceSubscribeRequest,
-    ) -> Result<
-        Subscription<HostPaymentBalanceSubscribeItem>,
-        CallError<HostPaymentBalanceSubscribeError>,
-    > {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostPaymentBalanceSubscribeItem, CallError<HostPaymentBalanceSubscribeError>>
+    {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Request a payment from the user.
@@ -96,11 +94,9 @@ pub trait Payment: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostPaymentStatusSubscribeRequest,
-    ) -> Result<
-        Subscription<HostPaymentStatusSubscribeItem>,
-        CallError<HostPaymentStatusSubscribeError>,
-    > {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostPaymentStatusSubscribeItem, CallError<HostPaymentStatusSubscribeError>>
+    {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Top up the user's payment balance.

@@ -41,77 +41,14 @@ impl StatementStore for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         request: RemoteStatementStoreSubscribeRequest,
-    ) -> Result<
-        Subscription<RemoteStatementStoreSubscribeItem>,
+    ) -> Subscription<
+        RemoteStatementStoreSubscribeItem,
         CallError<RemoteStatementStoreSubscribeError>,
     > {
-        let (kind, topics) = match statement_store_topic_filter(request) {
-            Ok(value) => value,
-            Err(reason) => {
-                return Err(CallError::Domain(RemoteStatementStoreSubscribeError::V1(
-                    latest::GenericError { reason },
-                )));
-            }
-        };
-        let statement_store = self.statement_store_rpc();
-        let rpc_client = statement_store
-            .client("statement-store")
-            .await
-            .map_err(|reason| {
-                CallError::Domain(RemoteStatementStoreSubscribeError::V1(
-                    latest::GenericError {
-                        reason: reason.to_string(),
-                    },
-                ))
-            })?;
-        let subscription = statement_store_rpc::subscribe(&rpc_client, kind, &topics)
-            .await
-            .map_err(|err| {
-                CallError::Domain(RemoteStatementStoreSubscribeError::V1(
-                    latest::GenericError {
-                        reason: format!("statement-store subscribe failed: {err}"),
-                    },
-                ))
-            })?;
-        let Some(remote_subscription_id) = subscription.subscription_id().map(ToString::to_string)
-        else {
-            return Err(CallError::Domain(RemoteStatementStoreSubscribeError::V1(
-                latest::GenericError {
-                    reason: "statement-store subscribe returned no subscription id".to_string(),
-                },
-            )));
-        };
-        let remote_stream =
-            statement_store_subscription_stream(subscription, remote_subscription_id);
-        let cached = self.services.cached_statements(kind, &topics);
-        let cached_page = (!cached.is_empty()).then(|| {
-            RemoteStatementStoreSubscribeItem::V1(latest::RemoteStatementStoreSubscribeItem {
-                statements: cached.clone(),
-                is_complete: false,
-            })
-        });
-        let services = self.services.clone();
-        let mut pending_local = cached;
-        let remote_stream = remote_stream.filter_map(move |item| {
-            let RemoteStatementStoreSubscribeItem::V1(mut page) = item;
-            let mut visible_local = Vec::new();
-            page.statements.retain(|statement| {
-                if pending_local.contains(statement) {
-                    visible_local.push(statement.clone());
-                    false
-                } else {
-                    true
-                }
-            });
-            pending_local.retain(|statement| !visible_local.contains(statement));
-            services.mark_statements_visible(&visible_local);
-            futures::future::ready(
-                (!page.statements.is_empty() || page.is_complete)
-                    .then_some(RemoteStatementStoreSubscribeItem::V1(page)),
-            )
-        });
-        let stream = futures::stream::iter(cached_page).chain(remote_stream);
-        Ok(Subscription::new(Box::pin(stream)))
+        match self.open_statement_subscription(request).await {
+            Ok(subscription) => subscription,
+            Err(error) => Subscription::interrupted(error),
+        }
     }
 
     #[instrument(skip_all, fields(runtime.method = "statement_store.create_proof"))]
@@ -289,6 +226,89 @@ impl futures::Stream for StatementStoreSubscriptionStream {
                 },
             )));
         }
+    }
+}
+
+impl ProductRuntimeHost {
+    /// Open the remote statement-store subscription, reporting a failure
+    /// before its first item as the interrupt the subscription ends with.
+    async fn open_statement_subscription(
+        &self,
+        request: RemoteStatementStoreSubscribeRequest,
+    ) -> Result<
+        Subscription<
+            RemoteStatementStoreSubscribeItem,
+            CallError<RemoteStatementStoreSubscribeError>,
+        >,
+        CallError<RemoteStatementStoreSubscribeError>,
+    > {
+        let (kind, topics) = match statement_store_topic_filter(request) {
+            Ok(value) => value,
+            Err(reason) => {
+                return Err(CallError::Domain(RemoteStatementStoreSubscribeError::V1(
+                    latest::GenericError { reason },
+                )));
+            }
+        };
+        let statement_store = self.statement_store_rpc();
+        let rpc_client = statement_store
+            .client("statement-store")
+            .await
+            .map_err(|reason| {
+                CallError::Domain(RemoteStatementStoreSubscribeError::V1(
+                    latest::GenericError {
+                        reason: reason.to_string(),
+                    },
+                ))
+            })?;
+        let subscription = statement_store_rpc::subscribe(&rpc_client, kind, &topics)
+            .await
+            .map_err(|err| {
+                CallError::Domain(RemoteStatementStoreSubscribeError::V1(
+                    latest::GenericError {
+                        reason: format!("statement-store subscribe failed: {err}"),
+                    },
+                ))
+            })?;
+        let Some(remote_subscription_id) = subscription.subscription_id().map(ToString::to_string)
+        else {
+            return Err(CallError::Domain(RemoteStatementStoreSubscribeError::V1(
+                latest::GenericError {
+                    reason: "statement-store subscribe returned no subscription id".to_string(),
+                },
+            )));
+        };
+        let remote_stream =
+            statement_store_subscription_stream(subscription, remote_subscription_id);
+        let cached = self.services.cached_statements(kind, &topics);
+        let cached_page = (!cached.is_empty()).then(|| {
+            RemoteStatementStoreSubscribeItem::V1(latest::RemoteStatementStoreSubscribeItem {
+                statements: cached.clone(),
+                is_complete: false,
+            })
+        });
+        let services = self.services.clone();
+        let mut pending_local = cached;
+        let remote_stream = remote_stream.filter_map(move |item| {
+            let RemoteStatementStoreSubscribeItem::V1(mut page) = item;
+            let mut visible_local = Vec::new();
+            page.statements.retain(|statement| {
+                if pending_local.contains(statement) {
+                    visible_local.push(statement.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            pending_local.retain(|statement| !visible_local.contains(statement));
+            services.mark_statements_visible(&visible_local);
+            futures::future::ready(
+                (!page.statements.is_empty() || page.is_complete)
+                    .then_some(RemoteStatementStoreSubscribeItem::V1(page)),
+            )
+        });
+        let stream = futures::stream::iter(cached_page).chain(remote_stream);
+        Ok(Subscription::new(stream.map(Ok)))
     }
 }
 
@@ -717,12 +737,13 @@ mod tests {
             RemoteStatementStoreSubscribeRequest::V1(
                 latest::RemoteStatementStoreSubscribeRequest::MatchAny(vec![[7; 32]]),
             ),
-        ))
-        .unwrap();
+        ));
 
         let item = futures::executor::block_on(subscription.next()).expect("statement page");
 
-        let RemoteStatementStoreSubscribeItem::V1(inner) = item;
+        let Ok(RemoteStatementStoreSubscribeItem::V1(inner)) = item else {
+            panic!("expected a statement page")
+        };
         assert!(inner.is_complete);
         assert_eq!(inner.statements, vec![signed_statement([7; 32])]);
         let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
@@ -755,26 +776,25 @@ mod tests {
             RemoteStatementStoreSubscribeRequest::V1(
                 latest::RemoteStatementStoreSubscribeRequest::MatchAny(vec![[7; 32]]),
             ),
-        ))
-        .unwrap();
+        ));
 
         assert_eq!(
             futures::executor::block_on(subscription.next()),
-            Some(RemoteStatementStoreSubscribeItem::V1(
+            Some(Ok(RemoteStatementStoreSubscribeItem::V1(
                 latest::RemoteStatementStoreSubscribeItem {
                     statements: vec![cached],
                     is_complete: false,
                 }
-            ))
+            )))
         );
         assert_eq!(
             futures::executor::block_on(subscription.next()),
-            Some(RemoteStatementStoreSubscribeItem::V1(
+            Some(Ok(RemoteStatementStoreSubscribeItem::V1(
                 latest::RemoteStatementStoreSubscribeItem {
                     statements: vec![],
                     is_complete: true,
                 }
-            ))
+            )))
         );
         assert!(
             host.services
@@ -811,17 +831,18 @@ mod tests {
             RemoteStatementStoreSubscribeRequest::V1(
                 latest::RemoteStatementStoreSubscribeRequest::MatchAny(vec![[7; 32]]),
             ),
-        ))
-        .unwrap();
+        ));
 
         let item = futures::executor::block_on(subscription.next()).expect("statement page");
 
         assert_eq!(
             item,
-            RemoteStatementStoreSubscribeItem::V1(latest::RemoteStatementStoreSubscribeItem {
-                statements: vec![signed_statement([9; 32])],
-                is_complete: true,
-            })
+            Ok(RemoteStatementStoreSubscribeItem::V1(
+                latest::RemoteStatementStoreSubscribeItem {
+                    statements: vec![signed_statement([9; 32])],
+                    is_complete: true,
+                }
+            ))
         );
     }
 
@@ -850,8 +871,7 @@ mod tests {
             RemoteStatementStoreSubscribeRequest::V1(
                 latest::RemoteStatementStoreSubscribeRequest::MatchAny(vec![[7; 32]]),
             ),
-        ))
-        .unwrap();
+        ));
 
         let _ = futures::executor::block_on(subscription.next()).expect("statement page");
         drop(subscription);
@@ -884,12 +904,13 @@ mod tests {
             RemoteStatementStoreSubscribeRequest::V1(
                 latest::RemoteStatementStoreSubscribeRequest::MatchAny(vec![[7; 32]]),
             ),
-        ))
-        .unwrap();
+        ));
 
         let item = futures::executor::block_on(subscription.next()).expect("completion page");
 
-        let RemoteStatementStoreSubscribeItem::V1(inner) = item;
+        let Ok(RemoteStatementStoreSubscribeItem::V1(inner)) = item else {
+            panic!("expected a statement page")
+        };
         assert!(inner.is_complete);
         assert!(inner.statements.is_empty());
     }
@@ -905,15 +926,16 @@ mod tests {
         let cx = CallContext::with_request_id("sub-too-many".to_string());
         let topics = vec![[7; 32]; MAX_MATCH_ANY_TOPICS + 1];
 
-        let err = match futures::executor::block_on(StatementStore::subscribe(
+        let mut subscription = futures::executor::block_on(StatementStore::subscribe(
             &host,
             &cx,
             RemoteStatementStoreSubscribeRequest::V1(
                 latest::RemoteStatementStoreSubscribeRequest::MatchAny(topics),
             ),
-        )) {
-            Ok(_) => panic!("topic limit violation should fail subscription start"),
-            Err(err) => err,
+        ));
+        let err = match futures::executor::block_on(subscription.next()) {
+            Some(Err(err)) => err,
+            _ => panic!("topic limit violation should interrupt the subscription"),
         };
 
         let CallError::Domain(RemoteStatementStoreSubscribeError::V1(reason)) = err else {
@@ -943,15 +965,16 @@ mod tests {
         );
         let cx = CallContext::with_request_id("sub-connect-fail".to_string());
 
-        let err = match futures::executor::block_on(StatementStore::subscribe(
+        let mut subscription = futures::executor::block_on(StatementStore::subscribe(
             &host,
             &cx,
             RemoteStatementStoreSubscribeRequest::V1(
                 latest::RemoteStatementStoreSubscribeRequest::MatchAny(vec![[7; 32]]),
             ),
-        )) {
-            Ok(_) => panic!("chain connect failure should fail subscription start"),
-            Err(err) => err,
+        ));
+        let err = match futures::executor::block_on(subscription.next()) {
+            Some(Err(err)) => err,
+            _ => panic!("chain connect failure should interrupt the subscription"),
         };
 
         let CallError::Domain(RemoteStatementStoreSubscribeError::V1(reason)) = err else {

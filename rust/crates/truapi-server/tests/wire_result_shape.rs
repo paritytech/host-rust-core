@@ -2,7 +2,7 @@
 //!
 //! The TS host/client codec expects every request/response frame to be
 //! `Result<{Method}Response, CallError<{Method}Error>>`, and every
-//! subscription's `Interrupt` frame to be `Option<CallError<{Method}Error>>`
+//! subscription's `Interrupt` frame to be `Result<(), CallError<{Method}Error>>`
 //! — both leg types already-versioned wrappers (their own `V<N>` tag is the
 //! wire's only version signal), with which leg a frame carries named by the
 //! outer wire's own `messageType` byte rather than anything inside these
@@ -192,7 +192,7 @@ fn versioned_result_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<
 }
 
 /// Expected bytes for a subscription's `Interrupt`-leg payload ending with a
-/// domain error: `[Option::Some=0x01][CallError::Domain=0x00][encoded,
+/// domain error: `[Result::Err=0x01][CallError::Domain=0x00][encoded,
 /// already-versioned error wrapper]`.
 fn versioned_interrupt_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<u8> {
     let mut expected = vec![0x01u8, 0x00u8];
@@ -251,6 +251,8 @@ fn assert_subscription_start_interrupts_error<Wrapper: Encode>(
         },
         transport.clone(),
     ));
+
+    transport.wait_for(1, std::time::Duration::from_secs(5));
 
     let sent = transport.sent.lock().unwrap();
     assert_eq!(sent.len(), 1);

@@ -3,9 +3,11 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use futures::StreamExt;
 use futures::channel::mpsc;
-use truapi::Subscription;
+use truapi::latest::GenericError;
 use truapi::versioned::chat::HostChatActionSubscribeItem;
+use truapi::{CallError, Subscription};
 
 use crate::host_core::ProductRuntimeError;
 const ACTION_BUFFER_CAPACITY: usize = 64;
@@ -45,17 +47,21 @@ impl ChatConnection {
     }
 
     /// Open the product's action subscription and drain buffered actions first.
-    pub(crate) fn subscribe_actions(&self) -> Subscription<HostChatActionSubscribeItem> {
+    pub(crate) fn subscribe_actions(
+        &self,
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<GenericError>> {
         let (sender, receiver) = mpsc::unbounded();
         let mut state = self.state.lock().expect("chat state mutex poisoned");
         if state.closed {
-            return Subscription::empty();
+            return Subscription::interrupted(CallError::HostFailure {
+                reason: "chat is closed for this product connection".to_string(),
+            });
         }
         for item in state.action_buffer.drain(..) {
             let _ = sender.unbounded_send(item);
         }
         state.actions = Some(sender);
-        Subscription::new(Box::pin(receiver))
+        Subscription::new(receiver.map(Ok))
     }
 
     /// Publish one host-authored action, buffering it until the product
@@ -128,8 +134,8 @@ mod tests {
         connection.publish_action(action("second")).unwrap();
 
         let mut actions = connection.subscribe_actions();
-        assert_eq!(block_on(actions.next()), Some(action("first")));
-        assert_eq!(block_on(actions.next()), Some(action("second")));
+        assert_eq!(block_on(actions.next()), Some(Ok(action("first"))));
+        assert_eq!(block_on(actions.next()), Some(Ok(action("second"))));
     }
 
     #[test]
@@ -152,14 +158,14 @@ mod tests {
         let connection = connection();
         let mut first = connection.subscribe_actions();
         connection.publish_action(action("live")).unwrap();
-        assert_eq!(block_on(first.next()), Some(action("live")));
+        assert_eq!(block_on(first.next()), Some(Ok(action("live"))));
 
         connection.detach();
         assert_eq!(block_on(first.next()), None);
         connection.publish_action(action("buffered")).unwrap();
 
         let mut second = connection.subscribe_actions();
-        assert_eq!(block_on(second.next()), Some(action("buffered")));
+        assert_eq!(block_on(second.next()), Some(Ok(action("buffered"))));
     }
 
     #[test]
@@ -168,8 +174,13 @@ mod tests {
         connection.publish_action(action("discard me")).unwrap();
         connection.close();
 
+        // Subscribing to a closed connection interrupts, so a product can
+        // tell it from a stream that ran and finished.
         let mut actions = connection.subscribe_actions();
-        assert_eq!(block_on(actions.next()), None);
+        assert!(matches!(
+            block_on(actions.next()),
+            Some(Err(CallError::HostFailure { .. }))
+        ));
         assert!(matches!(
             connection.publish_action(action("too late")),
             Err(ProductRuntimeError::Closed)
@@ -185,8 +196,14 @@ mod tests {
 
         first.publish_action(action("first only")).unwrap();
         second.publish_action(action("second only")).unwrap();
-        assert_eq!(block_on(first_actions.next()), Some(action("first only")));
-        assert_eq!(block_on(second_actions.next()), Some(action("second only")));
+        assert_eq!(
+            block_on(first_actions.next()),
+            Some(Ok(action("first only")))
+        );
+        assert_eq!(
+            block_on(second_actions.next()),
+            Some(Ok(action("second only")))
+        );
 
         second.close();
         assert!(matches!(

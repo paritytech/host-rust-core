@@ -1,12 +1,12 @@
 import { getClientSync } from "@parity/truapi/sandbox";
 import { bytesToHex, hexToBytes } from "@parity/truapi/scale";
 import type {
+  CallErrorValue,
   CustomRendererNode,
+  GenericError,
   HostChatActionSubscribeItem,
   HostChatListSubscribeItem,
   ObservableLike,
-  ObservableSource,
-  Observer,
   ProductChatCustomMessageRenderRequest,
 } from "@parity/truapi";
 import { filter, firstValueFrom, from, timeout } from "rxjs";
@@ -37,7 +37,8 @@ let customMessageId: string | undefined;
 let finalReportPosted = false;
 type RenderInstance = {
   request: ProductChatCustomMessageRenderRequest;
-  observer: Partial<Observer<CustomRendererNode>>;
+  send: (node: CustomRendererNode) => void;
+  interrupt: (reason?: CallErrorValue<GenericError>) => void;
   disposed: boolean;
 };
 const activeRenderInstances = new Set<RenderInstance>();
@@ -178,7 +179,9 @@ async function ensureRoom(roomId: string, name: string): Promise<void> {
 
 function handleRenderRequest(
   request: ProductChatCustomMessageRenderRequest,
-): ObservableSource<CustomRendererNode> {
+  send: (node: CustomRendererNode) => void,
+  interrupt: (reason?: CallErrorValue<GenericError>) => void,
+): () => void {
   if (request.messageType !== RENDER_MESSAGE_TYPE) {
     throw new Error(`unsupported custom message type: ${request.messageType}`);
   }
@@ -199,19 +202,13 @@ function handleRenderRequest(
     throw new Error("render request did not preserve the custom payload");
   }
 
-  return {
-    subscribe(observer) {
-      const instance: RenderInstance = { request, observer, disposed: false };
-      if (customMessageId) activateRenderInstance(instance);
-      else pendingRenderInstances.add(instance);
-      return {
-        unsubscribe() {
-          instance.disposed = true;
-          pendingRenderInstances.delete(instance);
-          activeRenderInstances.delete(instance);
-        },
-      };
-    },
+  const instance: RenderInstance = { request, send, interrupt, disposed: false };
+  if (customMessageId) activateRenderInstance(instance);
+  else pendingRenderInstances.add(instance);
+  return () => {
+    instance.disposed = true;
+    pendingRenderInstances.delete(instance);
+    activeRenderInstances.delete(instance);
   };
 }
 
@@ -225,15 +222,16 @@ function activatePendingRenderInstances(): void {
 function activateRenderInstance(instance: RenderInstance): void {
   if (instance.disposed) return;
   if (instance.request.messageId !== customMessageId) {
-    instance.observer.error?.(
-      new Error(
-        `render request message ${instance.request.messageId} did not match ${customMessageId}`,
-      ),
-    );
+    instance.interrupt({
+      tag: "HostFailure",
+      value: {
+        reason: `render request message ${instance.request.messageId} did not match ${customMessageId}`,
+      },
+    });
     return;
   }
   activeRenderInstances.add(instance);
-  instance.observer.next?.(diagnosis.rendererNode());
+  instance.send(diagnosis.rendererNode());
   diagnosis.pass(
     "Chat/custom_message_render",
     "served initial and replacement trees on a host-initiated render stream",
@@ -243,7 +241,7 @@ function activateRenderInstance(instance: RenderInstance): void {
 function renderActiveMessages(): void {
   const node = diagnosis.rendererNode();
   for (const instance of activeRenderInstances) {
-    instance.observer.next?.(node);
+    instance.send(node);
   }
 }
 

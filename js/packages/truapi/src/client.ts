@@ -13,7 +13,6 @@ import {
   PROTOCOL_ERROR_TRAIT_ID,
   type HostInitiatedSubscriptionHandler,
   type MethodIds,
-  type ObservableSource,
   type ProtocolMessage,
   type RegisterHostInitiatedSubscriptionParams,
   type RequestParams,
@@ -233,10 +232,11 @@ export function createTransport(
     ids: MethodIds;
     decodeRequest: (payload: Uint8Array) => unknown;
     encodeItem: (item: unknown) => Uint8Array;
-    interruptPayload: Uint8Array;
+    encodeInterrupt: (reason?: unknown) => Uint8Array;
+    declinePayload: Uint8Array;
     bufferCapacity: number;
     buffered: BufferedHostStart[];
-    handler?: (request: unknown) => ObservableSource<unknown>;
+    handler?: HostInitiatedSubscriptionHandler<unknown, unknown, unknown>;
     instances: Map<string, { unsubscribe(): void }>;
   };
   // Keyed by the full (trait, method) pair: a bare method id would collide
@@ -578,7 +578,17 @@ export function createTransport(
     }
   }
 
-  function interruptHostSubscription(route: HostRoute, requestId: string) {
+  /**
+   * End one host-initiated stream, sending `payload` on its interrupt leg and
+   * running the handler's teardown. The instance is dropped before the
+   * teardown runs, so a handler that interrupts from inside its own teardown
+   * cannot recurse.
+   */
+  function interruptHostSubscription(
+    route: HostRoute,
+    requestId: string,
+    payload: Uint8Array,
+  ) {
     const instance = route.instances.get(requestId);
     if (instance) {
       route.instances.delete(requestId);
@@ -591,7 +601,7 @@ export function createTransport(
           traitId: route.ids.trait,
           methodId: route.ids.method,
           messageType: MESSAGE_TYPE_INTERRUPT,
-          value: route.interruptPayload,
+          value: payload,
         },
       });
     } catch {
@@ -614,58 +624,69 @@ export function createTransport(
     if (!handler) {
       if (route.buffered.length === route.bufferCapacity) {
         const evicted = route.buffered.shift();
-        if (evicted) interruptHostSubscription(route, evicted.requestId);
+        if (evicted)
+          interruptHostSubscription(
+            route,
+            evicted.requestId,
+            route.declinePayload,
+          );
       }
       route.buffered.push({ requestId, payload });
       return;
     }
 
-    let source: ObservableSource<unknown>;
+    let request: unknown;
     try {
-      source = handler(route.decodeRequest(payload));
+      request = route.decodeRequest(payload);
     } catch {
-      interruptHostSubscription(route, requestId);
+      interruptHostSubscription(route, requestId, route.declinePayload);
       return;
     }
 
     let active = true;
-    let sourceSubscription: { unsubscribe(): void } | undefined;
+    let teardown: (() => void) | void;
     const instance = {
       unsubscribe() {
         if (!active) return;
         active = false;
-        sourceSubscription?.unsubscribe();
+        teardown?.();
       },
     };
     route.instances.set(requestId, instance);
+
+    const sendItem = (item: unknown) => {
+      if (!active) return;
+      try {
+        send({
+          requestId,
+          payload: {
+            traitId: route.ids.trait,
+            methodId: route.ids.method,
+            messageType: MESSAGE_TYPE_RECEIVE,
+            value: route.encodeItem(item),
+          },
+        });
+      } catch {
+        interruptHostSubscription(route, requestId, route.declinePayload);
+      }
+    };
+
+    const interrupt = (reason?: unknown) => {
+      if (!active) return;
+      let encoded: Uint8Array;
+      try {
+        encoded = route.encodeInterrupt(reason);
+      } catch {
+        encoded = route.declinePayload;
+      }
+      interruptHostSubscription(route, requestId, encoded);
+    };
+
     try {
-      sourceSubscription = source.subscribe({
-        next(item) {
-          if (!active) return;
-          try {
-            send({
-              requestId,
-              payload: {
-                traitId: route.ids.trait,
-                methodId: route.ids.method,
-                messageType: MESSAGE_TYPE_RECEIVE,
-                value: route.encodeItem(item),
-              },
-            });
-          } catch {
-            interruptHostSubscription(route, requestId);
-          }
-        },
-        error() {
-          if (active) interruptHostSubscription(route, requestId);
-        },
-        // Completion deliberately keeps the instance alive and its last tree
-        // on screen until the host sends `_stop`.
-        complete() {},
-      });
-      if (!active) sourceSubscription.unsubscribe();
+      teardown = handler(request, sendItem, interrupt);
+      if (!active) teardown?.();
     } catch {
-      interruptHostSubscription(route, requestId);
+      interruptHostSubscription(route, requestId, route.declinePayload);
     }
   }
 
@@ -811,13 +832,14 @@ export function createTransport(
         },
       };
     },
-    registerHostInitiatedSubscription<Request, Item>({
+    registerHostInitiatedSubscription<Request, Item, Reason>({
       ids,
       decodeRequest,
       encodeItem,
-      interruptPayload,
+      encodeInterrupt,
+      declinePayload,
       bufferCapacity,
-    }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
+    }: RegisterHostInitiatedSubscriptionParams<Request, Item, Reason>) {
       const key = pairKey(ids.trait, ids.method);
       if (hostRoutes.has(key)) {
         throw new Error(
@@ -828,17 +850,22 @@ export function createTransport(
         ids,
         decodeRequest: decodeRequest as (payload: Uint8Array) => unknown,
         encodeItem: encodeItem as (item: unknown) => Uint8Array,
-        interruptPayload,
+        encodeInterrupt: encodeInterrupt as (reason?: unknown) => Uint8Array,
+        declinePayload,
         bufferCapacity,
         buffered: [],
         instances: new Map(),
       };
       hostRoutes.set(key, route);
       return {
-        setHandler(handler: HostInitiatedSubscriptionHandler<Request, Item>) {
-          const installed = handler as (
-            request: unknown,
-          ) => ObservableSource<unknown>;
+        setHandler(
+          handler: HostInitiatedSubscriptionHandler<Request, Item, Reason>,
+        ) {
+          const installed = handler as HostInitiatedSubscriptionHandler<
+            unknown,
+            unknown,
+            unknown
+          >;
           route.handler = installed;
           for (const start of route.buffered.splice(0)) {
             startHostSubscription(route, start.requestId, start.payload);

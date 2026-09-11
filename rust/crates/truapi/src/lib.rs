@@ -446,32 +446,45 @@ impl CallContext {
 
 /// Handle to an active subscription. Implements [`Stream`] to yield values
 /// pushed by the host. Drop to unsubscribe.
-pub struct Subscription<T> {
-    inner: Pin<Box<dyn Stream<Item = T> + Send>>,
+///
+/// The stream yields `Ok(item)` for each value and at most one `Err`, which
+/// ends it: the runtime encodes that value as the `_interrupt` payload and
+/// polls no further. A stream that ends without an `Err` interrupts with
+/// `Ok(())`, which the peer reads as a normal completion.
+pub struct Subscription<Item, Interrupt> {
+    inner: Pin<Box<dyn Stream<Item = Result<Item, Interrupt>> + Send>>,
 }
 
-impl<T> Stream for Subscription<T> {
-    type Item = T;
+impl<Item, Interrupt> Stream for Subscription<Item, Interrupt> {
+    type Item = Result<Item, Interrupt>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
 }
 
-impl<T> Subscription<T> {
-    /// Creates a new subscription from a boxed stream.
-    pub fn new(stream: Pin<Box<dyn Stream<Item = T> + Send>>) -> Self {
-        Self { inner: stream }
+impl<Item, Interrupt> Subscription<Item, Interrupt> {
+    /// Creates a subscription from a stream of items and at most one
+    /// terminating interrupt.
+    pub fn new<S>(stream: S) -> Self
+    where
+        S: Stream<Item = Result<Item, Interrupt>> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+        }
     }
 
-    /// Creates a subscription that yields no items. Useful as a placeholder for
-    /// default "unavailable" trait bodies where the dispatcher will discard the
-    /// stream and emit an Interrupt frame.
-    pub fn empty() -> Self
+    /// Creates a subscription that yields no items and ends with `interrupt`.
+    /// The default trait bodies of unimplemented methods interrupt with
+    /// [`CallError::unavailable`], so a caller sees a failure rather than a
+    /// stream that finished.
+    pub fn interrupted(interrupt: Interrupt) -> Self
     where
-        T: Send + 'static,
+        Item: Send + 'static,
+        Interrupt: Send + 'static,
     {
-        Self::new(Box::pin(futures::stream::empty()))
+        Self::new(futures::stream::once(core::future::ready(Err(interrupt))))
     }
 }
 
