@@ -283,6 +283,24 @@ fn cache_manifest(platform: &StubPlatform, owner: &str, trusted: &str, age_secs:
 }
 
 /// Seeds `owner`'s cached lookup, `None` standing for "publishes no manifest".
+/// Seed `owner`'s cached lookup with an explicit `fetched_at`, for tests about
+/// the freshness bound itself rather than about grants.
+fn cache_manifest_at(platform: &StubPlatform, owner: &str, trusted: &str, fetched_at_secs: u64) {
+    let json = format!(
+        r#"{{"$v":1,"displayName":"D","description":"d",
+                "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted}}}"#
+    );
+    let entry = CachedManifest {
+        fetched_at_secs,
+        json: Some(json),
+    };
+    futures::executor::block_on(platform.write_core_storage(
+        crate::runtime::product_manifest::manifest_cache_key(owner),
+        entry.encode(),
+    ))
+    .expect("stub core storage accepts the entry");
+}
+
 fn cache_manifest_entry(platform: &StubPlatform, owner: &str, json: Option<String>, age_secs: u64) {
     let entry = CachedManifest {
         fetched_at_secs: current_unix_secs().saturating_sub(age_secs),
@@ -381,6 +399,31 @@ fn a_context_grant_does_not_open_storage() {
     assert_eq!(
         read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
         access_not_granted()
+    );
+}
+
+/// A cache entry stamped in the future is stale, not immortal.
+///
+/// The TTL is the revocation bound: a grant a publisher withdraws stays in force
+/// until the document is read again. An entry written while the device clock ran
+/// ahead used to satisfy the bound forever, because `saturating_sub` floors at
+/// zero, so that one entry could never be revoked.
+#[test]
+fn a_cache_entry_stamped_in_the_future_is_not_honoured() {
+    let platform = stub_platform();
+    // A year ahead: `saturating_sub` gives 0, which is below any TTL.
+    cache_manifest_at(
+        &platform,
+        "wallet.dot",
+        r#"{"unknown":["storage"]}"#,
+        crate::host_logic::statement_store::current_unix_secs() + 365 * 24 * 60 * 60,
+    );
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted(),
+        "a future-stamped entry must be re-read, not trusted forever"
     );
 }
 
