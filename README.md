@@ -70,7 +70,7 @@ See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full 
 rust/crates/
   truapi/                Rust traits, versioned envelopes, and latest payload re-exports
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
-  truapi-macros/         #[wire(id = N)] proc-macro
+  truapi-macros/         TrUAPI wire annotations and inter-host SSO proc macros
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
@@ -90,11 +90,15 @@ android/truapi-provider/   truapi-provider-android: chain transport AAR (binding
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
 playground/                Interactive Next.js playground (truapi-playground dotNS label)
+hosts/ios/                 iOS host app; resolves the core from this tree
+hosts/android/             Android host app
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
+
+See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
@@ -111,6 +115,10 @@ returning a typed outcome: response bytes to post back, a disconnect marker, or
 ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
+See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
+for typed handlers, canonical resource types, and consent bound to the signing session.
+Product and SSO signing share canonical payloads and the one-byte `OptionBool`
+encoding for `with_signed_transaction`.
 
 ### JS Host SDKs
 
@@ -150,12 +158,12 @@ control of quota and of whether the bytes are backed up or encrypted.
 
 ## How it works
 
-1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each method tagged `#[wire(id = N)]` for a stable byte-level dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
+1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each trait tagged `#[wire_trait(id = N)]` and each method tagged `#[wire(id = N)]` for a stable byte-level `(trait, method)` dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
 2. `truapi-codegen` reads rustdoc JSON for that crate and generates the TypeScript client under git-ignored paths in `js/packages/truapi/`.
 3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
-Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions. Discriminant 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
+Wire ids are append-only per trait: a trait id is never reassigned and a method id is never renumbered or reused within its trait, so deployed products stay compatible across protocol revisions. New methods take the next free method ids in their own trait and leave every other trait untouched. Trait 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
 
 ## Develop
 

@@ -1125,10 +1125,13 @@ mod tests {
         use parity_scale_codec::{Decode, Encode};
         use std::sync::Mutex;
         use truapi::versioned::local_storage::{
-            HostLocalStorageReadRequest, HostLocalStorageWriteRequest,
+            HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
+            HostLocalStorageWriteRequest,
         };
         use truapi::{v01, v02};
-        use truapi_server::frame::{Payload, ProtocolMessage, request_ids};
+        use truapi_server::frame::{
+            MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, Payload, ProtocolMessage, request_ids,
+        };
 
         const OWNER: &str = "peopl.paseo";
         const CALLER: &str = "dim2.paseo";
@@ -1216,7 +1219,9 @@ mod tests {
             let frame = ProtocolMessage {
                 request_id: "1".to_string(),
                 payload: Payload {
-                    id: ids.request_id,
+                    trait_id: ids.trait_id,
+                    method_id: ids.method_id,
+                    message_type: MESSAGE_TYPE_REQUEST,
                     value: payload,
                 },
             }
@@ -1228,7 +1233,12 @@ mod tests {
             let answered = ProtocolMessage::decode(&mut frames.take_one().as_slice())
                 .expect("the answer is a protocol message");
             assert_eq!(
-                answered.payload.id, ids.response_id,
+                (
+                    answered.payload.trait_id,
+                    answered.payload.method_id,
+                    answered.payload.message_type,
+                ),
+                (ids.trait_id, ids.method_id, MESSAGE_TYPE_RESPONSE),
                 "answered on the wrong discriminant"
             );
             answered.payload.value
@@ -1254,17 +1264,18 @@ mod tests {
             })
             .encode();
             let answer = call(runtime, CALLER, "local_storage_read", payload).await;
-            // `[version][Result tag][value]`: the frame carries the version out
-            // of band, so the payload inside it is the concrete version's type.
-            let (version, mut body) = answer.split_first().expect("the answer is not empty");
-            assert_eq!(*version, 1, "expected a v0.2 answer");
+            // `[Result tag][version][body]`: the frame addresses the method, and
+            // the payload is the method's own versioned wrapper inside a Result.
             let decoded: Result<
-                v01::HostLocalStorageReadResponse,
-                truapi::CallError<v02::HostLocalStorageReadError>,
-            > = Decode::decode(&mut body).expect("the answer decodes");
+                HostLocalStorageReadResponse,
+                truapi::CallError<HostLocalStorageReadError>,
+            > = Decode::decode(&mut answer.as_slice()).expect("the answer decodes");
             match decoded {
-                Ok(v01::HostLocalStorageReadResponse { value }) => Ok(value),
-                Err(truapi::CallError::Domain(error)) => Err(error),
+                Ok(HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse {
+                    value,
+                })) => Ok(value),
+                Ok(other) => panic!("expected a v0.2 answer: {other:?}"),
+                Err(truapi::CallError::Domain(HostLocalStorageReadError::V2(error))) => Err(error),
                 Err(other) => panic!("unexpected refusal: {other:?}"),
             }
         }

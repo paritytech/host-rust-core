@@ -30,11 +30,13 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
+use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
+use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
     ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
     PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
-    SigningHostRole, answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
+    SigningHostRole, SigningHostSsoService, disconnect_paired_host, establish_pairing,
+    respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -771,6 +773,17 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Notify a paired host that this signing host is ending their SSO session.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.disconnect_paired_host"))]
+    pub async fn disconnect_paired_host(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<(), v01::GenericError> {
+        disconnect_paired_host(self.services.clone(), self.signing_host.clone(), peer)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Answer one decrypted SSO remote message with this signing host.
     ///
     /// Session control stays with the caller: `Disconnected` is reported as an
@@ -780,20 +793,11 @@ impl SigningHostRuntime {
         &self,
         message: RemoteMessage,
     ) -> SsoRequestOutcome<RemoteMessage> {
-        let RemoteMessageData::V1(request) = message.data;
-        if matches!(request, v1::RemoteMessage::Disconnected) {
-            return SsoRequestOutcome::Disconnected;
-        }
-        match answer_remote_message(
-            &self.services,
-            &self.signing_host,
-            message.message_id,
-            request,
-        )
-        .await
-        {
-            Some(answer) => SsoRequestOutcome::Response(answer.response),
-            None => SsoRequestOutcome::Ignored,
+        let service = SigningHostSsoService::new(self.signing_host.clone());
+        match service.dispatch(service.current_session(), message).await {
+            Dispatch::Response(answer) => SsoRequestOutcome::Response(answer.message),
+            Dispatch::Disconnected => SsoRequestOutcome::Disconnected,
+            Dispatch::NotARequest(_) => SsoRequestOutcome::Ignored,
         }
     }
 }
@@ -1496,6 +1500,14 @@ impl Transport for SinkTransport {
 mod tests {
     use super::*;
     use crate::frame::{Payload, ProtocolMessage, subscription_ids};
+    use crate::host_logic::product_account::derive_identity_keypair;
+    use crate::host_logic::sso::messages::{
+        RemoteMessage, RemoteMessageData, decode_incoming_sso_request, v1,
+    };
+    use crate::host_logic::sso::pairing::{
+        PairingBootstrap, derive_x25519_keypair_from_entropy, establish_sso_session_info,
+        x25519_public_key,
+    };
     use crate::test_support::{StubPlatform, runtime_config, test_spawner, wait_until};
     use parity_scale_codec::Encode;
     use std::sync::atomic::Ordering;
@@ -1512,6 +1524,28 @@ mod tests {
                 .expect("recording sink mutex poisoned")
                 .push(frame);
         }
+    }
+
+    fn activated_signing_runtime(platform: Arc<StubPlatform>) -> SigningHostRuntime {
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+            "testnet".to_string(),
+        )
+        .expect("signing host config is valid");
+        let runtime = SigningHostRuntime::new(platform, config, test_spawner());
+        futures::executor::block_on(runtime.activate_local_session(vec![0xab; 32]))
+            .expect("activation succeeds");
+        runtime
     }
 
     /// Install `session` once the boot reconcile has reported the empty
@@ -1642,7 +1676,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1794,7 +1830,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1911,7 +1949,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1966,7 +2006,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -2105,18 +2147,19 @@ mod tests {
             sink.clone(),
         );
         let ids = crate::frame::request_ids("chat_create_room").expect("known Chat request");
-        let request = truapi::versioned::chat::HostChatCreateRoomRequest::V1(
-            v01::HostChatCreateRoomRequest {
-                room_id: "room".into(),
-                name: "Room".into(),
-                icon: String::new(),
-            },
-        );
+        let request = v01::HostChatCreateRoomRequest {
+            room_id: "room".into(),
+            name: "Room".into(),
+            icon: String::new(),
+        };
+        let value = truapi::versioned::chat::HostChatCreateRoomRequest::V1(request).encode();
         let frame = ProtocolMessage {
             request_id: "chat:1".into(),
             payload: Payload {
-                id: ids.request_id,
-                value: request.encode(),
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value,
             },
         };
 
@@ -2125,12 +2168,17 @@ mod tests {
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
-        assert_eq!(response.payload.id, ids.response_id);
-        let expected = crate::frame::encode_versioned_err_payload(
-            truapi::CallError::<truapi::versioned::chat::HostChatCreateRoomError>::Denied,
-            1,
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
         );
-        assert_eq!(response.payload.value, expected);
+        let expected: Result<
+            truapi::versioned::chat::HostChatCreateRoomResponse,
+            truapi::CallError<truapi::versioned::chat::HostChatCreateRoomError>,
+        > = Err(truapi::CallError::Denied);
+        assert_eq!(response.payload.value, expected.encode());
     }
 
     #[test]
@@ -2145,18 +2193,19 @@ mod tests {
             sink.clone(),
         );
         let ids = crate::frame::request_ids("chat_register_bot").expect("known Chat request");
-        let request = truapi::versioned::chat::HostChatRegisterBotRequest::V1(
-            v01::HostChatRegisterBotRequest {
-                bot_id: "bot".into(),
-                name: "Bot".into(),
-                icon: String::new(),
-            },
-        );
+        let request = v01::HostChatRegisterBotRequest {
+            bot_id: "bot".into(),
+            name: "Bot".into(),
+            icon: String::new(),
+        };
+        let value = truapi::versioned::chat::HostChatRegisterBotRequest::V1(request).encode();
         let frame = ProtocolMessage {
             request_id: "chat:bot".into(),
             payload: Payload {
-                id: ids.request_id,
-                value: request.encode(),
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value,
             },
         };
 
@@ -2165,12 +2214,17 @@ mod tests {
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
-        assert_eq!(response.payload.id, ids.response_id);
-        let expected = crate::frame::encode_versioned_err_payload(
-            truapi::CallError::<truapi::versioned::chat::HostChatRegisterBotError>::Denied,
-            1,
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
         );
-        assert_eq!(response.payload.value, expected);
+        let expected: Result<
+            truapi::versioned::chat::HostChatRegisterBotResponse,
+            truapi::CallError<truapi::versioned::chat::HostChatRegisterBotError>,
+        > = Err(truapi::CallError::Denied);
+        assert_eq!(response.payload.value, expected.encode());
     }
 
     #[test]
@@ -2188,7 +2242,10 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "chat:actions".into(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
+                // No request wrapper for this method: an empty Start payload.
                 value: Vec::new(),
             },
         };
@@ -2199,8 +2256,14 @@ mod tests {
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
         assert_eq!(response.request_id, "chat:actions");
-        assert_eq!(response.payload.id, ids.interrupt_id);
-        assert!(response.payload.value.is_empty());
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_INTERRUPT
+        );
+        let expected = Some(truapi::CallError::<truapi::latest::GenericError>::Denied).encode();
+        assert_eq!(response.payload.value, expected);
     }
 
     #[test]
@@ -2225,7 +2288,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -2245,9 +2310,7 @@ mod tests {
 
     #[test]
     fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
-        use crate::host_logic::sso::messages::{
-            RemoteMessage, RemoteMessageData, SignRawLegacyResponse, v1,
-        };
+        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         const ENTROPY: [u8; 32] = [0xab; 32];
@@ -2279,10 +2342,10 @@ mod tests {
 
         let response_variant = RemoteMessage {
             message_id: "m2".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(
-                SignRawLegacyResponse {
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignRawWithLegacyAccountResponse(
+                Response {
                     responding_to: "m2".to_string(),
-                    signature: Ok(vec![]),
+                    payload: Ok(vec![]),
                 },
             )),
         };
@@ -2336,6 +2399,94 @@ mod tests {
             panic!("expected a product subtree response payload");
         };
         assert_eq!(payload.responding_to, "m3");
-        assert!(payload.product_public_key.is_ok());
+        assert!(payload.payload.is_ok());
+    }
+
+    #[test]
+    fn disconnect_paired_host_submits_one_disconnected_message_to_the_selected_peer() {
+        let platform = Arc::new(StubPlatform {
+            rpc_responses: vec![
+                r#"{"jsonrpc":"2.0","id":"truapi:1","result":{"status":"new"}}"#.to_string(),
+            ],
+            ..Default::default()
+        });
+        let runtime = activated_signing_runtime(platform.clone());
+        let peer_encryption_secret = [0x42; 32];
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key(peer_encryption_secret),
+        };
+        let identity =
+            derive_identity_keypair(&[0xab; 32], "testnet").expect("identity derivation succeeds");
+        let (_, responder_encryption_public_key) =
+            derive_x25519_keypair_from_entropy(&[0xab; 32], b"sso");
+        let pairing_session = establish_sso_session_info(
+            &PairingBootstrap {
+                deeplink: String::new(),
+                topic: [0; 32],
+                statement_store_public_key: peer.statement_account_id,
+                statement_store_secret: [0; 64],
+                encryption_public_key: peer.encryption_public_key,
+                encryption_secret_key: peer_encryption_secret,
+            },
+            identity.public.to_bytes(),
+            responder_encryption_public_key,
+        )
+        .expect("pairing session derivation succeeds");
+        futures::executor::block_on(runtime.disconnect_paired_host(peer))
+            .expect("disconnect submission succeeds");
+
+        let submits = platform
+            .sent_rpc
+            .lock()
+            .expect("rpc list mutex poisoned")
+            .iter()
+            .filter_map(|request| {
+                let value: serde_json::Value = serde_json::from_str(request).ok()?;
+                (value["method"] == "statement_submit").then_some(value)
+            })
+            .collect::<Vec<_>>();
+        let [submit] = submits.as_slice() else {
+            panic!("expected one disconnect submission, got {submits:?}");
+        };
+        let statement_hex = submit["params"][0]
+            .as_str()
+            .expect("statement submit carries encoded bytes");
+        let statement = hex::decode(statement_hex.strip_prefix("0x").unwrap_or(statement_hex))
+            .expect("submitted statement is hex");
+        let incoming = decode_incoming_sso_request(&pairing_session, &statement)
+            .expect("selected peer decrypts the statement")
+            .expect("submitted statement is an SSO request");
+        assert_eq!(
+            incoming.messages,
+            vec![RemoteMessage {
+                message_id: incoming.request_id,
+                data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+            }],
+        );
+    }
+
+    #[test]
+    fn disconnect_paired_host_propagates_submission_failure() {
+        let platform = Arc::new(StubPlatform {
+            rpc_responses: vec![
+                r#"{"jsonrpc":"2.0","id":"truapi:1","result":{"reason":"badProof","status":"rejected"}}"#
+                    .to_string(),
+            ],
+            ..Default::default()
+        });
+        let runtime = activated_signing_runtime(platform);
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key([0x42; 32]),
+        };
+
+        let error = futures::executor::block_on(runtime.disconnect_paired_host(peer))
+            .expect_err("disconnect submission failure is returned to the caller");
+
+        assert_eq!(
+            error.reason,
+            r#"statement_submit not accepted: {"reason":"badProof","status":"rejected"}"#
+        );
     }
 }

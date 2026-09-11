@@ -299,11 +299,14 @@ export function renderFrameValueDetail(detail: FrameValueDetail): string {
 /** Pretty-print a decoded value for a `<pre>`, tolerating cyclic/bigint inputs. */
 function stringifyValue(value: unknown): string {
   try {
+    // `JSON.stringify` returns the JS `undefined` (not a string) for `undefined`
+    // and functions - a real decoded shape now that a paramless subscription's
+    // `Start` leg decodes to bare `undefined`, with no wrapper to report.
     return JSON.stringify(
       value,
       (_key, v: unknown) => (typeof v === "bigint" ? `${v.toString()}n` : v),
       2,
-    );
+    ) ?? String(value);
   } catch {
     return String(value);
   }

@@ -399,13 +399,14 @@ pub struct VrfSignature {
 }
 
 /// Error returned when VRF signing fails.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, derive_more::Display)]
 pub enum HostAccountSignVrfError {
     /// User is not logged in.
     NotConnected,
     /// User or host rejected the signing confirmation.
     Rejected,
     /// Catch-all.
+    #[display("{reason}")]
     Unknown {
         /// Human-readable failure reason.
         reason: String,

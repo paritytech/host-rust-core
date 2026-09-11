@@ -10,7 +10,9 @@ This repo is the single source of truth for the TrUAPI protocol. It vendors `dot
 rust/crates/
   truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2 (canonical)
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
-  truapi-macros/         #[wire(id = N)] proc-macro
+  truapi-macros/         #[wire_trait(id = N)] and #[wire(id = N)] proc-macros;
+                         #[sso_service] for truapi-server's inter-host SSO protocol
+                         One implementation module per macro; lib.rs holds entry points
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
@@ -48,6 +50,8 @@ ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFF
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
+hosts/ios/                 iOS host app; resolves the core from this tree
+hosts/android/             Android host app
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
@@ -71,6 +75,14 @@ scripts/truapi-host-installer.sh
   rather than importing a concrete protocol version. Runtime crates may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
+- Inter-host SSO uses `#[sso_service]` as described
+  in the [macro guide](rust/crates/truapi-macros/README.md). Keep per-variant pairing,
+  dispatch, and correlation in that macro; do not add manual per-variant catalogs.
+  Requests with a caller share `ProductRequest<P>` around canonical payloads;
+  handler method names select request variants. Responses share `Response<P>`;
+  handler signatures name their result payload
+  and response variant. Transcript classification belongs in shared reply handling
+  or the handler; request context carries only the call and signing session.
 - Native bindings expose canonical Rust domain and protocol types directly.
   Add feature-gated UniFFI derives to those types and custom conversions for
   unsupported leaf values instead of defining parallel `Native*` mirrors.
@@ -333,7 +345,7 @@ __truapi.setLogLevel("debug");
 sessionStorage.setItem("dotli:truapi-debug", "1");
 ```
 
-Reload after setting the debug-panel flag. Watch for `Unknown wire discriminant`, missing
+Reload after setting the debug-panel flag. Watch for `unknown wire discriminant pair`, missing
 `@parity/truapi-host` imports, worker WASM instantiation failures, and
 debug-panel traffic disappearing when the login popup opens.
 

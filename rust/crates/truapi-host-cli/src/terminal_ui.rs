@@ -355,6 +355,20 @@ pub fn output_success(title: impl Into<String>, detail: Option<String>) {
     }
 }
 
+/// Emit a warning through the active transcript or standard error.
+pub fn output_warning(title: impl Into<String>, detail: Option<String>) {
+    let title = title.into();
+    if !send_to_active(UiEvent::Notice {
+        tone: NoticeTone::Warning,
+        title: title.clone(),
+        detail: detail.clone(),
+    }) {
+        let mut app = App::new_pairing(String::new(), String::new(), "info".to_string());
+        app.notice(NoticeTone::Warning, title, detail);
+        write_human_stderr(&app.transcript_text());
+    }
+}
+
 fn write_human_stdout(text: &str) {
     let styled = styled_output(io::stdout().is_terminal());
     let mut stdout = io::stdout().lock();
@@ -721,6 +735,11 @@ impl ActiveTerminalUi {
     /// Record an immediate successful result.
     pub fn success(&mut self, text: impl Into<String>, detail: Option<String>) {
         self.app.notice(NoticeTone::Success, text.into(), detail);
+    }
+
+    /// Record an immediate warning.
+    pub fn warning(&mut self, text: impl Into<String>, detail: Option<String>) {
+        self.app.notice(NoticeTone::Warning, text.into(), detail);
     }
 
     /// Record a typed lifecycle event.

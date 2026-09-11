@@ -467,16 +467,27 @@ export type SignPayloadReview =
 
 /**
  * Review shown before a sign-raw request is sent to the paired wallet.
+ * Hosts must display the payload according to `watermarked` and warn that
+ * unwatermarked signatures can authorize transactions.
  */
 export type SignRawReview =
   /**
    * Product-account raw signing request.
    */
-  | { tag: "Product"; value: HostSignRawRequest }
+  | {
+      tag: "Product";
+      value: { request: HostSignRawRequest; watermarked: boolean };
+    }
   /**
    * Legacy-account raw signing request.
    */
-  | { tag: "LegacyAccount"; value: HostSignRawWithLegacyAccountRequest };
+  | {
+      tag: "LegacyAccount";
+      value: {
+        request: HostSignRawWithLegacyAccountRequest;
+        watermarked: boolean;
+      };
+    };
 
 /**
  * Review shown before signing an RFC-0023 VRF transcript.
@@ -851,12 +862,23 @@ export const SignPayloadReview: S.Codec<SignPayloadReview> = S.lazy(
 
 /**
  * Review shown before a sign-raw request is sent to the paired wallet.
+ * Hosts must display the payload according to `watermarked` and warn that
+ * unwatermarked signatures can authorize transactions.
  */
 export const SignRawReview: S.Codec<SignRawReview> = S.lazy(
   (): S.Codec<SignRawReview> =>
     S.TaggedUnion({
-      Product: HostSignRawRequest,
-      LegacyAccount: HostSignRawWithLegacyAccountRequest,
+      Product: S.Struct({
+        request: HostSignRawRequest,
+        watermarked: S.bool,
+      }) as S.Codec<{ request: HostSignRawRequest; watermarked: boolean }>,
+      LegacyAccount: S.Struct({
+        request: HostSignRawWithLegacyAccountRequest,
+        watermarked: S.bool,
+      }) as S.Codec<{
+        request: HostSignRawWithLegacyAccountRequest;
+        watermarked: boolean;
+      }>,
     }),
 );
 

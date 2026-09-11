@@ -2662,13 +2662,25 @@ pub enum SignPayloadReview {
 }
 
 /// Review shown before a sign-raw request is sent to the paired wallet.
+/// Hosts must display the payload according to `watermarked` and warn that
+/// unwatermarked signatures can authorize transactions.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum SignRawReview {
     /// Product-account raw signing request.
-    Product(HostSignRawRequest),
+    Product {
+        /// Raw signing request.
+        request: HostSignRawRequest,
+        /// Whether the signer applies the `<Bytes>` transaction-payload protection.
+        watermarked: bool,
+    },
     /// Legacy-account raw signing request.
-    LegacyAccount(HostSignRawWithLegacyAccountRequest),
+    LegacyAccount {
+        /// Raw signing request.
+        request: HostSignRawWithLegacyAccountRequest,
+        /// Whether the signer applies the `<Bytes>` transaction-payload protection.
+        watermarked: bool,
+    },
 }
 
 /// Review shown before a product account signs a Statement Store proof

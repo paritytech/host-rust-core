@@ -250,20 +250,53 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 session/SSO crypto, key derivation, and permission policy, while all I/O
 (statement-store RPC, storage, prompts, chain RPC) stays in the layers above.
 
+### Inter-host SSO
+
+`PairingHost::call(request)` sends typed requests to
+[`SigningHostSsoService`](src/runtime/signing_host/sso_service.rs). Handlers own
+consent and business logic; `sso_responder.rs` owns the transport loop and shared
+allowance helpers. Resource consent is bound to the request's signing session:
+account changes, disconnects, and reactivation invalidate pending approval before
+allocation or key return. Allocation failure details stay in local transcripts.
+Allocation requests use the canonical `truapi::latest::AllocatableResource` type.
+Signing uses canonical request and result types. Product-scoped VRF requests use
+`ProductRequest<P>` to attach the caller to a canonical payload. Both product and
+SSO signing encode `with_signed_transaction` with the one-byte `OptionBool` codec.
+
+The `host_logic::sso::messages::v1::RemoteMessage` enum owns the SCALE wire
+contract. Its response variants wrap named result payloads in `Response<P>`,
+which carries `responding_to` once. Macros generate request/response pairing
+and dispatch; see the
+[macro guide](../truapi-macros/README.md) for handler signatures and reply handling.
+A new operation needs payload definitions, wire variants, a handler, and a typed
+client call.
+
+Rust consumers must update renamed SSO types and helpers even when SCALE encoding
+is unchanged. Use `RemoteMessage::request(message_id, request)` to construct
+requests. Decoded `SsoSessionStatement::RemoteMessages` preserves message order;
+match variants directly or use the request's `SsoRequest::response_from_message`.
+
 ## Wire envelope
 
 Every frame on the wire is encoded as:
 
 ```text
-[requestId: SCALE str][discriminant: u8][payload bytes...]
+[requestId: SCALE str][trait: u8][method: u8][message_type: u8][payload bytes...]
 ```
 
-The discriminant identifies a method + frame kind via the auto-generated
-[`crate::generated::wire_table::WIRE_TABLE`]. Each method's ids are exposed
-as a named const (`PREIMAGE_SUBMIT`, ...); both `WIRE_TABLE` and the generated
-dispatcher reference those consts. Method ordering is part of the wire
-protocol; only ever append.
+The `(trait, method)` discriminant pair identifies the method via the
+auto-generated [`crate::generated::wire_table::WIRE_TABLE`], and the
+`message_type` byte names which leg of that method's exchange the frame
+carries (`Request`/`Response`, or a subscription's
+`Start`/`Receive`/`Interrupt`/`Stop`). The trait
+byte comes from the trait-level `#[wire_trait(id = N)]` annotation; the method
+byte addresses a method within that trait, so method ids restart at 0 in every
+trait. Each method's ids are exposed as a named const (`PREIMAGE_SUBMIT`, ...);
+both `WIRE_TABLE` and the generated dispatcher reference those consts. Trait
+ids and per-trait method ordering are part of the wire protocol; only ever
+append within a trait.
 
 The payload bytes are the SCALE-encoded inner value, inlined without a
-length prefix. The discriminant is carried directly as `Payload::id`, and the
-dispatcher routes on that numeric id via id-keyed tables.
+length prefix. The pair is carried as `Payload::trait_id` and
+`Payload::method_id` with the leg in `Payload::message_type`, and the
+dispatcher routes on the pair via pair-keyed tables.

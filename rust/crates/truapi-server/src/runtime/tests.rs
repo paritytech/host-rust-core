@@ -63,9 +63,7 @@ use super::product_manifest::{CachedManifest, MANIFEST_TTL_SECS};
 use super::*;
 use crate::host_logic::product_account::index_bytes;
 use crate::host_logic::product_manifest::test_manifest_json;
-use crate::host_logic::sso::messages::{
-    RemoteMessage, RemoteMessageData, RingVrfAliasResponse, RingVrfProofResponse, v1,
-};
+use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
 use crate::host_logic::statement_store::current_unix_secs;
 use crate::test_support::*;
 
@@ -1419,15 +1417,13 @@ fn get_account_alias_forwards_without_pairing_host_confirmation() {
             &session,
             RemoteMessage {
                 message_id: "wallet-alias-1".to_string(),
-                data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasResponse(
-                    RingVrfAliasResponse {
-                        responding_to: "alias-1".to_string(),
-                        payload: Ok(v01::ContextualAlias {
-                            context: [9; 32],
-                            alias: vec![1, 2, 3],
-                        }),
-                    },
-                )),
+                data: RemoteMessageData::V1(v1::RemoteMessage::GetAccountAliasResponse(Response {
+                    responding_to: "alias-1".to_string(),
+                    payload: Ok(v01::ContextualAlias {
+                        context: [9; 32],
+                        alias: vec![1, 2, 3],
+                    }),
+                })),
             },
         )),
         ..Default::default()
@@ -1447,13 +1443,13 @@ fn get_account_alias_forwards_without_pairing_host_confirmation() {
     assert_eq!(inner.context, [9; 32]);
     assert_eq!(inner.alias, vec![1, 2, 3]);
     let message = submitted_remote_message(&platform, &session);
-    let RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasRequest(request)) = message.data
+    let RemoteMessageData::V1(v1::RemoteMessage::GetAccountAliasRequest(request)) = message.data
     else {
         panic!("expected ring VRF alias request");
     };
     assert_eq!(request.calling_product_id, "myapp.dot");
-    assert_eq!(request.context.product_id, "myapp.dot");
-    assert_eq!(request.ring_location.chain_id, [1; 32]);
+    assert_eq!(request.payload.context.product_id, "myapp.dot");
+    assert_eq!(request.payload.ring_location.chain_id, [1; 32]);
 }
 
 #[test]
@@ -1481,8 +1477,8 @@ fn create_account_proof_returns_sso_proof() {
             &session,
             RemoteMessage {
                 message_id: "wallet-proof-1".to_string(),
-                data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofResponse(
-                    RingVrfProofResponse {
+                data: RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofResponse(
+                    Response {
                         responding_to: "proof-1".to_string(),
                         payload: Ok(v01::HostAccountCreateProofResponse {
                             proof: vec![0xaa, 0xbb],
@@ -1515,13 +1511,13 @@ fn create_account_proof_returns_sso_proof() {
     assert_eq!(inner.ring_index, 5);
     assert_eq!(inner.ring_revision, 7);
     let message = submitted_remote_message(&platform, &session);
-    let RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofRequest(request)) = message.data
+    let RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofRequest(request)) = message.data
     else {
         panic!("expected ring VRF proof request");
     };
     assert_eq!(request.calling_product_id, "myapp.dot");
-    assert_eq!(request.context.product_id, "myapp.dot");
-    assert_eq!(request.message, vec![4, 5, 6]);
+    assert_eq!(request.payload.context.product_id, "myapp.dot");
+    assert_eq!(request.payload.message, vec![4, 5, 6]);
 }
 
 #[test]
@@ -1532,8 +1528,8 @@ fn create_account_proof_maps_not_member_error() {
             &session,
             RemoteMessage {
                 message_id: "wallet-proof-1".to_string(),
-                data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofResponse(
-                    RingVrfProofResponse {
+                data: RemoteMessageData::V1(v1::RemoteMessage::CreateAccountProofResponse(
+                    Response {
                         responding_to: "proof-1".to_string(),
                         payload: Err(RingVrfError::NotMember),
                     },
@@ -2081,9 +2077,9 @@ fn legacy_create_transaction_accepts_identity_account_then_routes_legacy_request
                 message_id: "wallet-identity-create-tx-1".to_string(),
                 data: crate::host_logic::sso::messages::RemoteMessageData::V1(
                     crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
-                        crate::host_logic::sso::messages::CreateTransactionResponse {
+                        crate::host_logic::sso::messages::Response {
                             responding_to: "identity-create-tx-1".to_string(),
-                            signed_transaction: Ok(vec![0xca, 0xfe]),
+                            payload: Ok(vec![0xca, 0xfe]),
                         },
                     ),
                 ),
@@ -2114,7 +2110,7 @@ fn legacy_create_transaction_accepts_identity_account_then_routes_legacy_request
     assert_eq!(inner.transaction, vec![0xca, 0xfe]);
     let message = submitted_remote_message(&platform, &session);
     let crate::host_logic::sso::messages::RemoteMessageData::V1(
-        crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionLegacyRequest(
+        crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionWithLegacyAccountRequest(
             request,
         ),
     ) = message.data
@@ -2138,9 +2134,9 @@ fn legacy_create_transaction_accepts_derived_key_then_returns_sso_response() {
                 message_id: "wallet-legacy-create-tx-1".to_string(),
                 data: crate::host_logic::sso::messages::RemoteMessageData::V1(
                     crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
-                        crate::host_logic::sso::messages::CreateTransactionResponse {
+                        crate::host_logic::sso::messages::Response {
                             responding_to: "legacy-create-tx-1".to_string(),
-                            signed_transaction: Ok(vec![0xca, 0xfe]),
+                            payload: Ok(vec![0xca, 0xfe]),
                         },
                     ),
                 ),
@@ -2254,7 +2250,7 @@ fn resource_allocation_respects_a_shorter_call_context_timeout() {
             message_id: "wallet-allocation-timeout".to_string(),
             data: crate::host_logic::sso::messages::RemoteMessageData::V1(
                 crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse(
-                    crate::host_logic::sso::messages::ResourceAllocationResponse {
+                    crate::host_logic::sso::messages::Response {
                         responding_to: message_id.to_string(),
                         payload: Ok(vec![]),
                     },
@@ -2312,7 +2308,7 @@ fn resource_allocation_accepts_confirmation_then_returns_sso_response() {
                 message_id: "wallet-alloc-1".to_string(),
                 data: crate::host_logic::sso::messages::RemoteMessageData::V1(
                     crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse(
-                        crate::host_logic::sso::messages::ResourceAllocationResponse {
+                        crate::host_logic::sso::messages::Response {
                             responding_to: "alloc-1".to_string(),
                             payload: Ok(vec![
                                 crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
@@ -2370,7 +2366,7 @@ fn auto_signing_test_platform(session: &SessionInfo, request_id: &str) -> Arc<St
             RemoteMessage {
                 message_id: format!("wallet-{request_id}"),
                 data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-                    crate::host_logic::sso::messages::ResourceAllocationResponse {
+                    crate::host_logic::sso::messages::Response {
                         responding_to: request_id.to_string(),
                         payload: Ok(vec![
                             crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
@@ -2431,7 +2427,7 @@ fn auto_signing_allocation_persists_and_serves_vrf_without_sso() {
             RemoteMessage {
                 message_id: "wallet-auto-1".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-                    crate::host_logic::sso::messages::ResourceAllocationResponse {
+                    crate::host_logic::sso::messages::Response {
                         responding_to: "auto-1".to_string(),
                         payload: Ok(vec![
                             crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
