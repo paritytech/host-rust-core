@@ -8,8 +8,11 @@ on:
         required: false
         default: 30
         type: number
-  schedule:
-    - cron: "0 7 1 * *" # 1st of every month at 08:00 CET (UTC+1)
+  # Held on workflow_dispatch until the build credentials tracked in #672
+  # land. The trigger below is the one this workflow runs on; restoring it
+  # is the change that puts this workflow live.
+#   schedule:
+#     - cron: "0 7 1 * *" # 1st of every month at 08:00 CET (UTC+1)
 
 jobs:
   pr-summary:

@@ -6,8 +6,11 @@ concurrency:
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 10 * * *" # 10:00 AM every day
+  # Held on workflow_dispatch until the build credentials tracked in #672
+  # land. The trigger below is the one this workflow runs on; restoring it
+  # is the change that puts this workflow live.
+#   schedule:
+#     - cron: "0 10 * * *" # 10:00 AM every day
 
 jobs:
   update_signing_data:
@@ -16,12 +19,13 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup iOS Environment
-        uses: ./.github/actions/install
+        uses: ./hosts/ios/.github/actions/install
         with:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RW_PAT }}
 
       - name: Update signing data
+        working-directory: hosts/ios
         run: bundle exec fastlane update_signing_data
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
