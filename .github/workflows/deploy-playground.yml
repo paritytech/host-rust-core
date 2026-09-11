@@ -79,9 +79,9 @@ jobs:
           # is bulletin-deploy's assets/environments.json: only `preview` and
           # `paseo-next-v2` declare one, the rest fall back to dotNS's `dot`.
           case "$BULLETIN_ENV" in
-            paseo-next-v2) tld=paseo ;;
-            preview)       tld=test ;;
-            *)             tld=dot ;;
+            paseo-next-v2) tld="paseo" ;;
+            preview)       tld="test" ;;
+            *)             tld="dot" ;;
           esac
           echo "name=truapi-playground.$tld" >> "$GITHUB_OUTPUT"
 

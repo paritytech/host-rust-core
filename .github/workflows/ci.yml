@@ -198,6 +198,7 @@ jobs:
     outputs:
       sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
       sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
+      workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -228,6 +229,7 @@ jobs:
             {
               echo "sdk_swift=true"
               echo "sdk_kotlin=true"
+              echo "workflows=true"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -242,6 +244,7 @@ jobs:
           }
 
           gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate workflows '^(\.github/workflows/|\.github/actions/|hosts/[a-z]+/\.github/)'
           gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
   ios-swift:
@@ -649,6 +652,56 @@ jobs:
           path: playground/playwright-report
           retention-days: 14
 
+  workflow-lint:
+    name: Workflow lint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned by version and checksum rather than piping an install script, so
+      # a change in what gets linted is a change in this file.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
+
+      # actionlint runs shellcheck over every run: block when shellcheck is on
+      # PATH, which is what catches the quoting and expansion mistakes the inline
+      # shell here carries a lot of. Fail if it is missing rather than quietly
+      # linting less than intended.
+      - name: Check shellcheck is available
+        run: shellcheck --version
+
+      # The e2e job is deliberately disabled with a constant condition while its
+      # smoke test is stabilised, which actionlint reports as if-cond. Drop this
+      # ignore when #686 re-enables that job.
+      # Two shellcheck rules are excluded by code rather than by lowering the
+      # severity bar: SC2012 prefers find over ls, SC2129 prefers grouped
+      # redirects, and both are preference. Severity is left alone because
+      # SC2086, unquoted expansions that word-split, is only info and is exactly
+      # what this job exists to catch.
+      - name: Lint the workflows
+        env:
+          SHELLCHECK_OPTS: "--exclude=SC2012,SC2129"
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/actionlint" \
+            -ignore 'constant expression "false" in condition' \
+            -color
+
   ci-status:
     name: CI Status
     if: always()
@@ -674,6 +727,7 @@ jobs:
         playground,
         explorer,
         e2e,
+        workflow-lint,
       ]
     steps:
       # The results come from the needs context itself rather than a second list
@@ -701,7 +755,7 @@ jobs:
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
             android-bindings ts-client ts-host ts-debugger playground explorer
-            e2e
+            e2e workflow-lint
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
