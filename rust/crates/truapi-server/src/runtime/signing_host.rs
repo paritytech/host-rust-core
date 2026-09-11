@@ -923,6 +923,24 @@ impl ProductAuthority for SigningHost {
                 &request.payload.key_handle,
             )
             .await?;
+        // A grant lets the caller act with the owner's key in the caller's own
+        // context. It does not let it choose whose pseudonym to mint: the
+        // contextual alias is a function of (owner key, context), so an
+        // unconstrained context would let a grantee produce the alias the owner
+        // presents to a third product that granted nothing. That third party
+        // cannot consent here and is not a party to the grant.
+        //
+        // The owner's own calls are unaffected; only a cross-product caller is
+        // held to its own context.
+        {
+            use crate::host_logic::product_manifest::bare_product_label as label;
+            let caller = label(&request.calling_product_id);
+            if label(&key_handle.dot_ns_identifier) != caller
+                && label(&request.context.product_id) != caller
+            {
+                return Err(RingVrfError::NotAllowlisted);
+            }
+        }
         let entropy = self
             .resolve_ring_vrf_key_for_ring(
                 session,
@@ -1705,6 +1723,60 @@ mod tests {
                 deny_account_access(platform, "dim2.dot", "peopl.dot")
             });
         assert_eq!(refusal.err(), Some(RingVrfError::NotAllowlisted));
+    }
+
+    /// A grant does not let the grantee choose whose pseudonym to mint.
+    ///
+    /// The contextual alias is a function of (owner key, context), so with the
+    /// context unconstrained a `context` grant from `peopl.dot` let `dim2.dot`
+    /// produce the alias `peopl.dot` presents to `bank.dot` — a third product
+    /// that granted nothing, is not a party to the grant, and cannot consent
+    /// here. The grant is to act in the grantee's own context, not in anyone's.
+    ///
+    /// The owner's own calls are untouched: minting your own aliases in any
+    /// context is what the context parameter is for.
+    #[test]
+    fn a_grantee_cannot_mint_the_owners_alias_in_a_third_partys_context() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+
+        let mint = |caller: &str, context: &str| {
+            futures::executor::block_on(authority.create_proof(
+                &CallContext::default(),
+                &session,
+                CreateProofAuthorityRequest {
+                    calling_product_id: caller.to_string(),
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: context.to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location: ring.clone(),
+                    message: b"m".to_vec(),
+                },
+            ))
+        };
+
+        assert_eq!(
+            mint("dim2.dot", "bank.dot").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "the grantee must not mint the owner's pseudonym for a third product"
+        );
+        assert!(
+            mint("dim2.dot", "dim2.dot").is_ok(),
+            "the grant still admits the grantee acting in its own context"
+        );
+        assert!(
+            mint("peopl.dot", "bank.dot").is_ok(),
+            "the owner may still mint its own alias in any context"
+        );
     }
 
     /// A refusal covers the product, not one spelling of it.

@@ -2154,6 +2154,24 @@ impl PairingHost {
                 &request.payload.key_handle,
             )
             .await?;
+        // A grant lets the caller act with the owner's key in the caller's own
+        // context. It does not let it choose whose pseudonym to mint: the
+        // contextual alias is a function of (owner key, context), so an
+        // unconstrained context would let a grantee produce the alias the owner
+        // presents to a third product that granted nothing. That third party
+        // cannot consent here and is not a party to the grant.
+        //
+        // The owner's own calls are unaffected; only a cross-product caller is
+        // held to its own context.
+        {
+            use crate::host_logic::product_manifest::bare_product_label as label;
+            let caller = label(&request.calling_product_id);
+            if label(&key_handle.dot_ns_identifier) != caller
+                && label(&request.context.product_id) != caller
+            {
+                return Err(RingVrfError::NotAllowlisted);
+            }
+        }
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy_for_ring(
