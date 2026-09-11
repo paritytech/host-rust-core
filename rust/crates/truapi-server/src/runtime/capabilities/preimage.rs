@@ -6,6 +6,7 @@ use std::time::Instant;
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::Preimage;
+use truapi::latest::GenericError;
 use truapi::versioned::preimage::{
     RemotePreimageLookupSubscribeItem, RemotePreimageLookupSubscribeRequest,
     RemotePreimageSubmitError, RemotePreimageSubmitRequest, RemotePreimageSubmitResponse,
@@ -30,15 +31,14 @@ impl Preimage for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         request: RemotePreimageLookupSubscribeRequest,
-    ) -> Subscription<RemotePreimageLookupSubscribeItem> {
+    ) -> Subscription<RemotePreimageLookupSubscribeItem, CallError<GenericError>> {
         let RemotePreimageLookupSubscribeRequest::V1(v01::RemotePreimageLookupSubscribeRequest {
             key,
         }) = request;
 
         // A cache hit is final: preimages are content-addressed and immutable.
-        // Emit the value once, then keep the subscription open (never complete,
-        // which would emit a product-visible interrupt frame) until the caller
-        // unsubscribes.
+        // Emit the value once, then keep the subscription open until the
+        // caller unsubscribes, since there is nothing left to report.
         if let Ok(key_bytes) = <[u8; 32]>::try_from(key.as_slice())
             && let Some(value) = self.services.cached_preimage(&key_bytes)
         {
@@ -47,47 +47,43 @@ impl Preimage for ProductRuntimeHost {
                     value: Some(value),
                 });
             let stream =
-                futures::stream::once(async move { item }).chain(futures::stream::pending());
-            return Subscription::new(Box::pin(stream));
+                futures::stream::once(async move { Ok(item) }).chain(futures::stream::pending());
+            return Subscription::new(stream);
         }
 
         // Otherwise delegate to the host content backend, verifying that any
         // returned value hashes to the requested key so a compromised backend
-        // cannot feed products forged content. A mismatch is downgraded to a
-        // miss (the wire item has no error channel and the product still needs
-        // its initial current-value/miss emission).
-        let stream = self
-            .platform
-            .lookup_preimage(key.clone())
-            .filter_map(move |item| {
-                let key = key.clone();
-                async move {
-                    let value = match item {
-                        Ok(value) => value,
-                        Err(error) => {
-                            warn!(
-                                reason = %error.reason,
-                                "preimage lookup platform stream failed"
-                            );
-                            return None;
-                        }
-                    };
-                    let value = value.filter(|value| {
-                        let matches = preimage_key(value)[..] == key[..];
-                        if !matches {
-                            warn!(
-                                "preimage lookup returned a value whose hash does not match the \
-                                 requested key; downgrading to a miss"
-                            );
-                        }
-                        matches
+        // cannot feed products forged content. A mismatch is reported as a
+        // miss, so the product still gets its initial current-value/miss
+        // emission.
+        let stream = self.platform.lookup_preimage(key.clone()).map(move |item| {
+            let value = match item {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        reason = %error.reason,
+                        "preimage lookup platform stream failed"
+                    );
+                    return Err(CallError::HostFailure {
+                        reason: error.reason,
                     });
-                    Some(RemotePreimageLookupSubscribeItem::V1(
-                        v01::RemotePreimageLookupSubscribeItem { value },
-                    ))
                 }
+            };
+            let value = value.filter(|value| {
+                let matches = preimage_key(value)[..] == key[..];
+                if !matches {
+                    warn!(
+                        "preimage lookup returned a value whose hash does not match the \
+                             requested key; downgrading to a miss"
+                    );
+                }
+                matches
             });
-        Subscription::new(Box::pin(stream))
+            Ok(RemotePreimageLookupSubscribeItem::V1(
+                v01::RemotePreimageLookupSubscribeItem { value },
+            ))
+        });
+        Subscription::new(stream)
     }
 
     #[instrument(skip_all, fields(runtime.method = "preimage.submit"))]

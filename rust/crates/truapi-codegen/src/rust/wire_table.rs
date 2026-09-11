@@ -129,9 +129,7 @@ fn method_entry(trait_def: &TraitDef, trait_id: u8, method: &MethodDef) -> Resul
     };
     match method.kind {
         MethodKind::Request => Ok(MethodEntry::Request(ids)),
-        MethodKind::Subscription | MethodKind::ResultSubscription => {
-            Ok(MethodEntry::Subscription(ids))
-        }
+        MethodKind::Subscription => Ok(MethodEntry::Subscription(ids)),
     }
 }
 

@@ -7,6 +7,7 @@
 use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::Chain;
+use truapi::latest::GenericError;
 use truapi::versioned::chain::{
     RemoteChainHeadBodyError, RemoteChainHeadBodyRequest, RemoteChainHeadBodyResponse,
     RemoteChainHeadCallError, RemoteChainHeadCallRequest, RemoteChainHeadCallResponse,
@@ -40,15 +41,15 @@ impl Chain for ProductRuntimeHost {
         &self,
         cx: &CallContext,
         request: RemoteChainHeadFollowRequest,
-    ) -> Subscription<RemoteChainHeadFollowItem> {
+    ) -> Subscription<RemoteChainHeadFollowItem, CallError<GenericError>> {
         let RemoteChainHeadFollowRequest::V1(inner) = request;
         let follow_subscription_id = self.follow_id(cx.request_id());
         let stream = self
             .services
             .chain
             .remote_chain_head_follow(follow_subscription_id, inner)
-            .map(RemoteChainHeadFollowItem::V1);
-        Subscription::new(Box::pin(stream))
+            .map(|item| Ok(RemoteChainHeadFollowItem::V1(item)));
+        Subscription::new(stream)
     }
 
     #[instrument(skip_all, fields(runtime.method = "chain.get_head_header"))]

@@ -1,7 +1,8 @@
 //! Unified [`Locale`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::locale::HostLocaleSubscribeItem;
-use crate::{CallContext, Subscription};
+use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 
 /// Host locale subscription.
@@ -19,7 +20,10 @@ pub trait Locale: Send + Sync {
     /// console.log("locale received:", locale.languageTag);
     /// ```
     #[wire(id = 0)]
-    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
-        Subscription::empty()
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostLocaleSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 }

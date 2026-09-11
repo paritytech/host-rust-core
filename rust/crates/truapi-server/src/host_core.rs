@@ -1146,7 +1146,7 @@ impl ProductRuntimeControl {
         message_type: String,
         payload: Vec<u8>,
     ) -> Result<
-        truapi::Subscription<Result<v01::CustomRendererNode, v01::GenericError>>,
+        truapi::Subscription<v01::CustomRendererNode, truapi::CallError<v01::GenericError>>,
         ProductRuntimeError,
     > {
         self.runtime()?.native_chat_platform()?;
