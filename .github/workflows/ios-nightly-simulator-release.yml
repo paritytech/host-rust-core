@@ -14,11 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  schedule:
-    # 02:30 UTC — runs after the nightly Firebase distribution on develop
-    # (typically completes by ~01:00 UTC after the day's last merge), so
-    # the simulator artifact reflects the same code that Firebase shipped.
-    - cron: "30 2 * * *"
+  # Held on workflow_dispatch until the build credentials tracked in #672
+  # land. The trigger below is the one this workflow runs on; restoring it
+  # is the change that puts this workflow live.
+#   schedule:
+#     # 02:30 UTC — runs after the nightly Firebase distribution on develop
+#     # (typically completes by ~01:00 UTC after the day's last merge), so
+#     # the simulator artifact reflects the same code that Firebase shipped.
+#     - cron: "30 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -39,21 +42,22 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup iOS Environment
-        uses: ./.github/actions/install
+        uses: ./hosts/ios/.github/actions/install
 
       - name: Configure Google services
-        uses: ./.github/actions/configure-google-services
+        uses: ./hosts/ios/.github/actions/configure-google-services
         with:
           google_service_info_base64: ${{ secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
           expected_bundle_id: ${{ env.IOS_BUNDLE_ID }}
 
       - name: Configure secrets
-        uses: ./.github/actions/configure-secrets
+        uses: ./hosts/ios/.github/actions/configure-secrets
         with:
           sentry_dsn: ${{ secrets.SENTRY_DSN }}
           meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
 
       - name: Build simulator .app
+        working-directory: hosts/ios
         run: bundle exec fastlane build_app_simulator
 
       - name: Compute release tag + name
@@ -71,12 +75,13 @@ jobs:
 
       - name: Zip .app bundle
         id: zip
+        working-directory: hosts/ios
         run: |
           set -euo pipefail
           cd build_simulator
           # `.app` is a directory bundle; zip preserves the structure so
           # consumers can unzip and `xcrun simctl install` the result.
-          APP_DIR=$(ls -d *.app | head -1)
+          APP_DIR=$(ls -d ./*.app | head -1)
           if [ -z "$APP_DIR" ]; then
             echo "::error::No .app directory found under build_simulator/"
             exit 1
@@ -84,7 +89,7 @@ jobs:
           ARCHIVE="polkadot-app-simulator.app.zip"
           zip -ry "$ARCHIVE" "$APP_DIR"
           ls -la "$ARCHIVE"
-          echo "archive=build_simulator/$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "archive=hosts/ios/build_simulator/$ARCHIVE" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
