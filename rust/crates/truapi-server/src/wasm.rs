@@ -684,6 +684,11 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
                 "runtimeConfig.networkSuffix must be a supported dotNS TLD, got {network_suffix:?}"
             ))
         }
+        // By length, never by value: an id that trips this is unbounded in
+        // size, and this string reaches the product's console.
+        RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => JsValue::from_str(
+            &format!("runtimeConfig.productId must be at most {limit} bytes, got {actual}"),
+        ),
     }
 }
 

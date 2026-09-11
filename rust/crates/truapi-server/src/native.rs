@@ -304,6 +304,18 @@ pub enum NativeRuntimeConfigError {
         /// Supplied byte length.
         actual: u64,
     },
+    /// Product id was longer than `PRODUCT_ID_MAX_BYTES` after normalization.
+    ///
+    /// Appended for the same reason as the variant above. Carries lengths and
+    /// not the id: an id that trips this is unbounded in size, and this error
+    /// reaches the wire and the logs.
+    #[error("product_id must be at most {limit} bytes, got {actual}")]
+    ProductIdTooLong {
+        /// Accepted maximum, in bytes.
+        limit: u64,
+        /// Normalized length, in bytes.
+        actual: u64,
+    },
 }
 
 impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
@@ -380,6 +392,12 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             }
             RuntimeConfigValidationError::InvalidProductId { product_id } => {
                 Self::InvalidProductId { product_id }
+            }
+            RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => {
+                Self::ProductIdTooLong {
+                    limit: limit as u64,
+                    actual: actual as u64,
+                }
             }
             RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
                 Self::InvalidNetworkSuffix { network_suffix }

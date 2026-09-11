@@ -189,6 +189,10 @@ impl SigningHost {
             [0xbb; 32],
             crate::test_support::test_spawner(),
         );
+        // Same reason as the other fixtures that build services directly: this
+        // bypasses `SigningHostRuntime::new`, so without this every test built
+        // from it keeps the pre-#660 behaviour of resolving no manifest at all.
+        services.install_asset_hub_genesis_hash([0xcc; 32]);
         Arc::new(Self {
             services,
             platform: platform.clone(),

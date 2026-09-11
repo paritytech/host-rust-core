@@ -580,6 +580,19 @@ impl SigningHostRuntime {
         // signing role resolves no manifest and refuses every cross-product
         // grant. The pairing role installs it in `PairingHostRole::new`.
         services.install_asset_hub_genesis_hash(config.asset_hub_chain_genesis_hash);
+        if let Some(configured) = services.asset_hub_chain_genesis_hash() {
+            // Spawned, not awaited: this is a diagnostic, and on the native
+            // hosts `supported_chains` is a synchronous UniFFI callback with no
+            // timeout. Once per runtime, so it needs no latch of its own.
+            let platform = services.platform.clone();
+            (services.spawner)(Box::pin(async move {
+                crate::runtime::product_manifest::warn_if_asset_hub_disagrees_with_chain_set(
+                    platform.as_ref(),
+                    configured,
+                )
+                .await;
+            }));
+        }
         if services.asset_hub_chain_genesis_hash().is_none() {
             // Said once at startup rather than inferred from every grant
             // refusing: the refusals are deliberately indistinguishable from an
@@ -2625,7 +2638,14 @@ mod tests {
         use truapi::api::LocalStorage;
         use truapi::versioned::local_storage::HostLocalStorageReadRequest;
 
-        let platform = Arc::new(StubPlatform::default());
+        // The follow ends instead of hanging: this test asserts which chain the
+        // lookup dialled, and the stub serves no dotNS either way. Without this
+        // it waits out the full `dotns_lookup::OPERATION_TIMEOUT` to reach the
+        // same refusal.
+        let platform = Arc::new(StubPlatform {
+            chain_responses_end: true,
+            ..StubPlatform::default()
+        });
         let runtime = SigningHostRuntime::new(
             platform.clone(),
             signing_config_with_asset_hub(asset_hub),

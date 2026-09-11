@@ -339,13 +339,20 @@ pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
 /// Largest accepted product identifier, in bytes.
 ///
 /// `has_dotns_tld` only inspects the suffix after the last `.`, so without a
-/// cap every length of `aaa…aaa.dot` is a distinct valid id. Cross-product
-/// calls carry this string from the wire, where it is self-asserted, and a
-/// manifest miss caches its result under it — including the authoritative
-/// "no manifest", so a miss writes an entry too. Uncapped, that is unbounded
-/// attacker-keyed core storage. The real names are labels plus a short TLD,
-/// so this is far above anything legitimate and matches the cap already
-/// applied to product-supplied chat identifiers.
+/// cap every length of `aaa...aaa.dot` was a distinct valid id, and a
+/// cross-product call carries this string from the wire where it is
+/// self-asserted.
+///
+/// This bounds the size of one identifier. It does not bound how many there
+/// are. A manifest miss caches its answer keyed by the target, including the
+/// authoritative "no manifest", and nothing evicts those entries, so a product
+/// can still mint an unbounded number of distinct capped-length names at one
+/// dotNS round trip each. Bounding that cardinality is a cache-eviction
+/// decision and is not made here.
+///
+/// Real names are a label plus a short TLD, so this is far above anything
+/// legitimate. It matches the cap already applied to product-supplied chat
+/// identifiers.
 pub const PRODUCT_ID_MAX_BYTES: usize = 256;
 
 /// Normalize product identifiers before derivation and policy checks.
@@ -356,10 +363,18 @@ pub fn normalize_product_identifier(
     require_non_empty("product_id", trimmed)?;
     let normalized = trimmed.nfc().collect::<String>().to_lowercase();
     // Checked after normalizing: NFC can change the byte length, so capping the
-    // input would leave the stored form able to exceed the cap.
+    // input would leave the stored form able to exceed the cap. Note this
+    // bounds what is stored, not what is allocated: the NFC and lowercase
+    // passes above have already copied the caller's string.
+    //
+    // Reported by length, never by value. `InvalidProductId` carries the
+    // rejected id and `Display`s it, and these errors reach both the wire and
+    // the logs, so reusing it here would copy a multi-megabyte id into an error
+    // string and a log line. Same shape as `ChatFieldError::TooLong`.
     if normalized.len() > PRODUCT_ID_MAX_BYTES {
-        return Err(RuntimeConfigValidationError::InvalidProductId {
-            product_id: product_id.to_string(),
+        return Err(RuntimeConfigValidationError::ProductIdTooLong {
+            limit: PRODUCT_ID_MAX_BYTES,
+            actual: normalized.len(),
         });
     }
     if has_dotns_tld(&normalized)
@@ -911,6 +926,21 @@ pub enum RuntimeConfigValidationError {
     InvalidNetworkSuffix {
         /// Actual network suffix value.
         network_suffix: String,
+    },
+    /// Product id was longer than [`PRODUCT_ID_MAX_BYTES`] after normalization.
+    ///
+    /// Appended, not grouped with `InvalidProductId`: the native mirror of this
+    /// enum maps to FFI discriminants by declaration order, so inserting here
+    /// silently renumbers every variant below it.
+    ///
+    /// Carries lengths rather than the id, because the whole point of this
+    /// variant is that the id may be enormous.
+    #[display("product_id must be at most {limit} bytes, got {actual}")]
+    ProductIdTooLong {
+        /// Accepted maximum, in bytes.
+        limit: usize,
+        /// Normalized length, in bytes.
+        actual: usize,
     },
 }
 

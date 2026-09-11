@@ -396,9 +396,10 @@ let runtimeConfig = HostRuntimeConfig(
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),
     bulletinChainGenesisHash: Data(repeating: 0, count: 32),
-    // A real Asset Hub genesis hash. All-zero here would mean "no Asset Hub",
-    // which refuses every cross-product `trustedProducts` grant.
-    assetHubChainGenesisHash: assetHubChainGenesisHash,
+    // Stand-in for a real Asset Hub genesis hash. Non-zero on purpose:
+    // all-zero is the "no Asset Hub" sentinel and refuses every cross-product
+    // `trustedProducts` grant.
+    assetHubChainGenesisHash: Data(repeating: 1, count: 32),
     networkSuffix: "dot"
 )
 let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)

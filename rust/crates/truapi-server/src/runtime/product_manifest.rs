@@ -8,8 +8,6 @@
 //!
 //! [manifest]: ../../../../docs/rfcs/product-manifest.md
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use parity_scale_codec::{Decode, Encode};
 use tracing::{instrument, warn};
 use truapi_platform::{CoreStorageKey, Platform};
@@ -243,11 +241,6 @@ pub(crate) async fn grants_scope(
     manifest.grants(bare_product_label(caller_id), scope)
 }
 
-/// Set once the configured Asset Hub has been compared against the host's
-/// chain set, so the comparison costs one `supported_chains` call per process
-/// rather than one per manifest lookup.
-static ASSET_HUB_CROSS_CHECKED: AtomicBool = AtomicBool::new(false);
-
 /// Warn when the Asset Hub hash this host was *configured* with is not the one
 /// it *serves*.
 ///
@@ -265,17 +258,22 @@ static ASSET_HUB_CROSS_CHECKED: AtomicBool = AtomicBool::new(false);
 /// another, so whoever holds the product name on the other network's registry
 /// decides who may read the victim product's storage.
 ///
+/// Run once per runtime, spawned at construction rather than awaited from a
+/// manifest lookup. On the native hosts `supported_chains` is a synchronous
+/// UniFFI callback with no timeout, so awaiting it on the lookup path would let
+/// a slow or wedged host stall a grant decision for a diagnostic.
+///
 /// This does not pick a winner — the configured hash still wins, as #660
 /// specifies — it only makes the divergence audible instead of silent. Which
 /// source should be authoritative is a design question for #660/#454.
-async fn warn_if_asset_hub_disagrees_with_chain_set(platform: &dyn Platform, configured: [u8; 32]) {
+pub(crate) async fn warn_if_asset_hub_disagrees_with_chain_set(
+    platform: &dyn Platform,
+    configured: [u8; 32],
+) {
     use truapi::latest::ChainIdentifier;
 
     use crate::host_logic::features;
 
-    if ASSET_HUB_CROSS_CHECKED.swap(true, Ordering::Relaxed) {
-        return;
-    }
     // A host that cannot answer `supported_chains` is not evidence of a
     // mismatch, so stay quiet rather than cry wolf on an unrelated failure.
     let Ok(chains) = features::supported_chains(platform).await else {
@@ -335,7 +333,6 @@ async fn root_manifest(
     }
 
     let genesis_hash = services.asset_hub_chain_genesis_hash()?;
-    warn_if_asset_hub_disagrees_with_chain_set(platform, genesis_hash).await;
     let json = match fetch_root_manifest(&services.chain, genesis_hash, target).await {
         Ok(json) => json,
         Err(reason) => {
