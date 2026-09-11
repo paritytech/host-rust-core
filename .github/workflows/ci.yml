@@ -688,7 +688,14 @@ jobs:
       # The e2e job is deliberately disabled with a constant condition while its
       # smoke test is stabilised, which actionlint reports as if-cond. Drop this
       # ignore when #686 re-enables that job.
+      # Two shellcheck rules are excluded by code rather than by lowering the
+      # severity bar: SC2012 prefers find over ls, SC2129 prefers grouped
+      # redirects, and both are preference. Severity is left alone because
+      # SC2086, unquoted expansions that word-split, is only info and is exactly
+      # what this job exists to catch.
       - name: Lint the workflows
+        env:
+          SHELLCHECK_OPTS: "--exclude=SC2012,SC2129"
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/actionlint" \
