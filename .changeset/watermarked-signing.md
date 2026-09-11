@@ -5,5 +5,5 @@
 
 Add `signRawWatermarked` and `signRawWatermarkedWithLegacyAccount`, retaining the existing names as deprecated
 compatibility aliases. Add explicitly deprecated unwatermarked signing for product and legacy accounts to unblock
-runtime ownership proofs while runtimes adopt watermarked verification (#612). Deprecated client requests emit a warning
-when called.
+runtime ownership proofs while runtimes adopt watermarked verification (#612). The temporary implementations log a
+deprecation warning when called.

@@ -872,8 +872,6 @@ fn write_header(out: &mut String) {
         // the methods whose payload is unit and for which the conversion is a
         // no-op.
         #![allow(clippy::unit_arg)]
-        // Serving deprecated APIs must keep working while consumers migrate.
-        #![allow(deprecated)]
 
         "#
     )

@@ -37,6 +37,8 @@ pub mod transport;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+// Dispatch must keep serving deprecated APIs while clients migrate.
+#[allow(deprecated)]
 pub mod generated;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]

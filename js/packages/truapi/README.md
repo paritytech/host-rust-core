@@ -64,9 +64,8 @@ These methods retain account authorization, signing permission, and confirmation
 unwatermarked confirmation variant because this operation can sign transaction data. Both ends of a paired connection
 need support for the new unwatermarked requests; they never fall back to wrapped signing.
 
-All deprecated methods carry Rust `#[deprecated]` and TypeScript `@deprecated` notices. The generated client also warns
-on each call. TypeScript's compiler does not report deprecated calls during builds; consumers that require build
-diagnostics must enable deprecation checking in their lint pipeline.
+API definitions carry Rust `#[deprecated]` and TypeScript `@deprecated` notices. The temporary unwatermarked
+implementations log a warning linking to #612 when called.
 
 Once runtimes verify watermarked proofs, migrate to the watermarked methods. The temporary unwatermarked methods will
 then be removed, as tracked in [#612](https://github.com/paritytech/host-rust-core/issues/612).
