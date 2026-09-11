@@ -15,9 +15,11 @@ mod authority;
 pub(crate) mod bulletin_rpc;
 mod capabilities;
 mod chat;
+mod dotns_lookup;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
+pub(crate) mod product_manifest;
 mod product_subtree;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
@@ -82,6 +84,7 @@ use crate::host_logic::permissions::PermissionsService;
 use crate::host_logic::product_account::{
     derivation_index_bytes, derive_product_public_key, public_key_from_address,
 };
+use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
 use crate::host_logic::session::SessionState;
@@ -425,6 +428,36 @@ impl ProductRuntimeHost {
             || dot_ns_identifier == product_id
     }
 
+    /// The normalized id to act on when the calling product may reach `target`
+    /// under `scope`, or `None` when it may not.
+    ///
+    /// The caller's own id is not a cross-product access and consults no grant.
+    /// Any other product must name this caller in its manifest's
+    /// `trustedProducts` with `scope` or `all`.
+    ///
+    /// Returning the id rather than a bare yes keeps one canonical spelling for
+    /// the callers that go on to address the target — the grant and whatever it
+    /// admits are then decided against the same string.
+    pub(crate) async fn cross_product_scope_target(
+        &self,
+        target: &str,
+        scope: Granted,
+    ) -> Option<String> {
+        let normalized = normalize_product_identifier(target).ok()?;
+        if normalized == self.product_id() {
+            return Some(normalized);
+        }
+        product_manifest::grants_scope(
+            &self.services,
+            &*self.platform,
+            &self.product_id(),
+            &normalized,
+            scope,
+        )
+        .await
+        .then_some(normalized)
+    }
+
     fn normalize_product_account_id(
         product_account_id: v01::ProductAccountId,
     ) -> Result<v01::ProductAccountId, ()> {
@@ -481,9 +514,18 @@ impl ProductRuntimeHost {
         .map_err(|err| err.to_string())
     }
 
-    fn product_storage_key(&self, key: String) -> String {
-        ProductStorageKey::new(self.product.product_id.as_str(), key)
-            .expect("product runtime context was already validated")
+    /// The storage key `owner` holds `key` under.
+    ///
+    /// The owner is explicit because a read may be addressed at another product:
+    /// deriving it from `self` would hand a granted foreign read the caller's own
+    /// values instead of the ones it asked for.
+    ///
+    /// `owner` must already be normalized — either this product's validated id or
+    /// an id returned by [`Self::cross_product_scope_target`]. `ProductStorageKey`
+    /// re-applies the same normalization, so the key cannot fail to build.
+    fn product_storage_key(&self, owner: &str, key: String) -> String {
+        ProductStorageKey::new(owner, key)
+            .expect("storage key owner was already normalized")
             .encode()
     }
 

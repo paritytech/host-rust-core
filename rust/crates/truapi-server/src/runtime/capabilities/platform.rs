@@ -3,6 +3,7 @@
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme};
+use truapi::versioned::IntoLatest;
 use truapi::versioned::local_storage::{
     HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
@@ -25,11 +26,12 @@ use truapi::versioned::system::{
     HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
-use truapi::{CallContext, CallError, Subscription, v01};
+use truapi::{CallContext, CallError, Subscription, v01, v02};
 use truapi_platform::PermissionAuthorizationStatus;
 
 use crate::host_logic::dotns::{NavigateDecision, external_host, parse_navigate};
 use crate::host_logic::features::feature_supported;
+use crate::host_logic::product_manifest::Granted;
 use crate::runtime::ProductRuntimeHost;
 
 #[truapi::async_trait]
@@ -172,14 +174,40 @@ impl LocalStorage for ProductRuntimeHost {
         _cx: &CallContext,
         request: HostLocalStorageReadRequest,
     ) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
-        let HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest { key }) = request;
+        let v02::HostLocalStorageReadRequest { product, key } = request.into_latest();
+
+        // One refusal for every reason the grant is not held: telling them apart
+        // would make this call a probe for which products exist and which hold
+        // data. A prompt is not the fallback either, since stored values are
+        // opaque bytes nobody could inspect to approve.
+        let owner = match product {
+            Some(target) => {
+                match self
+                    .cross_product_scope_target(&target, Granted::Storage)
+                    .await
+                {
+                    Some(owner) => owner,
+                    None => {
+                        return Err(CallError::Domain(HostLocalStorageReadError::V2(
+                            v02::HostLocalStorageReadError::AccessNotGranted,
+                        )));
+                    }
+                }
+            }
+            None => self.product_id(),
+        };
+
         self.platform
-            .read(self.product_storage_key(key))
+            .read(self.product_storage_key(&owner, key))
             .await
             .map(|value| {
-                HostLocalStorageReadResponse::V1(v01::HostLocalStorageReadResponse { value })
+                HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value })
             })
-            .map_err(|err| CallError::Domain(HostLocalStorageReadError::V1(err)))
+            .map_err(|err| {
+                CallError::Domain(HostLocalStorageReadError::V2(
+                    HostLocalStorageReadError::V1(err).into_latest(),
+                ))
+            })
     }
 
     #[instrument(skip_all, fields(runtime.method = "local_storage.write"))]
@@ -191,7 +219,10 @@ impl LocalStorage for ProductRuntimeHost {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
         self.platform
-            .write(self.product_storage_key(key), value)
+            .write(
+                self.product_storage_key(self.product.product_id.as_str(), key),
+                value,
+            )
             .await
             .map(|()| HostLocalStorageWriteResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageWriteError::V1(err)))
@@ -205,7 +236,7 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Result<HostLocalStorageClearResponse, CallError<HostLocalStorageClearError>> {
         let HostLocalStorageClearRequest::V1(v01::HostLocalStorageClearRequest { key }) = request;
         self.platform
-            .clear(self.product_storage_key(key))
+            .clear(self.product_storage_key(self.product.product_id.as_str(), key))
             .await
             .map(|()| HostLocalStorageClearResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageClearError::V1(err)))
