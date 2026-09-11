@@ -38,3 +38,9 @@ codegen-units = 16
 # Most core edits touch one crate, so reusing the previous compilation is the
 # largest remaining win on this path.
 incremental = true
+
+# `lifecycle_unstable_follow` is on smoldot's main branch and in no published
+# release yet, so the light client comes from git until one ships it.
+[patch.crates-io]
+smoldot = { git = "https://github.com/paritytech/smoldot", branch = "main" }
+smoldot-light = { git = "https://github.com/paritytech/smoldot", branch = "main" }
