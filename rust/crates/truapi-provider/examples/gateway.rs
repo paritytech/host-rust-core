@@ -182,10 +182,16 @@ mod imp {
         StatementUnsubscribe(String),
     }
 
+    enum RestoredResponse {
+        Send(u64),
+        Suppress,
+    }
+
     struct PendingRequest {
         client: u64,
         original_id: Value,
         action: PendingAction,
+        retries: u8,
     }
 
     struct SharedChain {
@@ -273,6 +279,7 @@ mod imp {
                                 client,
                                 original_id: id.clone(),
                                 action,
+                                retries: 0,
                             },
                         );
                         *id = Value::String(namespaced);
@@ -287,41 +294,81 @@ mod imp {
                 self.broadcast(Message::Text(text));
                 return;
             };
-            if let Some(client) = self.restore_ids(&mut response) {
-                self.send_to(
-                    client,
-                    Message::Text(
-                        serde_json::to_string(&response).expect("JSON-RPC response must serialize"),
-                    ),
-                );
+            if let Some(restored) = self.restore_ids(&mut response) {
+                if let RestoredResponse::Send(client) = restored {
+                    self.send_to(
+                        client,
+                        Message::Text(
+                            serde_json::to_string(&response)
+                                .expect("JSON-RPC response must serialize"),
+                        ),
+                    );
+                }
+                return;
+            }
+            if self.suppress_local_fanout_echo(&mut response) {
+                return;
+            }
+            if let Some(client) = self.statement_notification_client(&response) {
+                self.send_to(client, Message::Text(response.to_string()));
             } else {
-                if self.suppress_local_fanout_echo(&mut response) {
-                    return;
-                }
-                if let Some(client) = self.statement_notification_client(&response) {
-                    self.send_to(client, Message::Text(response.to_string()));
-                } else {
-                    self.broadcast(Message::Text(text));
-                }
+                self.broadcast(Message::Text(text));
             }
         }
 
-        fn restore_ids(&self, value: &mut Value) -> Option<u64> {
+        fn restore_ids(&self, value: &mut Value) -> Option<RestoredResponse> {
             match value {
                 Value::Array(items) => {
                     let mut client = None;
                     for item in items {
-                        let item_client = self.restore_ids(item)?;
-                        if client.is_some_and(|current| current != item_client) {
-                            return None;
+                        match self.restore_ids(item)? {
+                            RestoredResponse::Suppress => {
+                                return Some(RestoredResponse::Suppress);
+                            }
+                            RestoredResponse::Send(item_client) => {
+                                if client.is_some_and(|current| current != item_client) {
+                                    return None;
+                                }
+                                client = Some(item_client);
+                            }
                         }
-                        client = Some(item_client);
                     }
-                    client
+                    client.map(RestoredResponse::Send)
                 }
                 Value::Object(object) => {
+                    const MAX_DISCONNECTED_RETRIES: u8 = 30;
+
                     let namespaced = object.get("id")?.as_str()?.to_owned();
-                    let pending = self.pending.lock().unwrap().remove(&namespaced)?;
+                    let mut pending = self.pending.lock().unwrap().remove(&namespaced)?;
+                    let disconnected = object.get("result").is_some_and(|result| {
+                        result.get("status").and_then(Value::as_str) == Some("internalError")
+                            && result.get("error").and_then(Value::as_str)
+                                == Some("No connected peers")
+                    });
+                    if disconnected && pending.retries < MAX_DISCONNECTED_RETRIES {
+                        if let PendingAction::StatementSubmit(statement) = &pending.action {
+                            pending.retries += 1;
+                            let retry = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": namespaced.clone(),
+                                "method": "statement_submit",
+                                "params": [statement]
+                            })
+                            .to_string();
+                            let attempt = pending.retries;
+                            self.pending.lock().unwrap().insert(namespaced, pending);
+                            let connection = Arc::clone(&self.connection);
+                            tokio::spawn(async move {
+                                sleep(Duration::from_secs(1)).await;
+                                connection.send(retry);
+                            });
+                            eprintln!(
+                                "[gateway] statement_submit has no peers; retrying ({attempt}/{MAX_DISCONNECTED_RETRIES})"
+                            );
+                            return Some(RestoredResponse::Suppress);
+                        }
+                    }
+
                     object.insert("id".to_owned(), pending.original_id);
                     match pending.action {
                         PendingAction::None => {}
@@ -353,7 +400,7 @@ mod imp {
                             }
                         }
                     }
-                    Some(pending.client)
+                    Some(RestoredResponse::Send(pending.client))
                 }
                 _ => None,
             }
