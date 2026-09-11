@@ -25,8 +25,8 @@ use crate::host_logic::statement_store::{
 use crate::host_rpc_client::HostRpcClient;
 use crate::subscription::Spawner;
 
-const SSO_NO_ALLOWANCE_RETRY_ATTEMPTS: usize = 5;
-const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(1);
+const SSO_SUBMIT_RETRY_ATTEMPTS: usize = 10;
+const SSO_SUBMIT_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Error opening a statement-store RPC client over the host platform.
 #[derive(Debug, Error)]
@@ -187,20 +187,20 @@ pub(super) async fn submit_sso(
     statement: Vec<u8>,
     label: &'static str,
 ) -> Result<(), String> {
-    for attempt in 1..=SSO_NO_ALLOWANCE_RETRY_ATTEMPTS {
+    for attempt in 1..=SSO_SUBMIT_RETRY_ATTEMPTS {
         match submit(rpc_client, statement.clone()).await {
             Ok(()) => return Ok(()),
             Err(reason)
-                if is_transient_no_allowance(&reason)
-                    && attempt < SSO_NO_ALLOWANCE_RETRY_ATTEMPTS =>
+                if is_transient_sso_submit_failure(&reason)
+                    && attempt < SSO_SUBMIT_RETRY_ATTEMPTS =>
             {
                 warn!(
                     label,
                     attempt,
-                    max_attempts = SSO_NO_ALLOWANCE_RETRY_ATTEMPTS,
-                    "SSO allowance not visible yet; retrying statement submission"
+                    max_attempts = SSO_SUBMIT_RETRY_ATTEMPTS,
+                    "SSO statement store unavailable; retrying submission"
                 );
-                futures_timer::Delay::new(SSO_NO_ALLOWANCE_RETRY_DELAY).await;
+                futures_timer::Delay::new(SSO_SUBMIT_RETRY_DELAY).await;
             }
             Err(reason) => return Err(reason),
         }
@@ -208,8 +208,9 @@ pub(super) async fn submit_sso(
     unreachable!("the bounded SSO submit loop always returns")
 }
 
-fn is_transient_no_allowance(reason: &str) -> bool {
+fn is_transient_sso_submit_failure(reason: &str) -> bool {
     reason.contains("noAllowance")
+        || (reason.contains("internalError") && reason.contains("No connected peers"))
 }
 
 /// Statement-store topic filter encoded as JSON-RPC params.
@@ -232,14 +233,17 @@ pub(super) fn rpc_error_message(error: subxt_rpcs::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_transient_no_allowance;
+    use super::is_transient_sso_submit_failure;
 
     #[test]
-    fn identifies_no_allowance_submit_rejections_for_retry() {
-        assert!(is_transient_no_allowance(
+    fn identifies_transient_sso_submit_failures_for_retry() {
+        assert!(is_transient_sso_submit_failure(
             r#"statement_submit not accepted: {"reason":"noAllowance","status":"rejected"}"#
         ));
-        assert!(!is_transient_no_allowance(
+        assert!(is_transient_sso_submit_failure(
+            r#"statement_submit not accepted: {"error":"No connected peers","status":"internalError"}"#
+        ));
+        assert!(!is_transient_sso_submit_failure(
             r#"statement_submit not accepted: {"reason":"badProof","status":"rejected"}"#
         ));
     }
