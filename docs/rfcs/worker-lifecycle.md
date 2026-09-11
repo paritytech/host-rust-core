@@ -41,8 +41,9 @@ The design has three parts:
 ### References
 
 A reference is held for exactly as long as its work is on screen or in flight. Several references of one product hold
-one worker: a pocket artifact and an input surface over it are two references on the same worker. A modality names its
-holders in its own RFC. App and Widget executables hold no reference; their lifetime is their screen.
+one worker: a chat room the worker serves, a pocket artifact it contributed, and a funding flow that selected the product
+are three references on the same worker. A modality names its holders in its own RFC. App and Widget executables hold no
+reference; their lifetime is their screen.
 
 Reference holders, by modality:
 
