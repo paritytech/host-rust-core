@@ -22,6 +22,8 @@ use crate::chain_runtime::{
     wait_for_chain_head_best_hash, wait_for_chain_head_call_output,
     wait_for_chain_head_storage_value,
 };
+use tracing::debug;
+
 use crate::host_logic::dotns_gateway::{
     DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, encode_revive_call, view_output,
 };
@@ -65,13 +67,31 @@ impl<'a> DotnsLookup<'a> {
                 with_runtime: true,
             },
         );
+        // This whole path used to be unreachable on the signing role, so it
+        // had no logging of its own at all. It can now do network I/O, stall
+        // for `OPERATION_TIMEOUT`, and fail closed into a refusal a caller
+        // cannot tell from "you were not granted this" — so say what it did.
+        debug!(
+            target: "truapi_server::dotns",
+            %follow_id,
+            genesis = %hex::encode(&genesis_hash),
+            "opening the Asset Hub follow for a dotNS lookup"
+        );
         let hash = wait_for_chain_head_best_hash(
             &mut follow,
             "Asset Hub",
             OPERATION_TIMEOUT,
             BEST_BLOCK_TIMEOUT,
         )
-        .await?;
+        .await
+        .inspect_err(|reason| {
+            debug!(
+                target: "truapi_server::dotns",
+                %follow_id, %reason,
+                "the Asset Hub follow never initialized; every grant behind \
+                 this lookup is refused"
+            );
+        })?;
         Ok(Self {
             chain,
             follow,
@@ -114,10 +134,33 @@ impl DotnsTransport for DotnsLookup<'_> {
             },
         )
         .await?;
+        // `Missing` is a real answer and `Inaccessible` is a failure, but both
+        // end in the same refusal upstream. Distinguish them here or the two
+        // are indistinguishable after the fact.
         match value {
-            ChainHeadStorageValue::Found(value) => Ok(Some(value)),
-            ChainHeadStorageValue::Missing => Ok(None),
+            ChainHeadStorageValue::Found(value) => {
+                debug!(
+                    target: "truapi_server::dotns",
+                    follow_id = %self.follow_id,
+                    bytes = value.len(),
+                    "dotNS storage read found a value"
+                );
+                Ok(Some(value))
+            }
+            ChainHeadStorageValue::Missing => {
+                debug!(
+                    target: "truapi_server::dotns",
+                    follow_id = %self.follow_id,
+                    "dotNS storage read: no such entry"
+                );
+                Ok(None)
+            }
             ChainHeadStorageValue::Inaccessible => {
+                debug!(
+                    target: "truapi_server::dotns",
+                    follow_id = %self.follow_id,
+                    "dotNS storage was inaccessible, which is not the same as absent"
+                );
                 Err("Asset Hub storage was inaccessible".to_string())
             }
         }
@@ -150,7 +193,18 @@ impl DotnsTransport for DotnsLookup<'_> {
         )
         .await
         .map_err(DotnsViewError::Failed)?;
-        view_output(&output)
+        let result = view_output(&output);
+        debug!(
+            target: "truapi_server::dotns",
+            follow_id = %self.follow_id,
+            dest = %hex::encode(dest),
+            outcome = match &result {
+                Ok(data) => format!("{} bytes", data.len()),
+                Err(reason) => format!("failed: {reason}"),
+            },
+            "dotNS contract view returned"
+        );
+        result
     }
 }
 

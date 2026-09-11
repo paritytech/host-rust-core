@@ -96,7 +96,12 @@ enum class ProductExecutionKind {
 /**
  * Immutable process-wide configuration shared by every product execution
  * opened from one [TrUAPIHostRuntime]. [peopleChainGenesisHash] and
- * [bulletinChainGenesisHash] must each be exactly 32 bytes. [networkSuffix] is
+ * [bulletinChainGenesisHash] must each be exactly 32 bytes, and so must
+ * [assetHubChainGenesisHash], where the dotNS contracts are deployed: product
+ * manifests are read from there, so it is what makes a `trustedProducts` grant
+ * resolvable. 32 zero bytes says this host has no Asset Hub, and no manifest
+ * then resolves, so every cross-product grant is refused — except one already
+ * cached, which is served without consulting it. [networkSuffix] is
  * the network's dotNS TLD without the leading dot (`dot`, `paseo`, `testnet`);
  * the core derives the wallet's reserved identities under it (`uid.<suffix>`,
  * `peopl.<suffix>`), the same person the app's own onboarding derives there.
@@ -109,6 +114,7 @@ data class HostRuntimeConfig(
     val platformVersion: String? = null,
     val peopleChainGenesisHash: ByteArray,
     val bulletinChainGenesisHash: ByteArray,
+    val assetHubChainGenesisHash: ByteArray,
     val networkSuffix: String,
     val localSessionSecret: ByteArray? = null,
     val localSessionLiteUsername: String? = null,
@@ -123,6 +129,7 @@ data class HostRuntimeConfig(
             platformVersion = platformVersion,
             peopleChainGenesisHash = peopleChainGenesisHash,
             bulletinChainGenesisHash = bulletinChainGenesisHash,
+            assetHubChainGenesisHash = assetHubChainGenesisHash,
             networkSuffix = networkSuffix,
             localSessionSecret = localSessionSecret,
             localSessionLiteUsername = localSessionLiteUsername,
@@ -138,6 +145,7 @@ data class HostRuntimeConfig(
             platformVersion == other.platformVersion &&
             peopleChainGenesisHash.contentEquals(other.peopleChainGenesisHash) &&
             bulletinChainGenesisHash.contentEquals(other.bulletinChainGenesisHash) &&
+            assetHubChainGenesisHash.contentEquals(other.assetHubChainGenesisHash) &&
             networkSuffix == other.networkSuffix &&
             localSessionSecret.contentEquals(other.localSessionSecret) &&
             localSessionLiteUsername == other.localSessionLiteUsername
@@ -151,6 +159,7 @@ data class HostRuntimeConfig(
         result = 31 * result + (platformVersion?.hashCode() ?: 0)
         result = 31 * result + peopleChainGenesisHash.contentHashCode()
         result = 31 * result + bulletinChainGenesisHash.contentHashCode()
+        result = 31 * result + assetHubChainGenesisHash.contentHashCode()
         result = 31 * result + networkSuffix.hashCode()
         result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
         result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)

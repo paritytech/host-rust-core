@@ -3,8 +3,10 @@
 # `@parity/truapi` client.
 #
 # One product writes to its own storage and another reads it; only the manifest
-# grant in `peopl.paseo`'s local product config permits that. Nothing here
-# touches a chain: the host resolves the grant from `--product-config`.
+# grant in `peopl.paseo`'s local product config permits that. The granted read
+# touches no chain: the host resolves it from `--product-config`, which seeds the
+# manifest cache. The `read-missing` phase has nothing seeded, so its cache miss
+# does go to dotNS on Asset Hub before refusing.
 #
 # The runner serves one product per host process, so each phase is its own
 # `truapi-host` run. They share one `--base-path`, which is what makes the read

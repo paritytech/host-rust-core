@@ -152,6 +152,11 @@ pub(crate) struct StubPlatform {
     /// that decodes metadata or does other work between calls.
     pub(crate) rpc_method_responses: Vec<(&'static str, String)>,
     pub(crate) sso_response_script: Option<SsoResponseScript>,
+    /// Every genesis hash handed to `connect`, in order. Lets a test assert
+    /// *which* chain a lookup reached, not merely that it reached one: the
+    /// hashes a host is configured with are same-typed `[u8; 32]` passed
+    /// positionally, so a transposed pair still connects and still answers.
+    pub(crate) chain_connects: Arc<Mutex<Vec<[u8; 32]>>>,
     /// When set, `connect` fails with this reason.
     pub(crate) chain_connect_error: Option<&'static str>,
     /// When true, `connect` stays pending forever.
@@ -1465,8 +1470,14 @@ impl Drop for DropFlagGuard {
 impl ChainProvider for StubPlatform {
     async fn connect(
         &self,
-        _genesis_hash: [u8; 32],
+        genesis_hash: [u8; 32],
     ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        // Recorded before the failure branches: a test asserting which chain
+        // was dialled needs the attempt even when the connect never succeeds.
+        self.chain_connects
+            .lock()
+            .expect("chain connect mutex poisoned")
+            .push(genesis_hash);
         if let Some(reason) = self.chain_connect_error {
             return Err(v01::GenericError {
                 reason: reason.to_string(),

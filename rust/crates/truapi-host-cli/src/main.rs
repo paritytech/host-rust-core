@@ -1546,6 +1546,7 @@ fn build_signing_runtime(
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.asset_hub_genesis,
         network.network_suffix.to_string(),
     )
     .context("invalid signing host config")?;

@@ -91,6 +91,18 @@ pub struct SigningHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
+    /// Asset Hub genesis hash the dotNS contracts are deployed on, used to
+    /// resolve the product manifests that carry `trustedProducts` grants.
+    ///
+    /// All-zero says this host has no Asset Hub. No manifest then resolves, so
+    /// every cross-product grant is refused — the same answer as a chain that
+    /// cannot be read, and the reason a host must set this deliberately rather
+    /// than by omission.
+    ///
+    /// Not a kill switch: a manifest already in the core-storage cache is
+    /// served before this is consulted, so grants resolved earlier stay
+    /// honoured until that entry expires.
+    pub asset_hub_chain_genesis_hash: [u8; 32],
     /// The network's dotNS TLD without the leading dot: `dot`, `paseo`,
     /// `testnet`. Every reserved RFC-0022 identity the wallet derives ends in
     /// it: the `uid.<suffix>` identity account and the `peopl.<suffix>` person
@@ -221,6 +233,7 @@ impl SigningHostConfig {
         platform_info: PlatformInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
+        asset_hub_chain_genesis_hash: [u8; 32],
         network_suffix: String,
     ) -> Result<Self, RuntimeConfigValidationError> {
         validate_network_suffix(&network_suffix)?;
@@ -228,6 +241,7 @@ impl SigningHostConfig {
             host: HostRuntimeConfig::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             network_suffix,
         })
     }
@@ -322,6 +336,18 @@ pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
             .is_some_and(|(label, _tld)| REMOTE_PERMISSION_TRUSTED_LABELS.contains(&label))
 }
 
+/// Largest accepted product identifier, in bytes.
+///
+/// `has_dotns_tld` only inspects the suffix after the last `.`, so without a
+/// cap every length of `aaa…aaa.dot` is a distinct valid id. Cross-product
+/// calls carry this string from the wire, where it is self-asserted, and a
+/// manifest miss caches its result under it — including the authoritative
+/// "no manifest", so a miss writes an entry too. Uncapped, that is unbounded
+/// attacker-keyed core storage. The real names are labels plus a short TLD,
+/// so this is far above anything legitimate and matches the cap already
+/// applied to product-supplied chat identifiers.
+pub const PRODUCT_ID_MAX_BYTES: usize = 256;
+
 /// Normalize product identifiers before derivation and policy checks.
 pub fn normalize_product_identifier(
     product_id: &str,
@@ -329,6 +355,13 @@ pub fn normalize_product_identifier(
     let trimmed = product_id.trim();
     require_non_empty("product_id", trimmed)?;
     let normalized = trimmed.nfc().collect::<String>().to_lowercase();
+    // Checked after normalizing: NFC can change the byte length, so capping the
+    // input would leave the stored form able to exceed the cap.
+    if normalized.len() > PRODUCT_ID_MAX_BYTES {
+        return Err(RuntimeConfigValidationError::InvalidProductId {
+            product_id: product_id.to_string(),
+        });
+    }
     if has_dotns_tld(&normalized)
         || normalized == "localhost"
         || normalized.starts_with("localhost:")
@@ -1539,6 +1572,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [1; 32],
+            [2; 32],
             network_suffix.to_string(),
         )
     }
@@ -2243,6 +2277,32 @@ mod tests {
             assert!(!label.contains('.'), "{label} must not carry a TLD");
             assert_eq!(*label, label.to_lowercase(), "{label} must be lowercase");
         }
+    }
+
+    #[test]
+    fn an_overlong_product_id_is_not_an_identifier() {
+        // `has_dotns_tld` reads only the suffix after the last `.`, so every
+        // length of this is otherwise a valid, distinct id. A cross-product
+        // call carries this string from the wire and a manifest miss caches
+        // its answer keyed by it, so an uncapped id is unbounded
+        // attacker-keyed core storage.
+        let label = "a".repeat(PRODUCT_ID_MAX_BYTES);
+        let overlong = format!("{label}.dot");
+        assert!(overlong.len() > PRODUCT_ID_MAX_BYTES);
+        assert!(
+            !is_product_identifier(&overlong),
+            "a product id past the cap must be rejected, not stored"
+        );
+
+        // The boundary itself is accepted, so the cap rejects only what is
+        // over it: a test that only checked a huge id would still pass if the
+        // cap were off by any amount.
+        let at_cap = format!("{}.dot", "a".repeat(PRODUCT_ID_MAX_BYTES - 4));
+        assert_eq!(at_cap.len(), PRODUCT_ID_MAX_BYTES);
+        assert!(
+            is_product_identifier(&at_cap),
+            "an id exactly at the cap is still valid"
+        );
     }
 
     #[test]

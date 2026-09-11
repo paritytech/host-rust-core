@@ -764,6 +764,7 @@ mod tests {
             },
             network.people_genesis,
             network.bulletin_genesis,
+            network.asset_hub_genesis,
             network.network_suffix.to_string(),
         )?;
         let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
@@ -1157,7 +1158,21 @@ mod tests {
         }
 
         fn host() -> Result<(Arc<crate::platform::CliPlatform>, SigningHostRuntime)> {
-            let network = crate::network::Network::default().config();
+            // A real Asset Hub genesis hash, so the signing role installs one
+            // and manifest resolution takes the dotNS path. The preset URL is
+            // replaced with a closed port to keep this off the live network:
+            // on the preset these tests dialled `paseo-asset-hub-next-rpc`
+            // for real, so they passed or failed on Paseo's reachability.
+            //
+            // It does not make them fast. A closed port costs the same 10s as
+            // a live one: the provider keeps retrying rather than ending the
+            // follow, so `wait_for_chain_head_best_hash` never sees `Stop` and
+            // burns all of `dotns_lookup::OPERATION_TIMEOUT`. Measured both
+            // ways — 10.01s live, 10.02s refused, 0.01s with no Asset Hub at
+            // all. An unreachable Asset Hub is not distinguishable here from a
+            // merely slow one.
+            let mut network = crate::network::Network::default().config();
+            network.asset_hub_ws = "ws://127.0.0.1:1";
             let platform = crate::platform::CliPlatform::new(
                 network,
                 None,
@@ -1177,6 +1192,7 @@ mod tests {
                 },
                 network.people_genesis,
                 network.bulletin_genesis,
+                network.asset_hub_genesis,
                 network.network_suffix.to_string(),
             )?;
             let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
@@ -1305,9 +1321,13 @@ mod tests {
 
         #[tokio::test]
         async fn a_product_with_no_config_is_refused_the_same_way() -> Result<()> {
-            // No config applied, and no Asset Hub on the signing role, so the
-            // lookup finds nothing. It must be the same refusal as a config
-            // that named someone else.
+            // No config applied, so nothing is seeded in the manifest cache
+            // and resolution falls through to dotNS, which cannot answer here.
+            // Note what this pins down: an Asset Hub that never answers is
+            // refused identically to a config that named someone else. The
+            // caller cannot tell "you were not granted this" from "the grant
+            // could not be looked up", which is the same collapse the
+            // `assetHubChainGenesisHash` docs warn about.
             let (_platform, runtime) = host()?;
             write_owner_value(&runtime).await;
             assert_eq!(

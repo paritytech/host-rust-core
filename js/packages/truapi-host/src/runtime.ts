@@ -96,7 +96,16 @@ export interface ProductRuntimeConfig {
     /** Bulletin-chain genesis hash. */
     genesisHash: string | Uint8Array;
   };
-  /** Asset Hub configuration used to resolve session usernames from dotNS. */
+  /**
+   * Asset Hub configuration. Used to resolve session usernames from dotNS, and
+   * to read the product manifests that carry `trustedProducts` grants — so
+   * without a usable genesis hash every cross-product call is refused,
+   * indistinguishably from the other product having granted nothing. An
+   * all-zero hash declares deliberately that this host has no Asset Hub.
+   *
+   * The wasm signing host requires the same `assetHub.genesisHash`, though it
+   * takes an untyped config object rather than this interface.
+   */
   assetHub: {
     /** Asset Hub genesis hash. */
     genesisHash: string | Uint8Array;

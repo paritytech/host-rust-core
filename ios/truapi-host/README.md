@@ -95,6 +95,15 @@ and the People/Bulletin genesis hashes. It must match the People chain's
 `NetworkSuffix.NetworkSuffix`. Include this configuration update in the
 embedding app's package upgrade.
 
+`HostRuntimeConfig.assetHubChainGenesisHash` is required. Supply the Asset Hub
+genesis hash from the same network configuration, as 32 bytes. Product manifests
+are read from the dotNS contracts deployed there, so it is what makes a
+`trustedProducts` grant resolvable: without a usable value no manifest resolves,
+so every cross-product grant not already cached is refused, and the refusal is
+indistinguishable from the other product having granted nothing. Pass 32 zero
+bytes only to declare deliberately that this host has no Asset Hub. Include this
+configuration update in the embedding app's package upgrade.
+
 Run the package tests against an iOS simulator (the xcframework has no macOS slice):
 
 ```bash
@@ -147,6 +156,7 @@ let runtime = try TrUAPIHostRuntime(
         hostName: "My Chat Host",
         peopleChainGenesisHash: peopleChainGenesisHash,   // exactly 32 bytes
         bulletinChainGenesisHash: bulletinChainGenesisHash,
+        assetHubChainGenesisHash: assetHubChainGenesisHash,
         networkSuffix: "dot"
     )
 )
@@ -386,6 +396,9 @@ let runtimeConfig = HostRuntimeConfig(
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),
     bulletinChainGenesisHash: Data(repeating: 0, count: 32),
+    // A real Asset Hub genesis hash. All-zero here would mean "no Asset Hub",
+    // which refuses every cross-product `trustedProducts` grant.
+    assetHubChainGenesisHash: assetHubChainGenesisHash,
     networkSuffix: "dot"
 )
 let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)

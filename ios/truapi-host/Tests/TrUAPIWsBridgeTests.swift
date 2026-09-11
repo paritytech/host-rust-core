@@ -80,6 +80,7 @@ private extension TrUAPIWsBridgeTests {
             hostName: "truapi-host-tests",
             peopleChainGenesisHash: Data(repeating: 0, count: 32),
             bulletinChainGenesisHash: Data(repeating: 0, count: 32),
+            assetHubChainGenesisHash: Data(repeating: 0, count: 32),
             networkSuffix: "paseo"
         )
     }

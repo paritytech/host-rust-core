@@ -8,6 +8,8 @@
 //!
 //! [manifest]: ../../../../docs/rfcs/product-manifest.md
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use parity_scale_codec::{Decode, Encode};
 use tracing::{instrument, warn};
 use truapi_platform::{CoreStorageKey, Platform};
@@ -241,6 +243,61 @@ pub(crate) async fn grants_scope(
     manifest.grants(bare_product_label(caller_id), scope)
 }
 
+/// Set once the configured Asset Hub has been compared against the host's
+/// chain set, so the comparison costs one `supported_chains` call per process
+/// rather than one per manifest lookup.
+static ASSET_HUB_CROSS_CHECKED: AtomicBool = AtomicBool::new(false);
+
+/// Warn when the Asset Hub hash this host was *configured* with is not the one
+/// it *serves*.
+///
+/// There are two sources of truth for Asset Hub on the signing role and they
+/// are not reconciled anywhere. `SigningHostConfig::asset_hub` is a hash the
+/// embedder supplies, and it reaches `platform.connect()` with only a length
+/// check — nothing verifies it is an Asset Hub at all. The PGAS path next door
+/// in `sso_responder::allocate_smart_contract_allowance` instead derives it
+/// from `features::supported_chains`, and its doc comment argues for that
+/// precisely so a host cannot claim "against whatever chain a stale hash
+/// happens to reach".
+///
+/// Both can be live at once. A host whose config and `supported_chains()`
+/// disagree resolves manifests from one chain's dotNS while allocating PGAS on
+/// another, so whoever holds the product name on the other network's registry
+/// decides who may read the victim product's storage.
+///
+/// This does not pick a winner — the configured hash still wins, as #660
+/// specifies — it only makes the divergence audible instead of silent. Which
+/// source should be authoritative is a design question for #660/#454.
+async fn warn_if_asset_hub_disagrees_with_chain_set(platform: &dyn Platform, configured: [u8; 32]) {
+    use truapi::latest::ChainIdentifier;
+
+    use crate::host_logic::features;
+
+    if ASSET_HUB_CROSS_CHECKED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    // A host that cannot answer `supported_chains` is not evidence of a
+    // mismatch, so stay quiet rather than cry wolf on an unrelated failure.
+    let Ok(chains) = features::supported_chains(platform).await else {
+        return;
+    };
+    match features::genesis_for(&chains, ChainIdentifier::AssetHub) {
+        Some(served) if served != configured => warn!(
+            configured = %hex::encode(configured),
+            served = %hex::encode(served),
+            "the configured Asset Hub genesis hash is not the one this host \
+             serves: manifest grants resolve against the configured chain \
+             while PGAS is allocated on the served one"
+        ),
+        None => warn!(
+            configured = %hex::encode(configured),
+            "an Asset Hub genesis hash is configured but this host's chain set \
+             serves no Asset Hub"
+        ),
+        Some(_) => {}
+    }
+}
+
 /// `target`'s root manifest JSON, from cache when it is younger than
 /// [`MANIFEST_TTL_SECS`] and from dotNS otherwise.
 ///
@@ -252,6 +309,15 @@ pub(crate) async fn grants_scope(
 /// A failed lookup is not cached. It says nothing about the product, only that
 /// the chain could not be read, and holding that for a day would turn one blip
 /// into a day of withdrawn grants.
+///
+/// The cache dedupes misses only once one has *finished*. Concurrent misses for
+/// the same target each open their own dotNS follow, and nothing upstream caps
+/// how many dispatches a product may have in flight, so a product can hold N
+/// follows for up to `OPERATION_TIMEOUT` each. That shape predates this path —
+/// `ProductRuntime::in_flight` and the `ws_bridge` task spawn are both
+/// uncapped — but a chain round trip per request makes each one dearer than it
+/// was. A real fix is a single-flight keyed by target, or a dispatch
+/// concurrency cap; both belong with the request pipeline rather than here.
 async fn root_manifest(
     services: &RuntimeServices,
     platform: &dyn Platform,
@@ -269,6 +335,7 @@ async fn root_manifest(
     }
 
     let genesis_hash = services.asset_hub_chain_genesis_hash()?;
+    warn_if_asset_hub_disagrees_with_chain_set(platform, genesis_hash).await;
     let json = match fetch_root_manifest(&services.chain, genesis_hash, target).await {
         Ok(json) => json,
         Err(reason) => {
