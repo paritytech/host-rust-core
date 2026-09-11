@@ -19,9 +19,18 @@ The shipped WASM is built by `scripts/build-wasm.mjs` with
 `--no-default-features`, so it excludes `WasmSigningHostRuntime`.
 `ProductRuntimeConfig` configures the pairing host and requires no network
 suffix. A custom build enabling the Rust `wasm-signing-host` feature exposes
-the signing constructor, whose configuration requires
-`runtimeConfig.networkSuffix`: the bare TLD (`dot`, `paseo`, or `testnet`)
+the signing constructor, whose configuration requires two further keys.
+
+`runtimeConfig.networkSuffix` is the bare TLD (`dot`, `paseo`, or `testnet`)
 matching the People chain and the wallet's onboarding configuration.
+
+`runtimeConfig.assetHub` is the Asset Hub genesis hash, in the same shape as
+`runtimeConfig.people` and `runtimeConfig.bulletin`. Product manifests are read
+from the dotNS contracts deployed there, so it is what makes a
+`trustedProducts` grant resolvable: without a usable value no manifest resolves,
+so every cross-product grant not already cached is refused, and the refusal is
+indistinguishable from the other product having granted nothing. A config
+omitting it is rejected.
 
 ## Bundler requirements
 

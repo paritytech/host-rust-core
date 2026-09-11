@@ -349,9 +349,10 @@ val runtimeConfig = HostRuntimeConfig(
     hostIcon = "https://host.example/icon.png",
     peopleChainGenesisHash = ByteArray(32),
     bulletinChainGenesisHash = ByteArray(32),
-    // A real Asset Hub genesis hash. All-zero here would mean "no Asset Hub",
-    // which refuses every cross-product `trustedProducts` grant.
-    assetHubChainGenesisHash = assetHubChainGenesisHash,
+    // Stand-in for a real Asset Hub genesis hash. Non-zero on purpose:
+    // all-zero is the "no Asset Hub" sentinel and refuses every cross-product
+    // `trustedProducts` grant.
+    assetHubChainGenesisHash = ByteArray(32) { 1.toByte() },
     networkSuffix = "dot",
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.
