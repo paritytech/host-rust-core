@@ -522,11 +522,11 @@ fn subscription_start_receive_stop_through_wire_boundary() {
     );
 }
 
-/// A pairing host holds no purse keys, so the NFT pocket answers
-/// `Unsupported` there before consulting any session, and products degrade
-/// instead of retrying a transient failure.
+/// A pairing host serves the NFT pocket through its paired signing host, so
+/// with no session it answers the service's `NotConnected` rather than
+/// `Unsupported`: the product waits for a pairing instead of degrading.
 #[test]
-fn scarcity_list_reports_unsupported_on_the_wire() {
+fn scarcity_list_reports_not_connected_on_the_wire() {
     let core = make_core();
     let request =
         truapi::versioned::scarcity::HostScarcityListRequest::V1(v01::HostScarcityListRequest {
@@ -542,8 +542,12 @@ fn scarcity_list_reports_unsupported_on_the_wire() {
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.payload.id, ids.response_id);
-    // [V1 disc=0x00][Err disc=0x01][CallError::Unsupported=0x02], and nothing more.
-    assert_eq!(response.payload.value, vec![0x00u8, 0x01u8, 0x02u8]);
+    // [V1 disc=0x00][Err disc=0x01][CallError::Domain=0x00][V1 disc=0x00]
+    // [ScarcityError::NotConnected=0x08], and nothing more.
+    assert_eq!(
+        response.payload.value,
+        vec![0x00u8, 0x01u8, 0x00u8, 0x00u8, 0x08u8]
+    );
 }
 
 /// Coin Payment answers `Unsupported` rather than the trait default's

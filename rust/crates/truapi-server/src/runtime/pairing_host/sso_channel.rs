@@ -15,10 +15,10 @@ use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
 use crate::host_logic::sso::messages::{
     CreateTransactionLegacyPayload, CreateTransactionPayload, CreateTransactionRequest,
     CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
-    ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
-    RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
-    SsoAllocationOutcome, SsoSessionStatement, build_outgoing_request_statement,
-    decode_sso_session_statement, v1,
+    ProductSubtreeRequest, PurseAllocateRequest, PurseKeysRequest, PurseSignRequest,
+    PurseSignature, RemoteMessage, RemoteMessageData, ResourceAllocationRequest, RingVrfError,
+    SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource, SsoAllocationOutcome,
+    SsoSessionStatement, build_outgoing_request_statement, decode_sso_session_statement, v1,
 };
 use crate::host_logic::sso::wire::SsoRequest;
 use crate::host_logic::statement_store::parse_new_statements_result;
@@ -110,6 +110,7 @@ impl PairingHost {
         self.clear_bulletin_allowance_keys(session);
         self.stop_disconnect_monitor();
         self.clear_product_subtrees(session);
+        self.clear_purse_keys(session);
     }
 
     /// Best-effort `Disconnected` notification to the SSO peer.
@@ -258,6 +259,45 @@ impl PairingHost {
             return Err(AuthorityError::Disconnected);
         }
         Ok(public_key)
+    }
+
+    /// Ask the Account Holder for a range of NFT purse public keys.
+    pub(super) async fn remote_purse_keys(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        request: PurseKeysRequest,
+    ) -> Result<Vec<[u8; 32]>, AuthorityError> {
+        self.call(cx, session, request)
+            .await
+            .map_err(remote_authority_error)?
+            .map_err(remote_authority_error)
+    }
+
+    /// Ask the Account Holder to allocate, or replay, an NFT purse receive key.
+    pub(super) async fn remote_purse_allocate(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        request: PurseAllocateRequest,
+    ) -> Result<(u32, [u8; 32]), AuthorityError> {
+        self.call(cx, session, request)
+            .await
+            .map_err(remote_authority_error)?
+            .map_err(remote_authority_error)
+    }
+
+    /// Ask the Account Holder to show and sign one NFT holder transfer.
+    pub(super) async fn remote_purse_sign(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        request: PurseSignRequest,
+    ) -> Result<PurseSignature, AuthorityError> {
+        self.call(cx, session, request)
+            .await
+            .map_err(remote_authority_error)?
+            .map_err(remote_authority_error)
     }
 
     /// Forward RFC-0023 VRF signing to the paired Account Holder.

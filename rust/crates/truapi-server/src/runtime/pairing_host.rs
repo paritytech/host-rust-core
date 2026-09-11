@@ -4,6 +4,7 @@
 //! host, keeps the active inter-host session, and sends authority requests to
 //! that signing host over the SSO channel in [`sso_channel`].
 
+mod purse_keys;
 mod sso_channel;
 
 use std::collections::HashMap;
@@ -242,6 +243,10 @@ pub(crate) struct PairingHost {
     statement_store_allowances: Mutex<HashMap<AllowanceCacheKey, StatementStoreAllowanceKey>>,
     bulletin_allowances: Mutex<HashMap<AllowanceCacheKey, BulletinAllowanceKey>>,
     product_subtrees: Mutex<HashMap<(SsoSessionKey, String), [u8; 32]>>,
+    /// Purse public keys the paired signing host has served, per session.
+    purse_keys: Mutex<HashMap<purse_keys::PurseKeyCacheKey, [u8; 32]>>,
+    /// The NFT pocket over keys the paired signing host serves.
+    pocket: crate::runtime::scarcity::ScarcityPocket,
     auto_signing_keys: Mutex<HashMap<AutoSigningCacheKey, AutoSigningKey>>,
     ring_resolver: Arc<dyn RingResolver>,
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
@@ -280,6 +285,8 @@ impl PairingHost {
             statement_store_allowances: Mutex::new(HashMap::new()),
             bulletin_allowances: Mutex::new(HashMap::new()),
             product_subtrees: Mutex::new(HashMap::new()),
+            purse_keys: Mutex::new(HashMap::new()),
+            pocket: crate::runtime::scarcity::ScarcityPocket::new(services.clone()),
             auto_signing_keys: Mutex::new(HashMap::new()),
             ring_resolver: ChainRingResolver::new(services.chain.clone()),
             ring_vrf_registry: RingVrfRegistryStore::new(services.platform.clone()),
@@ -324,6 +331,21 @@ impl PairingHost {
 
     pub(super) fn is_session_lifecycle_current(&self, epoch: u64) -> bool {
         self.current_session_lifecycle_epoch() == epoch
+    }
+
+    /// The pocket engine, for tests reading what the desktop learned.
+    #[cfg(test)]
+    pub(super) fn pocket_for_tests(&self) -> &crate::runtime::scarcity::ScarcityPocket {
+        &self.pocket
+    }
+
+    /// How many purse public keys the session cache holds.
+    #[cfg(test)]
+    pub(super) fn cached_purse_key_count_for_tests(&self) -> usize {
+        self.purse_keys
+            .lock()
+            .expect("purse key cache mutex poisoned")
+            .len()
     }
 
     /// Test hook for [`Self::start_session_store_sync`].
@@ -726,6 +748,10 @@ impl PairingHost {
             .lock()
             .expect("product subtree cache mutex poisoned")
             .retain(|(_, cached_product_id), _| cached_product_id != &product_id);
+        self.purse_keys
+            .lock()
+            .expect("purse key cache mutex poisoned")
+            .retain(|(_, cached_product_id, _), _| cached_product_id != &product_id);
         self.auto_signing_keys
             .lock()
             .expect("AutoSigning key cache mutex poisoned")
@@ -759,6 +785,7 @@ impl PairingHost {
         self.clear_statement_store_allowance_keys(None);
         self.clear_bulletin_allowance_keys(None);
         self.clear_product_subtrees(None);
+        self.clear_purse_keys(None);
         self.auth_state.announce_current();
     }
 
@@ -1890,6 +1917,53 @@ impl PairingHost {
         }
     }
 
+    /// Forget the purse public keys served for `session`, or for every
+    /// session when `None`. Public material, cleared so a later pairing to a
+    /// different wallet never reads another wallet's purse.
+    pub(super) fn clear_purse_keys(&self, session: Option<&SessionInfo>) {
+        let mut keys = self
+            .purse_keys
+            .lock()
+            .expect("purse key cache mutex poisoned");
+        let Some(session) = session else {
+            keys.clear();
+            return;
+        };
+        let Some(sso) = session.sso.as_ref() else {
+            return;
+        };
+        let session_key = SsoSessionKey::from_session(sso);
+        keys.retain(|(key, _, _), _| *key != session_key);
+    }
+
+    /// Cache purse public keys fetched for `session`, unless the pairing or
+    /// its lifecycle moved on while the request was in flight.
+    pub(super) fn cache_purse_keys_if_current(
+        &self,
+        session: &SessionInfo,
+        lifecycle_epoch: u64,
+        keys: impl IntoIterator<Item = (purse_keys::PurseKeyCacheKey, [u8; 32])>,
+    ) -> bool {
+        let lifecycle = self
+            .session_lifecycle
+            .lock()
+            .expect("session lifecycle mutex poisoned");
+        if lifecycle.epoch != lifecycle_epoch {
+            return false;
+        }
+        let Some(sso) = session.sso.as_ref() else {
+            return false;
+        };
+        if !self.current_sso_session_matches(SsoSessionKey::from_session(sso)) {
+            return false;
+        }
+        self.purse_keys
+            .lock()
+            .expect("purse key cache mutex poisoned")
+            .extend(keys);
+        true
+    }
+
     fn clear_product_subtrees(&self, session: Option<&SessionInfo>) {
         let mut subtrees = self
             .product_subtrees
@@ -2471,6 +2545,76 @@ impl ProductAuthority for PairingHost {
         request: CreateTransactionAuthorityRequest,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
         PairingHost::create_transaction(self, cx, session, request).await
+    }
+
+    fn supports_scarcity(&self) -> bool {
+        true
+    }
+
+    async fn scarcity_list(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+        collections: Option<Vec<u32>>,
+    ) -> Result<Vec<truapi::latest::ScarcityItem>, crate::runtime::scarcity::PocketAuthorityError>
+    {
+        self.current_private_session(session)?;
+        let keys = purse_keys::RemotePurseKeys::new(self, cx);
+        Ok(self
+            .pocket
+            .list(&keys, session, &product_id, collections.as_deref())
+            .await?)
+    }
+
+    async fn scarcity_request_receive_address(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        target_product_id: String,
+        requested_by: String,
+        idempotency_key: String,
+    ) -> Result<[u8; 32], crate::runtime::scarcity::PocketAuthorityError> {
+        self.current_private_session(session)?;
+        let keys = purse_keys::RemotePurseKeys::new(self, cx);
+        Ok(self
+            .pocket
+            .request_receive_address(
+                &keys,
+                session,
+                &target_product_id,
+                &requested_by,
+                &idempotency_key,
+            )
+            .await?)
+    }
+
+    async fn scarcity_transfer(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+        instance: u64,
+        to: [u8; 32],
+        progress: Arc<dyn Fn(truapi::latest::ScarcityTransferStatus) + Send + Sync>,
+    ) -> Result<[u8; 32], crate::runtime::scarcity::transfer::TransferError> {
+        self.current_private_session(session)
+            .map_err(crate::runtime::scarcity::PocketError::from)?;
+        let keys = purse_keys::RemotePurseKeys::new(self, cx);
+        self.pocket
+            .transfer(&keys, session, &product_id, instance, to, progress.as_ref())
+            .await
+    }
+
+    async fn scarcity_purse_of(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        address: [u8; 32],
+    ) -> Result<Option<String>, crate::runtime::scarcity::PocketAuthorityError> {
+        self.current_private_session(session)?;
+        let keys = purse_keys::RemotePurseKeys::new(self, cx);
+        Ok(self.pocket.purse_of(&keys, session, &address).await?)
     }
 
     async fn account_alias(

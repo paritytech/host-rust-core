@@ -169,6 +169,26 @@ impl PocketStore {
         Ok(index)
     }
 
+    /// Record that another host allocated `index` in `product_id`'s purse, so
+    /// this host knows the purse and how far it reaches without ever
+    /// allocating in it itself.
+    pub(crate) async fn observe_allocated(
+        &self,
+        root_public_key: [u8; 32],
+        product_id: &str,
+        index: u32,
+    ) -> Result<(), PocketStoreError> {
+        let _guard = self.storage_guard.lock().await;
+        let mut snapshot = self.load_under_guard(root_public_key).await?;
+        let purse = purse_mut(&mut snapshot, product_id);
+        let next = index.saturating_add(1);
+        if purse.next_index >= next {
+            return Ok(());
+        }
+        purse.next_index = next;
+        self.persist_under_guard(root_public_key, snapshot).await
+    }
+
     /// Record that a scan saw items up to `highest_occupied` in `product_id`'s
     /// purse, so allocation resumes above them after a restore from seed, and
     /// drop reservations for keys now seen occupied.

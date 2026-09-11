@@ -3737,3 +3737,87 @@ fn feature_supported_encodes_response_to_known_bytes() {
 }
 
 mod signing;
+
+/// On a pairing host a receive address is allocated by the paired Account
+/// Holder: one SSO request carries the purse, caller and idempotency key, the
+/// answer is the key handed back to the product, and the desktop learns the
+/// purse exists without allocating in it. The key it just learned resolves
+/// to its purse from the cache, with no second round trip.
+#[test]
+fn scarcity_receive_address_on_a_pairing_host_is_allocated_by_the_account_holder() {
+    use crate::host_logic::sso::messages::PurseAllocateRequest;
+    use truapi::versioned::scarcity::{
+        HostScarcityRequestReceiveAddressRequest, HostScarcityRequestReceiveAddressResponse,
+    };
+
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        sso_response_script: Some(sso_success_response_script(
+            &session,
+            RemoteMessage {
+                message_id: "wallet-purse-1".to_string(),
+                data: RemoteMessageData::V1(v1::RemoteMessage::PurseAllocateResponse(Response {
+                    responding_to: "purse-1".to_string(),
+                    payload: Ok((0, [0xAB; 32])),
+                })),
+            },
+        )),
+        ..Default::default()
+    });
+    let (host, pairing) =
+        ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+    install_pairing_session(&host, session.clone());
+    let cx = CallContext::with_request_id("purse-1".to_string());
+    let response = futures::executor::block_on(truapi::api::Scarcity::request_receive_address(
+        &host,
+        &cx,
+        HostScarcityRequestReceiveAddressRequest::V1(
+            v01::HostScarcityRequestReceiveAddressRequest {
+                idempotency_key: "mint-1".to_string(),
+                target: None,
+            },
+        ),
+    ))
+    .unwrap();
+    let HostScarcityRequestReceiveAddressResponse::V1(inner) = response;
+    assert_eq!(inner.address, [0xAB; 32]);
+
+    let message = submitted_remote_message(&platform, &session);
+    let RemoteMessageData::V1(v1::RemoteMessage::PurseAllocateRequest(request)) = message.data
+    else {
+        panic!("expected a purse allocation request, got {message:?}");
+    };
+    assert_eq!(
+        request,
+        PurseAllocateRequest {
+            target_product_id: "unknown.dot".to_string(),
+            requested_by: "unknown.dot".to_string(),
+            idempotency_key: "mint-1".to_string(),
+        }
+    );
+
+    let authority_session = host.authority.current_session().expect("paired session");
+    let purse = futures::executor::block_on(host.authority.scarcity_purse_of(
+        &cx,
+        &authority_session,
+        [0xAB; 32],
+    ))
+    .unwrap();
+    assert_eq!(purse, Some("unknown.dot".to_string()));
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_submit"),
+        1,
+        "the purse lookup was served from the key cache"
+    );
+    let purses = futures::executor::block_on(
+        pairing
+            .pocket_for_tests()
+            .known_purses(authority_session.public_key),
+    )
+    .unwrap();
+    assert_eq!(purses, vec!["unknown.dot".to_string()]);
+
+    // Ending the session forgets the served keys.
+    futures::executor::block_on(pairing.reset_session_state());
+    assert_eq!(pairing.cached_purse_key_count_for_tests(), 0);
+}
