@@ -505,9 +505,16 @@ async fn root_manifest(
 ) -> Option<String> {
     let key = manifest_cache_key(target);
     let now = current_unix_secs();
+    // `fetched_at_secs <= now` is part of the freshness test, not an assumption.
+    // Without it a `saturating_sub` on a future stamp yields 0, which is below
+    // any TTL, so an entry written while the device clock ran ahead would be
+    // honoured forever. The TTL is documented as the revocation bound, so such
+    // an entry is one a publisher could never withdraw. Treating it as stale
+    // costs one lookup and cannot be worse than that.
     if let Ok(Some(bytes)) = platform.read_core_storage(key.clone()).await
         && let Ok(cached) = CachedManifest::decode(&mut bytes.as_slice())
-        && now.saturating_sub(cached.fetched_at_secs) < MANIFEST_TTL_SECS
+        && cached.fetched_at_secs <= now
+        && now - cached.fetched_at_secs < MANIFEST_TTL_SECS
     {
         return cached.json;
     }
