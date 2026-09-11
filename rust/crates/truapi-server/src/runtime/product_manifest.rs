@@ -242,6 +242,12 @@ pub(crate) async fn grants_scope(
     // a refusal the user already gave, so the stored decision is consulted
     // first, read-only: raising the prompt here would turn a grant into a way
     // to ask again.
+    // Scope-specific by design, and deliberately in this shared helper rather
+    // than in `ring_vrf_key_access_granted`: the stored decision is
+    // `AccountAccess`, so it answers about reaching another product's account
+    // and says nothing about its storage, while living in one place means both
+    // the frontend and the authority inherit it. A later scope that also
+    // implies account access has to name itself here; it does not inherit this.
     if scope == Granted::Context && user_denied_account_access(platform, caller_id, target).await {
         return false;
     }
@@ -367,6 +373,11 @@ async fn user_denied_account_access(
 /// the device by setting one field, instead of only the handles a publisher
 /// really granted.
 ///
+/// Returns the **normalized** owner it decided about. Callers must derive from
+/// that value rather than from the handle they were given: otherwise access is
+/// authorized about `peopl.dot` while the key is derived from whatever spelling
+/// arrived, and only a registry lookup miss separates the two.
+///
 /// The owner check runs first and costs nothing, so a product proving with its
 /// own key never touches the network. Everything after it is a cross-product
 /// access, and every reason it is refused answers the same way.
@@ -375,12 +386,15 @@ pub(crate) async fn ring_vrf_key_access_granted(
     platform: &dyn Platform,
     calling_product_id: &str,
     handle: &v01::ProductAccountId,
-) -> Result<(), RingVrfError> {
-    let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
-        RingVrfError::Unknown {
-            reason: error.to_string(),
-        }
-    })?;
+) -> Result<String, RingVrfError> {
+    // A caller id that does not normalize names no product, so it holds no key
+    // and no manifest can grant it. It takes the same refusal as a product that
+    // granted nothing rather than an error carrying the string back: on the wire
+    // path this field is peer-supplied, and one refusal for every reason is the
+    // whole design of this seam.
+    let Ok(caller) = normalize_product_identifier(calling_product_id) else {
+        return Err(RingVrfError::NotAllowlisted);
+    };
     // The handle is normalized here, not only at the frontend. The frontend
     // does it before delegating, but `sso_responder` hands a wire request
     // straight to the authority unnormalized, so without this the two doors
@@ -394,10 +408,10 @@ pub(crate) async fn ring_vrf_key_access_granted(
         return Err(RingVrfError::NotAllowlisted);
     };
     if caller == owner {
-        return Ok(());
+        return Ok(owner);
     }
     if grants_scope(services, platform, &caller, &owner, Granted::Context).await {
-        return Ok(());
+        return Ok(owner);
     }
     // The wire answer is one refusal for every reason, so the reason lives here
     // or nowhere. Which door the request came through is not repeated: the

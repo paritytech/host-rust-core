@@ -186,6 +186,11 @@ impl Account for ProductRuntimeHost {
         // Proving against another product's key uses that product's account and
         // the identity derived from it, so it needs that product's `context`
         // grant. One refusal covers every reason it is not held.
+        // The gate returns the normalized owner it decided about, and the handle
+        // is rebuilt from it rather than the caller's spelling. Authorization and
+        // key derivation then agree by construction: without this the gate admits
+        // `peopl.dot` while the authority derives from whatever was sent, and the
+        // only thing separating the two is a registry lookup that happens to miss.
         let Some(owner) = self
             .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
             .await
@@ -313,15 +318,17 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if self
+        // As in `create_account_proof`: the handle carried on is the normalized
+        // owner the gate decided about, not the spelling the caller sent.
+        let Some(owner) = self
             .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
             .await
-            .is_none()
-        {
+        else {
             return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
                 v01::HostAccountRingVrfSignError::NotAllowlisted,
             )));
-        }
+        };
+        request.key_handle.dot_ns_identifier = owner;
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
         remote_authority_call(

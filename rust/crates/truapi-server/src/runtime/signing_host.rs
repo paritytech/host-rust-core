@@ -197,6 +197,13 @@ impl SigningHost {
             [0xcc; 32],
             crate::test_support::test_spawner(),
         );
+        // What `SigningHostRuntime::new` does for a real signing host. Without
+        // it every ring-VRF grant test below runs on a role with no Asset Hub
+        // and passes only because `cache_grant` pre-seeds the manifest cache,
+        // which `root_manifest` serves before it consults the genesis hash — so
+        // the install could be deleted from production and the suite would stay
+        // green. That is the blind spot #660 itself survived in.
+        services.install_asset_hub_genesis_hash([0xcc; 32]);
         Arc::new(Self {
             services,
             platform: platform.clone(),
@@ -540,14 +547,18 @@ impl SigningHost {
         &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<(), RingVrfError> {
-        crate::runtime::product_manifest::ring_vrf_key_access_granted(
+    ) -> Result<v01::ProductAccountId, RingVrfError> {
+        let owner = crate::runtime::product_manifest::ring_vrf_key_access_granted(
             &self.services,
             self.platform.as_ref(),
             calling_product_id,
             handle,
         )
-        .await
+        .await?;
+        Ok(v01::ProductAccountId {
+            dot_ns_identifier: owner,
+            derivation_index: handle.derivation_index.clone(),
+        })
     }
 
     pub(crate) async fn ring_vrf_providers(
@@ -915,7 +926,7 @@ impl ProductAuthority for SigningHost {
         let entropy = self
             .resolve_ring_vrf_key_for_ring(
                 session,
-                &request.payload.key_handle,
+                &key_handle,
                 &request.payload.ring_location,
             )
             .await?;
@@ -1024,7 +1035,7 @@ impl ProductAuthority for SigningHost {
             )
             .await?;
         let entropy = self
-            .resolve_registered_ring_vrf_key(session, &request.payload.key_handle)
+            .resolve_registered_ring_vrf_key(session, &key_handle)
             .await?;
         sign_from_entropy(&entropy, &request.payload.message)
     }
@@ -1760,6 +1771,73 @@ mod tests {
     /// delegating, and false of `sso_responder`, which hands a wire request to
     /// the authority untouched. The two doors have to agree here, because the
     /// authority is the component that decides.
+    /// A grant lookup with nothing cached reaches the chain, and dials the
+    /// Asset Hub the role was configured with.
+    ///
+    /// Every other grant test here seeds the manifest cache, and `root_manifest`
+    /// serves that before it consults the genesis hash — so the whole suite
+    /// passes on a role with no Asset Hub, and deleting the production install
+    /// would not turn any of it red. That is the blind spot #660 survived in.
+    /// This is the one case that takes the other branch: it asserts the dial
+    /// itself, so removing the install breaks it rather than going unnoticed.
+    ///
+    /// The stub answers no RPC, so the lookup fails closed and the call is
+    /// refused. What is pinned is that the chain was reached at all, and which
+    /// chain.
+    #[test]
+    fn a_grant_lookup_with_a_cold_cache_dials_the_configured_asset_hub() {
+        let platform = Arc::new(StubPlatform::default());
+        // Deliberately no `cache_grant`: this must take the chain branch.
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+
+        let granted = futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+            &services,
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            crate::host_logic::product_manifest::Granted::Context,
+        ));
+        assert!(
+            !granted,
+            "the stub answers no RPC, so the lookup must fail closed"
+        );
+
+        let dialled = platform
+            .chain_connects
+            .lock()
+            .expect("chain connect list mutex poisoned")
+            .clone();
+        assert!(
+            dialled.contains(&[0xcc; 32]),
+            "a cold-cache grant lookup must dial the configured Asset Hub; dialled {dialled:?}"
+        );
+    }
+
+    /// The gate and the key derivation act on one identity, by construction.
+    ///
+    /// Previously the gate normalized the handle to decide, then handed the
+    /// caller's own spelling on to derivation, and the only thing between an
+    /// authorization about `peopl.dot` and a key derived from `PEOPL.DOT` was a
+    /// registry lookup that happened to miss. A later "make the registry
+    /// case-insensitive" change would have turned that into key confusion with
+    /// nothing to catch it. The gate now returns the owner it decided about and
+    /// the authority derives from that, so the two cannot diverge.
+    #[test]
+    fn the_gate_and_the_derivation_act_on_the_same_identity() {
+        let signed = ring_vrf_sign_at_the_authority("peopl.dot", "PEOPL.DOT");
+        assert!(
+            signed.is_ok(),
+            "an owner's own key must sign however it is spelled, because the gate \
+             hands the normalized owner to the derivation; got {signed:?}"
+        );
+        assert_eq!(
+            signed.ok(),
+            ring_vrf_sign_at_the_authority("peopl.dot", "peopl.dot").ok(),
+            "the two spellings must produce the same signature, not merely both succeed"
+        );
+    }
+
     #[test]
     fn an_owner_naming_its_own_key_in_another_spelling_is_admitted_over_the_wire() {
         // Past the gate: not `NotAllowlisted`. It stops one layer further on,
@@ -1770,9 +1848,8 @@ mod tests {
         // so this test fails loudly in both directions: red if the gate
         // regresses, and red again when that gap is closed, which is when this
         // should become `is_ok()`.
-        assert_eq!(
-            ring_vrf_sign_at_the_authority("peopl.dot", "PEOPL.DOT").err(),
-            Some(RingVrfError::KeyNotRegistered),
+        assert!(
+            ring_vrf_sign_at_the_authority("peopl.dot", "PEOPL.DOT").is_ok(),
             "the gate must admit an owner's own key however it is spelled"
         );
     }

@@ -1921,14 +1921,18 @@ impl PairingHost {
         &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<(), RingVrfError> {
-        crate::runtime::product_manifest::ring_vrf_key_access_granted(
+    ) -> Result<v01::ProductAccountId, RingVrfError> {
+        let owner = crate::runtime::product_manifest::ring_vrf_key_access_granted(
             &self.services,
             self.platform.as_ref(),
             calling_product_id,
             handle,
         )
-        .await
+        .await?;
+        Ok(v01::ProductAccountId {
+            dot_ns_identifier: owner,
+            derivation_index: handle.derivation_index.clone(),
+        })
     }
 
     async fn local_ring_vrf_entropy(
@@ -2141,7 +2145,7 @@ impl PairingHost {
         if let Some(entropy) = self
             .local_ring_vrf_entropy_for_ring(
                 &private_session,
-                &request.payload.key_handle,
+                &key_handle,
                 &request.payload.ring_location,
             )
             .await?
@@ -2282,7 +2286,7 @@ impl PairingHost {
             .await?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
-            .local_ring_vrf_entropy(&private_session, &request.payload.key_handle)
+            .local_ring_vrf_entropy(&private_session, &key_handle)
             .await?
         {
             self.current_private_session(session)?;
