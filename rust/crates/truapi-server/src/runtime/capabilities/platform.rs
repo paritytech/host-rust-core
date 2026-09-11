@@ -2,11 +2,12 @@
 
 use futures::StreamExt;
 use tracing::{instrument, warn};
-use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme};
+use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme, Worker};
 use truapi::versioned::local_storage::{
-    HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
-    HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
-    HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
+    HostLocalStorageChangeItem, HostLocalStorageClearError, HostLocalStorageClearRequest,
+    HostLocalStorageClearResponse, HostLocalStorageReadError, HostLocalStorageReadRequest,
+    HostLocalStorageReadResponse, HostLocalStorageSubscribeRequest, HostLocalStorageWriteError,
+    HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
 use truapi::versioned::locale::HostLocaleSubscribeItem;
 use truapi::versioned::notifications::{
@@ -25,6 +26,11 @@ use truapi::versioned::system::{
     HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
+use truapi::versioned::worker::{
+    HostWorkerBeginOperationError, HostWorkerBeginOperationRequest,
+    HostWorkerBeginOperationResponse, HostWorkerEndOperationError, HostWorkerEndOperationRequest,
+    HostWorkerEndOperationResponse,
+};
 use truapi::{CallContext, CallError, Subscription, v01};
 use truapi_platform::PermissionAuthorizationStatus;
 
@@ -190,8 +196,18 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Result<HostLocalStorageWriteResponse, CallError<HostLocalStorageWriteError>> {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
+        let storage_key = self.product_storage_key(key);
+        // Skip the store write when the value is byte-identical to what the key
+        // already holds, so a subscriber sees only real changes and no
+        // redundant persistence happens. A failed pre-read falls through to the
+        // write rather than blocking it.
+        if let Ok(Some(current)) = self.platform.read(storage_key.clone()).await
+            && current == value
+        {
+            return Ok(HostLocalStorageWriteResponse::V1);
+        }
         self.platform
-            .write(self.product_storage_key(key), value)
+            .write(storage_key, value)
             .await
             .map(|()| HostLocalStorageWriteResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageWriteError::V1(err)))
@@ -209,6 +225,64 @@ impl LocalStorage for ProductRuntimeHost {
             .await
             .map(|()| HostLocalStorageClearResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageClearError::V1(err)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "local_storage.subscribe"))]
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        request: HostLocalStorageSubscribeRequest,
+    ) -> Subscription<HostLocalStorageChangeItem> {
+        let HostLocalStorageSubscribeRequest::V1(v01::HostLocalStorageSubscribeRequest { key }) =
+            request;
+        Subscription::new(Box::pin(
+            self.platform
+                .subscribe_storage(self.product_storage_key(key).into_bytes())
+                .filter_map(|item| async {
+                    match item {
+                        Ok(item) => Some(HostLocalStorageChangeItem::V1(item)),
+                        Err(error) => {
+                            warn!(
+                                reason = %error.reason,
+                                "local storage subscription platform stream failed"
+                            );
+                            None
+                        }
+                    }
+                }),
+        ))
+    }
+}
+
+#[truapi::async_trait]
+impl Worker for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "worker.begin_operation"))]
+    async fn begin_operation(
+        &self,
+        _cx: &CallContext,
+        request: HostWorkerBeginOperationRequest,
+    ) -> Result<HostWorkerBeginOperationResponse, CallError<HostWorkerBeginOperationError>> {
+        let HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label }) =
+            request;
+        self.platform
+            .begin_operation(&self.product, label.unwrap_or_default())
+            .await
+            .map(HostWorkerBeginOperationResponse::V1)
+            .map_err(|error| CallError::Domain(HostWorkerBeginOperationError::V1(error)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "worker.end_operation"))]
+    async fn end_operation(
+        &self,
+        _cx: &CallContext,
+        request: HostWorkerEndOperationRequest,
+    ) -> Result<HostWorkerEndOperationResponse, CallError<HostWorkerEndOperationError>> {
+        let HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }) = request;
+        self.platform
+            .end_operation(&self.product, id)
+            .await
+            .map(|()| HostWorkerEndOperationResponse::V1)
+            .map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))
     }
 }
 

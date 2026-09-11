@@ -36,10 +36,12 @@ import type {
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocalStorageChangeItem,
   HostLocaleSubscribeItem,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
+  HostWorkerBeginOperationResponse,
   NotificationId,
   RemotePermissionResponse,
   Result,
@@ -1277,6 +1279,29 @@ export interface PreimageHost {
 }
 
 /**
+ * Host store for a product's pending operations. The host keeps the product's
+ * worker runtime alive while it holds at least one open operation. Worker
+ * products reach these through the `Worker` protocol trait, which is gated to
+ * the Worker execution kind, so non-worker products never call them.
+ */
+export interface ProductOperations {
+  /**
+   * Record a pending operation for this product. Returns its id. `label` is
+   * a host log and UI hint, empty when the product gave none.
+   */
+  beginOperation(
+    product: ProductContext,
+    label: string,
+  ): Promise<HostWorkerBeginOperationResponse>;
+
+  /**
+   * Remove a pending operation. Idempotent: an unknown or already-ended id
+   * returns `Ok`.
+   */
+  endOperation(product: ProductContext, id: number): Promise<void>;
+}
+
+/**
  * Product-scoped key-value storage.
  *
  * The core namespaces product keys before calling this trait. Host
@@ -1298,6 +1323,16 @@ export interface ProductStorage {
    * Clear a value at a key.
    */
   clear(key: string): Promise<void>;
+
+  /**
+   * Emit the current value of a key, then each later change to it, from any
+   * of the product's runtimes. A write that leaves the stored bytes
+   * unchanged emits nothing. `key` is the UTF-8 bytes of the namespaced
+   * storage key, the same key passed to `Self::read` as a `String`.
+   */
+  subscribeStorage(
+    key: Uint8Array,
+  ): AsyncIterable<Result<HostLocalStorageChangeItem, GenericError>>;
 }
 
 /**
@@ -1339,6 +1374,7 @@ export interface HostCallbacks {
   theme: ThemeHost;
   locale: LocaleHost;
   preimage: PreimageHost;
+  productOperations: ProductOperations;
   chat?: ChatPlatform;
   permissionStatus?: PermissionStatusHost;
 }
@@ -1356,6 +1392,7 @@ export interface RequiredHostCallbacks {
   theme: Required<ThemeHost>;
   locale: Required<LocaleHost>;
   preimage: Required<PreimageHost>;
+  productOperations: Required<ProductOperations>;
   chat?: Required<ChatPlatform>;
   permissionStatus?: Required<PermissionStatusHost>;
 }

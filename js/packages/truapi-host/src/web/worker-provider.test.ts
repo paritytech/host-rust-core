@@ -10,7 +10,11 @@ import { bytesToHex } from "@parity/truapi/scale";
 import type { GenericError, Result, ThemeVariant } from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
-import { AuthState, CoreStorageKey } from "../generated/host-callbacks.js";
+import {
+  AuthState,
+  CoreStorageKey,
+  ProductContext,
+} from "../generated/host-callbacks.js";
 import type {
   AuthState as AuthStateValue,
   PreimageHost,
@@ -957,6 +961,97 @@ describe("createWebWorkerPairingHostRuntime", () => {
     });
     expect(lateClose).toBeInstanceOf(Error);
     provider.dispose();
+  });
+
+  it("keeps the worker alive until pending operations end", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker, {
+      runtimeConfig: runtimeConfig({ executionKind: "Worker" }),
+    });
+
+    const product = ProductContext.enc({
+      productId: "dotli.dot",
+      executionKind: "Worker",
+    });
+
+    // Open a pending operation.
+    worker.emit({
+      kind: "callbackRequest",
+      requestId: 1,
+      name: "beginOperation",
+      args: [product, "funding"],
+    });
+    await settle();
+
+    // Disposing while the operation is open defers the worker teardown.
+    provider.dispose();
+    await settle();
+    expect(worker.terminated).toBe(false);
+
+    // Ending the operation runs the deferred teardown, which terminates the
+    // worker on a zero-delay timer.
+    worker.emit({
+      kind: "callbackRequest",
+      requestId: 2,
+      name: "endOperation",
+      args: [product, 1],
+    });
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(worker.terminated).toBe(true);
+  });
+
+  it("ending an unknown or already-ended operation releases no other hold", async () => {
+    const worker = new FakeWorker();
+    let nextId = 1;
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        productOperations: { beginOperation: async () => ({ id: nextId++ }) },
+      }),
+      { runtimeConfig: runtimeConfig({ executionKind: "Worker" }) },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const product = ProductContext.enc({
+      productId: "dotli.dot",
+      executionKind: "Worker",
+    });
+    const begin = (requestId: number) =>
+      worker.emit({
+        kind: "callbackRequest",
+        requestId,
+        name: "beginOperation",
+        args: [product, ""],
+      });
+    const end = (requestId: number, id: number) =>
+      worker.emit({
+        kind: "callbackRequest",
+        requestId,
+        name: "endOperation",
+        args: [product, id],
+      });
+
+    begin(1);
+    begin(2);
+    await settle();
+    provider.dispose();
+
+    // Operation 1 ends twice and an unknown id ends once. Operation 2 still
+    // holds the worker.
+    end(3, 1);
+    end(4, 1);
+    end(5, 99);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(worker.terminated).toBe(false);
+
+    end(6, 2);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(worker.terminated).toBe(true);
   });
 
   it("routes payload-carrying subscriptions by name", async () => {
