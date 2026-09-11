@@ -59,7 +59,9 @@ pub(crate) fn test_spawner() -> Spawner {
 }
 
 /// Synchronous spawner for tests that should complete work immediately.
-#[cfg(target_arch = "wasm32")]
+///
+/// Also the shape that makes a constructor's spawned work observable: the task
+/// has finished by the time the constructor returns.
 pub(crate) fn immediate_spawner() -> Spawner {
     Arc::new(futures::executor::block_on)
 }
@@ -159,6 +161,15 @@ pub(crate) struct StubPlatform {
     pub(crate) chain_connects: Arc<Mutex<Vec<[u8; 32]>>>,
     /// When set, `connect` fails with this reason.
     pub(crate) chain_connect_error: Option<&'static str>,
+    /// Every `supported_chains` call, counted. Lets a test see that a
+    /// construction-time diagnostic actually reached the host, rather than
+    /// only that it compiled.
+    pub(crate) supported_chains_calls: Arc<AtomicUsize>,
+    /// When true, `supported_chains` panics the way host-supplied code across
+    /// the FFI boundary can.
+    pub(crate) supported_chains_panics: bool,
+    /// Asset Hub genesis the stub reports serving, when it serves one.
+    pub(crate) supported_chains_asset_hub: Option<[u8; 32]>,
     /// When true, the connection's response stream ends instead of staying
     /// pending. A follow opened over it then yields `None` rather than waiting
     /// out `OPERATION_TIMEOUT`, which is the difference between a test that
@@ -1011,12 +1022,23 @@ impl PlatformFeatures for StubPlatform {
     }
 
     async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
+        self.supported_chains_calls.fetch_add(1, Ordering::Relaxed);
+        assert!(
+            !self.supported_chains_panics,
+            "stub host panicking in supported_chains"
+        );
         Ok(truapi_platform::HostChainSet {
             network: "paseo".to_string(),
-            chains: vec![truapi_platform::HostChainEntry {
-                identifier: v01::ChainIdentifier::AssetHub,
-                genesis_hash: [0xaa; 32],
-            }],
+            chains: match self.supported_chains_asset_hub {
+                Some(genesis_hash) => vec![truapi_platform::HostChainEntry {
+                    identifier: v01::ChainIdentifier::AssetHub,
+                    genesis_hash,
+                }],
+                None => vec![truapi_platform::HostChainEntry {
+                    identifier: v01::ChainIdentifier::AssetHub,
+                    genesis_hash: [0xaa; 32],
+                }],
+            },
         })
     }
 }
