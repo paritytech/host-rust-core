@@ -21,6 +21,10 @@ use truapi_server::statement_allowance::{self as alloc, ChainContextCache};
 /// Default People-chain endpoint, kept in step with `network.rs`.
 const DEFAULT_PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";
 
+/// The `paseo-next-v2` preset's `network_suffix`, kept in step with `network.rs`
+/// (the binary crate exposes no library for tests to read it from).
+const DEFAULT_NETWORK_SUFFIX: &str = "paseo";
+
 /// A genesis hash no chain will report, standing in for a host whose configured
 /// constant has gone stale after a testnet wipe.
 const STALE_CONFIGURED_GENESIS: [u8; 32] = [0xff; 32];
@@ -47,6 +51,24 @@ fn current_period() -> u32 {
         .expect("system clock after UNIX epoch")
         .as_secs();
     alloc::slot::current_period(now)
+}
+
+/// The preset's network suffix is what the reserved `uid.<suffix>` and
+/// `peopl.<suffix>` derivations end in, so it has to be the suffix the chain
+/// itself scopes People contexts with, or the CLI derives a person no other
+/// host on this network recognises.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn network_suffix_matches_the_preset() {
+    let rpc = connect().await;
+    let live = alloc::slot::read_network_suffix(&rpc)
+        .await
+        .expect("read the live network suffix");
+    assert_eq!(
+        String::from_utf8(live).expect("network suffix is UTF-8"),
+        DEFAULT_NETWORK_SUFFIX,
+        "the paseo-next-v2 preset's network suffix must match the chain"
+    );
 }
 
 /// The genesis hash signed into allowance extrinsics must be the one the chain
@@ -103,6 +125,9 @@ async fn scanning_a_live_period_answers_without_erroring() {
         .await
         .expect("read the live chain context");
     let period = current_period();
+    let network_suffix = alloc::slot::read_network_suffix(&rpc)
+        .await
+        .expect("read the live network suffix");
 
     // Entropy and target are throwaway: no alias derived from them owns a slot,
     // so the scan must offer a free one or report the table full — never error.
@@ -112,6 +137,7 @@ async fn scanning_a_live_period_answers_without_erroring() {
         alloc::slot::SlotScan {
             collection: PersonhoodCollection::LitePeople,
             entropy: [0x11; 32],
+            network_suffix: &network_suffix,
             period,
             target: &[0x22; 32],
             excluded: &[],
@@ -206,8 +232,8 @@ async fn live_grace_window_still_leaves_a_full_period_of_slack() {
     let metadata = alloc::fetch_metadata(&rpc)
         .await
         .expect("live People metadata");
-    let grace = metadata
-        .constant_u32("Resources", "StmtStoreGraceWindow")
+    let grace = alloc::slot::statement_store_grace_window(&rpc, &metadata)
+        .await
         .expect("the runtime declares a statement-store grace window");
     let period = alloc::slot::STATEMENT_STORE_PERIOD_SECONDS;
 
@@ -246,7 +272,8 @@ async fn both_personhood_collections_resolve_on_the_live_chain() {
             .await
             .unwrap_or_else(|err| panic!("{collection} collection is absent on chain: {err}"));
         let slots = collection
-            .slots_per_period(&chain.metadata)
+            .slots_per_period(&rpc, &chain.metadata)
+            .await
             .unwrap_or_else(|err| panic!("{collection} declares no slot budget: {err}"));
         let ring_index = alloc::ring::read_current_ring_index(&rpc, collection)
             .await
@@ -266,10 +293,12 @@ async fn both_personhood_collections_resolve_on_the_live_chain() {
     // The pooled budget is what the fix delivers, so assert the two differ
     // rather than silently reading the same constant twice.
     let people = PersonhoodCollection::People
-        .slots_per_period(&chain.metadata)
+        .slots_per_period(&rpc, &chain.metadata)
+        .await
         .expect("People slot budget");
     let lite = PersonhoodCollection::LitePeople
-        .slots_per_period(&chain.metadata)
+        .slots_per_period(&rpc, &chain.metadata)
+        .await
         .expect("LitePeople slot budget");
     assert!(
         people > lite,
@@ -278,5 +307,32 @@ async fn both_personhood_collections_resolve_on_the_live_chain() {
     println!(
         "live pooled budget={} (People {people} + LitePeople {lite})",
         people + lite
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn dynamic_resources_values_resolve_on_the_live_chain() {
+    let rpc = connect().await;
+    let metadata = alloc::fetch_metadata(&rpc)
+        .await
+        .expect("live People metadata");
+
+    let cooldown = alloc::slot::replacement_cooldown(&rpc, &metadata)
+        .await
+        .expect("replacement cooldown view");
+    let long_term_storage_claims =
+        alloc::slot::long_term_storage_claims_per_period(&rpc, &metadata)
+            .await
+            .expect("long-term-storage claims view");
+
+    assert!(cooldown > 0, "replacement cooldown must be positive");
+    assert!(
+        long_term_storage_claims > 0,
+        "long-term-storage claims must be positive"
+    );
+    println!(
+        "live Resources views: replacement_cooldown={cooldown}s \
+         long_term_storage_claims_per_period={long_term_storage_claims}"
     );
 }

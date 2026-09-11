@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,20 +18,18 @@ use crate::attestation;
 use crate::network::NetworkConfig;
 use truapi_server::statement_allowance as alloc;
 use truapi_server::statement_allowance::collection::PersonhoodCollection;
-use zeroize::Zeroize;
+use zeroize::ZeroizeOnDrop;
 
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
 const ACCOUNT_STORE_LOCK_FILE: &str = "accounts.json.lock";
 const DEFAULT_USERNAME_PREFIX: &str = "headless";
 const IMPORTED_ACCOUNT_NAME: &str = "imported";
 
-/// Placeholder rendered by `Debug` in place of secret material.
-const REDACTED: &str = "<redacted>";
-
 /// Signer material selected for a signing-host session.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct ResolvedSigner {
     /// BIP-39 entropy backing the selected signer account.
+    #[debug("\"<redacted>\"")]
     pub entropy: Vec<u8>,
     /// Stored account name when this came from `accounts.json`.
     pub account_name: Option<String>,
@@ -44,12 +41,20 @@ pub struct ResolvedSigner {
 
 /// A mnemonic whose existing on-chain identity and personhood membership have
 /// been verified, but which has not yet been persisted into a session.
+#[derive(derive_more::Debug, ZeroizeOnDrop)]
 pub struct ImportedSigner {
+    #[debug("\"<redacted>\"")]
     mnemonic: String,
+    #[debug("\"<redacted>\"")]
     entropy: Vec<u8>,
+    #[zeroize(skip)]
     username: Option<String>,
+    #[zeroize(skip)]
     session_name: String,
+    #[zeroize(skip)]
+    #[debug("0x{}", hex::encode(public_key))]
     public_key: [u8; 32],
+    #[zeroize(skip)]
     address: String,
 }
 
@@ -71,49 +76,15 @@ impl ImportedSigner {
     }
 }
 
-impl fmt::Debug for ImportedSigner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ImportedSigner")
-            .field("mnemonic", &REDACTED)
-            .field("entropy", &REDACTED)
-            .field("username", &self.username)
-            .field("session_name", &self.session_name)
-            .field(
-                "public_key",
-                &format_args!("0x{}", hex::encode(self.public_key)),
-            )
-            .field("address", &self.address)
-            .finish()
-    }
-}
-
-impl Drop for ImportedSigner {
-    fn drop(&mut self) {
-        self.mnemonic.zeroize();
-        self.entropy.zeroize();
-    }
-}
-
-impl fmt::Debug for ResolvedSigner {
-    /// Redacts `entropy` so signer material cannot reach a log or error string.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResolvedSigner")
-            .field("entropy", &REDACTED)
-            .field("account_name", &self.account_name)
-            .field("lite_username", &self.lite_username)
-            .field("auto_managed", &self.auto_managed)
-            .finish()
-    }
-}
-
 /// Inputs for resolving a signing-host account.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct ResolveSignerConfig<'a> {
     /// Directory containing the local account store.
     pub base_path: &'a Path,
     /// Network whose identity backend and People chain should be used.
     pub network: NetworkConfig,
     /// Explicit mnemonic. When present, the account store is not used.
+    #[debug("{:?}", mnemonic.as_ref().map(|_| "<redacted>"))]
     pub mnemonic: Option<String>,
     /// Named stored account. Mutually exclusive with `mnemonic`.
     pub account: Option<String>,
@@ -124,34 +95,22 @@ pub struct ResolveSignerConfig<'a> {
     pub reserved_username: Option<String>,
 }
 
-impl fmt::Debug for ResolveSignerConfig<'_> {
-    /// Redacts `mnemonic` while keeping the non-secret resolution inputs.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ResolveSignerConfig")
-            .field("base_path", &self.base_path)
-            .field("network", &self.network)
-            .field("mnemonic", &self.mnemonic.as_ref().map(|_| REDACTED))
-            .field("account", &self.account)
-            .field("lite_username_prefix", &self.lite_username_prefix)
-            .field("reserved_username", &self.reserved_username)
-            .finish()
-    }
-}
-
 /// Stored signer account record.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, derive_more::Debug)]
 pub struct AccountRecord {
     /// Stable local account name, for example `auto-1`.
     pub name: String,
     /// Network id this account belongs to.
     pub network: String,
     /// BIP-39 mnemonic for this local test signer.
+    #[debug("\"<redacted>\"")]
     pub mnemonic: String,
     /// Lite username registered through the identity backend.
     pub lite_username: String,
-    /// Hex-encoded RFC-0022 `uid.dot` identity public key.
+    /// Hex-encoded RFC-0022 `uid.<suffix>` identity public key on this
+    /// account's network.
     pub public_key_hex: String,
-    /// SS58 address for the RFC-0022 `uid.dot` identity public key.
+    /// SS58 address for the RFC-0022 `uid.<suffix>` identity public key.
     pub address: String,
     /// Creation timestamp.
     pub created_at_unix: u64,
@@ -171,28 +130,6 @@ enum AccountOrigin {
     #[default]
     Auto,
     Imported,
-}
-
-impl fmt::Debug for AccountRecord {
-    /// Redacts `mnemonic`. `AccountStoreData` and `AccountStore` render records
-    /// through this impl, so neither can print stored signer material either.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AccountRecord")
-            .field("name", &self.name)
-            .field("network", &self.network)
-            .field("mnemonic", &REDACTED)
-            .field("lite_username", &self.lite_username)
-            .field("public_key_hex", &self.public_key_hex)
-            .field("address", &self.address)
-            .field("created_at_unix", &self.created_at_unix)
-            .field("attested", &self.attested)
-            .field("origin", &self.origin)
-            .field(
-                "exhausted_statement_periods",
-                &self.exhausted_statement_periods,
-            )
-            .finish()
-    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -453,8 +390,8 @@ pub async fn inspect_imported_signer(
     let mnemonic = Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_string();
-    let identity = identity_from_mnemonic(&mnemonic)?;
-    let username = attestation::lookup_registered_username(network.asset_hub_ws, &identity.entropy)
+    let identity = identity_from_mnemonic(&mnemonic, network.network_suffix)?;
+    let username = attestation::lookup_registered_username(network, &identity.entropy)
         .await
         .with_context(|| {
             format!(
@@ -464,20 +401,16 @@ pub async fn inspect_imported_signer(
         })?;
     let username = match username {
         Some(username) => Some(username),
-        None => attestation::lookup_backend_username(
-            network.identity_backend_base,
-            &identity.entropy,
-            &identity.address,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "reverse-resolve the mnemonic's assigned identity-backend username on {}",
-                network.id
-            )
-        })?,
+        None => attestation::lookup_backend_username(network, &identity.entropy, &identity.address)
+            .await
+            .with_context(|| {
+                format!(
+                    "reverse-resolve the mnemonic's assigned identity-backend username on {}",
+                    network.id
+                )
+            })?,
     };
-    wait_for_ring_membership(network.people_ws, &identity.entropy)
+    wait_for_ring_membership(network, &identity.entropy)
         .await
         .with_context(|| {
             let account = username.as_deref().unwrap_or(&identity.address);
@@ -595,15 +528,11 @@ async fn create_auto_account(
     let mnemonic = Mnemonic::generate(12)
         .context("generate BIP-39 mnemonic")?
         .to_string();
-    let identity = identity_from_mnemonic(&mnemonic)?;
+    let identity = identity_from_mnemonic(&mnemonic, network.network_suffix)?;
 
-    if !attestation::lite_username_available(
-        network.identity_backend_base,
-        &identity.entropy,
-        &lite_username,
-    )
-    .await
-    .with_context(|| format!("check lite username {lite_username:?} availability"))?
+    if !attestation::lite_username_available(network, &identity.entropy, &lite_username)
+        .await
+        .with_context(|| format!("check lite username {lite_username:?} availability"))?
     {
         bail!("lite username {lite_username:?} is taken; pass a different --lite-username-prefix");
     }
@@ -632,7 +561,7 @@ async fn create_auto_account(
     );
 
     record.lite_username = attest_record(network, &record, reserved_username).await?;
-    wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+    wait_for_ring_membership(network, &identity.entropy).await?;
     record.attested = true;
     store.upsert(record.clone());
     store.save()?;
@@ -645,9 +574,9 @@ async fn ensure_record_ready(
     record: &AccountRecord,
     reserved_username: Option<&str>,
 ) -> Result<AccountRecord> {
-    let identity = identity_from_mnemonic(&record.mnemonic)?;
+    let identity = identity_from_mnemonic(&record.mnemonic, network.network_suffix)?;
     if record.origin == AccountOrigin::Imported {
-        wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+        wait_for_ring_membership(network, &identity.entropy).await?;
         return Ok(record.clone());
     }
     let mut record = record.clone();
@@ -655,10 +584,9 @@ async fn ensure_record_ready(
         record.lite_username = attest_record(network, &record, reserved_username).await?;
         record.attested = true;
     } else {
-        record.lite_username =
-            attestation::registered_lite_username(network.asset_hub_ws, &identity.entropy)
-                .await
-                .with_context(|| format!("resolve Lite username for account {}", record.name))?;
+        record.lite_username = attestation::registered_lite_username(network, &identity.entropy)
+            .await
+            .with_context(|| format!("resolve Lite username for account {}", record.name))?;
     }
     if store
         .get(network.id, &record.name)
@@ -667,7 +595,7 @@ async fn ensure_record_ready(
         store.upsert(record.clone());
         store.save()?;
     }
-    wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+    wait_for_ring_membership(network, &identity.entropy).await?;
     Ok(record)
 }
 
@@ -680,6 +608,7 @@ async fn attest_record(
     let lite_username = attestation::attest(&attestation::AttestConfig {
         backend_base: network.identity_backend_base.to_string(),
         asset_hub_ws: network.asset_hub_ws.to_string(),
+        network_suffix: network.network_suffix.to_string(),
         entropy,
         username_base: record.lite_username.clone(),
         reserved_username: reserved_username.map(str::to_string),
@@ -701,27 +630,32 @@ fn resolved_lite_username(username: &str) -> bool {
         .is_some_and(|(name, discriminator)| !name.is_empty() && !discriminator.is_empty())
 }
 
-/// Every personhood collection candidate for `entropy`, widest slot budget first.
+/// Every personhood collection candidate for `entropy` on the network whose
+/// dotNS TLD is `network_suffix`, widest slot budget first.
 ///
 /// Both are always offered; membership is settled on chain, not from local state.
-pub(crate) fn collection_candidates(entropy: &[u8]) -> Vec<alloc::CollectionCandidate> {
+pub(crate) fn collection_candidates(
+    entropy: &[u8],
+    network_suffix: &str,
+) -> Vec<alloc::CollectionCandidate> {
     vec![
         alloc::CollectionCandidate {
             collection: PersonhoodCollection::People,
-            entropy: derive_full_person_ring_vrf_entropy(entropy),
+            entropy: derive_full_person_ring_vrf_entropy(entropy, network_suffix),
         },
         alloc::CollectionCandidate {
             collection: PersonhoodCollection::LitePeople,
-            entropy: derive_lite_person_ring_vrf_entropy(entropy),
+            entropy: derive_lite_person_ring_vrf_entropy(entropy, network_suffix),
         },
     ]
 }
 
-async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()> {
+async fn wait_for_ring_membership(network: NetworkConfig, entropy: &[u8]) -> Result<()> {
     const MAX_ATTEMPTS: usize = 30;
     const SLEEP: Duration = Duration::from_secs(4);
 
-    let candidates = collection_candidates(entropy);
+    let people_ws = network.people_ws;
+    let candidates = collection_candidates(entropy, network.network_suffix);
     let mut metadata = None;
     for attempt in 1..=MAX_ATTEMPTS {
         crate::terminal_ui::update_activity(
@@ -826,10 +760,10 @@ struct SignerIdentity {
     address: String,
 }
 
-fn identity_from_mnemonic(mnemonic: &str) -> Result<SignerIdentity> {
+fn identity_from_mnemonic(mnemonic: &str, network_suffix: &str) -> Result<SignerIdentity> {
     let entropy = mnemonic_entropy(mnemonic)?;
-    let candidate = derive_identity_keypair(&entropy)
-        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let candidate = derive_identity_keypair(&entropy, network_suffix)
+        .map_err(|err| anyhow::anyhow!("uid identity derivation failed: {err}"))?;
     let public_key = candidate.public.to_bytes();
     Ok(SignerIdentity {
         entropy,
@@ -936,7 +870,7 @@ mod tests {
             !rendered.contains("171"),
             "entropy bytes leaked: {rendered}"
         );
-        assert!(rendered.contains(REDACTED));
+        assert!(rendered.contains("<redacted>"));
         assert!(rendered.contains("auto-1"), "non-secret fields dropped");
 
         let config = ResolveSignerConfig {
@@ -949,7 +883,7 @@ mod tests {
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");
-        assert!(rendered.contains(REDACTED));
+        assert!(rendered.contains("<redacted>"));
 
         // AccountStoreData renders records through AccountRecord's impl, so the
         // whole store is covered by redacting the record.
@@ -960,7 +894,7 @@ mod tests {
         store.upsert(record("auto-1", "paseo-next-v2", true));
         let rendered = format!("{:?}", store.data);
         assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");
-        assert!(rendered.contains(REDACTED));
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]
@@ -1118,7 +1052,7 @@ mod tests {
     #[test]
     fn imported_signer_is_durable_named_and_excluded_from_auto_pool() -> Result<()> {
         let dir = tempdir()?;
-        let identity = identity_from_mnemonic(MNEMONIC)?;
+        let identity = identity_from_mnemonic(MNEMONIC, "paseo")?;
         let imported = ImportedSigner {
             mnemonic: MNEMONIC.to_string(),
             entropy: identity.entropy,
@@ -1142,14 +1076,14 @@ mod tests {
 
         let rendered = format!("{imported:?}");
         assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");
-        assert!(rendered.contains(REDACTED));
+        assert!(rendered.contains("<redacted>"));
         Ok(())
     }
 
     #[test]
     fn imported_signer_without_dotns_username_is_still_cached() -> Result<()> {
         let dir = tempdir()?;
-        let identity = identity_from_mnemonic(MNEMONIC)?;
+        let identity = identity_from_mnemonic(MNEMONIC, "paseo")?;
         let session_name = imported_session_name(None, &identity.public_key);
         let imported = ImportedSigner {
             mnemonic: MNEMONIC.to_string(),

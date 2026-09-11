@@ -1,0 +1,19 @@
+name: PR Summary Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Number of days to look back for merged PRs
+        required: false
+        default: 30
+        type: number
+  schedule:
+    - cron: "0 7 1 * *" # 1st of every month at 08:00 CET (UTC+1)
+
+jobs:
+  pr-summary:
+    uses: novasamatech/github-actions/.github/workflows/pr-summary-report.yml@v5
+    with:
+      days: ${{ fromJSON(github.event.inputs.days || '30') }}
+    secrets: inherit

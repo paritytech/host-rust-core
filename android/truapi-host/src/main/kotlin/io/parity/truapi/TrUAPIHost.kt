@@ -25,6 +25,7 @@
 
 package io.parity.truapi
 
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.awaitClose
@@ -39,6 +40,7 @@ import uniffi.truapi.CustomRendererNode
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.HostLocaleSubscribeItem
 import uniffi.truapi.HostPlatform
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
@@ -94,7 +96,10 @@ enum class ProductExecutionKind {
 /**
  * Immutable process-wide configuration shared by every product execution
  * opened from one [TrUAPIHostRuntime]. [peopleChainGenesisHash] and
- * [bulletinChainGenesisHash] must each be exactly 32 bytes.
+ * [bulletinChainGenesisHash] must each be exactly 32 bytes. [networkSuffix] is
+ * the network's dotNS TLD without the leading dot (`dot`, `paseo`, `testnet`);
+ * the core derives the wallet's reserved identities under it (`uid.<suffix>`,
+ * `peopl.<suffix>`), the same person the app's own onboarding derives there.
  */
 data class HostRuntimeConfig(
     val hostName: String,
@@ -104,6 +109,7 @@ data class HostRuntimeConfig(
     val platformVersion: String? = null,
     val peopleChainGenesisHash: ByteArray,
     val bulletinChainGenesisHash: ByteArray,
+    val networkSuffix: String,
     val localSessionSecret: ByteArray? = null,
     val localSessionLiteUsername: String? = null,
 ) {
@@ -117,6 +123,7 @@ data class HostRuntimeConfig(
             platformVersion = platformVersion,
             peopleChainGenesisHash = peopleChainGenesisHash,
             bulletinChainGenesisHash = bulletinChainGenesisHash,
+            networkSuffix = networkSuffix,
             localSessionSecret = localSessionSecret,
             localSessionLiteUsername = localSessionLiteUsername,
         )
@@ -131,6 +138,7 @@ data class HostRuntimeConfig(
             platformVersion == other.platformVersion &&
             peopleChainGenesisHash.contentEquals(other.peopleChainGenesisHash) &&
             bulletinChainGenesisHash.contentEquals(other.bulletinChainGenesisHash) &&
+            networkSuffix == other.networkSuffix &&
             localSessionSecret.contentEquals(other.localSessionSecret) &&
             localSessionLiteUsername == other.localSessionLiteUsername
     }
@@ -143,6 +151,7 @@ data class HostRuntimeConfig(
         result = 31 * result + (platformVersion?.hashCode() ?: 0)
         result = 31 * result + peopleChainGenesisHash.contentHashCode()
         result = 31 * result + bulletinChainGenesisHash.contentHashCode()
+        result = 31 * result + networkSuffix.hashCode()
         result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
         result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
         return result
@@ -331,6 +340,14 @@ interface HostBridge {
         HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK)
 
     /**
+     * Return the language this host presents its interface in, as a BCP 47 tag.
+     * Hosts with no in-app language picker report the system language.
+     */
+    @Throws(HostRejection::class)
+    fun currentLocale(): HostLocaleSubscribeItem =
+        HostLocaleSubscribeItem(Locale.getDefault().toLanguageTag())
+
+    /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
      * return promptly.
      */
@@ -467,6 +484,9 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override fun currentTheme(): HostThemeSubscribeItem =
         withHostRejection { bridge.currentTheme() }
+
+    override fun currentLocale(): HostLocaleSubscribeItem =
+        withHostRejection { bridge.currentLocale() }
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
         withHostRejection { bridge.featureSupported(request) }
@@ -924,6 +944,11 @@ class TrUAPIProductExecution internal constructor(
     /** Push a host theme update to active TrUAPI theme subscriptions. */
     fun notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme)
+    }
+
+    /** Push a host locale update to active TrUAPI locale subscriptions. */
+    fun notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
+        inner.notifyLocaleChanged(locale)
     }
 
     /** Push a preimage lookup update to active subscriptions for [key]. */

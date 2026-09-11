@@ -32,7 +32,7 @@ interface HostGetProductContextResponse {
 
 `productId` is the host runtime's existing canonical identifier. The method is available before account pairing and requires no permission.
 
-The host returns the full identifier, including `.dot`, `.paseo`, `.test`, or a localhost form. Products do not construct or normalize it. This keeps account requests, authorization, and account derivation on the same identifier.
+The host returns the full identifier, including `.dot`, `.paseo`, `.testnet`, or a localhost form. Products do not construct or normalize it. This keeps account requests, authorization, and account derivation on the same identifier.
 
 ## Alternatives
 

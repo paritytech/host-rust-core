@@ -36,6 +36,7 @@ import type {
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocaleSubscribeItem,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
@@ -900,13 +901,11 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
  */
 export interface AuthPresenter {
   /**
-   * Observe an auth state change, in transition order. A pairing host's
-   * session activation reports its outcome even when it is the default
-   * `Disconnected`, so a host that awaits activation before routing never
-   * has to read silence as "signed out". Every other emission, and every
-   * emission on a host role that has no session activation, happens only
-   * when the state actually changes. Default is a no-op for hosts that
-   * render no auth UI.
+   * Observe an auth state change, in transition order. A pairing host
+   * always receives an opening state once the core has restored the
+   * persisted session, `Disconnected` included; later emissions happen
+   * only when the state changes. Default is a no-op for hosts that render
+   * no auth UI.
    */
   authStateChanged?(state: AuthState): void;
 }
@@ -1159,6 +1158,18 @@ export interface JsonRpcConnection {
 }
 
 /**
+ * Host locale source.
+ */
+export interface LocaleHost {
+  /**
+   * Emits the currently selected locale immediately, then future changes.
+   */
+  subscribeLocale(): AsyncIterable<
+    Result<HostLocaleSubscribeItem, GenericError>
+  >;
+}
+
+/**
  * Open URLs in the system browser. Input is already trimmed, categorized,
  * and (where needed) normalized by the core; the host implementation only
  * needs to hand the URL to the OS URL handler.
@@ -1326,6 +1337,7 @@ export interface HostCallbacks {
   auth: AuthPresenter;
   userConfirmation: UserConfirmation;
   theme: ThemeHost;
+  locale: LocaleHost;
   preimage: PreimageHost;
   chat?: ChatPlatform;
   permissionStatus?: PermissionStatusHost;
@@ -1342,6 +1354,7 @@ export interface RequiredHostCallbacks {
   auth: Required<AuthPresenter>;
   userConfirmation: Required<UserConfirmation>;
   theme: Required<ThemeHost>;
+  locale: Required<LocaleHost>;
   preimage: Required<PreimageHost>;
   chat?: Required<ChatPlatform>;
   permissionStatus?: Required<PermissionStatusHost>;

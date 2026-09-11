@@ -36,6 +36,7 @@ impl Network {
         match self {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
+                network_suffix: "paseo",
                 identity_backend_base: "https://identity.dotspark.app/api/v1",
                 people_ws: PASEO_PEOPLE.ws,
                 bulletin_ws: PASEO_BULLETIN.ws,
@@ -47,6 +48,7 @@ impl Network {
             },
             Self::Previewnet => NetworkConfig {
                 id: "previewnet",
+                network_suffix: "testnet",
                 identity_backend_base: "https://identity-previewnet.dotspark.app/api/v1",
                 people_ws: PREVIEWNET_PEOPLE.ws,
                 bulletin_ws: PREVIEWNET_BULLETIN.ws,
@@ -81,7 +83,7 @@ fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> Ne
 
 const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
+        "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
     ),
     ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
     required_for_host: true,
@@ -89,7 +91,7 @@ const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
 
 const PASEO_PEOPLE: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
+        "4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
     ),
     ws: "wss://paseo-people-next-system-rpc.polkadot.io",
     required_for_host: true,
@@ -105,7 +107,7 @@ const PASEO_BULLETIN: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659",
+        "c27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe",
     ),
     ws: "wss://previewnet.substrate.dev/asset-hub",
     required_for_host: true,
@@ -113,7 +115,7 @@ const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220",
+        "f720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218",
     ),
     ws: "wss://previewnet.substrate.dev/people",
     required_for_host: true,
@@ -121,7 +123,7 @@ const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_BULLETIN: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89",
+        "ea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d",
     ),
     ws: "wss://previewnet.substrate.dev/bulletin",
     required_for_host: true,
@@ -137,6 +139,13 @@ const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] =
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkConfig {
     pub id: &'static str,
+    /// The network's dotNS TLD without the dot, as its runtimes report it in
+    /// `NetworkSuffix.NetworkSuffix`. Every reserved RFC-0022 identity the CLI
+    /// derives ends in it (`uid.<suffix>`, `peopl.<suffix>`), so a person the
+    /// CLI creates here is the same person a phone derives from that seed on
+    /// this network. `live_people_chain::network_suffix_matches_the_preset`
+    /// holds it against the chain.
+    pub network_suffix: &'static str,
     pub identity_backend_base: &'static str,
     pub people_ws: &'static str,
     #[allow(dead_code)]
@@ -412,6 +421,20 @@ mod tests {
         "identity.dotspark.app",
         "identity-previewnet.dotspark.app",
     ];
+
+    #[test]
+    fn every_preset_names_a_known_dotns_tld() {
+        for network in Network::value_variants() {
+            let config = network.preset();
+            assert!(
+                truapi_platform::DOTNS_TLDS.contains(&config.network_suffix),
+                "preset `{}` derives reserved identities under `.{}`, a TLD navigation does not \
+                 accept",
+                config.id,
+                config.network_suffix,
+            );
+        }
+    }
 
     #[test]
     fn every_preset_is_a_test_network() {

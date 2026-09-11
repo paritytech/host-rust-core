@@ -10,7 +10,7 @@ created: 2026-03-13
 
 | Number | Title                                                                                                    | Status   | Author            | PR                                                              |
 | ------ | -------------------------------------------------------------------------------------------------------- | -------- | ----------------- | --------------------------------------------------------------- |
-| 0001   | [RFC Title](0001-template.md)                                                                            | accepted | @ownerhandle      | —                                                               |
+| 0001   | [Title](0001-template.md)                                                                                | draft    | @handle           | —                                                               |
 | 0002   | [Permission Model for Host API](0002-permission-model.md)                                                | accepted | @johnthecat       | [#66](https://github.com/paritytech/triangle-js-sdks/pull/66)   |
 | 0004   | [Redesign `host_account_create_proof`](0004-ringlocation-redesign.md)                                    | draft    | Valentin Sergeev  | [#18](https://github.com/paritytech/host-rust-core/pull/18)             |
 | 0006   | [Payment Host API](0006-payments.md)                                                                     | accepted | Valentin Sergeev  | [#94](https://github.com/paritytech/triangle-js-sdks/pull/94)   |
@@ -26,3 +26,4 @@ created: 2026-03-13
 | 0022   | [Account key derivations](0022-account-derivations.md)                                                   | draft    | Valentin Sergeev  | —                                                               |
 | 0023   | [sr25519 VRF signing for product accounts](0023-account-sign-vrf.md)                                     | draft    | Valentin Sergeev  | —                                                               |
 | 0026   | [Host chain discovery and name resolution](0026-supported-chains.md)                                     | draft    | Valentin Fernandez | [#354](https://github.com/paritytech/host-rust-core/pull/354)          |
+| 0028   | [Wire Message Type: An Explicit Byte for Trait, Method, and Leg](0028-wire-message-type-byte.md)         | draft    | Nidish            | [#357](https://github.com/paritytech/host-rust-core/pull/357)  |

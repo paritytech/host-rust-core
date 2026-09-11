@@ -198,13 +198,16 @@ fn golden_dispatcher_and_wire_table() {
         String::from_utf8_lossy(&out.stderr),
     );
 
-    // Compare both emitted files against the goldens. We assert on
+    // Compare the emitted files against the goldens. We assert on
     // wire_table.rs first because it's small and the diff is easy to
-    // read when the wire ids drift.
+    // read when the wire ids drift. mod.rs is covered because
+    // truapi-server declares `pub mod generated;` unconditionally, so
+    // dropping it stops the crate parsing at all.
     let golden_dir = manifest_dir.join("tests/golden");
     let cases = [
         ("wire_table.rs", "wire_table.rs"),
         ("dispatcher.rs", "dispatcher.rs"),
+        ("mod.rs", "mod.rs"),
     ];
     for (golden_name, output_name) in cases {
         let golden = fs::read_to_string(golden_dir.join(golden_name))
@@ -222,6 +225,18 @@ fn golden_dispatcher_and_wire_table() {
             );
         }
     }
+
+    // A method body should only ever reference its pre-built `T.{Method}Version`
+    // codec by name (see `method_envelope_name` in `ts.rs`); `types.ts`
+    // legitimately inlines `S.indexedTaggedUnion(` to define those wrapper
+    // codecs themselves, which is why only `client.ts` is scanned here.
+    let client_ts = fs::read_to_string(tempdir.path().join("ts").join("client.ts"))
+        .unwrap_or_else(|e| panic!("read generated client.ts: {e}"));
+    assert!(
+        !client_ts.contains("indexedTaggedUnion"),
+        "generated client.ts contains `S.indexedTaggedUnion(`; a method body should \
+         reference its `T.{{Method}}Version` codec by name instead of inlining one"
+    );
 }
 
 /// Idempotence guard at the integration level: running the binary twice

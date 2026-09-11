@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   rust:
+    needs: codegen
     name: Rust workspace
     runs-on: ubuntu-latest
     env:
@@ -37,6 +38,11 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
 
       - name: cargo build
         run: cargo build --workspace --all-targets --all-features
@@ -121,18 +127,20 @@ jobs:
       - name: Install workspace deps
         run: npm ci --ignore-scripts
 
+      - name: Check no generated outputs are committed
+        run: |
+          committed="$(git ls-files -ci --exclude-standard)"
+          if [ -n "$committed" ]; then
+            echo "$committed"
+            echo "Generated outputs above are committed. Untrack them with 'git rm --cached'." >&2
+            exit 1
+          fi
+
       - name: Run codegen
         run: ./scripts/codegen.sh
 
-      - name: Check generated output is committed
-        run: |
-          git diff --exit-code -- \
-            rust/crates/truapi-server/src/generated \
-            rust/crates/truapi-server/src/wasm/generated_bridge.rs \
-            rust/crates/truapi-host-cli/js/script-types.d.ts
-
       - name: Type-check headless host scripts
-        run: node_modules/.bin/tsc -p rust/crates/truapi-host-cli/js/tsconfig.json
+        run: node scripts/check-host-script-types.mjs
 
       - name: Check Rust/TS wire table parity
         run: TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity
@@ -151,9 +159,12 @@ jobs:
             js/packages/truapi-host/src/generated
             playground/test/generated
             rust/crates/truapi-host-cli/js/script-types.d.ts
+            rust/crates/truapi-server/src/generated
+            rust/crates/truapi-server/src/wasm
 
   ios-bindings:
     name: iOS bindings (uniffi)
+    needs: codegen
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -166,58 +177,81 @@ jobs:
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
+      # truapi-server declares its generated modules unconditionally, so the
+      # cdylib bindgen builds from does not compile without the codegen output.
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
       # Swift bindgen is pure Rust codegen, so this needs neither Xcode nor the
-      # iOS targets, unlike rebuild.sh which also builds the xcframework.
+      # iOS targets, unlike rebuild.sh which also builds the xcframework. It
+      # gates that every UniFFI-exposed type still has a binding representation.
       - name: Generate Swift bindings
         run: make uniffi
 
-      - name: Check committed iOS bindings are current
-        run: ./ios/truapi-host/scripts/sync-bindings.sh --check
+      - name: Sync iOS bindings into package
+        run: ./ios/truapi-host/scripts/sync-bindings.sh
 
-      # The provider ships its own UniFFI surface and its own committed
-      # bindings; `rebuild.sh` overwrites them in place, so only this check
-      # can fail on drift.
-      - name: Check committed TrUAPIProvider bindings are current
-        run: make provider-swift-check
+      - name: Generate TrUAPIProvider bindings
+        run: make provider-swift
 
-  ios-changes:
-    name: iOS change filter
+  changes:
+    name: Change filter
     runs-on: ubuntu-latest
     outputs:
-      ios: ${{ steps.filter.outputs.ios }}
+      sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
+      sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
 
-      # Actions has no per-job paths filter, so compute it once here and gate
-      # ios-swift on the output. On pull_request the checkout is the merge
-      # commit, so HEAD^1 is the base. Other events always run the gate.
+      # Actions has no per-job paths filter, so compute every gate once here and
+      # have each gated job read an output. On pull_request the checkout is the
+      # merge commit, so HEAD^1 is the base. Other events always run every gate.
       #
-      # The list needs no broader rust/ entry: the generated bindings are
-      # committed under ios/, and ios-bindings runs unconditionally, so a Rust
-      # change that moves the UniFFI surface either carries an ios/ change or
-      # fails there first.
-      - name: Detect iOS-relevant changes
+      # Neither binding set is committed, so a UniFFI surface change leaves no
+      # ios/ or android/ diff to key on. Each list therefore names every input
+      # its gated job actually reads: the crates the bindings are generated
+      # from, the generator itself, the Makefile targets that drive it, and the
+      # manifest that pins each platform's toolchain, and the workspace manifest
+      # and lockfile, which is where the bindings generator version and the
+      # codegen profile live. js/container is in the
+      # Swift list because it is compiled into the TrUAPIHost target as a
+      # resource; the root Gradle files are in the Kotlin list because they pin
+      # AGP and Kotlin. Both lists name this workflow, so editing a filter
+      # exercises the jobs that filter gates.
+      - name: Detect which areas changed
         id: filter
         run: |
           set -euo pipefail
+
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "ios=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "sdk_swift=true"
+              echo "sdk_kotlin=true"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --name-only HEAD^1 HEAD \
-            | grep -qE '^(ios/|Package\.swift$|Makefile$|rust/crates/truapi-server/src/native|rust/crates/truapi-provider/)'; then
-            echo "ios=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ios=false" >> "$GITHUB_OUTPUT"
-          fi
+
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          gate() {
+            if grep -qE "$2" <<<"$changed"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
   ios-swift:
     name: iOS package (swift compile)
-    needs: ios-changes
-    if: needs.ios-changes.outputs.ios == 'true'
+    needs: [changes, codegen]
+    if: needs.changes.outputs.sdk_swift == 'true'
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -229,6 +263,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           toolchain: stable
@@ -238,6 +276,11 @@ jobs:
         with:
           shared-key: ios-swift-gate
 
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
       # Simulator slice only, debug profile. This gate compiles Swift and ships
       # no binary, so the device slice and release codegen are waste. The
       # published binary is older than the current Rust surface, so
@@ -245,24 +288,114 @@ jobs:
       - name: Build the simulator XCFramework
         run: make xcframework XCFRAMEWORK_TARGETS=aarch64-apple-ios-sim XCFRAMEWORK_PROFILE=debug
 
+      # make xcframework leaves the bindings in target/uniffi-swift-out; the
+      # package's Swift targets are gitignored, so they only exist once this
+      # copies them in.
+      - name: Sync the generated Swift bindings into the package
+        run: ./ios/truapi-host/scripts/sync-bindings.sh
+
       - name: Stage it into the package
         run: ./ios/truapi-host/scripts/stage-xcframework.sh
+
+      # TrUAPIHost declares Resources/truapi-container.js as a .copy resource,
+      # so SwiftPM refuses to resolve the package until this exists.
+      - name: Build the lockdown container bundle
+        run: |
+          npm --prefix js/container install --no-fund --no-audit
+          npm --prefix js/container run build
 
       - name: Build the simulator XCFramework for TrUAPIProvider
         run: PROFILE=debug ./ios/truapi-provider/scripts/rebuild.sh --sim-only
 
-      # Compiling the test target is the point: the hand-written conformers a
-      # generated-file diff cannot see live there and in TrUAPIHost.swift.
-      - name: Compile the package and its tests
+      # Build the tag a release would cut, then compile from a clean clone of
+      # it. Compiling in place would pass on generated files that the tag does
+      # not carry, which is exactly the failure this guards: a consumer only
+      # ever sees the tag.
+      - name: Build the SwiftPM consumer tag
         run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./ios/truapi-host/scripts/tag-release.sh 0.0.0-ci
+
+      - name: Check the tag carries every generated file
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/tag-probe"
+          rm -rf "$probe"
+          git clone --quiet --branch 0.0.0-ci "file://$PWD" "$probe"
+          while read -r path; do
+            diff -u <(cd "$probe" && find "$path" -type f | sort) \
+                    <(find "$path" -type f | sort)
+          done <<< "$(sed -n -E 's/^[[:space:]]*path: "([^"]+)".*/\1/p' Package.swift | grep -v '/Binaries/')"
+
+      # The xcframework ships as a release asset rather than in the tag, so the
+      # locally built one stands in for it here.
+      - name: Compile the package and its tests from the tag
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/tag-probe"
+          mkdir -p "$probe/ios/truapi-host/Binaries" "$probe/ios/truapi-provider/Binaries"
+          cp -R ios/truapi-host/Binaries/truapi_server.xcframework "$probe/ios/truapi-host/Binaries/"
+          cp -R ios/truapi-provider/Binaries/truapi_provider.xcframework "$probe/ios/truapi-provider/Binaries/"
+          cd "$probe"
           xcodebuild build-for-testing \
             -scheme TrUAPIHost \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
+          # Built for the simulator like TrUAPIHost above, not with `swift build`,
+          # which targets macOS: the xcframeworks carry iOS slices only, and the
+          # generated bindings use Swift concurrency, which the package's macOS
+          # floor would have to declare purely to satisfy a host-platform build.
+          xcodebuild build \
+            -scheme TrUAPIProvider \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPIProviderDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
 
-      - name: Compile TrUAPIProvider
-        run: swift build --target TrUAPIProvider
+  # Compile gate for the Android host module: regenerates the UniFFI Kotlin
+  # bindings and compiles the shell against them. No cross-compile, no
+  # publishing.
+  android-bindings:
+    name: Android host (kotlin compile)
+    needs: changes
+    if: needs.changes.outputs.sdk_kotlin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # codegen.sh formats its generated Rust with `cargo +nightly fmt`.
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+          components: rustfmt
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+        with:
+          shared-key: android-bindings-gate
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: "8.9"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      # truapi-server declares its generated modules unconditionally and they are
+      # gitignored, so the crate does not compile until codegen has run.
+      - name: Generate the Rust codegen output
+        run: |
+          npm ci --ignore-scripts
+          TRUAPI_SKIP_PACKAGE_BUILD=1 ./scripts/codegen.sh
+      - name: Generate UniFFI Kotlin bindings
+        run: make uniffi-kotlin
+      - name: Compile the shell against the bindings
+        run: gradle :truapi-host:assembleRelease
 
   ts-client:
     name: "@parity/truapi"
@@ -333,6 +466,45 @@ jobs:
 
       - name: Test
         run: npm test --prefix js/packages/truapi-host
+
+  ts-debugger:
+    name: "@parity/truapi-debugger"
+    runs-on: ubuntu-latest
+    needs: codegen
+    env:
+      TRUAPI_REQUIRE_GENERATED: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Build @parity/truapi (workspace dependency)
+        run: npm run build --prefix js/packages/truapi
+
+      - name: Build
+        run: npm run build --prefix js/packages/truapi-debugger
+
+      - name: Typecheck tests
+        run: npm run typecheck:tests --prefix js/packages/truapi-debugger
+
+      - name: Test
+        run: npm test --prefix js/packages/truapi-debugger
 
   playground:
     name: Playground (build + lint + unit)
@@ -485,6 +657,11 @@ jobs:
     name: CI Status
     if: always()
     runs-on: ubuntu-latest
+    # Writing the sticky summary needs more than the workflow's read-only
+    # default. Nothing else here writes anything.
+    permissions:
+      contents: read
+      pull-requests: write
     needs:
       [
         rust,
@@ -492,37 +669,181 @@ jobs:
         licenses,
         codegen,
         ios-bindings,
-        ios-changes,
+        changes,
         ios-swift,
+        android-bindings,
         ts-client,
         ts-host,
+        ts-debugger,
         playground,
         explorer,
         e2e,
       ]
     steps:
-      - name: Check all jobs
+      # The results come from the needs context itself rather than a second list
+      # of `needs.<job>.result` expressions, so the set of jobs checked cannot
+      # drift from the set depended on. `REQUIRED` is the one list to maintain:
+      # a job present here but absent from the run reported nothing, which is
+      # how a gate gets deleted without anyone noticing, and a job in the run
+      # that is absent here means this list went stale.
+      #
+      # A job skipped by its path filter counts towards the gate as a pass,
+      # which is what stops a gate stalling a pull request it does not apply
+      # to. The rendered verdict still counts it as skipped, so a filtered-out
+      # host is never reported to a reviewer as a host that compiled.
+      #
+      # A pull request that builds three hosts produces a long list of checks,
+      # and a reviewer reads all of them to answer one question. The same
+      # comparison that decides the gate renders the verdict, so the comment
+      # and the check cannot disagree. This step records the verdict rather
+      # than acting on it, and the gate is the last step, so the verdict
+      # reaches the pull request whether the run is green or red.
+      - name: Evaluate every required job
+        id: evaluate
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED: >-
+            rust wasm-provider licenses codegen ios-bindings changes ios-swift
+            android-bindings ts-client ts-host ts-debugger playground explorer
+            e2e
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          results=(
-            "${{ needs.rust.result }}"
-            "${{ needs.wasm-provider.result }}"
-            "${{ needs.licenses.result }}"
-            "${{ needs.codegen.result }}"
-            "${{ needs.ios-bindings.result }}"
-            # ios-changes is listed because a failure there skips ios-swift,
-            # and skipped counts as a pass below.
-            "${{ needs.ios-changes.result }}"
-            "${{ needs.ios-swift.result }}"
-            "${{ needs.ts-client.result }}"
-            "${{ needs.ts-host.result }}"
-            "${{ needs.playground.result }}"
-            "${{ needs.explorer.result }}"
-            "${{ needs.e2e.result }}"
-          )
-          for r in "${results[@]}"; do
-            if [[ "$r" != "success" && "$r" != "skipped" ]]; then
-              echo "::error::One or more CI jobs failed or were cancelled."
-              exit 1
-            fi
+          set -euo pipefail
+
+          passed=()
+          skipped=()
+          failed=()
+          missing=()
+          undeclared=()
+
+          for job in $REQUIRED; do
+            result="$(jq -r --arg j "$job" '.[$j].result // "ABSENT"' <<<"$NEEDS")"
+            case "$result" in
+              success) passed+=("$job") ;;
+              skipped) skipped+=("$job") ;;
+              ABSENT) missing+=("$job") ;;
+              *) failed+=("$job=$result") ;;
+            esac
           done
-          echo "All CI jobs passed."
+
+          while read -r job; do
+            [ -n "$job" ] && undeclared+=("$job")
+          done < <(jq -r --arg req "$REQUIRED" \
+            '($req | split(" ") | map(select(length > 0))) as $r | (keys - $r)[]' \
+            <<<"$NEEDS")
+
+          total="$(wc -w <<<"$REQUIRED" | tr -d ' ')"
+          bad=$(( ${#failed[@]} + ${#missing[@]} + ${#undeclared[@]} ))
+
+          {
+            if [ "$bad" -eq 0 ] && [ ${#skipped[@]} -eq 0 ]; then
+              echo "**CI Status: all $total required jobs passed.**"
+            elif [ "$bad" -eq 0 ]; then
+              echo "**CI Status: $total required jobs green, ${#passed[@]} passed and ${#skipped[@]} skipped by path filter.**"
+            else
+              if [ "$bad" -eq 1 ]; then
+                echo "**CI Status: not green, 1 item needs attention.**"
+              else
+                echo "**CI Status: not green, $bad items need attention.**"
+              fi
+              echo
+              for entry in "${failed[@]:-}"; do
+                [ -n "$entry" ] || continue
+                echo "- \`${entry%%=*}\`: ${entry#*=}"
+              done
+              for job in "${missing[@]:-}"; do
+                [ -n "$job" ] || continue
+                echo "- \`$job\`: reported nothing, so a gate is missing from this workflow"
+              done
+              for job in "${undeclared[@]:-}"; do
+                [ -n "$job" ] || continue
+                echo "- \`$job\`: depended on but absent from the required list, which is now stale"
+              done
+            fi
+            echo
+            echo "<details><summary>All job results</summary>"
+            echo
+            echo "| job | result |"
+            echo "| --- | --- |"
+            jq -r 'to_entries | sort_by(.key) | .[] | "| \(.key) | \(.value.result) |"' <<<"$NEEDS"
+            echo
+            echo "</details>"
+            echo
+            echo "<sub>Commit \`${SHA:0:8}\` &middot; [run log]($RUN_URL)</sub>"
+          } > "$RUNNER_TEMP/ci-summary.md"
+
+          cat "$RUNNER_TEMP/ci-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::CI jobs did not pass: ${failed[*]}"
+          fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Required jobs reported nothing, so a gate is missing from this workflow: ${missing[*]}"
+          fi
+          if [ ${#undeclared[@]} -gt 0 ]; then
+            echo "::error::Jobs are depended on but not listed in REQUIRED, so this gate is stale: ${undeclared[*]}"
+          fi
+
+          if [ "$bad" -eq 0 ]; then
+            echo "verdict=ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=bad" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Upsert rather than post, so a pull request carries one comment however
+      # many times CI runs. A pull request from a fork gets a read-only token
+      # and cannot comment, so a failure here is tolerated; the run summary
+      # above is written either way.
+      #
+      # `--paginate` applies `--jq` once per page, so matches are collected
+      # across every page and slurped before one comment is chosen. The newest
+      # match is kept and any older duplicate is deleted, rather than left on
+      # the pull request showing a verdict from an earlier run.
+      - name: Upsert the pull request comment
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          MARKER: "<!-- ci-status-summary -->"
+        run: |
+          set -euo pipefail
+          [ -f "$RUNNER_TEMP/ci-summary.md" ] || { echo "no verdict to post"; exit 0; }
+          { echo "$MARKER"; cat "$RUNNER_TEMP/ci-summary.md"; } > "$RUNNER_TEMP/body.md"
+
+          ids="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            | jq -s --arg m "$MARKER" '[.[][] | select(.body | startswith($m)) | .id]')"
+
+          if [ "$(jq 'length' <<<"$ids")" -eq 0 ]; then
+            gh api --method POST "repos/$REPO/issues/$PR/comments" \
+              -F body=@"$RUNNER_TEMP/body.md" >/dev/null
+            echo "created a comment"
+            exit 0
+          fi
+
+          keep="$(jq -r 'last' <<<"$ids")"
+          gh api --method PATCH "repos/$REPO/issues/comments/$keep" \
+            -F body=@"$RUNNER_TEMP/body.md" >/dev/null
+          echo "updated comment $keep"
+
+          for stale in $(jq -r '.[:-1][]' <<<"$ids"); do
+            gh api --method DELETE "repos/$REPO/issues/comments/$stale" >/dev/null
+            echo "deleted duplicate comment $stale"
+          done
+
+      # Last, so the verdict above reaches the pull request first. Anything
+      # other than an explicit pass fails the check, including the evaluation
+      # step not having run at all.
+      - name: Fail if a required job did not pass
+        if: always()
+        env:
+          VERDICT: ${{ steps.evaluate.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          if [ "$VERDICT" != "ok" ]; then
+            echo "CI is not green. The verdict above lists what needs attention."
+            exit 1
+          fi
+          echo "Every required job reported and passed."

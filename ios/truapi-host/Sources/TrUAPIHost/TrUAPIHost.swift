@@ -29,6 +29,12 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     public let platformVersion: String?
     public let peopleChainGenesisHash: Data
     public let bulletinChainGenesisHash: Data
+    /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
+    /// `testnet`). The core derives the wallet's reserved identities under it:
+    /// `uid.<suffix>` for the identity account and `peopl.<suffix>` for the
+    /// person ring-VRF keys, the same person the app's own onboarding derives
+    /// on that network.
+    public let networkSuffix: String
     public let localSessionSecret: Data?
     public let localSessionLiteUsername: String?
 
@@ -40,6 +46,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         platformVersion: String? = nil,
         peopleChainGenesisHash: Data,
         bulletinChainGenesisHash: Data,
+        networkSuffix: String,
         localSessionSecret: Data? = nil,
         localSessionLiteUsername: String? = nil
     ) {
@@ -50,6 +57,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.networkSuffix = networkSuffix
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
     }
@@ -64,6 +72,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,
             bulletinChainGenesisHash: bulletinChainGenesisHash,
+            networkSuffix: networkSuffix,
             localSessionSecret: localSessionSecret,
             localSessionLiteUsername: localSessionLiteUsername
         )
@@ -321,6 +330,10 @@ public protocol HostBridge: AnyObject, Sendable {
     /// `ThemeName.default`.
     func currentTheme() throws -> HostThemeSubscribeItem
 
+    /// Return the language this host presents its interface in, as a BCP 47
+    /// tag. Hosts with no in-app language picker report the system language.
+    func currentLocale() throws -> HostLocaleSubscribeItem
+
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool
@@ -391,6 +404,11 @@ public extension HostBridge {
     func lookupPreimage(key: Data) async throws -> Data? { nil }
     func currentTheme() throws -> HostThemeSubscribeItem {
         HostThemeSubscribeItem(name: .default, variant: .dark)
+    }
+    func currentLocale() throws -> HostLocaleSubscribeItem {
+        HostLocaleSubscribeItem(
+            languageTag: Locale.current.language.languageCode?.identifier ?? "en"
+        )
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
@@ -554,6 +572,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func currentTheme() throws -> HostThemeSubscribeItem {
         try withHostRejection {
             try bridge.currentTheme()
+        }
+    }
+
+    func currentLocale() throws -> HostLocaleSubscribeItem {
+        try withHostRejection {
+            try bridge.currentLocale()
         }
     }
 
@@ -803,6 +827,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
         status: PermissionAuthorizationStatus
     ) throws
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
+    func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -876,6 +901,10 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme: theme)
+    }
+
+    public func notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
+        inner.notifyLocaleChanged(locale: locale)
     }
 
     public func notifyPreimageChanged(key: Data, value: Data?) {

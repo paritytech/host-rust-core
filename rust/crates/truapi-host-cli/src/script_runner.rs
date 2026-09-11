@@ -37,20 +37,7 @@ impl ScriptHostRole {
     }
 }
 
-const SCRATCH_TEMPLATE: &str = r#"#!/usr/bin/env bun
-
-/// <reference path="./__TRUAPI_TYPES__" />
-export {};
-
-// Scripts can use packages installed next to the script or in a parent project.
-
-const result = await truapi.account.getUserId();
-if (!result.isOk()) {
-  throw new Error(`getUserId failed: ${JSON.stringify(result.error)}`);
-}
-
-console.log('user id', result.value);
-"#;
+const SCRATCH_TEMPLATE: &str = include_str!("../js/scratch.ts");
 
 /// Runner bundle shipped next to the binary in a release archive. It has
 /// `@parity/truapi` compiled in, so a downloaded install runs product scripts
@@ -62,10 +49,7 @@ const PACKAGED_SCRIPT_TYPES: &str = "script-types.d.ts";
 
 /// Declaration bundle matching the selected host-script runner.
 fn runner_types_path(runner: &Path) -> PathBuf {
-    runner
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(PACKAGED_SCRIPT_TYPES)
+    runner.with_file_name(PACKAGED_SCRIPT_TYPES)
 }
 
 /// Locate the host-script runner.
@@ -126,11 +110,10 @@ fn create_scratch_script_for_runner(directory: &Path, runner: &Path) -> Result<P
         .unwrap_or_default()
         .as_nanos();
     for sequence in 0..100 {
-        let path = directory.join(format!(
-            "script-{timestamp}-{}-{sequence}.ts",
-            std::process::id()
-        ));
-        let types_path = path.with_extension("d.ts");
+        let name = format!("script-{timestamp}-{}-{sequence}", std::process::id());
+        let path = directory.join(format!("{name}.ts"));
+        let types_name = format!("{name}.types.d.ts");
+        let types_path = directory.join(&types_name);
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -158,11 +141,7 @@ fn create_scratch_script_for_runner(directory: &Path, runner: &Path) -> Result<P
         types_file
             .write_all(&runner_types)
             .with_context(|| format!("write script types {}", types_path.display()))?;
-        let types_name = types_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("scratch script type filename is not valid UTF-8")?;
-        let contents = SCRATCH_TEMPLATE.replace("__TRUAPI_TYPES__", types_name);
+        let contents = SCRATCH_TEMPLATE.replace("__TRUAPI_TYPES__", &types_name);
         file.write_all(contents.as_bytes())
             .with_context(|| format!("write scratch script {}", path.display()))?;
         return Ok(path);
@@ -399,7 +378,7 @@ mod tests {
 
         let script = create_scratch_script(temporary.path())?;
         let contents = fs::read_to_string(&script)?;
-        let script_types = script.with_extension("d.ts");
+        let script_types = script.with_extension("types.d.ts");
         let script_types_name = script_types.file_name().unwrap().to_string_lossy();
 
         assert_eq!(
@@ -407,8 +386,15 @@ mod tests {
             format!(
                 r#"#!/usr/bin/env bun
 
-/// <reference path="./{script_types_name}" />
-export {{}};
+import type {{
+  TrUApiClient,
+  HostContext,
+  ScriptAssert,
+}} from "./{script_types_name}";
+
+declare const truapi: TrUApiClient;
+declare const host: HostContext;
+declare const assert: ScriptAssert;
 
 // Scripts can use packages installed next to the script or in a parent project.
 
@@ -417,7 +403,7 @@ if (!result.isOk()) {{
   throw new Error(`getUserId failed: ${{JSON.stringify(result.error)}}`);
 }}
 
-console.log('user id', result.value);
+console.log("user id", result.value);
 "#
             )
         );
@@ -458,7 +444,7 @@ console.log('user id', result.value);
         let script = create_scratch_script_for_runner(scripts.path(), &runner)?;
 
         assert_eq!(
-            fs::read_to_string(script.with_extension("d.ts"))?,
+            fs::read_to_string(script.with_extension("types.d.ts"))?,
             "declare const packaged: true;\n"
         );
         Ok(())

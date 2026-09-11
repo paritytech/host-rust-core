@@ -37,6 +37,7 @@ pub(super) struct JsBridge {
     pub(super) clear_core_storage: Function,
     pub(super) feature_supported: Function,
     pub(super) supported_chains: Function,
+    pub(super) subscribe_locale: Function,
     pub(super) navigate_to: Function,
     pub(super) push_notification: Function,
     pub(super) cancel_notification: Function,
@@ -71,6 +72,7 @@ impl JsBridge {
             clear_core_storage: get_function(callbacks, "clearCoreStorage")?,
             feature_supported: get_function(callbacks, "featureSupported")?,
             supported_chains: get_function(callbacks, "supportedChains")?,
+            subscribe_locale: get_function(callbacks, "subscribeLocale")?,
             navigate_to: get_function(callbacks, "navigateTo")?,
             push_notification: get_function(callbacks, "pushNotification")?,
             cancel_notification: get_function(callbacks, "cancelNotification")?,
@@ -108,7 +110,7 @@ impl truapi_platform::AuthPresenter for WasmPlatform {
     fn auth_state_changed(&self, state: truapi_platform::AuthState) {
         if let Err(reason) = call_js_function(
             &self.bridge.auth_state_changed,
-            &vec![Uint8Array::from(state.encode().as_slice()).into()],
+            &[Uint8Array::from(state.encode().as_slice()).into()],
         ) {
             web_sys::console::error_1(&JsValue::from_str(&reason));
         }
@@ -264,6 +266,18 @@ impl truapi_platform::Features for WasmPlatform {
             "supportedChains response did not decode",
         )
         .map_err(generic)
+    }
+}
+
+impl truapi_platform::LocaleHost for WasmPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        invoke_js_subscription(
+            &self.bridge.subscribe_locale,
+            None,
+            parse_host_locale_subscribe_item_item,
+        )
     }
 }
 
@@ -441,6 +455,12 @@ fn parse_host_chat_list_subscribe_item_item(
     value: JsValue,
 ) -> Result<v01::HostChatListSubscribeItem, String> {
     decode_js_item::<v01::HostChatListSubscribeItem>(value, "HostChatListSubscribeItem")
+}
+
+fn parse_host_locale_subscribe_item_item(
+    value: JsValue,
+) -> Result<v01::HostLocaleSubscribeItem, String> {
+    decode_js_item::<v01::HostLocaleSubscribeItem>(value, "HostLocaleSubscribeItem")
 }
 
 fn parse_host_theme_subscribe_item_item(

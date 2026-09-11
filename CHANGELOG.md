@@ -5,6 +5,78 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.0] - 2026-09-10
+
+### Added
+
+- warm start on every client (#629)
+- wire trace engine, standalone inspector, and in-app panel (#536)
+- payload-blind wire-debug tap, sinks, and the codegen decode surface (#295)
+- persist /log level (#583)
+
+### Changed
+
+- Clarify TrUAPI README and documentation paths (#721)
+- move the request id into the call context (#718)
+- @parity/truapi-provider 0.1.0 (#662)
+- consolidate Rust boilerplate and move runtime modules (#617)
+- speed up UniFFI binding generation (#590)
+
+### Fixed
+
+- run the bootnode health check when a dispatch asks for it (#691)
+- version the persisted session blob and decode the older layouts (#647)
+- read lite PoP names in both their dotted and flattened forms (#602)
+- derive the reserved person and identity keys under the network suffix (#627)
+- remove legacy compatibility fallbacks (#585)
+- adopt current People proof contexts (#587)
+- announce the boot auth state after the initial session restore (#571)
+
+## [0.13.1] - 2026-09-02
+
+### Changed
+
+- @parity/truapi 0.13.1, @parity/truapi-host 0.10.1, @parity/ios-host 0.13.1 (#581)
+
+### Fixed
+
+- strip the provider xcframework modulemaps (#553)
+- resolve the dotNS controller whether the gateway stores a dispatcher or the controller (#564)
+- follow previewnet and paseo-next-v2 through their wipes (#579)
+- read Resources parameters through view functions (#577)
+- clear the active UI slot only while it owns it (#567)
+- page dotNS pendingClaims through its (address,uint256,uint256) view (#574)
+
+## [0.13.0] - 2026-09-01
+
+### Added
+
+- rename PreviewNet dotNS TLD from .test to .testnet (#561)
+
+### Changed
+
+- @parity/truapi 0.13.0, @parity/truapi-host 0.10.0 (#568)
+- Paste pairing QR images in the host CLI (#552)
+
+## [0.12.0] - 2026-08-31
+
+### Added
+
+- `development_createAccountProof` for raw proof contexts to unblock Humanity as a Product (#457)
+- open bump issues on consumer repos when a package is released (#529)
+
+### Changed
+
+- @parity/truapi 0.12.0, @parity/truapi-host 0.9.0, @parity/ios-host 0.12.0 (#555)
+- RFC: Host locale subscription (#526)
+- fix prebuilt script runner lookup (#532)
+
+### Fixed
+
+- reject unknown wire messages (#547)
+- declare the chat worker in the product manifest (#541)
+- downgrade response and error payloads to the caller's version (#525)
+
 ## [0.11.0] - 2026-08-27
 
 ### Added
@@ -19,11 +91,13 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.11.0, @parity/truapi-host 0.8.0 (#530)
 - remove legacy single-execution core (#508)
 - RFC: Host Identity and Version via `System.host_info` (#177)
 
 ### Fixed
 
+- make the CLI release pipeline work end to end (#531)
 - clear the sandbox client when the pipe closes (#509)
 - persist and restore paired SSO hosts (#501)
 - gate tags on a confirmed npm publish (#505)

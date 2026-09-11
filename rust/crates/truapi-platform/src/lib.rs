@@ -37,11 +37,12 @@ use truapi::latest::{
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostNavigateToError, HostPlatform, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
-    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
-    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
+    HostLocaleSubscribeItem, HostNavigateToError, HostPlatform, HostPushNotificationRequest,
+    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
+    LegacyAccountTxPayload, NotificationId, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RemotePermission, RemotePermissionRequest, RemotePermissionResponse,
+    RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -91,6 +92,12 @@ pub struct SigningHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
+    /// The network's dotNS TLD without the leading dot: `dot`, `paseo`,
+    /// `testnet`. Every reserved RFC-0022 identity the wallet derives ends in
+    /// it: the `uid.<suffix>` identity account and the `peopl.<suffix>` person
+    /// ring-VRF keys. Must match the People chain's
+    /// `NetworkSuffix.NetworkSuffix` value used for proof contexts.
+    pub network_suffix: String,
 }
 
 /// Product identity attached to one product-facing TrUAPI connection.
@@ -215,13 +222,26 @@ impl SigningHostConfig {
         platform_info: PlatformInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
+        network_suffix: String,
     ) -> Result<Self, RuntimeConfigValidationError> {
+        validate_network_suffix(&network_suffix)?;
         Ok(Self {
             host: HostRuntimeConfig::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            network_suffix,
         })
     }
+}
+
+fn validate_network_suffix(network_suffix: &str) -> Result<(), RuntimeConfigValidationError> {
+    require_non_empty("network_suffix", network_suffix)?;
+    if !DOTNS_TLDS.contains(&network_suffix) {
+        return Err(RuntimeConfigValidationError::InvalidNetworkSuffix {
+            network_suffix: network_suffix.to_string(),
+        });
+    }
+    Ok(())
 }
 
 impl ProductContext {
@@ -268,7 +288,7 @@ pub fn is_product_identifier(identifier: &str) -> bool {
 /// Top-level domains that dotNS deployments register product names under.
 /// Each network declares its own, so the set spans every network a host can
 /// be pointed at rather than just the production one.
-pub const DOTNS_TLDS: &[&str] = &["dot", "paseo", "test"];
+pub const DOTNS_TLDS: &[&str] = &["dot", "paseo", "testnet"];
 
 /// Whether `normalized` ends in one of [`DOTNS_TLDS`]. Expects an
 /// already-lowercased host with no trailing root dot.
@@ -853,6 +873,12 @@ pub enum RuntimeConfigValidationError {
     InvalidProductId {
         /// Actual product id value.
         product_id: String,
+    },
+    /// Network suffix was not a supported dotNS TLD.
+    #[display("network_suffix must be a supported dotNS TLD, got {network_suffix:?}")]
+    InvalidNetworkSuffix {
+        /// Actual network suffix value.
+        network_suffix: String,
     },
 }
 
@@ -1474,6 +1500,56 @@ fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissi
 mod tests {
     use super::*;
 
+    fn signing_host_config(
+        network_suffix: &str,
+    ) -> Result<SigningHostConfig, RuntimeConfigValidationError> {
+        SigningHostConfig::new(
+            HostInfo {
+                name: "Test host".to_string(),
+                icon: None,
+                version: None,
+                platform: HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [1; 32],
+            network_suffix.to_string(),
+        )
+    }
+
+    #[test]
+    fn a_signing_host_is_configured_for_one_dotns_tld() {
+        for tld in DOTNS_TLDS {
+            let config = signing_host_config(tld).expect("a known TLD is a valid suffix");
+            assert_eq!(config.network_suffix, *tld);
+        }
+
+        assert_eq!(
+            signing_host_config(""),
+            Err(RuntimeConfigValidationError::EmptyField {
+                field: "network_suffix"
+            })
+        );
+        for malformed in [
+            "pasoe",
+            "unknown",
+            ".paseo",
+            "peopl.paseo",
+            "Paseo",
+            "pas eo",
+            "a-b",
+            "abcdefghijklmnopq",
+        ] {
+            assert_eq!(
+                signing_host_config(malformed),
+                Err(RuntimeConfigValidationError::InvalidNetworkSuffix {
+                    network_suffix: malformed.to_string()
+                }),
+                "{malformed:?} must be rejected"
+            );
+        }
+    }
+
     fn file_with_url(url: &str) -> ChatMessageContent {
         ChatMessageContent::File(ChatFile {
             url: url.to_string(),
@@ -2086,7 +2162,7 @@ mod tests {
         for product_id in [
             "peopl.dot",
             "peopl.paseo",
-            "peopl.test",
+            "peopl.testnet",
             "dim2.dot",
             "stash.dot",
         ] {
@@ -2539,13 +2615,11 @@ pub enum LoginFailureKind {
 
 /// Host auth UI driven by core-owned [`AuthState`] transitions.
 pub trait AuthPresenter: Send + Sync {
-    /// Observe an auth state change, in transition order. A pairing host's
-    /// session activation reports its outcome even when it is the default
-    /// `Disconnected`, so a host that awaits activation before routing never
-    /// has to read silence as "signed out". Every other emission, and every
-    /// emission on a host role that has no session activation, happens only
-    /// when the state actually changes. Default is a no-op for hosts that
-    /// render no auth UI.
+    /// Observe an auth state change, in transition order. A pairing host
+    /// always receives an opening state once the core has restored the
+    /// persisted session, `Disconnected` included; later emissions happen
+    /// only when the state changes. Default is a no-op for hosts that render
+    /// no auth UI.
     fn auth_state_changed(&self, state: AuthState) {
         let _ = state;
     }
@@ -2725,6 +2799,13 @@ pub trait ThemeHost: Send + Sync {
     fn subscribe_theme(&self) -> BoxStream<'static, Result<HostThemeSubscribeItem, GenericError>>;
 }
 
+/// Host locale source.
+pub trait LocaleHost: Send + Sync {
+    /// Emits the currently selected locale immediately, then future changes.
+    fn subscribe_locale(&self)
+    -> BoxStream<'static, Result<HostLocaleSubscribeItem, GenericError>>;
+}
+
 /// Host preimage backend. The core builds, signs, and submits the Bulletin
 /// `TransactionStorage.store` transaction itself; the host only owns preimage
 /// content retrieval (P2P/IPFS lookup).
@@ -2852,6 +2933,7 @@ pub trait Platform:
     + AuthPresenter
     + UserConfirmation
     + ThemeHost
+    + LocaleHost
     + PreimageHost
 {
 }
@@ -2867,6 +2949,7 @@ impl<T> Platform for T where
         + AuthPresenter
         + UserConfirmation
         + ThemeHost
+        + LocaleHost
         + PreimageHost
 {
 }

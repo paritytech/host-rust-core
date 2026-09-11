@@ -10,7 +10,7 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use web_time::Duration;
 
-use crate::host_logic::session::SessionInfo;
+use crate::host_logic::session::{SessionInfo, SsoSessionInfo};
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
 use crate::host_logic::sso::pairing;
 use crate::subscription::Spawner;
@@ -27,13 +27,24 @@ use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest
 use truapi_platform::{
     AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
-    JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
-    PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
-    ProductContext, ProductStorage as PlatformProductStorage, ProductSubtreeReview,
-    ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
-    UserConfirmation, UserConfirmationReview,
+    JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
+    Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
+    ProductSubtreeReview, ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview,
+    ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
+
+/// Block until `condition` holds, failing with `message` after two seconds.
+/// Background runtime tasks run on their own threads, so a test that observes
+/// their effects polls for them instead of assuming an ordering.
+pub(crate) fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "{message}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
 
 /// Test spawner that matches the current target.
 pub(crate) fn test_spawner() -> Spawner {
@@ -98,6 +109,9 @@ pub(crate) struct StubPlatform {
     pub(crate) create_transaction_error: Option<&'static str>,
     pub(crate) resource_allocation_confirmed: bool,
     pub(crate) resource_allocation_error: Option<&'static str>,
+    /// Pause a resource review until the test releases its confirmation.
+    pub(crate) resource_allocation_confirmation_gate:
+        Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     /// Every `ResourceAllocation` review passed to `confirm_user_action`, in order.
     pub(crate) resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
     pub(crate) session_blob: Option<Vec<u8>>,
@@ -128,7 +142,8 @@ pub(crate) struct StubPlatform {
     pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
     pub(crate) rpc_responses: Vec<String>,
     /// Responses keyed by JSON-RPC method, answered as each request arrives with
-    /// that request's own id echoed back.
+    /// that request's own id echoed back. A `state_call` is keyed by the runtime
+    /// API it names instead, so metadata and view-function reads stay separable.
     ///
     /// Unlike `rpc_responses` this assumes nothing about request order and waits
     /// indefinitely for the next request, so a slow step between two requests
@@ -245,6 +260,56 @@ pub(crate) fn session_info() -> crate::host_logic::session::SessionInfo {
         lite_username: Some("alice".to_string()),
         full_username: Some("Alice Smith".to_string()),
     }
+}
+
+/// A pairing host and the signing host it paired with, each holding its own
+/// side of one SSO session.
+pub(crate) fn sso_host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionInfo) {
+    use crate::host_logic::sso::pairing::{
+        ResponderIdentity, create_pairing_bootstrap, derive_x25519_keypair_from_entropy,
+        establish_responder_session_info, establish_sso_session_info,
+    };
+    use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
+
+    let config = PairingHostConfig::new(
+        HostInfo {
+            name: "Test Host".to_string(),
+            icon: None,
+            version: None,
+            platform: truapi::latest::HostPlatform::Unknown,
+        },
+        PlatformInfo::default(),
+        [0; 32],
+        [0xbb; 32],
+        [0xcc; 32],
+        "polkadotapp".to_string(),
+    )
+    .expect("test pairing config is valid");
+    let bootstrap = create_pairing_bootstrap(&config).unwrap();
+    let statement_keypair = MiniSecretKey::from_bytes(&[7; 32])
+        .unwrap()
+        .expand_to_keypair(ExpansionMode::Ed25519);
+    let (encryption_secret_key, encryption_public_key) =
+        derive_x25519_keypair_from_entropy(&[0xAB; 16], b"sso");
+    let responder = ResponderIdentity {
+        statement_secret: statement_keypair.secret.to_bytes(),
+        statement_public_key: statement_keypair.public.to_bytes(),
+        encryption_secret_key,
+        encryption_public_key,
+    };
+    let responder_session = establish_responder_session_info(
+        &responder,
+        bootstrap.statement_store_public_key,
+        bootstrap.encryption_public_key,
+    )
+    .unwrap();
+    let host_session = establish_sso_session_info(
+        &bootstrap,
+        responder.statement_public_key,
+        responder.encryption_public_key,
+    )
+    .unwrap();
+    (host_session, responder_session)
 }
 
 /// Connected session fixture with deterministic SSO channel material.
@@ -581,14 +646,12 @@ pub(crate) fn sign_response_message(
         message_id: format!("wallet-{message_id}"),
         data: crate::host_logic::sso::messages::RemoteMessageData::V1(
             crate::host_logic::sso::messages::v1::RemoteMessage::SignResponse(
-                crate::host_logic::sso::messages::SigningResponse {
+                crate::host_logic::sso::messages::Response {
                     responding_to: message_id.to_string(),
-                    payload: Ok(
-                        crate::host_logic::sso::messages::SigningPayloadResponseData {
-                            signature,
-                            signed_transaction,
-                        },
-                    ),
+                    payload: Ok(truapi::latest::HostSignPayloadResponse {
+                        signature,
+                        signed_transaction,
+                    }),
                 },
             ),
         ),
@@ -603,10 +666,10 @@ pub(crate) fn sign_raw_legacy_response_message(
     crate::host_logic::sso::messages::RemoteMessage {
         message_id: format!("wallet-{message_id}"),
         data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRawLegacyResponse(
-                crate::host_logic::sso::messages::SignRawLegacyResponse {
+            crate::host_logic::sso::messages::v1::RemoteMessage::SignRawWithLegacyAccountResponse(
+                crate::host_logic::sso::messages::Response {
                     responding_to: message_id.to_string(),
-                    signature: Ok(signature),
+                    payload: Ok(signature),
                 },
             ),
         ),
@@ -687,7 +750,7 @@ pub(crate) fn sign_payload_data() -> v01::HostSignPayloadData {
         asset_id: None,
         metadata_hash: None,
         mode: None,
-        with_signed_transaction: None,
+        with_signed_transaction: parity_scale_codec::OptionBool(None),
     }
 }
 
@@ -989,42 +1052,8 @@ async fn wait_for_rpc_method_id(
 
 fn retarget_sso_response(mut response: RemoteMessage, message_id: &str) -> RemoteMessage {
     response.message_id = format!("wallet-{message_id}");
-    match &mut response.data {
-        RemoteMessageData::V1(v1::RemoteMessage::SignResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::CreateTransactionResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        _ => {}
-    }
+    let RemoteMessageData::V1(data) = response.data;
+    response.data = RemoteMessageData::V1(data.with_responding_to(message_id.to_string()));
     response
 }
 
@@ -1295,7 +1324,28 @@ impl JsonRpcConnection for RecordingConnection {
     fn close(&self) {}
 }
 
-/// Answer each request as it arrives, by method, echoing its id.
+/// The scripting key for one request: a `state_call` is keyed by the runtime API
+/// it names, every other method by its own name.
+///
+/// A path that reads both metadata and a view function issues both through
+/// `state_call`, so keying those two apart is what lets a script answer them
+/// differently.
+fn response_key(request: &serde_json::Value) -> Option<&str> {
+    let method = request["method"].as_str()?;
+    if method == "state_call" {
+        return Some(request["params"][0].as_str().unwrap_or(method));
+    }
+    Some(method)
+}
+
+/// Answer each request as it arrives, keyed by [`response_key`], echoing its id.
+///
+/// Repeated entries for one key are answered in call order. Running past the
+/// last one panics rather than replaying it: a script that answers fewer calls
+/// than the code makes would otherwise hand a response meant for one read to a
+/// different one, which decodes to a plausible wrong value instead of failing.
+///
+/// Exhausted method scripts panic so one read cannot reuse another's response.
 ///
 /// Waits indefinitely for the next request rather than giving up after a fixed
 /// number of polls, so work between requests cannot race the pump.
@@ -1317,12 +1367,33 @@ fn method_keyed_responses(
                     let value: serde_json::Value =
                         serde_json::from_str(&request).expect("request is valid JSON");
                     let id = value["id"].as_str().expect("request carries a string id");
-                    let method = value["method"].as_str().expect("request carries a method");
-                    let result = answers
+                    let key = response_key(&value).expect("request carries a method");
+                    let occurrence = sent
+                        .lock()
+                        .expect("rpc list mutex poisoned")
                         .iter()
-                        .find(|(candidate, _)| *candidate == method)
+                        .take(answered)
+                        .filter(|earlier| {
+                            serde_json::from_str::<serde_json::Value>(earlier)
+                                .ok()
+                                .and_then(|earlier| response_key(&earlier).map(str::to_owned))
+                                .is_some_and(|candidate| candidate == key)
+                        })
+                        .count();
+                    let scripted = answers
+                        .iter()
+                        .filter(|(candidate, _)| *candidate == key)
+                        .collect::<Vec<_>>();
+                    let result = scripted
+                        .get(occurrence)
                         .map(|(_, body)| body.clone())
-                        .unwrap_or_else(|| panic!("no scripted response for method `{method}`"));
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "`{key}` was called {} times, and the script has {} response(s) for it",
+                                occurrence + 1,
+                                scripted.len(),
+                            )
+                        });
                     return Some((
                         format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{result}}}"#),
                         answered + 1,
@@ -1332,6 +1403,25 @@ fn method_keyed_responses(
             }
         }
     }))
+}
+
+#[test]
+#[should_panic(
+    expected = "`state_getStorage` was called 2 times, and the script has 1 response(s) for it"
+)]
+fn method_keyed_responses_do_not_replay_an_exhausted_answer() {
+    use futures::StreamExt;
+
+    let request =
+        |id| format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"state_getStorage","params":[]}}"#);
+    let sent = Arc::new(Mutex::new(vec![request(1), request(2)]));
+    let mut responses =
+        method_keyed_responses(sent, vec![("state_getStorage", "null".to_string())]);
+
+    futures::executor::block_on(async {
+        responses.next().await.expect("first scripted response");
+        responses.next().await.expect("second scripted response");
+    });
 }
 
 async fn wait_for_matching_request_id(sent: Arc<Mutex<Vec<String>>>, response: &str) {
@@ -1471,6 +1561,14 @@ impl UserConfirmation for StubPlatform {
                     .lock()
                     .expect("resource allocation review list mutex poisoned")
                     .push(review);
+                let gate = self
+                    .resource_allocation_confirmation_gate
+                    .lock()
+                    .expect("resource confirmation gate mutex poisoned")
+                    .take();
+                if let Some(gate) = gate {
+                    gate.await.expect("resource confirmation gate was released");
+                }
                 (
                     self.resource_allocation_error,
                     self.resource_allocation_confirmed,
@@ -1509,6 +1607,18 @@ impl ThemeHost for StubPlatform {
             Ok(v01::HostThemeSubscribeItem {
                 name: v01::ThemeName::Custom("midnight".to_string()),
                 variant: v01::ThemeVariant::Dark,
+            })
+        }))
+    }
+}
+
+impl LocaleHost for StubPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostLocaleSubscribeItem, v01::GenericError>> {
+        Box::pin(stream::once(async {
+            Ok(v01::HostLocaleSubscribeItem {
+                language_tag: "zh-Hans".to_string(),
             })
         }))
     }

@@ -13,26 +13,26 @@ export const PASEO_NEXT_V2_ASSET_HUB = {
   name: "Paseo Next v2 Hub",
   network: "Testnet",
   genesis:
-    "0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
+    "0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
 } as const satisfies WellKnownChain;
 
 export const PASEO_NEXT_V2_INDIVIDUALITY = {
   name: "Paseo Next v2 Individuality",
   network: "Testnet",
   genesis:
-    "0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
+    "0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
 } as const satisfies WellKnownChain;
 
 export const PREVIEWNET_ASSET_HUB = {
   name: "Previewnet Hub",
   network: "Testnet",
   genesis:
-    "0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659",
+    "0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe",
 } as const satisfies WellKnownChain;
 
 export const PREVIEWNET_INDIVIDUALITY = {
   name: "Previewnet Individuality",
   network: "Testnet",
   genesis:
-    "0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220",
+    "0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218",
 } as const satisfies WellKnownChain;

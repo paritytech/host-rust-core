@@ -1,0 +1,38 @@
+# Labels applied from the paths a pull request touches. Every label here already
+# exists in the repository; adding one means adding it there first.
+#
+# Reviewer assignment is deliberately not here. A team review is already required
+# on every file by the branch ruleset, and per-path reviewers belong with the
+# review boundary work, where they can be expressed as ownership rather than as
+# a labelling side effect.
+
+rfc:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/rfcs/**"
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+
+github_actions:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - ".github/actions/**"
+
+javascript:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "js/**"
+          - "playground/**"
+          - "explorer/**"
+
+host-work:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "hosts/**"
+          - "ios/**"
+          - "android/**"

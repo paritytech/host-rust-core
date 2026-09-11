@@ -130,8 +130,8 @@ fn product_context_validation_cases() {
         Ok("host-playground44.paseo".to_string())
     );
     assert_eq!(
-        ProductContext::new("Browse.TEST".to_string()).map(|context| context.product_id),
-        Ok("browse.test".to_string())
+        ProductContext::new("Browse.TESTNET".to_string()).map(|context| context.product_id),
+        Ok("browse.testnet".to_string())
     );
     for domain in ["example.com", "example.org", "dotli.dotty"] {
         assert_eq!(

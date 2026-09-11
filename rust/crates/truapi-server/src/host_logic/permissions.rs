@@ -1258,7 +1258,7 @@ mod tests {
         for product_id in [
             "peopl.dot",
             "peopl.paseo",
-            "peopl.test",
+            "peopl.testnet",
             "dim2.dot",
             "stash.dot",
         ] {

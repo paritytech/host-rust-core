@@ -244,6 +244,7 @@ fn target_label(target: &StatementRenewalTarget) -> String {
 
 fn resolve_target(
     entropy: &[u8],
+    network_suffix: &str,
     target: &StatementRenewalTarget,
 ) -> Result<ResolvedRenewalTarget, String> {
     let label = target_label(target);
@@ -260,7 +261,8 @@ fn resolve_target(
             })
         }
         StatementRenewalTarget::WalletSso => {
-            let pair = derive_identity_keypair(entropy).map_err(|err| err.to_string())?;
+            let pair =
+                derive_identity_keypair(entropy, network_suffix).map_err(|err| err.to_string())?;
             Ok(ResolvedRenewalTarget {
                 label,
                 account_id: pair.public.to_bytes(),
@@ -310,17 +312,20 @@ pub(super) async fn untrack_account_for_signing_host(
 /// not stop every other target from being renewed.
 fn resolve_targets(
     entropy: &[u8],
+    network_suffix: &str,
     targets: &[StatementRenewalTarget],
 ) -> Vec<ResolvedRenewalTarget> {
     targets
         .iter()
-        .filter_map(|target| match resolve_target(entropy, target) {
-            Ok(resolved) => Some(resolved),
-            Err(reason) => {
-                warn!(?target, %reason, "skipping an unresolvable renewal target");
-                None
-            }
-        })
+        .filter_map(
+            |target| match resolve_target(entropy, network_suffix, target) {
+                Ok(resolved) => Some(resolved),
+                Err(reason) => {
+                    warn!(?target, %reason, "skipping an unresolvable renewal target");
+                    None
+                }
+            },
+        )
         .collect()
 }
 
@@ -382,7 +387,7 @@ pub(super) async fn renew_now(
         owner_key(&entropy)?,
     )
     .await?;
-    let resolved = resolve_targets(&entropy, &targets);
+    let resolved = resolve_targets(&entropy, signing_host.network_suffix(), &targets);
     if resolved.is_empty() {
         return Ok(StatementRenewalReport {
             period,
@@ -411,6 +416,9 @@ pub(super) async fn renew_now(
     let chain_state = fetch_chain_state(&rpc)
         .await
         .map_err(|err| err.to_string())?;
+    let network_suffix = statement_allowance::slot::read_network_suffix(&rpc)
+        .await
+        .map_err(|err| err.to_string())?;
     // Every ring back to index 0, because a membership that stopped being
     // re-included still proves against the ring that holds it.
     let memberships = find_including_rings(&rpc, &metadata, &candidates, u32::MAX)
@@ -426,6 +434,7 @@ pub(super) async fn renew_now(
         rpc: &rpc,
         metadata: &metadata,
         chain_state: &chain_state,
+        network_suffix: &network_suffix,
         candidates: &candidates,
         memberships: &memberships,
     };
@@ -827,19 +836,19 @@ mod tests {
         let unresolvable = product(&"9".repeat(25));
         let entropy = [7u8; 32];
 
-        assert!(resolve_target(&entropy, &unresolvable).is_err());
+        assert!(resolve_target(&entropy, "paseo", &unresolvable).is_err());
         let targets = [unresolvable, product("a.dot")];
 
         // Resolving strictly loses the healthy target with the broken one.
         assert!(
             targets
                 .iter()
-                .map(|target| resolve_target(&entropy, target))
+                .map(|target| resolve_target(&entropy, "paseo", target))
                 .collect::<Result<Vec<_>, _>>()
                 .is_err()
         );
 
-        let resolved = resolve_targets(&entropy, &targets);
+        let resolved = resolve_targets(&entropy, "paseo", &targets);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].label, "product:a.dot");
     }
@@ -963,7 +972,7 @@ mod tests {
                 .public
                 .to_bytes();
 
-        let resolved = resolve_target(&entropy, &product("a.dot")).unwrap();
+        let resolved = resolve_target(&entropy, "paseo", &product("a.dot")).unwrap();
         assert_eq!(
             resolved,
             ResolvedRenewalTarget {
@@ -976,12 +985,15 @@ mod tests {
     #[test]
     fn wallet_sso_target_resolves_to_the_responder_identity() {
         let entropy = [7u8; 32];
-        let expected = crate::host_logic::product_account::derive_identity_keypair(&entropy)
-            .unwrap()
-            .public
-            .to_bytes();
+        let expected =
+            crate::host_logic::product_account::derive_identity_keypair(&entropy, "paseo")
+                .unwrap()
+                .public
+                .to_bytes();
 
-        let resolved = resolve_target(&entropy, &StatementRenewalTarget::WalletSso).unwrap();
+        let resolved =
+            resolve_target(&entropy, "paseo", &StatementRenewalTarget::WalletSso).unwrap();
+
         assert_eq!(
             resolved,
             ResolvedRenewalTarget {
