@@ -63,11 +63,11 @@ pub trait StatementStore: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: RemoteStatementStoreSubscribeRequest,
-    ) -> Result<
-        Subscription<RemoteStatementStoreSubscribeItem>,
+    ) -> Subscription<
+        RemoteStatementStoreSubscribeItem,
         CallError<RemoteStatementStoreSubscribeError>,
     > {
-        Err(CallError::unavailable())
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Create a proof for a statement.

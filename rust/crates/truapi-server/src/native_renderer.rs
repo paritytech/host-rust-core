@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
-use truapi::{Subscription, latest::GenericError, latest::ProductChatCustomMessageRenderItem};
+use truapi::{
+    CallError, Subscription, latest::GenericError, latest::ProductChatCustomMessageRenderItem,
+};
 
 use crate::subscription::Spawner;
 
@@ -52,7 +54,7 @@ impl Drop for NativeCustomRendererSubscription {
 
 #[cfg_attr(not(feature = "ws-bridge"), allow(dead_code))]
 pub(crate) fn observe_renderer(
-    mut stream: Subscription<Result<ProductChatCustomMessageRenderItem, GenericError>>,
+    mut stream: Subscription<ProductChatCustomMessageRenderItem, CallError<GenericError>>,
     observer: Arc<dyn NativeCustomRendererObserver>,
     spawner: Spawner,
 ) -> Arc<NativeCustomRendererSubscription> {
@@ -63,7 +65,7 @@ pub(crate) fn observe_renderer(
                 while let Some(item) = stream.next().await {
                     match item {
                         Ok(node) => observer.on_update(node),
-                        Err(error) => return observer.on_error(error.reason),
+                        Err(error) => return observer.on_error(interrupt_reason(error)),
                     }
                 }
                 observer.on_complete();
@@ -75,4 +77,14 @@ pub(crate) fn observe_renderer(
     Arc::new(NativeCustomRendererSubscription {
         abort: Mutex::new(Some(abort)),
     })
+}
+
+/// Render one interrupt as the diagnostic string a native observer reports.
+fn interrupt_reason(error: CallError<GenericError>) -> String {
+    match error {
+        CallError::Domain(GenericError { reason }) => reason,
+        CallError::Denied => "denied".to_string(),
+        CallError::Unsupported => "unsupported".to_string(),
+        CallError::MalformedFrame { reason } | CallError::HostFailure { reason } => reason,
+    }
 }

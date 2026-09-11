@@ -386,18 +386,6 @@ fn versioned_wrapper_for<'a>(
     None
 }
 
-/// The well-known bare (unwrapped) type of the framework-level error every
-/// subscription can be interrupted with, even a plain (non-`ResultSubscription`)
-/// method with no domain error of its own: the framework-level `CallError`
-/// variants (`Denied`/`Unsupported`/`MalformedFrame`/`HostFailure`) still ride
-/// along on every interrupt frame and must be decodable.
-fn generic_error_type_ref() -> TypeRef {
-    TypeRef::Named {
-        name: "GenericError".to_string(),
-        args: Vec::new(),
-    }
-}
-
 /// Emits a JSDoc block for `docs` at the given indent. No-op when `docs` is
 /// `None` so callers can pipe rust doc strings through unconditionally.
 ///
@@ -588,7 +576,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
             }
             let wire_kind = match method.kind {
                 MethodKind::Request => "request",
-                MethodKind::Subscription | MethodKind::ResultSubscription => "subscription",
+                MethodKind::Subscription => "subscription",
             };
             constants.push((
                 wire_const_name(&trait_def.name, &method.name),
@@ -754,15 +742,12 @@ fn method_payload_signature(method: &MethodDef, types: &HashMap<&str, &TypeDef>)
                 type_signature(err, types, &mut Vec::new())
             );
         }
-        ReturnType::Subscription(item) => {
-            let _ = write!(out, "sub<{}>", type_signature(item, types, &mut Vec::new()));
-        }
-        ReturnType::ResultSubscription { item, err } => {
+        ReturnType::Subscription { item, interrupt } => {
             let _ = write!(
                 out,
-                "ressub<{},{}>",
+                "sub<{},{}>",
                 type_signature(item, types, &mut Vec::new()),
-                type_signature(err, types, &mut Vec::new())
+                type_signature(interrupt, types, &mut Vec::new())
             );
         }
     }
@@ -1060,13 +1045,10 @@ fn method_versioned_wrappers(
                 &mut names,
             );
         }
-        ReturnType::Subscription(item) => {
-            collect_type_versioned_wrappers(item, wrappers, &mut names);
-        }
-        ReturnType::ResultSubscription { item, err } => {
+        ReturnType::Subscription { item, interrupt } => {
             collect_type_versioned_wrappers(item, wrappers, &mut names);
             collect_type_versioned_wrappers(
-                call_error_inner(err).unwrap_or(err),
+                call_error_inner(interrupt).unwrap_or(interrupt),
                 wrappers,
                 &mut names,
             );
@@ -1165,12 +1147,12 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         import * as S from '../scale.js';
         import type {{ HexString }} from '../scale.js';
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, ObservableSource, Observer, Subscription, TrUApiTransport }} from '../transport.js';
+        import type {{ HostInitiatedSubscriptionHandler, HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, Observer, Subscription, TrUApiTransport }} from '../transport.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
         export {{ ResultAsync, SubscriptionError }};
-        export type {{ ObservableLike, ObservableSource, Observer, Result, Subscription, TrUApiTransport }};
+        export type {{ HostInitiatedSubscriptionHandler, ObservableLike, Observer, Result, Subscription, TrUApiTransport }};
         export const TRUAPI_VERSION = {target_version} as const;
         export const TRUAPI_CODEC_VERSION = {codec_version} as const;
         export const TRUAPI_WIRE_SCHEMA_HASH = "{schema_hash}" as const;
@@ -1182,17 +1164,42 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         }}
 
         // Interrupt payload sent (with messageType Interrupt) when a
-        // host-initiated render arrives with no registered handler,
-        // declining the start: Some(CallError::HostFailure with reason
-        // "unavailable"). HostFailure's payload doesn't depend on the
-        // method's own domain error type, so this fixed frame is valid for
-        // every method regardless of what D in CallError<D> decodes to.
+        // host-initiated start arrives the product cannot serve, declining
+        // it: Err(CallError::HostFailure with reason "unavailable").
+        // HostFailure's payload doesn't depend on the method's own domain
+        // error type, so this fixed frame is valid for every method
+        // regardless of what D in CallError<D> decodes to.
         const HOST_INITIATED_DECLINE_PAYLOAD = new Uint8Array([
           1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101,
         ]);
-        // Items buffered per host-initiated stream while the product's handler
-        // observable has no subscriber yet.
+        // Items buffered per host-initiated stream while the product has no
+        // handler installed yet.
         const HOST_INITIATED_BUFFER_CAPACITY = 64;
+
+        // The Interrupt leg carries Result<(), CallError<Err>>: Ok(()) ends
+        // the stream normally, Err(reason) ends it with the method's own
+        // interrupt value.
+        function interruptDecoder<Reason>(
+          reason: S.Codec<Reason>,
+        ): (payload: Uint8Array) => Reason | undefined {{
+          const codec = S.Result(S._void, reason);
+          return (payload) => {{
+            const decoded = codec.dec(payload);
+            return decoded.success ? undefined : decoded.value;
+          }};
+        }}
+
+        function interruptEncoder<Reason>(
+          reason: S.Codec<Reason>,
+        ): (value?: Reason) => Uint8Array {{
+          const codec = S.Result(S._void, reason);
+          return (value) =>
+            codec.enc(
+              value === undefined
+                ? {{ success: true, value: undefined }}
+                : {{ success: false, value }},
+            );
+        }}
 
         "#
     )
@@ -1341,28 +1348,13 @@ fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<Str
                         "    1: (payload) => S.Result({response_codec}, {error_codec}).dec(payload),"
                     ));
                 }
-                (MethodKind::Subscription, ReturnType::Subscription(ty)) => {
-                    let item_codec = leg_codec_expr(ty, &wrappers)?;
-                    let generic_error = generic_error_type_ref();
-                    let call_error_generic = TypeRef::Named {
-                        name: "CallError".to_string(),
-                        args: vec![generic_error],
-                    };
-                    let error_codec = leg_error_codec_expr(&call_error_generic, &wrappers, &ctx)?;
-                    lines.push(format!("    0: {request_decoder},"));
-                    lines.push(format!("    1: (payload) => {item_codec}.dec(payload),"));
-                    lines.push(format!(
-                        "    2: (payload) => S.Option({error_codec}).dec(payload),"
-                    ));
-                    lines.push("    3: () => undefined,".to_string());
-                }
-                (MethodKind::ResultSubscription, ReturnType::ResultSubscription { item, err }) => {
+                (MethodKind::Subscription, ReturnType::Subscription { item, interrupt }) => {
                     let item_codec = leg_codec_expr(item, &wrappers)?;
-                    let error_codec = leg_error_codec_expr(err, &wrappers, &ctx)?;
+                    let error_codec = leg_error_codec_expr(interrupt, &wrappers, &ctx)?;
                     lines.push(format!("    0: {request_decoder},"));
                     lines.push(format!("    1: (payload) => {item_codec}.dec(payload),"));
                     lines.push(format!(
-                        "    2: (payload) => S.Option({error_codec}).dec(payload),"
+                        "    2: (payload) => S.Result(S._void, {error_codec}).dec(payload),"
                     ));
                     lines.push("    3: () => undefined,".to_string());
                 }
@@ -1443,9 +1435,9 @@ fn write_observable_helper(out: &mut String) {
           payload: Uint8Array;
           decodeItem: (payload: Uint8Array) => Item;
           // `undefined` signals a clean, error-free completion (the wire
-          // envelope's `Interrupt(None)`), distinct from not being able to
-          // observe a typed reason at all (this method has no domain error,
-          // and `decodeInterrupt` itself is omitted).
+          // envelope's `Interrupt(Ok(()))`), distinct from not being able to
+          // observe a typed reason at all, where `decodeInterrupt` itself is
+          // omitted.
           decodeInterrupt?: (payload: Uint8Array) => Reason | undefined;
           onSubscribe?: (subscription: Subscription) => {{ unsubscribe(): void }};
         }}): ObservableLike<Item, Reason> {{
@@ -1888,42 +1880,12 @@ fn emit_method(
             )
             .unwrap();
         }
-        (MethodKind::Subscription, ReturnType::Subscription(ty)) => {
-            let response = emit_response(ty, wrappers, wire_version)?;
-            let item_codec = leg_codec_expr(ty, wrappers)?;
-            let item_is_wrapper = versioned_wrapper_for(ty, wrappers).is_some();
-            // A plain subscription has no domain error type, but the wire's
-            // Interrupt payload still carries a `CallError<GenericError>`: the
-            // framework-level failure modes (Denied, Unsupported,
-            // MalformedFrame, HostFailure) can interrupt any subscription
-            // regardless of what it declares.
-            let generic_error = generic_error_type_ref();
-            let call_error_generic = TypeRef::Named {
-                name: "CallError".to_string(),
-                args: vec![generic_error],
-            };
-            let error = emit_error_response(&call_error_generic, wrappers, wire_version)?;
-            let error_codec = leg_error_codec_expr(&call_error_generic, wrappers, &ctx)?;
-            emit_subscribe_method(
-                out,
-                &ts_method_name,
-                &wire_const,
-                &payload,
-                response.inner_type_ts.clone(),
-                item_codec,
-                item_is_wrapper,
-                error,
-                error_codec,
-                version,
-                request_name,
-            )?;
-        }
-        (MethodKind::ResultSubscription, ReturnType::ResultSubscription { item, err }) => {
+        (MethodKind::Subscription, ReturnType::Subscription { item, interrupt }) => {
             let response = emit_response(item, wrappers, wire_version)?;
             let item_codec = leg_codec_expr(item, wrappers)?;
             let item_is_wrapper = versioned_wrapper_for(item, wrappers).is_some();
-            let error = emit_error_response(err, wrappers, wire_version)?;
-            let error_codec = leg_error_codec_expr(err, wrappers, &ctx)?;
+            let error = emit_error_response(interrupt, wrappers, wire_version)?;
+            let error_codec = leg_error_codec_expr(interrupt, wrappers, &ctx)?;
             emit_subscribe_method(
                 out,
                 &ts_method_name,
@@ -1959,19 +1921,20 @@ fn emit_host_initiated_types(
     method: &MethodDef,
     wrappers: &HashMap<String, VersionedWrapper>,
     target_version: u32,
-) -> Result<(PayloadEmission, ResponseEmission, u32)> {
+) -> Result<(PayloadEmission, ResponseEmission, ResponseEmission, u32)> {
     let wire_version = method_wire_version(method, wrappers, target_version)?.ok_or_else(|| {
         anyhow::anyhow!("host-initiated method `{}` is not versioned", method.name)
     })?;
     let payload = emit_payload(&method.params, wrappers, Some(wire_version))?;
-    let ReturnType::Subscription(item) = &method.return_type else {
+    let ReturnType::Subscription { item, interrupt } = &method.return_type else {
         bail!(
-            "host-initiated method `{}` must return Subscription<T>",
+            "host-initiated method `{}` must return Subscription<Item, Interrupt>",
             method.name
         );
     };
     let response = emit_response(item, wrappers, Some(wire_version))?;
-    Ok((payload, response, wire_version))
+    let error = emit_error_response(interrupt, wrappers, Some(wire_version))?;
+    Ok((payload, response, error, wire_version))
 }
 
 fn emit_host_initiated_field(
@@ -1980,13 +1943,15 @@ fn emit_host_initiated_field(
     wrappers: &HashMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
-    let (payload, response, _) = emit_host_initiated_types(method, wrappers, target_version)?;
+    let (payload, response, error, _) =
+        emit_host_initiated_types(method, wrappers, target_version)?;
     writeln!(
         out,
-        "  private readonly {}: HostInitiatedSubscriptionRegistration<{}, {}>;",
+        "  private readonly {}: HostInitiatedSubscriptionRegistration<{}, {}, {}>;",
         host_registration_field(method),
         payload.inner_type_ts,
-        response.inner_type_ts
+        response.inner_type_ts,
+        error.inner_type_ts
     )
     .unwrap();
     Ok(())
@@ -2000,11 +1965,16 @@ fn emit_host_initiated_registration(
     wrappers: &HashMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
-    let (_, _, version) = emit_host_initiated_types(method, wrappers, target_version)?;
+    let (_, _, _, version) = emit_host_initiated_types(method, wrappers, target_version)?;
+    let ctx = CodecContext::default();
     let wire_const = wire_const_name(&trait_def.name, &method.name);
-    let ReturnType::Subscription(item_ty) = &method.return_type else {
+    let ReturnType::Subscription {
+        item: item_ty,
+        interrupt,
+    } = &method.return_type
+    else {
         bail!(
-            "host-initiated method `{}` must return Subscription<T>",
+            "host-initiated method `{}` must return Subscription<Item, Interrupt>",
             method.name
         );
     };
@@ -2022,6 +1992,7 @@ fn emit_host_initiated_registration(
     };
     let request_codec = format!("T.{}", versioned_wrapper_ts_name(request_name));
     let item_codec = format!("T.{}", versioned_wrapper_ts_name(item_name));
+    let error_codec = leg_error_codec_expr(interrupt, wrappers, &ctx)?;
     writedoc!(
         out,
         "
@@ -2029,7 +2000,8 @@ fn emit_host_initiated_registration(
               ids: W.{wire_const},
               decodeRequest: (payload) => {request_codec}.dec(payload).value,
               encodeItem: (item) => {item_codec}.enc({{ tag: \"V{version}\", value: item }}),
-              interruptPayload: HOST_INITIATED_DECLINE_PAYLOAD,
+              encodeInterrupt: interruptEncoder({error_codec}),
+              declinePayload: HOST_INITIATED_DECLINE_PAYLOAD,
               bufferCapacity: HOST_INITIATED_BUFFER_CAPACITY,
             }});
         ",
@@ -2046,25 +2018,27 @@ fn emit_host_initiated_method(
     wrappers: &HashMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<()> {
-    let ReturnType::Subscription(item) = &method.return_type else {
+    let ReturnType::Subscription { item, interrupt } = &method.return_type else {
         bail!(
-            "host-initiated method `{}` must return Subscription<T>",
+            "host-initiated method `{}` must return Subscription<Item, Interrupt>",
             method.name
         );
     };
     let response = emit_response(item, wrappers, wire_version)?;
+    let error = emit_error_response(interrupt, wrappers, wire_version)?;
     let name = format!("on{}", strip_prefix(&method.name).to_case(Case::Pascal));
     writedoc!(
         out,
         "
           {name}(
-            handler: (request: {request}) => ObservableSource<{item}>,
+            handler: HostInitiatedSubscriptionHandler<{request}, {item}, {reason}>,
           ): {{ unsubscribe(): void }} {{
             return this.{field}.setHandler(handler);
           }}
         ",
         request = payload.inner_type_ts,
         item = response.inner_type_ts,
+        reason = error.inner_type_ts,
         field = host_registration_field(method),
     )
     .unwrap();
@@ -2072,17 +2046,10 @@ fn emit_host_initiated_method(
 }
 
 /// Emits a subscribe method body that returns an Observable-compatible
-/// object. Every subscription's envelope carries a real `Err` (a domain error
-/// for `ResultSubscription`, `CallError<GenericError>` otherwise), so every
-/// generated method gets a real `decodeInterrupt`: `undefined` maps to clean
-/// completion, anything else maps to `error`.
-/// Emits a subscribe method body that returns an Observable-compatible
 /// object. `Start`'s payload is the request wrapper's own encoding, or empty
-/// bytes when the method takes no request at all. Every subscription's
-/// `Interrupt` payload carries a real `CallError<Err>` (a domain error for
-/// `ResultSubscription`, `CallError<GenericError>` otherwise), so every
-/// generated method gets a real `decodeInterrupt`: `undefined` maps to clean
-/// completion, anything else maps to `error`.
+/// bytes when the method takes no request at all. The `Interrupt` payload is
+/// `Result<(), CallError<Err>>`, so every generated method decodes `Ok(())`
+/// as a clean completion and `Err(reason)` as `error`.
 #[allow(clippy::too_many_arguments)]
 fn emit_subscribe_method(
     out: &mut String,
@@ -2150,7 +2117,7 @@ fn emit_subscribe_method(
     writedoc!(
         out,
         "
-              decodeInterrupt: (payload) => S.Option({error_codec}).dec(payload),
+              decodeInterrupt: interruptDecoder({error_codec}),
             }});
           }}
         "
@@ -3252,7 +3219,16 @@ mod tests {
             name: name.to_string(),
             kind: MethodKind::Subscription,
             params: Vec::new(),
-            return_type: ReturnType::Subscription(TypeRef::Unit),
+            return_type: ReturnType::Subscription {
+                item: TypeRef::Unit,
+                interrupt: TypeRef::Named {
+                    name: "CallError".to_string(),
+                    args: vec![TypeRef::Named {
+                        name: "GenericError".to_string(),
+                        args: vec![],
+                    }],
+                },
+            },
             wire: wire_attrs(wire_id),
             docs: None,
         }
@@ -3308,7 +3284,16 @@ mod tests {
             name: name.to_string(),
             kind: MethodKind::Subscription,
             params: Vec::new(),
-            return_type: ReturnType::Subscription(named_type(item)),
+            return_type: ReturnType::Subscription {
+                item: named_type(item),
+                interrupt: TypeRef::Named {
+                    name: "CallError".to_string(),
+                    args: vec![TypeRef::Named {
+                        name: "GenericError".to_string(),
+                        args: vec![],
+                    }],
+                },
+            },
             wire: wire_attrs(wire_id),
             docs: None,
         }
@@ -3350,6 +3335,61 @@ mod tests {
 
     fn versioned_tuple_wrapper(name: &str, legacy: &str, latest: &str) -> TypeDef {
         versioned_tuple_wrapper_variants(name, &[(1, legacy), (2, latest)])
+    }
+
+    /// The framework types every subscription's interrupt leg reaches, in the
+    /// shape `truapi` declares them. Fixtures that emit a client need them, or
+    /// the wire schema hash refuses to fingerprint a bare name.
+    fn call_error_framework_types() -> Vec<TypeDef> {
+        vec![
+            TypeDef {
+                name: "CallError".to_string(),
+                module_path: Vec::new(),
+                generic_params: vec!["D".to_string()],
+                kind: TypeDefKind::Enum(vec![
+                    VariantDef {
+                        name: "Domain".to_string(),
+                        fields: VariantFields::Unnamed(vec![TypeRef::Generic("D".to_string())]),
+                        docs: None,
+                        codec_index: None,
+                    },
+                    VariantDef {
+                        name: "Denied".to_string(),
+                        fields: VariantFields::Unit,
+                        docs: None,
+                        codec_index: None,
+                    },
+                    VariantDef {
+                        name: "Unsupported".to_string(),
+                        fields: VariantFields::Unit,
+                        docs: None,
+                        codec_index: None,
+                    },
+                    VariantDef {
+                        name: "MalformedFrame".to_string(),
+                        fields: VariantFields::Named(vec![FieldDef {
+                            name: "reason".to_string(),
+                            type_ref: TypeRef::Primitive("String".to_string()),
+                            docs: None,
+                        }]),
+                        docs: None,
+                        codec_index: None,
+                    },
+                    VariantDef {
+                        name: "HostFailure".to_string(),
+                        fields: VariantFields::Named(vec![FieldDef {
+                            name: "reason".to_string(),
+                            type_ref: TypeRef::Primitive("String".to_string()),
+                            docs: None,
+                        }]),
+                        docs: None,
+                        codec_index: None,
+                    },
+                ]),
+                docs: None,
+            },
+            single_field_struct("GenericError", "reason", "String"),
+        ]
     }
 
     fn single_field_struct(name: &str, field_name: &str, field_type: &str) -> TypeDef {
@@ -3588,7 +3628,7 @@ mod tests {
         assert!(source.contains("T.VersionedStreamItem.dec(payload)"));
         // message_type 2 (Interrupt) on a plain subscription still decodes a
         // framework-level `CallError<GenericError>`, wrapped in `Option`.
-        assert!(source.contains("S.Option(S.CallError(T.GenericError)).dec(payload)"));
+        assert!(source.contains("S.Result(S._void, S.CallError(T.GenericError)).dec(payload)"));
     }
 
     #[test]
@@ -4076,10 +4116,19 @@ mod tests {
                         name: "request".to_string(),
                         type_ref: TypeRef::Primitive("u32".to_string()),
                     }],
-                    return_type: ReturnType::Subscription(TypeRef::Named {
-                        name: "ExampleItem".to_string(),
-                        args: Vec::new(),
-                    }),
+                    return_type: ReturnType::Subscription {
+                        item: TypeRef::Named {
+                            name: "ExampleItem".to_string(),
+                            args: Vec::new(),
+                        },
+                        interrupt: TypeRef::Named {
+                            name: "CallError".to_string(),
+                            args: vec![TypeRef::Named {
+                                name: "GenericError".to_string(),
+                                args: Vec::new(),
+                            }],
+                        },
+                    },
                     wire: wire_attrs(Some(2)),
                     docs: None,
                 }],
@@ -4093,7 +4142,7 @@ mod tests {
                 single_field_struct("LegacyItem", "value", "u32"),
                 single_field_struct("LatestItem", "value", "u32"),
             ],
-            framework_types: Vec::new(),
+            framework_types: call_error_framework_types(),
         };
 
         let err = generate_client(&api, 2, 1).expect_err("a raw Start param must be rejected");

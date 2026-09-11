@@ -78,7 +78,7 @@ The payload bytes that follow `message_type` are exactly that leg's own already-
 - **Response**: `Result<{Method}Response, CallError<{Method}Error>>`, both sides already-versioned wrappers.
 - **Start**: the request wrapper's own encoding, or zero bytes when the subscription takes no request at all.
 - **Receive**: the item wrapper's own encoding.
-- **Interrupt**: `Option<CallError<{Method}Error>>` — `None` is natural completion, `Some(err)` is a failure. A subscription with no domain-specific error uses a bare `GenericError` in the same position.
+- **Interrupt**: `Result<(), CallError<{Method}Error>>` — `Ok(())` is natural completion, `Err(err)` is the value the subscription ended with. A subscription with no domain-specific error uses a bare `GenericError` in the same position.
 - **Stop**: zero bytes, unconditionally.
 
 Each leg therefore versions independently: a method's `Response` does not share a version number with its `Request`, nor do a subscription's four legs share one with each other.
@@ -97,7 +97,7 @@ and a subscription's four legs all address the same `(trait, method)` pair, dist
 ```text
 start:     [trait][method][0x00 START][0x00 V1][...start fields]
 receive:   [trait][method][0x01 RECEIVE][0x00 V1][...item fields]
-interrupt: [trait][method][0x02 INTERRUPT][...Option<CallError<Err>> bytes]
+interrupt: [trait][method][0x02 INTERRUPT][...Result<(), CallError<Err>> bytes]
 stop:      [trait][method][0x03 STOP]
 ```
 
@@ -125,7 +125,7 @@ Each message has a defined role:
 
 - `start` — the consumer subscribes; it MUST send a `start` message to the provider.
 - `stop` — the consumer unsubscribes; it MUST send a `stop` message.
-- `interrupt` — if the provider can no longer supply data, it CAN send an `interrupt` message; the consumer MAY react by notifying the application layer.
+- `interrupt` — the provider MUST end a stream with an `interrupt` message, carrying `Ok(())` when it has no more data to supply and `Err(reason)` when it stopped for a reason the consumer can act on.
 - `receive` — the provider MUST deliver each update with a `receive` message.
 
 When a protocol error rejects a subscription's `start` frame, the consumer
