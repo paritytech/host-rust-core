@@ -2,8 +2,9 @@
 //!
 //! Every method resolves the calling product from the runtime, never from
 //! the request, checks the persisted grant, and delegates to the account
-//! authority, which alone holds the purse keys. Hosts without purses answer
-//! `Unsupported` before any session is consulted.
+//! authority, which alone reaches the purse keys: locally on a signing host,
+//! through the paired signing host on a pairing host. Hosts that reach none
+//! answer `Unsupported` before any session is consulted.
 
 use core::time::Duration;
 use std::sync::Arc;

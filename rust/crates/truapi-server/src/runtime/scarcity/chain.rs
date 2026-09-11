@@ -34,8 +34,6 @@ pub(crate) struct Nft {
 }
 
 /// `Scarcity.Locked[purse]`: the backoff lock after a failed dispatch.
-// Read by the transfer pipeline once it lands.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, DecodeAsType)]
 pub(crate) struct LockInfo {
     /// Consecutive failed dispatches.
@@ -145,8 +143,6 @@ pub(crate) async fn read_nfts(
 }
 
 /// The item `owner` holds at block `at` (or the best block), if any.
-// Used by the transfer pipeline once it lands.
-#[allow(dead_code)]
 pub(crate) async fn read_nft(
     rpc: &RpcClient,
     metadata: &Metadata,
@@ -165,8 +161,6 @@ pub(crate) async fn read_nft(
 
 /// The purse key holding `instance` at block `at` (or the best block), if the
 /// instance exists.
-// Used by the transfer pipeline once it lands.
-#[allow(dead_code)]
 pub(crate) async fn read_instance_owner(
     rpc: &RpcClient,
     metadata: &Metadata,
@@ -190,8 +184,6 @@ pub(crate) async fn read_instance_owner(
 }
 
 /// The failure lock on `owner`, if one is recorded.
-// Used by the transfer pipeline once it lands.
-#[allow(dead_code)]
 pub(crate) async fn read_lock(
     rpc: &RpcClient,
     metadata: &Metadata,

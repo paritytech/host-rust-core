@@ -20,7 +20,8 @@ pub(crate) mod login_failure;
 mod pairing_host;
 mod product_subtree;
 mod ring_vrf_registry;
-/// The signing host's NFT pocket: per-product `pallet-scarcity` purses.
+/// The NFT pocket: per-product `pallet-scarcity` purses, served by either host
+/// role over the purse keys its account authority can reach.
 pub(crate) mod scarcity;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;

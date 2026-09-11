@@ -460,17 +460,17 @@ pub(crate) trait ProductAuthority: Send + Sync {
         payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError>;
 
-    /// Whether this authority serves the NFT pocket at all. Only a signing
-    /// host holds the root entropy purse keys derive from; a product on any
-    /// other host gets `Unsupported` before a session is even consulted.
+    /// Whether this authority serves the NFT pocket at all. A signing host
+    /// derives purse keys from root entropy; a pairing host asks its paired
+    /// signing host for them. Any other authority answers `Unsupported`
+    /// before a session is even consulted.
     fn supports_scarcity(&self) -> bool {
         false
     }
 
-    /// List `product_id`'s NFT purse: the items its host-derived keys hold.
+    /// List `product_id`'s NFT purse: the items its purse keys hold.
     ///
-    /// Only a signing host holds the root entropy the purse keys derive from;
-    /// other authorities report `NotSupported`.
+    /// Authorities that reach no purse keys report `NotSupported`.
     async fn scarcity_list(
         &self,
         _cx: &CallContext,
