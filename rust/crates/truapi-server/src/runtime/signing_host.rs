@@ -43,7 +43,7 @@ use super::authority::{
     StatementStoreAllowanceKey, authority_session_validation_id,
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
-use super::scarcity::keys::LocalPurseKeys;
+use super::scarcity::keys::{LocalPurseKeys, PurseKeys};
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::attestation;
 use crate::host_logic::attestation::{build_identity_auth_proof, build_lite_registration};
@@ -52,6 +52,7 @@ use crate::host_logic::extrinsic::{
     Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
     build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
 };
+use crate::host_logic::pocket::normalize_purse_product_id;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
@@ -710,6 +711,118 @@ impl SigningHost {
         self.current_local_session()
             .ok_or(AuthorityError::Disconnected)
             .map_err(Into::into)
+    }
+
+    /// Purse public keys for a paired host's pocket: `count` keys of
+    /// `product_id` from `start`, bounded so one request cannot demand
+    /// unbounded derivation.
+    pub(super) async fn purse_public_keys(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+        start: u32,
+        count: u32,
+    ) -> Result<Vec<[u8; 32]>, crate::runtime::scarcity::PocketAuthorityError> {
+        use crate::runtime::scarcity::{PocketError, SCAN_MAX, keys::PURSE_KEYS_MAX_COUNT};
+        self.require_current_session(session)?;
+        if count > PURSE_KEYS_MAX_COUNT || start.saturating_add(count) > SCAN_MAX {
+            return Err(PocketError::Unknown {
+                reason: format!(
+                    "purse key range {start}..{} exceeds the {PURSE_KEYS_MAX_COUNT}-key request \
+                     limit or the {SCAN_MAX}-index purse ceiling",
+                    start.saturating_add(count)
+                ),
+            }
+            .into());
+        }
+        let product_id = normalize_purse_product_id(product_id).map_err(PocketError::from)?;
+        let keys = self.local_purse_keys()?;
+        Ok(keys.public_keys(session, &product_id, start, count).await?)
+    }
+
+    /// Allocate, or replay, a receive key for a paired host's pocket.
+    pub(super) async fn purse_allocate(
+        &self,
+        session: &AuthoritySession,
+        target_product_id: &str,
+        requested_by: &str,
+        idempotency_key: &str,
+    ) -> Result<(u32, [u8; 32]), crate::runtime::scarcity::PocketAuthorityError> {
+        self.require_current_session(session)?;
+        let target = normalize_purse_product_id(target_product_id)
+            .map_err(crate::runtime::scarcity::PocketError::from)?;
+        let keys = self.local_purse_keys()?;
+        Ok(keys
+            .allocate_receive_key(session, &target, requested_by, idempotency_key)
+            .await?)
+    }
+
+    /// The review for a paired host's transfer request, built from this host's
+    /// own chain read: the holding key must hold `instance` at `state_nonce`,
+    /// and the destination purse is resolved here, never taken from the wire.
+    pub(super) async fn purse_transfer_review(
+        &self,
+        session: &AuthoritySession,
+        request: &crate::runtime::scarcity::keys::PurseTransfer,
+    ) -> Result<
+        truapi_platform::ScarcityTransferReview,
+        crate::runtime::scarcity::PocketAuthorityError,
+    > {
+        use crate::runtime::scarcity::{PocketError, chain};
+        self.require_current_session(session)?;
+        let from_product_id =
+            normalize_purse_product_id(&request.from_product_id).map_err(PocketError::from)?;
+        let keys = self.local_purse_keys()?;
+        let holding = keys
+            .public_keys(session, &from_product_id, request.from_index, 1)
+            .await?
+            .pop()
+            .ok_or_else(|| PocketError::Unknown {
+                reason: "no holding key".into(),
+            })?;
+        let hub = self.pocket.asset_hub().await?;
+        let held = chain::read_nft(&hub.rpc, &hub.context.metadata, &holding, None)
+            .await
+            .map_err(PocketError::from)?
+            .ok_or_else(|| PocketError::Unknown {
+                reason: format!(
+                    "NotFound: {from_product_id} key {} holds nothing",
+                    request.from_index
+                ),
+            })?;
+        if held.instance != request.instance || held.state_nonce != request.state_nonce {
+            return Err(PocketError::Unknown {
+                reason: format!(
+                    "StateMismatch: the key holds instance {} at state {}, not instance {} at \
+                     state {}",
+                    held.instance, held.state_nonce, request.instance, request.state_nonce
+                ),
+            }
+            .into());
+        }
+        let to_product_id = self.pocket.purse_of(&keys, session, &request.to).await?;
+        Ok(truapi_platform::ScarcityTransferReview {
+            product_id: from_product_id,
+            instance: held.instance,
+            collection: held.collection,
+            item: held.item,
+            to: request.to,
+            to_product_id,
+        })
+    }
+
+    /// Sign a transfer the user has just reviewed, anchoring its era now.
+    pub(super) async fn purse_sign_reviewed(
+        &self,
+        session: &AuthoritySession,
+        request: crate::runtime::scarcity::keys::PurseTransfer,
+    ) -> Result<
+        crate::runtime::scarcity::keys::SignedTransfer,
+        crate::runtime::scarcity::PocketAuthorityError,
+    > {
+        self.require_current_session(session)?;
+        let keys = self.local_purse_keys()?;
+        Ok(keys.sign_transfer(session, request).await?)
     }
 
     pub(crate) async fn ring_vrf_providers(

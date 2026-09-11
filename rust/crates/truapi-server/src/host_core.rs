@@ -2475,4 +2475,106 @@ mod tests {
         assert_eq!(payload.responding_to, "m3");
         assert!(payload.payload.is_ok());
     }
+
+    /// The purse requests a paired host relays are answered from the local
+    /// root: public keys come straight from derivation, with no consent, and a
+    /// transfer the host cannot even resolve is refused before any sheet.
+    #[test]
+    fn purse_sso_requests_are_answered_from_the_local_root() {
+        use crate::host_logic::pocket::derive_purse_public_key;
+        use crate::host_logic::sso::messages::{
+            PurseKeysRequest, PurseSignRequest, RemoteMessage, RemoteMessageData, v1,
+        };
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        const ENTROPY: [u8; 32] = [0xab; 32];
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+            "paseo".to_string(),
+        )
+        .expect("signing host config is valid");
+        let platform = Arc::new(StubPlatform::default());
+        let runtime = SigningHostRuntime::new(platform.clone(), config, test_spawner());
+        futures::executor::block_on(runtime.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let keys = RemoteMessage {
+            message_id: "k1".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::PurseKeysRequest(PurseKeysRequest {
+                product_id: "CardClash.dot".to_string(),
+                start: 1,
+                count: 3,
+            })),
+        };
+        let SsoRequestOutcome::Response(response) =
+            futures::executor::block_on(runtime.answer_sso_request(keys))
+        else {
+            panic!("expected a response outcome");
+        };
+        let RemoteMessageData::V1(v1::RemoteMessage::PurseKeysResponse(payload)) = response.data
+        else {
+            panic!("expected a purse keys response payload");
+        };
+        let expected: Vec<[u8; 32]> = (1..4)
+            .map(|index| derive_purse_public_key(&ENTROPY, "cardclash.dot", index).unwrap())
+            .collect();
+        assert_eq!(payload.payload, Ok(expected));
+
+        let too_many = RemoteMessage {
+            message_id: "k2".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::PurseKeysRequest(PurseKeysRequest {
+                product_id: "cardclash.dot".to_string(),
+                start: 990,
+                count: 20,
+            })),
+        };
+        let SsoRequestOutcome::Response(response) =
+            futures::executor::block_on(runtime.answer_sso_request(too_many))
+        else {
+            panic!("expected a response outcome");
+        };
+        let RemoteMessageData::V1(v1::RemoteMessage::PurseKeysResponse(payload)) = response.data
+        else {
+            panic!("expected a purse keys response payload");
+        };
+        assert!(payload.payload.is_err(), "past the purse ceiling");
+
+        let sign = RemoteMessage {
+            message_id: "s1".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::PurseSignRequest(PurseSignRequest {
+                from_product_id: "12345".to_string(),
+                from_index: 0,
+                instance: 34,
+                state_nonce: 3,
+                to: [0x33; 32],
+            })),
+        };
+        let SsoRequestOutcome::Response(response) =
+            futures::executor::block_on(runtime.answer_sso_request(sign))
+        else {
+            panic!("expected a response outcome");
+        };
+        let RemoteMessageData::V1(v1::RemoteMessage::PurseSignResponse(payload)) = response.data
+        else {
+            panic!("expected a purse sign response payload");
+        };
+        assert!(payload.payload.is_err(), "a numeric purse id is no purse");
+        assert!(
+            platform
+                .scarcity_transfer_reviews
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "nothing reached the consent sheet"
+        );
+    }
 }

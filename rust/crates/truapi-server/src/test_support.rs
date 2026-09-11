@@ -30,8 +30,8 @@ use truapi_platform::{
     JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
     Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
     PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
-    ProductSubtreeReview, ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    ProductSubtreeReview, ResourceAllocationReview, ScarcityTransferReview, SignVrfReview,
+    StatementStoreProductSignReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -92,6 +92,8 @@ pub(crate) struct StubPlatform {
     /// pre-consent behavior where a cold own-account resolve was not gated.
     pub(crate) product_subtree_denied: bool,
     pub(crate) product_subtree_reviews: Arc<Mutex<Vec<ProductSubtreeReview>>>,
+    pub(crate) scarcity_transfer_denied: bool,
+    pub(crate) scarcity_transfer_reviews: Arc<Mutex<Vec<ScarcityTransferReview>>>,
     pub(crate) identity_disclosure_confirmed: bool,
     pub(crate) identity_disclosure_error: Option<&'static str>,
     pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
@@ -1582,10 +1584,16 @@ impl UserConfirmation for StubPlatform {
                     .push(review);
                 (None, !self.product_subtree_denied)
             }
-            // The pocket engine is not wired yet; approve so pocket tests can
-            // exercise the paths that follow consent.
+            UserConfirmationReview::ScarcityTransfer(review) => {
+                self.scarcity_transfer_reviews
+                    .lock()
+                    .expect("scarcity transfer review list mutex poisoned")
+                    .push(review);
+                (None, !self.scarcity_transfer_denied)
+            }
+            // Grants are approved so pocket tests can exercise the paths that
+            // follow consent.
             UserConfirmationReview::ScarcityAccess(_)
-            | UserConfirmationReview::ScarcityTransfer(_)
             | UserConfirmationReview::ScarcityReceiveFor(_) => (None, true),
         };
         if let Some(reason) = error {

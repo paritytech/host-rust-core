@@ -17,6 +17,7 @@ use crate::host_logic::extrinsic::{Sr25519Signer, v4_signer_digest};
 use crate::host_logic::pocket::{
     derive_purse_keypair, derive_purse_public_key, normalize_purse_product_id,
 };
+use crate::host_logic::sso::messages::{PurseSignRequest, PurseSignature};
 use crate::runtime::authority::AuthoritySession;
 use crate::runtime::statement_allowance::extension::{ChainState, Era};
 use subxt::tx::Signer;
@@ -75,6 +76,50 @@ impl fmt::Debug for SignedTransfer {
             .field("era_block_hash", &hex::encode(self.era_block_hash))
             .field("signature", &hex::encode(self.signature))
             .finish()
+    }
+}
+
+impl From<PurseSignRequest> for PurseTransfer {
+    fn from(request: PurseSignRequest) -> Self {
+        Self {
+            from_product_id: request.from_product_id,
+            from_index: request.from_index,
+            instance: request.instance,
+            state_nonce: request.state_nonce,
+            to: request.to,
+        }
+    }
+}
+
+impl From<PurseTransfer> for PurseSignRequest {
+    fn from(transfer: PurseTransfer) -> Self {
+        Self {
+            from_product_id: transfer.from_product_id,
+            from_index: transfer.from_index,
+            instance: transfer.instance,
+            state_nonce: transfer.state_nonce,
+            to: transfer.to,
+        }
+    }
+}
+
+impl From<PurseSignature> for SignedTransfer {
+    fn from(signature: PurseSignature) -> Self {
+        Self {
+            era_block_number: signature.era_block_number,
+            era_block_hash: signature.era_block_hash,
+            signature: signature.signature,
+        }
+    }
+}
+
+impl From<SignedTransfer> for PurseSignature {
+    fn from(signed: SignedTransfer) -> Self {
+        Self {
+            era_block_number: signed.era_block_number,
+            era_block_hash: signed.era_block_hash,
+            signature: signed.signature,
+        }
     }
 }
 

@@ -22,16 +22,18 @@ use crate::host_logic::sso::messages::{
     CreateAccountProofResponse, CreateTransactionLegacyPayload, CreateTransactionPayload,
     CreateTransactionRequest, CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest,
     GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy, ProductRequest,
-    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
-    ResourceAllocationRequest, ResourceAllocationResponse, RingVrfSignResponse,
-    SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
-    SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
+    ProductSubtreeRequest, ProductSubtreeResponse, PurseAllocateRequest, PurseAllocateResponse,
+    PurseKeysRequest, PurseKeysResponse, PurseSignRequest, PurseSignResponse, PurseSignature,
+    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse,
+    RingVrfSignResponse, SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse,
+    SignRequest, SignResponse, SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
 };
 use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::runtime::authority::{
     AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
+use crate::runtime::scarcity::keys::PurseTransfer;
 use crate::runtime::sso_service::{SsoReply, SsoRequestContext};
 
 /// SSO handlers served by a locally activated [`SigningHost`].
@@ -440,6 +442,64 @@ impl SigningHostSsoService {
         self.signing_host
             .product_subtree_public_key(&cx.call, &cx.session, request.product_id)
             .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Consent-free purse public keys for the paired host's pocket scans.
+    async fn purse_keys(
+        &self,
+        cx: &SsoRequestContext,
+        request: PurseKeysRequest,
+    ) -> PurseKeysResponse {
+        self.signing_host
+            .purse_public_keys(
+                &cx.session,
+                &request.product_id,
+                request.start,
+                request.count,
+            )
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Consent-free receive-key allocation; only this host's store allocates,
+    /// so paired hosts never hand out the same key.
+    async fn purse_allocate(
+        &self,
+        cx: &SsoRequestContext,
+        request: PurseAllocateRequest,
+    ) -> PurseAllocateResponse {
+        self.signing_host
+            .purse_allocate(
+                &cx.session,
+                &request.target_product_id,
+                &request.requested_by,
+                &request.idempotency_key,
+            )
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Show the move as this host reads it from the chain, refuse if the
+    /// request disagrees with the chain, then anchor the era and sign with the
+    /// purse key.
+    async fn purse_sign(
+        &self,
+        cx: &SsoRequestContext,
+        request: PurseSignRequest,
+    ) -> PurseSignResponse {
+        let transfer = PurseTransfer::from(request);
+        let review = self
+            .signing_host
+            .purse_transfer_review(&cx.session, &transfer)
+            .await
+            .map_err(|err| err.to_string())?;
+        self.confirm(UserConfirmationReview::ScarcityTransfer(review))
+            .await?;
+        self.signing_host
+            .purse_sign_reviewed(&cx.session, transfer)
+            .await
+            .map(PurseSignature::from)
             .map_err(|err| err.to_string())
     }
 

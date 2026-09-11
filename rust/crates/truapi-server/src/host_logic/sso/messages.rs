@@ -292,6 +292,72 @@ pub struct ProductSubtreeRequest {
 /// Account Holder response carrying a product subtree public key.
 pub type ProductSubtreeResponse = Result<[u8; 32], String>;
 
+/// Consent-free request for the public keys at `start..start + count` in
+/// `product_id`'s NFT purse. Every purse junction is hard, so a paired host
+/// cannot derive them itself.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PurseKeysRequest {
+    /// Product whose purse is being read.
+    pub product_id: String,
+    /// First derivation index wanted.
+    pub start: u32,
+    /// Number of consecutive indices wanted.
+    pub count: u32,
+}
+
+/// Account Holder response carrying purse public keys in index order.
+pub type PurseKeysResponse = Result<Vec<[u8; 32]>, String>;
+
+/// Consent-free request to allocate, or replay, the next receive key in
+/// `target_product_id`'s purse for `requested_by`. Only the Account Holder
+/// allocates, so paired hosts never hand out the same key.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PurseAllocateRequest {
+    /// Purse the key is allocated in.
+    pub target_product_id: String,
+    /// Product that asked for it.
+    pub requested_by: String,
+    /// Caller-chosen replay key; the same key returns the same index.
+    pub idempotency_key: String,
+}
+
+/// Account Holder response carrying the allocated index and its public key.
+pub type PurseAllocateResponse = Result<(u32, [u8; 32]), String>;
+
+/// Ask the Account Holder to show and sign one NFT holder transfer with a
+/// purse key. The move is described by what it does; the Account Holder
+/// rebuilds the transaction itself, refuses if the chain disagrees, and
+/// anchors the mortal era after consent.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PurseSignRequest {
+    /// Purse the item is leaving.
+    pub from_product_id: String,
+    /// Index of the holding key within that purse.
+    pub from_index: u32,
+    /// Instance being moved, as the requester read it.
+    pub instance: u64,
+    /// Ownership-state revision the authorization names, as the requester
+    /// read it.
+    pub state_nonce: u64,
+    /// Destination purse key.
+    pub to: [u8; 32],
+}
+
+/// A purse key's signature over a transfer and the era anchor it was made
+/// under; the requester rebuilds the same transaction from the anchor.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PurseSignature {
+    /// Block number the mortal era is anchored to.
+    pub era_block_number: u32,
+    /// Hash of that block.
+    pub era_block_hash: [u8; 32],
+    /// sr25519 signature over the V4 signer digest.
+    pub signature: [u8; 64],
+}
+
+/// Account Holder response to [`PurseSignRequest`].
+pub type PurseSignResponse = Result<PurseSignature, String>;
+
 /// Request sent when a product asks the signing host to create a transaction
 /// for a product-derived account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -945,6 +1011,119 @@ mod tests {
             Some(Response {
                 responding_to: "request".to_string(),
                 payload: Ok([0xAB; 32]),
+            })
+        );
+    }
+
+    /// The purse requests sit at indices 24..=29 and encode their fields in
+    /// declaration order; the responses are request-selected like every other.
+    #[test]
+    fn purse_messages_match_the_pinned_wire_indices() {
+        let keys = RemoteMessage::request(
+            "request".to_string(),
+            PurseKeysRequest {
+                product_id: "cardclash.dot".to_string(),
+                start: 0,
+                count: 10,
+            },
+        );
+        assert_eq!(
+            hex::encode(keys.encode()),
+            "1c726571756573740018".to_string()
+                + "34"
+                + &hex::encode("cardclash.dot")
+                + "00000000"
+                + "0a000000"
+        );
+        let keys_response = RemoteMessage {
+            message_id: "response".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::PurseKeysResponse(Response {
+                responding_to: "request".to_string(),
+                payload: Ok(vec![[0xAB; 32]]),
+            })),
+        };
+        assert_eq!(
+            hex::encode(keys_response.encode()),
+            format!(
+                "20726573706f6e736500191c726571756573740004{}",
+                "ab".repeat(32)
+            )
+        );
+        let RemoteMessageData::V1(data) = keys_response.data;
+        assert_eq!(
+            PurseKeysRequest::response_from_message(data),
+            Some(Response {
+                responding_to: "request".to_string(),
+                payload: Ok(vec![[0xAB; 32]]),
+            })
+        );
+
+        let allocate = RemoteMessage::request(
+            "request".to_string(),
+            PurseAllocateRequest {
+                target_product_id: "cardclash.dot".to_string(),
+                requested_by: "console.dot".to_string(),
+                idempotency_key: "mint-1".to_string(),
+            },
+        );
+        assert_eq!(
+            hex::encode(allocate.encode()),
+            "1c72657175657374001a".to_string()
+                + "34"
+                + &hex::encode("cardclash.dot")
+                + "2c"
+                + &hex::encode("console.dot")
+                + "18"
+                + &hex::encode("mint-1")
+        );
+        let allocate_response = v1::RemoteMessage::PurseAllocateResponse(Response {
+            responding_to: "request".to_string(),
+            payload: Ok((3, [0xCD; 32])),
+        });
+        assert_eq!(allocate_response.encode()[0], 0x1b);
+        assert_eq!(
+            PurseAllocateRequest::response_from_message(allocate_response),
+            Some(Response {
+                responding_to: "request".to_string(),
+                payload: Ok((3, [0xCD; 32])),
+            })
+        );
+
+        let sign = RemoteMessage::request(
+            "request".to_string(),
+            PurseSignRequest {
+                from_product_id: "console.dot".to_string(),
+                from_index: 2,
+                instance: 34,
+                state_nonce: 3,
+                to: [0x33; 32],
+            },
+        );
+        assert_eq!(
+            hex::encode(sign.encode()),
+            "1c72657175657374001c".to_string()
+                + "2c"
+                + &hex::encode("console.dot")
+                + "02000000"
+                + "2200000000000000"
+                + "0300000000000000"
+                + &"33".repeat(32)
+        );
+        let signature = PurseSignature {
+            era_block_number: 1000,
+            era_block_hash: [0x22; 32],
+            signature: [0x44; 64],
+        };
+        let sign_response = v1::RemoteMessage::PurseSignResponse(Response {
+            responding_to: "request".to_string(),
+            payload: Ok(signature.clone()),
+        });
+        assert_eq!(sign_response.encode()[0], 0x1d);
+        assert_eq!(
+            PurseSignRequest::response_from_message(sign_response),
+            Some(Response {
+                responding_to: "request".to_string(),
+                payload: Ok(signature),
             })
         );
     }
