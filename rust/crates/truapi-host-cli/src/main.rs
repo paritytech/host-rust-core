@@ -81,6 +81,7 @@ const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 /// Deeplink scheme advertised by the pairing host.
 const DEEPLINK_SCHEME: &str = "polkadotapp";
 const LOG_LEVEL_FILE: &str = "log-level";
+const STATE_VERSION: &str = "v2";
 
 #[derive(Parser)]
 #[command(
@@ -338,7 +339,7 @@ struct PairingHostArgs {
     /// private per-process Unix-domain socket.
     #[arg(long)]
     frame_listen: Option<SocketAddr>,
-    /// Root directory for CLI-managed host state.
+    /// Base directory; CLI-managed state lives in its v2 subdirectory.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
     /// Network preset that supplies all RPC/backend/genesis config.
@@ -378,7 +379,7 @@ struct DevArgs {
     /// so the connected product can sign anything: testnet keys only.
     #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
     mnemonic: Option<String>,
-    /// Root directory for CLI-managed account and host state.
+    /// Base directory; CLI-managed state lives in its v2 subdirectory.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
     /// Development command to run once the host is ready, after `--`.
@@ -421,7 +422,7 @@ struct SigningHostArgs {
     /// alongside its lite username, to claim later as a full person.
     #[arg(long = "reserved-username")]
     reserved_username: Option<String>,
-    /// Root directory for CLI-managed account and host state.
+    /// Base directory; CLI-managed state lives in its v2 subdirectory.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
     /// Network preset that supplies all RPC/backend/genesis config.
@@ -456,13 +457,19 @@ enum SigningHostAction {
 }
 
 fn command_base_path(command: &Command) -> PathBuf {
-    match command {
+    let base_path = match command {
         Command::PairingHost(args) => args.base_path.clone(),
         Command::Dev(args) => args.base_path.clone(),
         Command::SigningHost(args) => args.base_path.clone(),
         _ => None,
-    }
-    .unwrap_or_else(default_base_path)
+    };
+    state_base_path(base_path)
+}
+
+fn state_base_path(base_path: Option<PathBuf>) -> PathBuf {
+    base_path
+        .unwrap_or_else(default_base_path)
+        .join(STATE_VERSION)
 }
 
 #[tokio::main]
@@ -545,7 +552,7 @@ async fn dispatch(
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
                 .to_entropy();
-            attestation::check_identity(network.config().asset_hub_ws, &entropy).await
+            attestation::check_identity(network.config(), &entropy).await
         }
         Command::RegisterName {
             mnemonic,
@@ -612,7 +619,7 @@ async fn run_pgas_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.network_suffix);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; a claim has to credit an account");
@@ -775,7 +782,7 @@ async fn run_alloc_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.network_suffix);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; the all-zero default is read-only");
@@ -1026,7 +1033,7 @@ async fn run_pairing_host(
         );
     }
     let network = args.network.config();
-    let base_path = args.base_path.unwrap_or_else(default_base_path);
+    let base_path = state_base_path(args.base_path);
     let product =
         frame_server::ProductSelection::new(args.product_id, args.execution_kind.context())?;
     let product_id = product.current();
@@ -1139,7 +1146,7 @@ async fn run_signing_host(
     )?;
     let product_id = product.current();
     let network = args.network.config();
-    let base_path = args.base_path.clone().unwrap_or_else(default_base_path);
+    let base_path = state_base_path(args.base_path.clone());
     let session_catalog = SessionCatalog::new(base_path.clone(), network.id)?;
     let initial_session_name = initial_session_name(&args, &session_catalog);
     if normalized(args.mnemonic.clone()).is_none() {
@@ -1427,9 +1434,7 @@ async fn start_signing_host(
             reserved_username: None,
         })
         .await?;
-        match attestation::registered_lite_username(network.asset_hub_ws, &explicit_signer.entropy)
-            .await
-        {
+        match attestation::registered_lite_username(network, &explicit_signer.entropy).await {
             Ok(user_id) => explicit_signer.lite_username = Some(user_id),
             Err(error) => {
                 tracing::warn!(%error, "explicit signer has no resolvable dotNS username")
@@ -1530,6 +1535,7 @@ fn build_signing_runtime(
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.network_suffix.to_string(),
     )
     .context("invalid signing host config")?;
     let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
@@ -2421,7 +2427,7 @@ async fn respond_to_deeplink(session: &mut SigningHostSession, deeplink: String)
         .await
         .map_err(|err| anyhow::anyhow!("pairing failed: {}", err.reason))?;
     if exit == ResponderExit::PeerDisconnected && session.profile.is_some() {
-        remove_paired_host_locally(session, host).await?;
+        remove_paired_host_locally(session, &host.statement_account_id()).await?;
     }
     terminal_ui::output_event(SystemEvent::SigningHostExit {
         outcome: format!("{exit:?}"),
@@ -2488,7 +2494,7 @@ async fn disconnect_and_remove_paired_host(
             )
         }
     };
-    let paired_host = remove_paired_host_locally(session, paired_host).await?;
+    remove_paired_host_locally(session, statement_account_id).await?;
     Ok(PairedHostRemoval {
         paired_host,
         notification_failure,
@@ -2506,20 +2512,19 @@ fn forced_removal_warning(reason: &str) -> (&'static str, String) {
 
 async fn remove_paired_host_locally(
     session: &mut SigningHostSession,
-    paired_host: PairedHost,
-) -> Result<PairedHost> {
-    let statement_account_id = paired_host.statement_account_id();
+    statement_account_id: &[u8; 32],
+) -> Result<()> {
     let profile = session
         .profile
         .as_ref()
         .context("paired-device management is unavailable when launched with --mnemonic")?;
     session
         .catalog
-        .remove_paired_host(profile, &statement_account_id)?;
-    session.responders.remove(&statement_account_id);
+        .remove_paired_host(profile, statement_account_id)?;
+    session.responders.remove(statement_account_id);
     if let Err(error) = session
         .runtime
-        .untrack_statement_renewal_account(&statement_account_id)
+        .untrack_statement_renewal_account(statement_account_id)
         .await
     {
         tracing::warn!(
@@ -2527,7 +2532,7 @@ async fn remove_paired_host_locally(
             "paired device was removed, but its allowance renewal could not be removed"
         );
     }
-    Ok(paired_host)
+    Ok(())
 }
 
 fn validate_session_clear(
@@ -4280,7 +4285,7 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
 
             assert_eq!(
                 command_base_path(&cli.command),
-                PathBuf::from("custom-state")
+                PathBuf::from("custom-state/v2")
             );
         }
     }

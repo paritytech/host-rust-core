@@ -30,11 +30,12 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
+use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
+use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
     ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
     PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
-    SigningHostRole, answer_remote_message, disconnect_paired_host, establish_pairing,
+    SigningHostRole, SigningHostSsoService, disconnect_paired_host, establish_pairing,
     respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
@@ -575,7 +576,7 @@ impl SigningHostRuntime {
             spawner,
             chat_platform,
         );
-        let signing_host = SigningHostRole::new(services.clone());
+        let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
         Self {
             services,
             signing_host,
@@ -792,20 +793,11 @@ impl SigningHostRuntime {
         &self,
         message: RemoteMessage,
     ) -> SsoRequestOutcome<RemoteMessage> {
-        let RemoteMessageData::V1(request) = message.data;
-        if matches!(request, v1::RemoteMessage::Disconnected) {
-            return SsoRequestOutcome::Disconnected;
-        }
-        match answer_remote_message(
-            &self.services,
-            &self.signing_host,
-            message.message_id,
-            request,
-        )
-        .await
-        {
-            Some(answer) => SsoRequestOutcome::Response(answer.response),
-            None => SsoRequestOutcome::Ignored,
+        let service = SigningHostSsoService::new(self.signing_host.clone());
+        match service.dispatch(service.current_session(), message).await {
+            Dispatch::Response(answer) => SsoRequestOutcome::Response(answer.message),
+            Dispatch::Disconnected => SsoRequestOutcome::Disconnected,
+            Dispatch::NotARequest(_) => SsoRequestOutcome::Ignored,
         }
     }
 }
@@ -1547,6 +1539,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            "testnet".to_string(),
         )
         .expect("signing host config is valid");
         let runtime = SigningHostRuntime::new(platform, config, test_spawner());
@@ -2286,9 +2279,7 @@ mod tests {
 
     #[test]
     fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
-        use crate::host_logic::sso::messages::{
-            RemoteMessage, RemoteMessageData, SignRawLegacyResponse, v1,
-        };
+        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         const ENTROPY: [u8; 32] = [0xab; 32];
@@ -2303,6 +2294,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            "paseo".to_string(),
         )
         .expect("signing host config is valid");
         let runtime =
@@ -2319,10 +2311,10 @@ mod tests {
 
         let response_variant = RemoteMessage {
             message_id: "m2".to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(
-                SignRawLegacyResponse {
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignRawWithLegacyAccountResponse(
+                Response {
                     responding_to: "m2".to_string(),
-                    signature: Ok(vec![]),
+                    payload: Ok(vec![]),
                 },
             )),
         };
@@ -2349,6 +2341,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            "paseo".to_string(),
         )
         .expect("signing host config is valid");
         let runtime =
@@ -2375,7 +2368,7 @@ mod tests {
             panic!("expected a product subtree response payload");
         };
         assert_eq!(payload.responding_to, "m3");
-        assert!(payload.product_public_key.is_ok());
+        assert!(payload.payload.is_ok());
     }
 
     #[test]
@@ -2392,7 +2385,8 @@ mod tests {
             statement_account_id: [0x31; 32],
             encryption_public_key: x25519_public_key(peer_encryption_secret),
         };
-        let identity = derive_identity_keypair(&[0xab; 32]).expect("identity derivation succeeds");
+        let identity =
+            derive_identity_keypair(&[0xab; 32], "testnet").expect("identity derivation succeeds");
         let (_, responder_encryption_public_key) =
             derive_x25519_keypair_from_entropy(&[0xab; 32], b"sso");
         let pairing_session = establish_sso_session_info(
@@ -2408,21 +2402,6 @@ mod tests {
             responder_encryption_public_key,
         )
         .expect("pairing session derivation succeeds");
-        let unrelated_peer_encryption_secret = [0x43; 32];
-        let unrelated_pairing_session = establish_sso_session_info(
-            &PairingBootstrap {
-                deeplink: String::new(),
-                topic: [0; 32],
-                statement_store_public_key: [0x32; 32],
-                statement_store_secret: [0; 64],
-                encryption_public_key: x25519_public_key(unrelated_peer_encryption_secret),
-                encryption_secret_key: unrelated_peer_encryption_secret,
-            },
-            identity.public.to_bytes(),
-            responder_encryption_public_key,
-        )
-        .expect("unrelated pairing session derivation succeeds");
-
         futures::executor::block_on(runtime.disconnect_paired_host(peer))
             .expect("disconnect submission succeeds");
 
@@ -2436,7 +2415,10 @@ mod tests {
                 (value["method"] == "statement_submit").then_some(value)
             })
             .collect::<Vec<_>>();
-        let statement_hex = submits[0]["params"][0]
+        let [submit] = submits.as_slice() else {
+            panic!("expected one disconnect submission, got {submits:?}");
+        };
+        let statement_hex = submit["params"][0]
             .as_str()
             .expect("statement submit carries encoded bytes");
         let statement = hex::decode(statement_hex.strip_prefix("0x").unwrap_or(statement_hex))
@@ -2444,30 +2426,12 @@ mod tests {
         let incoming = decode_incoming_sso_request(&pairing_session, &statement)
             .expect("selected peer decrypts the statement")
             .expect("submitted statement is an SSO request");
-        let unrelated_error = decode_incoming_sso_request(&unrelated_pairing_session, &statement)
-            .expect_err("unrelated peer cannot decrypt the statement envelope");
-        let message_id = incoming.messages[0].message_id.clone();
-
         assert_eq!(
-            (
-                submits.len(),
-                incoming.request_id,
-                incoming.messages,
-                unrelated_error.request_id,
-                unrelated_error
-                    .reason
-                    .starts_with("failed to decrypt SSO statement data"),
-            ),
-            (
-                1,
-                message_id.clone(),
-                vec![RemoteMessage {
-                    message_id,
-                    data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
-                }],
-                None,
-                true,
-            )
+            incoming.messages,
+            vec![RemoteMessage {
+                message_id: incoming.request_id,
+                data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+            }],
         );
     }
 

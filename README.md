@@ -1,21 +1,22 @@
-<div align="center">
-
 # TrUAPI
 
-> The following is a prototype, reference implementation, and proof-of-concept. This open source code is provided for research, experimentation, and developer education only. This code has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. Use at your own risk.
+TrUAPI (Triangle User-Agent Programming Interface) is the API surface that hosts like the Polkadot Desktop Browser expose to the products that run inside them. One Rust crate defines the contract, a code generator produces a typed TypeScript client, and hosts and products implement against the same shared types.
 
-_The protocol that lets product webviews talk to their Polkadot host._
+> [!WARNING]
+> The following is a prototype, reference implementation, and proof-of-concept. This open source code is provided for research, experimentation, and developer education only. This code has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. Use at your own risk.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/paritytech/host-rust-core/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/host-rust-core/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/host-rust-core)
 [![Playground](https://img.shields.io/badge/playground-live-success?style=flat-square)](https://truapi-playground.paseo.li/)
 
-</div>
+
+## Documentation
+
+- [TrUAPI reference](https://docs.polkadot.com/reference/apps/protocol/truapi/)
+- [Rust API reference](https://paritytech.github.io/host-rust-core/)
 
 <!-- TODO: Add hero screenshot of the playground showing methods + a live call/response. Capture with a screenshot tool, save to `assets/screenshots/playground.png`, then place it here. -->
-
-TrUAPI (Triangle User-Agent Programming Interface) is the API surface that hosts like the Polkadot Desktop Browser expose to the products that run inside them. One Rust crate defines the contract, a code generator produces a typed TypeScript client, and hosts and products implement against the same shared types.
 
 ## Try it
 
@@ -58,6 +59,9 @@ const result = await truapi.accountManagement.accountGet({
 });
 ```
 
+The transport retries iframe bootstrap until the host channel arrives and rejects unanswered
+requests after a bounded deadline; pass `requestTimeoutMs` to `createTransport` to override it.
+
 See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full client reference.
 
 ## Repository layout
@@ -66,7 +70,7 @@ See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full 
 rust/crates/
   truapi/                Rust traits, versioned envelopes, and latest payload re-exports
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
-  truapi-macros/         #[wire(id = N)] proc-macro
+  truapi-macros/         TrUAPI wire annotations and inter-host SSO proc macros
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
@@ -86,17 +90,22 @@ android/truapi-provider/   truapi-provider-android: chain transport AAR (binding
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
 playground/                Interactive Next.js playground (truapi-playground dotNS label)
+hosts/ios/                 iOS host app; resolves the core from this tree
+hosts/android/             Android host app
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
 
+See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
+
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
 manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
-dependency. Its `scripts/rebuild.sh` regenerates the committed bindings and
-container bundle (`make xcframework` + `make uniffi`); see
+dependency. The UniFFI bindings and the container bundle are gitignored build
+outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
+(`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
@@ -106,6 +115,10 @@ returning a typed outcome: response bytes to post back, a disconnect marker, or
 ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
+See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
+for typed handlers, canonical resource types, and consent bound to the signing session.
+Product and SSO signing share canonical payloads and the one-byte `OptionBool`
+encoding for `with_signed_transaction`.
 
 ### JS Host SDKs
 
@@ -130,11 +143,18 @@ dependency on the crate:
 - [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
   browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
 - [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
-  `Package.swift`, an xcframework plus committed Swift bindings, built by
+  `Package.swift`, an xcframework plus generated Swift bindings, built by
   `make provider-ios`.
 - [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
   Kotlin bindings and the cdylib per ABI, built by
   `make provider-android-publish-local`.
+
+A light client that starts cold warp syncs from the checkpoint in the chain spec, so
+every artifact resumes from stored finalized state instead, including the relay a
+parachain syncs through. The provider owns when a blob is read and written; the
+host owns where the bytes live. The crate stores nothing itself: a host implements
+`StorageClient` over storage it already owns, on web and native alike, so it keeps
+control of quota and of whether the bytes are backed up or encrypted.
 
 ## How it works
 
@@ -164,6 +184,10 @@ The native `truapi-host` utility runs pairing and signing hosts against the real
 SSO transport for local end-to-end work. See [Install the CLI](#install-the-cli)
 to get it, and the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md)
 for its commands and controls.
+
+CLI reserved identities follow the selected network's dotNS suffix. Old account
+and pairing stores are left unused as the CLI starts fresh under its
+[versioned state directory](rust/crates/truapi-host-cli/README.md#state-directory).
 
 `scripts/battery.sh` drives that CLI from source over every code-generated
 example and writes both committed compatibility reports:

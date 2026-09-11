@@ -469,7 +469,7 @@ mod tests {
             [0xbb; 32],
             test_spawner(),
         );
-        let signing_host = SigningHostRole::new(services.clone());
+        let signing_host = SigningHostRole::new(services.clone(), "paseo".to_string());
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let host = ProductRuntimeHost::from_services(
@@ -571,7 +571,7 @@ mod tests {
                     message_id: "wallet-proof-auth-1".to_string(),
                     data: crate::host_logic::sso::messages::RemoteMessageData::V1(
                         crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse(
-                            crate::host_logic::sso::messages::ResourceAllocationResponse {
+                            crate::host_logic::sso::messages::Response {
                                 responding_to: "proof-auth-1".to_string(),
                                 payload: Ok(vec![
                                     crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
@@ -622,7 +622,7 @@ mod tests {
         );
         assert_eq!(
             request.resources,
-            vec![crate::host_logic::sso::messages::SsoAllocatableResource::StatementStoreAllowance]
+            vec![truapi::latest::AllocatableResource::StatementStoreAllowance]
         );
     }
 

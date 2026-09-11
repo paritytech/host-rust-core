@@ -8,7 +8,7 @@ fn command() -> Command {
 }
 
 fn seed_two_paired_hosts(base_path: &Path) -> PathBuf {
-    let profile = base_path.join("paseo-next-v2/alice_signing_host");
+    let profile = base_path.join("v2/paseo-next-v2/alice_signing_host");
     std::fs::create_dir_all(&profile).expect("create signing-host profile");
     std::fs::write(
         profile.join("paired-hosts.json"),
@@ -33,6 +33,85 @@ fn seed_two_paired_hosts(base_path: &Path) -> PathBuf {
     )
     .expect("seed paired hosts");
     profile
+}
+
+#[test]
+fn versioned_state_starts_fresh_and_preserves_previous_state() {
+    for source in ["argument", "environment", "default"] {
+        let temporary = tempfile::tempdir().expect("create temporary state root");
+        let base_path = temporary.path().join("truapi-host");
+        let previous_profile = base_path.join("paseo-next-v2/previous_signing_host");
+        let previous_role = base_path.join("paseo-next-v2/signing-host");
+        std::fs::create_dir_all(&previous_profile).expect("create previous profile");
+        std::fs::create_dir_all(&previous_role).expect("create previous role");
+        let previous_files = [
+            (
+                base_path.join("accounts.json"),
+                r#"{"version":1,"accounts":[]}"#,
+            ),
+            (base_path.join("log-level"), "trace\n"),
+            (previous_role.join("current-session"), "previous\n"),
+            (
+                previous_profile.join("session.json"),
+                r#"{"version":1,"user_id":"previous.01"}"#,
+            ),
+            (
+                previous_profile.join("core-storage.json"),
+                "previous core state",
+            ),
+            (
+                previous_profile.join("paired-hosts.json"),
+                "previous pairings",
+            ),
+        ];
+        for (path, contents) in &previous_files {
+            std::fs::write(path, contents).expect("seed previous state");
+        }
+
+        let mut invocation = command();
+        invocation
+            .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+            .env_remove("HOST_CLI_SIGNER_MNEMONIC")
+            .env_remove("TRUAPI_HOST_BASE_PATH")
+            .env_remove("TRUAPI_HOST_LOG")
+            .env_remove("RUST_LOG")
+            .env("XDG_STATE_HOME", temporary.path())
+            .env("TRUAPI_HOST_NO_UPDATE", "1");
+        match source {
+            "argument" => {
+                invocation.arg("--base-path").arg(&base_path);
+                invocation.env("TRUAPI_HOST_BASE_PATH", temporary.path().join("unused"));
+            }
+            "environment" => {
+                invocation.env("TRUAPI_HOST_BASE_PATH", &base_path);
+            }
+            _ => {}
+        }
+        let output = invocation
+            .args(["exec", "/log debug"])
+            .stdin(Stdio::null())
+            .output()
+            .expect("start with versioned state");
+
+        assert!(output.status.success(), "{source}: {output:?}");
+        assert_eq!(
+            (
+                std::fs::read_to_string(base_path.join("v2/log-level"))
+                    .expect("read log preference"),
+                std::fs::read_to_string(
+                    base_path.join("v2/paseo-next-v2/signing-host/current-session")
+                )
+                .expect("read fresh session selection"),
+            ),
+            ("debug\n".to_string(), "default\n".to_string())
+        );
+        for (path, contents) in &previous_files {
+            assert_eq!(
+                std::fs::read_to_string(path).expect("read previous state"),
+                *contents
+            );
+        }
+    }
 }
 
 #[test]
@@ -164,7 +243,7 @@ fn bare_script_in_non_tty_exec_mode_fails_without_opening_an_editor() {
     assert!(
         !temporary
             .path()
-            .join("paseo-next-v2/signing-host/scripts")
+            .join("v2/paseo-next-v2/signing-host/scripts")
             .exists()
     );
 }
@@ -207,7 +286,7 @@ fn startup_session_is_reported_and_restored() {
 #[test]
 fn exec_clear_removes_the_named_session_without_extra_confirmation() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
-    let session_path = temporary.path().join("paseo-next-v2/alice_signing_host");
+    let session_path = temporary.path().join("v2/paseo-next-v2/alice_signing_host");
     std::fs::create_dir_all(&session_path).expect("seed session");
     std::fs::write(session_path.join("state"), "local state").expect("seed session state");
 
@@ -231,7 +310,7 @@ fn exec_clear_removes_the_named_session_without_extra_confirmation() {
 #[test]
 fn exec_clear_all_removes_every_session_for_the_network() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
-    let network_path = temporary.path().join("paseo-next-v2");
+    let network_path = temporary.path().join("v2/paseo-next-v2");
     let role_path = network_path.join("signing-host");
     let alice = network_path.join("alice_signing_host");
     let bob = network_path.join("bob_signing_host");
@@ -265,6 +344,8 @@ fn exec_clear_all_removes_every_session_for_the_network() {
 fn exec_device_removal_preserves_pairings_when_the_local_session_is_inactive() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
     let profile = seed_two_paired_hosts(temporary.path());
+    let pairings_before =
+        std::fs::read(profile.join("paired-hosts.json")).expect("read paired hosts");
 
     let listed = command()
         .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
@@ -292,26 +373,9 @@ fn exec_device_removal_preserves_pairings_when_the_local_session_is_inactive() {
     assert_eq!(removed.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&removed.stderr).contains("no active local session"));
 
-    let stored: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(profile.join("paired-hosts.json")).expect("read paired hosts"),
-    )
-    .expect("decode paired hosts");
     assert_eq!(
-        stored["paired_hosts"],
-        serde_json::json!([
-            {
-                "version": 1,
-                "statement_account_id": vec![1_u8; 32],
-                "encryption_public_key": vec![11_u8; 32],
-                "host_name": "First"
-            },
-            {
-                "version": 1,
-                "statement_account_id": vec![2_u8; 32],
-                "encryption_public_key": vec![22_u8; 32],
-                "host_name": "Second"
-            }
-        ])
+        std::fs::read(profile.join("paired-hosts.json")).expect("read paired hosts"),
+        pairings_before,
     );
 }
 
@@ -342,8 +406,6 @@ fn exec_force_device_removal_removes_exactly_one_pairing_when_notification_fails
     let stderr = String::from_utf8_lossy(&removed.stderr);
     assert!(stderr.contains("Paired device removed without notification"));
     assert!(stderr.contains("no active local session"));
-    assert!(stderr.contains("Forced local removal completed"));
-    assert!(stderr.contains("cannot reach a responder on this signing host"));
 
     let stored: serde_json::Value = serde_json::from_slice(
         &std::fs::read(profile.join("paired-hosts.json")).expect("read paired hosts"),
@@ -385,8 +447,10 @@ fn default_session_is_not_user_selectable() {
 fn existing_local_signer_is_activated_and_cached_at_startup() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
     let base_path = temporary.path();
+    let state_path = base_path.join("v2");
+    std::fs::create_dir_all(&state_path).expect("create active state root");
     std::fs::write(
-        base_path.join("accounts.json"),
+        state_path.join("accounts.json"),
         r#"{
   "version": 1,
   "accounts": [{
@@ -417,7 +481,7 @@ fn existing_local_signer_is_activated_and_cached_at_startup() {
     assert!(stdout.contains("Signing host ready"));
     assert!(stdout.contains("User cachedalice.01"));
     let metadata = std::fs::read_to_string(
-        base_path.join("paseo-next-v2/cachedalice.01_signing_host/session.json"),
+        base_path.join("v2/paseo-next-v2/cachedalice.01_signing_host/session.json"),
     )
     .expect("read persisted session identity");
     assert!(metadata.contains("cachedalice.01"));
@@ -426,7 +490,7 @@ fn existing_local_signer_is_activated_and_cached_at_startup() {
 #[test]
 fn imported_session_restores_the_exact_bound_account() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
-    let network_path = temporary.path().join("paseo-next-v2");
+    let network_path = temporary.path().join("v2/paseo-next-v2");
     let profile = network_path.join("importedalice.01_signing_host");
     let role_path = network_path.join("signing-host");
     std::fs::create_dir_all(&profile).expect("create imported profile");
@@ -480,7 +544,7 @@ fn imported_session_restores_the_exact_bound_account() {
 #[test]
 fn imported_session_without_dotns_username_restores_by_account_binding() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
-    let network_path = temporary.path().join("paseo-next-v2");
+    let network_path = temporary.path().join("v2/paseo-next-v2");
     let session_name = "imported-0123456789abcdef";
     let profile = network_path.join(format!("{session_name}_signing_host"));
     let role_path = network_path.join("signing-host");

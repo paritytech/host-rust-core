@@ -15,6 +15,14 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
 
+The shipped WASM is built by `scripts/build-wasm.mjs` with
+`--no-default-features`, so it excludes `WasmSigningHostRuntime`.
+`ProductRuntimeConfig` configures the pairing host and requires no network
+suffix. A custom build enabling the Rust `wasm-signing-host` feature exposes
+the signing constructor, whose configuration requires
+`runtimeConfig.networkSuffix`: the bare TLD (`dot`, `paseo`, or `testnet`)
+matching the People chain and the wallet's onboarding configuration.
+
 ## Bundler requirements
 
 The worker imports the WASM glue by a literal specifier, so every bundler

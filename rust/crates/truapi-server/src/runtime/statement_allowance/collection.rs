@@ -13,7 +13,8 @@ use super::rpc::RpcClient;
 use super::view;
 
 /// A personhood ring collection in the People chain's `Members` pallet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display)]
+#[display("{}", self.metadata_variant())]
 pub enum PersonhoodCollection {
     /// Full personhood, established by proof-of-personhood registration.
     People,
@@ -50,15 +51,6 @@ impl PersonhoodCollection {
         }
     }
 
-    /// The `Resources` constant bounding StatementStore slots per period for
-    /// this collection.
-    pub fn slots_per_period_constant(self) -> &'static str {
-        match self {
-            Self::People => "StmtStoreSlotsPerPeriod",
-            Self::LitePeople => "LiteStmtStoreSlotsPerPeriod",
-        }
-    }
-
     /// The `Resources` view function returning StatementStore slots per period
     /// for this collection.
     pub fn slots_per_period_view(self) -> &'static str {
@@ -78,11 +70,7 @@ impl PersonhoodCollection {
 
     /// Whether this chain exposes a StatementStore slot budget for this collection.
     pub fn is_supported(self, metadata: &Metadata) -> bool {
-        view::supports_resource_u32(
-            metadata,
-            self.slots_per_period_view(),
-            self.slots_per_period_constant(),
-        )
+        view::supports_resource_u32(metadata, self.slots_per_period_view())
     }
 
     /// Max StatementStore slots per period for this collection.
@@ -91,19 +79,7 @@ impl PersonhoodCollection {
         rpc: &RpcClient,
         metadata: &Metadata,
     ) -> Result<u32, StatementAllowanceError> {
-        view::read_resource_u32(
-            rpc,
-            metadata,
-            self.slots_per_period_view(),
-            self.slots_per_period_constant(),
-        )
-        .await
-    }
-}
-
-impl core::fmt::Display for PersonhoodCollection {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.metadata_variant())
+        view::read_resource_u32(rpc, metadata, self.slots_per_period_view()).await
     }
 }
 
@@ -178,19 +154,11 @@ mod tests {
     }
 
     #[test]
-    fn each_collection_names_its_own_variant_slot_constant_and_view() {
+    fn each_collection_names_its_own_variant_and_slot_view() {
         assert_eq!(PersonhoodCollection::People.metadata_variant(), "People");
         assert_eq!(
             PersonhoodCollection::LitePeople.metadata_variant(),
             "LitePeople"
-        );
-        assert_eq!(
-            PersonhoodCollection::People.slots_per_period_constant(),
-            "StmtStoreSlotsPerPeriod",
-        );
-        assert_eq!(
-            PersonhoodCollection::LitePeople.slots_per_period_constant(),
-            "LiteStmtStoreSlotsPerPeriod",
         );
         assert_eq!(
             PersonhoodCollection::People.slots_per_period_view(),

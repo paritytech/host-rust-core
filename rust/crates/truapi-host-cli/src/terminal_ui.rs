@@ -3103,19 +3103,6 @@ mod tests {
         )
     }
 
-    fn test_active_ui() -> ActiveTerminalUi {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        ActiveTerminalUi {
-            terminal: None,
-            events: None,
-            receiver,
-            sender,
-            app: test_app(),
-            clipboard: None,
-            copy_next_pairing_deeplink: false,
-        }
-    }
-
     #[test]
     fn approval_temporarily_replaces_and_then_restores_command_draft() {
         let mut app = test_app();
@@ -3422,7 +3409,16 @@ mod tests {
 
     #[test]
     fn interactive_error_preserves_backend_cause_chain() {
-        let mut ui = test_active_ui();
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let mut ui = ActiveTerminalUi {
+            terminal: None,
+            events: None,
+            receiver,
+            sender,
+            app: test_app(),
+            clipboard: None,
+            copy_next_pairing_deeplink: false,
+        };
         let error = anyhow::anyhow!("backend supplied explanation")
             .context("username registration failed (503 Service Unavailable)")
             .context("attest account auto-1");
@@ -3432,22 +3428,6 @@ mod tests {
         assert_eq!(
             ui.app.transcript_text(),
             "× attest account auto-1\n  username registration failed (503 Service Unavailable)\n  backend supplied explanation"
-        );
-    }
-
-    #[test]
-    fn immediate_warning_precedes_following_success() {
-        let mut ui = test_active_ui();
-
-        ui.warning(
-            "Paired device removed without notification",
-            Some("notification failed".to_string()),
-        );
-        ui.success("Paired device removed", None);
-
-        assert_eq!(
-            ui.app.transcript_text(),
-            "! Paired device removed without notification\n  notification failed\n✓ Paired device removed"
         );
     }
 

@@ -21,6 +21,10 @@ use truapi_server::statement_allowance::{self as alloc, ChainContextCache};
 /// Default People-chain endpoint, kept in step with `network.rs`.
 const DEFAULT_PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";
 
+/// The `paseo-next-v2` preset's `network_suffix`, kept in step with `network.rs`
+/// (the binary crate exposes no library for tests to read it from).
+const DEFAULT_NETWORK_SUFFIX: &str = "paseo";
+
 /// A genesis hash no chain will report, standing in for a host whose configured
 /// constant has gone stale after a testnet wipe.
 const STALE_CONFIGURED_GENESIS: [u8; 32] = [0xff; 32];
@@ -47,6 +51,24 @@ fn current_period() -> u32 {
         .expect("system clock after UNIX epoch")
         .as_secs();
     alloc::slot::current_period(now)
+}
+
+/// The preset's network suffix is what the reserved `uid.<suffix>` and
+/// `peopl.<suffix>` derivations end in, so it has to be the suffix the chain
+/// itself scopes People contexts with, or the CLI derives a person no other
+/// host on this network recognises.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn network_suffix_matches_the_preset() {
+    let rpc = connect().await;
+    let live = alloc::slot::read_network_suffix(&rpc)
+        .await
+        .expect("read the live network suffix");
+    assert_eq!(
+        String::from_utf8(live).expect("network suffix is UTF-8"),
+        DEFAULT_NETWORK_SUFFIX,
+        "the paseo-next-v2 preset's network suffix must match the chain"
+    );
 }
 
 /// The genesis hash signed into allowance extrinsics must be the one the chain

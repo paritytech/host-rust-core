@@ -209,8 +209,8 @@ async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
 
 use truapi_server::host_logic::dotns_gateway::{
     DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, call_bytes32, classify_labels,
-    decode_address, discover_pop_controller, encode_revive_call, label_available, namehash_under,
-    resolve_labels, selector, view_output,
+    decode_address, discover_pop_controller, encode_revive_call, is_dotted_lite_username,
+    is_pop_issued, label_available, namehash_under, resolve_labels, selector, view_output,
 };
 use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
 
@@ -332,9 +332,21 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
         "the settled store label loses its network TLD: {labels:?}"
     );
     assert!(
-        labels.iter().all(|label| !label.contains('.')),
-        "no TLD or subname survives: {labels:?}"
+        labels
+            .iter()
+            .all(|label| !label.contains('.') || is_dotted_lite_username(label)),
+        "no TLD or subname survives (dotted lite names may): {labels:?}"
     );
+    // A dotted survivor must also carry gateway provenance, so a subname under
+    // a digit-only parent cannot pass as a lite name.
+    for label in labels.iter().filter(|label| label.contains('.')) {
+        assert!(
+            is_pop_issued(&mut transport, &controller, label)
+                .await
+                .expect("isPopIssued"),
+            "dotted label {label:?} is not pop-issued"
+        );
+    }
     // The default owner's store holds far more than one `getLabels` page, so
     // this also proves the store is paged rather than read once.
     if std::env::var("LIVE_MINTED_LABEL").is_err() {
@@ -344,7 +356,9 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
             labels.len()
         );
     }
-    let identity = classify_labels(&labels);
+    let identity = classify_labels(&mut transport, &controller, &labels)
+        .await
+        .expect("classify labels");
     assert!(
         identity.lite_username.is_some() || identity.full_username.is_some(),
         "labels classify into a username"

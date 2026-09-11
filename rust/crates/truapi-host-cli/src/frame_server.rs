@@ -764,6 +764,7 @@ mod tests {
             },
             network.people_genesis,
             network.bulletin_genesis,
+            network.network_suffix.to_string(),
         )?;
         let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
         Ok(Arc::new(SigningHostRuntime::new(platform, config, spawner)))

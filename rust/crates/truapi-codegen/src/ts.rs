@@ -2883,6 +2883,7 @@ fn ts_inner_option(ty: &TypeRef) -> Result<String> {
 fn ts_inner_option_with_named(ty: &TypeRef, qualified: bool, mode: NameMode<'_>) -> Result<String> {
     match ty {
         TypeRef::Option(inner) => ts_type_with_named(inner, qualified, mode),
+        TypeRef::Primitive(name) if name == "optionBool" => Ok("boolean".to_string()),
         other => ts_type_with_named(other, qualified, mode),
     }
 }
@@ -2897,7 +2898,8 @@ fn ts_type_qualified_preserve(ty: &TypeRef) -> Result<String> {
 
 fn ts_field_name(name: &str, ty: &TypeRef) -> (String, bool) {
     let camel = to_camel_case(name);
-    let optional = matches!(ty, TypeRef::Option(_));
+    let optional = matches!(ty, TypeRef::Option(_))
+        || matches!(ty, TypeRef::Primitive(name) if name == "optionBool");
     (camel, optional)
 }
 
@@ -3052,6 +3054,19 @@ mod tests {
             types: vec![payload],
             framework_types: Vec::new(),
         }
+    }
+
+    #[test]
+    fn option_bool_fields_are_optional_and_keep_their_compact_codec() {
+        let api = api_with_payload_fields(vec![(
+            "with_signed_transaction",
+            TypeRef::Primitive("optionBool".to_string()),
+        )]);
+
+        let source = generate_types(&api, 1).expect("generate types");
+
+        assert!(source.contains("withSignedTransaction?: boolean;"));
+        assert!(source.contains("withSignedTransaction: S.OptionBool"));
     }
 
     #[test]

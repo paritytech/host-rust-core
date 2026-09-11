@@ -77,24 +77,7 @@ trap cleanup EXIT
 
 wait_for_pairing_pattern() {
   local pattern="$1"
-  local deadline=$((SECONDS + TIMEOUT_SECONDS))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if grep -qE "$pattern" "$PAIRING_LOG"; then
-      return 0
-    fi
-    if ! process_running "$PAIRING_PID"; then
-      echo "pairing host exited before matching $pattern" >&2
-      return 1
-    fi
-    sleep 1
-  done
-  echo "timed out waiting for $pattern in $PAIRING_LOG" >&2
-  return 1
-}
-
-wait_for_new_pairing_pattern() {
-  local pattern="$1"
-  local previous_count="$2"
+  local previous_count="${2:-0}"
   local deadline=$((SECONDS + TIMEOUT_SECONDS))
   while [ "$SECONDS" -lt "$deadline" ]; do
     local current_count
@@ -136,13 +119,13 @@ send_signing_command() {
 }
 
 wait_for_persisted_auth_session() {
-  local current_user_path="$PAIRING_BASE/$NETWORK/pairing-host/current-user"
+  local current_user_path="$PAIRING_BASE/v2/$NETWORK/pairing-host/current-user"
   local deadline=$((SECONDS + TIMEOUT_SECONDS))
   while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -s "$current_user_path" ]; then
       local current_user
       current_user="$(tr -d '\r\n' <"$current_user_path")"
-      CORE_STORAGE="$PAIRING_BASE/$NETWORK/${current_user}_pairing_host/core-storage.json"
+      CORE_STORAGE="$PAIRING_BASE/v2/$NETWORK/${current_user}_pairing_host/core-storage.json"
       if [ -f "$CORE_STORAGE" ] && grep -qE '"00"[[:space:]]*:' "$CORE_STORAGE"; then
         return 0
       fi
@@ -220,8 +203,8 @@ fi
 tmux send-keys -t "$TMUX_SESSION" y
 wait_for_signing_pattern 'Paired device removed'
 
-wait_for_new_pairing_pattern '^DEVICE_REMOVE_DISCONNECT_OK$' "$disconnect_marker_before_removal"
-wait_for_new_pairing_pattern 'Pairing ended' "$pairing_ended_before_removal"
+wait_for_pairing_pattern '^DEVICE_REMOVE_DISCONNECT_OK$' "$disconnect_marker_before_removal"
+wait_for_pairing_pattern 'Pairing ended' "$pairing_ended_before_removal"
 wait_for_auth_session_clear
 
 send_signing_command '/devices'
