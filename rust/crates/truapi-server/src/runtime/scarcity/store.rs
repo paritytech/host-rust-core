@@ -63,6 +63,8 @@ pub(crate) struct WalEntry {
     pub from_product_id: String,
     /// Index of the holding key within that purse.
     pub from_index: u32,
+    /// The holding key itself, kept so recovery needs no key source.
+    pub from_address: [u8; 32],
     /// Instance being moved.
     pub instance: u64,
     /// Destination purse key.
@@ -133,6 +135,10 @@ impl PocketStore {
     /// Allocate the next key in `product_id`'s purse for `requested_by`, or
     /// answer a repeated `idempotency_key` from the same caller with the index
     /// it already got. Creates the purse record on first use.
+    ///
+    /// Only the key source that derives from root entropy may call this: a
+    /// host relaying to a paired signer must ask it to allocate, or the two
+    /// stores hand out the same key.
     pub(crate) async fn allocate(
         &self,
         root_public_key: [u8; 32],
@@ -490,6 +496,7 @@ mod tests {
                 id: 0,
                 from_product_id: "cardclash.dot".into(),
                 from_index: 1,
+                from_address: [1; 32],
                 instance,
                 to: [9; 32],
                 state_nonce: 0,

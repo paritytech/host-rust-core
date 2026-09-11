@@ -5,18 +5,27 @@
 //! the signed origin before the account checks, so the purse needs no System
 //! account and pays no fee; the nonce is therefore always zero. The era must
 //! end before the pallet's failure lock does, so the transaction is mortal and
-//! short. Inclusion is not success: the pallet restores the item on a failed
-//! dispatch, so ownership is re-read at the included block.
+//! short, and the key source anchors it right before signing so a consent wait
+//! never eats into it. The requesting host rebuilds the transaction from the
+//! signer's anchor, checks the signature against the holding key, and only then
+//! broadcasts. Inclusion is not success: the pallet restores the item on a
+//! failed dispatch, so ownership is re-read at the included block.
 
 use parity_scale_codec::Encode;
+use schnorrkel::{PublicKey, Signature};
 use serde_json::{Value, json};
+use subxt::utils::{AccountId32, MultiSignature};
 use truapi::latest::{ScarcityTransferStatus, TxPayloadExtension};
 
 use super::chain::{self, Nft, ScarcityChainError};
+use super::keys::{PurseKeys, PurseTransfer};
 use super::store::WalEntry;
 use super::{AssetHub, PocketError};
-use crate::host_logic::extrinsic::{Sr25519Signer, build_signed_extrinsic_v4};
-use crate::host_logic::pocket::derive_purse_keypair;
+use crate::host_logic::extrinsic::{
+    build_signed_extrinsic_v4_with_signature, v4_signer_digest, v4_signer_payload_unhashed,
+};
+use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
+use crate::runtime::authority::AuthoritySession;
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_allowance::extension::{
     AS_SCARCITY, ChainState, Era, Metadata, MetadataError,
@@ -59,6 +68,10 @@ pub(crate) enum TransferError {
     /// The item moved between the read and the signature.
     #[display("the item's state changed before the transaction was built")]
     StateMismatch,
+    /// The key source's signature does not verify over the transaction the
+    /// requesting host rebuilt from its anchor.
+    #[display("the purse key's signature does not verify over the transfer")]
+    SignatureMismatch,
     /// The chain refused or dropped the transaction.
     #[display("the transaction was rejected: {reason}")]
     Rejected {
@@ -95,17 +108,26 @@ impl TransferError {
 
     /// The service's view of this failure.
     pub(crate) fn to_service_error(&self) -> truapi::latest::ScarcityError {
+        use crate::runtime::authority::AuthorityError;
         use truapi::latest::ScarcityError;
         match self {
             Self::NotHeld { .. } => ScarcityError::NotFound,
-            Self::TransferToSelf | Self::Rejected { .. } => ScarcityError::Unknown {
-                reason: self.to_string(),
-            },
+            Self::TransferToSelf | Self::SignatureMismatch | Self::Rejected { .. } => {
+                ScarcityError::Unknown {
+                    reason: self.to_string(),
+                }
+            }
             Self::AddressOccupied => ScarcityError::AddressOccupied,
             Self::Locked { until } => ScarcityError::Locked { until: *until },
             Self::Soulbound => ScarcityError::Soulbound,
             Self::StateMismatch => ScarcityError::StateMismatch,
             Self::Pocket(PocketError::ChainNotServed) => ScarcityError::ChainNotServed,
+            Self::Pocket(PocketError::Authority(AuthorityError::Rejected)) => {
+                ScarcityError::Rejected
+            }
+            Self::Pocket(PocketError::Authority(AuthorityError::Disconnected)) => {
+                ScarcityError::NotConnected
+            }
             Self::Pocket(other) => ScarcityError::Unknown {
                 reason: other.to_string(),
             },
@@ -114,7 +136,7 @@ impl TransferError {
 }
 
 /// The best block's number and hash: the mortal era's anchor.
-pub(crate) async fn best_block(rpc: &RpcClient) -> Result<(u32, [u8; 32]), TransferError> {
+pub(crate) async fn best_block(rpc: &RpcClient) -> Result<(u32, [u8; 32]), PocketError> {
     let header = rpc.call("chain_getHeader", json!([])).await?;
     let number = header
         .get("number")
@@ -150,16 +172,29 @@ pub(crate) fn as_scarcity_extra(
     Ok(extra)
 }
 
-/// Build and sign the holder transfer of `instance` at `state_nonce` from the
-/// purse key `signer` to `to`, mortal from `state.era`.
-pub(crate) fn build_transfer_extrinsic(
+/// The unsigned parts of a holder transfer: the call, the metadata-order
+/// extensions with only `AsScarcity` replaced, and the unhashed V4 signer
+/// payload over them. Both the requesting host and the key source build this
+/// from the same anchor, so the signature made on one verifies on the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TransferSigning {
+    /// `Scarcity.transfer(to)` call bytes.
+    pub call: Vec<u8>,
+    /// Transaction extensions in metadata order.
+    pub extensions: Vec<TxPayloadExtension>,
+    /// [`v4_signer_payload_unhashed`] over `call` and `extensions`.
+    pub payload: Vec<u8>,
+}
+
+/// Build the holder transfer of `instance` at `state_nonce` to `to`, mortal
+/// from `state.era`, ready for a purse key to sign.
+pub(crate) fn build_transfer_signing(
     metadata: &Metadata,
     state: &ChainState,
-    signer: &Sr25519Signer,
     instance: u64,
     state_nonce: u64,
     to: &[u8; 32],
-) -> Result<Vec<u8>, StatementAllowanceError> {
+) -> Result<TransferSigning, StatementAllowanceError> {
     let mut call = metadata.call_indices(chain::PALLET, "transfer")?.to_vec();
     to.encode_to(&mut call);
     let authorizing =
@@ -184,7 +219,48 @@ pub(crate) fn build_transfer_extrinsic(
             additional_signed: encoded.additional_signed,
         })
         .collect();
-    Ok(build_signed_extrinsic_v4(signer, &call, &extensions))
+    let payload = v4_signer_payload_unhashed(&call, &extensions);
+    Ok(TransferSigning {
+        call,
+        extensions,
+        payload,
+    })
+}
+
+/// Whether `signature` by the purse key `signer_public` covers `signing`.
+pub(crate) fn verify_transfer_signature(
+    signer_public: &[u8; 32],
+    signature: &[u8; 64],
+    signing: &TransferSigning,
+) -> bool {
+    let (Ok(public), Ok(signature)) = (
+        PublicKey::from_bytes(signer_public),
+        Signature::from_bytes(signature),
+    ) else {
+        return false;
+    };
+    public
+        .verify_simple(
+            SR25519_SIGNING_CONTEXT,
+            &v4_signer_digest(signing.payload.clone()),
+            &signature,
+        )
+        .is_ok()
+}
+
+/// The signed V4 body once the purse key `signer_public` has signed
+/// `signing.payload`.
+pub(crate) fn assemble_transfer_extrinsic(
+    signer_public: [u8; 32],
+    signature: [u8; 64],
+    signing: &TransferSigning,
+) -> Vec<u8> {
+    build_signed_extrinsic_v4_with_signature(
+        AccountId32(signer_public),
+        &MultiSignature::Sr25519(signature),
+        &signing.call,
+        &signing.extensions,
+    )
 }
 
 /// What the chain says about a logged transfer at a finalized block.
@@ -204,13 +280,12 @@ pub(crate) enum Resolution {
 /// Decide a logged transfer from the instance's owner at a finalized block.
 pub(crate) fn resolve(
     entry: &WalEntry,
-    source: &[u8; 32],
     owner_now: Option<&[u8; 32]>,
     finalized_number: u32,
 ) -> Resolution {
     match owner_now {
         Some(owner) if owner == &entry.to => Resolution::Landed,
-        Some(owner) if owner == source => {
+        Some(owner) if owner == &entry.from_address => {
             if finalized_number >= entry.birth_block.saturating_add(entry.period) {
                 Resolution::Expired
             } else {
@@ -238,8 +313,8 @@ pub(crate) struct TransferSpec<'a> {
 pub(crate) async fn execute(
     pocket: &super::ScarcityPocket,
     hub: &AssetHub,
-    entropy: &[u8],
-    root_public_key: [u8; 32],
+    keys: &dyn PurseKeys,
+    session: &AuthoritySession,
     spec: TransferSpec<'_>,
     progress: &(dyn Fn(ScarcityTransferStatus) + Send + Sync),
 ) -> Result<[u8; 32], TransferError> {
@@ -249,8 +324,9 @@ pub(crate) async fn execute(
         to,
     } = spec;
     let metadata = &hub.context.metadata;
+    let root = session.public_key;
     let held = pocket
-        .scan_purse_with(hub, entropy, root_public_key, from_product_id)
+        .scan_purse_with(hub, keys, session, from_product_id)
         .await?;
     let item = held
         .into_iter()
@@ -273,30 +349,49 @@ pub(crate) async fn execute(
     if fresh.instance != instance {
         return Err(TransferError::StateMismatch);
     }
-    let (number, hash) = best_block(&hub.rpc).await?;
+
+    // The key source anchors the era and signs; a refusal there leaves no
+    // trace here.
+    let signed = keys
+        .sign_transfer(
+            session,
+            PurseTransfer {
+                from_product_id: from_product_id.to_string(),
+                from_index: item.index,
+                instance,
+                state_nonce: fresh.state_nonce,
+                to,
+            },
+        )
+        .await?;
     let state = ChainState {
-        era: Era::mortal(TRANSFER_ERA_BLOCKS, u64::from(number), hash),
+        era: Era::mortal(
+            TRANSFER_ERA_BLOCKS,
+            u64::from(signed.era_block_number),
+            signed.era_block_hash,
+        ),
         nonce: 0,
         ..hub.context.state
     };
-    let keypair =
-        derive_purse_keypair(entropy, from_product_id, item.index).map_err(PocketError::from)?;
-    let signer = Sr25519Signer::from_keypair(&keypair);
-    let extrinsic =
-        build_transfer_extrinsic(metadata, &state, &signer, instance, fresh.state_nonce, &to)?;
+    let signing = build_transfer_signing(metadata, &state, instance, fresh.state_nonce, &to)?;
+    if !verify_transfer_signature(&item.address, &signed.signature, &signing) {
+        return Err(TransferError::SignatureMismatch);
+    }
+    let extrinsic = assemble_transfer_extrinsic(item.address, signed.signature, &signing);
 
     let wal_id = pocket
         .store()
         .wal_append(
-            root_public_key,
+            root,
             WalEntry {
                 id: 0,
                 from_product_id: from_product_id.to_string(),
                 from_index: item.index,
+                from_address: item.address,
                 instance,
                 to,
                 state_nonce: fresh.state_nonce,
-                birth_block: number,
+                birth_block: signed.era_block_number,
                 period: TRANSFER_ERA_BLOCKS as u32,
             },
         )
@@ -308,7 +403,7 @@ pub(crate) async fn execute(
         Ok(block) => block,
         Err(err) => {
             // Never included, so nothing to recover.
-            let _ = pocket.store().wal_remove(root_public_key, wal_id).await;
+            let _ = pocket.store().wal_remove(root, wal_id).await;
             return Err(TransferError::Rejected {
                 reason: err.to_string(),
             });
@@ -321,12 +416,12 @@ pub(crate) async fn execute(
     progress(ScarcityTransferStatus::InBlock { block: block_hash });
 
     let owner = chain::read_instance_owner(&hub.rpc, metadata, instance, Some(&block)).await?;
-    let _ = pocket.store().wal_remove(root_public_key, wal_id).await;
+    let _ = pocket.store().wal_remove(root, wal_id).await;
     match owner {
         Some(owner) if owner == to => {
             let _ = pocket
                 .store()
-                .observe_occupied(root_public_key, from_product_id, &[])
+                .observe_occupied(root, from_product_id, &[])
                 .await;
             Ok(block_hash)
         }
@@ -365,11 +460,11 @@ async fn validate_destination_and_lock(
 
 /// Resolve every logged transfer against the finalized head and drop the ones
 /// the chain has settled. Runs before a purse scan so a restart never reports
-/// an item both moved and held.
+/// an item both moved and held. Needs no key source: every entry carries its
+/// holding key.
 pub(crate) async fn recover(
     pocket: &super::ScarcityPocket,
     hub: &AssetHub,
-    entropy: &[u8],
     root_public_key: [u8; 32],
 ) -> Result<(), TransferError> {
     let entries = pocket
@@ -383,10 +478,6 @@ pub(crate) async fn recover(
     let finalized = hub.rpc.finalized_head().await?;
     let finalized_number = block_number_of(&hub.rpc, &finalized).await?;
     for entry in entries {
-        let source = derive_purse_keypair(entropy, &entry.from_product_id, entry.from_index)
-            .map_err(PocketError::from)?
-            .public
-            .to_bytes();
         let owner = chain::read_instance_owner(
             &hub.rpc,
             &hub.context.metadata,
@@ -394,7 +485,7 @@ pub(crate) async fn recover(
             Some(&finalized),
         )
         .await?;
-        match resolve(&entry, &source, owner.as_ref(), finalized_number) {
+        match resolve(&entry, owner.as_ref(), finalized_number) {
             Resolution::Pending => {}
             Resolution::Landed | Resolution::Expired | Resolution::Gone => {
                 pocket
@@ -425,8 +516,10 @@ async fn block_number_of(rpc: &RpcClient, hash: &str) -> Result<u32, TransferErr
 #[cfg(test)]
 mod tests {
     use parity_scale_codec::{Compact, Decode};
+    use subxt::tx::Signer;
 
     use super::*;
+    use crate::host_logic::extrinsic::Sr25519Signer;
     use crate::host_logic::pocket::derive_purse_keypair;
     use crate::runtime::statement_allowance::test_fixtures;
 
@@ -444,6 +537,15 @@ mod tests {
         }
     }
 
+    fn sign(keypair: &schnorrkel::Keypair, signing: &TransferSigning) -> [u8; 64] {
+        let MultiSignature::Sr25519(signature) =
+            Sr25519Signer::from_keypair(keypair).sign(&v4_signer_digest(signing.payload.clone()))
+        else {
+            panic!("sr25519 signer");
+        };
+        signature
+    }
+
     /// The signed v4 body carries the purse key as signer, the metadata-order
     /// extras with only `AsScarcity` replaced, and the call; the signature
     /// verifies over the v4 payload with the purse key.
@@ -452,9 +554,15 @@ mod tests {
         let metadata = test_fixtures::asset_hub();
         let state = state(metadata);
         let keypair = derive_purse_keypair(&ENTROPY, "cardclash.dot", 1).unwrap();
-        let signer = Sr25519Signer::from_keypair(&keypair);
         let to = [0x33u8; 32];
-        let extrinsic = build_transfer_extrinsic(metadata, &state, &signer, 34, 3, &to).unwrap();
+        let signing = build_transfer_signing(metadata, &state, 34, 3, &to).unwrap();
+        let signature = sign(&keypair, &signing);
+        assert!(verify_transfer_signature(
+            &keypair.public.to_bytes(),
+            &signature,
+            &signing
+        ));
+        let extrinsic = assemble_transfer_extrinsic(keypair.public.to_bytes(), signature, &signing);
 
         let mut input = extrinsic.as_slice();
         let len = Compact::<u32>::decode(&mut input).unwrap().0 as usize;
@@ -463,7 +571,7 @@ mod tests {
         assert_eq!(input[1], 0x00, "MultiAddress::Id");
         assert_eq!(&input[2..34], &keypair.public.to_bytes());
         assert_eq!(input[34], 0x01, "MultiSignature::Sr25519");
-        let signature = &input[35..99];
+        assert_eq!(&input[35..99], &signature);
         let rest = &input[99..];
 
         // Extras: metadata order, AsScarcity = Some(AsNft{34, 3}).
@@ -499,46 +607,68 @@ mod tests {
         // The era anchors to the birth block, not genesis.
         assert!(implicits.windows(32).any(|w| w == [0x22; 32]));
 
-        let mut payload = [call, extras, implicits].concat();
-        if payload.len() > 256 {
-            payload = sp_crypto_hashing::blake2_256(&payload).to_vec();
-        }
-        let signature = schnorrkel::Signature::from_bytes(signature).unwrap();
+        let payload = [call, extras, implicits].concat();
+        assert_eq!(signing.payload, payload);
+        let signature = schnorrkel::Signature::from_bytes(&signature).unwrap();
         keypair
             .public
-            .verify_simple(b"substrate", &payload, &signature)
+            .verify_simple(b"substrate", &v4_signer_digest(payload), &signature)
             .expect("the purse key signed the v4 payload");
+    }
+
+    /// A signature made over a different anchor, destination or state nonce
+    /// does not verify against the rebuilt transaction, so a signer that lied
+    /// about what it signed is caught before broadcast.
+    #[test]
+    fn a_signature_over_a_different_transfer_does_not_verify() {
+        let metadata = test_fixtures::asset_hub();
+        let state = state(metadata);
+        let keypair = derive_purse_keypair(&ENTROPY, "cardclash.dot", 1).unwrap();
+        let public = keypair.public.to_bytes();
+        let to = [0x33u8; 32];
+        let genuine = build_transfer_signing(metadata, &state, 34, 3, &to).unwrap();
+        let signature = sign(&keypair, &genuine);
+
+        let other_nonce = build_transfer_signing(metadata, &state, 34, 4, &to).unwrap();
+        assert!(!verify_transfer_signature(
+            &public,
+            &signature,
+            &other_nonce
+        ));
+        let other_to = build_transfer_signing(metadata, &state, 34, 3, &[0x44; 32]).unwrap();
+        assert!(!verify_transfer_signature(&public, &signature, &other_to));
+        let other_anchor = ChainState {
+            era: Era::mortal(TRANSFER_ERA_BLOCKS, 1001, [0x22; 32]),
+            ..state
+        };
+        let moved = build_transfer_signing(metadata, &other_anchor, 34, 3, &to).unwrap();
+        assert!(!verify_transfer_signature(&public, &signature, &moved));
+        let other_key = derive_purse_keypair(&ENTROPY, "cardclash.dot", 2).unwrap();
+        assert!(!verify_transfer_signature(
+            &other_key.public.to_bytes(),
+            &signature,
+            &genuine
+        ));
     }
 
     #[test]
     fn logged_transfers_resolve_from_the_finalized_owner() {
+        let source = [1u8; 32];
         let entry = WalEntry {
             id: 0,
             from_product_id: "cardclash.dot".into(),
             from_index: 0,
+            from_address: source,
             instance: 34,
             to: [2; 32],
             state_nonce: 0,
             birth_block: 100,
             period: 8,
         };
-        let source = [1u8; 32];
-        assert_eq!(
-            resolve(&entry, &source, Some(&[2; 32]), 101),
-            Resolution::Landed
-        );
-        assert_eq!(
-            resolve(&entry, &source, Some(&source), 105),
-            Resolution::Pending
-        );
-        assert_eq!(
-            resolve(&entry, &source, Some(&source), 108),
-            Resolution::Expired
-        );
-        assert_eq!(
-            resolve(&entry, &source, Some(&[7; 32]), 101),
-            Resolution::Gone
-        );
-        assert_eq!(resolve(&entry, &source, None, 101), Resolution::Gone);
+        assert_eq!(resolve(&entry, Some(&[2; 32]), 101), Resolution::Landed);
+        assert_eq!(resolve(&entry, Some(&source), 105), Resolution::Pending);
+        assert_eq!(resolve(&entry, Some(&source), 108), Resolution::Expired);
+        assert_eq!(resolve(&entry, Some(&[7; 32]), 101), Resolution::Gone);
+        assert_eq!(resolve(&entry, None, 101), Resolution::Gone);
     }
 }

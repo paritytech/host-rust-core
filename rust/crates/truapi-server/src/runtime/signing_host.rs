@@ -43,6 +43,7 @@ use super::authority::{
     StatementStoreAllowanceKey, authority_session_validation_id,
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
+use super::scarcity::keys::LocalPurseKeys;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::attestation;
 use crate::host_logic::attestation::{build_identity_auth_proof, build_lite_registration};
@@ -233,6 +234,11 @@ impl SigningHost {
             .expect("signing host entropy mutex poisoned")
             .clone()
             .ok_or(AuthorityError::Disconnected)
+    }
+
+    /// The pocket's key source over the active session's root entropy.
+    fn local_purse_keys(&self) -> Result<LocalPurseKeys<'_>, AuthorityError> {
+        Ok(LocalPurseKeys::new(&self.pocket, self.root_entropy()?))
     }
 
     fn product_subtree_secret(&self, product_id: &str) -> Result<[u8; 64], AuthorityError> {
@@ -644,11 +650,8 @@ impl SigningHost {
     ) -> Result<Vec<truapi::latest::ScarcityItem>, crate::runtime::scarcity::PocketAuthorityError>
     {
         let session = self.pocket_session()?;
-        let entropy = self.root_entropy()?;
-        Ok(self
-            .pocket
-            .list(&entropy, session.public_key, product_id, None)
-            .await?)
+        let keys = self.local_purse_keys()?;
+        Ok(self.pocket.list(&keys, &session, product_id, None).await?)
     }
 
     /// A fresh receive key in `product_id`'s purse, requested by the wallet.
@@ -658,12 +661,12 @@ impl SigningHost {
         idempotency_key: &str,
     ) -> Result<[u8; 32], crate::runtime::scarcity::PocketAuthorityError> {
         let session = self.pocket_session()?;
-        let entropy = self.root_entropy()?;
+        let keys = self.local_purse_keys()?;
         Ok(self
             .pocket
             .request_receive_address(
-                &entropy,
-                session.public_key,
+                &keys,
+                &session,
                 product_id,
                 crate::host_logic::pocket::WALLET_PURSE_PRODUCT_ID,
                 idempotency_key,
@@ -685,28 +688,19 @@ impl SigningHost {
         let session = self.pocket_session().map_err(|err| PocketError::Unknown {
             reason: err.to_string(),
         })?;
-        let entropy = self.root_entropy().map_err(|err| PocketError::Unknown {
-            reason: err.to_string(),
-        })?;
+        let keys = self.local_purse_keys().map_err(PocketError::from)?;
         let to = self
             .pocket
             .request_receive_address(
-                &entropy,
-                session.public_key,
+                &keys,
+                &session,
                 to_product_id,
                 crate::host_logic::pocket::WALLET_PURSE_PRODUCT_ID,
                 &format!("move:{instance}:{from_product_id}->{to_product_id}"),
             )
             .await?;
         self.pocket
-            .transfer(
-                &entropy,
-                session.public_key,
-                from_product_id,
-                instance,
-                to,
-                progress,
-            )
+            .transfer(&keys, &session, from_product_id, instance, to, progress)
             .await
     }
 
@@ -1311,15 +1305,10 @@ impl ProductAuthority for SigningHost {
     ) -> Result<Vec<truapi::latest::ScarcityItem>, crate::runtime::scarcity::PocketAuthorityError>
     {
         self.require_current_session(session)?;
-        let entropy = self.root_entropy()?;
+        let keys = self.local_purse_keys()?;
         Ok(self
             .pocket
-            .list(
-                &entropy,
-                session.public_key,
-                &product_id,
-                collections.as_deref(),
-            )
+            .list(&keys, session, &product_id, collections.as_deref())
             .await?)
     }
 
@@ -1332,12 +1321,12 @@ impl ProductAuthority for SigningHost {
         idempotency_key: String,
     ) -> Result<[u8; 32], crate::runtime::scarcity::PocketAuthorityError> {
         self.require_current_session(session)?;
-        let entropy = self.root_entropy()?;
+        let keys = self.local_purse_keys()?;
         Ok(self
             .pocket
             .request_receive_address(
-                &entropy,
-                session.public_key,
+                &keys,
+                session,
                 &target_product_id,
                 &requested_by,
                 &idempotency_key,
@@ -1354,39 +1343,25 @@ impl ProductAuthority for SigningHost {
         to: [u8; 32],
         progress: Arc<dyn Fn(truapi::latest::ScarcityTransferStatus) + Send + Sync>,
     ) -> Result<[u8; 32], crate::runtime::scarcity::transfer::TransferError> {
-        self.require_current_session(session).map_err(|err| {
-            crate::runtime::scarcity::PocketError::Unknown {
-                reason: err.to_string(),
-            }
-        })?;
-        let entropy =
-            self.root_entropy()
-                .map_err(|err| crate::runtime::scarcity::PocketError::Unknown {
-                    reason: err.to_string(),
-                })?;
+        self.require_current_session(session)
+            .map_err(crate::runtime::scarcity::PocketError::from)?;
+        let keys = self
+            .local_purse_keys()
+            .map_err(crate::runtime::scarcity::PocketError::from)?;
         self.pocket
-            .transfer(
-                &entropy,
-                session.public_key,
-                &product_id,
-                instance,
-                to,
-                progress.as_ref(),
-            )
+            .transfer(&keys, session, &product_id, instance, to, progress.as_ref())
             .await
     }
 
     async fn scarcity_purse_of(
         &self,
+        _cx: &CallContext,
         session: &AuthoritySession,
         address: [u8; 32],
     ) -> Result<Option<String>, crate::runtime::scarcity::PocketAuthorityError> {
         self.require_current_session(session)?;
-        let entropy = self.root_entropy()?;
-        Ok(self
-            .pocket
-            .purse_of(&entropy, session.public_key, &address)
-            .await?)
+        let keys = self.local_purse_keys()?;
+        Ok(self.pocket.purse_of(&keys, session, &address).await?)
     }
 
     async fn statement_store_allowance_key(

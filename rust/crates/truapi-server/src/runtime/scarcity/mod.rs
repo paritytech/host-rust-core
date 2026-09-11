@@ -1,14 +1,17 @@
-//! The signing host's NFT pocket: per-product `pallet-scarcity` purses over
-//! the wallet's root entropy.
+//! The NFT pocket: per-product `pallet-scarcity` purses over the wallet's
+//! root, served by whichever host the product runs on.
 //!
 //! Custody is context. Each product has one purse, derived at
 //! `//pps//nft//<product_id>//<index>`; the wallet's own is the reserved
 //! `nfts.dot`. The chain is the authority on what a purse holds; the engine
-//! derives keys, scans `NftsByOwner`, hands out never-reused receive keys, and
-//! remembers only what it allocated. Products reach it through the `Scarcity`
-//! service; the wallet reaches it directly.
+//! scans `NftsByOwner`, hands out never-reused receive keys, moves items, and
+//! remembers only what it allocated and what it broadcast. Keys come from a
+//! [`keys::PurseKeys`] source: the signing host derives them from root entropy,
+//! a pairing host asks the paired signing host. Products reach the pocket
+//! through the `Scarcity` service; the wallet reaches it directly.
 
 pub(crate) mod chain;
+pub(crate) mod keys;
 pub(crate) mod store;
 pub(crate) mod transfer;
 
@@ -18,20 +21,19 @@ use std::sync::Arc;
 use truapi::latest::{ChainIdentifier, ScarcityItem, ScarcityTransferability};
 
 use crate::host_logic::features::{genesis_for, supported_chains};
-use crate::host_logic::pocket::{
-    PocketDerivationError, derive_purse_public_key, normalize_purse_product_id,
-};
-use crate::runtime::authority::AuthorityError;
+use crate::host_logic::pocket::{PocketDerivationError, normalize_purse_product_id};
+use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::statement_allowance::rpc::RpcClient;
 use crate::runtime::statement_allowance::{ChainClient, ChainContext, StatementAllowanceError};
 use chain::{Nft, ScarcityChainError, Transferability};
+use keys::{PURSE_KEYS_MAX_COUNT, PurseKeys};
 use store::{PocketStore, PocketStoreError};
 
 /// Keys read per scan round trip; matches the Stash's browser-side scan.
 const SCAN_BATCH: u32 = 10;
 /// Hard ceiling on indices a scan will walk past the last occupied key.
-const SCAN_MAX: u32 = 1_000;
+pub(crate) const SCAN_MAX: u32 = 1_000;
 
 /// Failure inside the pocket engine.
 #[derive(Debug, derive_more::Display)]
@@ -51,6 +53,10 @@ pub(crate) enum PocketError {
     /// Metadata or runtime version could not be resolved.
     #[display("{_0}")]
     Context(StatementAllowanceError),
+    /// The key source, local session or paired signing host, could not
+    /// serve the call.
+    #[display("{_0}")]
+    Authority(AuthorityError),
     /// Catch-all.
     #[display("{reason}")]
     Unknown {
@@ -79,6 +85,11 @@ impl From<StatementAllowanceError> for PocketError {
         Self::Context(err)
     }
 }
+impl From<AuthorityError> for PocketError {
+    fn from(err: AuthorityError) -> Self {
+        Self::Authority(err)
+    }
+}
 
 /// A pocket call's failure as the account authority reports it: either the
 /// authority could not serve the caller at all, or the engine failed.
@@ -99,7 +110,13 @@ impl From<AuthorityError> for PocketAuthorityError {
 }
 impl From<PocketError> for PocketAuthorityError {
     fn from(err: PocketError) -> Self {
-        Self::Pocket(err)
+        // A key source's authority failure is the authority's failure to the
+        // caller too, so the service maps it to `NotConnected`/`Rejected`
+        // rather than an opaque reason.
+        match err {
+            PocketError::Authority(err) => Self::Authority(err),
+            other => Self::Pocket(other),
+        }
     }
 }
 
@@ -122,7 +139,7 @@ pub(crate) struct AssetHub {
     pub context: ChainContext,
 }
 
-/// The pocket engine shared by every product runtime of one signing host.
+/// The pocket engine shared by every product runtime of one host.
 pub(crate) struct ScarcityPocket {
     services: Arc<RuntimeServices>,
     store: Arc<PocketStore>,
@@ -169,32 +186,32 @@ impl ScarcityPocket {
     /// so a wallet restored from seed rebuilds its purses by listing them.
     pub(crate) async fn scan_purse(
         &self,
-        entropy: &[u8],
-        root_public_key: [u8; 32],
+        keys: &dyn PurseKeys,
+        session: &AuthoritySession,
         product_id: &str,
     ) -> Result<Vec<HeldItem>, PocketError> {
         let hub = self.asset_hub().await?;
-        transfer::recover(self, &hub, entropy, root_public_key)
+        transfer::recover(self, &hub, session.public_key)
             .await
             .map_err(|err| PocketError::Unknown {
                 reason: format!("transfer log recovery: {err}"),
             })?;
-        self.scan_purse_with(&hub, entropy, root_public_key, product_id)
-            .await
+        self.scan_purse_with(&hub, keys, session, product_id).await
     }
 
     /// [`Self::scan_purse`] against an already resolved Asset Hub.
     pub(crate) async fn scan_purse_with(
         &self,
         hub: &AssetHub,
-        entropy: &[u8],
-        root_public_key: [u8; 32],
+        keys: &dyn PurseKeys,
+        session: &AuthoritySession,
         product_id: &str,
     ) -> Result<Vec<HeldItem>, PocketError> {
         let product_id = normalize_purse_product_id(product_id)?;
+        let root = session.public_key;
         let known = self
             .store
-            .purse(root_public_key, &product_id)
+            .purse(root, &product_id)
             .await?
             .map_or(0, |purse| purse.next_index);
         let mut held = Vec::new();
@@ -204,19 +221,26 @@ impl ScarcityPocket {
         let mut trailing_empty = 0u32;
         while from < SCAN_MAX {
             let to = (from + SCAN_BATCH).min(SCAN_MAX);
-            let indices: Vec<u32> = (from..to).collect();
-            let keys = indices
-                .iter()
-                .map(|index| derive_purse_public_key(entropy, &product_id, *index))
-                .collect::<Result<Vec<_>, _>>()?;
-            let found = chain::read_nfts(&hub.rpc, &hub.context.metadata, &keys).await?;
+            let batch = keys
+                .public_keys(session, &product_id, from, to - from)
+                .await?;
+            if batch.len() != (to - from) as usize {
+                return Err(PocketError::Unknown {
+                    reason: format!(
+                        "the key source returned {} keys for {} indices",
+                        batch.len(),
+                        to - from
+                    ),
+                });
+            }
+            let found = chain::read_nfts(&hub.rpc, &hub.context.metadata, &batch).await?;
             let mut any = false;
-            for ((index, address), nft) in indices.iter().zip(keys).zip(found) {
+            for ((index, address), nft) in (from..to).zip(batch).zip(found) {
                 if let Some(nft) = nft {
                     any = true;
-                    occupied.push(*index);
+                    occupied.push(index);
                     held.push(HeldItem {
-                        index: *index,
+                        index,
                         address,
                         nft,
                     });
@@ -231,7 +255,7 @@ impl ScarcityPocket {
             }
         }
         self.store
-            .observe_occupied(root_public_key, &product_id, &occupied)
+            .observe_occupied(root, &product_id, &occupied)
             .await?;
         Ok(held)
     }
@@ -241,14 +265,12 @@ impl ScarcityPocket {
     /// its definition.
     pub(crate) async fn list(
         &self,
-        entropy: &[u8],
-        root_public_key: [u8; 32],
+        keys: &dyn PurseKeys,
+        session: &AuthoritySession,
         product_id: &str,
         collections: Option<&[u32]>,
     ) -> Result<Vec<ScarcityItem>, PocketError> {
-        let held = self
-            .scan_purse(entropy, root_public_key, product_id)
-            .await?;
+        let held = self.scan_purse(keys, session, product_id).await?;
         let held: Vec<HeldItem> = held
             .into_iter()
             .filter(|item| {
@@ -302,28 +324,20 @@ impl ScarcityPocket {
     }
 
     /// A fresh, empty key in `target_product_id`'s purse for `requested_by`,
-    /// or the same key again for a repeated `idempotency_key`.
-    ///
-    /// The first allocation in a purse the store has never seen scans it
-    /// first, so a wallet restored from seed resumes above its occupied keys
-    /// instead of handing one out again.
+    /// or the same key again for a repeated `idempotency_key`. The key source
+    /// owns the allocation, so only one host ever hands out an index.
     pub(crate) async fn request_receive_address(
         &self,
-        entropy: &[u8],
-        root_public_key: [u8; 32],
+        keys: &dyn PurseKeys,
+        session: &AuthoritySession,
         target_product_id: &str,
         requested_by: &str,
         idempotency_key: &str,
     ) -> Result<[u8; 32], PocketError> {
         let target = normalize_purse_product_id(target_product_id)?;
-        if self.store.purse(root_public_key, &target).await?.is_none() {
-            self.scan_purse(entropy, root_public_key, &target).await?;
-        }
-        let index = self
-            .store
-            .allocate(root_public_key, &target, requested_by, idempotency_key)
-            .await?;
-        Ok(derive_purse_public_key(entropy, &target, index)?)
+        keys.allocate_receive_key(session, &target, requested_by, idempotency_key)
+            .await
+            .map(|(_, key)| key)
     }
 
     /// Move `instance` out of `from_product_id`'s purse to `to`, reporting
@@ -331,20 +345,20 @@ impl ScarcityPocket {
     /// verified there.
     pub(crate) async fn transfer(
         &self,
-        entropy: &[u8],
-        root_public_key: [u8; 32],
+        keys: &dyn PurseKeys,
+        session: &AuthoritySession,
         from_product_id: &str,
         instance: u64,
         to: [u8; 32],
         progress: &(dyn Fn(truapi::latest::ScarcityTransferStatus) + Send + Sync),
     ) -> Result<[u8; 32], transfer::TransferError> {
         let hub = self.asset_hub().await?;
-        transfer::recover(self, &hub, entropy, root_public_key).await?;
+        transfer::recover(self, &hub, session.public_key).await?;
         transfer::execute(
             self,
             &hub,
-            entropy,
-            root_public_key,
+            keys,
+            session,
             transfer::TransferSpec {
                 from_product_id,
                 instance,
@@ -355,19 +369,25 @@ impl ScarcityPocket {
         .await
     }
 
-    /// The purse a key belongs to, if the host derived it: searched over every
-    /// key allocated so far in every known purse.
+    /// The purse a key belongs to, if the host allocated it: searched over
+    /// every key allocated so far in every known purse.
     pub(crate) async fn purse_of(
         &self,
-        entropy: &[u8],
-        root_public_key: [u8; 32],
+        keys: &dyn PurseKeys,
+        session: &AuthoritySession,
         address: &[u8; 32],
     ) -> Result<Option<String>, PocketError> {
-        for purse in self.store.snapshot(root_public_key).await?.purses {
-            for index in 0..purse.next_index {
-                if derive_purse_public_key(entropy, &purse.product_id, index)? == *address {
+        for purse in self.store.snapshot(session.public_key).await?.purses {
+            let mut start = 0u32;
+            while start < purse.next_index {
+                let count = (purse.next_index - start).min(PURSE_KEYS_MAX_COUNT);
+                let batch = keys
+                    .public_keys(session, &purse.product_id, start, count)
+                    .await?;
+                if batch.contains(address) {
                     return Ok(Some(purse.product_id));
                 }
+                start = start.saturating_add(count);
             }
         }
         Ok(None)
@@ -375,8 +395,6 @@ impl ScarcityPocket {
 
     /// Product ids of every purse the host has allocated in, for the wallet's
     /// own view.
-    // Wired to the wallet's wasm export once the Pocket UI lands.
-    #[allow(dead_code)]
     pub(crate) async fn known_purses(
         &self,
         root_public_key: [u8; 32],
@@ -393,23 +411,25 @@ impl ScarcityPocket {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use parity_scale_codec::Encode;
     use serde_json::json;
+    use zeroize::Zeroizing;
 
+    use super::keys::LocalPurseKeys;
     use super::*;
     use crate::host_logic::pocket::derive_purse_public_key;
     use crate::runtime::statement_allowance::extension::{ChainState, Era, Metadata};
     use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
     use crate::test_support::StubPlatform;
 
-    const ENTROPY: [u8; 16] = [0xAB; 16];
-    const ROOT: [u8; 32] = [0x77; 32];
+    pub(crate) const ENTROPY: [u8; 16] = [0xAB; 16];
+    pub(crate) const ROOT: [u8; 32] = [0x77; 32];
     const PRODUCT: &str = "cardclash.dot";
 
-    fn pocket(platform: Arc<StubPlatform>) -> ScarcityPocket {
+    pub(crate) fn pocket(platform: Arc<StubPlatform>) -> ScarcityPocket {
         let services = RuntimeServices::new(
             platform,
             truapi_platform::HostInfo {
@@ -423,6 +443,21 @@ mod tests {
             crate::test_support::test_spawner(),
         );
         ScarcityPocket::new(services)
+    }
+
+    /// A session snapshot over the test root; the engine reads only its key.
+    pub(crate) fn session() -> AuthoritySession {
+        AuthoritySession {
+            public_key: ROOT,
+            identity_account_id: None,
+            lite_username: None,
+            full_username: None,
+            validation_id: Vec::new(),
+        }
+    }
+
+    fn local_keys(engine: &ScarcityPocket) -> LocalPurseKeys<'_> {
+        LocalPurseKeys::new(engine, Zeroizing::new(ENTROPY.to_vec()))
     }
 
     fn hub(rpc: ScriptedRpc) -> AssetHub {
@@ -465,6 +500,7 @@ mod tests {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform::default());
             let engine = pocket(platform);
+            let keys = local_keys(&engine);
             let metadata = hub(ScriptedRpc::default()).context.metadata;
             let key = |index: u32| {
                 let owner = derive_purse_public_key(&ENTROPY, PRODUCT, index).unwrap();
@@ -483,7 +519,7 @@ mod tests {
             let hub = hub(rpc.clone());
 
             let held = engine
-                .scan_purse_with(&hub, &ENTROPY, ROOT, PRODUCT)
+                .scan_purse_with(&hub, &keys, &session(), PRODUCT)
                 .await
                 .unwrap();
             assert_eq!(
@@ -523,6 +559,7 @@ mod tests {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform::default());
             let engine = pocket(platform);
+            let keys = local_keys(&engine);
             for i in 0..25 {
                 engine
                     .store()
@@ -549,7 +586,7 @@ mod tests {
             ]);
             let hub = hub(rpc.clone());
             let held = engine
-                .scan_purse_with(&hub, &ENTROPY, ROOT, PRODUCT)
+                .scan_purse_with(&hub, &keys, &session(), PRODUCT)
                 .await
                 .unwrap();
             assert_eq!(held.len(), 1);
@@ -561,6 +598,37 @@ mod tests {
                 purse.reserved.len(),
                 24,
                 "the occupied reservation was released"
+            );
+        });
+    }
+
+    /// The purse lookup asks the key source for each purse's allocated range
+    /// and finds a key by its index, with no chain access.
+    #[test]
+    fn purse_of_searches_allocated_keys_through_the_key_source() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform::default());
+            let engine = pocket(platform);
+            let keys = local_keys(&engine);
+            for i in 0..3 {
+                engine
+                    .store()
+                    .allocate(ROOT, PRODUCT, "console.dot", &format!("k{i}"))
+                    .await
+                    .unwrap();
+            }
+            let second = derive_purse_public_key(&ENTROPY, PRODUCT, 2).unwrap();
+            assert_eq!(
+                engine.purse_of(&keys, &session(), &second).await.unwrap(),
+                Some(PRODUCT.to_string())
+            );
+            let unallocated = derive_purse_public_key(&ENTROPY, PRODUCT, 3).unwrap();
+            assert_eq!(
+                engine
+                    .purse_of(&keys, &session(), &unallocated)
+                    .await
+                    .unwrap(),
+                None
             );
         });
     }

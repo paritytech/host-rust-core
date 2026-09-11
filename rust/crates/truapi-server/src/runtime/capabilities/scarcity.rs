@@ -266,7 +266,7 @@ impl Scarcity for ProductRuntimeHost {
             .ok_or_else(|| CallError::Domain(wrap(v01::ScarcityError::NotFound)))?;
         let to_product_id = self
             .authority
-            .scarcity_purse_of(&session, to)
+            .scarcity_purse_of(cx, &session, to)
             .await
             .map_err(|err| scarcity_call_error(err, wrap))?;
         // Every move asks; a stored grant never covers a transfer.

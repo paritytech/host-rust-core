@@ -519,9 +519,11 @@ pub(crate) trait ProductAuthority: Send + Sync {
         .into())
     }
 
-    /// The product whose purse holds `address`, when the host derived that key.
+    /// The product whose purse holds `address`, when the host allocated that
+    /// key.
     async fn scarcity_purse_of(
         &self,
+        _cx: &CallContext,
         _session: &AuthoritySession,
         _address: [u8; 32],
     ) -> Result<Option<String>, crate::runtime::scarcity::PocketAuthorityError> {
