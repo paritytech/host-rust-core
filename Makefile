@@ -410,6 +410,15 @@ debugger: dev-bootstrap ## Wire debugger (:9231) + a DEV-MODE dotli host (:5173)
 	# both production builds, and the dial sits behind `import.meta.env.DEV`, which
 	# a production bundle replaces with `false`. The host then never dials and the
 	# board stays empty with no error - so build the host in dev mode here.
+	#
+	# Building the host ALONE is not enough. `make dev` runs dotli's `preview`
+	# script, which is `turbo run build` (every app) before the preview server;
+	# going straight to the server instead leaves apps/sandbox unbuilt, and the
+	# server treats that one as required and exits 1. :5173 then never comes up at
+	# all, which on a laptop that has run `make dev` before is invisible: the stale
+	# dist from that run satisfies the check. Build the siblings first.
+	cd $(DOTLI) && VITE_APP_DEBUG=true bunx turbo run build \
+		--filter=@dotli/sandbox --filter=@dotli/protocol-app
 	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true \
 		VITE_TRUAPI_DEBUGGER=ws://127.0.0.1:$(DEBUGGER_PORT) bunx --bun vite build
 	@printf '\n  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'
