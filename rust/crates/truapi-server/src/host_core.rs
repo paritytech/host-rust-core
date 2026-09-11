@@ -65,10 +65,12 @@ pub trait DebugSink: Send + Sync {
     /// public and implementable out-of-repo, and because the profiles that can
     /// unwind are exactly the ones a developer runs: the workspace defines no
     /// `[profile.dev]`, so `dev` keeps Cargo's default `panic = "unwind"`, and an
-    /// out-of-repo or test sink can be installed under it. (The only in-repo
-    /// installer is the wasm host, which cannot unwind at all; `truapi-host-cli`
-    /// installs no sink.) Serialize and enqueue only; never do fallible work
-    /// that can `unwrap`/panic on the caller's thread.
+    /// out-of-repo or test sink can be installed under it. (The in-repo installers
+    /// are the wasm host, which cannot unwind at all, and `truapi-host-cli` behind
+    /// `--debugger`, which installs [`crate::WsDebugSink`]: that one does serialize
+    /// and enqueue, so it meets the contract on a target that can unwind.)
+    /// Serialize and enqueue only; never do fallible work that can `unwrap`/panic
+    /// on the caller's thread.
     ///
     /// The two halves of that contract are NOT equally enforced, and the asymmetry
     /// is deliberate rather than an oversight. Panics are contained: both tap sites
@@ -1402,13 +1404,14 @@ impl SinkTransport {
         // under this guard can unwind, the body being an
         // `Option<(ChannelId, Arc<..>)>` clone.
         //
-        // Two independent reasons that poisoner is already unreachable in what
-        // ships, neither of them the profile. `wasm.rs` is the ONLY non-test
-        // `set_debug_sink` caller in the repo (`truapi-host-cli` installs no sink
-        // at all): the wasm32 target cannot unwind, AND that call site builds a
-        // fresh `SinkTransport` per `product_runtime()` and installs at most once
-        // on it, so `previous` is always `None` and there is no destructor to run
-        // under the lock regardless of profile.
+        // That poisoner is unreachable in what ships, and not because of the
+        // profile. There are two non-test `set_debug_sink` callers: `wasm.rs`, on a
+        // target that cannot unwind, and `truapi-host-cli`'s `DebugTappedRuntime`
+        // behind `--debugger`, which can. Both share the property that actually
+        // closes the hole: each builds a fresh `SinkTransport` per
+        // `product_runtime()` and installs at most once on it, so `previous` is
+        // always `None` and there is no destructor to run under the lock, whatever
+        // the profile or target.
         //
         // The recovery is kept regardless, because this guard sits on the per-frame
         // path in both directions and outside `emit_debug`'s `catch_unwind`, so any

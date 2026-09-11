@@ -333,16 +333,26 @@ parameter.
 
 The browser store is read in the realm that creates the host runtime — the shell
 page in one embedding, an iframe realm in another — and is per-origin, so a value
-set on any other origin is invisible.
+set on any other origin is invisible. A dev build **MAY** also carry the value it
+was built with; a store value **MUST** win over it, so a build's value is a default
+and never an override.
+
+A native host's injected value arrives however that host is configured, and the
+headless CLI takes it as a flag or an environment variable. More than one switch
+**MUST** resolve to one value and the report **MUST** name which supplied it: a
+stale exported variable beating an explicit flag is otherwise silent. A value that
+is not a loopback `ws://` target (§6) **MUST** fail the host at the point it is
+read, not at first dial - a host that starts without the debugger it was asked for
+presents, from the debugger's side, exactly as a host nobody switched on.
 
 Reading whether the switch is set is distinct from reading what it holds (§7).
 The production message below depends on the first surviving into a production
 build; the dial depends on the second, which does not.
 
 A host with a dial path **MUST** report it: one that does not dial says so once,
-one that does says where, each naming the source it read. Today only the web host
-has such a path - the native sink has no host wiring it up - so this binds the web
-host now and every host as its dial path lands. The debugger's own viewer
+one that does says where, each naming the source it read. The web host and the
+headless CLI host both have such a path; a host that gains one is bound by this
+rule the moment it does. The debugger's own viewer
 holds a socket, so its socket count moves whether or not a host connected, and an
 empty board with a live socket is indistinguishable from a host nobody switched
 on. The message **MUST NOT** appear in a production build, with one exception: a
