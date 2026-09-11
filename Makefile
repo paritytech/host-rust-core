@@ -420,15 +420,15 @@ debugger: dev-bootstrap ## Wire debugger (:9231) + a DEV-MODE dotli host (:5173)
 	cd $(DOTLI) && VITE_APP_DEBUG=true bunx turbo run build \
 		--filter=@dotli/sandbox --filter=@dotli/protocol-app
 	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true \
-		VITE_TRUAPI_DEBUGGER=ws://127.0.0.1:$(DEBUGGER_PORT) bunx --bun vite build
+		VITE_TRUAPI_DEBUGGER_URL=ws://127.0.0.1:$(DEBUGGER_PORT) bunx --bun vite build
 	@printf '\n  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'
 	@printf '  Host:      http://localhost:5173/localhost:3000\n\n'
 	@printf '  The dial URL is built into the host, so there is nothing to enable and it\n'
 	@printf '  works in any browser profile. The host logs `wire debugger: dialling ...\n'
 	@printf '  from the build` once it connects.\n\n'
-	@printf '  To aim it somewhere else instead, set the key on http://localhost:5173\n'
-	@printf '  (the realm that creates the host runtime); a key set by hand always wins:\n\n'
-	@printf '    localStorage.setItem("truapi:debugger", "ws://127.0.0.1:$(DEBUGGER_PORT)"); location.reload()\n\n'
+	@printf '  To aim it somewhere else instead, attach from the console on the host\n'
+	@printf '  page - no reload, and it reaches the session already running:\n\n'
+	@printf '    __truapi.debugger.attach("ws://127.0.0.1:$(DEBUGGER_PORT)")\n\n'
 	@trap 'kill 0' EXIT; \
 	( cd $(DEBUGGER_PKG) && TRUAPI_DEBUGGER_PORT=$(DEBUGGER_PORT) bun run src/server.ts ) & \
 	( cd $(DOTLI) && bun scripts/preview-server.ts ) & \

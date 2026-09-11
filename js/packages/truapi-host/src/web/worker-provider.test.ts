@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
@@ -9,7 +9,10 @@ import {
 import { bytesToHex } from "@parity/truapi/scale";
 import type { GenericError, Result, ThemeVariant } from "@parity/truapi";
 
-import { resolveDebuggerEnablement } from "./create-worker-host-runtime.js";
+import {
+  productionReason,
+  resolveDebuggerEnablement,
+} from "./create-worker-host-runtime.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import { AuthState, CoreStorageKey } from "../generated/host-callbacks.js";
 import type {
@@ -171,11 +174,14 @@ async function createProviderFromRuntime(
   };
 }
 
-async function readyRuntime(worker: FakeWorker) {
+async function readyRuntime(
+  worker: FakeWorker,
+  options: { debugger?: string | null } = {},
+) {
   const runtimePromise = createWebWorkerPairingHostRuntime(
     asWorker(worker),
     makeHostCallbacks(),
-    { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+    { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()), ...options },
   );
   worker.emit({ kind: "loaded" });
   worker.emit({ kind: "ready" });
@@ -223,6 +229,9 @@ describe("createWebWorkerPairingHostRuntime", () => {
       hostConfig: hostConfigFromRuntimeConfig(config),
       capabilities: { chat: false, permissionStatus: false },
       debuggerUrl: null,
+      // Under `bun test` the `import.meta.env.DEV` gate reads undefined, so the
+      // build refuses and no core is ever built tappable.
+      debugTapArmed: false,
     });
 
     worker.emit({ kind: "ready" });
@@ -1225,26 +1234,13 @@ describe("createWebWorkerPairingHostRuntime", () => {
 });
 
 describe("debugger enablement reporting", () => {
-  // Regression for design doc §9: a switch set on a build whose dial is compiled
-  // out must say so once. Silence there is indistinguishable from a broken
-  // debugger, and a host whose only local build is production-mode (dot.li ships
-  // `build`/`preview`, no dev server) gets no other signal.
-  //
-  // Under `bun test` `import.meta.env.DEV` is `undefined`, so the gate takes its
-  // production path - which is exactly the path being asserted.
-  const withStubbedStorage = async (
-    key: string | null,
+  // Under `bun test` `import.meta.env.DEV` reads undefined, so the live path
+  // always takes its production branch - which is the one asserted here.
+  const capturingInfo = async (
     run: () => Promise<unknown>,
   ): Promise<string[]> => {
-    const g = globalThis as typeof globalThis & { localStorage?: unknown };
-    const had = Object.prototype.hasOwnProperty.call(g, "localStorage");
-    const previous = g.localStorage;
     const logged: string[] = [];
     const info = console.info;
-    g.localStorage = {
-      getItem: (name: string) => (name === "truapi:debugger" ? key : null),
-      setItem: () => {},
-    };
     console.info = (...args: unknown[]) => {
       logged.push(args.map(String).join(" "));
     };
@@ -1252,82 +1248,202 @@ describe("debugger enablement reporting", () => {
       await run();
     } finally {
       console.info = info;
-      if (had) g.localStorage = previous;
-      else delete g.localStorage;
     }
     return logged;
   };
 
-  it("reports once when the switch is set but the dial is compiled out", async () => {
+  // Nothing was asked for, so there is nothing to report and the line would be
+  // pure noise. `readyRuntime` passes no `debugger` option, and under `bun test`
+  // there is no build value either.
+  it("stays silent in a production build nobody asked to debug", async () => {
     const worker = new FakeWorker();
-    const logged = await withStubbedStorage("ws://127.0.0.1:9231", () =>
-      readyRuntime(worker),
+    const logged = await capturingInfo(() => readyRuntime(worker));
+    expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
+  });
+
+  // The counterpart, and the regression this pair exists for. Silence when a dial
+  // WAS configured is design doc §9's named failure: the easiest way to reach it
+  // is to copy the build command and drop `NODE_ENV=development`, and the result
+  // is an empty board with no console line and no error.
+  it("says so once when a dial was configured but the build compiled it out", async () => {
+    const worker = new FakeWorker();
+    const logged = await capturingInfo(() =>
+      readyRuntime(worker, { debugger: "ws://127.0.0.1:9231" }),
     );
     const line = logged.find((l) => l.includes("wire debugger"));
     expect(line).toBeDefined();
-    expect(line).toContain("truapi:debugger");
     // Must not assert a cause it cannot know: a production build and a bundler
     // that never substituted the token both leave the condition false.
     expect(line).toContain("did not resolve true");
   });
 
-  it("stays silent when the switch is unset", async () => {
+  // The tap is armed for the whole dev session, not only while a URL is set: the
+  // worker decides a core's `debugEmit` once, when the core is built, so a session
+  // that starts detached must still arm or a later attach() reaches nothing. In a
+  // production build it must stay false, or a core would carry a live sink.
+  it("never arms the tap when the build refuses", async () => {
     const worker = new FakeWorker();
-    const logged = await withStubbedStorage(null, () => readyRuntime(worker));
-    expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
+    await readyRuntime(worker);
+    const init = worker.messages.find((m) => m.kind === "init");
+    expect(init).toMatchObject({ debugTapArmed: false, debuggerUrl: null });
   });
 });
 
 // The dev-build branch, which the suite above cannot reach: it gates on
 // `import.meta.env.DEV`, a token a bundler substitutes and `bun test` leaves
 // undefined, so the live call always takes the production path here. The pure
-// seam is where the precedence design doc §9 fixes can actually be asserted.
-describe("debugger switch precedence (design doc §9)", () => {
+// seam is where the precedence can actually be asserted.
+describe("debugger switch precedence", () => {
   const BUILD = "ws://127.0.0.1:9231";
 
-  it("dials the key over the build's value", () => {
+  it("dials the host's option over the build's value", () => {
     expect(resolveDebuggerEnablement("ws://127.0.0.1:9300", BUILD)).toEqual({
       url: "ws://127.0.0.1:9300",
-      reason: "enabled",
+      reason: "enabled-from-option",
     });
   });
 
-  it("falls back to the build's value when no key is set", () => {
-    expect(resolveDebuggerEnablement(null, BUILD)).toEqual({
-      url: BUILD,
-      reason: "enabled-from-build",
-    });
-  });
-
-  // The regression this seam exists for. An empty key used to fold in with an
-  // absent one and fall through to the build, leaving a build that carries a URL
-  // with no way to stop dialling short of rebuilding it. §9 requires the store to
-  // win unconditionally, and "off" is a thing the store must be able to say.
-  it("treats an empty key as OFF, beating the build's value", () => {
-    expect(resolveDebuggerEnablement("", BUILD)).toEqual({
-      url: null,
-      reason: "off-by-key",
-    });
-  });
-
-  it("is off with neither switch set, and says which is missing", () => {
-    expect(resolveDebuggerEnablement(null, null)).toEqual({
-      url: null,
-      reason: "no-key",
-    });
-    expect(resolveDebuggerEnablement(undefined, null)).toEqual({
-      url: null,
-      reason: "no-storage",
-    });
-  });
-
-  // A realm with no store cannot opt out, so the build must still win there -
-  // otherwise `no-storage` would silently disable every build-configured host in
-  // a sandboxed iframe.
-  it("still uses the build's value when the realm has no storage", () => {
+  // Omitting the field is how a host says "whatever you were built with", which
+  // is what makes `make debugger` work with nothing to switch on.
+  it("falls back to the build's value when the host passes nothing", () => {
     expect(resolveDebuggerEnablement(undefined, BUILD)).toEqual({
       url: BUILD,
       reason: "enabled-from-build",
     });
+  });
+
+  // The case that is easy to fold in with "omitted". If null fell through to the
+  // build, a host compiled with a URL could not refuse the dial short of being
+  // rebuilt - so a host has no way to turn the tap off for its own users.
+  it("treats an explicit null or empty string as OFF, beating the build", () => {
+    expect(resolveDebuggerEnablement(null, BUILD)).toEqual({
+      url: null,
+      reason: "not-configured",
+    });
+    expect(resolveDebuggerEnablement("", BUILD)).toEqual({
+      url: null,
+      reason: "not-configured",
+    });
+  });
+
+  it("is off with neither switch set", () => {
+    expect(resolveDebuggerEnablement(undefined, null)).toEqual({
+      url: null,
+      reason: "not-configured",
+    });
+  });
+});
+
+describe("productionReason", () => {
+  const URL = "ws://127.0.0.1:9231";
+
+  it("is silent only when nothing asked for a dial", () => {
+    expect(productionReason(undefined, null)).toBe("production-build");
+    expect(productionReason(null, null)).toBe("production-build");
+    expect(productionReason("", null)).toBe("production-build");
+  });
+
+  // The reviewer's scenario, and the half a test can otherwise never reach: the
+  // env var IS substituted into a production bundle, so a build made with it but
+  // without `NODE_ENV=development` is readable here and must not go quiet.
+  it("reports a build-carried URL in a production build", () => {
+    expect(productionReason(undefined, URL)).toBe(
+      "production-build-configured",
+    );
+  });
+
+  it("reports a host that asked, whatever the build carries", () => {
+    expect(productionReason(URL, null)).toBe("production-build-configured");
+  });
+});
+
+describe("__truapi.debugger", () => {
+  const devConsole = (): {
+    attach(url: string): void;
+    detach(): void;
+    status(): string | null;
+  } => {
+    const g = globalThis as unknown as {
+      __truapi?: { debugger: ReturnType<typeof devConsole> };
+    };
+    const api = g.__truapi?.debugger;
+    if (!api) throw new Error("__truapi.debugger was not published");
+    return api;
+  };
+
+  const silently = (run: () => void): void => {
+    const info = console.info;
+    console.info = () => {};
+    try {
+      run();
+    } finally {
+      console.info = info;
+    }
+  };
+
+  afterEach(() => {
+    silently(() => {
+      devConsole().detach();
+    });
+  });
+
+  // The whole point of the console over a storage key: repointing a host that is
+  // already running, with no reload and no per-origin key to get wrong.
+  it("repoints a live runtime without a reload", async () => {
+    const worker = new FakeWorker();
+    await readyRuntime(worker);
+    silently(() => {
+      devConsole().attach("ws://127.0.0.1:9300");
+    });
+    expect(lastMessageOfKind(worker, "setDebuggerUrl")).toEqual({
+      kind: "setDebuggerUrl",
+      url: "ws://127.0.0.1:9300",
+    });
+    expect(devConsole().status()).toBe("ws://127.0.0.1:9300");
+  });
+
+  // Detach must reach the worker as an explicit null rather than simply going
+  // quiet on the main thread: the link owns a socket and a reconnect timer, and
+  // only the worker can close them.
+  it("detaches by sending null, and forgets the url", async () => {
+    const worker = new FakeWorker();
+    await readyRuntime(worker);
+    silently(() => {
+      devConsole().attach("ws://127.0.0.1:9300");
+      devConsole().detach();
+    });
+    expect(lastMessageOfKind(worker, "setDebuggerUrl")).toEqual({
+      kind: "setDebuggerUrl",
+      url: null,
+    });
+    expect(devConsole().status()).toBeNull();
+  });
+
+  // A host that rebuilds its runtime mid-session (a reset, a product swap) would
+  // otherwise stop streaming with nothing said, which reads as the debugger
+  // dropping the connection rather than the host replacing its runtime.
+  it("replays the attached url onto a runtime created afterwards", async () => {
+    silently(() => {
+      devConsole().attach("ws://127.0.0.1:9300");
+    });
+    const worker = new FakeWorker();
+    await readyRuntime(worker);
+    expect(lastMessageOfKind(worker, "setDebuggerUrl")).toEqual({
+      kind: "setDebuggerUrl",
+      url: "ws://127.0.0.1:9300",
+    });
+  });
+
+  // Called directly, not through the console: dispose() already unregisters the
+  // runtime from the fan-out, so routing this through attach() would pass with or
+  // without the guard. `setDebuggerUrl` is a public method on the runtime, so a
+  // host can reach a disposed one on its own, and its worker is gone by then.
+  it("does not post to a disposed runtime", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    runtime.dispose();
+    const before = worker.messages.length;
+    runtime.setDebuggerUrl("ws://127.0.0.1:9300");
+    expect(worker.messages.length).toBe(before);
   });
 });

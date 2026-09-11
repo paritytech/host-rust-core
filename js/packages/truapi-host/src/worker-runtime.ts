@@ -345,6 +345,7 @@ export function createDebuggerLink(
   options: DebuggerLinkOptions = {},
 ): {
   emit(channelId: string, dir: string, frame: Uint8Array): void;
+  close(): void;
 } {
   // Loopback-only, dev-only: a non-loopback (or non-ws://) debugger URL yields an
   // inert link rather than streaming frames across the network. Warn so a
@@ -353,7 +354,7 @@ export function createDebuggerLink(
     console.warn(
       `[truapi] wire debugger URL rejected (must be ws:// on a loopback host): ${url}`,
     );
-    return { emit() {} };
+    return { emit() {}, close() {} };
   }
   const createSocket =
     options.createSocket ?? ((target: string) => new WebSocket(target));
@@ -376,6 +377,10 @@ export function createDebuggerLink(
   let droppedSinceSend = 0;
   let reconnectDelayMs = RECONNECT_BASE_MS;
   let reconnectScheduled = false;
+  // Set by close(). Checked in scheduleReconnect rather than only in emit,
+  // because a reconnect timer armed before the close still fires afterwards and
+  // would otherwise redial a link the console just detached.
+  let closed = false;
 
   /**
    * Dial again after the current backoff, at most one dial in flight.
@@ -387,14 +392,16 @@ export function createDebuggerLink(
    * mirrors it.
    */
   function scheduleReconnect(): void {
-    if (socket !== null || reconnectScheduled) return;
+    if (closed || socket !== null || reconnectScheduled) return;
     reconnectScheduled = true;
     const delayMs = reconnectDelayMs;
     reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
     try {
       schedule(() => {
         reconnectScheduled = false;
-        if (socket === null) connect();
+        // Re-checked here, not only at arming time: a timer armed before close()
+        // still fires afterwards, and would redial a link the console detached.
+        if (!closed && socket === null) connect();
       }, delayMs);
     } catch {
       // No timer available: fall back to redialling on the next emit.
@@ -518,7 +525,30 @@ export function createDebuggerLink(
   }
 
   return {
+    /**
+     * Detach: drop the socket and the backlog, and refuse to redial.
+     *
+     * The tap upstream of this stays installed - a core's `debugEmit` is decided
+     * once, when the core is built - so emit() must go quiet on its own rather
+     * than relying on the caller stopping. The backlog goes too: it exists to
+     * cover a debugger that is coming back, and after a detach nothing is.
+     */
+    close() {
+      closed = true;
+      open = false;
+      queue.length = 0;
+      queuedBytes = 0;
+      droppedSinceSend = 0;
+      const doomed = socket;
+      socket = null;
+      try {
+        doomed?.close();
+      } catch {
+        // A socket that refuses to close is still detached from this link.
+      }
+    },
     emit(channelId, dir, frame) {
+      if (closed) return;
       // A debug tap must never throw into the observed frame path: toBase64 /
       // JSON.stringify can raise on a pathological frame (btoa or V8 string-length
       // limits), and only send() swallows its own errors. Losing a trace is fine;
@@ -592,6 +622,46 @@ export function createDebuggerLink(
 }
 
 let debuggerLink: ReturnType<typeof createDebuggerLink> | null = null;
+/**
+ * Whether a core may be built with a wire tap at all; see `init.debugTapArmed`.
+ *
+ * Separate from {@link debuggerLink} because the two have different lifetimes. A
+ * core's `debugEmit` is decided once, when the core is built, and it is what makes
+ * the Rust host install its `DebugSink`. Keying that on the link would mean every
+ * core created while detached is permanently untappable, so `__truapi.debugger
+ * .attach()` would appear to work and then show nothing for the session that was
+ * already running - the exact silent failure this whole path exists to avoid.
+ */
+let debugTapArmed = false;
+
+/**
+ * Attach the wire tap to a core's callbacks, when this session is armed for one.
+ *
+ * Adding `debugEmit` is what makes the Rust host install its `DebugSink`, and that
+ * happens once, when the core is built. Two consequences this function exists to
+ * hold, and a unit is the only place they can be asserted - the live path needs a
+ * worker context and a WASM module:
+ *
+ *  - Unarmed, the key is ABSENT rather than a no-op function. A present-but-inert
+ *    `debugEmit` would still make the Rust side install a sink in production.
+ *  - Armed, `emit` is called through on every frame rather than captured now, so a
+ *    debugger attached later reaches cores that already exist. Binding the link at
+ *    construction is the bug that makes `__truapi.debugger.attach()` appear to work
+ *    and then show nothing for the session already running.
+ */
+export function withDebugTap<T extends object>(
+  callbacks: T,
+  armed: boolean,
+  emit: (channelId: string, dir: string, frame: Uint8Array) => void,
+): T {
+  if (!armed) return callbacks;
+  return {
+    ...callbacks,
+    debugEmit(channelId: string, dir: string, frame: Uint8Array): void {
+      emit(channelId, dir, frame);
+    },
+  };
+}
 
 function buildCoreCallbacks(coreId: number) {
   const callbacks = {
@@ -602,15 +672,9 @@ function buildCoreCallbacks(coreId: number) {
       // Main thread owns lifecycle and disposes explicitly.
     },
   };
-  if (!debuggerLink) return callbacks;
-  // Adding `debugEmit` is what makes the Rust host install its debug sink; when
-  // no debugger is configured it is absent and the tap stays inert.
-  return {
-    ...callbacks,
-    debugEmit(channelId: string, dir: string, frame: Uint8Array): void {
-      debuggerLink?.emit(channelId, dir, frame);
-    },
-  };
+  return withDebugTap(callbacks, debugTapArmed, (channelId, dir, frame) => {
+    debuggerLink?.emit(channelId, dir, frame);
+  });
 }
 
 let runtime: WorkerPairingHostRuntime | null = null;
@@ -652,6 +716,7 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         break;
       }
       wasm.setLogLevel?.(msg.logLevel);
+      debugTapArmed = msg.debugTapArmed;
       if (msg.debuggerUrl && !debuggerLink) {
         // The hash comes from the core that will encode the frames, not from this
         // package's client constant: they are separate artifacts and the WASM
@@ -696,6 +761,18 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       break;
     case "setLogLevel":
       wasm?.setLogLevel?.(msg.level);
+      break;
+    case "setDebuggerUrl":
+      // Replace, never layer: two live links would double every frame on the
+      // board. Closing first also frees the old socket rather than leaving it
+      // reconnecting to a debugger nobody is reading.
+      debuggerLink?.close();
+      debuggerLink = null;
+      if (debugTapArmed && msg.url !== null) {
+        debuggerLink = createDebuggerLink(msg.url, {
+          schema: wasm === null ? undefined : coreWireSchemaHash(wasm),
+        });
+      }
       break;
     case "frame":
       void handleFrame(msg.coreId, msg.bytes);

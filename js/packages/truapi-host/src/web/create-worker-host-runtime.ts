@@ -93,6 +93,11 @@ export interface WorkerPairingHostRuntime {
     timeoutMs?: number,
   ): Promise<Uint8Array | undefined>;
   setLogLevel(level: LogLevel): void;
+  /**
+   * Dev-only: repoint this runtime's wire tap, or detach it with `null`. A no-op
+   * in a production build, where no tap was installed to repoint.
+   */
+  setDebuggerUrl(url: string | null): void;
   dispose(): void;
 }
 
@@ -212,43 +217,35 @@ function readPersistedLogLevel(): LogLevel | null {
   return globalThis.localStorage?.getItem(DEV_LOG_LEVEL_KEY) ?? null;
 }
 
-// Dev-only, host-agnostic enablement for the wire debugger: in a DEV build, set
-// `localStorage["truapi:debugger"] = "ws://<host>:9231"` in the browser and the
-// host worker dials that debugger and streams frames to it. Read here (host page)
-// and forwarded to the worker in `init`; no cooperation from the embedding shell.
-const DEV_DEBUGGER_URL_KEY = "truapi:debugger";
-
 /**
  * Why the wire debugger is (not) enabled, so a no-dial is never silent.
  *
- * `no-key` is the one that bites. The key is read on whichever origin creates the
- * runtime - the shell in an embedded host like dot.li, but an iframe realm in
- * another embedding - and `localStorage` is per-origin, so a key set anywhere else
- * is invisible here. Naming the origin is the whole point: the tap then stays dark
- * with nothing on screen to say why.
+ * There is no browser store in this path. The dial is something the embedding
+ * host passes in - `options.debugger`, or `__truapi.debugger.attach()` once the
+ * runtime is up - with the value a dev build was compiled with as the default.
+ * A library reading a key out of `localStorage` behind its embedder was both
+ * un-turn-off-able from the host's own UI and invisible across origins and
+ * browser profiles, which is what made a dark tap so hard to explain.
  */
 type DebuggerEnablement = {
   readonly url: string | null;
   readonly reason:
-    | "enabled"
-    | "production-build"
-    | "production-build-switch-set"
+    | "enabled-from-option"
     | "enabled-from-build"
-    | "off-by-key"
-    | "no-key"
-    | "no-storage";
+    | "production-build"
+    | "production-build-configured"
+    | "not-configured";
 };
 
 /**
- * Dial URL a dev build was given, when it was given one.
+ * Dial URL a dev build was compiled with, when it was given one.
  *
- * Lets a local stack point the tap at its own debugger with no per-browser setup:
- * `localStorage` is per-origin AND per-profile, so a key is the one piece of this
- * that cannot be arranged from outside the browser. A build-time value can, and it
- * then holds for every profile that opens that build.
+ * This is the default, not the mechanism: it lets `make debugger` hand a whole
+ * local stack a working tap with nothing to switch on, in any browser profile.
+ * An embedder that passes `debugger` explicitly overrides it.
  *
  * Same literal-token rule as the `DEV` read below: a bundler replaces the exact
- * `import.meta.env.VITE_TRUAPI_DEBUGGER` expression, so it must not be aliased or
+ * `import.meta.env.VITE_TRUAPI_DEBUGGER_URL` expression, so it must not be aliased or
  * optionally chained. The try/catch covers realms with no `import.meta.env` at all
  * (tsc output under Node, unit tests), where the access throws.
  */
@@ -256,8 +253,8 @@ function buildTimeDebuggerUrl(): string | null {
   let raw: unknown;
   try {
     raw = (
-      import.meta as unknown as { env: { VITE_TRUAPI_DEBUGGER?: unknown } }
-    ).env.VITE_TRUAPI_DEBUGGER;
+      import.meta as unknown as { env: { VITE_TRUAPI_DEBUGGER_URL?: unknown } }
+    ).env.VITE_TRUAPI_DEBUGGER_URL;
   } catch {
     return null;
   }
@@ -266,92 +263,106 @@ function buildTimeDebuggerUrl(): string | null {
   return url === "" ? null : url;
 }
 
-function readPersistedDebuggerUrl(): DebuggerEnablement {
-  // Hard dev-only gate, not a convention: bundlers (Vite) replace
-  // `import.meta.env.DEV` with a boolean literal, so in a PRODUCTION build this
-  // returns null unconditionally and the tap is inert - a stray localStorage key
-  // cannot turn the debugger on in prod. The wire debugger streams raw
-  // (now fully-decoded) frames and is strictly a development tool.
-  //
-  // The expression below must stay the *literal* `import.meta.env.DEV`, with no
-  // alias and no optional chaining. A bundler replaces that exact token; reading
-  // it through `const meta = import.meta` or as `import.meta.env?.DEV` does not
-  // match, so the expression survives into the bundle and is evaluated at runtime
-  // against an `import.meta.env` that a plain module does not have. That reads as
-  // `undefined`, and the gate then refuses in *every* bundled host rather than
-  // only production ones - which silently disables the standalone tap everywhere.
-  // The try/catch keeps it safe where `import.meta.env` genuinely does not exist
-  // (tsc output run under Node, unit tests), where the access throws.
-  let dev = false;
+/**
+ * Whether this build may carry a wire tap at all.
+ *
+ * Hard dev-only gate, not a convention: bundlers (Vite) replace
+ * `import.meta.env.DEV` with a boolean literal, so a PRODUCTION build returns
+ * false unconditionally, no option can turn the debugger on, and the tap is never
+ * installed. The wire debugger streams fully-decoded frames and is strictly a
+ * development tool.
+ *
+ * The expression below must stay the *literal* `import.meta.env.DEV`, with no
+ * alias and no optional chaining. A bundler replaces that exact token; reading it
+ * through `const meta = import.meta` or as `import.meta.env?.DEV` does not match,
+ * so the expression survives into the bundle and is evaluated at runtime against
+ * an `import.meta.env` that a plain module does not have. That reads as
+ * `undefined`, and the gate then refuses in *every* bundled host rather than only
+ * production ones - which silently disables the tap everywhere. The try/catch
+ * keeps it safe where `import.meta.env` genuinely does not exist (tsc output run
+ * under Node, unit tests), where the access throws.
+ */
+function debuggerBuildAllows(): boolean {
   try {
-    dev =
-      (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
+    return (
+      (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true
+    );
   } catch {
-    dev = false;
+    return false;
   }
-  if (!dev) {
-    // A switch set on a production build is someone actively trying to enable the
-    // debugger against a build that cannot carry one. Distinguish it from plain
-    // production so the reporter can say so: staying silent here is what makes a
-    // compiled-out dial read as a broken debugger (design doc §9).
-    //
-    // Both the property access and the read sit inside the try. Reading the
-    // `localStorage` PROPERTY is what throws (`SecurityError`) in a storage-denied
-    // realm - a sandboxed iframe without `allow-same-origin`, or blocked
-    // third-party storage - while `getItem` on an available store does not. This
-    // function runs inside `createWebWorkerPairingHostRuntime`'s promise executor,
-    // so an escaping throw rejects host creation over a debug-only lookup.
-    let switchSet = false;
-    try {
-      const key = globalThis.localStorage?.getItem(DEV_DEBUGGER_URL_KEY);
-      switchSet = key !== null && key !== undefined && key !== "";
-    } catch {
-      switchSet = false;
-    }
-    return {
-      url: null,
-      reason: switchSet ? "production-build-switch-set" : "production-build",
-    };
-  }
-  const storage = globalThis.localStorage;
-  return resolveDebuggerEnablement(
-    storage === undefined
-      ? undefined
-      : (storage.getItem(DEV_DEBUGGER_URL_KEY) ?? null),
-    buildTimeDebuggerUrl(),
-  );
 }
 
 /**
- * Resolve the two dev-build switches into one verdict. Pure, and exported so the
+ * Which of the two production verdicts applies. Pure, and exported for the same
+ * reason {@link resolveDebuggerEnablement} is: the caller reads
+ * `import.meta.env`, which a bundler substitutes and a test runner cannot, so
+ * neither the build value nor the DEV gate can be varied from a test.
+ *
+ * The build half is the one that matters and the one that is easy to drop. The
+ * env var is substituted at build time, so it is still readable in a production
+ * bundle - a build made with it but without `NODE_ENV=development` is exactly the
+ * case that must not go quiet. An option, by contrast, is passed by a host that is
+ * still running, so it is visible either way.
+ */
+export function productionReason(
+  fromOption: string | null | undefined,
+  fromBuild: string | null,
+): "production-build" | "production-build-configured" {
+  const asked =
+    fromBuild !== null || (typeof fromOption === "string" && fromOption !== "");
+  return asked ? "production-build-configured" : "production-build";
+}
+
+function readDebuggerEnablement(
+  fromOption: string | null | undefined,
+): DebuggerEnablement {
+  const fromBuild = buildTimeDebuggerUrl();
+  if (!debuggerBuildAllows()) {
+    // Somebody asked for a dial this build cannot carry. Saying nothing here is
+    // the failure design doc §9 exists to prevent: the easiest way to reach it is
+    // to copy the build command and drop `NODE_ENV=development`, and what you get
+    // is an empty board, no console line, and no error - which reads as a broken
+    // debugger rather than a build that compiled the dial out.
+    //
+    // Keyed on the BUILD value as well as the option, because the build value is
+    // the half that survives into a production bundle: the env var is substituted
+    // at build time, so it is still readable here, while an option passed by a
+    // host is not something this branch can see going unused.
+    return { url: null, reason: productionReason(fromOption, fromBuild) };
+  }
+  return resolveDebuggerEnablement(fromOption, fromBuild);
+}
+
+/**
+ * Resolve the dev-build switches into one verdict. Pure, and exported so the
  * precedence is testable: the caller reads `import.meta.env.DEV`, which a bundler
  * substitutes and a test runner cannot, so the live path cannot reach this branch
  * under `bun test` at all.
  *
- * `stored` is `undefined` when the realm has no `localStorage`, `null` when the
- * key is absent, and a string when it is set - including the empty string.
+ * `fromOption` is `undefined` when the embedder said nothing, `null` or `""` when
+ * it explicitly asked for no dial, and a URL when it asked for one.
  *
- * Precedence, per design doc §9 ("a store value MUST win over [the build's], so a
- * build's value is a default and never an override"):
+ * Precedence:
  *
- *  - key set to a URL  -> dial it, whatever the build says
- *  - key set to empty  -> OFF, whatever the build says
- *  - key absent        -> the build's value, if it carries one
+ *  - option set to a URL  -> dial it, whatever the build says
+ *  - option set null/""   -> OFF, whatever the build says
+ *  - option omitted       -> the build's value, if it carries one
  *
- * The empty case is the one that is easy to get wrong: treating `""` as "no key"
- * falls through to the build, and a build that carries a URL then has no off
- * switch short of rebuilding - the store losing to the build, which §9 forbids.
+ * The explicit-off case is the one that is easy to get wrong: folding `null` in
+ * with "omitted" falls through to the build, and an embedder that compiled a URL
+ * in then has no way to refuse the dial short of rebuilding.
  */
 export function resolveDebuggerEnablement(
-  stored: string | null | undefined,
+  fromOption: string | null | undefined,
   fromBuild: string | null,
 ): DebuggerEnablement {
-  if (stored === "") return { url: null, reason: "off-by-key" };
-  if (typeof stored === "string") return { url: stored, reason: "enabled" };
+  if (fromOption === null || fromOption === "")
+    return { url: null, reason: "not-configured" };
+  if (typeof fromOption === "string")
+    return { url: fromOption, reason: "enabled-from-option" };
   if (fromBuild !== null)
     return { url: fromBuild, reason: "enabled-from-build" };
-  if (stored === undefined) return { url: null, reason: "no-storage" };
-  return { url: null, reason: "no-key" };
+  return { url: null, reason: "not-configured" };
 }
 
 /**
@@ -360,60 +371,43 @@ export function resolveDebuggerEnablement(
  * count still moves (its UI holds one), so "connected but no frames" reads as a
  * debugger bug rather than a host that never dialled.
  *
- * Silent in a production build with the switch UNSET, where the message would be
- * noise. With the switch SET it says so once even in production: someone is
- * actively trying to enable a build that cannot carry the dial, and a host whose
- * only local build is production-mode (dot.li ships `build` and `preview`, no dev
- * server) otherwise gives them no signal at all. Design doc §9.
+ * Silent in a production build, where the message would be noise and there is
+ * nothing a developer could do about it in that build anyway.
  */
 function reportDebuggerEnablement(e: DebuggerEnablement): void {
   if (e.reason === "production-build") return;
-  if (e.reason === "production-build-switch-set") {
+  if (e.reason === "production-build-configured") {
     // Says "did not resolve true", not "this is a production build". The gate
-    // cannot tell a production build from a bundler that never substituted the
-    // token: both land on `dev === false`. Asserting production would tell a
-    // developer on a genuine dev build under webpack/rollup/plain tsc to rebuild
-    // in dev mode, which is the one configuration the comment above warns about.
+    // cannot tell the two apart: a genuine production build and a bundler that
+    // never substituted the token both leave the condition false, and asserting
+    // production would send a developer on a dev build under webpack or plain
+    // tsc off to rebuild in dev mode - the one case that would not help.
     console.info(
-      `[truapi] wire debugger: off (the "${DEV_DEBUGGER_URL_KEY}" switch is set, but ` +
-        "`import.meta.env.DEV` did not resolve true, so the dial is compiled out. " +
-        "Either this is a production build - rebuild the host in dev mode - or the " +
-        "bundler did not substitute that token.",
+      "[truapi] wire debugger: off (a dial was configured, but " +
+        "`import.meta.env.DEV` did not resolve true, so the tap is compiled out. " +
+        "Either this is a production build - rebuild the host in dev mode - or " +
+        "the bundler did not substitute that token.",
     );
     return;
   }
   const origin = globalThis.location?.origin ?? "(unknown origin)";
-  if (e.reason === "enabled") {
+  if (e.reason === "enabled-from-option") {
     console.info(
-      `[truapi] wire debugger: dialling ${e.url} (origin ${origin})`,
+      `[truapi] wire debugger: dialling ${e.url} from the host's option (origin ${origin})`,
     );
     return;
   }
   if (e.reason === "enabled-from-build") {
-    // Say where the URL came from. A developer who never set a key needs to know
-    // the build chose one, and a developer whose key was ignored needs to know it
-    // was not: a key always wins, so seeing this line means no key was set.
     console.info(
-      `[truapi] wire debugger: dialling ${e.url} from the build (origin ${origin}); ` +
-        `set "${DEV_DEBUGGER_URL_KEY}" here to override`,
+      `[truapi] wire debugger: dialling ${e.url} from the build (origin ${origin})`,
     );
     return;
   }
-  if (e.reason === "off-by-key") {
-    console.info(
-      `[truapi] wire debugger: off (the "${DEV_DEBUGGER_URL_KEY}" key on origin ` +
-        `${origin} is empty, which turns the dial off even when the build carries ` +
-        "a URL; remove the key to go back to the build's default)",
-    );
-    return;
-  }
-  const why =
-    e.reason === "no-storage"
-      ? "no localStorage in this realm"
-      : `no "${DEV_DEBUGGER_URL_KEY}" key on origin ${origin} - localStorage is ` +
-        "per-origin, so set it on THIS origin (the realm that creates the host " +
-        "runtime), then reload. A key on another origin is invisible here";
-  console.info(`[truapi] wire debugger: off (${why})`);
+  console.info(
+    "[truapi] wire debugger: off (this host passed no `debugger` option and the " +
+      `build carries no VITE_TRUAPI_DEBUGGER_URL). Attach one at any time with ` +
+      `__truapi.debugger.attach("ws://127.0.0.1:9231") on origin ${origin}`,
+  );
 }
 
 function persistLogLevel(level: LogLevel): void {
@@ -421,11 +415,34 @@ function persistLogLevel(level: LogLevel): void {
 }
 
 let devLogLevelOverride: LogLevel | null = readPersistedLogLevel();
-const devGlobalTargets = new Set<{ setLogLevel?: (level: LogLevel) => void }>();
+const devGlobalTargets = new Set<{
+  setLogLevel?: (level: LogLevel) => void;
+  setDebuggerUrl?: (url: string | null) => void;
+}>();
+/**
+ * Dev console published at `globalThis.__truapi`.
+ *
+ * Discoverability is the point: typing `__truapi.` in a console shows what a dev
+ * build can be told to do, which no storage key or environment variable does.
+ */
 interface TrUApiDevConsole {
   setLogLevel(level: LogLevel): void;
   getLogLevel(): LogLevel | null;
+  debugger: {
+    /** Point every live runtime at this loopback `ws://` debugger. No reload. */
+    attach(url: string): void;
+    /** Stop streaming. The tap stays installed, so `attach` works again after. */
+    detach(): void;
+    /** The URL currently attached, or null. */
+    status(): string | null;
+  };
 }
+/**
+ * The dial the console asked for, remembered across runtimes: a host created
+ * after an `attach()` inherits it, the way `devLogLevelOverride` works. Null is
+ * both "never attached" and "explicitly detached"; the two behave identically.
+ */
+let devDebuggerUrlOverride: string | null = null;
 
 function handleCallbackRequest(
   state: RuntimeState,
@@ -847,6 +864,21 @@ export interface CreateWebWorkerPairingHostRuntimeOptions {
   logLevel?: LogLevel;
   hostConfig: WebWorkerHostConfig;
   initTimeoutMs?: number;
+  /**
+   * Dev-only: a loopback `ws://` wire debugger to stream tapped frames to.
+   *
+   * The host decides. Omit the field to take whatever the build was compiled with
+   * (`VITE_TRUAPI_DEBUGGER_URL`, which is how `make debugger` hands a local stack a
+   * working tap with nothing to switch on); pass `null` or `""` to refuse the dial
+   * even when the build carries one.
+   *
+   * Ignored outside a dev build: the `import.meta.env.DEV` gate refuses first, so
+   * a production bundle cannot be talked into a tap by any value here.
+   *
+   * A running host can be repointed without a reload through
+   * `__truapi.debugger.attach(url)` / `.detach()`.
+   */
+  debugger?: string | null;
 }
 
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
@@ -1039,8 +1071,20 @@ export function createWebWorkerPairingHostRuntime(
       notifyFault(new Error("worker message could not be deserialized"));
     };
 
-    const debuggerEnablement = readPersistedDebuggerUrl();
+    const debuggerEnablement = readDebuggerEnablement(options.debugger);
     reportDebuggerEnablement(debuggerEnablement);
+    // Armed for the whole dev session, independent of whether a URL is set right
+    // now: the worker decides a core's tap once, when the core is built, so a
+    // later `__truapi.debugger.attach()` has nothing to reach unless every core
+    // was built tappable. False in production, where no core ever gets a sink.
+    const debugTapArmed = debuggerEnablement.reason !== "production-build";
+    // Seed the console's view so `__truapi.debugger.status()` reports the dial
+    // this host actually has, rather than null until someone calls attach(). Only
+    // when unset: an explicit attach() must not be undone by the next runtime
+    // reporting the value it was constructed with.
+    if (devDebuggerUrlOverride === null && debuggerEnablement.url !== null) {
+      devDebuggerUrlOverride = debuggerEnablement.url;
+    }
 
     const onInitMessage = (ev: MessageEvent<WorkerToMain>): void => {
       const msg = ev.data;
@@ -1054,6 +1098,7 @@ export function createWebWorkerPairingHostRuntime(
             permissionStatus: host.permissionStatus !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
+          debugTapArmed,
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
         state.coreWireSchemaHash = msg.schema;
@@ -1302,6 +1347,16 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         level,
       } satisfies MainToWorker);
     },
+    setDebuggerUrl(url): void {
+      if (state.disposed) return;
+      // Sent even when this session was never armed. The worker ignores it there,
+      // and deciding here would need the arming flag threaded onto RuntimeState
+      // for no behavioural difference.
+      state.worker.postMessage({
+        kind: "setDebuggerUrl",
+        url,
+      } satisfies MainToWorker);
+    },
     dispose(): void {
       devGlobalTargets.delete(runtime);
       teardown(state, new Error("runtime disposed"), false);
@@ -1483,10 +1538,17 @@ function buildProvider(
 
 function exposeDevGlobal(target: {
   setLogLevel?: (level: LogLevel) => void;
+  setDebuggerUrl?: (url: string | null) => void;
 }): void {
   devGlobalTargets.add(target);
   if (devLogLevelOverride !== null) {
     target.setLogLevel?.(devLogLevelOverride);
+  }
+  // A runtime created after an attach joins the same debugger. Without this a
+  // host that rebuilds its runtime (a session reset, a product swap) silently
+  // stops streaming, which reads as the debugger dropping the connection.
+  if (devDebuggerUrlOverride !== null) {
+    target.setDebuggerUrl?.(devDebuggerUrlOverride);
   }
   publishDevGlobal();
 }
@@ -1506,6 +1568,30 @@ function publishDevGlobal(): void {
     },
     getLogLevel(): LogLevel | null {
       return devLogLevelOverride;
+    },
+    debugger: {
+      attach(url: string): void {
+        devDebuggerUrlOverride = url;
+        for (const provider of [...devGlobalTargets]) {
+          provider.setDebuggerUrl?.(url);
+        }
+        // Say how many runtimes took it. Zero is the case worth seeing: it means
+        // the call landed before any host was created, so nothing is streaming
+        // yet even though the URL was accepted.
+        console.info(
+          `[truapi] wire debugger: attached ${url} (${devGlobalTargets.size} runtime(s))`,
+        );
+      },
+      detach(): void {
+        devDebuggerUrlOverride = null;
+        for (const provider of [...devGlobalTargets]) {
+          provider.setDebuggerUrl?.(null);
+        }
+        console.info("[truapi] wire debugger: detached");
+      },
+      status(): string | null {
+        return devDebuggerUrlOverride;
+      },
     },
   };
 }
