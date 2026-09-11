@@ -17,7 +17,7 @@ use futures::future::{BoxFuture, Either, select};
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use parity_scale_codec::{Decode, DecodeLimit, Encode};
-use truapi::v01;
+use truapi::CallError;
 
 use crate::frame::{
     IdFactory, MESSAGE_TYPE_INTERRUPT, MESSAGE_TYPE_RECEIVE, MESSAGE_TYPE_START, MESSAGE_TYPE_STOP,
@@ -59,19 +59,35 @@ pub enum SubscriptionOutput {
 /// Boxed stream of [`SubscriptionOutput`] consumed by the dispatcher.
 pub type SubscriptionStream = BoxStream<'static, SubscriptionOutput>;
 
-/// Wrap a host-side stream of typed items into the SCALE-encoded
+/// Wrap a host-side subscription into the SCALE-encoded
 /// [`SubscriptionStream`] that the dispatcher delivers to the transport.
 ///
 /// `Item` is the versioned wrapper for each emitted value (e.g.
-/// `versioned::account::HostAccountConnectionStatusSubscribeItem`). The
-/// generated dispatcher calls this with the second type parameter inferred
-/// from the host trait return.
-pub fn subscription_stream<Item, S>(stream: S) -> SubscriptionStream
+/// `versioned::account::HostAccountConnectionStatusSubscribeItem`) and
+/// `Interrupt` the value that ends the stream. The generated dispatcher calls
+/// this with both inferred from the host trait return.
+pub fn subscription_stream<Item, Interrupt, S>(stream: S) -> SubscriptionStream
 where
     Item: Encode + 'static,
-    S: futures::Stream<Item = Item> + Send + 'static,
+    Interrupt: Encode + 'static,
+    S: futures::Stream<Item = Result<Item, Interrupt>> + Send + 'static,
 {
-    Box::pin(stream.map(|item| SubscriptionOutput::Item(item.encode())))
+    Box::pin(stream.map(|item| match item {
+        Ok(item) => SubscriptionOutput::Item(item.encode()),
+        Err(interrupt) => SubscriptionOutput::Interrupt(subscription_interrupt(interrupt)),
+    }))
+}
+
+/// Encode the `Interrupt` payload that ends a subscription with `interrupt`.
+///
+/// The leg carries `Result<(), Interrupt>`, so a value rides in its `Err`
+/// arm and a stream that ends without one sends
+/// [`encode_clean_interrupt`]'s `Ok(())`.
+pub fn subscription_interrupt<Interrupt>(interrupt: Interrupt) -> Vec<u8>
+where
+    Interrupt: Encode,
+{
+    Err::<(), Interrupt>(interrupt).encode()
 }
 
 /// Generation-stamped slot tracking the lifecycle of one subscription id.
@@ -322,14 +338,14 @@ impl SubscriptionManager {
 }
 
 /// One frame routed to a live host-initiated stream. The product ends a
-/// stream with `_interrupt`, whose `Option<CallError<E>>` payload says which
-/// kind of end it is: `None` a clean completion, `Some(err)` a failure.
+/// stream with `_interrupt`, whose `Result<(), CallError<E>>` payload says
+/// which kind of end it is: `Ok(())` a clean completion, `Err(error)` a
+/// failure carrying the method's own interrupt value.
 enum HostInitiatedFrame {
     Item(Vec<u8>),
-    /// `Interrupt(Some(error))`: the product ended the stream with a failure.
-    Interrupt,
-    /// `Interrupt(None)`: the product ended the stream cleanly.
-    Complete,
+    /// The product ended the stream. The payload is decoded by the stream
+    /// itself, which is the only place the method's interrupt type is known.
+    Interrupt(Vec<u8>),
     Unsupported,
     /// A correlated protocol error this build cannot read. Terminal, because
     /// the peer has answered and will not answer again.
@@ -377,14 +393,15 @@ impl HostInitiatedSubscriptionManager {
     /// Start one typed subscription and send its `Start` frame to the
     /// product. `payload` is already the SCALE-encoded request wrapper's own
     /// bytes, constructed by the generated caller.
-    pub fn start<Item>(
+    pub fn start<Item, Interrupt>(
         &self,
         ids: MethodIds,
         payload: Vec<u8>,
         transport: Arc<dyn Transport>,
-    ) -> truapi::Subscription<Result<Item, v01::GenericError>>
+    ) -> truapi::Subscription<Item, CallError<Interrupt>>
     where
         Item: Decode + Send + Unpin + 'static,
+        Interrupt: Decode + Send + Unpin + 'static,
     {
         let (sender, receiver) = mpsc::unbounded();
         let request_id = {
@@ -393,7 +410,9 @@ impl HostInitiatedSubscriptionManager {
                 .lock()
                 .expect("host subscription state mutex poisoned");
             if state.closed {
-                return truapi::Subscription::empty();
+                return truapi::Subscription::interrupted(CallError::HostFailure {
+                    reason: "host-initiated subscriptions are closed".to_string(),
+                });
             }
             let request_id = state.ids.next_id();
             state
@@ -412,7 +431,7 @@ impl HostInitiatedSubscriptionManager {
             },
         });
 
-        truapi::Subscription::new(Box::pin(HostInitiatedSubscription::<Item> {
+        truapi::Subscription::new(HostInitiatedSubscription::<Item, Interrupt> {
             request_id,
             ids,
             receiver,
@@ -420,7 +439,7 @@ impl HostInitiatedSubscriptionManager {
             transport,
             terminated: false,
             marker: PhantomData,
-        }))
+        })
     }
 
     /// Route one product frame. Every `h:` id belongs to this manager and is
@@ -479,18 +498,12 @@ impl HostInitiatedSubscriptionManager {
             drop(state);
             let _ = sender.unbounded_send(HostInitiatedFrame::Item(message.payload.value));
         } else if message.payload.message_type == MESSAGE_TYPE_INTERRUPT {
-            // `Interrupt` carries `Option<CallError<E>>`. `None` is a clean
-            // completion and `Some(err)` a failure, so the `Option` tag alone
-            // decides which terminal this is. Only the tag is read here: `E`
-            // is method-specific and this manager is generic over the item
-            // type alone. Deliver the terminal before dropping the sender, so
-            // the stream never reports a silent end for either case.
-            let frame = match message.payload.value.split_first() {
-                Some((0, [])) => HostInitiatedFrame::Complete,
-                _ => HostInitiatedFrame::Interrupt,
-            };
+            // The payload is forwarded undecoded: its `Result<(), CallError<E>>`
+            // shape is method-specific and this manager is generic over the
+            // item type alone. Deliver the terminal before dropping the
+            // sender, so the stream never reports a silent end.
             let sender = slot.sender.clone();
-            let _ = sender.unbounded_send(frame);
+            let _ = sender.unbounded_send(HostInitiatedFrame::Interrupt(message.payload.value));
             state.active.remove(&message.request_id);
         }
         None
@@ -507,17 +520,17 @@ impl HostInitiatedSubscriptionManager {
     }
 }
 
-struct HostInitiatedSubscription<Item> {
+struct HostInitiatedSubscription<Item, Interrupt> {
     request_id: String,
     ids: MethodIds,
     receiver: mpsc::UnboundedReceiver<HostInitiatedFrame>,
     state: Arc<Mutex<HostInitiatedState>>,
     transport: Arc<dyn Transport>,
     terminated: bool,
-    marker: PhantomData<Item>,
+    marker: PhantomData<(Item, Interrupt)>,
 }
 
-impl<Item> HostInitiatedSubscription<Item> {
+impl<Item, Interrupt> HostInitiatedSubscription<Item, Interrupt> {
     fn stop(&mut self) {
         if self.terminated {
             return;
@@ -551,11 +564,12 @@ impl<Item> HostInitiatedSubscription<Item> {
 /// failing the call. Far above any nesting the protocol's own types need.
 const MAX_SUBSCRIPTION_DECODE_DEPTH: u32 = 64;
 
-impl<Item> Stream for HostInitiatedSubscription<Item>
+impl<Item, Interrupt> Stream for HostInitiatedSubscription<Item, Interrupt>
 where
     Item: Decode + Unpin,
+    Interrupt: Decode + Unpin,
 {
-    type Item = Result<Item, v01::GenericError>;
+    type Item = Result<Item, CallError<Interrupt>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.receiver).poll_next(cx) {
@@ -564,43 +578,44 @@ where
                 match Item::decode_with_depth_limit(MAX_SUBSCRIPTION_DECODE_DEPTH, &mut input) {
                     Ok(item) if input.is_empty() => Poll::Ready(Some(Ok(item))),
                     Ok(_) | Err(_) => {
-                        // The peer sees a bare stop frame and the host sees a
-                        // completion, both identical to a clean teardown, so
-                        // this is the only record that the item was refused.
-                        // The codec's own error chains to kilobytes, so it is
-                        // deliberately not included.
+                        // The peer sees a bare stop frame, so this is the only
+                        // record of why the item was refused. The codec's own
+                        // error chains to kilobytes, so it is deliberately not
+                        // included.
                         tracing::warn!(
                             request_id = %self.request_id,
                             "refused a host subscription item: undecodable or nested past the limit"
                         );
                         self.stop();
-                        Poll::Ready(Some(Err(v01::GenericError {
+                        Poll::Ready(Some(Err(CallError::MalformedFrame {
                             reason: "host-initiated subscription item did not decode".to_string(),
                         })))
                     }
                 }
             }
-            Poll::Ready(Some(HostInitiatedFrame::Interrupt)) => {
+            Poll::Ready(Some(HostInitiatedFrame::Interrupt(bytes))) => {
                 self.terminated = true;
-                Poll::Ready(Some(Err(v01::GenericError {
-                    reason: "product interrupted the host-initiated subscription".to_string(),
-                })))
-            }
-            Poll::Ready(Some(HostInitiatedFrame::Complete)) => {
-                // `Interrupt(None)`: the product ended the stream with no
-                // error, which is a completion and not a failure.
-                self.terminated = true;
-                Poll::Ready(None)
+                let mut input = &bytes[..];
+                match Result::<(), CallError<Interrupt>>::decode_with_depth_limit(
+                    MAX_SUBSCRIPTION_DECODE_DEPTH,
+                    &mut input,
+                ) {
+                    // `Ok(())` is the product saying it is done, which ends
+                    // the stream without a failure.
+                    Ok(Ok(())) if input.is_empty() => Poll::Ready(None),
+                    Ok(Err(interrupt)) if input.is_empty() => Poll::Ready(Some(Err(interrupt))),
+                    Ok(_) | Err(_) => Poll::Ready(Some(Err(CallError::MalformedFrame {
+                        reason: "host-initiated subscription interrupt did not decode".to_string(),
+                    }))),
+                }
             }
             Poll::Ready(Some(HostInitiatedFrame::Unsupported)) => {
                 self.terminated = true;
-                Poll::Ready(Some(Err(v01::GenericError {
-                    reason: "product does not support host-initiated subscription".to_string(),
-                })))
+                Poll::Ready(Some(Err(CallError::Unsupported)))
             }
             Poll::Ready(Some(HostInitiatedFrame::UnknownProtocolError)) => {
                 self.terminated = true;
-                Poll::Ready(Some(Err(v01::GenericError {
+                Poll::Ready(Some(Err(CallError::HostFailure {
                     reason: "product reported a protocol error this build cannot read".to_string(),
                 })))
             }
@@ -615,7 +630,7 @@ where
     }
 }
 
-impl<Item> Drop for HostInitiatedSubscription<Item> {
+impl<Item, Interrupt> Drop for HostInitiatedSubscription<Item, Interrupt> {
     fn drop(&mut self) {
         self.stop();
     }
@@ -630,6 +645,7 @@ mod tests {
     use parity_scale_codec::Encode;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll};
+    use truapi::v01;
 
     /// Transport that records every frame and notifies waiters when it
     /// reaches a target count. Used to wait for the subscription's
@@ -713,7 +729,8 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut subscription = manager.start::<u32>(host_ids(), vec![0xaa], transport);
+        let mut subscription =
+            manager.start::<u32, v01::GenericError>(host_ids(), vec![0xaa], transport);
 
         assert_eq!(transport_typed.sent()[0].request_id, "h:1");
         assert_eq!(transport_typed.sent()[0].payload.trait_id, 195);
@@ -750,8 +767,10 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut nested = manager.start::<NestedItem>(host_ids(), vec![], transport.clone());
-        let mut healthy = manager.start::<NestedItem>(host_ids(), vec![], transport);
+        let mut nested =
+            manager.start::<NestedItem, v01::GenericError>(host_ids(), vec![], transport.clone());
+        let mut healthy =
+            manager.start::<NestedItem, v01::GenericError>(host_ids(), vec![], transport);
 
         // One `Deeper` byte per level, terminated by `Leaf`.
         let mut bomb = vec![0x01; (MAX_SUBSCRIPTION_DECODE_DEPTH as usize) * 4];
@@ -821,8 +840,9 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut malformed = manager.start::<u32>(host_ids(), vec![], transport.clone());
-        let mut healthy = manager.start::<u32>(host_ids(), vec![], transport);
+        let mut malformed =
+            manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport.clone());
+        let mut healthy = manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
 
         manager.handle_message(host_frame("h:1", 1, vec![0xff]));
         manager.handle_message(host_frame("h:2", 1, 9_u32.encode()));
@@ -844,12 +864,12 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut declined = manager.start::<u32>(host_ids(), vec![], transport);
+        let mut declined = manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
 
-        // A declining product sends `Interrupt(Some(error))`. A payloadless
-        // `Interrupt(None)` is a clean completion instead, covered by
+        // A declining product sends `Interrupt(Err(error))`. An
+        // `Interrupt(Ok(()))` is a clean completion instead, covered by
         // `a_clean_host_interrupt_completes_the_stream_instead_of_erroring`.
-        let declining = Some(truapi::CallError::<v01::GenericError>::HostFailure {
+        let declining = Err::<(), _>(truapi::CallError::<v01::GenericError>::HostFailure {
             reason: "unavailable".to_string(),
         })
         .encode();
@@ -868,7 +888,8 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut unsupported = manager.start::<u32>(host_ids(), vec![], transport);
+        let mut unsupported =
+            manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
 
         manager.handle_message(ProtocolMessage {
             request_id: "h:1".into(),
@@ -886,9 +907,7 @@ mod tests {
 
         assert_eq!(
             unsupported.next().now_or_never(),
-            Some(Some(Err(v01::GenericError {
-                reason: "product does not support host-initiated subscription".to_string(),
-            })))
+            Some(Some(Err(CallError::Unsupported)))
         );
         assert_eq!(unsupported.next().now_or_never(), Some(None));
         assert_eq!(transport_typed.sent().len(), 1);
@@ -903,7 +922,7 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
+        let mut render = manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
 
         manager.handle_message(ProtocolMessage {
             request_id: "h:1".into(),
@@ -918,7 +937,7 @@ mod tests {
 
         assert_eq!(
             render.next().now_or_never(),
-            Some(Some(Err(v01::GenericError {
+            Some(Some(Err(CallError::HostFailure {
                 reason: "product reported a protocol error this build cannot read".to_string(),
             }))),
             "an unreadable protocol error must settle the stream, not leave it pending"
@@ -930,13 +949,13 @@ mod tests {
 
     #[test]
     fn a_clean_host_interrupt_completes_the_stream_instead_of_erroring() {
-        // `Interrupt` carries `Option<CallError<E>>`, so `None` (a single `0`
-        // byte) is a clean completion. Reporting it as an error would make
-        // every well-behaved product look like it had failed.
+        // `Interrupt` carries `Result<(), CallError<E>>`, so `Ok(())` (a
+        // single `0` byte) is a clean completion. Reporting it as an error
+        // would make every well-behaved product look like it had failed.
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
+        let mut render = manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
 
         manager.handle_message(host_frame(
             "h:1",
@@ -957,7 +976,7 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
+        let mut render = manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
 
         for value in [
             // A different (trait, method) pair than this render's own.
@@ -989,7 +1008,7 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
+        let mut render = manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
 
         manager.close();
 
@@ -1001,15 +1020,22 @@ mod tests {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport: Arc<dyn Transport> = transport_typed.clone();
         let manager = HostInitiatedSubscriptionManager::new();
-        let mut render = manager.start::<u32>(host_ids(), vec![], transport.clone());
+        let mut render =
+            manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport.clone());
 
         manager.close();
 
         assert_eq!(futures::executor::block_on(render.next()), None);
         assert_eq!(transport_typed.sent().len(), 1);
 
-        let mut after_close = manager.start::<u32>(host_ids(), vec![], transport);
-        assert_eq!(futures::executor::block_on(after_close.next()), None);
+        // A start against a closed manager can never be served, so it
+        // interrupts rather than completing as if it had run.
+        let mut after_close =
+            manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
+        assert!(matches!(
+            futures::executor::block_on(after_close.next()),
+            Some(Err(CallError::HostFailure { .. }))
+        ));
         assert_eq!(transport_typed.sent().len(), 1);
     }
 
@@ -1018,12 +1044,14 @@ mod tests {
         let first_transport_typed = Arc::new(RecordingTransport::new());
         let first_transport: Arc<dyn Transport> = first_transport_typed.clone();
         let first = HostInitiatedSubscriptionManager::new();
-        let mut first_render = first.start::<u32>(host_ids(), vec![], first_transport);
+        let mut first_render =
+            first.start::<u32, v01::GenericError>(host_ids(), vec![], first_transport);
 
         let second_transport_typed = Arc::new(RecordingTransport::new());
         let second_transport: Arc<dyn Transport> = second_transport_typed.clone();
         let second = HostInitiatedSubscriptionManager::new();
-        let mut second_render = second.start::<u32>(host_ids(), vec![], second_transport);
+        let mut second_render =
+            second.start::<u32, v01::GenericError>(host_ids(), vec![], second_transport);
 
         assert_eq!(first_transport_typed.sent()[0].request_id, "h:1");
         assert_eq!(second_transport_typed.sent()[0].request_id, "h:1");
@@ -1079,6 +1107,39 @@ mod tests {
             transport_typed.sent().is_empty(),
             "stopped subscription must not push any frame"
         );
+    }
+
+    /// A host stream that fails after its first item must deliver that item,
+    /// then the interrupt carrying the failure, and stop there: the values
+    /// behind the failure never reach the peer, and no clean terminator
+    /// follows it.
+    #[test]
+    fn a_mid_stream_interrupt_ends_the_subscription_where_it_happens() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport_dyn: Arc<dyn Transport> = transport_typed.clone();
+        let manager = SubscriptionManager::new(thread_per_subscription_spawner());
+        let failure: CallError<v01::GenericError> = CallError::HostFailure {
+            reason: "platform stream failed".to_string(),
+        };
+        let items = subscription_stream(stream::iter(vec![
+            Ok(1_u32),
+            Err(failure.clone()),
+            Ok(2_u32),
+        ]));
+        manager.register("p:1".to_string(), 7, 99, items, transport_dyn);
+
+        let observed = transport_typed.wait_for(2, std::time::Duration::from_secs(2));
+        assert_eq!(observed, 2, "expected 1 receive frame + 1 interrupt");
+        let frames = transport_typed.sent();
+        assert_eq!(frames[0].payload.message_type, MESSAGE_TYPE_RECEIVE);
+        assert_eq!(frames[0].payload.value, 1_u32.encode());
+        assert_eq!(frames[1].payload.message_type, MESSAGE_TYPE_INTERRUPT);
+        assert_eq!(frames[1].payload.value, subscription_interrupt(failure));
+
+        // The item behind the interrupt is dropped, and a stream that ended
+        // with one does not also report a clean end.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(transport_typed.sent().len(), 2);
     }
 
     /// A stream that yields 2 items then ends naturally must produce 2

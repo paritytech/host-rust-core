@@ -1,5 +1,6 @@
 //! Unified [`Chat`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
@@ -66,8 +67,11 @@ pub trait Chat: Send + Sync {
     /// console.log("room list received:", item);
     /// ```
     #[wire(id = 2)]
-    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
-        Subscription::empty()
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostChatListSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Post a message to a chat room.
@@ -115,16 +119,15 @@ pub trait Chat: Send + Sync {
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostChatActionSubscribeItem> {
-        Subscription::empty()
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Streams renderer trees for one stored custom message.
     ///
     /// ```ts
-    /// import { of } from "rxjs";
-    /// truapi.chat.onCustomMessageRender(({ messageType, payload }) => {
-    ///   return of({ tag: "String", value: { text: `${messageType}: ${payload}` } });
+    /// truapi.chat.onCustomMessageRender(({ messageType, payload }, send) => {
+    ///   send({ tag: "String", value: { text: `${messageType}: ${payload}` } });
     /// });
     /// ```
     #[wire(host_initiated, id = 5)]
@@ -132,7 +135,7 @@ pub trait Chat: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: ProductChatCustomMessageRenderRequest,
-    ) -> Subscription<ProductChatCustomMessageRenderItem> {
-        Subscription::empty()
+    ) -> Subscription<ProductChatCustomMessageRenderItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 }

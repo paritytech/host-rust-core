@@ -2625,7 +2625,10 @@ mod tests {
             core::task::Poll::Ready(Some(item)) => item,
             other => panic!("a published trigger must be ready, got {other:?}"),
         };
-        let truapi::versioned::chat::HostChatActionSubscribeItem::V1(delivered) = delivered;
+        let Ok(truapi::versioned::chat::HostChatActionSubscribeItem::V1(delivered)) = delivered
+        else {
+            panic!("expected a chat action item")
+        };
         let v01::ChatActionPayload::ActionTriggered(trigger) = delivered.payload else {
             panic!(
                 "expected an ActionTriggered payload, got {:?}",

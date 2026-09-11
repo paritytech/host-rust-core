@@ -3,6 +3,7 @@
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme};
+use truapi::latest::GenericError;
 use truapi::versioned::local_storage::{
     HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
@@ -215,38 +216,40 @@ impl LocalStorage for ProductRuntimeHost {
 #[truapi::async_trait]
 impl Theme for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "theme.subscribe"))]
-    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostThemeSubscribeItem> {
-        let stream = self.platform.subscribe_theme().filter_map(|item| async {
-            // TODO: preserve platform stream errors as terminal
-            // subscription interrupts once subscription items can carry
-            // in-stream failures. Until then a dropped error freezes the
-            // product's theme on its last value, so record why.
-            match item {
-                Ok(item) => Some(HostThemeSubscribeItem::V1(item)),
-                Err(error) => {
-                    warn!(reason = %error.reason, "theme platform stream failed");
-                    None
-                }
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostThemeSubscribeItem, CallError<GenericError>> {
+        let stream = self.platform.subscribe_theme().map(|item| match item {
+            Ok(item) => Ok(HostThemeSubscribeItem::V1(item)),
+            Err(error) => {
+                warn!(reason = %error.reason, "theme platform stream failed");
+                Err(CallError::HostFailure {
+                    reason: error.reason,
+                })
             }
         });
-        Subscription::new(Box::pin(stream))
+        Subscription::new(stream)
     }
 }
 
 #[truapi::async_trait]
 impl Locale for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "locale.subscribe"))]
-    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
-        let stream = self.platform.subscribe_locale().filter_map(|item| async {
-            match item {
-                Ok(item) => Some(HostLocaleSubscribeItem::V1(item)),
-                Err(error) => {
-                    warn!(reason = %error.reason, "locale platform stream failed");
-                    None
-                }
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostLocaleSubscribeItem, CallError<GenericError>> {
+        let stream = self.platform.subscribe_locale().map(|item| match item {
+            Ok(item) => Ok(HostLocaleSubscribeItem::V1(item)),
+            Err(error) => {
+                warn!(reason = %error.reason, "locale platform stream failed");
+                Err(CallError::HostFailure {
+                    reason: error.reason,
+                })
             }
         });
-        Subscription::new(Box::pin(stream))
+        Subscription::new(stream)
     }
 }
 
