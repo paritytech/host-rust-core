@@ -109,6 +109,14 @@ async function main() {
       existsSync(join(root, `versions/${version}/runner.js`)),
       true,
     );
+    check(
+      "the matching product-script types ship beside the runner",
+      readFileSync(join(root, `versions/${version}/script-types.d.ts`), "utf8"),
+      readFileSync(
+        join(repoRoot, "rust/crates/truapi-host-cli/js/script-types.d.ts"),
+        "utf8",
+      ),
+    );
     // The checkout's runner imports @parity/truapi by relative path. Running the
     // packaged one from an unrelated directory proves the client is bundled in,
     // so a downloaded install needs no source tree: it reaches its own env check

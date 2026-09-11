@@ -139,6 +139,9 @@ jobs:
       - name: Run codegen
         run: ./scripts/codegen.sh
 
+      - name: Type-check headless host scripts
+        run: node scripts/check-host-script-types.mjs
+
       - name: Check Rust/TS wire table parity
         run: TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity
 
@@ -155,6 +158,7 @@ jobs:
             js/packages/truapi/src/explorer/versions.ts
             js/packages/truapi-host/src/generated
             playground/test/generated
+            rust/crates/truapi-host-cli/js/script-types.d.ts
             rust/crates/truapi-server/src/generated
             rust/crates/truapi-server/src/wasm
 
