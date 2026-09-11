@@ -24,7 +24,7 @@ pub enum ProductCommand {
 pub enum DeviceCommand {
     /// List paired devices for the active managed session.
     List,
-    /// Remove the device with this statement account ID.
+    /// Notify and remove one device; `force` permits cleanup if notification fails.
     Remove {
         statement_account_id: [u8; 32],
         force: bool,

@@ -2480,18 +2480,20 @@ async fn disconnect_and_remove_paired_host(
     force: bool,
 ) -> Result<PairedHostRemoval> {
     let paired_host = find_paired_host(session, statement_account_id)?;
-    let notification_failure = match session
-        .runtime
-        .disconnect_paired_host(paired_sso_peer(&paired_host))
-        .await
-    {
+    let notification = tokio::time::timeout(
+        Duration::from_secs(30),
+        session
+            .runtime
+            .disconnect_paired_host(paired_sso_peer(&paired_host)),
+    )
+    .await
+    .map_err(|_| "disconnect notification submission timed out".to_string())
+    .and_then(|result| result.map_err(|error| error.reason));
+    let notification_failure = match notification {
         Ok(()) => None,
-        Err(error) if force => Some(error.reason),
-        Err(error) => {
-            bail!(
-                "failed to notify paired device before removal: {}",
-                error.reason
-            )
+        Err(reason) if force => Some(reason),
+        Err(reason) => {
+            bail!("failed to notify paired device before removal: {reason}")
         }
     };
     remove_paired_host_locally(session, statement_account_id).await?;
@@ -3284,9 +3286,14 @@ async fn signing_interactive_loop(
                     ui.system("Paired-device removal cancelled");
                     continue;
                 }
-                match disconnect_and_remove_paired_host(session, &statement_account_id, force).await
+                match ui
+                    .drive(
+                        input,
+                        disconnect_and_remove_paired_host(session, &statement_account_id, force),
+                    )
+                    .await?
                 {
-                    Ok(removal) => {
+                    DriveResult::Complete(Ok(removal)) => {
                         if let Some(reason) = removal.notification_failure {
                             let (title, detail) = forced_removal_warning(&reason);
                             ui.warning(title, Some(detail));
@@ -3300,7 +3307,8 @@ async fn signing_interactive_loop(
                             )),
                         );
                     }
-                    Err(error) => ui.error(error.to_string()),
+                    DriveResult::Complete(Err(error)) => ui.error(error.to_string()),
+                    DriveResult::Cancelled => ui.system("Paired-device removal cancelled"),
                 }
             }
             ShellCommand::Session(SessionCommand::Clear(target)) => {

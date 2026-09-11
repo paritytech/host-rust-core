@@ -401,14 +401,15 @@ order with available host and platform metadata. Interactive
 `/devices --remove <statement-account-id>` asks for confirmation. The same
 command through `exec` is an explicit one-shot removal and runs without another
 prompt. Removal first submits `Disconnected` to the selected remote host. Only
-after the statement is accepted does it stop that responder, remove the saved
-pairing, and stop its allowance renewal. A submission failure preserves all
+after the statement store accepts it does it stop that responder, remove the
+saved pairing, and stop its allowance renewal. A submission failure preserves all
 local pairing state. The other saved pairings and the signing identity are
 unchanged. For recovery when notification cannot be submitted, append
 `--force`. The command still attempts notification first, but warns and
-continues with local cleanup if that attempt fails. The remote host may continue
-to show stale connected state, but it cannot reach a responder on this signing
-host.
+continues with local cleanup if that attempt fails or times out after 30 seconds.
+Submission does not wait for the remote host to acknowledge receipt. The remote
+host may continue to show stale connected state, but it cannot reach a responder
+on this signing host.
 
 `/session --clear <name>` permanently deletes that session's local signer
 keys, scripts, core/product storage, and permissions. `/session --clear-all`
@@ -516,7 +517,7 @@ Product-local KV is persisted independently under each identity root as
 product id and raw product keys. Product and core JSON writes use a flushed
 temporary file and atomic rename.
 
-Six scripts ship under `js/scripts/`:
+Scripts under `js/scripts/` include:
 
 - `battery.ts` — the generated full-surface gate. It discovers every method
   from the same code-generated example manifest as the playground Diagnosis,
@@ -581,11 +582,11 @@ Six scripts ship under `js/scripts/`:
     --auto-accept
   ```
 
-  `e2e/device-removal-disconnect.sh` automates the two-host removal case. It
-  pairs an isolated signing host with an isolated pairing host, removes the
-  device interactively, and verifies the remote `Disconnected` status, cleared
-  pairing auth storage, and empty signing-host device list. Run `make codegen`
-  once in a fresh checkout, build `truapi-host-cli`, then run the script.
+- `device-removal-disconnect.ts`: verifies `Connected` followed by `Disconnected`.
+  Run it through `e2e/device-removal-disconnect.sh`, which pairs isolated hosts,
+  removes the device interactively, and checks cleared pairing auth storage and
+  an empty signing-host device list. Run `make codegen` once in a fresh checkout,
+  build `truapi-host-cli`, then run the shell script.
 
 - `whoami.ts` — calls `getUserId` and prints `WHOAMI <primary username>`; this
   remains available as an explicit `/script <path>` example.

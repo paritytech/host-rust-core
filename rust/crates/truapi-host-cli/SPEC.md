@@ -433,7 +433,7 @@ use `exec '/script <path>'` instead. `/copy` and `/approval` are unavailable.
 saved pairings without starting their responders. `exec '/devices --remove
 <statement-account-id>'` is an explicit removal and does not ask for another
 confirmation. It submits `Disconnected` directly and removes local state only
-after the statement is accepted. Appending `--force` still attempts that
+after the statement store accepts it. Appending `--force` still attempts that
 submission, but warns and continues with local cleanup if it fails.
 
 ### 6.5 `--serve`
@@ -569,8 +569,10 @@ account ID and print each ID with any available host and platform metadata.
 with an optional `0x` prefix and an optional trailing `--force`. Interactive
 removal uses the `[y/N]` approval and describes that only the selected peer is
 affected. `exec` removal runs directly. Both modes submit one `Disconnected`
-message before local cleanup. If submission fails, ordinary removal preserves
-the saved pairing, responder, and allowance-renewal target. Forced removal emits
+message before local cleanup, allowing up to 30 seconds for the statement store
+to accept it. This does not wait for a peer acknowledgement. If submission fails
+or times out, ordinary removal preserves the saved pairing, responder, and
+allowance-renewal target. Forced removal emits
 an unfiltered warning and continues with local cleanup, so the remote host may
 continue to show stale connected state, but it cannot reach a responder on this
 signing host.

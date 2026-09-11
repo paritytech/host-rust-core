@@ -184,7 +184,10 @@ wait_for_persisted_auth_session
 send_signing_command '/devices'
 wait_for_signing_pattern 'Paired devices for session'
 capture_signing_host
-mapfile -t device_ids < <(
+device_ids=()
+while IFS= read -r device_id; do
+  device_ids+=("$device_id")
+done < <(
   sed -nE 's/^.*(0x[[:xdigit:]]{64})  .*/\1/p' "$SIGNING_LOG" | sort -u
 )
 if [ "${#device_ids[@]}" -ne 1 ]; then
