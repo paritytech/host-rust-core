@@ -49,10 +49,12 @@ mod imp {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use futures::stream::BoxStream;
     use futures::{SinkExt, StreamExt};
     use serde_json::Value;
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc;
+    use tokio::time::{Duration, Instant, sleep, timeout};
     use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
     use truapi_platform::{ChainProvider, JsonRpcConnection};
@@ -103,6 +105,7 @@ mod imp {
                 panic!("gateway connection for {path} failed: {}", err.reason)
             });
             let mut responses = connection.responses();
+            wait_for_peers(&path, connection.as_ref(), &mut responses).await;
             let shared = Arc::new(SharedChain::new(Arc::from(connection)));
             let response_chain = Arc::clone(&shared);
             tokio::spawn(async move {
@@ -123,6 +126,52 @@ mod imp {
         loop {
             let (stream, peer) = listener.accept().await.expect("accept must succeed");
             tokio::spawn(serve(stream, peer, Arc::clone(&routes)));
+        }
+    }
+
+    async fn wait_for_peers(
+        path: &str,
+        connection: &dyn JsonRpcConnection,
+        responses: &mut BoxStream<'static, String>,
+    ) {
+        const READY_TIMEOUT: Duration = Duration::from_secs(300);
+        const POLL_INTERVAL: Duration = Duration::from_secs(1);
+        const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+        let deadline = Instant::now() + READY_TIMEOUT;
+        let mut request_id = 0_u64;
+        loop {
+            request_id += 1;
+            connection.send(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": format!("gateway-ready-{request_id}"),
+                    "method": "system_health",
+                    "params": []
+                })
+                .to_string(),
+            );
+            if let Ok(Some(text)) = timeout(RESPONSE_TIMEOUT, responses.next()).await {
+                if let Ok(response) = serde_json::from_str::<Value>(&text) {
+                    let ready = response.get("result").is_some_and(|health| {
+                        health.get("isSyncing").and_then(Value::as_bool) == Some(false)
+                            && health
+                                .get("peers")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|peers| peers > 0)
+                    });
+                    if ready {
+                        println!("[gateway] {path}: ready");
+                        return;
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "gateway connection for {path} did not become ready within {}s",
+                READY_TIMEOUT.as_secs()
+            );
+            sleep(POLL_INTERVAL).await;
         }
     }
 
