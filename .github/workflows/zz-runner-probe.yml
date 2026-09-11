@@ -1,0 +1,90 @@
+# Throwaway probe for #672. Answers three questions that are otherwise only
+# answered by a full iOS build: whether this repository can schedule the macOS
+# labels the imported iOS jobs ask for, whether those runners carry the Xcode
+# the install action pins, and whether the fastlane credential can read the
+# certificates repository. Delete once the answers are recorded.
+name: runner probe
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  macos-26:
+    name: probe macos-26
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Report the runner
+        run: |
+          set -euo pipefail
+          echo "scheduled on macos-26"
+          sw_vers
+          echo "cpus: $(sysctl -n hw.ncpu)  mem: $(( $(sysctl -n hw.memsize) / 1073741824 ))G"
+          df -h / | tail -1
+      - name: Which Xcode versions are present
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=(/Applications/Xcode*.app)
+          if [ ${#found[@]} -eq 0 ]; then
+            echo "no Xcode in /Applications"
+          else
+            printf '%s\n' "${found[@]##*/}"
+          fi
+          xcodebuild -version || true
+          echo "--- the install action pins 26.4.1 ---"
+          test -d "/Applications/Xcode_26.4.1.app" \
+            && echo "Xcode_26.4.1.app present" \
+            || echo "Xcode_26.4.1.app ABSENT (setup-xcode would have to download it)"
+
+  macos-26-xlarge:
+    name: probe macos-26-xlarge
+    runs-on: macos-26-xlarge
+    timeout-minutes: 10
+    steps:
+      - name: Report the runner
+        run: |
+          set -euo pipefail
+          echo "scheduled on macos-26-xlarge"
+          sw_vers
+          echo "cpus: $(sysctl -n hw.ncpu)  mem: $(( $(sysctl -n hw.memsize) / 1073741824 ))G"
+          df -h / | tail -1
+
+  match-credential:
+    name: probe the fastlane credential
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The same check hosts/ios/.github/actions/install performs, in isolation,
+      # so a scoping problem surfaces here rather than inside an iOS build.
+      - name: Can the credential read the certificates repository
+        env:
+          MATCH_REPOSITORY_PAT: ${{ secrets.FASTLANE_RO_PAT }}
+          MATCH_GIT_URL: "https://github.com/paritytech/fastlane-polkadotapp-develop.git"
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MATCH_REPOSITORY_PAT}" ]; then
+            echo "::error::FASTLANE_RO_PAT is not set or not visible to this job"
+            exit 1
+          fi
+
+          token_suffix="${MATCH_REPOSITORY_PAT#github_pat_}"
+          if [[ "$MATCH_REPOSITORY_PAT" != github_pat_* || -z "$token_suffix" || "$MATCH_REPOSITORY_PAT" =~ [[:space:]] ]]; then
+            echo "::error::Credential is not a fine-grained PAT (github_pat_...). The install action rejects anything else."
+            exit 1
+          fi
+          echo "format: fine-grained PAT, accepted by the install action"
+
+          basic_auth="$(printf 'x-access-token:%s' "$MATCH_REPOSITORY_PAT" | base64 | tr -d '\n')"
+          echo "::add-mask::$basic_auth"
+
+          if GIT_TERMINAL_PROMPT=0 git -c http.extraheader="Authorization: Basic $basic_auth" \
+               ls-remote --exit-code "$MATCH_GIT_URL" HEAD >/dev/null 2>&1; then
+            echo "access: the credential can read paritytech/fastlane-polkadotapp-develop"
+          else
+            echo "::error::The credential cannot read paritytech/fastlane-polkadotapp-develop. Check its repository access, Contents permission, expiry, and organization approval."
+            exit 1
+          fi
