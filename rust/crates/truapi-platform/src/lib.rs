@@ -2639,10 +2639,16 @@ pub enum SignPayloadReview {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum SignRawReview {
-    /// Product-account raw signing request.
+    /// Product-account signing with the `<Bytes>` watermark.
     Product(HostSignRawRequest),
-    /// Legacy-account raw signing request.
+    /// Legacy-account signing with the `<Bytes>` watermark.
     LegacyAccount(HostSignRawWithLegacyAccountRequest),
+    /// Temporary unwatermarked product signing. The host must make clear that
+    /// the signed data has no transaction-payload protection. See issue #612.
+    ProductUnwatermarkedDeprecated(HostSignRawRequest),
+    /// Temporary unwatermarked legacy signing, with the same warning as the
+    /// product variant. Removed once runtimes accept watermarked proofs (#612).
+    LegacyAccountUnwatermarkedDeprecated(HostSignRawWithLegacyAccountRequest),
 }
 
 /// Review shown before a product account signs a Statement Store proof

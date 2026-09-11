@@ -1974,13 +1974,28 @@ fn emit_method(
                 &payload.value_expr
             };
 
-            writedoc!(
+            writeln!(
                 out,
-                "
-                  {ts_method_name}({arg_decl}): ResultAsync<{ok_type}, {err_type}> {{
-                    return this.transport.request<{ok_type}, {err_type}>({{
-                      ids: W.{wire_const},
-                ",
+                "  {ts_method_name}({arg_decl}): ResultAsync<{ok_type}, {err_type}> {{",
+                ok_type = response.inner_type_ts,
+                err_type = error.inner_type_ts
+            )
+            .unwrap();
+            if let Some(note) = method.docs.as_deref().and_then(|docs| {
+                docs.lines()
+                    .find_map(|line| line.trim().strip_prefix("@deprecated "))
+            }) {
+                // TypeScript preserves @deprecated in declarations but does not
+                // warn during tsc builds. Also warn when a deprecated API is used.
+                let warning = serde_json::to_string(&format!(
+                    "{}.{} is deprecated: {note}",
+                    trait_def.name, ts_method_name
+                ))?;
+                writeln!(out, "    console.warn({warning});").unwrap();
+            }
+            writeln!(
+                out,
+                "    return this.transport.request<{ok_type}, {err_type}>({{\n      ids: W.{wire_const},",
                 ok_type = response.inner_type_ts,
                 err_type = error.inner_type_ts
             )
@@ -3924,6 +3939,26 @@ mod tests {
         assert!(source.contains("legacyCall("));
         assert!(!source.contains("FutureOnlyClient"));
         assert!(!source.contains("futureCall("));
+    }
+
+    #[test]
+    fn deprecated_requests_keep_jsdoc_and_warn_without_changing_transport() {
+        let mut deprecated = request_method("old_call", Some(2));
+        deprecated.docs = Some(
+            "Temporary API.\n\n@deprecated Use `newCall` (\"watermarked\"); see https://github.com/paritytech/host-rust-core/issues/612".into(),
+        );
+        let mut definition = api(vec![deprecated, request_method("new_call", Some(4))]);
+        definition.public_trait_order = vec!["Example".into()];
+        let source = generate_client(&definition, 1, 1).unwrap();
+        assert!(source.contains("@deprecated Use `newCall`"));
+        assert_eq!(source.matches("console.warn(").count(), 1);
+        assert!(
+            source.contains("\\\"watermarked\\\""),
+            "warning text is escaped as a JS string"
+        );
+        assert!(source.contains("https://github.com/paritytech/host-rust-core/issues/612"));
+        assert!(source.contains("ids: W.EXAMPLE_OLD_CALL"));
+        assert!(source.contains("ids: W.EXAMPLE_NEW_CALL"));
     }
 
     #[test]

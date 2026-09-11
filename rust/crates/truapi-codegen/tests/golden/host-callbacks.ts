@@ -462,13 +462,26 @@ export type SignPayloadReview =
  */
 export type SignRawReview =
   /**
-   * Product-account raw signing request.
+   * Product-account signing with the `<Bytes>` watermark.
    */
   | { tag: "Product"; value: HostSignRawRequest }
   /**
-   * Legacy-account raw signing request.
+   * Legacy-account signing with the `<Bytes>` watermark.
    */
-  | { tag: "LegacyAccount"; value: HostSignRawWithLegacyAccountRequest };
+  | { tag: "LegacyAccount"; value: HostSignRawWithLegacyAccountRequest }
+  /**
+   * Temporary unwatermarked product signing. The host must make clear that
+   * the signed data has no transaction-payload protection. See issue #612.
+   */
+  | { tag: "ProductUnwatermarkedDeprecated"; value: HostSignRawRequest }
+  /**
+   * Temporary unwatermarked legacy signing, with the same warning as the
+   * product variant. Removed once runtimes accept watermarked proofs (#612).
+   */
+  | {
+      tag: "LegacyAccountUnwatermarkedDeprecated";
+      value: HostSignRawWithLegacyAccountRequest;
+    };
 
 /**
  * Review shown before signing an RFC-0023 VRF transcript.
@@ -846,6 +859,8 @@ export const SignRawReview: S.Codec<SignRawReview> = S.lazy(
     S.TaggedUnion({
       Product: HostSignRawRequest,
       LegacyAccount: HostSignRawWithLegacyAccountRequest,
+      ProductUnwatermarkedDeprecated: HostSignRawRequest,
+      LegacyAccountUnwatermarkedDeprecated: HostSignRawWithLegacyAccountRequest,
     }),
 );
 

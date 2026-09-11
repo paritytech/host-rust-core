@@ -744,11 +744,17 @@ impl ProductAuthority for SigningHost {
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
+        let watermarked = matches!(
+            &request,
+            SignRawAuthorityRequest::Product(_) | SignRawAuthorityRequest::LegacyAccount { .. }
+        );
         let (keypair, payload) = match request {
-            SignRawAuthorityRequest::Product(request) => {
+            SignRawAuthorityRequest::Product(request)
+            | SignRawAuthorityRequest::ProductUnwatermarkedDeprecated(request) => {
                 (self.product_keypair(&request.account)?, request.payload)
             }
-            SignRawAuthorityRequest::LegacyAccount { account, request } => {
+            SignRawAuthorityRequest::LegacyAccount { account, request }
+            | SignRawAuthorityRequest::LegacyAccountUnwatermarkedDeprecated { account, request } => {
                 let keypair = self.identity_keypair()?;
                 if keypair.public.to_bytes() != account {
                     return Err(AuthorityError::Unavailable {
@@ -761,7 +767,11 @@ impl ProductAuthority for SigningHost {
             }
         };
         self.require_current_session(session)?;
-        let message = raw_payload_bytes(payload)?;
+        let message = if watermarked {
+            raw_payload_bytes(payload)?
+        } else {
+            unwatermarked_payload_bytes(payload)?
+        };
         let signature = keypair
             .secret
             .sign_simple(SR25519_SIGNING_CONTEXT, &message, &keypair.public)
@@ -1272,10 +1282,7 @@ async fn build_local_transaction(
 /// error (never silently signed as UTF-8); any other string is signed as its
 /// UTF-8 bytes.
 fn raw_payload_bytes(payload: v01::RawPayload) -> Result<Vec<u8>, AuthorityError> {
-    let raw = match payload {
-        v01::RawPayload::Bytes { bytes } => bytes,
-        v01::RawPayload::Payload { payload } => decode_payload_string(payload)?,
-    };
+    let raw = unwatermarked_payload_bytes(payload)?;
     if raw.starts_with(BYTES_WRAP_PREFIX) && raw.ends_with(BYTES_WRAP_SUFFIX) {
         return Ok(raw);
     }
@@ -1285,6 +1292,15 @@ fn raw_payload_bytes(payload: v01::RawPayload) -> Result<Vec<u8>, AuthorityError
     wrapped.extend_from_slice(&raw);
     wrapped.extend_from_slice(BYTES_WRAP_SUFFIX);
     Ok(wrapped)
+}
+
+/// Decode data without adding or stripping an envelope. Used only by the
+/// temporary unwatermarked API and as the first step in watermarked signing.
+fn unwatermarked_payload_bytes(payload: v01::RawPayload) -> Result<Vec<u8>, AuthorityError> {
+    match payload {
+        v01::RawPayload::Bytes { bytes } => Ok(bytes),
+        v01::RawPayload::Payload { payload } => decode_payload_string(payload),
+    }
 }
 
 fn decode_payload_string(payload: String) -> Result<Vec<u8>, AuthorityError> {
@@ -1303,6 +1319,8 @@ fn decode_payload_string(payload: String) -> Result<Vec<u8>, AuthorityError> {
 
 #[cfg(test)]
 mod tests {
+    mod raw_signing;
+
     use std::sync::Arc;
 
     use super::super::authority::{
@@ -1834,7 +1852,8 @@ mod tests {
             },
         });
         let HostSignRawResponse::V1(response) =
-            futures::executor::block_on(runtime.sign_raw(&cx, request)).expect("sign_raw ok");
+            futures::executor::block_on(runtime.sign_raw_watermarked(&cx, request))
+                .expect("sign_raw ok");
         assert!(response.signed_transaction.is_none());
 
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
@@ -2299,8 +2318,8 @@ mod tests {
                 bytes: vec![1, 2, 3],
             },
         });
-        let err =
-            futures::executor::block_on(runtime.sign_raw(&cx, request)).expect_err("no session");
+        let err = futures::executor::block_on(runtime.sign_raw_watermarked(&cx, request))
+            .expect_err("no session");
         assert!(matches!(err, CallError::Domain(HostSignRawError::V1(_))));
     }
 
@@ -2599,7 +2618,8 @@ mod tests {
             },
         });
         let HostSignRawResponse::V1(response) =
-            futures::executor::block_on(runtime.sign_raw(&cx, request)).expect("sign_raw ok");
+            futures::executor::block_on(runtime.sign_raw_watermarked(&cx, request))
+                .expect("sign_raw ok");
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
         let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
         let signature =

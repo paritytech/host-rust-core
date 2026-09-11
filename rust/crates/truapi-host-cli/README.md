@@ -455,7 +455,7 @@ project. The runner injects three globals before running it:
 
 - **`truapi`** — the `@parity/truapi` client connected to the pairing host and
   scoped to the host's `--product-id`. Call `truapi.account.requestLogin(...)`,
-  `truapi.signing.signRaw(...)`, `truapi.localStorage.write(...)`, etc.
+  `truapi.signing.signRawWatermarked(...)`, `truapi.localStorage.write(...)`, etc.
 - **`host`** — just `host.productId` and `host.productAccount(index?)`. That is
   all it does: it keeps product accounts in sync with the host's `--product-id`
   (hardcoding a mismatched id fails signing with `PermissionDenied`). Use
@@ -473,7 +473,7 @@ if (
 )
   throw new Error("login failed");
 
-const res = await truapi.signing.signRaw({
+const res = await truapi.signing.signRawWatermarked({
   account: host.productAccount(),
   payload: { tag: "Bytes", value: { bytes: "0xdeadbeef" } },
 });

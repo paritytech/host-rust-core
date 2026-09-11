@@ -795,9 +795,16 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
             "sign payload",
             "A product requested a SCALE payload signature.".to_string(),
         ),
+        UserConfirmationReview::SignRaw(
+            truapi_platform::SignRawReview::ProductUnwatermarkedDeprecated(_)
+            | truapi_platform::SignRawReview::LegacyAccountUnwatermarkedDeprecated(_),
+        ) => (
+            "sign unwatermarked data (deprecated)",
+            "A product requested a signature without the <Bytes> watermark. This can authorize transaction data. The payload is hidden here.".to_string(),
+        ),
         UserConfirmationReview::SignRaw(_) => (
-            "sign raw data",
-            "A product requested a raw-data signature. The payload is hidden here.".to_string(),
+            "sign watermarked data",
+            "A product requested a signature with the <Bytes> watermark. The payload is hidden here.".to_string(),
         ),
         UserConfirmationReview::SignVrf(review) => (
             "sign VRF transcript",
@@ -1773,6 +1780,29 @@ mod tests {
             "A product requested submission of a 4096-byte preimage."
         );
         assert!(!detail.contains("["));
+    }
+
+    #[test]
+    fn unwatermarked_approval_explains_transaction_authorization() {
+        let request = api::HostSignRawRequest {
+            account: api::ProductAccountId {
+                dot_ns_identifier: "myapp.dot".into(),
+                derivation_index: api::DerivationIndex::Index(0),
+            },
+            payload: api::RawPayload::Bytes {
+                bytes: vec![0x11; 32],
+            },
+        };
+        let watermarked = UserConfirmationReview::SignRaw(truapi_platform::SignRawReview::Product(
+            request.clone(),
+        ));
+        let unwatermarked = UserConfirmationReview::SignRaw(
+            truapi_platform::SignRawReview::ProductUnwatermarkedDeprecated(request),
+        );
+        assert_eq!(approval_summary(&watermarked).0, "sign watermarked data");
+        let (action, detail) = approval_summary(&unwatermarked);
+        assert_eq!(action, "sign unwatermarked data (deprecated)");
+        assert!(detail.contains("can authorize transaction data"));
     }
 
     #[test]

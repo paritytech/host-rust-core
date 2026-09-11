@@ -41,6 +41,36 @@ Request methods take the inner request value directly. The transport adds the wi
 Requests reject with `RequestTimeoutError` when no matching response arrives within 120 seconds.
 Pass `{ requestTimeoutMs }` to `createTransport` to select a different positive deadline.
 
+## Signing messages and temporary ownership proofs
+
+Use `signing.signRawWatermarked` for product accounts and `signing.signRawWatermarkedWithLegacyAccount` for legacy
+accounts. Both sign data inside a `<Bytes>…</Bytes>` envelope; data already enclosed in that envelope is signed
+unchanged. The old `signRaw` and `signRawWithLegacyAccount` names remain deprecated compatibility aliases with the same
+behavior and wire IDs.
+
+Until the runtime accepts watermarked ownership proofs, the temporary `signRawDeprecatedIWillChangeThisLater` and
+`signRawDeprecatedIWillChangeThisLaterWithLegacyAccount` methods sign the decoded payload exactly as supplied. They
+neither add nor strip an envelope. For example, Humanity can ask its lite account to sign the raw 32-byte Resources
+alias:
+
+```ts
+const proof = await truapi.signing.signRawDeprecatedIWillChangeThisLaterWithLegacyAccount({
+  signer: liteAccountAddress,
+  payload: { tag: "Bytes", value: { bytes: resourcesAliasHex } },
+});
+```
+
+These methods retain account authorization, signing permission, and confirmation checks. Hosts receive a distinct
+unwatermarked confirmation variant because this operation can sign transaction data. Both ends of a paired connection
+need support for the new unwatermarked requests; they never fall back to wrapped signing.
+
+All deprecated methods carry Rust `#[deprecated]` and TypeScript `@deprecated` notices. The generated client also warns
+on each call. TypeScript's compiler does not report deprecated calls during builds; consumers that require build
+diagnostics must enable deprecation checking in their lint pipeline.
+
+Once runtimes verify watermarked proofs, migrate to the watermarked methods. The temporary unwatermarked methods will
+then be removed, as tracked in [#612](https://github.com/paritytech/host-rust-core/issues/612).
+
 ## Subscriptions
 
 Streaming methods return a small Observable-compatible object:

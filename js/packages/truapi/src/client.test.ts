@@ -194,6 +194,74 @@ describe("generated client transport", () => {
         expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
     });
 
+    it("sends deprecated unwatermarked signing on its own wire ID and warns on every call", async () => {
+        const warning = spyOn(console, "warn").mockImplementation(() => {});
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+        const request: T.HostSignRawWithLegacyAccountRequest = {
+            signer: "lite-account",
+            payload: { tag: "Bytes", value: { bytes: `0x${"11".repeat(32)}` } },
+        };
+        try {
+            for (const index of [1, 2]) {
+                const response =
+                    client.signing.signRawDeprecatedIWillChangeThisLaterWithLegacyAccount(request);
+                const requestId = `p:${index}`;
+                const expected = unwrap(
+                    encodeWireMessage({
+                        requestId,
+                        payload: {
+                            id: W
+                                .SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER_WITH_LEGACY_ACCOUNT
+                                .request,
+                            value: T.VersionedHostSignRawWithLegacyAccountRequest.enc({
+                                tag: "V1",
+                                value: request,
+                            }),
+                        },
+                    }),
+                    "encode exact-byte proof request",
+                );
+                expect(fixture.sent[index - 1]).toEqual(expected);
+                expect(warning).toHaveBeenCalledTimes(index);
+                expect(warning.mock.calls[index - 1][0]).toContain(
+                    "https://github.com/paritytech/host-rust-core/issues/612",
+                );
+                fixture.receive(
+                    unwrap(
+                        encodeWireMessage({
+                            requestId,
+                            payload: {
+                                id: W
+                                    .SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER_WITH_LEGACY_ACCOUNT
+                                    .response,
+                                value: versionedV1(
+                                    ScaleResult(
+                                        T.HostSignPayloadResponse,
+                                        CallError(T.VersionedHostSignRawWithLegacyAccountError),
+                                    ),
+                                ).enc({
+                                    tag: "V1",
+                                    value: {
+                                        success: true,
+                                        value: {
+                                            signature: "0x0102",
+                                            signedTransaction: undefined,
+                                        },
+                                    },
+                                }),
+                            },
+                        }),
+                        "encode proof response",
+                    ),
+                );
+                expect((await response)._unsafeUnwrap().signature).toBe("0x0102");
+            }
+        } finally {
+            warning.mockRestore();
+        }
+    });
+
     it("uses the transport codec version for generated handshake calls", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);

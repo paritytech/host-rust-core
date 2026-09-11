@@ -99,6 +99,7 @@ pub(crate) struct StubPlatform {
     pub(crate) sign_payload_error: Option<&'static str>,
     pub(crate) sign_raw_confirmed: bool,
     pub(crate) sign_raw_error: Option<&'static str>,
+    pub(crate) sign_raw_reviews: Arc<Mutex<Vec<truapi_platform::SignRawReview>>>,
     pub(crate) sign_vrf_confirmed: bool,
     pub(crate) sign_vrf_error: Option<&'static str>,
     pub(crate) sign_vrf_reviews: Arc<Mutex<Vec<SignVrfReview>>>,
@@ -1516,7 +1517,10 @@ impl UserConfirmation for StubPlatform {
             UserConfirmationReview::SignPayload(_) => {
                 (self.sign_payload_error, self.sign_payload_confirmed)
             }
-            UserConfirmationReview::SignRaw(_) => (self.sign_raw_error, self.sign_raw_confirmed),
+            UserConfirmationReview::SignRaw(review) => {
+                self.sign_raw_reviews.lock().unwrap().push(review);
+                (self.sign_raw_error, self.sign_raw_confirmed)
+            }
             UserConfirmationReview::SignVrf(review) => {
                 self.sign_vrf_reviews
                     .lock()

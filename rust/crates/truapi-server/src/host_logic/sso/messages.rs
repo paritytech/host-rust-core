@@ -131,8 +131,14 @@ pub struct ProductRequest<P> {
 pub enum SignRequest {
     /// Sign a full Substrate extrinsic payload.
     Payload(Box<HostSignPayloadRequest>),
-    /// Sign raw bytes or a string message.
+    /// Sign raw bytes or a string message with the `<Bytes>` watermark.
     Raw(HostSignRawRequest),
+    /// Temporary unwatermarked product signing (#612). Appended so existing
+    /// signing requests keep their SCALE discriminants and semantics.
+    RawUnwatermarkedDeprecated(HostSignRawRequest),
+    /// Temporary unwatermarked legacy signing (#612). Older peers reject this
+    /// variant rather than silently signing a different, watermarked payload.
+    RawWithLegacyAccountUnwatermarkedDeprecated(SignRawWithLegacyAccountRequest),
 }
 
 /// Request sent when a product asks the paired signing host to sign raw data with a

@@ -225,6 +225,28 @@ pub(crate) enum SignRawAuthorityRequest {
         /// Original legacy-account request.
         request: HostSignRawWithLegacyAccountRequest,
     },
+    /// Temporary product signing without the `<Bytes>` watermark (#612).
+    ProductUnwatermarkedDeprecated(HostSignRawRequest),
+    /// Temporary legacy signing without the `<Bytes>` watermark (#612).
+    LegacyAccountUnwatermarkedDeprecated {
+        /// Account selected by the product and validated against the session.
+        account: AccountId,
+        /// Original legacy-account request.
+        request: HostSignRawWithLegacyAccountRequest,
+    },
+}
+
+impl SignRawAuthorityRequest {
+    /// Select the temporary unwatermarked operation after signer validation.
+    pub(crate) fn without_watermark_deprecated(self) -> Self {
+        match self {
+            Self::Product(request) => Self::ProductUnwatermarkedDeprecated(request),
+            Self::LegacyAccount { account, request } => {
+                Self::LegacyAccountUnwatermarkedDeprecated { account, request }
+            }
+            request => request,
+        }
+    }
 }
 
 /// Transaction-creation request selected by the product API entrypoint.

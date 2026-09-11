@@ -1,6 +1,100 @@
 use super::*;
 
 #[test]
+#[allow(deprecated)] // Exercise the temporary API's paired-host wire routing.
+fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading() {
+    use crate::host_logic::sso::messages::SignRequest;
+    use truapi_platform::SignRawReview;
+
+    for signer_kind in ["product", "legacy product", "identity"] {
+        let session = sso_session_info();
+        let identity = session.identity_account_id.unwrap();
+        let platform = Arc::new(StubPlatform {
+            sign_raw_confirmed: true,
+            sso_response_script: Some(sso_success_response_script(
+                &session,
+                sign_response_message("unwatermarked", vec![7, 7], None),
+            )),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, session.clone());
+        let cx = CallContext::with_request_id("unwatermarked".to_string());
+        let payload = v01::RawPayload::Bytes {
+            bytes: vec![0x11; 32],
+        };
+        let signature = futures::executor::block_on(async {
+            if signer_kind == "product" {
+                let HostSignRawResponse::V1(response) = host
+                    .sign_raw_deprecated_i_will_change_this_later(
+                        &cx,
+                        HostSignRawRequest::V1(v01::HostSignRawRequest {
+                            account: account_id("myapp.dot", 0),
+                            payload: payload.clone(),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                response.signature
+            } else {
+                let signer = if signer_kind == "identity" {
+                    subxt::utils::AccountId32(identity).to_string()
+                } else {
+                    subxt::utils::AccountId32(test_product_account_public("myapp.dot", 0))
+                        .to_string()
+                };
+                let HostSignRawWithLegacyAccountResponse::V1(response) = host
+                    .sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
+                        &cx,
+                        HostSignRawWithLegacyAccountRequest::V1(
+                            v01::HostSignRawWithLegacyAccountRequest {
+                                signer,
+                                payload: payload.clone(),
+                            },
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                response.signature
+            }
+        });
+        assert_eq!(signature, vec![7, 7]);
+        let RemoteMessageData::V1(v1::RemoteMessage::SignRequest(request)) =
+            submitted_remote_message(&platform, &session).data
+        else {
+            panic!("expected an explicit unwatermarked SignRequest");
+        };
+        match request {
+            SignRequest::RawUnwatermarkedDeprecated(request) => {
+                assert_ne!(signer_kind, "identity");
+                assert_eq!(request.account, account_id("myapp.dot", 0));
+                assert_eq!(request.payload, payload);
+            }
+            SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request) => {
+                assert_eq!(signer_kind, "identity");
+                assert_eq!(request.account, identity);
+                assert_eq!(request.data, payload);
+            }
+            request => panic!("unwatermarked signing was downgraded: {request:?}"),
+        }
+        let reviews = platform.sign_raw_reviews.lock().unwrap();
+        assert_eq!(reviews.len(), 1);
+        assert!(matches!(
+            (&reviews[0], signer_kind),
+            (SignRawReview::ProductUnwatermarkedDeprecated(_), "product")
+                | (
+                    SignRawReview::LegacyAccountUnwatermarkedDeprecated(_),
+                    "legacy product" | "identity"
+                )
+        ));
+    }
+}
+
+#[test]
 fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
     let session = sso_session_info();
     let signature = v01::VrfSignature {
@@ -172,7 +266,7 @@ fn sign_raw_rejects_invalid_product_account() {
         account: account_id("other.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(
@@ -190,7 +284,7 @@ fn sign_raw_rejects_without_session_after_valid_account() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Rejected))
@@ -213,7 +307,7 @@ fn sign_raw_denies_when_chain_submit_denied() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(
@@ -232,7 +326,7 @@ fn sign_raw_rejects_when_user_declines_confirmation() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Rejected))
@@ -261,7 +355,7 @@ fn sign_raw_accepts_confirmation_then_returns_sso_response() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let response = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap();
+    let response = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap();
     let HostSignRawResponse::V1(inner) = response;
     assert_eq!(inner.signature, vec![7, 7]);
     assert_eq!(inner.signed_transaction, None);
@@ -330,7 +424,7 @@ fn sign_raw_uses_call_context_timeout_for_sso_response_wait() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
 
     match err {
         CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Unknown { reason })) => {
@@ -373,7 +467,7 @@ fn sign_raw_cancellation_unsubscribes_sso_subscriptions() {
         payload: raw_payload(),
     });
     let handle = std::thread::spawn(move || {
-        futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err()
+        futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err()
     });
 
     wait_until(
@@ -432,7 +526,7 @@ fn sign_raw_peer_disconnect_clears_session_store_and_broadcasts() {
         account: account_id("myapp.dot", 0),
         payload: raw_payload(),
     });
-    let err = futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    let err = futures::executor::block_on(host.sign_raw_watermarked(&cx, request)).unwrap_err();
 
     assert!(matches!(
         err,
@@ -616,7 +710,8 @@ fn legacy_sign_raw_rejects_signer_mismatch() {
             payload: raw_payload(),
         });
     let err =
-        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap_err();
+        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
+            .unwrap_err();
     match err {
         CallError::Domain(HostSignRawWithLegacyAccountError::V1(
             v01::HostSignPayloadError::Unknown { reason },
@@ -644,7 +739,8 @@ fn legacy_sign_raw_denies_when_chain_submit_denied() {
             payload: raw_payload(),
         });
     let err =
-        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap_err();
+        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
+            .unwrap_err();
     assert!(matches!(
         err,
         CallError::Domain(HostSignRawWithLegacyAccountError::V1(
@@ -678,7 +774,8 @@ fn legacy_sign_raw_accepts_derived_ss58_then_returns_sso_response() {
             payload: raw_payload(),
         });
     let response =
-        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap();
+        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
+            .unwrap();
     let HostSignRawWithLegacyAccountResponse::V1(inner) = response;
     assert_eq!(inner.signature, vec![9, 9]);
     assert_eq!(inner.signed_transaction, None);
@@ -731,7 +828,8 @@ fn legacy_sign_raw_accepts_derived_hex_then_returns_sso_response() {
             payload: raw_payload(),
         });
     let response =
-        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap();
+        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
+            .unwrap();
     let HostSignRawWithLegacyAccountResponse::V1(inner) = response;
     assert_eq!(inner.signature, vec![8, 8]);
 
@@ -780,7 +878,8 @@ fn legacy_sign_raw_accepts_identity_ss58_then_routes_legacy_request() {
         });
 
     let response =
-        futures::executor::block_on(host.sign_raw_with_legacy_account(&cx, request)).unwrap();
+        futures::executor::block_on(host.sign_raw_watermarked_with_legacy_account(&cx, request))
+            .unwrap();
 
     let HostSignRawWithLegacyAccountResponse::V1(response) = response;
     assert_eq!(response.signature, vec![7, 7]);

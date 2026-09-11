@@ -93,6 +93,39 @@ impl SigningHostSsoService {
                     )
                     .await
             }
+            SignRequest::RawUnwatermarkedDeprecated(request) => {
+                self.confirm(UserConfirmationReview::SignRaw(
+                    SignRawReview::ProductUnwatermarkedDeprecated(request.clone()),
+                ))
+                .await?;
+                self.signing_host
+                    .sign_raw(
+                        &cx.call,
+                        &cx.session,
+                        SignRawAuthorityRequest::ProductUnwatermarkedDeprecated(request),
+                    )
+                    .await
+            }
+            SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request) => {
+                let public_request = api::HostSignRawWithLegacyAccountRequest {
+                    signer: product_public_key_to_address(request.account),
+                    payload: request.data,
+                };
+                self.confirm(UserConfirmationReview::SignRaw(
+                    SignRawReview::LegacyAccountUnwatermarkedDeprecated(public_request.clone()),
+                ))
+                .await?;
+                self.signing_host
+                    .sign_raw(
+                        &cx.call,
+                        &cx.session,
+                        SignRawAuthorityRequest::LegacyAccountUnwatermarkedDeprecated {
+                            account: request.account,
+                            request: public_request,
+                        },
+                    )
+                    .await
+            }
         }
         .map_err(|err| err.to_string())
     }
