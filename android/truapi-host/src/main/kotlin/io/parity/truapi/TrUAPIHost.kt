@@ -96,7 +96,10 @@ enum class ProductExecutionKind {
 /**
  * Immutable process-wide configuration shared by every product execution
  * opened from one [TrUAPIHostRuntime]. [peopleChainGenesisHash] and
- * [bulletinChainGenesisHash] must each be exactly 32 bytes.
+ * [bulletinChainGenesisHash] must each be exactly 32 bytes. [networkSuffix] is
+ * the network's dotNS TLD without the leading dot (`dot`, `paseo`, `testnet`);
+ * the core derives the wallet's reserved identities under it (`uid.<suffix>`,
+ * `peopl.<suffix>`), the same person the app's own onboarding derives there.
  */
 data class HostRuntimeConfig(
     val hostName: String,
@@ -106,6 +109,7 @@ data class HostRuntimeConfig(
     val platformVersion: String? = null,
     val peopleChainGenesisHash: ByteArray,
     val bulletinChainGenesisHash: ByteArray,
+    val networkSuffix: String,
     val localSessionSecret: ByteArray? = null,
     val localSessionLiteUsername: String? = null,
 ) {
@@ -119,6 +123,7 @@ data class HostRuntimeConfig(
             platformVersion = platformVersion,
             peopleChainGenesisHash = peopleChainGenesisHash,
             bulletinChainGenesisHash = bulletinChainGenesisHash,
+            networkSuffix = networkSuffix,
             localSessionSecret = localSessionSecret,
             localSessionLiteUsername = localSessionLiteUsername,
         )
@@ -133,6 +138,7 @@ data class HostRuntimeConfig(
             platformVersion == other.platformVersion &&
             peopleChainGenesisHash.contentEquals(other.peopleChainGenesisHash) &&
             bulletinChainGenesisHash.contentEquals(other.bulletinChainGenesisHash) &&
+            networkSuffix == other.networkSuffix &&
             localSessionSecret.contentEquals(other.localSessionSecret) &&
             localSessionLiteUsername == other.localSessionLiteUsername
     }
@@ -145,6 +151,7 @@ data class HostRuntimeConfig(
         result = 31 * result + (platformVersion?.hashCode() ?: 0)
         result = 31 * result + peopleChainGenesisHash.contentHashCode()
         result = 31 * result + bulletinChainGenesisHash.contentHashCode()
+        result = 31 * result + networkSuffix.hashCode()
         result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
         result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
         return result

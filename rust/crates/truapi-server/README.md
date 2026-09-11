@@ -88,6 +88,10 @@ the wallet-authority tail (`sign_*`, `create_transaction`, `account_alias`,
 `Arc<dyn ProductAuthority>` handle with an `AuthoritySession` snapshot the
 role revalidates before touching key material.
 
+`runtime.rs` owns the product runtime and shared helpers. The trait adapters
+are grouped by surface under `runtime/capabilities/`; cross-capability fixtures
+and tests live in `runtime/tests.rs` and `runtime/tests/`.
+
 ### Permission flow
 
 Permission grants are scoped by product id and typed request, so a grant for
@@ -206,6 +210,15 @@ each product connection. Role-specific operations live only on the matching hand
 touching the session or other products. Calling the wrong operation is
 a compile error, not a runtime `Unavailable`.
 
+`SigningHostConfig.network_suffix` is the network's bare dotNS TLD (`dot`,
+`paseo`, or `testnet`). The shell supplies it alongside the chain genesis hashes
+from the same network configuration used by wallet onboarding. It must match
+the People chain's `NetworkSuffix.NetworkSuffix`: reserved identities derive
+under `uid.<suffix>` and `peopl.<suffix>`, while the chain uses that suffix for
+proof contexts. Configuration keeps local activation and key derivation
+available offline. The core validates supported suffixes but does not
+automatically check that the configured suffix matches the chain.
+
 ### The two roles
 
 Both implement the role-neutral **`ProductAuthority`** trait; each owns its
@@ -220,7 +233,7 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 - **`SigningHost`** (wallet-local): signs on device from local BIP-39 entropy,
   no pairing flow. `signing_host/local_activation.rs` establishes a session
   from host-held secret material. Its public identity is the RFC-0022
-  `uid.dot` index-0 product account. RFC-0024 ring-VRF keys are explicit,
+  `uid.<tld>` index-0 product account of the configured network. RFC-0024 ring-VRF keys are explicit,
   product-owned registry entries; aliases, proofs, direct signatures, and
   internal personhood flows use the requested or user-selected registered key
   without a compiled-in fallback. It resolves RFC-0004 `RingLocation` values
@@ -237,20 +250,53 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 session/SSO crypto, key derivation, and permission policy, while all I/O
 (statement-store RPC, storage, prompts, chain RPC) stays in the layers above.
 
+### Inter-host SSO
+
+`PairingHost::call(request)` sends typed requests to
+[`SigningHostSsoService`](src/runtime/signing_host/sso_service.rs). Handlers own
+consent and business logic; `sso_responder.rs` owns the transport loop and shared
+allowance helpers. Resource consent is bound to the request's signing session:
+account changes, disconnects, and reactivation invalidate pending approval before
+allocation or key return. Allocation failure details stay in local transcripts.
+Allocation requests use the canonical `truapi::latest::AllocatableResource` type.
+Signing uses canonical request and result types. Product-scoped VRF requests use
+`ProductRequest<P>` to attach the caller to a canonical payload. Both product and
+SSO signing encode `with_signed_transaction` with the one-byte `OptionBool` codec.
+
+The `host_logic::sso::messages::v1::RemoteMessage` enum owns the SCALE wire
+contract. Its response variants wrap named result payloads in `Response<P>`,
+which carries `responding_to` once. Macros generate request/response pairing
+and dispatch; see the
+[macro guide](../truapi-macros/README.md) for handler signatures and reply handling.
+A new operation needs payload definitions, wire variants, a handler, and a typed
+client call.
+
+Rust consumers must update renamed SSO types and helpers even when SCALE encoding
+is unchanged. Use `RemoteMessage::request(message_id, request)` to construct
+requests. Decoded `SsoSessionStatement::RemoteMessages` preserves message order;
+match variants directly or use the request's `SsoRequest::response_from_message`.
+
 ## Wire envelope
 
 Every frame on the wire is encoded as:
 
 ```text
-[requestId: SCALE str][discriminant: u8][payload bytes...]
+[requestId: SCALE str][trait: u8][method: u8][message_type: u8][payload bytes...]
 ```
 
-The discriminant identifies a method + frame kind via the auto-generated
-[`crate::generated::wire_table::WIRE_TABLE`]. Each method's ids are exposed
-as a named const (`PREIMAGE_SUBMIT`, ...); both `WIRE_TABLE` and the generated
-dispatcher reference those consts. Method ordering is part of the wire
-protocol; only ever append.
+The `(trait, method)` discriminant pair identifies the method via the
+auto-generated [`crate::generated::wire_table::WIRE_TABLE`], and the
+`message_type` byte names which leg of that method's exchange the frame
+carries (`Request`/`Response`, or a subscription's
+`Start`/`Receive`/`Interrupt`/`Stop`). The trait
+byte comes from the trait-level `#[wire_trait(id = N)]` annotation; the method
+byte addresses a method within that trait, so method ids restart at 0 in every
+trait. Each method's ids are exposed as a named const (`PREIMAGE_SUBMIT`, ...);
+both `WIRE_TABLE` and the generated dispatcher reference those consts. Trait
+ids and per-trait method ordering are part of the wire protocol; only ever
+append within a trait.
 
 The payload bytes are the SCALE-encoded inner value, inlined without a
-length prefix. The discriminant is carried directly as `Payload::id`, and the
-dispatcher routes on that numeric id via id-keyed tables.
+length prefix. The pair is carried as `Payload::trait_id` and
+`Payload::method_id` with the leg in `Payload::message_type`, and the
+dispatcher routes on the pair via pair-keyed tables.

@@ -1,5 +1,5 @@
 //! Cross-language parity check: the Rust `WIRE_TABLE` and the TS
-//! `wire-table.ts` must list the exact same `(method, request_id, response_id)`
+//! `wire-table.ts` must list the exact same `(method, trait_id, method_id)`
 //! tuples in the same order. A drift here means a product built against one
 //! side will fail to decode frames produced by the other.
 //!
@@ -20,12 +20,8 @@ const RUST_TABLE: &str = include_str!("../src/generated/wire_table.rs");
 #[derive(Debug, PartialEq, Eq)]
 struct Row {
     method: String,
-    request_or_start: u8,
-    response_or_receive: u8,
-    /// Subscription `_stop` / `_interrupt` ids; `None` for request methods.
-    stop: Option<u8>,
-    interrupt: Option<u8>,
-    is_subscription: bool,
+    trait_id: u8,
+    method_id: u8,
 }
 
 /// Parse a wire id. A malformed id is a hard failure, never a silent `0`: a
@@ -39,10 +35,10 @@ fn parse_id(raw: &str, method: &str) -> u8 {
 }
 
 fn parse_rust(src: &str) -> Vec<Row> {
-    // The Rust codegen emits one named `pub const FOO_BAR: RequestFrameIds = ...`
-    // (or `SubscriptionFrameIds`) per method. The const name is
-    // `SCREAMING_SNAKE_CASE` of the method name; we lowercase it to match the
-    // TS const names. This mirrors `parse_ts` below.
+    // The Rust codegen emits one named `pub const FOO_BAR: MethodIds = { ... }`
+    // per method. The const name is `SCREAMING_SNAKE_CASE` of the method name;
+    // we lowercase it to match the TS const names. This mirrors `parse_ts`
+    // below.
     let mut out = Vec::new();
     let mut iter = src.lines();
     while let Some(line) = iter.next() {
@@ -53,50 +49,32 @@ fn parse_rust(src: &str) -> Vec<Row> {
         let Some(colon) = rest.find(':') else {
             continue;
         };
-        let is_subscription = rest.contains("SubscriptionFrameIds");
         // Skip non-id consts (e.g. `WIRE_TABLE: &[WireEntry]`).
-        if !is_subscription && !rest.contains("RequestFrameIds") {
+        if !rest.contains("MethodIds") {
             continue;
         }
         let method = rest[..colon].trim().to_ascii_lowercase();
-        let mut request_or_start = None;
-        let mut response_or_receive = None;
-        let mut stop = None;
-        let mut interrupt = None;
+        let mut trait_id = None;
+        let mut method_id = None;
         for inner in iter.by_ref() {
             let t = inner.trim();
             if t.starts_with("};") {
                 break;
             }
-            if let Some(rest) = t
-                .strip_prefix("request_id: ")
-                .or_else(|| t.strip_prefix("start_id: "))
-            {
-                request_or_start = Some(parse_id(rest, &method));
+            if let Some(rest) = t.strip_prefix("trait_id: ") {
+                trait_id = Some(parse_id(rest, &method));
             }
-            if let Some(rest) = t
-                .strip_prefix("response_id: ")
-                .or_else(|| t.strip_prefix("receive_id: "))
-            {
-                response_or_receive = Some(parse_id(rest, &method));
-            }
-            if let Some(rest) = t.strip_prefix("stop_id: ") {
-                stop = Some(parse_id(rest, &method));
-            }
-            if let Some(rest) = t.strip_prefix("interrupt_id: ") {
-                interrupt = Some(parse_id(rest, &method));
+            if let Some(rest) = t.strip_prefix("method_id: ") {
+                method_id = Some(parse_id(rest, &method));
             }
         }
-        if let (Some(rs), Some(rr)) = (request_or_start, response_or_receive) {
-            out.push(Row {
-                method,
-                request_or_start: rs,
-                response_or_receive: rr,
-                stop,
-                interrupt,
-                is_subscription,
-            });
-        }
+        out.push(Row {
+            trait_id: trait_id
+                .unwrap_or_else(|| panic!("missing trait_id for `{method}` in Rust table")),
+            method_id: method_id
+                .unwrap_or_else(|| panic!("missing method_id for `{method}` in Rust table")),
+            method,
+        });
     }
     out
 }
@@ -116,45 +94,24 @@ fn parse_ts(src: &str) -> Vec<Row> {
             continue;
         };
         let method = rest[..name_end].to_ascii_lowercase();
-        let mut request_or_start = None;
-        let mut response_or_receive = None;
-        let mut stop = None;
-        let mut interrupt = None;
-        let mut is_subscription = false;
+        let mut trait_id = None;
+        let mut method_id = None;
         for inner in iter.by_ref() {
             let t = inner.trim();
-            if t.starts_with("start:") || t.contains("SubscriptionFrameIds") {
-                is_subscription = true;
+            if let Some(rest) = t.strip_prefix("trait: ") {
+                trait_id = Some(parse_id(rest, &method));
             }
-            if let Some(rest) = t
-                .strip_prefix("request: ")
-                .or_else(|| t.strip_prefix("start: "))
-            {
-                request_or_start = Some(parse_id(rest, &method));
-            }
-            if let Some(rest) = t
-                .strip_prefix("response: ")
-                .or_else(|| t.strip_prefix("receive: "))
-            {
-                response_or_receive = Some(parse_id(rest, &method));
-            }
-            if let Some(rest) = t.strip_prefix("stop: ") {
-                stop = Some(parse_id(rest, &method));
-            }
-            if let Some(rest) = t.strip_prefix("interrupt: ") {
-                interrupt = Some(parse_id(rest, &method));
+            if let Some(rest) = t.strip_prefix("method: ") {
+                method_id = Some(parse_id(rest, &method));
             }
             if t.starts_with("} as const") || t == "}" {
-                if let (Some(rs), Some(rr)) = (request_or_start, response_or_receive) {
-                    out.push(Row {
-                        method,
-                        request_or_start: rs,
-                        response_or_receive: rr,
-                        stop,
-                        interrupt,
-                        is_subscription,
-                    });
-                }
+                out.push(Row {
+                    trait_id: trait_id
+                        .unwrap_or_else(|| panic!("missing trait id for `{method}` in TS table")),
+                    method_id: method_id
+                        .unwrap_or_else(|| panic!("missing method id for `{method}` in TS table")),
+                    method,
+                });
                 break;
             }
         }
@@ -225,4 +182,35 @@ fn rust_and_ts_wire_tables_agree() {
         "Rust WIRE_TABLE and TS wire-table.ts diverged. Regenerate both via \
          `scripts/codegen.sh` so the codegen pipeline produces them in lockstep.",
     );
+}
+
+/// `transport.ts` hand-mirrors the reserved protocol-error address, which the
+/// generated table does not carry. It is hand-written on the TS side, so
+/// nothing but this test stops it drifting - and a drift means one language
+/// answers frames the other refuses.
+#[test]
+fn transport_ts_mirrors_the_rust_wire_constants() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../js/packages/truapi/src/transport.ts");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+
+    for (name, expected) in [
+        ("PROTOCOL_ERROR_TRAIT_ID", 255),
+        ("PROTOCOL_ERROR_METHOD_ID", 255),
+    ] {
+        let needle = format!("export const {name} = ");
+        let start = src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("transport.ts must export {name}"));
+        let rest = &src[start + needle.len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        let actual: u8 = digits
+            .parse()
+            .unwrap_or_else(|err| panic!("{name} is not a u8 literal: {err}"));
+        assert_eq!(
+            actual, expected,
+            "transport.ts {name} = {actual} but Rust says {expected}",
+        );
+    }
 }

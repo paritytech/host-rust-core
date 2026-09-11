@@ -181,7 +181,9 @@ async fn lookup_dotns_identity(
         if labels.is_empty() {
             return Ok(None);
         }
-        Ok(Some(classify_labels(labels)))
+        Ok(Some(
+            classify_labels(&mut lookup, &controller, labels).await?,
+        ))
     }
     .fuse();
     pin_mut!(lookup);
@@ -463,9 +465,13 @@ mod tests {
                 assert_eq!(&input[68..100], &abi_word(16));
                 // One live claim and one that lapsed a second ago.
                 abi_pending_claims(&[
-                    ("alice01", NOW_SECS - 10),
-                    ("stale01", NOW_SECS - RESERVATION_DURATION - 1),
+                    ("alice.01", NOW_SECS - 10),
+                    ("stale.01", NOW_SECS - RESERVATION_DURATION - 1),
                 ])
+            }
+            (CONTROLLER, s) if s == selector("isPopIssued(string)") => {
+                // Both surviving labels were issued through the gateway.
+                abi_word(1).to_vec()
             }
             (CONTROLLER, s) if s == selector("reservationDuration()") => {
                 abi_word(RESERVATION_DURATION).to_vec()
@@ -695,11 +701,12 @@ mod tests {
             .count();
         // protocolRegistry (reverts on the dispatcher), TARGET, pendingClaims,
         // reservationDuration, protocolRegistry, get(storeFactory), getLabelStore, tld,
-        // one short getLabels page. A repointed chain resolves on the first probe and
-        // needs eight.
+        // one short getLabels page, then one isPopIssued per surviving label
+        // (alice.01, myproject). A repointed chain resolves on the first probe
+        // and needs ten.
         assert_eq!(
-            calls, 9,
-            "the discovery and label chain is exactly nine views on a dispatcher chain"
+            calls, 11,
+            "the discovery, label and provenance chain is exactly eleven views on a dispatcher chain"
         );
     }
 }

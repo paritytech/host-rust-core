@@ -124,7 +124,7 @@ impl truapi_platform::AuthPresenter for WasmPlatform {
     fn auth_state_changed(&self, state: truapi_platform::AuthState) {
         if let Err(reason) = call_js_function(
             &self.bridge.auth_state_changed,
-            &vec![Uint8Array::from(state.encode().as_slice()).into()],
+            &[Uint8Array::from(state.encode().as_slice()).into()],
         ) {
             web_sys::console::error_1(&JsValue::from_str(&reason));
         }

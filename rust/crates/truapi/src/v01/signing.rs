@@ -1,4 +1,4 @@
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::{Decode, Encode, OptionBool};
 
 use super::ProductAccountId;
 
@@ -35,8 +35,8 @@ pub struct HostSignPayloadData {
     pub metadata_hash: Option<Vec<u8>>,
     /// Metadata mode.
     pub mode: Option<u32>,
-    /// Request signed transaction back.
-    pub with_signed_transaction: Option<bool>,
+    /// Request signed transaction back, encoded as one byte: absent, true, or false.
+    pub with_signed_transaction: OptionBool,
 }
 
 /// Request to sign an extrinsic payload with a product account.

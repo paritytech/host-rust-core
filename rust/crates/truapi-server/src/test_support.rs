@@ -10,7 +10,7 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use web_time::Duration;
 
-use crate::host_logic::session::SessionInfo;
+use crate::host_logic::session::{SessionInfo, SsoSessionInfo};
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
 use crate::host_logic::sso::pairing;
 use crate::subscription::Spawner;
@@ -30,8 +30,8 @@ use truapi_platform::{
     JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
     Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
     PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
-    ProductSubtreeReview, ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    ProductSubtreeReview, ResourceAllocationReview, SignRawReview, SignVrfReview,
+    StatementStoreProductSignReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -105,6 +105,7 @@ pub(crate) struct StubPlatform {
     pub(crate) sign_payload_error: Option<&'static str>,
     pub(crate) sign_raw_confirmed: bool,
     pub(crate) sign_raw_error: Option<&'static str>,
+    pub(crate) sign_raw_reviews: Arc<Mutex<Vec<SignRawReview>>>,
     pub(crate) sign_vrf_confirmed: bool,
     pub(crate) sign_vrf_error: Option<&'static str>,
     pub(crate) sign_vrf_reviews: Arc<Mutex<Vec<SignVrfReview>>>,
@@ -115,6 +116,9 @@ pub(crate) struct StubPlatform {
     pub(crate) create_transaction_error: Option<&'static str>,
     pub(crate) resource_allocation_confirmed: bool,
     pub(crate) resource_allocation_error: Option<&'static str>,
+    /// Pause a resource review until the test releases its confirmation.
+    pub(crate) resource_allocation_confirmation_gate:
+        Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     /// Every `ResourceAllocation` review passed to `confirm_user_action`, in order.
     pub(crate) resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
     pub(crate) session_blob: Option<Vec<u8>>,
@@ -263,6 +267,56 @@ pub(crate) fn session_info() -> crate::host_logic::session::SessionInfo {
         lite_username: Some("alice".to_string()),
         full_username: Some("Alice Smith".to_string()),
     }
+}
+
+/// A pairing host and the signing host it paired with, each holding its own
+/// side of one SSO session.
+pub(crate) fn sso_host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionInfo) {
+    use crate::host_logic::sso::pairing::{
+        ResponderIdentity, create_pairing_bootstrap, derive_x25519_keypair_from_entropy,
+        establish_responder_session_info, establish_sso_session_info,
+    };
+    use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
+
+    let config = PairingHostConfig::new(
+        HostInfo {
+            name: "Test Host".to_string(),
+            icon: None,
+            version: None,
+            platform: truapi::latest::HostPlatform::Unknown,
+        },
+        PlatformInfo::default(),
+        [0; 32],
+        [0xbb; 32],
+        [0xcc; 32],
+        "polkadotapp".to_string(),
+    )
+    .expect("test pairing config is valid");
+    let bootstrap = create_pairing_bootstrap(&config).unwrap();
+    let statement_keypair = MiniSecretKey::from_bytes(&[7; 32])
+        .unwrap()
+        .expand_to_keypair(ExpansionMode::Ed25519);
+    let (encryption_secret_key, encryption_public_key) =
+        derive_x25519_keypair_from_entropy(&[0xAB; 16], b"sso");
+    let responder = ResponderIdentity {
+        statement_secret: statement_keypair.secret.to_bytes(),
+        statement_public_key: statement_keypair.public.to_bytes(),
+        encryption_secret_key,
+        encryption_public_key,
+    };
+    let responder_session = establish_responder_session_info(
+        &responder,
+        bootstrap.statement_store_public_key,
+        bootstrap.encryption_public_key,
+    )
+    .unwrap();
+    let host_session = establish_sso_session_info(
+        &bootstrap,
+        responder.statement_public_key,
+        responder.encryption_public_key,
+    )
+    .unwrap();
+    (host_session, responder_session)
 }
 
 /// Connected session fixture with deterministic SSO channel material.
@@ -599,14 +653,12 @@ pub(crate) fn sign_response_message(
         message_id: format!("wallet-{message_id}"),
         data: crate::host_logic::sso::messages::RemoteMessageData::V1(
             crate::host_logic::sso::messages::v1::RemoteMessage::SignResponse(
-                crate::host_logic::sso::messages::SigningResponse {
+                crate::host_logic::sso::messages::Response {
                     responding_to: message_id.to_string(),
-                    payload: Ok(
-                        crate::host_logic::sso::messages::SigningPayloadResponseData {
-                            signature,
-                            signed_transaction,
-                        },
-                    ),
+                    payload: Ok(truapi::latest::HostSignPayloadResponse {
+                        signature,
+                        signed_transaction,
+                    }),
                 },
             ),
         ),
@@ -621,10 +673,10 @@ pub(crate) fn sign_raw_legacy_response_message(
     crate::host_logic::sso::messages::RemoteMessage {
         message_id: format!("wallet-{message_id}"),
         data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRawLegacyResponse(
-                crate::host_logic::sso::messages::SignRawLegacyResponse {
+            crate::host_logic::sso::messages::v1::RemoteMessage::SignRawWithLegacyAccountResponse(
+                crate::host_logic::sso::messages::Response {
                     responding_to: message_id.to_string(),
-                    signature: Ok(signature),
+                    payload: Ok(signature),
                 },
             ),
         ),
@@ -705,7 +757,7 @@ pub(crate) fn sign_payload_data() -> v01::HostSignPayloadData {
         asset_id: None,
         metadata_hash: None,
         mode: None,
-        with_signed_transaction: None,
+        with_signed_transaction: parity_scale_codec::OptionBool(None),
     }
 }
 
@@ -1013,42 +1065,8 @@ async fn wait_for_rpc_method_id(
 
 fn retarget_sso_response(mut response: RemoteMessage, message_id: &str) -> RemoteMessage {
     response.message_id = format!("wallet-{message_id}");
-    match &mut response.data {
-        RemoteMessageData::V1(v1::RemoteMessage::SignResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        RemoteMessageData::V1(v1::RemoteMessage::CreateTransactionResponse(response)) => {
-            response.responding_to = message_id.to_string();
-        }
-        _ => {}
-    }
+    let RemoteMessageData::V1(data) = response.data;
+    response.data = RemoteMessageData::V1(data.with_responding_to(message_id.to_string()));
     response
 }
 
@@ -1511,7 +1529,13 @@ impl UserConfirmation for StubPlatform {
             UserConfirmationReview::SignPayload(_) => {
                 (self.sign_payload_error, self.sign_payload_confirmed)
             }
-            UserConfirmationReview::SignRaw(_) => (self.sign_raw_error, self.sign_raw_confirmed),
+            UserConfirmationReview::SignRaw(review) => {
+                self.sign_raw_reviews
+                    .lock()
+                    .expect("raw signing review list mutex poisoned")
+                    .push(review);
+                (self.sign_raw_error, self.sign_raw_confirmed)
+            }
             UserConfirmationReview::SignVrf(review) => {
                 self.sign_vrf_reviews
                     .lock()
@@ -1556,6 +1580,14 @@ impl UserConfirmation for StubPlatform {
                     .lock()
                     .expect("resource allocation review list mutex poisoned")
                     .push(review);
+                let gate = self
+                    .resource_allocation_confirmation_gate
+                    .lock()
+                    .expect("resource confirmation gate mutex poisoned")
+                    .take();
+                if let Some(gate) = gate {
+                    gate.await.expect("resource confirmation gate was released");
+                }
                 (
                     self.resource_allocation_error,
                     self.resource_allocation_confirmed,

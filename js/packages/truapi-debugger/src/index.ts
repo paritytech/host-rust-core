@@ -14,12 +14,17 @@ export type {
   FrameDecoderOptions,
   FrameValueDetail,
 } from "./decode.js";
-export { createWireDebugger, createMethodNameMap } from "./wire-debugger.js";
+export {
+  createWireDebugger,
+  createMethodNameMap,
+  frameIdOf,
+  resolveRole,
+} from "./wire-debugger.js";
 export type {
   WireDebugger,
   WireDebuggerOptions,
   WireDebugSink,
-  WireFrameKind,
+  WireMethodKind,
   WireMethodInfo,
   WireTrace,
 } from "./wire-debugger.js";

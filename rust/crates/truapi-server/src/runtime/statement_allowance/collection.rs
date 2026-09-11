@@ -13,7 +13,8 @@ use super::rpc::RpcClient;
 use super::view;
 
 /// A personhood ring collection in the People chain's `Members` pallet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display)]
+#[display("{}", self.metadata_variant())]
 pub enum PersonhoodCollection {
     /// Full personhood, established by proof-of-personhood registration.
     People,
@@ -79,12 +80,6 @@ impl PersonhoodCollection {
         metadata: &Metadata,
     ) -> Result<u32, StatementAllowanceError> {
         view::read_resource_u32(rpc, metadata, self.slots_per_period_view()).await
-    }
-}
-
-impl core::fmt::Display for PersonhoodCollection {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.metadata_variant())
     }
 }
 

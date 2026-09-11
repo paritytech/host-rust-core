@@ -10,7 +10,9 @@ This repo is the single source of truth for the TrUAPI protocol. It vendors `dot
 rust/crates/
   truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2 (canonical)
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
-  truapi-macros/         #[wire(id = N)] proc-macro
+  truapi-macros/         #[wire_trait(id = N)] and #[wire(id = N)] proc-macros;
+                         #[sso_service] for truapi-server's inter-host SSO protocol
+                         One implementation module per macro; lib.rs holds entry points
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
@@ -48,6 +50,8 @@ ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFF
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
+hosts/ios/                 iOS host app; resolves the core from this tree
+hosts/android/             Android host app
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
@@ -71,6 +75,14 @@ scripts/truapi-host-installer.sh
   rather than importing a concrete protocol version. Runtime crates may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
+- Inter-host SSO uses `#[sso_service]` as described
+  in the [macro guide](rust/crates/truapi-macros/README.md). Keep per-variant pairing,
+  dispatch, and correlation in that macro; do not add manual per-variant catalogs.
+  Requests with a caller share `ProductRequest<P>` around canonical payloads;
+  handler method names select request variants. Responses share `Response<P>`;
+  handler signatures name their result payload
+  and response variant. Transcript classification belongs in shared reply handling
+  or the handler; request context carries only the call and signing session.
 - Native bindings expose canonical Rust domain and protocol types directly.
   Add feature-gated UniFFI derives to those types and custom conversions for
   unsupported leaf values instead of defining parallel `Native*` mirrors.
@@ -104,14 +116,17 @@ scripts/truapi-host-installer.sh
   still has a binding representation, and the `ios-swift` job generates the
   package's Swift sources and container resource and then compiles the package
   and its test target, which is what catches a hand-written conformer that
-  missed a new protocol requirement. `ios-swift` is path-filtered, and the
-  filter has to name every crate the bindings are generated from, since a
-  protocol change no longer leaves an `ios/` diff to key on. On the Kotlin side
-  the `ci-android` job compiles
-  `TrUAPIHost.kt` against freshly generated bindings on pull requests touching
-  `android/` or the native crates, which catches the same class of drift;
-  `make android-check` does it locally. The embedding apps are compiled by
-  neither.
+  missed a new protocol requirement. On the Kotlin side the `android-bindings`
+  job compiles `TrUAPIHost.kt` against freshly generated bindings, which catches
+  the same class of drift; `make android-check` does it locally. The embedding
+  apps are compiled by neither.
+- Both compile gates are path-filtered from one place. The `changes` job in
+  `ci.yml` computes `sdk_swift` and `sdk_kotlin`, and each gated job reads the
+  output. Because neither binding set is committed, a filter has to name every
+  crate its bindings are generated from, since a protocol change leaves no
+  `ios/` or `android/` diff to key on. Every job in `ci.yml` is aggregated by
+  `ci-status`, which is the check worth requiring: a job skipped by its filter
+  counts as a pass, so a gate cannot stall a PR it does not apply to.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
   To publish, include `@parity/ios-host <version>` in the `release:` PR title.
@@ -330,7 +345,7 @@ __truapi.setLogLevel("debug");
 sessionStorage.setItem("dotli:truapi-debug", "1");
 ```
 
-Reload after setting the debug-panel flag. Watch for `Unknown wire discriminant`, missing
+Reload after setting the debug-panel flag. Watch for `unknown wire discriminant pair`, missing
 `@parity/truapi-host` imports, worker WASM instantiation failures, and
 debug-panel traffic disappearing when the login popup opens.
 

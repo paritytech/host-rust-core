@@ -12,9 +12,11 @@
  *    can, with no "sensitive" special-casing. A developer inspecting their own
  *    session's traffic sees the real values. When decoding is disabled every
  *    frame reports its byte length only.
- *  - **Reuse, don't reinvent.** Decoding is `WIRE_DECODE_TABLE[frameId]?.(bytes)`
- *    from `@parity/truapi/wire-decode` - the same generated, dev-only codecs the
- *    client uses. The debugger writes no codecs of its own.
+ *  - **Reuse, don't reinvent.** Decoding is
+ *    `WIRE_DECODE_TABLE[frameId]?.[messageType]?.(bytes)` from
+ *    `@parity/truapi/wire-decode` - the same generated, dev-only codecs the
+ *    client uses, keyed by the wire's own leg marker. The debugger writes no
+ *    codecs of its own.
  *
  * Nothing here is ever serialized into `/traces`; the detail it produces is
  * returned only from the explicit per-frame drill-down.
@@ -48,10 +50,10 @@ export interface FrameDecoderOptions {
    */
   enabled?: boolean;
   /**
-   * Frame-id → decoder map. Defaults to the generated
+   * Frame-id → messageType → decoder map. Defaults to the generated
    * {@link WIRE_DECODE_TABLE}; overridable for tests.
    */
-  decodeTable?: Record<number, (payload: Uint8Array) => unknown>;
+  decodeTable?: Record<number, Record<number, (payload: Uint8Array) => unknown>>;
 }
 
 /** A gated per-frame value decoder for the drill-down detail path. */
@@ -93,7 +95,7 @@ export function createFrameDecoder(
     // that `channelId`, and a frame id means nothing without the table that
     // assigned it. Unattested frames still group, list and show their hex.
     if (frame.identityConfirmed !== true) return bytesFallback();
-    const decode = decodeTable[frame.frameId];
+    const decode = decodeTable[frame.frameId]?.[frame.messageType];
     if (!decode || !frame.bytes) return bytesFallback();
     try {
       return { kind: "decoded", value: decode(frame.bytes) };

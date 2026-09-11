@@ -3,25 +3,29 @@
 //! Pairing and signing hosts implement these traits differently, but
 //! `ProductRuntimeHost` can use this module's shared request/session types
 //! without knowing where the key material lives.
+//! Alias, proof, and ring-VRF operations reuse the request payloads in
+//! `host_logic::sso::messages` for both local calls and SSO transport.
 
 use async_trait::async_trait;
 use std::sync::Arc;
 use truapi::latest::{
-    AccountId, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
-    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyResponse,
-    HostAccountRingVrfSignResponse, HostCreateTransactionResponse,
-    HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
-    HostSignPayloadRequest, HostSignPayloadResponse, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
-    ProductAccountId, ProductAccountTxPayload, ProductProofContext, RingLocation,
+    AccountId, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
+    HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
+    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
+    HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
+    HostAccountRingVrfSignResponse, HostAccountSignVrfError, HostAccountSignVrfRequest,
+    HostCreateTransactionResponse, HostRequestResourceAllocationRequest,
+    HostRequestResourceAllocationResponse, HostSignPayloadRequest, HostSignPayloadResponse,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, ProductAccountId,
+    ProductAccountTxPayload, VrfSignature,
 };
-use truapi::v01::{HostAccountSignVrfRequest, VrfSignature};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
 
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::RingVrfError;
+use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
 
 /// Secret key allocated for Bulletin preimage submission.
@@ -125,7 +129,7 @@ impl AuthoritySession {
 }
 
 /// Typed account-authority failure before it is mapped to an API-specific error.
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 pub(crate) enum AuthorityError {
     /// User or authority rejected the request.
     #[display("Rejected")]
@@ -159,8 +163,23 @@ impl From<AuthorityError> for RingVrfError {
     }
 }
 
+impl From<AuthorityError> for HostAccountSignVrfError {
+    fn from(err: AuthorityError) -> Self {
+        match err {
+            AuthorityError::Disconnected => Self::NotConnected,
+            AuthorityError::Rejected => Self::Rejected,
+            AuthorityError::Cancelled(err) => Self::Unknown {
+                reason: err.to_string(),
+            },
+            AuthorityError::Unavailable { reason }
+            | AuthorityError::NotSupported { reason }
+            | AuthorityError::Unknown { reason } => Self::Unknown { reason },
+        }
+    }
+}
+
 /// Cancellation cause for an account-authority call.
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 #[display(
     "Account authority request {reason}{}",
     if request_id.is_empty() { String::new() } else { format!(" for {request_id}") }
@@ -222,67 +241,6 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     },
     /// Create a transaction with the active wallet's identity account.
     IdentityAccount(LegacyAccountTxPayload),
-}
-
-/// Contextual-alias request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AccountAliasAuthorityRequest {
-    /// Calling product, so the Account Holder can scope context derivation.
-    pub calling_product_id: String,
-    /// Explicit ring-VRF key handle.
-    pub key_handle: ProductAccountId,
-    /// Product-scoped context the derived alias is bound to.
-    pub context: ProductProofContext,
-    /// Ring the explicit key must be registered for.
-    pub ring_location: RingLocation,
-}
-
-/// Ring-VRF proof request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CreateProofAuthorityRequest {
-    /// Calling product, so the Account Holder can scope context derivation.
-    pub calling_product_id: String,
-    /// Explicit ring-VRF key handle.
-    pub key_handle: ProductAccountId,
-    /// Product-scoped context the derived alias is bound to.
-    pub context: ProductProofContext,
-    /// Ring the explicit key must be registered for.
-    pub ring_location: RingLocation,
-    /// Opaque message bound into the proof.
-    pub message: Vec<u8>,
-}
-
-/// Ring-VRF key registration request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RegisterRingVrfKeyAuthorityRequest {
-    /// Calling product that owns the key.
-    pub calling_product_id: String,
-    /// Key derivation index within the caller's ring-VRF domain.
-    pub index: truapi::v01::DerivationIndex,
-    /// Declared ring for the key.
-    pub ring: RingLocation,
-}
-
-/// Ring-VRF key listing request forwarded to the account authority.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ListRingVrfKeysAuthorityRequest {
-    /// Calling product requesting the list.
-    pub calling_product_id: String,
-    /// Owner product whose entries should be listed.
-    pub owner: String,
-    /// Disclosure requested by the caller.
-    pub disclosure: truapi::v01::RingVrfKeyDisclosure,
-}
-
-/// Direct ring-VRF member-key signing request.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RingVrfSignAuthorityRequest {
-    /// Calling product requesting the signature.
-    pub calling_product_id: String,
-    /// Registered key handle.
-    pub key_handle: ProductAccountId,
-    /// Message to sign.
-    pub message: Vec<u8>,
 }
 
 /// Statement-store allowance signing material held by the authority layer.
@@ -399,6 +357,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<HostSignPayloadResponse, AuthorityError>;
 
     /// Build a transaction for a product account, signed unless the request
@@ -418,7 +377,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: AccountAliasAuthorityRequest,
+        request: ProductRequest<HostAccountGetAliasRequest>,
     ) -> Result<HostAccountGetAliasResponse, RingVrfError>;
 
     /// Create a ring-VRF proof bound to a context and message.
@@ -429,7 +388,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: CreateProofAuthorityRequest,
+        request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<HostAccountCreateProofResponse, RingVrfError>;
 
     /// Register a ring-VRF key owned by the calling product.
@@ -437,7 +396,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: RegisterRingVrfKeyAuthorityRequest,
+        request: ProductRequest<HostAccountRegisterRingVrfKeyRequest>,
     ) -> Result<HostAccountRegisterRingVrfKeyResponse, RingVrfError>;
 
     /// List registered ring-VRF keys.
@@ -445,7 +404,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: ListRingVrfKeysAuthorityRequest,
+        request: ProductRequest<HostAccountListRingVrfKeysRequest>,
     ) -> Result<HostAccountListRingVrfKeysResponse, RingVrfError>;
 
     /// Sign bytes directly with a registered ring-VRF key.
@@ -453,7 +412,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        request: RingVrfSignAuthorityRequest,
+        request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
 
     /// Ask the account authority to allocate product-scoped resources.

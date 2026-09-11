@@ -1,0 +1,1550 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="send_gaining_privacy_title">This payment might reduce your privacy</string>
+    <string name="send_gaining_privacy_full_amount">In this payment you are using funds that have not yet been fully processed by the privacy system.</string>
+    <string name="send_gaining_privacy_send_anyway_button">Send %1$s anyway</string>
+
+    <string name="send_payment_failed">Failed to submit transaction</string>
+    <string name="common_intent_failed">Failed to find application to perform specified action</string>
+    <string name="add_contact_already_exists_error">You have already added this contact</string>
+
+    <string name="video_game_deposit_lost_title">Deposit lost: You didn’t participate in the weekly game</string>
+    <string name="video_game_deposit_lost_message">If you still want to play the weekly games, please add a new deposit.</string>
+
+    <string name="video_game_keep_playing_games_title">Keep playing the weekly game</string>
+    <string name="video_game_keep_playing_games_message">Not participating can lead to your Membership status being put on hold</string>
+    <string name="common_got_it">Got it</string>
+
+    <string name="people_issuing_citizenship_title">Issuing your Membership</string>
+    <string name="people_issuing_citizenship_message">Issuing your Membership can take a few days, please check back later.</string>
+
+    <string name="people_ring_setup_notification_title">Issuing Membership</string>
+    <string name="people_ring_setup_notification_message">Working on issuing your Membership.</string>
+
+    <string name="video_game_claim_citizenship_title">Your Membership is ready to be issued</string>
+    <string name="video_game_claim_citizenship_action">Claim your Membership</string>
+    <string name="video_game_claim_citizenship_card_header">Polkadot</string>
+    <string name="video_game_claim_citizenship_card_footer">Membership</string>
+
+    <string name="video_game_final_processing_title">Game completed</string>
+    <string name="video_game_final_processing_subtitle">Membership is within reach. Check the app a bit later, or we’ll notify you when it’s ready.</string>
+    <string name="video_game_chat_with_players_title">Chat with players</string>
+    <string name="video_game_chat_with_players_empty">No players found</string>
+    <string name="video_game_chat_with_players_add">Add</string>
+    <string name="video_game_chat_with_players_message">Message</string>
+
+    <string name="mobrule_rewards_sync_worker_notification_title">Voting rewards sync</string>
+    <string name="mobrule_rewards_sync_worker_notification_message">Syncing and claiming your pending voting rewards</string>
+
+    <string name="login_title">Polkadot</string>
+    <string name="login_default_action">Get started</string>
+    <string name="login_restore_action">Other options</string>
+    <string name="login_restoring_account_progress">Restoring your account</string>
+
+    <string name="dim_switch_to_dim1_placeholder">You\’re joining Peers through the Unique Tattoo. Press \“Edit\” to switch to the Weekly Game option.</string>
+    <string name="dim_switch_to_dim1_sheet_title">Switch to the Unique Peer Tattoo Option?</string>
+    <string name="dim_switch_to_dim1_sheet_description">Once you switch, you will need to add a new deposit.\nThe existing deposit will be returned to the original transfer address.</string>
+
+    <string name="dim_switch_to_dim2_placeholder">You\'re applying to become a Peer through the weekly game. To switch to the unique tattoo option, press \"Edit\".</string>
+    <string name="dim_switch_to_dim2_sheet_title">Switch to the Weekly Game option?</string>
+    <string name="dim_switch_to_dim2_sheet_description">Cancel your reserved tattoo and register\nto start playing weekly games instead?\n Your game progress will be permanently lost, and your deposit will not be returned!</string>
+    <string name="dim_switch_to_dim1_unavailable">Edit will be available after the active game you are participating in is finished</string>
+    <string name="dim_switch_to_dim2_unavailable">Switching is not available after committing to a tattoo design</string>
+
+    <string name="tattoo_families_examples_header">Polkadot Citizen Tattoo Designs Examples</string>
+    <string name="tattoo_families_selection_header">Select the design  for your tattoo</string>
+    <string name="tattoo_families_not_enough_deposit_footer">Deposit %s to Choose the Tattoo and Provide Evidence</string>
+    <string name="tattoo_families_not_enough_deposit_footer_action">Deposit %s</string>
+    <string name="tattoo_families_can_apply_footer_title">%s Deposit Received</string>
+    <string name="tattoo_families_can_apply_footer_description">Select and Reserve\nany Available Tattoo</string>
+    <string name="tattoo_families_can_apply_footer_action">Generate Personal Tattoos</string>
+
+    <string name="tattoo_families_personal_tattoos_title">Personalized Designs</string>
+    <string name="tattoo_families_personal_tattoos_description">Procedural designs based on a your unique citizenship number or account address. The designs use algorithmic rules to map the input (e.g., a number or address) into specific aesthetic designs, ensuring both uniqueness and relevance to your individual data.</string>
+    <string name="mob_rule_warn_sensitive_content_skip">Next Evidence</string>
+    <string name="mob_rule_warn_sensitive_content_show">Show Anyway</string>
+
+    <string name="mob_rule_warn_sensitive_content_title">The Evidence May Contain Sensitive Content or Inappropriate Information</string>
+
+    <string name="mob_rule_report_evidence_title">Report Evidence</string>
+    <string name="mob_rule_report_evidence_description">Submit the report if you think the evidence contains sensitive content or inappropriate information.</string>
+
+    <string name="common_submit_report">Submit Report</string>
+
+    <string name="mob_rule_voting_error">Failed to vote on the case. It will appear again in the review feed</string>
+    <string name="mob_rule_content_reporting_error">Failed to report the sensitive content</string>
+
+    <string name="mob_rule_bot_sensitive_title">Sensitive Content Warning</string>
+    <string name="mob_rule_bot_sensitive_description">This case may contain sensitive or inappropriate content.</string>
+    <string name="mob_rule_bot_show_evidence">Show Evidence</string>
+    <string name="mob_rule_bot_show_more">Show more</string>
+    <string name="mob_rule_bot_show_less">Show Less</string>
+    <string name="mob_rule_bot_photo_title">Tattoo Photo</string>
+    <string name="mob_rule_bot_video_title">Documentation Video</string>
+    <string name="mob_rule_bot_photo_description">• Is the Tattoo Design matches the submitted image in terms of design?\n\n• Is the tattoo located on the upper arm between the elbow and armpit?\n\n• Are marks of skin reaction to the tattoo visible in the photo to ensure that it is real?</string>
+    <string name="mob_rule_bot_video_description">• Is the Tattoo Design matches the submitted image in terms of design?\n\n• Are marks of skin reaction to the tattoo visible in the video to ensure that the process is real?</string>
+    <string name="mob_rule_bot_welcome">Provide Judgments, Earn Rewards\n\n• The app will send you documentation tattoo videos and photos\n\n• Provide ✅ True or ❌ False judgement for each case, earn rewards for each statement</string>
+    <string name="mob_rule_view_case">View Case</string>
+    <string name="mob_rule_vote_true">✅ True</string>
+    <string name="mob_rule_vote_false">❌ False</string>
+    <string name="mob_rule_case_subtitle">Mob Rule Case #%s</string>
+    <string name="mob_rule_judgment_processing">Judgement is being processed</string>
+    <string name="mob_rule_judgment_correct">Judgement is correct.</string>
+    <string name="mob_rule_judgment_incorrect">Judgement is incorrect</string>
+
+    <string name="home_citizenship_waiting_final_judgment">Review in progress</string>
+    <string name="home_citizenship_registering_person">Registering as a person</string>
+
+    <string name="common_send">Send</string>
+    <string name="common_edit">Edit</string>
+    <string name="common_reply">Reply</string>
+
+    <string name="common_pdf_attachment">Pdf attachment</string>
+
+    <string name="become_citizen_send_inquiry_message">"I hope this message finds you well. I\'ve been admiring your work for a while now, and I\'m interested in getting a custom tattoo from you.
+
+I have a specific design  that I\'d like to have placed on inner part of the upper left arm.
+
+Additionally, I would like to document the last three minutes of the tattooing process.
+
+Could we possibly schedule a consultation to discuss the design, placement, and the filming aspect?
+I’m attaching PDF with more information and details regarding the Tattoo Stencil, Placement, and Evidence video.Looking forward to the possibility of working with you."</string>
+
+    <string name="become_citizen_tattoo_details_evidence_review_title">Evidence review</string>
+    <string name="become_citizen_tattoo_details_evidence_review_description">The review time can take from %s to %s.</string>
+
+    <string name="become_citizen_evidence">Evidence</string>
+
+    <string name="become_citizen_tattoo_details_execution_title">Execution</string>
+    <string name="become_citizen_tattoo_details_execution_description">Find any tattooer you like. You will also see a few suggested tattoo studios after booking.</string>
+
+    <string name="become_citizen_tattoo_details_reimbursement_title">Tattoo expenses Reimbursement</string>
+    <string name="become_citizen_tattoo_details_reimbursement_description">Once your Proof of Ink Evidence is approved, you will receive full reimbursement for your tattoo expenses.</string>
+
+    <string name="become_citizen_tattoo_details_evidence_title">Proof of Ink Evidence</string>
+    <string name="become_citizen_tattoo_details_evidence_description">Provide 3-minute proof of documentation video and a picture of the final tattoo</string>
+
+    <string name="become_citizen_tattoo_evidence_provided_review_title">Evidence in Review</string>
+    <string name="become_citizen_tattoo_evidence_provided_review_description">The review time can take from  one day to a week</string>
+    <string name="become_citizen_tattoo_evidence_provided_review_action">Report an Issue</string>
+
+    <string name="citizenship_issued_title">Web3 Citizenship is Issued. Claim Username Now!</string>
+    <string name="citizenship_issued_action">Claim Unique Username</string>
+
+    <string name="become_citizen_tattoo_evidence_confirmed_citizenship">Polkadot Citizen #%s</string>
+    <string name="become_citizen_tattoo_evidence_confirmed_citizenship_received_at">Received at</string>
+
+    <string name="become_citizen_notification_permission_request_title">Enable Notifications to Receive Updates</string>
+    <string name="become_citizen_notification_permission_request_benefit_1">For Evidence Upload Status</string>
+    <string name="become_citizen_notification_permission_request_benefit_2">When Evidence is Accepted</string>
+    <string name="become_citizen_notification_permission_request_benefit_3">When Citizenship is Issued</string>
+    <string name="become_citizen_notification_permission_rationale_title">We kindly recommend enabling notifications to avoid missing important updates about your evidence processing</string>
+    <string name="become_citizen_notification_permission_rationale_message">Disabling notifications may result in missing important updates, actions that need to be taken, and could overall prolong the evidence upload and review process. </string>
+
+    <string name="notification_permission_request_ok_button">Enable notifications</string>
+    <string name="notification_permission_request_nah_button">Don’t enable</string>
+
+    <string name="common_duration_format_long_period_hours" translatable="false">%dH</string>
+    <string name="common_duration_format_long_period_days" translatable="false">%dD</string>
+    <string name="common_duration_format_long_period_weeks" translatable="false">%dW</string>
+
+    <string name="common_from">From</string>
+    <string name="common_to">To</string>
+    <string name="common_username">Username</string>
+
+    <string name="home_citizenship_failed">Uploading failed: %s</string>
+
+    <string name="home_citizenship_uploading">Uploading: %s</string>
+    <string name="home_citizenship_waiting_intermediate_judgment">Intermediate review in progress</string>
+    <string name="home_citizenship_waiting_storage">Waiting storage allocation</string>
+    <string name="common_permission_permissions_needed_title">Permissions needed</string>
+    <string name="common_permission_permissions_needed_message">Requested permissions are required to use this screen.</string>
+    <string name="common_ask_again">Ask again</string>
+
+    <string name="common_permission_permissions_denied_title">Permissions denied</string>
+    <string name="common_permission_permissions_denied_message">Requested permissions are required to use this screen. You should enable them in Settings.</string>
+    <string name="common_to_settings">Open Settings</string>
+
+    <string name="common_error_general_title" translatable="false">Error</string>
+    <string name="common_error_no_connection">No connection. Check your network and try again.</string>
+    <string name="common_error_server">Our servers are having trouble. Try again in a few minutes.</string>
+    <string name="common_error_signing_failed">Couldn\'t sign the transaction. Try again.</string>
+    <string name="common_error_integrity">Device integrity verification failed</string>
+
+    <string name="become_citizen_tattoo_details">Tattoo Details</string>
+    <string name="become_citizen_tattoo_reserved_teails_instructions_title">Stencil and Guidelines PDF</string>
+
+    <string name="tattoo_instructions_stencil_title">Stencil</string>
+    <string name="tattoo_instructions_location_title">Tattoo Location</string>
+    <string name="tattoo_instructions_location_subtitle">Inner part of the upper left arm</string>
+    <string name="tattoo_instructions_location_description">The tattoo has to be made on inner part of the upper left arm. Centred between armpit and elbow. Location is fixed and can’t be replaced.</string>
+    <string name="tattoo_instructions_proof_of_ink_title">Proof of Ink Evidence</string>
+    <string name="tattoo_instructions_proof_of_ink_description">The tattoo has to be made on inner part of the upper left arm. Centred between armpit and elbow. Location is fixed and can’t be replaced.</string>
+    <string name="tattoo_instructions_documentation_title">Documentation video</string>
+    <string name="tattoo_instructions_documentation_description">Filming has to be started once most of the tattoo has been performed</string>
+    <string name="tattoo_instructions_final_photo_title">Final Tattoo Photo</string>
+    <string name="tattoo_instructions_final_photo_description">Close up picture of the fresh tattoo exposed</string>
+
+    <string name="tattoo_instructions_page_footer_counter" translatable="false">%d / %d</string>
+    <string name="tattoo_instructions_page_footer">The Polkadot Citizen Tattoo Guidelines</string>
+
+    <string name="become_citizen_tattoo_location_title">Location</string>
+    <string name="become_citizen_tattoo_location_description">The tattoo has to be made on inner part of the upper left arm. Centred between armpit and elbow. Location is fixed and can’t be replaced.</string>
+
+    <string name="become_citizen_tattoo_size_title">Size in Millimeters</string>
+    <string name="become_citizen_tattoo_size_description">This tattoo is available in several sizes ranging from %s to %s millimeters. You will see stencil with all sizes after booking.</string>
+
+    <string name="become_citizen_provide_evidence_notification_title">Uploading evidence...</string>
+    <string name="become_citizen_provide_evidence_notification_message">Evidence is being uploaded to the blockchain</string>
+    <string name="common_proceed">Proceed</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_continue">Continue</string>
+    <string name="common_ok">OK</string>
+    <string name="common_retry">Retry</string>
+    <string name="common_confirm">Confirm</string>
+    <string name="common_done">Done</string>
+    <string name="common_close">Close</string>
+    <string name="common_quit">Quit</string>
+    <string name="common_save">Save</string>
+    <string name="common_next">Next</string>
+    <string name="common_paste">Paste</string>
+    <string name="common_copy">Copy</string>
+    <string name="common_back">Back</string>
+    <string name="common_switch">Switch</string>
+    <string name="common_open">Open</string>
+    <string name="common_you">You</string>
+    <string name="common_delete">Delete</string>
+    <string name="common_decline">Decline</string>
+    <string name="common_true">True</string>
+    <string name="common_false">False</string>
+
+    <string name="become_citizen_confirm_tattoo_title">Confirm Polkadot Peer Tattoo Reservation</string>
+    <string name="become_citizen_confirm_tattoo_description">Be sure you’re happy with your choice, as the tattoo design can’t be changed after confirmation.</string>
+    <string name="become_citizen_confirm_tattoo_deadline_format">By confirming you’re agree to submit tattoo evidence before %s.</string>
+    <string name="become_citizen_confirm_tattoo_already_reserved">This tattoo is already reserved, select again</string>
+
+    <string name="become_citizen_tattoo_proceed">Proceed with this Tattoo</string>
+
+    <string name="home_citizenship_apply_format">Upgrade ID to %s</string>
+    <string name="home_citizenship_apply_highlighted_part">Polkadot Citizen</string>
+
+    <string name="home_credentials_card_title">Add Credentials</string>
+    <string name="home_credentials_card_description">Link social media accounts to your citizenship</string>
+    <string name="home_credentials_card_action_add">Add Credentials</string>
+    <string name="home_credentials_card_action_edit">Edit Credentials</string>
+
+    <string name="home_citizenship_commited_title">Tattoo %s</string>
+    <string name="home_citizenship_commited_title_highlighted_part">Reserved</string>
+
+    <string name="home_citizenship_commited_subtitle">%s to provide evidence</string>
+
+    <string name="home_citizenship_judjing_title">Evidence %s</string>
+    <string name="home_citizenship_judjing_title_highlighted_part">Provided</string>
+    <string name="home_citizenship_judjing_subtitle">Review is in Process</string>
+
+    <string name="home_citizenship_proven_title">You are Proven</string>
+    <string name="home_citizenship_unknown_title">Unknown citizen state</string>
+
+    <string name="home_next_video_game_in">Next Game In</string>
+
+    <string name="home_title">Home</string>
+
+    <string name="home_citizen_id">Web3 Citizen #%d</string>
+
+    <string name="home_username_banned_title">Your username has been banned</string>
+    <string name="home_username_banned_description">Your username was reported by users for containing hate speech, violent symbols, or harmful language.</string>
+    <string name="home_username_banned_action">Got it</string>
+
+    <string name="become_citizen_select_design">Select the design for your tattoo</string>
+    <string name="become_citizen_see_collection">See Collection</string>
+
+    <string name="tattoo_image_description">Tattoo image</string>
+
+    <string name="deposit_tokens_copy_cta">Copy Address</string>
+    <string name="deposit_tokens_section_to">To</string>
+    <string name="deposit_tokens_title">Deposit %1$s</string>
+    <string name="deposit_tokens_tattoo_evidence_description">Deposited %1$s will be held and sent back after tattoo evidence has been confirmed.</string>
+    <string name="deposit_tokens_video_game_description">A small deposit is required to prevent game violations and will be fully refunded upon obtaining citizenship.</string>
+
+    <string name="home_mob_rule_title">Vote and Earn</string>
+    <string name="home_mob_rule_subtitle">Total Score</string>
+    <string name="home_mob_rule_statements_header">Statements</string>
+    <string name="home_mob_rule_correct_header">Correct</string>
+    <string name="home_mob_rule_widget_title">Earn Rewards</string>
+    <string name="home_mob_rule_widget_description">Earn DOT rewards by reviewing Proof of Ink Evidence.</string>
+    <string name="home_mob_rule_widget_action">Start Earning</string>
+
+    <string name="screen_voting_title">Mob Rule</string>
+    <string name="screen_voting_out_of_statements">Out of Statements</string>
+
+    <string name="mobrule_card_header_photo">Proof of Ink Photo</string>
+    <string name="mobrule_card_header_video">Proof of Ink Video</string>
+    <string name="mobrule_card_header_credentials">Online Activity Credential</string>
+    <string name="mobrule_card_description_photo">· Does the film start once enough  of the selected design has been tattooed and is clearly visible\n\n
+· Is the needle clearly visible enough in the frame during the tattooing process to ensure that it is real?\n\n
+· Is the Tattoo Design matches the submitted image in terms of design.\n\n
+· Are marks of skin reaction to the tattoo visible in the video to ensure that the process is real?\n\n
+· A napkin is often used to wipe off ink traces, making the tattoo area clear for the next line. Is a napkin used in the video?</string>
+    <string name="mobrule_card_description_video">· Does the film start once enough  of the selected design has been tattooed and is clearly visible\n\n
+· Is the needle clearly visible enough in the frame during the tattooing process to ensure that it is real?\n\n
+· Is the Tattoo Design matches the submitted image in terms of design.\n\n
+· Are marks of skin reaction to the tattoo visible in the video to ensure that the process is real?\n\n
+· A napkin is often used to wipe off ink traces, making the tattoo area clear for the next line. Is a napkin used in the video?</string>
+    <string name="mobrule_card_description_credentials">· Tap the link to go to the profile where  the claimed credential is located\n\n
+· Compare the information\n\n
+· Return to the app to make statement</string>
+    <string name="mobrule_card_timeout_label">Watch 10 or more seconds of the video to complete statement</string>
+    <string name="mobrule_card_read_more">Read More</string>
+    <string name="mobrule_card_credentials_text">Does the tagline of the\n%s\ncontain the text\n%s\n?</string>
+    <string name="mobrule_card_credentials_headline">Does the tagline of the</string>
+    <string name="mobrule_card_credentials_contain">contain the text</string>
+    <string name="mobrule_card_header_username">Reported username</string>
+    <string name="mobrule_card_description_username">· Please review the reported username and determine if it includes any of the following:\n\n· Hate speech or slurs (e.g. racism, sexism, homophobia)\n\n· References to violence, extremism, or threats\n\n· Offensive or dehumanizing language\n\n· Symbols or coded terms commonly associated with hate or harm\n\nIf the username clearly contains such elements — even indirectly or in disguised form — it can be considered grounds for removal and banning.</string>
+    <string name="mobrule_card_username_question_part1">Is the username</string>
+    <string name="mobrule_card_username_question_part2">free from harmful\nor offensive content?</string>
+
+    <string name="identity_credentials_platforms_title">Online Activities Credentials</string>
+    <string name="identity_credentials_platforms_description">Social media and other proof on online activities can be used as proof of your identity required by some apps</string>
+
+    <string name="identity_credentials_platform_add">Add %s</string>
+    <string name="identity_credentials_platform_rejected">Rejected</string>
+    <string name="identity_credentials_platform_under_review">Under Review</string>
+
+    <string name="identity_credentials_add_handle_twitter_description">Type or paste link to twitter profile  you want to add</string>
+    <string name="identity_credentials_add_handle_discord_description">Type or paste Discord tag  you want to add</string>
+    <string name="identity_credentials_add_handle_github_description">Type or paste Github profile name  you want to add</string>
+
+    <string name="identity_credentials_add_steps_counter">Step %s / %s</string>
+    <string name="identity_credentials_add_handle_title">Add Handle</string>
+    <string name="identity_credentials_add_proof_title">Add Proof of Ownership Mark</string>
+
+    <string name="identity_credentials_proof_description">Your unique Web3 citizen username is your proof of ownership mark. Copy and paste it into your %s profile bio and confirm</string>
+
+    <string name="identity_credentials_add_handle_twitter_placeholder">Your X @username</string>
+    <string name="identity_credentials_add_handle_discord_placeholder">Your Discord #Tag</string>
+    <string name="identity_credentials_add_handle_github_placeholder">Your Github profile name</string>
+
+    <string name="identity_credentials_add_proof_first_step_title">Username</string>
+    <string name="identity_credentials_add_proof_second_step_title">Add Proof of OwnerShip</string>
+
+    <string name="identity_credentials_add_proof_open_action">Open %s</string>
+
+    <string name="identity_credentials_add_proof_action">Confirm and Submit</string>
+
+    <string name="identity_credentials_rejected_title">Credentials Has Been Rejected</string>
+    <string name="identity_credentials_rejected_description">The review time can take from one day to a week</string>
+    <string name="identity_credentials_rejected_action">Submit again</string>
+
+    <string name="identity_credentials_review_title">Credentials  are Under Review</string>
+    <string name="identity_credentials_review_description">The review time can take from  one day to a week</string>
+    <string name="identity_credentials_review_action">Back To Home Screen</string>
+
+    <string name="pick_username_title">Pick a username</string>
+    <string name="pick_username_description">Use this name to send and receive all types of payments instead of hard-to remember wallet address.</string>
+    <string name="pick_username_text_field_hint">Enter username</string>
+    <string name="pick_username_state_taken">Taken. Try another.</string>
+    <string name="pick_username_state_invalid">Try another.</string>
+    <string name="pick_username_state_available">It\'s yours!</string>
+    <string name="pick_username_digits_taken">Digits taken. Try again.</string>
+    <string name="pick_username_just_claimed_new_digit">This username was just claimed. We picked a new number for you.</string>
+    <string name="pick_username_just_claimed_taken">This username was just claimed. Try another.</string>
+
+    <string name="pick_username_action_too_short">Minimum %s characters</string>
+    <string name="pick_username_action_clear">Clear</string>
+    <string name="pick_username_action_claim">Get username</string>
+
+    <string name="username_error_verification_unavailable">Google Play services aren\'t available on this device, so it can\'t be verified. Contact support for a build that works without them.</string>
+    <string name="username_error_verification_rejected">We couldn\'t verify this device. Rooted devices and custom ROMs aren\'t supported.</string>
+    <string name="username_error_verification_busy">Device verification is temporarily unavailable. Try again in a moment.</string>
+    <string name="username_error_unknown">Couldn\'t check this username. Try again.</string>
+
+    <string name="backup_found_title">We found an existing backup</string>
+    <string name="backup_found_description">Restore from the existing backup or remove it and create a new one</string>
+    <string name="backup_found_date_created">Created</string>
+    <string name="backup_found_recover_action">Recover this backup</string>
+    <string name="backup_found_remove_action">Replace with a new backup</string>
+    <string name="backup_not_found_error">No backup was found in Google Drive. Recover with your recovery phrase instead.</string>
+    <string name="backup_corrupted_error">This backup is damaged and can\'t be read. Recover with your recovery phrase instead.</string>
+    <string name="backup_error_wrong_mnemonic">Those words don\'t match your recovery phrase. Try again.</string>
+    <string name="backup_error_authentication_failed">Couldn\'t confirm it\'s you. Try again.</string>
+
+    <string name="claim_username_creating_account">Creating new account</string>
+    <string name="claim_username_already_have_account">Already using Polkadot? %1$s</string>
+    <string name="claim_username_recover_here">Recover here</string>
+    <string name="claim_username_terms_privacy_consent">By continuing you agree to our %1$s and %2$s</string>
+    <string name="claim_username_terms">Terms</string>
+    <string name="claim_username_privacy_policy">Privacy Policy</string>
+    <string name="claim_username_welcome_header">Welcome to Polkadot</string>
+    <string name="claim_username_onboarding_description">Choose a username to get started.</string>
+    <string name="claim_username_recovered_header">Account restored</string>
+    <string name="claim_username_recovered_description">Claim a username - it\'s how people find, pay, and message you.</string>
+
+    <string name="registration_queue_title">You\'re almost there</string>
+    <string name="registration_queue_description">The queue helps us protect the service from bots and fake mass sign-ups. It keeps access safe and fair for everyone.</string>
+    <string name="registration_queue_position_caption">Your position</string>
+    <string name="registration_queue_why_waiting">Why am I waiting?</string>
+    <string name="registration_queue_why_title">Why is there a queue?</string>
+    <string name="registration_queue_why_description">We use a queue to protect the service from bots, scripts, and automated mass sign-ups</string>
+    <string name="registration_queue_why_point_secure">Keep the system secure</string>
+    <string name="registration_queue_why_point_fair">Make access fair for real users</string>
+    <string name="registration_queue_why_point_abuse">Prevent abuse and overload</string>
+
+    <string name="claim_unavailable_title">Device verification isn\'t available</string>
+    <string name="claim_unavailable_description">Free username claims require device verification, but this device doesn\'t support the required verification method.</string>
+
+    <string name="integrity_failed_title">App safety check failed</string>
+    <string name="integrity_failed_description">We couldn\'t confirm that this app is safe to use on this device</string>
+
+    <string name="backup_override_title">Replacing this backup is permanent.</string>
+    <string name="backup_override_description">The account, money, collectables and all information tied to this backup will be lost unless you\'ve already written down the recovery phrase.</string>
+    <string name="backup_override_confirmation">I\'ve written down the recovery phrase for the old account.</string>
+    <string name="backup_override_continue_action">Replace backup</string>
+
+    <string name="authentication_title">Verify it\'s you</string>
+    <string name="authentication_description">Use your device screen lock to verify it\'s you</string>
+
+    <string name="bottom_nav_menu_chats">Chats</string>
+    <string name="bottom_nav_menu_mob_rule">Vote</string>
+    <string name="bottom_nav_menu_pocket">Pocket</string>
+    <string name="bottom_nav_menu_explore">Browse</string>
+    <string name="bottom_nav_menu_settings">Settings</string>
+    <string name="bottom_nav_scanner_tooltip">Use this button to add contacts, send funds, and more</string>
+    <string name="tab_bar_no_open_products">No open products</string>
+    <string name="tab_bar_close_tab">Close tab</string>
+
+    <string name="create_or_recover_options_recover_title">Recover Account</string>
+    <string name="create_or_recover_options_create_title">Create New Account</string>
+    <string name="create_or_recover_options_recover_google_drive_action_title">Backup from Google Drive</string>
+    <string name="create_or_recover_options_recover_google_drive_action_description">Import your recovery phrase from a Google Drive backup</string>
+    <string name="create_or_recover_options_recover_phrase_action_title">Import recovery phrase</string>
+    <string name="create_or_recover_options_recover_phrase_action_description">Type in your recovery phrase</string>
+    <string name="create_or_recover_options_create_manually_action_title">Create Manually</string>
+    <string name="create_or_recover_options_create_manually_action_description">Write down your recovery phrase</string>
+
+    <string name="manual_backup_write_down_title">Write Down Your\nrecovery phrase</string>
+    <string name="manual_backup_write_down_description">Never share the recovery phrase.</string>
+    <string name="manual_backup_confirm_title">Confirm your\nrecovery phrase</string>
+    <string name="manual_backup_confirm_description">Tap on the words below</string>
+    <string name="manual_backup_confirm_reveal_action_title">Tap to reveal</string>
+    <string name="manual_backup_confirm_reveal_action_description">Make sure no one can see your screen and do not take a screenshot</string>
+    <string name="manual_backup_confirm_warning">Keep your recovery phrase stored in a safe place and never ahare it with anyone</string>
+
+    <string name="recover_mnemonic_title">Restore your account</string>
+    <string name="recover_mnemonic_description">Enter your 12 or 24-word recovery phrase</string>
+    <string name="recover_mnemonic_action">Restore account</string>
+    <string name="recover_mnemonic_invalid_mnemonic_title">Invalid recovery phrase</string>
+    <string name="recover_mnemonic_invalid_mnemonic_description">Please check your recovery phrase</string>
+    <string name="recover_mnemonic_invalid_mnemonic_action">Got it</string>
+
+    <string name="rewards_title">Your Rewards</string>
+    <string name="rewards_total_balance">Total Balance</string>
+    <string name="rewards_approx_not_yet_available">approx. %s will soon be available to withdraw</string>
+    <string name="rewards_available_to_withdraw">Available to Withdraw</string>
+    <string name="rewards_withdraw_to">Withdraw to</string>
+    <string name="rewards_withdraw_elsewhere_action">or Withdraw Elsewhere</string>
+    <string name="rewards_withdraw_to_polkadot_app_action">Withdraw to Polkadot App</string>
+    <string name="rewards_withdraw_to_address_action">Withdraw Rewards</string>
+    <string name="rewards_until_next_withdrawal">Not available</string>
+    <string name="rewards_expiration_warning">Reward is expiring in %s. Withdraw it now.</string>
+    <string name="rewards_start_earning_description">Earn %1$s by providing judgements, playing weekly games, or inviting friends</string>
+    <string name="rewards_start_earning_action">Start earning</string>
+    <string name="rewards_remove_address_action">Remove</string>
+    <string name="rewards_add_address_action">Add Withdrawal Address</string>
+    <string name="rewards_withdrawal_options">Withdrawal Options</string>
+
+    <string name="rewards_polkadot_banner_title">Withdraw to</string>
+    <string name="rewards_polkadot_banner_subtitle">Polkadot App</string>
+    <string name="rewards_polkadot_banner_description">Transfer your DOT rewards to the Polkadot App</string>
+
+    <string name="add_withdrawal_address_title">Add Withdrawal Address</string>
+    <string name="add_withdrawal_address_description">Scan or paste the address and make sure it’s correct.</string>
+    <string name="add_withdrawal_address_input_placeholder">Withdrawal Address</string>
+    <string name="add_withdrawal_address_add_action">Add Address</string>
+    <string name="add_withdrawal_address_invalid_address_error">Invalid address</string>
+    <string name="add_withdrawal_scan_invalid_code_error_title">Invalid QR code</string>
+    <string name="add_withdrawal_scan_invalid_code_error_message">Be sure you’re scanning a Polkadot account address</string>
+    <string name="add_withdrawal_scan_invalid_code_error_action">Got it</string>
+
+    <string name="withdrawal_confirmation_section_header_withdrawing">Withdrawing</string>
+    <string name="withdrawal_confirmation_section_header_destination">To</string>
+    <string name="withdrawal_confirmation_confirm_action">Confirm Withdrawal</string>
+    <string name="withdrawal_confirmation_success">Reward Withdrawn Successfully</string>
+
+    <string name="voucher_sync_worker_notification_title">Vouchers sync</string>
+    <string name="voucher_sync_worker_notification_message">Your vouchers are being synced right now</string>
+
+    <string name="coinage_recycling_worker_notification_title">Coin recycling</string>
+    <string name="coinage_recycling_worker_notification_message">Recycling aged coins to keep your wallet healthy</string>
+
+    <string name="coinage_recovery_worker_notification_title">Confirming payments</string>
+    <string name="coinage_recovery_worker_notification_message">Waiting for your recent payments to settle on chain</string>
+
+    <string name="revoke_payments_toolbar_title">Revoke Payments</string>
+    <string name="revoke_payments_title">Revoke pending payments?</string>
+    <string name="revoke_payments_description">This will cancel any payments that have not been completed yet. Payments that are still pending, processing, or waiting for confirmation will not go through. Completed payments will not be affected.</string>
+    <string name="revoke_payments_disclaimer">This action cannot be undone. To send these payments later, you\'ll need to create them again.</string>
+    <string name="revoke_payments_button">Revoke</string>
+    <string name="revoke_payments_success">Reclaimed %1$s</string>
+    <string name="revoke_payments_nothing">No pending payments to revoke</string>
+
+    <string name="external_payment_worker_notification_title">Processing payment…</string>
+    <string name="external_payment_worker_notification_message">Completing your payment</string>
+
+    <string name="chat_file_upload_worker_notification_title">Sending attachment…</string>
+    <string name="chat_file_upload_worker_notification_message">Your attachment is being uploaded</string>
+
+    <string name="chat_file_download_worker_notification_title">Downloading attachment…</string>
+    <string name="chat_file_download_worker_notification_message">An attachment is being downloaded</string>
+
+    <string name="tracked_extrinsic_worker_notification_title">Submitting transaction…</string>
+    <string name="tracked_extrinsic_worker_notification_message">Waiting for on-chain confirmation</string>
+
+    <string name="video_game_home_title">Weekly games</string>
+    <string name="video_game_home_next_game_starts_in">next game starts</string>
+    <string name="video_game_home_next_game_in_progress">Game in progress</string>
+    <string name="video_game_home_missing_game_disclaimer">Missing this game risks deposit loss.</string>
+    <string name="video_game_home_last_game_result_pending_title">Game Results Pending</string>
+    <string name="video_game_home_last_game_result_pending_description">Wait 24 hours for other players\' attestations to be finalized.</string>
+    <string name="video_game_home_last_game_result_failed_title">Game Not Successful</string>
+    <string name="video_game_home_last_game_result_failed_description">An extra game has been added.</string>
+    <string name="video_game_home_last_game_result_dismiss_action">Got It</string>
+    <string name="video_game_home_register_action">Register for the game</string>
+    <string name="video_game_home_register_in_action">Register in %s</string>
+    <string name="video_game_home_start_playing_action">Start playing</string>
+    <string name="video_game_home_start_playing_in_action">Start playing %s</string>
+    <string name="video_game_home_add_deposit_action">Add a deposit to play</string>
+    <string name="video_game_home_citizenship_journey_title">Citizenship Journey</string>
+    <string name="video_game_home_footer_title">If you don’t want to play games for citizenship, quit anytime and apply with a tattoo and video evidence.</string>
+    <string name="video_game_home_footer_action">Quit Games &amp; Apply Another Way</string>
+    <string name="video_game_home_games_left">Game Left\nto Play</string>
+    <string name="video_game_home_offboard_title">Quit Games?</string>
+    <string name="video_game_home_offboard_message">Warning: Your game progress will be permanently lost, and your deposit will not be returned!</string>
+
+    <string name="video_game_play_waiting_room_countdown">Game starts %s</string>
+    <string name="video_game_pill_waiting_countdown_label">Game starting in</string>
+    <string name="video_game_connection_game_starting_in">Game starting in %1$d</string>
+    <string name="video_game_connection_connected">Connected</string>
+    <string name="video_game_connection_connecting">Connecting</string>
+    <string name="video_game_connection_not_connected">Not connected</string>
+    <string name="video_game_pill_in_progress_label">Game Live</string>
+    <string name="video_game_pill_round_template">Round %1$d / %2$d</string>
+    <string name="video_game_pill_review_label">Review</string>
+    <string name="video_game_pill_content_description">Expand weekly game</string>
+    <string name="video_game_play_player_banned">Banned</string>
+    <string name="video_game_play_player_meet_host">Meet the host</string>
+    <string name="video_game_play_player_you_are_host">You\’re the host</string>
+    <string name="video_game_play_host_transition_description_show">Show gesture!</string>
+    <string name="video_game_play_host_transition_description_copy">Copy gesture!</string>
+    <string name="video_game_play_disconnected_host">Host disconnected</string>
+    <string name="video_game_play_disconnected_player">Player disconnected</string>
+    <string name="video_game_play_no_host_pill">No host - copy other players</string>
+
+    <string name="video_game_vote_title">Check your\nchoices</string>
+    <string name="video_game_confirming_in">Confirming in %1$d</string>
+    <string name="video_game_confirming">Confirming…</string>
+
+    <string name="video_game_registration_reminder_title">Join the %s game</string>
+    <string name="video_game_registration_reminder_message">Register now to take part in this weeks\'s game</string>
+    <string name="video_game_waiting_room_reminder_title">Game starting soon</string>
+    <string name="video_game_waiting_room_reminder_message">The weekly game starts in 5 minutes! Join for free to win amazing prizes!</string>
+    <string name="video_game_about_to_start_reminder_title">Game is about to start</string>
+    <string name="video_game_about_to_start_reminder_message">The game is about to start! Join and get ready for fun and rewards!</string>
+    <string name="video_game_start_reminder_title">Game starting now!</string>
+    <string name="video_game_start_reminder_message">The game is starting! Jump in!</string>
+
+    <string name="video_game_alert_setting_title">Alert</string>
+    <string name="video_game_alert_offset_seconds">%d sec before</string>
+
+    <string name="platform_twitter" translatable="false">X</string>
+    <string name="platform_github" translatable="false">Github</string>
+    <string name="platform_discord" translatable="false">Discord</string>
+
+    <string name="workers_notification_channel_id" translatable="false">workers_notification_channel_id</string>
+    <string name="workers_notification_channel_name">Background service workers</string>
+
+    <string name="video_game_notifications_channel_id" translatable="false">video_game_notifications_channel_id</string>
+    <string name="video_game_notifications_channel_name">Video game reminders</string>
+    <string name="video_game_notifications_channel_description">Reminders for when a Video Game is about to start.</string>
+
+    <string name="video_game_alarms_channel_id" translatable="false">video_game_alarms_channel_id</string>
+    <string name="video_game_alarms_channel_name">Video game alarms</string>
+    <string name="video_game_alarms_channel_description">Critical alerts with loud sound and vibration for unmissable game events.</string>
+
+    <string name="video_game_person_title">Weekly Game</string>
+    <string name="video_game_person_missing_game_warning_part_one">Don\'t miss the game.</string>
+    <string name="video_game_person_missing_game_warning_part_two">Missing the game will pause your citizenship status.</string>
+    <string name="video_game_person_start_playing_action">Start Playing</string>
+    <string name="video_game_person_get_rewards_footer">Get your reward once the game ends</string>
+    <string name="video_game_person_game_in_progress_title">Game In Progress</string>
+    <string name="video_game_person_game_in_progress_description">Your session is still active.\nRejoin to continue playing.</string>
+
+    <string name="video_game_confirm_registration_title">Confirm Registration</string>
+    <string name="video_game_confirm_registration_description">Once confirmed, participation is required. Missing this game risks deposit loss.</string>
+
+    <string name="video_game_notifications_permission_request_title">Enable notifications to receive updates</string>
+    <string name="video_game_notifications_permission_request_benefit_1">Upcoming game reminders</string>
+    <string name="video_game_notifications_permission_request_benefit_2">Completed game results</string>
+    <string name="video_game_notifications_permission_request_benefit_3">Rewards updates</string>
+    <string name="video_game_notifications_permission_rationale_title">We strongly recommend enabling notifications and alarms to avoid missing games.</string>
+    <string name="video_game_notifications_permission_rationale_message">Missing games will result in losing your Membership.</string>
+
+    <string name="video_game_add_to_calendar_title">Add the upcoming game to your calendar</string>
+    <string name="video_game_add_to_calendar_description">To make sure never miss a game!</string>
+    <string name="video_game_add_to_calendar_add_action">Add to calendar</string>
+    <string name="video_game_add_to_calendar_later_action">Maybe later</string>
+
+    <string name="video_game_service_notification_title">Video game is in progress</string>
+
+    <string name="settings_backup_title">Backup</string>
+    <string name="settings_backup_no_backup_header">Backup your account</string>
+    <string name="settings_backup_no_backup_description">Securely back up your account to Google Drive so you can restore them if lose your device or get a new one.</string>
+    <string name="settings_backup_no_backup_action">Backup Your account</string>
+    <string name="settings_backup_in_progress_header">Backup your account</string>
+    <string name="settings_backup_in_progress_action">Creating backup</string>
+    <string name="settings_backup_exists_header">Account is backed up</string>
+    <string name="settings_backup_exists_description">Your account is backed up to Google Drive. If you lose your device or get a new one, you\'ll be able to restore the account.</string>
+    <string name="settings_backup_no_google_drive_permission_header">Enable Google Drive</string>
+    <string name="settings_backup_no_google_drive_permission_description">We need to access Google Drive to save your backup. Switch it on in your phone settings.</string>
+    <string name="settings_backup_no_google_drive_permission_allow_action">Enable Google Drive</string>
+    <string name="settings_backup_no_google_drive_permission_decline_action">Don\'t enable</string>
+    <string name="settings_backup_checking_for_backup_header">Checking for an existing backup</string>
+    <string name="settings_backup_secret_phrase_action">View recovery phrase</string>
+    <string name="settings_backup_exists_conflict_header">Backup conflict</string>
+    <string name="settings_backup_exists_conflict_description">You have another account backed up on Google Drive. You may want to override the existing backup.</string>
+    <string name="settings_backup_exists_conflict_action">Override existing backup</string>
+
+    <string name="settings_backup_conflict_title">Backup found</string>
+    <string name="settings_backup_conflict_description">You already have another account backed up. Remove it and create a new one or cancel.</string>
+    <string name="settings_backup_conflict_timestamp">Created</string>
+    <string name="settings_backup_conflict_action">Remove and create new backup</string>
+    <string name="settings_backup_override_title">Remove the existing backup and create a new one?</string>
+    <string name="settings_backup_override_description">If you haven\'t written down the recovery phrase for the account being replaced, you will no longer be able to access it.</string>
+    <string name="settings_backup_override_confirmation">I fully understand the risk</string>
+    <string name="settings_backup_override_continue_action">Create a new nackup</string>
+
+    <string name="settings_backup_not_backed_up">Not backed up.\nSet up a backup to stay protected</string>
+
+    <string name="settings_backup_recovery_phrase_warning_title">View Private Key</string>
+    <string name="settings_backup_recovery_phrase_warning_recommendation_1">Never share your recovery phrase or enter it into other apps or websites.</string>
+    <string name="settings_backup_recovery_phrase_warning_recommendation_2">Anyone who has your recovery phrase can access your account.</string>
+    <string name="settings_backup_recovery_phrase_warning_recommendation_3">Make sure nobody can see your screen when viewing your recovery phrase.</string>
+    <string name="settings_backup_recovery_phrase_warning_proceed_action">Show recovery phrase</string>
+
+    <string name="debug_menu_title">Debug menu</string>
+    <string name="debug_menu_clear_backup">Clear backup</string>
+    <string name="debug_menu_share_logs">Share logs</string>
+    <string name="debug_menu_open_video_game">Open video game</string>
+    <string name="debug_menu_copy_deposit_account">Copy wallet account address</string>
+    <string name="debug_menu_copy_candidate_account">Copy candidate account address</string>
+    <string name="debug_menu_copy_deposit_mnemonic">Copy wallet mnemonic</string>
+    <string name="debug_menu_product_bots">Product bots</string>
+    <string name="product_bot_management_title">Product bots</string>
+    <string name="product_bot_management_add">Add product</string>
+    <string name="product_bot_management_edit_title">Edit product</string>
+    <string name="product_bot_management_add_title">Add product</string>
+    <string name="product_bot_management_empty">No products added</string>
+    <string name="product_bot_management_url_hint">Script URL</string>
+    <string name="product_bot_management_app_url_hint">App URL</string>
+    <string name="product_bot_management_name_hint">product%1$s</string>
+    <string name="product_bot_management_confirm">Save</string>
+    <string name="spa_browser_menu_open_chat">Open Chat</string>
+    <string name="spa_browser_menu_refresh">Refresh</string>
+    <string name="spa_browser_menu_share">Share</string>
+    <string name="spa_browser_page_no_app_surface">This product doesn\'t have an app on this device.</string>
+    <string name="product_resolution_error_malformed_manifest">This product published a manifest this app can\'t read. Contact the product\'s developer.</string>
+    <string name="product_resolution_error_unknown">Couldn\'t load this product.</string>
+    <string name="debug_menu_enable_retro_mode">Enable retro mode</string>
+    <string name="debug_menu_disable_retro_mode">Disable retro mode</string>
+    <string name="debug_menu_randomize_account">Randomize account (Test Dev Reset)</string>
+    <string name="debug_menu_dotns_browser">DotNS Browser</string>
+    <string name="debug_dotns_browser_title">DotNS Browser</string>
+    <string name="debug_dotns_browser_domain_hint">Enter .dot domain</string>
+    <string name="debug_dotns_browser_load">Load</string>
+    <string name="debug_menu_open_spa_browser">Open SPA browser</string>
+    <string name="debug_menu_clear_dotns_cache">Clear DotNs cache</string>
+    <string name="debug_menu_clear_jwt_token">Clear JWT token (none)</string>
+    <string name="debug_menu_clear_jwt_token_stored">Clear JWT token (stored)</string>
+    <string name="debug_menu_simulate_game_results">Simulate game-results WebView</string>
+    <string name="debug_menu_coinage_debug_widgets">Coinage debug overlays</string>
+    <string name="debug_spa_browser_title">Open SPA URL</string>
+    <string name="debug_spa_browser_url_hint">Enter SPA URL</string>
+    <string name="debug_spa_browser_open">Open</string>
+
+
+    <string name="settings_mnemonic_reveal_title">Recovery phrase</string>
+    <string name="settings_mnemonic_reveal_description">Never share the recovery phrase. Anyone with the recovery phrase has full access to your account, cash and collectables.</string>
+    <string name="settings_mnemonic_reveal_copy_action">Copy To Clipboard</string>
+
+    <plurals name="mob_rule_points">
+        <item quantity="one">%d Point</item>
+        <item quantity="other">%d Points</item>
+    </plurals>
+
+    <string name="mob_rule_bot_judge_to_unlock">Judge the case to unlock %d More</string>
+    <string name="mob_rule_bot_all_cases_completed">Thank you for contributing your judgments. You\'ve completed all available cases. The app will notify you when new cases appear.</string>
+    <string name="mob_rule_evidence_watch_prompt">Tap and watch at least 10 seconds of the video to make your judgement</string>
+    <string name="mob_rule_evidence_watch_countdown">Watch 10 seconds of the video to make your judgement</string>
+
+    <plurals name="common_weeks_format">
+        <item quantity="one">%d week</item>
+        <item quantity="other">%d weeks</item>
+    </plurals>
+
+    <plurals name="common_days_format">
+        <item quantity="one">%d day</item>
+        <item quantity="other">%d days</item>
+    </plurals>
+    <plurals name="common_hours_format">
+        <item quantity="one">%d hour</item>
+        <item quantity="other">%d hours</item>
+    </plurals>
+    <plurals name="common_minutes_format">
+        <item quantity="one">%d minute</item>
+        <item quantity="other">%d minutes</item>
+    </plurals>
+    <plurals name="common_seconds_format">
+        <item quantity="one">%d second</item>
+        <item quantity="other">%d seconds</item>
+    </plurals>
+
+    <string name="common_no_results_for">No results for\n“%1$s”</string>
+
+    <plurals name="tattoo_family_designs">
+        <item quantity="one">%d Design</item>
+        <item quantity="other">%d Designs</item>
+    </plurals>
+
+    <string name="identity_details_description_text">Use your ID to start a chat or\nreceive digital dollars.</string>
+    <string name="identity_details_share_button_label">Share ID</string>
+    <string name="identity_details_copy_username_description">Copy username</string>
+    <string name="identity_card_top_bar_title">ID card</string>
+    <string name="identity_card_rank_label">Rank</string>
+    <string name="identity_card_rank_basic">Basic</string>
+    <string name="identity_card_rank_member">Member</string>
+    <string name="pocket_id_share_subtitle">Show this QR to someone who wants to add you as a contact or send you money</string>
+    <string name="pocket_id_share_scan_title">Scan with a camera</string>
+
+    <string name="send_payment_toolbar_title">Send payment</string>
+    <string name="send_payment_search_placeholder">Type username or wallet address</string>
+    <string name="send_payment_to">To:</string>
+    <string name="send_payment_open_chat_message">You need to first establish a chat before sending a payment</string>
+
+    <string name="send_enter_amount_title">Enter amount</string>
+    <string name="send_enter_amount_placeholder">Enter Amount</string>
+    <string name="send_enter_amount_max_balance_prefix">Max:</string>
+    <string name="send_enter_amount_privacy_cost_hint">Extra %1$s is spendable, but at the risk of reducing your privacy</string>
+    <string name="send_enter_amount_not_enough_funds_error">You don’t have enough funds</string>
+    <string name="send_enter_amount_cash_title">%1$s</string>
+    <string name="send_enter_amount_submitting">Sending…</string>
+    <string name="send_enter_amount_settling">Waiting for seller confirmation…</string>
+    <string name="send_error_settlement_timeout">The recipient didn\'t confirm the payment in time. Your money is still yours \u2014 try again later.</string>
+    <string name="send_error_not_enough_funds">Amount exceeds your available balance. Enter a smaller amount.</string>
+    <string name="send_error_balance_unavailable">Couldn\'t check your balance. Try again.</string>
+
+    <string name="common_relative_time_now">Now</string>
+    <string name="common_relative_time_today">Today</string>
+    <string name="common_relative_time_yesterday">Yesterday</string>
+    <plurals name="common_relative_time_minutes_ago">
+        <item quantity="one">%dm</item>
+        <item quantity="other">%dm</item>
+    </plurals>
+    <plurals name="common_relative_time_hours_ago">
+        <item quantity="one">%dh</item>
+        <item quantity="other">%dh</item>
+    </plurals>
+
+    <string name="sso_pair_request_failed_title">Failed to load pairing request</string>
+    <string name="sso_pair_request_title">Polkadot sign in</string>
+    <string name="sso_pair_request_subtitle">Sign in to %1$s\nusing %2$s</string>
+    <string name="sso_pair_request_sign_in">Sign In</string>
+    <string name="pair_request_confirm_title">Link a new device?</string>
+    <string name="pair_request_connecting_title">Connecting device…</string>
+    <string name="pair_request_device_platform">(%1$s)</string>
+    <string name="pair_request_info_intro">This device will be connected to your account and synced securely:</string>
+    <string name="pair_request_info_chats">Chats and messages will be available</string>
+    <string name="pair_request_info_send_receive">Send and receive messages from this device</string>
+    <string name="pair_request_info_remove">Remove this device at any time in Settings</string>
+    <string name="pair_request_progress_verifying">Verifying device</string>
+    <string name="pair_request_progress_registering">Registering securely</string>
+    <string name="pair_request_progress_syncing">Syncing data</string>
+    <string name="stall_report_taking_longer">This is taking longer than usual</string>
+    <string name="stall_report_details">Details</string>
+    <string name="stall_report_details_title">What\'s happening</string>
+    <string name="stall_reading_chain_state">Reading chain state</string>
+    <string name="stall_submitting_transaction">Submitting transaction</string>
+    <string name="sso_stall_responding_to_device">Responding to device</string>
+    <string name="statement_store_stall_allocating_voucher">Allocating statement store usage voucher</string>
+    <string name="statement_store_stall_reading_slots">Reading claimed vouchers</string>
+    <string name="statement_store_stall_renewing_vouchers">Renewing statement store usage vouchers</string>
+    <string name="transaction_storage_stall_allocating">Allocating Bulletin allowance</string>
+    <string name="transaction_storage_stall_picking_slot">Looking for a free storage claim</string>
+    <string name="transaction_storage_stall_awaiting_bulletin">Waiting for the allowance to appear on Bulletin</string>
+    <string name="pgas_stall_claiming">Allocating smart contract allowance</string>
+    <string name="pgas_stall_picking_slot">Looking for a free gas claim</string>
+    <string name="chats_stall_broadcasting_device">Broadcasting to network</string>
+    <string name="coinage_stall_preparing_transfer">Preparing payment</string>
+    <string name="coinage_stall_picking_unload_token">Looking for a free transfer allowance</string>
+    <string name="coinage_stall_reading_anonymity_set">Reading the anonymity set</string>
+    <string name="coinage_stall_generating_proofs">Generating privacy proofs</string>
+    <string name="wallet_stall_sending">Sending your payment</string>
+    <string name="wallet_stall_delivering">Delivering payment to recipient</string>
+    <string name="wallet_stall_awaiting_claim">Waiting for the recipient to receive the payment</string>
+    <string name="pair_request_link_action">Link</string>
+    <string name="pair_request_cancel_action">Cancel</string>
+    <string name="pair_request_close_action">Close</string>
+    <string name="pair_request_limit_reached_title">Limit Reached</string>
+    <string name="pair_request_limit_reached_message">You can\'t add more than %1$d devices. Disconnect one of the devices to add a new one.</string>
+
+    <string name="device_connected_notification">Device connected</string>
+    <string name="generic_error_notification">That didn\'t work. Try again \u2014 if it keeps happening, contact support.</string>
+    <string name="device_details_toolbar_title">Device Details</string>
+    <string name="device_details_field_device">Device</string>
+    <string name="device_details_field_host">Host</string>
+    <string name="device_details_field_added">Added</string>
+    <string name="device_details_field_placeholder">—</string>
+    <string name="device_details_remove_action">Remove Device</string>
+    <string name="device_details_remove_confirm_title">Remove device?</string>
+    <string name="device_details_remove_confirm_message_format">%1$s will lose access to your chats.</string>
+    <string name="device_details_remove_confirm_subject_with_device">%1$s (%2$s)</string>
+    <string name="device_details_remove_confirm_subject_fallback">This device</string>
+    <string name="device_details_remove_confirm_positive">Remove Device</string>
+    <string name="device_details_remove_confirm_negative">Cancel</string>
+
+    <string name="sign_transaction_failed_title">Failed to load transaction</string>
+    <string name="sign_transaction_title">%s requests signature</string>
+    <string name="sign_transaction_view_details">View Details</string>
+    <string name="sign_transaction_reject">Reject</string>
+    <string name="sign_transaction_approve">Sign</string>
+    <string name="sign_transaction_details_title">Transaction details</string>
+    <string name="sign_raw_message_details_title">Message details</string>
+    <string name="sign_vrf_transcript_details_title">Transcript details</string>
+    <string name="sign_transaction_signing_account">Signing account</string>
+    <string name="sign_transaction_product_account">Product account %1$s #%2$s</string>
+    <string name="sign_transaction_identity_account">Identity Account</string>
+    <string name="sign_transaction_wallet_account">Root account</string>
+    <string name="sign_transaction_unknown_account">Unknown account</string>
+    <string name="sign_transaction_signed">Signed</string>
+
+    <!-- Product permission prompt -->
+    <string name="product_permission_allow_always">Allow always</string>
+    <string name="product_permission_allow_once">Allow once</string>
+    <string name="product_permission_deny">Don\'t allow</string>
+    <string name="product_permission_subtitle">You can manage this later in Settings.</string>
+    <string name="product_permission_network_title">%1$s would like to access %2$s</string>
+    <string name="product_permission_network_subtitle">Network access is required to communicate with external services. %1$s</string>
+    <string name="product_permission_account_title">%1$s would tike to access accounts of %2$s</string>
+    <string name="product_permission_account_subtitle">Account access is required to read account data. %1$s</string>
+    <string name="product_permission_balance_title">%1$s would Like to Access Your Balance</string>
+    <string name="product_permission_balance_subtitle">Balance access lets the product see funds available for spending. %1$s</string>
+    <string name="product_permission_user_identity_title">%1$s Would like to know your identity</string>
+    <string name="product_permission_user_identity_subtitle">This reveals your primary username to the product. %1$s</string>
+    <string name="product_payment_request_title">Product %1$s requests payment of %2$s</string>
+    <string name="product_payment_request_approve">Approve</string>
+    <string name="product_payment_request_reject">Reject</string>
+    <string name="product_top_up_failed_title">Failed to Accept Funds from %1$s</string>
+    <string name="product_top_up_failed_message">The funds could not be moved into your balance.</string>
+    <string name="product_top_up_accepted_title">Accepted funds from %1$s</string>
+    <string name="product_top_up_amount_mismatch_warning">The detected amount differs from the amount stated by the product.</string>
+    <string name="product_resource_allocation_title">Product %1$s requests resource allocation</string>
+    <string name="product_resource_allocation_in_progress">Allocating resources</string>
+    <string name="product_resource_allocation_approve">Approve</string>
+    <string name="product_resource_allocation_reject">Reject</string>
+    <string name="product_resource_allocation_bullet">• %1$s</string>
+    <string name="product_resource_allocation_bulletin">Bulletin allowance</string>
+    <string name="product_resource_allocation_statement_store">Statement store allowance</string>
+    <string name="product_resource_allocation_smart_contract">Smart contract allowance</string>
+    <string name="product_resource_allocation_auto_signing">Auto-signing</string>
+    <string name="product_cross_product_proof_title">%1$s wants to execute an anonymous action on behalf of %2$s</string>
+    <string name="product_cross_product_proof_on_behalf_of">On behalf of: %1$s</string>
+    <string name="product_cross_product_proof_suffix">Context: %1$s</string>
+    <string name="product_cross_product_proof_message">Message: %1$s</string>
+    <string name="product_cross_product_proof_approve">Approve</string>
+    <string name="product_cross_product_proof_reject">Reject</string>
+    <string name="product_permission_device_camera_title">%1$s would like to access the camera</string>
+    <string name="product_permission_device_camera_subtitle">Camera access is required to take photos. %1$s</string>
+    <string name="product_permission_device_bluetooth_title">%1$s Would like to use bluetooth</string>
+    <string name="product_permission_device_bluetooth_subtitle">Bluetooth access is required for nearby device communication. %1$s</string>
+    <string name="product_permission_device_microphone_title">%1$s would like to access the microphone</string>
+    <string name="product_permission_device_microphone_subtitle">Microphone access is required to record audio. %1$s</string>
+    <string name="product_permission_device_notifications_title">%1$s would like to send notifications</string>
+    <string name="product_permission_device_notifications_subtitle">Notification access is required to send you alerts. %1$s</string>
+    <string name="product_permission_device_nfc_title">%1$s would like to use NFC</string>
+    <string name="product_permission_device_nfc_subtitle">NFC access is required for tap interactions. %1$s</string>
+    <string name="product_permission_device_location_title">%1$s would like to access your location</string>
+    <string name="product_permission_device_location_subtitle">Location access is required to determine your position. %1$s</string>
+    <string name="product_permission_device_clipboard_title">%1$s would like to access the clipboard</string>
+    <string name="product_permission_device_clipboard_subtitle">Clipboard access is required to read or write copied data. %1$s</string>
+    <string name="product_permission_device_biometrics_title">%1$s would like to use biometrics</string>
+    <string name="product_permission_device_biometrics_subtitle">Biometric access is required for authentication. %1$s</string>
+    <string name="product_permission_device_open_url_title">%1$s would like to open external links</string>
+    <string name="product_permission_device_open_url_subtitle">The app will open links in your browser or other apps. %1$s</string>
+    <string name="product_permission_webrtc_title">%1$s would like to use WebRTC</string>
+    <string name="product_permission_webrtc_subtitle">WebRTC access can reveal your IP address to remote peers. %1$s</string>
+    <string name="product_permission_chain_submit_title">%1$s would like to submit transactions</string>
+    <string name="product_permission_chain_submit_subtitle">Signed transactions will be broadcast to the blockchain. %1$s</string>
+    <string name="product_permission_statement_submit_title">%1$s would like to submit statements</string>
+    <string name="product_permission_statement_submit_subtitle">Statements will be published to the statement store. %1$s</string>
+    <string name="product_permission_preimage_submit_title">%1$s would like to submit preimages</string>
+    <string name="product_permission_preimage_submit_subtitle">Preimages will be uploaded to the bulletin chain. %1$s</string>
+    <string name="product_permission_batched_title">%1$s Would Like Access to:</string>
+    <string name="product_permission_network_label">Access %1$s</string>
+    <string name="product_permission_webrtc_label">Use WebRTC</string>
+    <string name="product_permission_chain_submit_label">Submit transactions</string>
+    <string name="product_permission_statement_submit_label">Submit statements</string>
+    <string name="product_permission_preimage_submit_label">Submit preimages</string>
+    <string name="product_permission_allow_always_all">Allow always all</string>
+    <string name="product_permission_allow_once_all">Allow once all</string>
+    <string name="product_permission_deny_all">Deny all</string>
+
+    <string name="scan_invalid_code_error_title">Invalid QR code</string>
+    <string name="scan_invalid_code_error_message">The scanned QR code is not recognized</string>
+    <string name="scan_invalid_code_error_action">Got it</string>
+    <string name="scan_point_camera_at_qr_code">Scan the QR code to continue</string>
+
+    <string name="chat_message_unsupported">Unsupported message content. Please update the app.</string>
+    <string name="chat_message_compaction_unavailable">Some messages could not be retrieved and are permanently unavailable.</string>
+    <string name="chat_message_edited">Edited</string>
+    <string name="chat_message_edited_time">Edited %s</string>
+    <string name="chat_edit_history">Edit history</string>
+    <string name="chat_reply_to">Reply to %1$s</string>
+
+    <string name="chat_reactions_expand">Show more reactions</string>
+    <string name="chat_reactions_details_title">Reactions</string>
+    <plurals name="chat_reactions_details_total">
+        <item quantity="one">%1$d total</item>
+        <item quantity="other">%1$d total</item>
+    </plurals>
+    <string name="chat_emoji_category_smileys">Smileys</string>
+    <string name="chat_emoji_category_people">People</string>
+    <string name="chat_emoji_category_animals">Animals &amp; Nature</string>
+    <string name="chat_emoji_category_food">Food &amp; Drink</string>
+    <string name="chat_emoji_category_activities">Activity</string>
+    <string name="chat_emoji_category_travel">Travel &amp; Places</string>
+    <string name="chat_emoji_category_objects">Objects</string>
+    <string name="chat_emoji_category_symbols">Symbols</string>
+    <string name="chat_emoji_category_flags">Flags</string>
+
+    <string name="settings_sso_sessions">Connected apps</string>
+    <string name="sso_sessions_list_toolbar_title">Connected apps</string>
+    <string name="sso_sessions_list_empty">No connected apps</string>
+    <string name="sso_sessions_list_delete_confirmation_title">Disconnect app</string>
+    <string name="sso_sessions_list_delete_confirmation_message">Are you sure you want to disconnect %s?</string>
+    <string name="sso_sessions_list_delete_confirmation_positive">Disconnect</string>
+    <string name="sso_sessions_list_delete_confirmation_negative">Cancel</string>
+
+    <string name="notifications_permission_warning_highlighted">Stay informed:</string>
+    <string name="notifications_permission_warning_default">Notifications are currently turned off. You can enable them in settings</string>
+
+    <!-- Chat Requests -->
+    <string name="chat_request_new_requests">New requests</string>
+    <string name="chat_request_message_requests">Message requests</string>
+    <string name="chat_request_message_requests_subtitle">Message requests from people who aren\'t in your contact list appear here.</string>
+    <string name="chat_request_label">Message request</string>
+    <string name="chat_request_sent">Request sent</string>
+    <string name="chat_request_message_sent">Request message sent</string>
+    <string name="chat_request_approved">%s approved your request</string>
+    <string name="chat_request_approved_outgoing">You approved the request</string>
+    <string name="chat_request_accepted">Request accepted</string>
+    <string name="chat_request_declined">Request declined</string>
+    <string name="chat_request_accept">Accept</string>
+    <string name="chat_request_decline">Decline</string>
+    <string name="chat_request_cancel">Cancel</string>
+    <string name="chat_request_pending">Pending</string>
+    <string name="chat_request_welcome_message_hint">Add a welcome message (optional)</string>
+    <string name="chat_request_decline_dialog_title">Decline message request?</string>
+    <string name="chat_request_you_approved">You approved the request</string>
+    <string name="chat_request_accept_title">Accept chat request from %s</string>
+    <string name="chat_request_wait_accept_title">Wait for %s to accept your message request.</string>
+    <string name="chat_request_accept_description">Add %s to your contacts to accept the chat request. They won\'t know you\'ve seen their message until you accept.</string>
+    <string name="chat_request_invite_title">Invite %s to chat</string>
+    <string name="chat_request_invite_description">You can only send one message in this request.</string>
+    <string name="chat_request_waiting_description">Wait for %s to accept your request message before sending the next message.</string>
+
+    <string name="video_game_tutorial_first_step">Copy the gesture</string>
+    <string name="video_game_tutorial_second_step">Tap other players who also copy the gesture</string>
+    <string name="video_game_tips_show_gesture">Show Gesture</string>
+    <string name="video_game_tips_copy_host">Copy Host</string>
+    <string name="video_game_tips_vote">Tap to Identify Humans</string>
+    <string name="video_game_how_to_play">How to play</string>
+    <string name="video_game_waiting_room_close_content_description">Close waiting room</string>
+
+    <string name="call_incoming">Incoming call</string>
+    <string name="call_initializing">Initializing\u2026</string>
+    <string name="call_requesting">Contacting\u2026</string>
+    <string name="call_ringing">Ringing\u2026</string>
+    <string name="call_connecting">Connecting\u2026</string>
+    <string name="call_ended">Call ended</string>
+    <string name="call_failed">Connection lost</string>
+    <string name="call_accept">accept</string>
+    <string name="call_end">end</string>
+    <string name="call_speaker">speaker</string>
+    <string name="call_video">video</string>
+    <string name="call_mute">mute</string>
+    <string name="call_audio_device_phone">Phone</string>
+    <string name="call_audio_device_speaker">Speaker</string>
+    <string name="call_audio_device_headphones">Headphones</string>
+    <string name="call_audio_device_bluetooth">Bluetooth</string>
+    <string name="call_self_mic_off">Your microphone is off</string>
+    <string name="call_remote_mic_off">%s microphone is off</string>
+    <string name="chat_last_message_call_started">Call</string>
+    <plurals name="chat_last_message_media_collection_photos">
+        <item quantity="one">%d photo</item>
+        <item quantity="other">%d photos</item>
+    </plurals>
+    <plurals name="chat_last_message_media_collection_videos">
+        <item quantity="one">%d video</item>
+        <item quantity="other">%d videos</item>
+    </plurals>
+    <plurals name="chat_last_message_media_collection_files">
+        <item quantity="one">%d file</item>
+        <item quantity="other">%d files</item>
+    </plurals>
+
+    <string name="chat_message_call_incoming_video">Incoming video call</string>
+    <string name="chat_message_call_incoming_voice">Incoming voice call</string>
+    <string name="chat_message_call_outgoing_video">Outgoing video call</string>
+    <string name="chat_message_call_outgoing_voice">Outgoing voice call</string>
+    <string name="chat_message_call_ongoing_video">Ongoing video call</string>
+    <string name="chat_message_call_ongoing_voice">Ongoing voice call</string>
+    <string name="chat_message_call_ended_video">Video call</string>
+    <string name="chat_message_call_ended_voice">Voice call</string>
+    <string name="chat_message_call_missed_video">Missed video call</string>
+    <string name="chat_message_call_missed_voice">Missed voice call</string>
+    <string name="chat_message_call_canceled">Canceled call</string>
+    <string name="chat_message_call_canceled_voice">Canceled voice call</string>
+    <string name="chat_message_call_canceled_video">Canceled video call</string>
+    <string name="chat_message_call_declined">Declined call</string>
+    <string name="chat_message_call_declined_voice">Declined voice call</string>
+    <string name="chat_message_call_declined_video">Declined video call</string>
+    <string name="chat_message_call_subtitle_calling">Calling</string>
+    <string name="chat_message_call_subtitle_tap_to_return">Tap to return</string>
+    <string name="chat_message_call_subtitle_tap_to_call_back">Tap to call back</string>
+    <string name="chat_message_call_subtitle_tap_to_call_again">Tap to call again</string>
+
+    <string name="dev_reset_title">The environment has been reset</string>
+    <string name="dev_reset_message">The environment was updated and your account no longer exists on-chain. You\'ll need to start fresh.\n\nThe app will close after tapping \"Start Over\" — please reopen it manually.</string>
+    <string name="dev_reset_start_over">Start Over</string>
+    <string name="dev_reset_dismiss">Dismiss</string>
+
+    <string name="common_search">Search</string>
+
+    <string name="app_not_found_error">No App found</string>
+
+    <string name="chats_toolbar_title" translatable="false">Chats</string>
+    <string name="chats_empty_state_title">No active chats</string>
+    <string name="chats_empty_state_message">Start a conversation with someone \nby typing their username</string>
+
+    <string name="chat_search_empty_state_title">No results</string>
+    <string name="chat_search_empty_state_message">There is no result for “%1$s”. Try a new search</string>
+    <string name="chat_search_prompt_message">Search by username or in messages</string>
+    <string name="chat_search_section_apps">APPS</string>
+    <string name="chat_search_section_chats">CHATS AND CONTACTS</string>
+    <string name="chat_search_section_messages">MESSAGES</string>
+    <string name="address_section_previous_payments">Previous payments</string>
+    <string name="address_section_my_contacts">My Contacts</string>
+    <string name="send_payment_section_global_search">Global search</string>
+    <string name="chat_search_recents_header">RECENT</string>
+    <string name="chat_search_recents_clear">CLEAR</string>
+    <string name="chat_search_recent_menu_remove">Remove from Recents</string>
+    <string name="chat_search_error_message">Search failed. Please try again</string>
+
+    <string name="add_contact_search_placeholder">Type username</string>
+    <string name="add_contact_bottom_sheet_message">Add a contact\nand start a chat with\n%1$s</string>
+    <string name="add_contact_bottom_sheet_description">After you enter the chat, make sure <b>%1$s</b> starts one with you as well, or your message may not be seen.</string>
+    <string name="add_contact_bottom_sheet_button_text">Add to Contacts</string>
+    <string name="add_contact_search_error">Couldn\'t load search results.\nPlease try again.</string>
+
+    <string name="chat_details_pay_button_text">Pay</string>
+    <string name="chat_details_input_field_placeholder">Write a message…</string>
+    <string name="chat_details_message_status_pending">Pending</string>
+    <string name="chat_details_message_status_sent">Message sent</string>
+    <string name="chat_details_message_status_read">Message read</string>
+    <string name="chat_details_wait_for_message_read_text">Wait for the player to read or reply to your\nmessage before sending the next message</string>
+    <string name="chat_contact_pending_info">You will be able to start chatting with this player once they also add you to their contacts.</string>
+
+    <string name="chat_message_contact_added_incoming">%1$s added you</string>
+    <string name="chat_message_contact_added_outgoing">You added %1$s</string>
+    <string name="chat_message_last_outgoing">You: %1$s</string>
+    <string name="chat_message_payment_incoming">%1$s sent you</string>
+    <string name="chat_message_payment_outgoing">You sent</string>
+    <string name="chat_payment_status_detecting_sender">Sending…</string>
+    <string name="chat_payment_status_detecting_recipient">Detecting…</string>
+    <string name="chat_payment_status_detected_on_chain_sender">Sent, pending claim</string>
+    <string name="chat_payment_status_detected_on_chain_recipient">Claiming…</string>
+    <string name="chat_payment_status_claimed">Claimed</string>
+    <string name="chat_payment_status_partially_claimed">Claimed %1$s, waiting for the rest…</string>
+    <string name="chat_payment_status_not_detected">Transaction failed</string>
+    <string name="chat_payment_status_failed">Invalid transaction</string>
+    <string name="chat_payment_amount_differs">Amount received differs from amount sent</string>
+    <string name="chat_last_message_payment_incoming">%1$s sent you %2$s</string>
+    <string name="chat_last_message_payment_outgoing">You sent %1$s</string>
+    <string name="chat_reply_transfer_incoming">Sent you %1$s</string>
+    <string name="chat_reply_transfer_outgoing">You sent %1$s</string>
+    <string name="chat_last_message_token_incoming">%1$s shared a push token with you</string>
+    <string name="chat_last_message_token_outgoing">You shared a push token with %1$s</string>
+    <string name="chat_last_message_draft_prefix">Draft: %1$s</string>
+    <string name="chat_last_message_reacted_outgoing">You: reacted with %1$s</string>
+    <string name="chat_last_message_reacted_incoming">%1$s reacted with %2$s</string>
+    <string name="chat_last_message_reaction_removed_outgoing">You: removed reaction</string>
+    <string name="chat_last_message_reaction_removed_incoming">%1$s removed reaction</string>
+    <string name="chat_last_message_evidence_photo_provided">You provided photo evidence</string>
+    <string name="chat_last_message_evidence_video_provided">You provided video evidence</string>
+    <string name="chat_message_multimedia_uploading_progress">Uploading %1$d%%</string>
+    <string name="chat_message_multimedia_uploading_failed">Uploading failed · retry</string>
+    <string name="chat_message_multimedia_downloading_progress">Downloading %1$d%%</string>
+    <string name="chat_message_multimedia_downloading_failed">Downloading failed · retry</string>
+    <string name="chat_feed_new_messages">New messages</string>
+    <string name="chat_user_left_chat">%1$s left the chat</string>
+    <string name="chat_last_message_left_chat_incoming">%1$s left the chat</string>
+    <string name="chat_last_message_left_chat_outgoing">You left the chat</string>
+    <string name="chat_attachment_emoji_image">🖼️</string>
+    <string name="chat_attachment_emoji_video">🎥</string>
+    <string name="chat_attachment_emoji_file">📎</string>
+    <string name="chat_attachment_name_image">Photo</string>
+    <string name="chat_attachment_name_video">Video</string>
+    <string name="chat_reply_attachment">Attachment</string>
+    <string name="chat_attachment_name_file">File</string>
+
+    <string name="chat_call_busy_in_another_chat">You\'re already in a call in another chat. End it before starting a new one.</string>
+    <string name="chat_error_peer_not_available">Couldn\'t start a chat with this user. Ask them to open the app to finish setting up chats.</string>
+    <string name="chat_error_contact_not_found">This contact is no longer available. It may have been removed.</string>
+    <string name="chat_error_attachment_too_large">This file is too large to send. Choose one under %1$d MB.</string>
+
+    <string name="chat_peer_join_as_polkadot_peer_message">Join as a Polkadot Peer!\n\n🎰 Participate in Weekly Prize Draw\n👤 Choose a Short Username\n🔒 Enjoy Free, Private Transfers\n💎 Experience Premium Service Level across all Polkadot products\n💵 Seize the opportunity for daily paid contributions.</string>
+    <string name="chat_peer_option1_weekly_game_message">Option 1. Play a Weekly Game. Requires Constant Participation.\n\n🤖 Attest humans, remove AI in a 5 minute game</string>
+    <string name="chat_peer_option2_unique_tattoo_message">Option 2. Get a Unique Free Tattoo. One and Done Option.\n\n✍️ Get Inked with Any Artist You Like and Provide a 3 Minute Video Documenting the Tattoo Process</string>
+    <string name="chat_peer_faq_who_is_polkadot_peer">Who is Polkadot Peer?</string>
+    <string name="chat_peer_faq_who_is_polkadot_peer_answer">Polkadot Peers have premium access to many Polkadot services such as Academy Membership and many more</string>
+    <string name="chat_peer_faq_why_become_a_peer">Why become a Peer?</string>
+    <string name="chat_peer_faq_why_become_a_peer_answer">As a Polkadot Peer, you get premium service levels, participate in weekly prize draws, enjoy free private transfers, choose a short username, and have opportunities for daily paid contributions.</string>
+    <string name="chat_peer_faq_i_have_other_questions">I have other Questions</string>
+    <string name="chat_peer_faq_i_have_other_questions_answer">Feel free to explore the chat options or reach out to our support team for any additional questions you may have about becoming a Polkadot Peer.</string>
+
+    <string name="chat_bot_prizes_intro_message_1">Win cash prizes by playing a free, fun and quick game.</string>
+    <string name="chat_bot_prizes_intro_message_2">During the Web3 Summit, you jump into a two minute game with five other people. The game is easy, copy gestures from other players and make your own.</string>
+    <string name="chat_bot_prizes_intro_message_3">Why gestures? Bots can’t copy them live. Playing proves you’re a real person.</string>
+    <string name="chat_bot_prizes_intro_message_4">How to play in two simple steps:\n1. Copy the gesture</string>
+    <string name="chat_bot_prizes_intro_message_5">2. Tap other players who also copy the gesture</string>
+    <string name="chat_bot_prizes_intro_message_6">Play once to get your Membership and your chance to win a cash prize! Just by playing you also get rewarded with exciting collectibles.</string>
+
+    <string name="chat_bot_weekly_game_state_register_title">Register for the Game</string>
+    <string name="chat_bot_weekly_game_state_registered_title">Registered</string>
+    <string name="chat_bot_weekly_game_state_registered_subtitle">· Game starts</string>
+    <string name="chat_bot_weekly_game_state_game_starting_title">Game is starting</string>
+    <string name="chat_bot_weekly_game_state_game_ongoing_title">Game is in progress</string>
+    <string name="chat_bot_weekly_game_state_game_ongoing_message">Join now!</string>
+
+    <string name="chat_bot_weekly_game_state_register_action">Register</string>
+    <string name="chat_bot_weekly_game_state_register_opening_soon">Opening soon</string>
+    <string name="chat_bot_prizes_next_game_label">NEXT GAME STARTING</string>
+    <string name="chat_bot_prizes_game_live_label">GAME IS LIVE</string>
+    <string name="chat_bot_prizes_play_to_retain_membership">PLAY TO RETAIN YOUR MEMBERSHIP</string>
+    <string name="chat_bot_weekly_game_add_to_calendar_action">Add game to calendar</string>
+    <string name="chat_bot_weekly_game_start_playing_action">Start Playing</string>
+    <string name="chat_bot_weekly_game_deposit_required_title">Deposit is required</string>
+    <string name="chat_bot_weekly_game_deposit_required_subtitle">Deposit %1$s and join the weekly game</string>
+    <string name="chat_bot_weekly_game_deposit_required_description">Deposited funds will be held from you %1$s account and sent back after you become a Member.</string>
+    <string name="chat_bot_weekly_game_deposit_required_action">Deposit %1$s</string>
+    <string name="chat_bot_weekly_game_deposit_required_funding">Funding account, please wait…</string>
+
+    <string name="chat_bot_weekly_game_result_title">The game was played on</string>
+    <string name="chat_bot_weekly_game_result_date_placeholder">%s at %s</string>
+    <string name="chat_bot_weekly_game_result_pending">Game results pending</string>
+    <string name="chat_bot_weekly_game_result_pending_description">It may take up to a little while to process.</string>
+    <string name="chat_bot_weekly_game_result_success">Thanks for playing! See you next time.</string>
+    <string name="chat_bot_weekly_game_result_success_description">Play %s more games in a row to become a Polkadot Member.</string>
+    <string name="chat_bot_weekly_game_result_success_external_description">Reward granted shortly</string>
+    <string name="chat_bot_weekly_game_result_success_personhood_description">You got Membership!</string>
+    <string name="chat_bot_weekly_game_result_success_paused_description">Play %s more games in a row to resume your Membership status.</string>
+    <string name="chat_bot_weekly_game_result_failed">Game ended</string>
+    <string name="chat_bot_weekly_game_result_failed_subtitle">This one got away. Your next chance awaits</string>
+    <string name="chat_bot_weekly_game_result_chat_with_players">Chat with players</string>
+
+    <string name="chat_bot_tattoo_welcome_message_1">Become a Peer by Getting a Unique Free Tattoo\n\n✍️ Get Inked with Any Artist You Like and Provide a 3 Minute Video Documenting the Tattoo Process</string>
+    <string name="chat_bot_tattoo_welcome_message_2">📐 Size. This tattoo is available in several sizes ranging from 25 to 50 millimeters. You will see stencil with all sizes after booking.\n\n💪 Tattoo Location. The tattoo has to be made on inner part of the upper left arm. Centred between armpit and elbow. </string>
+    <string name="chat_bot_tattoo_welcome_message_3">🎨 Design. Add a small $10 deposit to select your unique design from over 2,000 options available.</string>
+    <string name="chat_bot_tattoo_welcome_message_4">📆 Execution. Find any tattooer you like. You will also see a few suggested tattoo studios after booking. </string>
+    <string name="chat_bot_tattoo_welcome_message_5">🤳 Evidence. Provide 3-minute proof of documentation video and a picture of the final tattoo</string>
+    <string name="chat_bot_tattoo_welcome_message_6">🗳️ Review. Tattoo Evidence is reviewed by other Polkadot peers, who will vote individually based on your documentation video evidence.\n\n💸 Reimbursement. Get Your Tattoo Expenses Refund</string>
+
+    <string name="chat_bot_tattoo_select_and_reserve_tattoo_action">Select and Reserve a Unique Tattoo</string>
+    <string name="chat_bot_tattoo_film_video_header">I\'m at the tattoo studio now</string>
+    <string name="chat_bot_tattoo_film_video_action">1/2 Film Documentation Video</string>
+    <string name="chat_bot_tattoo_take_photo_header">I\'ve done the tattoo</string>
+    <string name="chat_bot_tattoo_take_photo_action">2/2 Take Photo</string>
+    <string name="chat_bot_tattoo_evidence_provided_description">Evidence has been provided, wait for the upload and review. This process can take anywhere from one day to a week.</string>
+    <string name="chat_bot_tattoo_evidence_approved_description_title">Evidence Approved: Becoming a Peer.</string>
+    <string name="chat_bot_tattoo_evidence_approved_description_subtitle">Issuing Peer status can take some time</string>
+    <string name="chat_bot_tattoo_unrecoverable_error">Unrecoverable error</string>
+
+    <string name="chat_bot_tattoo_you_ve_commited_to_tattoo">You’ve committed to %s tattoo</string>
+    <string name="chat_bot_tattoo_after_commitment_message_1">You’ve reserved your unique tattoo design, now it’s time to make it happen! Share the design PDF with anyone you consider to do the tattoo, discuss the details, and make sure to capture video evidence of the process.</string>
+    <string name="chat_bot_tattoo_after_commitment_message_2">💸  Don’t forget, tattoo expenses will be reimbursed, so go ahead and spend your funds; you’ll get them back once your evidence is approved.</string>
+    <string name="chat_bot_tattoo_after_commitment_message_3">Send PDF with stencil to any tattoo artist you want. Also it contains additional instructions how to provide photo and video evidence</string>
+    <string name="chat_bot_tattoo_after_commitment_message_4">Provide Photo and Video Documentation\n\n🤳 Film the process while getting a tattoo. You can either ask for assistance or use the in-app camera to film yourself.\n\n🎦 Begin filming once the majority of the tattoo has been completed, ensuring that the chosen design is clearly visible.\n\n⏱️ Film closer moments when making tattoo lines over the stencil image\n\n🔄 Film 3 minute video without breaks\n\n📸 Take a picture of the fresh tattoo exposed </string>
+    <string name="chat_bot_tattoo_after_commitment_message_5">⏺ Evidence 1/2. The documentation video comes first. Press the "provide" button when you’re at the tattoo studio and ready to start filming with the in-app camera.</string>
+
+    <string name="chat_bot_tattoo_after_video_evidence_provided">📸 Evidence 2/2. Photo Evidence.\nTake a picture of the fresh tattoo exposed using in-app camera.</string>
+
+    <string name="chat_bot_tattoo_notification_photo_title">Photo Evidence Accepted</string>
+    <string name="chat_bot_tattoo_notification_photo_description">Tap to see more and start uploading the video evidence.</string>
+    <string name="chat_bot_tattoo_notification_video_title">Video Evidence Accepted</string>
+    <string name="chat_bot_tattoo_notification_video_description">Issuing Membership. Tap to see more.</string>
+    <string name="chat_bot_notification_citizenship_issued_title">Username upgrade available</string>
+    <string name="chat_bot_notification_citizenship_issued_description">Claim your unique username</string>
+
+    <string name="chat_faq_component_opened_title_base">Have more Questions or %1$s</string>
+    <string name="chat_faq_component_opened_title_action">Hide</string>
+    <string name="chat_faq_component_closed_title_base">Have more Questions? %1$s</string>
+    <string name="chat_faq_component_closed_title_action">Show More</string>
+    <string name="chat_faq_proof_of_ink_question_alter_location">Can I alter the location?</string>
+    <string name="chat_faq_proof_of_ink_question_film_evidence">How Should I Film the Evidence?</string>
+    <string name="chat_faq_proof_of_ink_question_after_submission">What happens after I submit the evidence?</string>
+    <string name="chat_dim_navigation_buttons_title">Open the chat for each option to explore</string>
+    <string name="chat_dim1_navigation_button_title">Unique Peer Tattoo</string>
+    <string name="chat_dim2_navigation_button_title">Weekly game</string>
+    <string name="chat_dim1_navigation_button_description">Get Inked and Provide a 3 Minute Video</string>
+    <string name="chat_dim2_navigation_button_description">Play a free, fun and quick weekly game.</string>
+    <string name="chat_mob_rule_navigation_button_title">Mob Rule</string>
+    <string name="chat_mob_rule_navigation_button_description">Earn by reviewing tattoo documentation videos</string>
+
+    <string name="chat_notification_reaction_added">reacted with %1$s</string>
+
+    <string name="chat_notification_contact_added">added you</string>
+    <string name="chat_notification_payment">sent you %1$s. Open to claim</string>
+    <string name="chat_notification_request_approved">approved the chat request</string>
+
+    <string name="pocket_toolbar_title">Pocket</string>
+    <string name="card_currency_title">Local currency</string>
+    <string name="card_balance_will_be_available_soon">Available soon</string>
+
+    <string name="asset_details_fund_button">Fund %1$s</string>
+    <string name="asset_details_fund_digital_dollar">Get %1$s</string>
+    <string name="asset_details_transfer_button">Transfer</string>
+    <string name="asset_details_actions_disabled">Actions will be available after you finish updating your balance</string>
+    <string name="asset_details_backup_in_progress">Updating balance</string>
+    <string name="asset_details_backup_in_progress_subsequent">Continue updating balance</string>
+    <string name="asset_details_balance_restored">Balance restored</string>
+    <string name="asset_details_balance_restored_description">If it differs from the previous value, press Update until correct</string>
+    <string name="asset_details_balance_restored_why">Why update?</string>
+    <string name="asset_details_balance_why_update_title">Why is this required?</string>
+    <string name="asset_details_balance_why_update_description">Private accounts don\'t support automatic syncing. Manually updating your balance helps keep it accurate.</string>
+    <string name="asset_details_balance_close_confirm_title">Done updating your balance?</string>
+    <string name="asset_details_balance_close_confirm_description">Once you close this, manual update won\'t be available again</string>
+    <string name="asset_details_balance_close_confirm_confirm">Yes, I\'m done</string>
+    <string name="asset_details_balance_CTA_close">Close</string>
+    <string name="asset_details_balance_CTA_update">Update</string>
+
+    <string name="transaction_success_title">Your transaction was sent successfully</string>
+    <string name="send_transaction_failure_title">Payment failed</string>
+    <string name="send_transaction_failure_description">Please review the details of your transaction and try to send it again</string>
+
+    <string name="fund_done">Done</string>
+    <string name="fund_fund_from">Fund from</string>
+    <string name="fund_description">Send %s on the %s to your wallet address below.</string>
+    <string name="fund_minimal_amount">Send %s or more</string>
+    <string name="fund_to">To</string>
+    <string name="fund_network">Network</string>
+    <string name="fund_copy_address">Copy address</string>
+    <string name="fund_rate" translatable="false">Rate</string>
+    <string name="fund_fee" translatable="false">Fee</string>
+    <string name="fund_funding_pending_title">Funding in progress</string>
+    <string name="fund_funding_complete_title">Funding complete</string>
+    <string name="fund_funding_failed_title">Funding incomplete</string>
+    <string name="fund_funding_pending">Pending</string>
+    <string name="fund_funding_completed">Complete</string>
+    <string name="fund_funding_incomplete">Incomplete</string>
+    <string name="fund_funding_warning">Don’t close the app until the process is complete, or you may lose funds.</string>
+    <string name="fund_funding_success">Funding complete, check your balance, spend dollars in the Polkadot app.</string>
+    <string name="fund_funding_failure">Error text</string>
+    <string name="fund_exit_confirm_title">Are you done funding?</string>
+    <string name="fund_exit_confirm_description">If you have pending funds, closing the screen may result in the loss of those funds</string>
+    <string name="fund_exit_confirm_CTA_dismiss">Back</string>
+    <string name="fund_exit_confirm_CTA_confirm">Done</string>
+
+    <string name="settings_toolbar_title">Settings</string>
+
+    <string name="settings_section_general">General</string>
+    <string name="settings_section_connections">Connections</string>
+    <string name="settings_section_security">Security &amp; privacy</string>
+    <string name="settings_section_legal">Legal</string>
+    <string name="settings_section_payments">Payments</string>
+    <string name="settings_section_debug">Debug</string>
+
+    <string name="settings_notifications">Notifications</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_claim_title">Claim your interface</string>
+    <string name="settings_theme_claim_subtitle">Pick a theme that feels like yours. You stay in control.</string>
+    <string name="settings_theme_preview_message_first">Hey, are you going to Web3Summit? 🎉</string>
+    <string name="settings_theme_preview_message_second">Of course! You?</string>
+    <string name="settings_theme_preview_message_third">Wouldn\'t miss it 👋 See you there!</string>
+    <string name="settings_connected_devices">Connected Devices</string>
+    <string name="settings_revoke_payments">Revoke Payments</string>
+
+    <string name="settings_backup">Backup</string>
+    <string name="settings_terms_of_use">Terms of use</string>
+    <string name="settings_privacy_policy">Privacy policy</string>
+    <string name="settings_products">Apps</string>
+    <string name="settings_blocked_contacts">Blocked contacts</string>
+    <string name="settings_contact_us">Contact us</string>
+    <string name="settings_email_copied">Email copied to clipboard</string>
+    <string name="settings_currency">Currency</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_linked_devices">Linked Devices</string>
+    <string name="settings_app_version">App Version: %1$s (%2$d)</string>
+    <string name="linked_devices_link_new_title">Link a new device</string>
+    <string name="linked_devices_link_new_description">Scan the QR code on your\ncomputer or another device to sync</string>
+    <string name="linked_devices_scan_qr_action">Scan QR Code</string>
+    <string name="linked_devices_safety_note">Your phone approves all devices.\nNo one can access your account without your permission</string>
+    <string name="linked_devices_category_laptop_desktop">Laptop / Desktop</string>
+    <plurals name="linked_devices_count_format">
+        <item quantity="one">%d device</item>
+        <item quantity="other">%d devices</item>
+    </plurals>
+    <string name="settings_android_version">Android: %1$s (API %2$d)</string>
+    <string name="settings_device_model">Device: %s</string>
+    <string name="settings_debug_menu">Debug menu</string>
+
+    <string name="products_toolbar_title">Apps</string>
+    <string name="products_empty_state_message">No products found</string>
+    <string name="products_message_custom_preview">Custom message</string>
+    <string name="products_message_load_failed">Couldn\'t load this message.</string>
+    <string name="products_message_render_failed">Couldn\'t display this message.</string>
+    <string name="product_settings_version">version %1$s</string>
+    <string name="product_settings_created_by">created by %1$s</string>
+    <string name="product_settings_section_privacy">Privacy &amp; Security</string>
+    <string name="product_settings_permissions">Permissions</string>
+    <string name="product_permissions_toolbar_title">%1$s Permissions</string>
+    <string name="product_permission_type_device_capability">Device capability</string>
+    <string name="product_permission_type_network_access">Network access</string>
+    <string name="product_permission_type_account_access">Account access</string>
+    <string name="product_permission_type_balance_access">Balance</string>
+    <string name="product_permission_type_balance_access_description">Balance access</string>
+    <string name="product_permission_type_user_identity_access">Identity</string>
+    <string name="product_permission_type_user_identity_access_description">Primary username disclosure</string>
+    <string name="product_permission_capability_notifications">Notifications</string>
+    <string name="product_permission_capability_camera">Camera</string>
+    <string name="product_permission_capability_microphone">Microphone</string>
+    <string name="product_permission_capability_bluetooth">Bluetooth</string>
+    <string name="product_permission_capability_nfc">NFC</string>
+    <string name="product_permission_capability_location">Location</string>
+    <string name="product_permission_capability_clipboard">Clipboard</string>
+    <string name="product_permission_capability_biometrics">Biometrics</string>
+    <string name="product_permission_capability_open_url">External links</string>
+    <string name="product_permission_type_webrtc">WebRTC</string>
+    <string name="product_permission_type_chain_submit">Chain transactions</string>
+    <string name="product_permission_type_statement_submit">Statement submission</string>
+    <string name="product_permission_type_preimage_submit">Preimage submission</string>
+    <string name="product_permission_type_remote">Remote permission</string>
+
+    <string name="notification_channel_name_chat">Chat messages</string>
+    <string name="notification_channel_description_chat">Notifications for new chat messages</string>
+    <string name="chat_leave_chat">Leave chat</string>
+    <string name="chat_copy_username">Copy username</string>
+    <string name="chat_block_user">Block user</string>
+    <string name="blocked_users_unblock">Unblock</string>
+    <string name="chat_leave_chat_question">Leave chat?</string>
+    <string name="chat_leave_chat_confirmation">Are you sure you want to leave\nthe chat with %1$s?</string>
+    <string name="chat_block_user_question">Block %1$s?</string>
+    <string name="chat_block_user_confirmation">They won\'t be able to send you a message request or call you.</string>
+    <string name="common_block">Block</string>
+    <string name="chat_blocked_user_notice">You won\'t receive any messages and requests until you unblock %1$s</string>
+
+    <string name="notification_channel_name_video_game">Weekly game</string>
+    <string name="notification_channel_description_video_game">Notifications about upcoming weekly games</string>
+
+    <string name="notification_channel_name_video_game_alarm">Weekly game urgent</string>
+    <string name="notification_channel_description_video_game_alarm">Urgent notifications when games are about to start</string>
+
+    <string name="notification_channel_name_tattoo_bot">Tattoo urgent</string>
+    <string name="notification_channel_description_tattoo_bot">Notifications when evidences are accepted</string>
+
+    <string name="notification_channel_name_become_citizen">Polkadot Membership</string>
+    <string name="notification_channel_description_become_citizen">Notifications about your Polkadot Membership</string>
+
+    <string name="notification_channel_name_calls">Calls</string>
+    <string name="notification_channel_description_calls">Notifications about incoming calls</string>
+
+    <string name="notification_channel_name_products">Products</string>
+    <string name="notification_channel_description_products">Notifications from products</string>
+
+    <string name="chat_bot_weekly_game_add_to_calendar_action_added">Added to calendar</string>
+
+    <string name="upgrade_username_title">Pick your new username</string>
+    <string name="upgrade_username_widget_title">Get your new username!</string>
+    <string name="upgrade_username_widget_title_upgraded">✅ Your new username is</string>
+    <string name="upgrade_username_description">As a member, you\'re eligible for a clean username without a suffix. Claim it for free</string>
+    <string name="upgrade_username_action_confirm">Confirm</string>
+    <string name="upgrade_username_field_placeholder">Enter username</string>
+    <string name="upgrade_username_state_taken">This username is already taken</string>
+    <string name="upgrade_username_description_placeholder">As a Member, you are eligible for a clean username without a suffix. How cool!</string>
+    <string name="upgrade_username_keep_playing_description">Keep playing to retain your Membership, win prizes, and get other perks!</string>
+    <string name="upgrade_username_any_other_username">or any other available name</string>
+
+    <string name="upgrade_username_congrats_subtitle">Congrats on securing this name!</string>
+    <string name="upgrade_username_CTA">Get your username</string>
+    <string name="upgrade_username_upgraded_placeholder">You upgraded your username\nfrom %s to %s</string>
+    <string name="chat_you_are_member_bold">You\'re a Polkadot member!</string>
+    <string name="chat_you_are_member_rest"> </string>
+    <string name="chat_failed_to_become_peer">Couldn\'t process your Membership. Please try again.</string>
+
+    <string name="evidence_video_instructions_title">Tattoo Documentation Video Instructions</string>
+    <string name="evidence_video_instructions_action_start_filming">Start Filming</string>
+    <string name="evidence_video_instructions_film_during_session_title">Film During the Tattoo Session</string>
+    <string name="evidence_video_instructions_film_during_session_description">Record the video while the tattoo is being executed, not before or after.</string>
+    <string name="evidence_video_instructions_partially_completed_title">Film a Partially Completed Tattoo</string>
+    <string name="evidence_video_instructions_partially_completed_description">The tattoo must be in progress—the stencil and the partially inked design must both be clearly visible.</string>
+    <string name="evidence_video_instructions_in_app_camera_title">Use the In-App Camera</string>
+    <string name="evidence_video_instructions_in_app_camera_description">All footage must be recorded directly through the app\'s built-in camera.</string>
+    <string name="evidence_video_instructions_continuous_take_title">Record in One Continuous Take</string>
+    <string name="evidence_video_instructions_continuous_take_description">Your video must be filmed without any pauses or cuts. If you stop, the recording will restart from the beginning.</string>
+    <string name="evidence_video_instructions_filming_style_title">Choose Your Filming Style</string>
+    <string name="evidence_video_instructions_filming_style_description">You may film in any style you prefer, as long as the tattoo execution and the overall design are clearly shown.</string>
+    <string name="evidence_video_instructions_assistance_title">Get Assistance if Needed</string>
+    <string name="evidence_video_instructions_assistance_description">You can ask someone to help you film, or record it yourself.</string>
+
+    <string name="evidence_video_precondition_battery_title">Please Charge Your Phone</string>
+    <string name="evidence_video_precondition_battery_description">Your phone\'s battery is required to be at least %s charged for filming evidence</string>
+    <string name="evidence_video_precondition_storage_title">Your Phone Storage Is Full</string>
+    <string name="evidence_video_precondition_storage_description">Your phone storage needs to have at least %s of free space for filming evidence</string>
+    <string name="evidence_video_precondition_accept_action">Got It</string>
+    <string name="evidence_video_precondition_ignore_action">Take the Risk and Proceed</string>
+    <string name="evidence_video_recording_title">Documentation Video</string>
+
+    <string name="evidence_video_preview_title">Confirm Filmed Video</string>
+
+    <string name="evidence_photo_instructions_title">Tattoo Photo Instructions</string>
+    <string name="evidence_photo_instructions_action_take_photo">Take Photo</string>
+    <string name="evidence_photo_instructions_in_app_camera_title">Use the In-App Camera</string>
+    <string name="evidence_photo_instructions_in_app_camera_description">Take the photo directly through the app’s built-in camera.</string>
+    <string name="evidence_photo_instructions_show_full_tattoo_title">Show the Full Tattoo</string>
+    <string name="evidence_photo_instructions_show_full_tattoo_description">Make sure the entire tattoo is clearly visible in the photo.</string>
+
+    <string name="evidence_photo_instructions_assistance_title">Get Assistance if Needed</string>
+    <string name="evidence_photo_instructions_assistance_description">You may ask someone to take the photo for you or take it yourself — what matters most is that the tattoo is fully visible.</string>
+
+    <string name="evidence_photo_capture_title">Tattoo Photo</string>
+    <string name="evidence_photo_capture_toggle_overlay_button">Toggle Outlines</string>
+    <string name="evidence_photo_preview_title">Tattoo Photo</string>
+
+    <string name="evidence_provided_photo_message_status">Photo Evidence</string>
+    <string name="evidence_provided_video_message_status">Video Evidence</string>
+    <string name="evidence_provided_video_message_footer">Uploading begins after tattoo photo evidence is submitted</string>
+    <string name="evidence_provided_status_queued">Upload Queued</string>
+    <string name="evidence_provided_status_uploading">Uploading</string>
+    <string name="evidence_provided_status_in_review">In Review</string>
+    <string name="evidence_provided_status_approved">Approved</string>
+    <string name="evidence_provided_status_failed">Upload Failed</string>
+    <string name="evidence_provided_status_uploading_progress">Uploading %s</string>
+
+    <string name="tattoo_family_details_error">Failed to load family details</string>
+
+    <string name="chat_header_shared_game">You played the game together on %s</string>
+
+    <string name="chat_bot_weekly_game_chat_preview_game_announced">Next game: %s. Register now!</string>
+    <string name="chat_bot_weekly_game_chat_preview_game_registered">Registered! Next game starts on %s.</string>
+    <string name="chat_bot_weekly_game_chat_preview_game_starting">Game starting. Play now!</string>
+    <string name="chat_bot_weekly_game_chat_preview_game_processing">Thanks for playing. Results processing...</string>
+    <string name="chat_bot_weekly_game_chat_preview_game_success">Thanks for playing! Play %d more to become a Member</string>
+    <string name="chat_bot_weekly_game_chat_preview_game_peer_reached">You’re a Polkadot Member!</string>
+    <string name="chat_bot_weekly_game_chat_preview_game_failed"> </string>
+
+    <string name="chat_message_deposit_added">%s deposit added</string>
+    <string name="chat_message_deposit_added_empty">Deposit added</string>
+
+    <string name="mob_rule_peer_suspended_message">Your Membership has been suspended.\nYou cannot make judgements until you reclaim it.</string>
+    <string name="mob_rule_peer_suspended_reclaim">Reclaim your Peer Status</string>
+
+    <string name="product_chat_menu_open_app">Open %s app</string>
+    <string name="product_chat_menu_remove_chat">Remove chat</string>
+    <string name="product_chat_menu_remove_confirmation_text">Remove chat?</string>
+    <string name="product_chat_menu_remove_confirmation_positive">Remove</string>
+
+    <string name="video_game_results_title">Game Results</string>
+    <string name="collectibles_title">Collectibles</string>
+    <string name="collectibles_unavailable">Collectibles are temporarily unavailable. Please try again later.</string>
+
+    <string name="chain_health_connection_connected">Connected</string>
+    <string name="chain_health_connection_connecting">Connecting…</string>
+    <string name="chain_health_connection_disconnected">Disconnected</string>
+    <string name="chain_health_metric_block_latency">Block latency</string>
+    <string name="chain_health_metric_finality_gap">Finality gap</string>
+    <string name="chain_health_metric_pending_request">Pending request</string>
+    <string name="chain_health_metric_response">Response time</string>
+    <string name="chain_health_target">target ≤ %1$s</string>
+    <plurals name="chain_health_blocks">
+        <item quantity="one">%1$d block</item>
+        <item quantity="other">%1$d blocks</item>
+    </plurals>
+
+    <string name="splash_waiting_for_network_title">Waiting for network connection…</string>
+    <string name="splash_waiting_for_network_message">Turn off Airplane Mode or check your internet</string>
+
+    <string name="pocket_digital_dollar_title">Balance Card</string>
+    <string name="pocket_digital_dollar_card_title">%1$s</string>
+    <string name="pocket_digital_dollar_send_button">Send %1$s</string>
+    <string name="pocket_digital_dollar_faucet_top_up">Faucet Top Up</string>
+    <string name="pocket_digital_dollar_available">Available</string>
+    <string name="pocket_collectibles_open_button">View collectibles</string>
+    <string name="pocket_collectibles_title">Collectibles</string>
+    <string name="pocket_digital_dollar_advanced">Advanced</string>
+    <string name="pocket_error_get_cash_unavailable">Get %1$s isn\'t available right now. Try again later.</string>
+    <string name="pocket_error_auto_fund_failed">Couldn\'t add test funds to this account. Try again.</string>
+    <string name="pocket_error_share_coinage_logs_failed">Couldn\'t share the coinage logs. Try again.</string>
+    <string name="pocket_error_force_recycle_failed">Couldn\'t recycle this coin. Try again.</string>
+
+    <string name="payment_privacy_mode_title">Payments Privacy Mode</string>
+    <string name="payment_privacy_mode_fastest_label">Fastest</string>
+    <string name="payment_privacy_mode_fastest_description">Fastest payments, lower privacy</string>
+    <string name="payment_privacy_mode_fastest_accessibility">Fastest. Fastest payments, lower privacy.</string>
+    <string name="payment_privacy_mode_balanced_label">Balanced</string>
+    <string name="payment_privacy_mode_balanced_description">Stronger privacy, moderate speed</string>
+    <string name="payment_privacy_mode_balanced_accessibility">Balanced. Stronger privacy, moderate speed.</string>
+    <string name="payment_privacy_mode_most_private_label">Most Private</string>
+    <string name="payment_privacy_mode_most_private_description">Maximum privacy, lowest speed</string>
+    <string name="payment_privacy_mode_most_private_accessibility">Most private. Maximum privacy, lowest speed.</string>
+    <string name="payment_privacy_mode_state_selected">Selected</string>
+    <string name="payment_privacy_mode_state_not_selected">Not selected</string>
+
+    <string name="w3s_wait_title">Your username is being registered</string>
+    <string name="w3s_wait_subtitle">This usually takes around 10 seconds</string>
+    <string name="w3s_debug_skip">(Debug) Skip verification</string>
+    <string name="w3s_start_using_app">Start using the Polkadot App</string>
+    <string name="w3s_start_using_app_preparing">Finishing registration…</string>
+    <string name="w3s_ended">Web3 Summit ended — stay tuned for more updates!</string>
+
+    <!-- Keys carried over from the branch, not yet present on master -->
+    <string name="video_game_play_host_transition_title">Round %d of %d</string>
+    <string name="video_game_play_finished_title">Game\ncomplete</string>
+    <string name="video_game_play_finished_description">Check your choices.</string>
+    <string name="video_game_vote_description">" "</string>
+    <string name="sso_pair_request_connect_title">%s wants to connect</string>
+    <string name="sso_pair_request_share_info_message">Do you want to share \"%s\" info with them?</string>
+    <string name="sso_pair_request_reject">Reject</string>
+    <string name="sso_pair_request_approve">Approve</string>
+    <string name="chat_last_message_call_voice">📞 Voice call</string>
+    <string name="chat_last_message_call_video">📹 Video call</string>
+    <string name="chat_payment_status_detecting">Detecting…</string>
+    <string name="chat_payment_status_detected_best">Confirming…</string>
+    <string name="chat_payment_status_detected_finalized">Confirmed</string>
+    <string name="chat_bot_prizes_become_a_peer_pill">Become a Peer in 6 games</string>
+    <string name="chat_bot_prizes_games_to_play">%1$d games to play</string>
+    <string name="settings_blocked_users">Blocked users</string>
+    <string name="video_game_play_player_copy_host">Copy Host</string>
+    <string name="video_game_play_host_transition_progress">Round is Starting</string>
+    <string name="video_game_play_tapping_hint">Tap on the Humans Who Copied 👇</string>
+    <string name="common_relative_time_just_now">Now</string>
+
+    <!-- Keys removed on master but retained intentionally -->
+    <string name="chat_bot_weekly_game_footer_title">Upcoming weekly game scheduled</string>
+    <string name="chat_bot_weekly_game_result_failed_paused">Your Polkadot Membership is paused</string>
+    <string name="chat_bot_weekly_game_result_failed_external_description">You won\'t receive a reward for this game</string>
+    <string name="chat_bot_weekly_game_result_failed_paused_description">Keep playing to resume your Polkadot Membership, sign up for next weeks game.</string>
+    <string name="chat_bot_weekly_game_result_failed_description">Keep playing to become a Member, sign up for next weeks game.</string>
+    <string name="chat_bot_weekly_game_welcome_message_1">Play a Weekly Game. Requires Constant Participation.\n\n🤖 Attest humans, remove AI in a 5 minute game</string>
+    <string name="chat_bot_weekly_game_welcome_message_2">🤙 Gesture. As a host perform a hand gesture, as a player mimic another host’s gesture</string>
+    <string name="chat_bot_weekly_game_welcome_message_3">🤖 Attestation. Identify humans playing the game with you. Remove AI.</string>
+    <string name="chat_bot_weekly_game_welcome_message_4">🏃 Play 6 games in a row to achieve your Polkadot Peer status.</string>
+    <string name="chat_bot_weekly_game_welcome_message_5">❣️️ Attendance. Attendance is important, missing the game pauses Peer status. Game has to be played constantly.</string>
+    <string name="chat_bot_weekly_game_welcome_message_6">🕰️ Game Time! The game is played every Thursday at 6 PM CET.</string>
+</resources>

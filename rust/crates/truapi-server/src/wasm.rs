@@ -151,7 +151,7 @@ impl ChainProvider for WasmPlatform {
                 }
             }) as Box<dyn FnMut(JsValue)>);
 
-            let genesis_arg = JsValue::from_str(&format!("0x{}", hex::encode(&genesis_hash)));
+            let genesis_arg = JsValue::from_str(&format!("0x{}", hex::encode(genesis_hash)));
             let returned = chain_connect
                 .call2(
                     &JsValue::NULL,
@@ -327,10 +327,10 @@ fn parse_generic_error(value: JsValue) -> v01::GenericError {
     if let Some(reason) = value.as_string() {
         return generic(reason);
     }
-    if let Ok(reason) = Reflect::get(&value, &JsValue::from_str("reason")) {
-        if let Some(reason) = reason.as_string() {
-            return generic(reason);
-        }
+    if let Ok(reason) = Reflect::get(&value, &JsValue::from_str("reason"))
+        && let Some(reason) = reason.as_string()
+    {
+        return generic(reason);
     }
     generic(js_to_string(value))
 }
@@ -581,6 +581,8 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+    let network_suffix =
+        get_required_string_at(value, "networkSuffix", "runtimeConfig.networkSuffix")?;
 
     SigningHostConfig::new(
         HostInfo {
@@ -611,6 +613,7 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
         )?,
+        network_suffix,
     )
     .map_err(runtime_config_validation_to_js)
 }
@@ -645,6 +648,7 @@ fn runtime_config_field_to_js(field: &str) -> &str {
         "people_chain_genesis_hash" => "people.genesisHash",
         "bulletin_chain_genesis_hash" => "bulletin.genesisHash",
         "asset_hub_chain_genesis_hash" => "assetHub.genesisHash",
+        "network_suffix" => "networkSuffix",
         other => other,
     }
 }
@@ -667,6 +671,11 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
         RuntimeConfigValidationError::InvalidProductId { product_id } => {
             JsValue::from_str(&format!(
                 "runtimeConfig.productId must be a dotNS or localhost product identifier, got {product_id:?}"
+            ))
+        }
+        RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
+            JsValue::from_str(&format!(
+                "runtimeConfig.networkSuffix must be a supported dotNS TLD, got {network_suffix:?}"
             ))
         }
     }
@@ -818,17 +827,15 @@ struct WasmCoreInner {
     disposing: Cell<bool>,
 }
 
-/// Build the platform from a JS bridge together with the optional capability
-/// adapters the host actually supplied. Both are the same object; a host that
-/// omits a group gets `None` and the core answers accordingly.
-fn wasm_platform(
-    bridge: Arc<JsBridge>,
-) -> (
-    Arc<WasmPlatform>,
-    Option<Arc<dyn ChatPlatform>>,
-    Option<Arc<dyn ContactsPlatform>>,
-    Option<Arc<dyn PermissionStatusHost>>,
-) {
+struct WasmPlatformAdapters {
+    platform: Arc<WasmPlatform>,
+    chat_platform: Option<Arc<dyn ChatPlatform>>,
+    contacts_platform: Option<Arc<dyn ContactsPlatform>>,
+    status_host: Option<Arc<dyn PermissionStatusHost>>,
+}
+
+/// Build the platform and the optional capability adapters supplied by the host.
+fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     let has_chat = bridge.has_chat();
     let has_contacts = bridge.has_contacts();
     let has_permission_status = bridge.has_permission_status();
@@ -836,7 +843,12 @@ fn wasm_platform(
     let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
     let contacts = has_contacts.then(|| platform.clone() as Arc<dyn ContactsPlatform>);
     let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
-    (platform, chat, contacts, status)
+    WasmPlatformAdapters {
+        platform,
+        chat_platform: chat,
+        contacts_platform: contacts,
+        status_host: status,
+    }
 }
 
 /// JS-callable handle to a long-lived pairing-host runtime shared by product
@@ -857,7 +869,12 @@ impl WasmPairingHostRuntime {
         console_error_panic_hook::set_once();
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
-        let (platform, chat_platform, contacts_platform, status_host) = wasm_platform(bridge);
+        let WasmPlatformAdapters {
+            platform,
+            chat_platform,
+            contacts_platform,
+            status_host,
+        } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
@@ -1234,7 +1251,12 @@ impl WasmProductRuntime {
         let frame_sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
-        let (platform, chat_platform, contacts_platform, status_host) = wasm_platform(bridge);
+        let WasmPlatformAdapters {
+            platform,
+            chat_platform,
+            contacts_platform,
+            status_host,
+        } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
