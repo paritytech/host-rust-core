@@ -10,7 +10,7 @@
 
 use parity_scale_codec::{Decode, Encode};
 use tracing::{instrument, warn};
-use truapi_platform::{CoreStorageKey, Platform};
+use truapi_platform::{CoreStorageKey, HostChainSet, Platform};
 
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::dotns_gateway::{
@@ -270,8 +270,6 @@ pub(crate) async fn warn_if_asset_hub_disagrees_with_chain_set(
     platform: &dyn Platform,
     configured: [u8; 32],
 ) {
-    use truapi::latest::ChainIdentifier;
-
     use crate::host_logic::features;
 
     // A host that cannot answer `supported_chains` is not evidence of a
@@ -279,20 +277,49 @@ pub(crate) async fn warn_if_asset_hub_disagrees_with_chain_set(
     let Ok(chains) = features::supported_chains(platform).await else {
         return;
     };
-    match features::genesis_for(&chains, ChainIdentifier::AssetHub) {
-        Some(served) if served != configured => warn!(
+    match asset_hub_agreement(&chains, configured) {
+        AssetHubAgreement::Diverges { served } => warn!(
             configured = %hex::encode(configured),
             served = %hex::encode(served),
             "the configured Asset Hub genesis hash is not the one this host \
              serves: manifest grants resolve against the configured chain \
              while PGAS is allocated on the served one"
         ),
-        None => warn!(
+        AssetHubAgreement::NotServed => warn!(
             configured = %hex::encode(configured),
             "an Asset Hub genesis hash is configured but this host's chain set \
              serves no Asset Hub"
         ),
-        Some(_) => {}
+        AssetHubAgreement::Agrees => {}
+    }
+}
+
+/// What comparing the configured Asset Hub against the host's chain set found.
+#[derive(Debug, PartialEq, Eq)]
+enum AssetHubAgreement {
+    /// The host serves the hash it was configured with.
+    Agrees,
+    /// The host serves a different Asset Hub than the one configured.
+    Diverges {
+        /// The hash the host's chain set reports.
+        served: [u8; 32],
+    },
+    /// The host's chain set carries no Asset Hub at all.
+    NotServed,
+}
+
+/// The comparison behind [`warn_if_asset_hub_disagrees_with_chain_set`], split
+/// out so it can be tested without a log capture: the wrapper is then only the
+/// `supported_chains` call and the wording.
+fn asset_hub_agreement(chains: &HostChainSet, configured: [u8; 32]) -> AssetHubAgreement {
+    use truapi::latest::ChainIdentifier;
+
+    use crate::host_logic::features;
+
+    match features::genesis_for(chains, ChainIdentifier::AssetHub) {
+        Some(served) if served == configured => AssetHubAgreement::Agrees,
+        Some(served) => AssetHubAgreement::Diverges { served },
+        None => AssetHubAgreement::NotServed,
     }
 }
 
@@ -351,4 +378,77 @@ async fn root_manifest(
         )
         .await;
     json
+}
+
+#[cfg(test)]
+mod asset_hub_agreement_tests {
+    use truapi::latest::ChainIdentifier;
+    use truapi_platform::{HostChainEntry, HostChainSet};
+
+    use super::{AssetHubAgreement, asset_hub_agreement};
+
+    /// A host chain set serving `chains`.
+    fn chain_set(chains: &[(ChainIdentifier, [u8; 32])]) -> HostChainSet {
+        HostChainSet {
+            network: "paseo".to_string(),
+            chains: chains
+                .iter()
+                .map(|(identifier, genesis_hash)| HostChainEntry {
+                    identifier: *identifier,
+                    genesis_hash: *genesis_hash,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_host_serving_the_configured_asset_hub_agrees() {
+        let chains = chain_set(&[(ChainIdentifier::AssetHub, [0xcc; 32])]);
+        assert_eq!(
+            asset_hub_agreement(&chains, [0xcc; 32]),
+            AssetHubAgreement::Agrees
+        );
+    }
+
+    #[test]
+    fn a_host_serving_a_different_asset_hub_diverges() {
+        // The case the warning exists for: manifests resolve against the
+        // configured registry while PGAS is allocated on the served one, so
+        // whoever holds the product name on the other network decides who may
+        // read this product's storage.
+        let chains = chain_set(&[(ChainIdentifier::AssetHub, [0xdd; 32])]);
+        assert_eq!(
+            asset_hub_agreement(&chains, [0xcc; 32]),
+            AssetHubAgreement::Diverges { served: [0xdd; 32] },
+            "a served hash that differs from the configured one is the divergence"
+        );
+    }
+
+    #[test]
+    fn a_host_serving_no_asset_hub_is_not_silently_agreement() {
+        // Distinct from `Agrees`: reporting no Asset Hub while one is
+        // configured is its own misconfiguration, and collapsing it into
+        // agreement would silence exactly the host that cannot serve manifests.
+        let chains = chain_set(&[(ChainIdentifier::People, [0xaa; 32])]);
+        assert_eq!(
+            asset_hub_agreement(&chains, [0xcc; 32]),
+            AssetHubAgreement::NotServed
+        );
+    }
+
+    #[test]
+    fn the_comparison_reads_asset_hub_and_not_whatever_is_first() {
+        // `genesis_for` searches by identifier. A lookup that took the first
+        // entry instead would agree here by accident, since People carries the
+        // configured value and Asset Hub does not.
+        let chains = chain_set(&[
+            (ChainIdentifier::People, [0xcc; 32]),
+            (ChainIdentifier::AssetHub, [0xdd; 32]),
+        ]);
+        assert_eq!(
+            asset_hub_agreement(&chains, [0xcc; 32]),
+            AssetHubAgreement::Diverges { served: [0xdd; 32] },
+            "the People entry carrying the configured hash must not mask the divergence"
+        );
+    }
 }
