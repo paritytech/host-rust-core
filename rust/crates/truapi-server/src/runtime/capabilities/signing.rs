@@ -322,7 +322,7 @@ impl Signing for ProductRuntimeHost {
 }
 
 impl ProductRuntimeHost {
-    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw", watermarked))]
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw"))]
     async fn sign_raw_with_watermark(
         &self,
         cx: &CallContext,
@@ -379,7 +379,7 @@ impl ProductRuntimeHost {
         .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))
     }
 
-    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_with_legacy_account", watermarked))]
+    #[instrument(skip_all, fields(runtime.method = "signing.sign_raw_with_legacy_account"))]
     async fn sign_raw_with_legacy_account_with_watermark(
         &self,
         cx: &CallContext,

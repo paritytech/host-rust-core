@@ -41,29 +41,6 @@ Request methods take the inner request value directly. The transport adds the wi
 Requests reject with `RequestTimeoutError` when no matching response arrives within 120 seconds.
 Pass `{ requestTimeoutMs }` to `createTransport` to select a different positive deadline.
 
-## Temporary ownership proofs
-
-Until the runtime accepts watermarked ownership proofs, the temporary `signRawDeprecatedIWillChangeThisLater` and
-`signRawDeprecatedIWillChangeThisLaterWithLegacyAccount` methods sign the decoded payload exactly as supplied. They
-neither add nor strip an envelope. For example, Humanity can ask its lite account to sign the raw 32-byte Resources
-alias:
-
-```ts
-const proof = await truapi.signing.signRawDeprecatedIWillChangeThisLaterWithLegacyAccount({
-  signer: liteAccountAddress,
-  payload: { tag: "Bytes", value: { bytes: resourcesAliasHex } },
-});
-```
-
-These methods retain account authorization, signing permission, and the existing confirmation flow. Both ends of a
-paired connection need support for the new unwatermarked requests; they never fall back to wrapped signing.
-
-API definitions carry Rust `#[deprecated]` and TypeScript `@deprecated` notices. The temporary unwatermarked
-implementations log a warning linking to #612 when called.
-
-Once runtimes verify watermarked proofs, migrate back to `signRaw` or `signRawWithLegacyAccount`. The temporary APIs
-will then be removed, as tracked in [#612](https://github.com/paritytech/host-rust-core/issues/612).
-
 ## Subscriptions
 
 Streaming methods return a small Observable-compatible object:

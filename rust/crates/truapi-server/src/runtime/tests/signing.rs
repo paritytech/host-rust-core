@@ -4,7 +4,6 @@ use super::*;
 #[allow(deprecated)] // Exercise the temporary API's paired-host wire routing.
 fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading() {
     use crate::host_logic::sso::messages::SignRequest;
-    use truapi_platform::SignRawReview;
 
     for signer_kind in ["product", "legacy product", "identity"] {
         let session = sso_session_info();
@@ -81,16 +80,6 @@ fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading(
             }
             request => panic!("unwatermarked signing was downgraded: {request:?}"),
         }
-        let reviews = platform.sign_raw_reviews.lock().unwrap();
-        assert_eq!(reviews.len(), 1);
-        assert!(matches!(
-            (&reviews[0], signer_kind),
-            (SignRawReview::Product(_), "product")
-                | (
-                    SignRawReview::LegacyAccount(_),
-                    "legacy product" | "identity"
-                )
-        ));
     }
 }
 

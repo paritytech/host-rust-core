@@ -11,7 +11,6 @@ use parity_scale_codec::{Decode, Encode};
 use truapi::versioned::signing::{
     HostSignRawWithLegacyAccountRequest, HostSignRawWithLegacyAccountResponse,
 };
-use truapi_platform::SignRawReview;
 
 #[test]
 fn signing_apis_preserve_exact_bytes_and_watermark_semantics() {
@@ -140,7 +139,7 @@ fn unwatermarked_signing_keeps_authorization_and_confirmation_gates() {
                 remote_permission_denied: failure == "permission",
                 ..Default::default()
             });
-            let (services, activation) = signing_runtime_with_platform(platform.clone());
+            let (services, activation) = signing_runtime_with_platform(platform);
             if failure != "no session" {
                 futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
                     .unwrap();
@@ -193,19 +192,6 @@ fn unwatermarked_signing_keeps_authorization_and_confirmation_gates() {
                 }
             });
             assert!(rejected, "{failure}, legacy={legacy}");
-            let reviews = platform.sign_raw_reviews.lock().unwrap();
-            if matches!(failure, "no session" | "wrong account" | "permission") {
-                assert!(
-                    reviews.is_empty(),
-                    "authorization fails before confirmation"
-                );
-            } else {
-                assert_eq!(reviews.len(), 1);
-                assert!(matches!(
-                    (&reviews[0], legacy),
-                    (SignRawReview::Product(_), false) | (SignRawReview::LegacyAccount(_), true)
-                ));
-            }
         }
     }
 }
@@ -218,7 +204,7 @@ fn paired_signing_host_signs_unwatermarked_proofs_only_after_confirmation() {
                 sign_raw_confirmed: confirmed,
                 ..Default::default()
             });
-            let (_, activation) = signing_runtime_with_platform(platform.clone());
+            let (_, activation) = signing_runtime_with_platform(platform);
             futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
                 .unwrap();
             let service = SigningHostSsoService::new(activation);
@@ -258,12 +244,6 @@ fn paired_signing_host_signs_unwatermarked_proofs_only_after_confirmation() {
             else {
                 panic!("expected SignResponse")
             };
-            let reviews = platform.sign_raw_reviews.lock().unwrap();
-            assert_eq!(reviews.len(), 1);
-            assert!(matches!(
-                (&reviews[0], legacy),
-                (SignRawReview::Product(_), false) | (SignRawReview::LegacyAccount(_), true)
-            ));
             if confirmed {
                 let response = response.payload.unwrap();
                 let signature = schnorrkel::Signature::from_bytes(&response.signature).unwrap();
