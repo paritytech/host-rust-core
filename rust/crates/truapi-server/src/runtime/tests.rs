@@ -4103,3 +4103,44 @@ fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
         "and the same on the signing method, which arrives through the same door"
     );
 }
+
+/// The grant lookup obeys the caller's deadline.
+///
+/// It can reach dotNS on the Asset Hub, which is several sequential chain
+/// operations each bounded only by `OPERATION_TIMEOUT` (10s). Run before
+/// `remote_authority_call` that cost sat outside the caller's deadline and
+/// ignored a cancel, so a product asking for a short timeout could wait far
+/// longer with no way to stop it. This pins that it now returns on the deadline:
+/// the stub answers no RPC, so an unscoped lookup would stall for the full
+/// operation timeout instead.
+#[test]
+fn a_grant_lookup_obeys_the_callers_deadline() {
+    let (host_config, product) = runtime_config("dim2.dot");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    install_pairing_session(&host, session_info());
+
+    let mut cx = CallContext::default();
+    cx.set_timeout(Duration::from_millis(1));
+    let started = std::time::Instant::now();
+    let result = futures::executor::block_on(
+        host.create_account_proof(&cx, create_proof_request("peopl.dot")),
+    );
+    let elapsed = started.elapsed();
+
+    assert!(result.is_err(), "a deadline that short cannot succeed");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the grant lookup must be bounded by the caller's deadline, not by the \
+         dotNS operation timeout; took {elapsed:?}"
+    );
+}
