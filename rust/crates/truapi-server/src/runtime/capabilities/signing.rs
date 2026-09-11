@@ -87,7 +87,7 @@ impl Signing for ProductRuntimeHost {
         self.sign_raw_with_watermark(cx, request, true).await
     }
 
-    async fn sign_raw_deprecated_i_will_change_this_later(
+    async fn sign_raw_unwatermarked_deprecated(
         &self,
         cx: &CallContext,
         request: HostSignRawRequest,
@@ -231,7 +231,7 @@ impl Signing for ProductRuntimeHost {
             .await
     }
 
-    async fn sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
+    async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
         &self,
         cx: &CallContext,
         request: HostSignRawWithLegacyAccountRequest,

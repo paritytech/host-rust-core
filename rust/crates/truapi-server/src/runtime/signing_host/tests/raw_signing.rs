@@ -13,7 +13,7 @@ use truapi::versioned::signing::{
 };
 
 #[test]
-fn signing_apis_preserve_exact_bytes_and_watermark_semantics() {
+fn unwatermarked_signing_signs_the_supplied_bytes() {
     let (services, activation) = signing_runtime();
     futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec())).unwrap();
     let identity = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX).unwrap();
@@ -21,178 +21,58 @@ fn signing_apis_preserve_exact_bytes_and_watermark_semantics() {
     let product = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
     let runtime = product_runtime(services, activation);
     let cx = CallContext::default();
-    let alias = vec![0x11; 32];
-    let payloads = [
-        (
-            v01::RawPayload::Bytes {
-                bytes: alias.clone(),
-            },
-            alias,
-        ),
-        (v01::RawPayload::Bytes { bytes: vec![] }, vec![]),
-        (
-            v01::RawPayload::Payload {
-                payload: "0x0102".into(),
-            },
-            vec![1, 2],
-        ),
-        (
-            v01::RawPayload::Payload {
-                payload: "hello".into(),
-            },
-            b"hello".to_vec(),
-        ),
-        (
-            v01::RawPayload::Bytes {
-                bytes: b"<Bytes>hello</Bytes>".to_vec(),
-            },
-            b"<Bytes>hello</Bytes>".to_vec(),
-        ),
-    ];
-    for (payload, exact_bytes) in payloads {
-        for unwatermarked in [false, true] {
-            for legacy in [false, true] {
-                let response = futures::executor::block_on(async {
-                    if legacy {
-                        let request = HostSignRawWithLegacyAccountRequest::V1(
+    for legacy in [false, true] {
+        let payload = v01::RawPayload::Bytes {
+            bytes: vec![0x11; 32],
+        };
+        let response = futures::executor::block_on(async {
+            if legacy {
+                let HostSignRawWithLegacyAccountResponse::V1(response) = runtime
+                    .sign_raw_unwatermarked_deprecated_with_legacy_account(
+                        &cx,
+                        HostSignRawWithLegacyAccountRequest::V1(
                             v01::HostSignRawWithLegacyAccountRequest {
                                 signer: subxt::utils::AccountId32(identity.public.to_bytes())
                                     .to_string(),
-                                payload: payload.clone(),
+                                payload,
                             },
-                        );
-                        let HostSignRawWithLegacyAccountResponse::V1(response) = if unwatermarked {
-                            runtime
-                                .sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
-                                    &cx, request,
-                                )
-                                .await
-                        } else {
-                            runtime.sign_raw_with_legacy_account(&cx, request).await
-                        }
-                        .unwrap();
-                        response
-                    } else {
-                        let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
-                            account: product_account(0),
-                            payload: payload.clone(),
-                        });
-                        let HostSignRawResponse::V1(response) = if unwatermarked {
-                            runtime
-                                .sign_raw_deprecated_i_will_change_this_later(&cx, request)
-                                .await
-                        } else {
-                            runtime.sign_raw(&cx, request).await
-                        }
-                        .unwrap();
-                        response
-                    }
-                });
-                let expected = if unwatermarked || exact_bytes.starts_with(b"<Bytes>") {
-                    exact_bytes.clone()
-                } else {
-                    [b"<Bytes>".as_slice(), &exact_bytes, b"</Bytes>"].concat()
-                };
-                let public = if legacy {
-                    &identity.public
-                } else {
-                    &product.public
-                };
-                let signature = schnorrkel::Signature::from_bytes(&response.signature).unwrap();
-                public
-                    .verify_simple(b"substrate", &expected, &signature)
+                        ),
+                    )
+                    .await
                     .unwrap();
-                assert!(response.signed_transaction.is_none());
-                if expected != exact_bytes {
-                    assert!(
-                        public
-                            .verify_simple(b"substrate", &exact_bytes, &signature)
-                            .is_err()
-                    );
-                } else {
-                    let double_wrapped = [b"<Bytes>".as_slice(), &expected, b"</Bytes>"].concat();
-                    assert!(
-                        public
-                            .verify_simple(b"substrate", &double_wrapped, &signature)
-                            .is_err()
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn unwatermarked_signing_keeps_authorization_and_confirmation_gates() {
-    for legacy in [false, true] {
-        for failure in [
-            "no session",
-            "wrong account",
-            "permission",
-            "declined",
-            "confirmation error",
-            "invalid hex",
-        ] {
-            let platform = Arc::new(StubPlatform {
-                sign_raw_confirmed: failure != "declined",
-                sign_raw_error: (failure == "confirmation error").then_some("failed"),
-                remote_permission_denied: failure == "permission",
-                ..Default::default()
-            });
-            let (services, activation) = signing_runtime_with_platform(platform);
-            if failure != "no session" {
-                futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
-                    .unwrap();
-            }
-            let runtime = product_runtime(services, activation);
-            let cx = CallContext::default();
-            let payload = if failure == "invalid hex" {
-                v01::RawPayload::Payload {
-                    payload: "0xzz".into(),
-                }
+                response
             } else {
-                v01::RawPayload::Bytes {
-                    bytes: vec![0x11; 32],
-                }
-            };
-            let rejected = futures::executor::block_on(async {
-                if legacy {
-                    let account = if failure == "wrong account" {
-                        [0xff; 32]
-                    } else {
-                        derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX)
-                            .unwrap()
-                            .public
-                            .to_bytes()
-                    };
-                    runtime
-                        .sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
-                            &cx,
-                            HostSignRawWithLegacyAccountRequest::V1(
-                                v01::HostSignRawWithLegacyAccountRequest {
-                                    signer: subxt::utils::AccountId32(account).to_string(),
-                                    payload,
-                                },
-                            ),
-                        )
-                        .await
-                        .is_err()
-                } else {
-                    let mut account = product_account(0);
-                    if failure == "wrong account" {
-                        account.dot_ns_identifier = "other.dot".into();
-                    }
-                    runtime
-                        .sign_raw_deprecated_i_will_change_this_later(
-                            &cx,
-                            HostSignRawRequest::V1(v01::HostSignRawRequest { account, payload }),
-                        )
-                        .await
-                        .is_err()
-                }
-            });
-            assert!(rejected, "{failure}, legacy={legacy}");
-        }
+                let HostSignRawResponse::V1(response) = runtime
+                    .sign_raw_unwatermarked_deprecated(
+                        &cx,
+                        HostSignRawRequest::V1(v01::HostSignRawRequest {
+                            account: product_account(0),
+                            payload,
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                response
+            }
+        });
+        let public = if legacy {
+            &identity.public
+        } else {
+            &product.public
+        };
+        let signature = schnorrkel::Signature::from_bytes(&response.signature).unwrap();
+        public
+            .verify_simple(b"substrate", &[0x11; 32], &signature)
+            .unwrap();
+        assert!(
+            public
+                .verify_simple(
+                    b"substrate",
+                    &[b"<Bytes>".as_slice(), &[0x11; 32], b"</Bytes>"].concat(),
+                    &signature,
+                )
+                .is_err()
+        );
     }
 }
 

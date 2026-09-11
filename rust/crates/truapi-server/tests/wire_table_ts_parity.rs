@@ -53,16 +53,9 @@ fn parse_rust(src: &str) -> Vec<Row> {
         let Some(colon) = rest.find(':') else {
             continue;
         };
-        // rustfmt moves the type to the next line for long method names.
-        // Read the complete declaration before deciding which const this is.
-        let mut declaration = rest.to_string();
-        while !declaration.contains('=') {
-            let Some(line) = iter.next() else { break };
-            declaration.push_str(line.trim());
-        }
-        let is_subscription = declaration.contains("SubscriptionFrameIds");
+        let is_subscription = rest.contains("SubscriptionFrameIds");
         // Skip non-id consts (e.g. `WIRE_TABLE: &[WireEntry]`).
-        if !is_subscription && !declaration.contains("RequestFrameIds") {
+        if !is_subscription && !rest.contains("RequestFrameIds") {
             continue;
         }
         let method = rest[..colon].trim().to_ascii_lowercase();

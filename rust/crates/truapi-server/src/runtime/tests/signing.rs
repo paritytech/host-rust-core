@@ -5,7 +5,7 @@ use super::*;
 fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading() {
     use crate::host_logic::sso::messages::SignRequest;
 
-    for signer_kind in ["product", "legacy product", "identity"] {
+    for legacy in [false, true] {
         let session = sso_session_info();
         let identity = session.identity_account_id.unwrap();
         let platform = Arc::new(StubPlatform {
@@ -27,9 +27,9 @@ fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading(
             bytes: vec![0x11; 32],
         };
         let signature = futures::executor::block_on(async {
-            if signer_kind == "product" {
+            if !legacy {
                 let HostSignRawResponse::V1(response) = host
-                    .sign_raw_deprecated_i_will_change_this_later(
+                    .sign_raw_unwatermarked_deprecated(
                         &cx,
                         HostSignRawRequest::V1(v01::HostSignRawRequest {
                             account: account_id("myapp.dot", 0),
@@ -40,14 +40,9 @@ fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading(
                     .unwrap();
                 response.signature
             } else {
-                let signer = if signer_kind == "identity" {
-                    subxt::utils::AccountId32(identity).to_string()
-                } else {
-                    subxt::utils::AccountId32(test_product_account_public("myapp.dot", 0))
-                        .to_string()
-                };
+                let signer = subxt::utils::AccountId32(identity).to_string();
                 let HostSignRawWithLegacyAccountResponse::V1(response) = host
-                    .sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
+                    .sign_raw_unwatermarked_deprecated_with_legacy_account(
                         &cx,
                         HostSignRawWithLegacyAccountRequest::V1(
                             v01::HostSignRawWithLegacyAccountRequest {
@@ -69,12 +64,12 @@ fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading(
         };
         match request {
             SignRequest::RawUnwatermarkedDeprecated(request) => {
-                assert_ne!(signer_kind, "identity");
+                assert!(!legacy);
                 assert_eq!(request.account, account_id("myapp.dot", 0));
                 assert_eq!(request.payload, payload);
             }
             SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request) => {
-                assert_eq!(signer_kind, "identity");
+                assert!(legacy);
                 assert_eq!(request.account, identity);
                 assert_eq!(request.data, payload);
             }

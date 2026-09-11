@@ -50,7 +50,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "8dc990db19f27f08";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "0c1c34f5865ebefa";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: RequestFrameIds = RequestFrameIds {
@@ -496,14 +496,14 @@ pub const ACCOUNT_RING_VRF_SIGN: RequestFrameIds = RequestFrameIds {
     response_id: 173,
 };
 
-/// Wire discriminants for `signing_sign_raw_deprecated_i_will_change_this_later`.
-pub const SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER: RequestFrameIds = RequestFrameIds {
+/// Wire discriminants for `signing_sign_raw_unwatermarked_deprecated`.
+pub const SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED: RequestFrameIds = RequestFrameIds {
     request_id: 174,
     response_id: 175,
 };
 
-/// Wire discriminants for `signing_sign_raw_deprecated_i_will_change_this_later_with_legacy_account`.
-pub const SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER_WITH_LEGACY_ACCOUNT: RequestFrameIds = RequestFrameIds {
+/// Wire discriminants for `signing_sign_raw_unwatermarked_deprecated_with_legacy_account`.
+pub const SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT: RequestFrameIds = RequestFrameIds {
     request_id: 176,
     response_id: 177,
 };
@@ -808,12 +808,12 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Request(ACCOUNT_RING_VRF_SIGN),
     },
     WireEntry {
-        method: "signing_sign_raw_deprecated_i_will_change_this_later",
-        kind: WireKind::Request(SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER),
+        method: "signing_sign_raw_unwatermarked_deprecated",
+        kind: WireKind::Request(SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED),
     },
     WireEntry {
-        method: "signing_sign_raw_deprecated_i_will_change_this_later_with_legacy_account",
-        kind: WireKind::Request(SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER_WITH_LEGACY_ACCOUNT),
+        method: "signing_sign_raw_unwatermarked_deprecated_with_legacy_account",
+        kind: WireKind::Request(SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT),
     },
     WireEntry {
         method: "system_get_product_context",

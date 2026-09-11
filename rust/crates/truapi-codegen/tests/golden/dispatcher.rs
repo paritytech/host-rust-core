@@ -2341,7 +2341,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignRawRequest = match Decode::decode(&mut &bytes[..]) {
@@ -2357,7 +2357,7 @@ where
                 };
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id);
-                let response: versioned::signing::HostSignRawResponse = match host.sign_raw_deprecated_i_will_change_this_later(&cx, request).await {
+                let response: versioned::signing::HostSignRawResponse = match host.sign_raw_unwatermarked_deprecated(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
                         return Ok(encode_versioned_err_payload(
@@ -2380,7 +2380,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_DEPRECATED_I_WILL_CHANGE_THIS_LATER_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignRawWithLegacyAccountRequest = match Decode::decode(&mut &bytes[..]) {
@@ -2396,7 +2396,7 @@ where
                 };
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id);
-                let response: versioned::signing::HostSignRawWithLegacyAccountResponse = match host.sign_raw_deprecated_i_will_change_this_later_with_legacy_account(&cx, request).await {
+                let response: versioned::signing::HostSignRawWithLegacyAccountResponse = match host.sign_raw_unwatermarked_deprecated_with_legacy_account(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
                         return Ok(encode_versioned_err_payload(

@@ -286,7 +286,7 @@ pub trait Signing: Send + Sync {
     /// const productContext = await truapi.system.getProductContext();
     /// assert(productContext.isOk(), "getProductContext failed:", productContext);
     ///
-    /// const result = await truapi.signing.signRawDeprecatedIWillChangeThisLater({
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecated({
     ///   account: { dotNsIdentifier: productContext.value.productId, derivationIndex: { tag: "Index", value: 0 } },
     ///   payload: {
     ///     tag: "Bytes",
@@ -295,14 +295,14 @@ pub trait Signing: Send + Sync {
     ///     },
     ///   },
     /// });
-    /// assert(result.isOk(), "signRawDeprecatedIWillChangeThisLater failed:", result);
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecated failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
     #[deprecated(
         note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
     )]
     #[wire(request_id = 174, sensitive)]
-    async fn sign_raw_deprecated_i_will_change_this_later(
+    async fn sign_raw_unwatermarked_deprecated(
         &self,
         _cx: &CallContext,
         _request: HostSignRawRequest,
@@ -328,21 +328,21 @@ pub trait Signing: Send + Sync {
     ///   accountsResult.value.accounts[0];
     /// assert(identityAccount, "no legacy accounts available");
     ///
-    /// const result = await truapi.signing.signRawDeprecatedIWillChangeThisLaterWithLegacyAccount({
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecatedWithLegacyAccount({
     ///   signer: identityAccount.publicKey,
     ///   payload: {
     ///     tag: "Bytes",
     ///     value: { bytes: "0x1111111111111111111111111111111111111111111111111111111111111111" },
     ///   },
     /// });
-    /// assert(result.isOk(), "signRawDeprecatedIWillChangeThisLaterWithLegacyAccount failed:", result);
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecatedWithLegacyAccount failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
     #[deprecated(
         note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
     )]
     #[wire(request_id = 176, sensitive)]
-    async fn sign_raw_deprecated_i_will_change_this_later_with_legacy_account(
+    async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
         &self,
         _cx: &CallContext,
         _request: HostSignRawWithLegacyAccountRequest,
