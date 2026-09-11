@@ -988,8 +988,15 @@ async fn connection_lifecycle(
             Ok(WsMessage::Binary(bytes)) => {
                 in_flight.retain(|task| !task.is_finished());
                 let product_runtime = product_runtime.clone();
+                let frame_logger = logger.clone();
                 in_flight.push(tokio::spawn(async move {
-                    let _ = product_runtime.receive_frame(bytes.to_vec()).await;
+                    // A frame the runtime cannot decode is a wire mismatch on
+                    // the peer's side. Report it: dropping it unreported is
+                    // indistinguishable from the peer never having sent it,
+                    // and the peer is left waiting for a response forever.
+                    if let Err(err) = product_runtime.receive_frame(bytes.to_vec()).await {
+                        frame_logger("truapi.ws_bridge.frame_error", &err.to_string());
+                    }
                 }));
             }
             Ok(WsMessage::Text(_)) => {
@@ -1091,7 +1098,6 @@ mod tests {
     use parity_scale_codec::Decode;
     use parity_scale_codec::Encode;
     use truapi::v01;
-    use truapi::versioned::system::HostFeatureSupportedRequest;
     use truapi_platform::{HostInfo, PlatformInfo, ProductContext, SigningHostConfig};
 
     use crate::SigningHostRuntime;
@@ -1244,16 +1250,19 @@ mod tests {
         let response_bytes = rt.block_on(async {
             let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.expect("dial");
 
+            let value = truapi::versioned::system::HostFeatureSupportedRequest::V1(
+                v01::HostFeatureSupportedRequest::Chain {
+                    genesis_hash: vec![0u8; 32],
+                },
+            )
+            .encode();
             let request_frame = ProtocolMessage {
                 request_id: "p:1".into(),
                 payload: Payload {
-                    id: ids.request_id,
-                    value: HostFeatureSupportedRequest::V1(
-                        v01::HostFeatureSupportedRequest::Chain {
-                            genesis_hash: vec![0u8; 32],
-                        },
-                    )
-                    .encode(),
+                    trait_id: ids.trait_id,
+                    method_id: ids.method_id,
+                    message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                    value,
                 },
             };
             ws.send(WsMessage::Binary(request_frame.encode()))
@@ -1273,10 +1282,19 @@ mod tests {
 
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
-        assert_eq!(response.payload.id, ids.response_id);
-        // Wire payload is `Result<Ok, Err>`-shaped:
-        // [Ok disc=0x00][V1 variant 0x00][supported=1]
-        assert_eq!(response.payload.value, vec![0x00, 0x00, 0x01]);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
+        );
+        let expected: Result<
+            truapi::versioned::system::HostFeatureSupportedResponse,
+            truapi::CallError<truapi::versioned::system::HostFeatureSupportedError>,
+        > = Ok(truapi::versioned::system::HostFeatureSupportedResponse::V1(
+            v01::HostFeatureSupportedResponse { supported: true },
+        ));
+        assert_eq!(response.payload.value, expected.encode());
 
         drop(bridge);
     }

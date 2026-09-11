@@ -1658,7 +1658,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1810,7 +1812,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1927,7 +1931,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -1982,7 +1988,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };
@@ -2121,18 +2129,19 @@ mod tests {
             sink.clone(),
         );
         let ids = crate::frame::request_ids("chat_create_room").expect("known Chat request");
-        let request = truapi::versioned::chat::HostChatCreateRoomRequest::V1(
-            v01::HostChatCreateRoomRequest {
-                room_id: "room".into(),
-                name: "Room".into(),
-                icon: String::new(),
-            },
-        );
+        let request = v01::HostChatCreateRoomRequest {
+            room_id: "room".into(),
+            name: "Room".into(),
+            icon: String::new(),
+        };
+        let value = truapi::versioned::chat::HostChatCreateRoomRequest::V1(request).encode();
         let frame = ProtocolMessage {
             request_id: "chat:1".into(),
             payload: Payload {
-                id: ids.request_id,
-                value: request.encode(),
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value,
             },
         };
 
@@ -2141,12 +2150,17 @@ mod tests {
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
-        assert_eq!(response.payload.id, ids.response_id);
-        let expected = crate::frame::encode_versioned_err_payload(
-            truapi::CallError::<truapi::versioned::chat::HostChatCreateRoomError>::Denied,
-            1,
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
         );
-        assert_eq!(response.payload.value, expected);
+        let expected: Result<
+            truapi::versioned::chat::HostChatCreateRoomResponse,
+            truapi::CallError<truapi::versioned::chat::HostChatCreateRoomError>,
+        > = Err(truapi::CallError::Denied);
+        assert_eq!(response.payload.value, expected.encode());
     }
 
     #[test]
@@ -2161,18 +2175,19 @@ mod tests {
             sink.clone(),
         );
         let ids = crate::frame::request_ids("chat_register_bot").expect("known Chat request");
-        let request = truapi::versioned::chat::HostChatRegisterBotRequest::V1(
-            v01::HostChatRegisterBotRequest {
-                bot_id: "bot".into(),
-                name: "Bot".into(),
-                icon: String::new(),
-            },
-        );
+        let request = v01::HostChatRegisterBotRequest {
+            bot_id: "bot".into(),
+            name: "Bot".into(),
+            icon: String::new(),
+        };
+        let value = truapi::versioned::chat::HostChatRegisterBotRequest::V1(request).encode();
         let frame = ProtocolMessage {
             request_id: "chat:bot".into(),
             payload: Payload {
-                id: ids.request_id,
-                value: request.encode(),
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value,
             },
         };
 
@@ -2181,12 +2196,17 @@ mod tests {
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
-        assert_eq!(response.payload.id, ids.response_id);
-        let expected = crate::frame::encode_versioned_err_payload(
-            truapi::CallError::<truapi::versioned::chat::HostChatRegisterBotError>::Denied,
-            1,
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_RESPONSE
         );
-        assert_eq!(response.payload.value, expected);
+        let expected: Result<
+            truapi::versioned::chat::HostChatRegisterBotResponse,
+            truapi::CallError<truapi::versioned::chat::HostChatRegisterBotError>,
+        > = Err(truapi::CallError::Denied);
+        assert_eq!(response.payload.value, expected.encode());
     }
 
     #[test]
@@ -2204,7 +2224,10 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "chat:actions".into(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
+                // No request wrapper for this method: an empty Start payload.
                 value: Vec::new(),
             },
         };
@@ -2215,8 +2238,14 @@ mod tests {
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
         assert_eq!(response.request_id, "chat:actions");
-        assert_eq!(response.payload.id, ids.interrupt_id);
-        assert!(response.payload.value.is_empty());
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.method_id);
+        assert_eq!(
+            response.payload.message_type,
+            crate::frame::MESSAGE_TYPE_INTERRUPT
+        );
+        let expected = Some(truapi::CallError::<truapi::latest::GenericError>::Denied).encode();
+        assert_eq!(response.payload.value, expected);
     }
 
     #[test]
@@ -2241,7 +2270,9 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_START,
                 value: Vec::new(),
             },
         };

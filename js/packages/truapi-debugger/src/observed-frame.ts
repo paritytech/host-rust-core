@@ -77,7 +77,13 @@ export interface ObservedFrame {
   requestId: string;
   /** Wire-table numeric discriminant of the frame's payload. */
   frameId: number;
-  /** Best-effort lifecycle role inferred from the frame id. */
+  /**
+   * The wire's own leg marker (`Payload.messageType`): `Request`/`Start` = 0,
+   * `Response`/`Receive` = 1, `Interrupt` = 2, `Stop` = 3. `-1` for a frame
+   * that failed to decode at all (the `"malformed"` sentinel).
+   */
+  messageType: number;
+  /** Best-effort lifecycle role inferred from the frame id and `messageType`. */
   role: FrameRole;
   /** Encoded SCALE payload length in bytes. */
   byteLength: number;

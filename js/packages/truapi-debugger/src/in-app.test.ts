@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   encodeWireMessage,
+  MESSAGE_TYPE_REQUEST,
+  VersionedHostAccountGetRequest,
   TRUAPI_CODEC_VERSION,
   TRUAPI_WIRE_SCHEMA_HASH,
-  VersionedHostAccountGetRequest,
 } from "@parity/truapi";
-import * as W from "@parity/truapi/wire-table";
+import * as REAL_W from "@parity/truapi/wire-table";
 import { Window } from "happy-dom";
 
 import { createInAppDebugger, type InAppFrameIdentity } from "./in-app.js";
@@ -16,16 +17,65 @@ import {
 } from "./inspector-styles.js";
 import { computeTraceStats, createDebugSession } from "./session.js";
 import { renderOperationRow } from "./trace-render.js";
+import { frameIdOf } from "./wire-debugger.js";
 import { wireTraceToView } from "./trace-view.js";
 
+/**
+ * Test-only convenience view over the generated wire table: gives each entry
+ * per-leg "flat id" properties by encoding `(frameId, messageType)` as one
+ * number (`frameId * 4 + messageType`), so fixtures can address a method's
+ * specific leg by name. `frameBytes()` below decodes a leg id back into a
+ * real `(trait, method)` pair and a `messageType` byte.
+ */
+function legacyIds(table: Record<string, unknown>): Record<string, Record<string, number>> {
+  const legs = {
+    request: ["request", "response"],
+    subscription: ["start", "receive", "interrupt", "stop"],
+  } as const;
+  const out: Record<string, Record<string, number>> = {};
+  for (const [name, entry] of Object.entries(table)) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      !("trait" in entry) ||
+      !("method" in entry) ||
+      !("kind" in entry)
+    ) {
+      continue;
+    }
+    const { trait, method, kind } = entry as {
+      trait: number;
+      method: number;
+      kind: "request" | "subscription";
+    };
+    const base = frameIdOf(trait, method) * 4;
+    const rec: Record<string, number> = {};
+    legs[kind].forEach((leg, i) => {
+      rec[leg] = base + i;
+    });
+    out[name] = rec;
+  }
+  return out;
+}
+
+const W = legacyIds(REAL_W as unknown as Record<string, unknown>);
+
+/** The leg's own payload bytes (`value`), for leg id `legId`. */
 function frameBytes(
-  id: number,
+  legId: number,
   value: number[] = [0],
   requestId = "p:1",
 ): Uint8Array {
+  const frameId = Math.floor(legId / 4);
+  const messageType = legId % 4;
   const r = encodeWireMessage({
     requestId,
-    payload: { id, value: new Uint8Array(value) },
+    payload: {
+      traitId: Math.floor(frameId / 256),
+      methodId: frameId % 256,
+      messageType,
+      value: new Uint8Array(value),
+    },
   });
   if (r.isErr()) throw r.error;
   return r.value;
@@ -44,7 +94,12 @@ function accountGetRequestBytes(requestId = "p:1"): Uint8Array {
   });
   const r = encodeWireMessage({
     requestId,
-    payload: { id: W.ACCOUNT_GET_ACCOUNT.request, value },
+    payload: {
+      traitId: REAL_W.ACCOUNT_GET_ACCOUNT.trait,
+      methodId: REAL_W.ACCOUNT_GET_ACCOUNT.method,
+      messageType: MESSAGE_TYPE_REQUEST,
+      value,
+    },
   });
   if (r.isErr()) throw r.error;
   return r.value;
