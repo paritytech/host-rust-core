@@ -2164,7 +2164,7 @@ impl PairingHost {
             use crate::host_logic::product_manifest::bare_product_label as label;
             let caller = label(&request.calling_product_id);
             if label(&key_handle.dot_ns_identifier) != caller
-                && label(&request.context.product_id) != caller
+                && label(&request.payload.context.product_id) != caller
             {
                 return Err(RingVrfError::NotAllowlisted);
             }
