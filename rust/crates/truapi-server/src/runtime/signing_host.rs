@@ -1573,9 +1573,7 @@ mod tests {
         futures::executor::block_on(
             <StubPlatform as truapi_platform::CoreStorage>::write_core_storage(
                 platform,
-                truapi_platform::CoreStorageKey::ProductManifest {
-                    product_id: owner.to_string(),
-                },
+                crate::runtime::product_manifest::manifest_cache_key(owner),
                 parity_scale_codec::Encode::encode(&entry),
             ),
         )

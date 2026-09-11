@@ -452,6 +452,25 @@ pub(crate) async fn ring_vrf_key_access_granted(
     Err(RingVrfError::NotAllowlisted)
 }
 
+/// Cache key for a product's root manifest.
+///
+/// Keyed by the bare label, which is what the document is actually resolved by:
+/// `fetch_root_manifest` walks `bare_product_label(product_id)` under the host's
+/// TLD, so `peopl.dot`, `app.peopl.dot` and `worker.peopl.dot` are one dotNS
+/// node holding one document. Keying by the full id instead gave each spelling
+/// its own entry, so a caller naming subnames drove a fresh chain resolution and
+/// a fresh durable write per spelling for a document already held, with nothing
+/// bounding how many. The host resolves only against its own network, so the
+/// label alone identifies the node.
+///
+/// Anything seeding this cache must key it the same way or the entry is written
+/// where nothing reads it.
+pub fn manifest_cache_key(product_id: &str) -> CoreStorageKey {
+    CoreStorageKey::ProductManifest {
+        product_id: bare_product_label(product_id).to_string(),
+    }
+}
+
 /// `target`'s root manifest JSON, from cache when it is younger than
 /// [`MANIFEST_TTL_SECS`] and from dotNS otherwise.
 ///
@@ -477,9 +496,7 @@ async fn root_manifest(
     platform: &dyn Platform,
     target: &str,
 ) -> Option<String> {
-    let key = CoreStorageKey::ProductManifest {
-        product_id: target.to_string(),
-    };
+    let key = manifest_cache_key(target);
     let now = current_unix_secs();
     if let Ok(Some(bytes)) = platform.read_core_storage(key.clone()).await
         && let Ok(cached) = CachedManifest::decode(&mut bytes.as_slice())
