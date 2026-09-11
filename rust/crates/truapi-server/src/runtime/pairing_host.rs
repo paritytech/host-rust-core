@@ -2149,10 +2149,7 @@ impl PairingHost {
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         let key_handle = self
-            .require_ring_vrf_key_access(
-                &request.calling_product_id,
-                &request.payload.key_handle,
-            )
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         // A grant lets the caller act with the owner's key in the caller's own
         // context. It does not let it choose whose pseudonym to mint: the
@@ -2167,7 +2164,7 @@ impl PairingHost {
             use crate::host_logic::product_manifest::bare_product_label as label;
             let caller = label(&request.calling_product_id);
             if label(&key_handle.dot_ns_identifier) != caller
-                && label(&request.context.product_id) != caller
+                && label(&request.payload.context.product_id) != caller
             {
                 return Err(RingVrfError::NotAllowlisted);
             }
@@ -2310,10 +2307,7 @@ impl PairingHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         let key_handle = self
-            .require_ring_vrf_key_access(
-                &request.calling_product_id,
-                &request.payload.key_handle,
-            )
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self

@@ -4091,6 +4091,7 @@ fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         test_spawner(),
     );
     let pairing_host = PairingHost::new(services.clone(), host_config);
@@ -4105,18 +4106,20 @@ fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
         &*pairing_host,
         &CallContext::default(),
         &session,
-        crate::runtime::authority::CreateProofAuthorityRequest {
+        crate::host_logic::sso::messages::ProductRequest {
             calling_product_id: "dim2.dot".to_string(),
-            key_handle: v01::ProductAccountId {
-                dot_ns_identifier: "peopl.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Index(0),
+            payload: v01::HostAccountCreateProofRequest {
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                context: v01::ProductProofContext {
+                    product_id: "dim2.dot".to_string(),
+                    suffix: v01::DerivationIndex::Index(0),
+                },
+                ring_location: ring_location_fixture(),
+                message: b"prove me".to_vec(),
             },
-            context: v01::ProductProofContext {
-                product_id: "dim2.dot".to_string(),
-                suffix: v01::DerivationIndex::Index(0),
-            },
-            ring_location: ring_location_fixture(),
-            message: b"prove me".to_vec(),
         },
     ));
     assert_eq!(
@@ -4129,13 +4132,15 @@ fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
         &*pairing_host,
         &CallContext::default(),
         &session,
-        crate::runtime::authority::RingVrfSignAuthorityRequest {
+        crate::host_logic::sso::messages::ProductRequest {
             calling_product_id: "dim2.dot".to_string(),
-            key_handle: v01::ProductAccountId {
-                dot_ns_identifier: "peopl.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Index(0),
+            payload: v01::HostAccountRingVrfSignRequest {
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                message: b"sign me".to_vec(),
             },
-            message: b"sign me".to_vec(),
         },
     ));
     assert_eq!(
@@ -4163,6 +4168,7 @@ fn a_grant_lookup_obeys_the_callers_deadline() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         test_spawner(),
     );
     let pairing_host = PairingHost::new(services.clone(), host_config);

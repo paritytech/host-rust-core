@@ -197,13 +197,6 @@ impl SigningHost {
             [0xcc; 32],
             crate::test_support::test_spawner(),
         );
-        // What `SigningHostRuntime::new` does for a real signing host. Without
-        // it every ring-VRF grant test below runs on a role with no Asset Hub
-        // and passes only because `cache_grant` pre-seeds the manifest cache,
-        // which `root_manifest` serves before it consults the genesis hash — so
-        // the install could be deleted from production and the suite would stay
-        // green. That is the blind spot #660 itself survived in.
-        services.install_asset_hub_genesis_hash([0xcc; 32]);
         Arc::new(Self {
             services,
             platform: platform.clone(),
@@ -918,10 +911,7 @@ impl ProductAuthority for SigningHost {
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
         let key_handle = self
-            .require_ring_vrf_key_access(
-                &request.calling_product_id,
-                &request.payload.key_handle,
-            )
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         // A grant lets the caller act with the owner's key in the caller's own
         // context. It does not let it choose whose pseudonym to mint: the
@@ -936,17 +926,13 @@ impl ProductAuthority for SigningHost {
             use crate::host_logic::product_manifest::bare_product_label as label;
             let caller = label(&request.calling_product_id);
             if label(&key_handle.dot_ns_identifier) != caller
-                && label(&request.context.product_id) != caller
+                && label(&request.payload.context.product_id) != caller
             {
                 return Err(RingVrfError::NotAllowlisted);
             }
         }
         let entropy = self
-            .resolve_ring_vrf_key_for_ring(
-                session,
-                &key_handle,
-                &request.payload.ring_location,
-            )
+            .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
             .await?;
         let candidate = self.ring_vrf_member_candidate(&entropy)?;
         let resolved = self
@@ -1047,10 +1033,7 @@ impl ProductAuthority for SigningHost {
     ) -> Result<Vec<u8>, RingVrfError> {
         self.require_current_session(session)?;
         let key_handle = self
-            .require_ring_vrf_key_access(
-                &request.calling_product_id,
-                &request.payload.key_handle,
-            )
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         let entropy = self
             .resolve_registered_ring_vrf_key(session, &key_handle)
@@ -1751,15 +1734,17 @@ mod tests {
             futures::executor::block_on(authority.create_proof(
                 &CallContext::default(),
                 &session,
-                CreateProofAuthorityRequest {
+                ProductRequest {
                     calling_product_id: caller.to_string(),
-                    key_handle: full_person_key_handle(),
-                    context: v01::ProductProofContext {
-                        product_id: context.to_string(),
-                        suffix: v01::DerivationIndex::Index(0),
+                    payload: v01::HostAccountCreateProofRequest {
+                        key_handle: full_person_key_handle(),
+                        context: v01::ProductProofContext {
+                            product_id: context.to_string(),
+                            suffix: v01::DerivationIndex::Index(0),
+                        },
+                        ring_location: ring.clone(),
+                        message: b"m".to_vec(),
                     },
-                    ring_location: ring.clone(),
-                    message: b"m".to_vec(),
                 },
             ))
         };
@@ -2059,13 +2044,15 @@ mod tests {
         futures::executor::block_on(authority.ring_vrf_sign(
             &CallContext::default(),
             &session,
-            RingVrfSignAuthorityRequest {
+            ProductRequest {
                 calling_product_id: caller.to_string(),
-                key_handle: v01::ProductAccountId {
-                    dot_ns_identifier: handle_owner.to_string(),
-                    derivation_index: v01::DerivationIndex::Index(0),
+                payload: v01::HostAccountRingVrfSignRequest {
+                    key_handle: v01::ProductAccountId {
+                        dot_ns_identifier: handle_owner.to_string(),
+                        derivation_index: v01::DerivationIndex::Index(0),
+                    },
+                    message: b"sign me".to_vec(),
                 },
-                message: b"sign me".to_vec(),
             },
         ))
     }
@@ -2097,10 +2084,12 @@ mod tests {
         futures::executor::block_on(authority.ring_vrf_sign(
             &CallContext::default(),
             &session,
-            RingVrfSignAuthorityRequest {
+            ProductRequest {
                 calling_product_id: caller.to_string(),
-                key_handle: full_person_key_handle(),
-                message: b"sign me".to_vec(),
+                payload: v01::HostAccountRingVrfSignRequest {
+                    key_handle: full_person_key_handle(),
+                    message: b"sign me".to_vec(),
+                },
             },
         ))
     }
@@ -2133,15 +2122,17 @@ mod tests {
         futures::executor::block_on(authority.create_proof(
             &CallContext::default(),
             &session,
-            CreateProofAuthorityRequest {
+            ProductRequest {
                 calling_product_id: "dim2.dot".to_string(),
-                key_handle: full_person_key_handle(),
-                context: v01::ProductProofContext {
-                    product_id: "dim2.dot".to_string(),
-                    suffix: v01::DerivationIndex::Index(0),
+                payload: v01::HostAccountCreateProofRequest {
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: "dim2.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location,
+                    message: b"prove me".to_vec(),
                 },
-                ring_location,
-                message: b"prove me".to_vec(),
             },
         ))
     }
