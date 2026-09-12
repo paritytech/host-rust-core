@@ -909,12 +909,8 @@ impl ConnectionAdapters {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
             permission_status: services.permission_status_host(),
-            chat: Arc::new(ActionChannel::new(
-                "chat is closed for this product connection",
-            )),
-            renderer: Arc::new(ActionChannel::new(
-                "renderer is closed for this product connection",
-            )),
+            chat: Arc::new(ActionChannel::chat()),
+            renderer: Arc::new(ActionChannel::renderer()),
         }
     }
 }
