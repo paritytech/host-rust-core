@@ -198,11 +198,8 @@ interface RuntimeState {
       reject: (error: Error) => void;
     }
   >;
-  pendingChatActions: Map<
-    number,
-    { resolve: () => void; reject: (error: Error) => void }
-  >;
-  pendingRendererActions: Map<
+  /** Host-authored Chat and Renderer actions awaiting the worker's response. */
+  pendingActions: Map<
     number,
     { resolve: () => void; reject: (error: Error) => void }
   >;
@@ -228,8 +225,7 @@ let nextSessionChatIdentityKeyRequestId = 0;
 let nextDeviceEncryptionKeyRequestId = 0;
 let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
-let nextChatActionRequestId = 0;
-let nextRendererActionRequestId = 0;
+let nextActionRequestId = 0;
 let nextRenderId = 0;
 
 function encodePermissionAuthorizationRequest(
@@ -695,8 +691,7 @@ function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingSessionChatIdentityKeys, error);
   rejectAll(state.pendingDeviceEncryptionKeys, error);
   rejectAll(state.pendingProductSubtreePublicKeys, error);
-  rejectAll(state.pendingChatActions, error);
-  rejectAll(state.pendingRendererActions, error);
+  rejectAll(state.pendingActions, error);
   for (const renderId of [...state.renders.keys()]) {
     const sink = takeRender(state, renderId);
     if (sink) reportRenderFailure(sink, error);
@@ -831,8 +826,7 @@ export function createWebWorkerPairingHostRuntime(
       pendingSessionChatIdentityKeys: new Map(),
       pendingProductSubtreePublicKeys: new Map(),
       pendingDeviceEncryptionKeys: new Map(),
-      pendingChatActions: new Map(),
-      pendingRendererActions: new Map(),
+      pendingActions: new Map(),
       renders: new Map(),
       wantedWorkers: new Set(),
       workerDemandListeners: new Set(),
@@ -908,17 +902,9 @@ export function createWebWorkerPairingHostRuntime(
           handleWorkerDemandChanged(state, msg.productId, msg.wanted);
           break;
         case "publishChatActionResponse":
-          settlePending(
-            state.pendingChatActions,
-            msg.requestId,
-            msg.ok
-              ? { ok: true, value: undefined }
-              : { ok: false, error: msg.error },
-          );
-          break;
         case "publishRendererActionResponse":
           settlePending(
-            state.pendingRendererActions,
+            state.pendingActions,
             msg.requestId,
             msg.ok
               ? { ok: true, value: undefined }
@@ -1364,6 +1350,35 @@ function failRendersForCore(
   }
 }
 
+/**
+ * Post one host-authored action to the worker and settle on its response.
+ * Encoding runs before the pending entry exists, so a payload the codec
+ * rejects fails the promise without leaving one behind.
+ */
+function publishAction(
+  state: RuntimeState,
+  core: CoreState,
+  kind: "publishChatAction" | "publishRendererAction",
+  encode: () => Uint8Array,
+): Promise<void> {
+  if (state.disposed || core.disposed) {
+    return Promise.reject(new Error("product connection is closed"));
+  }
+  let action: Uint8Array;
+  try {
+    action = encode();
+  } catch (err) {
+    return Promise.reject(toError(err));
+  }
+  return sendWorkerRequest<void>(
+    state,
+    state.pendingActions,
+    () => nextActionRequestId++,
+    undefined,
+    (requestId) => ({ kind, coreId: core.coreId, requestId, action }),
+  );
+}
+
 function buildProvider(
   state: RuntimeState,
   core: CoreState,
@@ -1450,48 +1465,16 @@ function buildProvider(
       runtime.setLogLevel(level);
     },
     publishChatAction(action: HostChatActionSubscribeItem): Promise<void> {
-      if (state.disposed || core.disposed) {
-        return Promise.reject(new Error("product connection is closed"));
-      }
-      let encoded: Uint8Array;
-      try {
-        encoded = HostChatActionSubscribeItemCodec.enc(action);
-      } catch (err) {
-        return Promise.reject(toError(err));
-      }
-      const requestId = nextChatActionRequestId++;
-      return new Promise((resolve, reject) => {
-        state.pendingChatActions.set(requestId, { resolve, reject });
-        state.worker.postMessage({
-          kind: "publishChatAction",
-          coreId: core.coreId,
-          requestId,
-          action: encoded,
-        } satisfies MainToWorker);
-      });
+      return publishAction(state, core, "publishChatAction", () =>
+        HostChatActionSubscribeItemCodec.enc(action),
+      );
     },
     publishRendererAction(
       item: HostRendererActionSubscribeItem,
     ): Promise<void> {
-      if (state.disposed || core.disposed) {
-        return Promise.reject(new Error("product connection is closed"));
-      }
-      let encoded: Uint8Array;
-      try {
-        encoded = HostRendererActionSubscribeItemCodec.enc(item);
-      } catch (err) {
-        return Promise.reject(toError(err));
-      }
-      const requestId = nextRendererActionRequestId++;
-      return new Promise((resolve, reject) => {
-        state.pendingRendererActions.set(requestId, { resolve, reject });
-        state.worker.postMessage({
-          kind: "publishRendererAction",
-          coreId: core.coreId,
-          requestId,
-          item: encoded,
-        } satisfies MainToWorker);
-      });
+      return publishAction(state, core, "publishRendererAction", () =>
+        HostRendererActionSubscribeItemCodec.enc(item),
+      );
     },
     render(request, sink) {
       if (state.disposed || core.disposed) {

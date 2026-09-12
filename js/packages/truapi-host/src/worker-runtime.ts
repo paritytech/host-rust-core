@@ -28,9 +28,12 @@ import type {
   WorkerTransition,
 } from "./wasm-module.js";
 import { errorMessage } from "./error.js";
-import { handlePublishChatAction } from "./worker-chat.js";
 import {
-  handlePublishRendererAction,
+  CHAT_ACTION_ENTRY_POINT,
+  RENDERER_ACTION_ENTRY_POINT,
+  handlePublishAction,
+} from "./worker-actions.js";
+import {
   handleRenderStart,
   stopRender,
   stopRendersForCore,
@@ -842,7 +845,8 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       break;
     }
     case "publishChatAction":
-      handlePublishChatAction(
+      handlePublishAction(
+        CHAT_ACTION_ENTRY_POINT,
         cores.get(msg.coreId),
         postToMain,
         msg.coreId,
@@ -851,12 +855,13 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       );
       break;
     case "publishRendererAction":
-      handlePublishRendererAction(
+      handlePublishAction(
+        RENDERER_ACTION_ENTRY_POINT,
         cores.get(msg.coreId),
         postToMain,
         msg.coreId,
         msg.requestId,
-        msg.item,
+        msg.action,
       );
       break;
     case "renderStart":
