@@ -1196,15 +1196,15 @@ impl ProductRuntimeControl {
             transport,
             request,
         )
-        .map(|item| {
+        .map(move |item| {
+            // The reference the stream owns, kept alive by this closure and
+            // released when the host drops the subscription.
+            let _reference = &reference;
             item.map(|item| match item {
                 truapi::versioned::renderer::ProductRendererRenderItem::V1(node) => node,
             })
         });
-        Ok(truapi::Subscription::new(WorkerScopedStream {
-            inner: Box::pin(stream),
-            _reference: reference,
-        }))
+        Ok(truapi::Subscription::new(stream))
     }
 }
 
@@ -1224,30 +1224,6 @@ impl WorkerReference {
 impl Drop for WorkerReference {
     fn drop(&mut self) {
         self.runtime.release_worker_reference();
-    }
-}
-
-/// Render stream that owns the worker reference its body's product needs, so
-/// the reference ends when the host stops reading the stream.
-struct WorkerScopedStream {
-    inner: core::pin::Pin<
-        Box<
-            dyn futures::Stream<
-                    Item = Result<v01::RendererNode, truapi::CallError<v01::GenericError>>,
-                > + Send,
-        >,
-    >,
-    _reference: WorkerReference,
-}
-
-impl futures::Stream for WorkerScopedStream {
-    type Item = Result<v01::RendererNode, truapi::CallError<v01::GenericError>>;
-
-    fn poll_next(
-        self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Option<Self::Item>> {
-        self.get_mut().inner.as_mut().poll_next(cx)
     }
 }
 
