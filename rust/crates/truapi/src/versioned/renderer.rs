@@ -33,7 +33,10 @@ mod tests {
         });
         let bytes = request.encode();
         // V1 envelope, ChatMessage variant, then the three strings and payload.
-        assert_eq!(&bytes[..2], &[0, 0]);
+        assert_eq!(
+            hex::encode(&bytes),
+            "000010726f6f6d246d6573736167652d3110766f7465080102"
+        );
         assert_eq!(
             ProductRendererRenderRequest::decode(&mut bytes.as_slice()).unwrap(),
             request
@@ -50,7 +53,9 @@ mod tests {
             payload: Vec::new(),
         });
         let bytes = item.encode();
-        assert_eq!(*bytes.last().unwrap(), 0);
+        // V1 envelope, PocketCard variant, the card and action ids, then the
+        // empty payload's length prefix.
+        assert_eq!(hex::encode(&bytes), "00021c6c6f79616c747910766f746500");
         assert_eq!(
             HostRendererActionSubscribeItem::decode(&mut bytes.as_slice()).unwrap(),
             item
