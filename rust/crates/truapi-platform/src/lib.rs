@@ -2856,6 +2856,28 @@ pub trait PreimageHost: Send + Sync {
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, GenericError>>;
 }
 
+/// A purse a host can disclose and fund (RFC 0006), installed once at startup
+/// like [`PermissionStatusHost`]. Without one the core answers products as a
+/// host with no payment surface. Balances are in the host's single payment
+/// asset.
+#[async_trait]
+pub trait PaymentPurse: Send + Sync {
+    /// The current balance of `purse` (`None` = main purse) first, then every
+    /// change, until the stream is dropped.
+    fn subscribe_balance(
+        &self,
+        purse: Option<truapi::v01::CoinPaymentPurseId>,
+    ) -> BoxStream<'static, truapi::v01::Balance>;
+
+    /// Move `amount` from `source` into `purse` (`None` = main purse).
+    async fn top_up(
+        &self,
+        purse: Option<truapi::v01::CoinPaymentPurseId>,
+        amount: truapi::v01::Balance,
+        source: truapi::v01::PaymentTopUpSource,
+    ) -> Result<(), truapi::v01::HostPaymentTopUpError>;
+}
+
 /// Host-implemented adapter through which product Chat calls reach host
 /// storage and UI. Optional: a host that omits it leaves Chat requests
 /// answered `Unsupported`. See [`OptionalPlatform`].

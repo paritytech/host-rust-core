@@ -1,7 +1,10 @@
 //! Product-facing payment capability adapters.
 //!
-//! Payment returns typed domain errors; CoinPayment returns Unsupported.
+//! Payment serves the purse the host installed (`RuntimeServices::payment_purse`)
+//! and answers with typed domain errors when there is none; CoinPayment
+//! returns Unsupported.
 
+use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::{CoinPayment, Payment};
 use truapi::versioned::coin_payment::{
@@ -133,14 +136,23 @@ impl Payment for ProductRuntimeHost {
     async fn balance_subscribe(
         &self,
         _cx: &CallContext,
-        _request: HostPaymentBalanceSubscribeRequest,
+        request: HostPaymentBalanceSubscribeRequest,
     ) -> Result<
         Subscription<HostPaymentBalanceSubscribeItem>,
         CallError<HostPaymentBalanceSubscribeError>,
     > {
-        Err(CallError::Domain(HostPaymentBalanceSubscribeError::V1(
-            v01::HostPaymentBalanceSubscribeError::PermissionDenied,
-        )))
+        let Some(purse) = self.services.payment_purse() else {
+            return Err(CallError::Domain(HostPaymentBalanceSubscribeError::V1(
+                v01::HostPaymentBalanceSubscribeError::PermissionDenied,
+            )));
+        };
+        let HostPaymentBalanceSubscribeRequest::V1(v01::HostPaymentBalanceSubscribeRequest {
+            purse: purse_id,
+        }) = request;
+        let stream = purse.subscribe_balance(purse_id).map(|available| {
+            HostPaymentBalanceSubscribeItem::V1(v01::HostPaymentBalanceSubscribeItem { available })
+        });
+        Ok(Subscription::new(Box::pin(stream)))
     }
 
     #[instrument(skip_all, fields(runtime.method = "payment.request"))]
@@ -176,12 +188,24 @@ impl Payment for ProductRuntimeHost {
     async fn top_up(
         &self,
         _cx: &CallContext,
-        _request: HostPaymentTopUpRequest,
+        request: HostPaymentTopUpRequest,
     ) -> Result<HostPaymentTopUpResponse, CallError<HostPaymentTopUpError>> {
-        Err(CallError::Domain(HostPaymentTopUpError::V1(
-            v01::HostPaymentTopUpError::Unknown {
-                reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
-            },
-        )))
+        let Some(purse) = self.services.payment_purse() else {
+            return Err(CallError::Domain(HostPaymentTopUpError::V1(
+                v01::HostPaymentTopUpError::Unknown {
+                    reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
+                },
+            )));
+        };
+        let HostPaymentTopUpRequest::V1(v01::HostPaymentTopUpRequest {
+            into,
+            amount,
+            source,
+        }) = request;
+        purse
+            .top_up(into, amount, source)
+            .await
+            .map(|()| HostPaymentTopUpResponse::V1)
+            .map_err(|error| CallError::Domain(HostPaymentTopUpError::V1(error)))
     }
 }

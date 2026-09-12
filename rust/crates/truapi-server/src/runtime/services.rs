@@ -14,7 +14,7 @@ use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
-use truapi_platform::{HostInfo, JsonRpcConnection, PermissionStatusHost, Platform};
+use truapi_platform::{HostInfo, JsonRpcConnection, PaymentPurse, PermissionStatusHost, Platform};
 
 /// Upper bound on the in-core preimage cache. The cache is a bridge until
 /// content propagates to the lookup backend, not a store, so it stays small.
@@ -37,6 +37,9 @@ pub(crate) struct RuntimeServices {
     /// startup by a host that can read it. Unset leaves device grants
     /// resolving from stored state alone.
     permission_status: OnceLock<Arc<dyn PermissionStatusHost>>,
+    /// Host purse behind the RFC 0006 Payment surface, installed once at
+    /// startup by a host that has one. Unset leaves payments unsupported.
+    payment_purse: OnceLock<Arc<dyn PaymentPurse>>,
     /// Asset Hub the dotNS contracts are deployed on, installed once at startup
     /// by the host that knows its chain configuration. Unset leaves every
     /// manifest unresolvable, so no cross-product grant is honoured.
@@ -90,6 +93,7 @@ impl RuntimeServices {
             host_info,
             chat_platform: None,
             permission_status: OnceLock::new(),
+            payment_purse: OnceLock::new(),
             asset_hub_chain_genesis_hash: OnceLock::new(),
             chain,
             statement_store,
@@ -138,6 +142,17 @@ impl RuntimeServices {
         host: Arc<dyn PermissionStatusHost>,
     ) -> bool {
         self.permission_status.set(host).is_ok()
+    }
+
+    /// Install the host's payment purse. Set-once, like the permission-status
+    /// adapter. Returns whether this call installed it.
+    pub(crate) fn install_payment_purse(&self, purse: Arc<dyn PaymentPurse>) -> bool {
+        self.payment_purse.set(purse).is_ok()
+    }
+
+    /// The host's payment purse, when one is installed.
+    pub(crate) fn payment_purse(&self) -> Option<Arc<dyn PaymentPurse>> {
+        self.payment_purse.get().cloned()
     }
 
     /// Records the Asset Hub the dotNS contracts live on. Returns false when a
