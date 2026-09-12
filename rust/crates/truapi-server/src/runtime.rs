@@ -23,6 +23,7 @@ pub(crate) mod login_failure;
 mod pairing_host;
 pub(crate) mod product_manifest;
 mod product_subtree;
+mod renderer;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;
@@ -53,6 +54,7 @@ use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
+pub(crate) use renderer::renderer_access_for;
 pub(crate) use services::RuntimeServices;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
@@ -965,17 +967,12 @@ impl ProductRuntimeHost {
         self.chat.publish(action)
     }
 
-    /// Renderer access policy for this connection: only a Worker execution with
-    /// an active session draws bodies or receives their actions.
+    /// Renderer access policy for this connection; see [`renderer_access_for`].
     pub(crate) fn renderer_access(&self) -> Result<(), crate::host_core::ProductRuntimeError> {
-        let is_worker =
-            self.product.execution_kind == truapi_platform::ProductExecutionKind::Worker;
-        let has_session = self.authority.session_state().current().is_some();
-        if is_worker && has_session {
-            Ok(())
-        } else {
-            Err(crate::host_core::ProductRuntimeError::Denied)
-        }
+        renderer_access_for(
+            self.product.execution_kind,
+            self.authority.session_state().current().is_some(),
+        )
     }
 
     /// End the renderer action stream this connection's product is reading.

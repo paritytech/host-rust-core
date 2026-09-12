@@ -1035,12 +1035,10 @@ impl NativeProductExecution {
         if self.closed.load(Ordering::Acquire) {
             return Err(crate::ProductRuntimeError::Closed);
         }
-        let is_worker = self.product.execution_kind == ProductExecutionKind::Worker;
-        if is_worker && self.runtime.has_active_session() {
-            Ok(())
-        } else {
-            Err(crate::ProductRuntimeError::Denied)
-        }
+        crate::runtime::renderer_access_for(
+            self.product.execution_kind,
+            self.runtime.has_active_session(),
+        )
     }
 
     #[cfg(feature = "ws-bridge")]
