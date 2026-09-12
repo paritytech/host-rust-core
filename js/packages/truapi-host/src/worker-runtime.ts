@@ -23,8 +23,10 @@ import {
 } from "./worker-permission-authorization.js";
 import type {
   WasmModuleShape,
+  WorkerHostRuntime,
   WorkerPairingHostRuntime,
   WorkerProductRuntime,
+  WorkerSigningHostRuntime,
 } from "./wasm-module.js";
 import { errorMessage } from "./error.js";
 import {
@@ -613,7 +615,7 @@ function buildCoreCallbacks(coreId: number) {
   };
 }
 
-let runtime: WorkerPairingHostRuntime | null = null;
+let runtime: WorkerHostRuntime | null = null;
 const cores = new Map<number, WorkerProductRuntime>();
 // Outstanding receiveFrame calls per core. wasm-bindgen holds a borrow of the
 // core for the whole duration of an async method, so `free()` throws while one
@@ -622,6 +624,18 @@ const inFlightFrames = new Map<number, Set<Promise<void>>>();
 /** Live custom-message render subscriptions, keyed by main-thread render id. */
 const renders: RenderSubscriptions = new Map();
 let wasm: WasmModuleShape | null = null;
+
+function isPairingRuntime(
+  candidate: WorkerHostRuntime,
+): candidate is WorkerPairingHostRuntime {
+  return "cancelPairing" in candidate;
+}
+
+function isSigningRuntime(
+  candidate: WorkerHostRuntime,
+): candidate is WorkerSigningHostRuntime {
+  return "activateLocalSession" in candidate;
+}
 
 (async () => {
   try {
@@ -661,10 +675,11 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         });
       }
       try {
-        runtime = new wasm.WasmPairingHostRuntime(
-          buildRawCallbacks(msg.capabilities),
-          msg.hostConfig,
-        );
+        const callbacks = buildRawCallbacks(msg.capabilities);
+        runtime =
+          msg.runtimeKind === "signing"
+            ? new wasm.WasmSigningHostRuntime(callbacks, msg.hostConfig)
+            : new wasm.WasmPairingHostRuntime(callbacks, msg.hostConfig);
         postToMain({ kind: "ready", schema: coreWireSchemaHash(wasm) });
       } catch (err) {
         postToMain({ kind: "fatalError", error: `init: ${errorMessage(err)}` });
@@ -704,7 +719,9 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       void handleDisconnectSession(msg.requestId);
       break;
     case "cancelPairing":
-      runtime?.cancelPairing();
+      if (runtime && isPairingRuntime(runtime)) {
+        runtime.cancelPairing();
+      }
       break;
     case "getSessionChatIdentityKey":
       handleGetSessionChatIdentityKey(msg.requestId);
@@ -720,13 +737,18 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       );
       break;
     case "notifySessionStoreChanged":
-      runtime?.notifySessionStoreChanged();
+      if (runtime && isPairingRuntime(runtime)) {
+        runtime.notifySessionStoreChanged();
+      }
       break;
     case "activateStoredSession":
       void handleSessionActivation(
         msg.requestId,
         "activateStoredSession",
-        (rt) => rt.activateStoredSession(),
+        (rt) =>
+          isPairingRuntime(rt)
+            ? rt.activateStoredSession()
+            : Promise.reject(new Error("pairing runtime is not active")),
       );
       break;
     case "activateExternalSession": {
@@ -734,15 +756,44 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       void handleSessionActivation(
         msg.requestId,
         "activateExternalSession",
-        (rt) => rt.activateExternalSession(blob),
+        (rt) =>
+          isPairingRuntime(rt)
+            ? rt.activateExternalSession(blob)
+            : Promise.reject(new Error("pairing runtime is not active")),
       );
       break;
     }
     case "resetSessionState":
       void handleSessionActivation(msg.requestId, "resetSessionState", (rt) =>
-        rt.resetSessionState(),
+        isPairingRuntime(rt)
+          ? rt.resetSessionState()
+          : Promise.reject(new Error("pairing runtime is not active")),
       );
       break;
+    case "activateLocalSession": {
+      const { secret } = msg;
+      void handleSessionActivation(
+        msg.requestId,
+        "activateLocalSession",
+        (rt) =>
+          isSigningRuntime(rt)
+            ? rt.activateLocalSession(secret)
+            : Promise.reject(new Error("signing runtime is not active")),
+      );
+      break;
+    }
+    case "activateLocalSessionWithIdentity": {
+      const { secret, liteUsername } = msg;
+      void handleSessionActivation(
+        msg.requestId,
+        "activateLocalSessionWithIdentity",
+        (rt) =>
+          isSigningRuntime(rt)
+            ? rt.activateLocalSessionWithIdentity(secret, liteUsername)
+            : Promise.reject(new Error("signing runtime is not active")),
+      );
+      break;
+    }
     case "getPermissionAuthorizationStatus":
       void handleGetPermissionAuthorizationStatus(
         runtime,
@@ -888,7 +939,7 @@ async function disposeCore(coreId: number): Promise<void> {
 async function handleSessionActivation(
   requestId: number,
   label: string,
-  activate: (runtime: WorkerPairingHostRuntime) => Promise<void>,
+  activate: (runtime: WorkerHostRuntime) => Promise<void>,
 ): Promise<void> {
   if (!runtime) {
     postToMain({

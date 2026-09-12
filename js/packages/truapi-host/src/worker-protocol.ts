@@ -60,6 +60,7 @@ export type MainToWorker =
       kind: "init";
       logLevel: LogLevel;
       hostConfig: unknown;
+      runtimeKind?: "pairing" | "signing";
       /**
        * Optional capabilities the main-thread host serves. The worker proxies
        * only these, so the core sees the same capability set on both sides of
@@ -80,6 +81,17 @@ export type MainToWorker =
   | { kind: "activateStoredSession"; requestId: number }
   | { kind: "activateExternalSession"; requestId: number; blob: Uint8Array }
   | { kind: "resetSessionState"; requestId: number }
+  | {
+      kind: "activateLocalSession";
+      requestId: number;
+      secret: Uint8Array;
+    }
+  | {
+      kind: "activateLocalSessionWithIdentity";
+      requestId: number;
+      secret: Uint8Array;
+      liteUsername?: string;
+    }
   | {
       kind: "getPermissionAuthorizationStatus";
       productId: string;

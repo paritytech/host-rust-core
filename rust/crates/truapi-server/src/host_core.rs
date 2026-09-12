@@ -710,6 +710,73 @@ impl SigningHostRuntime {
             .map_err(ring_vrf_admin_error)
     }
 
+    /// Read the active local session's X25519 chat identity private key.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.session_chat_identity_key"))]
+    pub fn session_chat_identity_key(&self) -> Option<[u8; 32]> {
+        self.signing_host
+            .session_state()
+            .current()?
+            .identity_chat_private_key
+    }
+
+    /// Read this browser's X25519 encryption secret, generating and persisting
+    /// it on first read.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.device_encryption_key"))]
+    pub async fn device_encryption_key(&self) -> Result<[u8; 32], v01::GenericError> {
+        self.services
+            .device_encryption_secret()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Resolve `product_id`'s hard-subtree public key from the active local
+    /// signing session.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_subtree_public_key"))]
+    pub async fn product_subtree_public_key(
+        &self,
+        product_id: &str,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<[u8; 32]>, v01::GenericError> {
+        product_subtree_public_key(self.signing_host.as_ref(), product_id, timeout_ms).await
+    }
+
+    /// Read a stored permission authorization status without prompting.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.permission_authorization_status", product_id = %product_id))]
+    pub async fn permission_authorization_status(
+        &self,
+        product_id: &str,
+        request: PermissionAuthorizationRequest,
+    ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
+        self.product_admin(product_context(product_id)?)
+            .permission_authorization_status(request)
+            .await
+    }
+
+    /// Read stored permission authorization statuses without prompting.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.permission_authorization_statuses", product_id = %product_id))]
+    pub async fn permission_authorization_statuses(
+        &self,
+        product_id: &str,
+        requests: Vec<PermissionAuthorizationRequest>,
+    ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
+        self.product_admin(product_context(product_id)?)
+            .permission_authorization_statuses(requests)
+            .await
+    }
+
+    /// Update one stored permission authorization status.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_permission_authorization_status", product_id = %product_id))]
+    pub async fn set_permission_authorization_status(
+        &self,
+        product_id: &str,
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus,
+    ) -> Result<(), v01::GenericError> {
+        self.product_admin(product_context(product_id)?)
+            .set_permission_authorization_status(request, status)
+            .await
+    }
+
     /// Activate a wallet-local session from host-held secret material (raw
     /// BIP-39 entropy).
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.activate_local_session"))]
