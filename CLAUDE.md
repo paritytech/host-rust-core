@@ -196,7 +196,7 @@ When the Rust trait surface changes, rerun:
 ```
 
 That will repopulate the ignored generated TS under `js/packages/truapi/src/generated/`,
-`js/packages/truapi/src/playground/codegen/`, and `js/packages/truapi/test/generated/examples/`.
+`js/packages/truapi/src/playground/codegen/`, and `playground/test/generated/examples/`.
 After regenerating, rebuild the client and refresh the playground's link copy:
 
 ```bash
