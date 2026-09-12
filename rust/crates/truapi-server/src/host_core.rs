@@ -2146,6 +2146,70 @@ mod tests {
     }
 
     #[test]
+    fn worker_connection_renders_and_receives_actions_without_a_session() {
+        // Renderer is gated on Worker execution alone: a host drawing a body
+        // while signed out still reaches the product, and the action stream it
+        // opens is live rather than one-shot interrupted.
+        let (host_config, _) = runtime_config("worker.dot");
+        let product = ProductContext::new_with_execution(
+            "worker.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("worker product context is valid");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+        let host = runtime.admin.product_runtime().clone();
+        assert!(
+            host.test_session_state().current().is_none(),
+            "the fixture must be signed out for this test to mean anything"
+        );
+
+        let mut actions = futures::executor::block_on(truapi::api::Renderer::action_subscribe(
+            host.as_ref(),
+            &CallContext::with_request_id("renderer:1".to_string()),
+        ));
+
+        let _render = runtime
+            .control()
+            .render(v01::ProductRendererRenderRequest {
+                context: v01::RenderContext::PocketCard {
+                    card_id: "loyalty".into(),
+                },
+                payload: vec![],
+            })
+            .expect("a signed-out Worker connection may render");
+
+        let published = v01::HostRendererActionSubscribeItem {
+            context: v01::RenderContext::PocketCard {
+                card_id: "loyalty".into(),
+            },
+            action_id: "vote".into(),
+            payload: vec![],
+        };
+        runtime
+            .control()
+            .publish_renderer_action(published.clone())
+            .expect("a signed-out Worker connection may receive actions");
+
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        let delivered = match actions.poll_next_unpin(&mut cx) {
+            core::task::Poll::Ready(Some(item)) => item,
+            other => panic!("a published renderer action must be ready, got {other:?}"),
+        };
+        let Ok(truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(delivered)) =
+            delivered
+        else {
+            panic!("expected a renderer action item")
+        };
+        assert_eq!(delivered, published);
+    }
+
+    #[test]
     fn app_connection_rejects_publishing_a_renderer_action() {
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
