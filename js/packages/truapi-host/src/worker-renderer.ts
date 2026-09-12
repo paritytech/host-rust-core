@@ -53,7 +53,8 @@ export function handlePublishRendererAction(
 
 /**
  * Open one render stream on the core and forward its items to the main thread.
- * Exactly one terminal is posted per render.
+ * Exactly one terminal is posted per render: the core rejects a request it
+ * cannot start by throwing, and otherwise delivers the terminal asynchronously.
  */
 export function handleRenderStart(
   core: WorkerProductRuntime | undefined,
@@ -71,31 +72,20 @@ export function handleRenderStart(
     });
     return;
   }
-  let settled = false;
   try {
     const subscription = core.render(
       request,
       (node) => postToMain({ kind: "renderItem", renderId, node }),
       () => {
-        settled = true;
         stopRender(renders, renderId);
         postToMain({ kind: "renderComplete", renderId });
       },
       (reason) => {
-        settled = true;
         stopRender(renders, renderId);
         postToMain({ kind: "renderError", renderId, error: reason });
       },
     );
-    // A terminal fired synchronously inside `core.render`, before the
-    // subscription existed to register: `stopRender` above found nothing to
-    // cancel, so free the subscription directly instead of registering it.
-    if (settled) {
-      subscription.cancel();
-      subscription.free();
-    } else {
-      renders.set(renderId, { coreId, subscription });
-    }
+    renders.set(renderId, { coreId, subscription });
   } catch (err) {
     postToMain({
       kind: "renderError",
