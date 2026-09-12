@@ -968,14 +968,6 @@ impl ProductRuntimeHost {
         renderer_access_for(self.product.execution_kind)
     }
 
-    /// Renderer access for this connection, mapped onto a wire call error.
-    fn renderer_platform<E>(&self) -> Result<(), CallError<E>> {
-        self.renderer_access().map_err(|error| match error {
-            crate::host_core::ProductRuntimeError::Denied => CallError::Denied,
-            _ => CallError::Unsupported,
-        })
-    }
-
     /// Take one core-held reference on this connection's product worker, for
     /// a body the product is drawing. Pair every call with one
     /// [`Self::release_worker_reference`].
@@ -1120,8 +1112,8 @@ impl Renderer for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
     ) -> Subscription<HostRendererActionSubscribeItem, CallError<GenericError>> {
-        if let Err(error) = self.renderer_platform::<GenericError>() {
-            return Subscription::interrupted(error);
+        if self.renderer_access().is_err() {
+            return Subscription::interrupted(CallError::Denied);
         }
         self.renderer.subscribe()
     }
