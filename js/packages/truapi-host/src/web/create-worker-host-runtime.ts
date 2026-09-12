@@ -1500,12 +1500,18 @@ function buildProvider(
         onComplete: () => sink.onComplete?.(),
         onError: (error) => sink.onError?.(error),
       });
-      state.worker.postMessage({
-        kind: "renderStart",
-        coreId: core.coreId,
-        renderId,
-        request: encoded,
-      } satisfies MainToWorker);
+      try {
+        state.worker.postMessage({
+          kind: "renderStart",
+          coreId: core.coreId,
+          renderId,
+          request: encoded,
+        } satisfies MainToWorker);
+      } catch (err) {
+        const failed = takeRender(state, renderId);
+        if (failed) reportRenderFailure(failed, err);
+        return () => {};
+      }
       return () => {
         if (!takeRender(state, renderId)) return;
         state.worker.postMessage({
