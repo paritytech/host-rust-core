@@ -1013,6 +1013,28 @@ impl ProductAuthority for SigningHost {
     ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
         self.require_current_session(session)
             .map_err(|_| ProductDeviceChatAuthorityError::Disconnected)?;
+        let request = match request {
+            ProductDeviceChatAuthorityRequest::SignRequestProof {
+                calling_product_id,
+                product_account_id,
+                payload,
+            } => {
+                if product_account_id.dot_ns_identifier != calling_product_id {
+                    return Err(ProductDeviceChatAuthorityError::Unavailable(
+                        "product account does not belong to the calling product".to_string(),
+                    ));
+                }
+                let keypair = self.product_keypair(&product_account_id).map_err(|error| {
+                    ProductDeviceChatAuthorityError::Unavailable(error.to_string())
+                })?;
+                let signature = keypair
+                    .secret
+                    .sign_simple(SR25519_SIGNING_CONTEXT, &payload, &keypair.public)
+                    .to_bytes();
+                return Ok(v01::HostProductDeviceChatResponse::RequestProofSigned { signature });
+            }
+            request => request,
+        };
         let entropy = self
             .root_entropy()
             .map_err(|error| ProductDeviceChatAuthorityError::Unavailable(error.to_string()))?;
@@ -2656,6 +2678,57 @@ mod tests {
                 )
                 .is_err(),
             "payload was not double-wrapped",
+        );
+    }
+
+    #[test]
+    fn product_chat_request_proof_signs_unframed_payload() {
+        let (services, activation) = signing_runtime_with_platform(Arc::new(StubPlatform {
+            identity_disclosure_confirmed: true,
+            ..StubPlatform::default()
+        }));
+        futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let runtime = product_runtime(services, activation);
+        let cx = CallContext::default();
+        let payload = b"canonical chat request proof".to_vec();
+        let request = truapi::versioned::account::HostProductDeviceChatRequest::V1(
+            v01::HostProductDeviceChatRequest::SignRequestProof {
+                product_account_id: v01::ProductAccountId {
+                    dot_ns_identifier: "myapp.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                payload: payload.clone(),
+            },
+        );
+        let response = futures::executor::block_on(runtime.product_device_chat(&cx, request))
+            .expect("Chat request proof signing succeeds");
+        let truapi::versioned::account::HostProductDeviceChatResponse::V1(
+            v01::HostProductDeviceChatResponse::RequestProofSigned { signature },
+        ) = response
+        else {
+            panic!("unexpected Chat response");
+        };
+        let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
+        let signature = schnorrkel::Signature::from_bytes(&signature).expect("64-byte signature");
+        assert!(
+            keypair
+                .public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &payload, &signature)
+                .is_ok(),
+            "signature verifies over the canonical unframed payload",
+        );
+        assert!(
+            keypair
+                .public
+                .verify_simple(
+                    SR25519_SIGNING_CONTEXT,
+                    b"<Bytes>canonical chat request proof</Bytes>",
+                    &signature,
+                )
+                .is_err(),
+            "Chat proof signing never applies wallet-message framing",
         );
     }
 

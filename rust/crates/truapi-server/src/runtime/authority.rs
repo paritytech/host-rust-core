@@ -268,6 +268,11 @@ pub(crate) enum ProductDeviceChatAuthorityRequest {
         cipher_suite: HostProductDeviceChatCipherSuite,
         combined_ciphertext: Vec<u8>,
     },
+    SignRequestProof {
+        calling_product_id: String,
+        product_account_id: ProductAccountId,
+        payload: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,6 +553,12 @@ pub(super) fn execute_product_device_chat(
             peer_chat_public_key,
             ..
         } => *peer_chat_public_key,
+        ProductDeviceChatAuthorityRequest::SignRequestProof { .. } => {
+            return Err(ProductDeviceChatAuthorityError::Unavailable(
+                "Chat request proof signing must be handled by the product signing authority"
+                    .to_string(),
+            ));
+        }
     };
     if !is_canonical_x25519_public_key(&peer_public_key) {
         return Err(ProductDeviceChatAuthorityError::InvalidPeerKey);
@@ -675,6 +686,12 @@ pub(super) fn execute_product_device_chat(
                 )
                 .map_err(|_| ProductDeviceChatAuthorityError::InvalidCiphertext)?;
             Ok(HostProductDeviceChatResponse::Opened { plaintext })
+        }
+        ProductDeviceChatAuthorityRequest::SignRequestProof { .. } => {
+            Err(ProductDeviceChatAuthorityError::Unavailable(
+                "Chat request proof signing must be handled by the product signing authority"
+                    .to_string(),
+            ))
         }
     };
 

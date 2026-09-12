@@ -366,6 +366,13 @@ pub enum SsoProductDeviceChatOperation {
         /// Nonce-prefixed ChaCha20-Poly1305 ciphertext and tag.
         combined_ciphertext: Vec<u8>,
     },
+    /// Sign a canonical Chat first-contact proof payload as the product device.
+    SignRequestProof {
+        /// Product account index to derive on the signing host.
+        derivation_index: v01::DerivationIndex,
+        /// Canonical SCALE-encoded Chat request proof payload.
+        payload: Vec<u8>,
+    },
 }
 
 /// Product-device Chat v2 response returned by the Account Holder.

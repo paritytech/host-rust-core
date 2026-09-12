@@ -600,6 +600,17 @@ impl SigningHostSsoService {
                 cipher_suite,
                 combined_ciphertext,
             },
+            SsoProductDeviceChatOperation::SignRequestProof {
+                derivation_index,
+                payload,
+            } => ProductDeviceChatAuthorityRequest::SignRequestProof {
+                product_account_id: api::ProductAccountId {
+                    dot_ns_identifier: calling_product_id.clone(),
+                    derivation_index,
+                },
+                calling_product_id,
+                payload,
+            },
         };
         self.signing_host
             .product_device_chat(&cx.call, &cx.session, authority_request)

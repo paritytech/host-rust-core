@@ -543,6 +543,17 @@ impl PairingHost {
                     combined_ciphertext,
                 },
             ),
+            ProductDeviceChatAuthorityRequest::SignRequestProof {
+                calling_product_id,
+                product_account_id,
+                payload,
+            } => (
+                calling_product_id,
+                SsoProductDeviceChatOperation::SignRequestProof {
+                    derivation_index: product_account_id.derivation_index,
+                    payload,
+                },
+            ),
         };
         self.call(
             cx,

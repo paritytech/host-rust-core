@@ -342,6 +342,9 @@ impl Account for ProductRuntimeHost {
             }
             | v01::HostProductDeviceChatRequest::Open {
                 product_account_id, ..
+            }
+            | v01::HostProductDeviceChatRequest::SignRequestProof {
+                product_account_id, ..
             } => product_account_id.clone(),
         };
         let product_account_id =
@@ -415,6 +418,13 @@ impl Account for ProductRuntimeHost {
                 cipher_suite,
                 combined_ciphertext,
             },
+            v01::HostProductDeviceChatRequest::SignRequestProof { payload, .. } => {
+                ProductDeviceChatAuthorityRequest::SignRequestProof {
+                    calling_product_id: self.product_id(),
+                    product_account_id,
+                    payload,
+                }
+            }
         };
         remote_authority_call(
             &cx,
