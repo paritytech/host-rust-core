@@ -69,6 +69,7 @@ import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeStatementRenewalTarget
 import uniffi.truapi_server.StatementRenewalReport
+import uniffi.truapi_server.WorkerTransition
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
 import uniffi.truapi_server.NativeHostRuntimeConfig as UniFfiNativeHostRuntimeConfig
@@ -361,6 +362,22 @@ interface HostBridge {
     @Throws(HostRejection::class)
     fun supportedChains(): HostChainSet = HostChainSet(network = "", chains = emptyList())
 
+    /**
+     * Observe demand on a product's worker crossing zero. `Start` means run
+     * the worker now, `Stop` that nothing wants it any more. Every transition
+     * arrives here in ledger order, the ones the app asks for by taking a
+     * reference of its own included.
+     *
+     * Demand is runtime-wide, so the core invokes this only on the bridge
+     * [TrUAPIHostRuntime] was built with, never on the per-execution bridge
+     * passed to [TrUAPIHostRuntime.openProductExecution]. Can arrive on any
+     * thread, including synchronously on the calling thread during
+     * `acquireWorker`/`releaseWorker`, often the main thread and
+     * re-entrantly: marshal the work off rather than blocking on another
+     * thread from inside it.
+     */
+    fun workerDemandChanged(productId: String, transition: WorkerTransition) {}
+
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
 
@@ -427,6 +444,11 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     // `panic = "abort"`. Neither may let a host exception reach the FFI.
     override fun onCoreLog(marker: String, detail: String) {
         runCatching { bridge.onCoreLog(marker, detail) }
+    }
+
+    // Infallible across the FFI for the same reason `onCoreLog` is.
+    override fun workerDemandChanged(productId: String, transition: WorkerTransition) {
+        runCatching { bridge.workerDemandChanged(productId, transition) }
     }
 
     override suspend fun navigateTo(url: String) =

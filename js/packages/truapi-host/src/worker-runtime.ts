@@ -166,14 +166,29 @@ function chainConnect(
 
 /** Build the host-level callback object passed to the WASM runtime. */
 function buildRawCallbacks(capabilities: OptionalCapabilities) {
-  return createWorkerRawCallbacks(
-    {
-      callbackRequest,
-      startSubscription,
-      chainConnect,
+  return {
+    ...createWorkerRawCallbacks(
+      {
+        callbackRequest,
+        startSubscription,
+        chainConnect,
+      },
+      capabilities,
+    ),
+    /**
+     * Demand on a product's worker crossed zero. Every transition arrives
+     * here in ledger order, whether this thread asked for it through
+     * `acquireWorker`/`releaseWorker` or the core took the reference itself
+     * for an open render.
+     */
+    workerDemandChanged(productId: string, transition: WorkerTransition): void {
+      postToMain({
+        kind: "workerDemandChanged",
+        productId,
+        wanted: transition === "Start",
+      });
     },
-    capabilities,
-  );
+  };
 }
 
 /** Encode raw frame bytes as base64 (JSON can't carry binary over the WS). */
@@ -724,10 +739,10 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       runtime?.notifySessionStoreChanged();
       break;
     case "acquireWorker":
-      reportWorkerTransition(msg.productId, runtime?.acquireWorker(msg.productId));
+      runtime?.acquireWorker(msg.productId);
       break;
     case "releaseWorker":
-      reportWorkerTransition(msg.productId, runtime?.releaseWorker(msg.productId));
+      runtime?.releaseWorker(msg.productId);
       break;
     case "activateStoredSession":
       void handleSessionActivation(
@@ -878,19 +893,6 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     }
   }
 });
-
-/** Post the wanted level when a ledger call crossed zero. */
-function reportWorkerTransition(
-  productId: string,
-  transition: WorkerTransition | undefined,
-): void {
-  if (transition === undefined) return;
-  postToMain({
-    kind: "workerDemandChanged",
-    productId,
-    wanted: transition === "Start",
-  });
-}
 
 async function disposeCore(coreId: number): Promise<void> {
   const core = cores.get(coreId);
