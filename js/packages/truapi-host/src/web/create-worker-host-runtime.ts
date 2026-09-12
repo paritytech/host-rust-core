@@ -33,7 +33,7 @@ import type {
 } from "../worker-protocol.js";
 import { bytesToHex } from "@parity/truapi/scale";
 import { startRawSubscription } from "../generated/worker-callbacks.js";
-import { errorMessage } from "../error.js";
+import { errorMessage, toError } from "../error.js";
 
 export type WebWorkerHostConfig = Omit<
   ProductRuntimeConfig,
@@ -287,7 +287,8 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
   // (tsc output run under Node, unit tests), where the access throws.
   let dev = false;
   try {
-    dev = (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
+    dev =
+      (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
   } catch {
     dev = false;
   }
@@ -352,7 +353,9 @@ function reportDebuggerEnablement(e: DebuggerEnablement): void {
   }
   const origin = globalThis.location?.origin ?? "(unknown origin)";
   if (e.reason === "enabled") {
-    console.info(`[truapi] wire debugger: dialling ${e.url} (origin ${origin})`);
+    console.info(
+      `[truapi] wire debugger: dialling ${e.url} (origin ${origin})`,
+    );
     return;
   }
   const why =
@@ -1101,8 +1104,12 @@ function handleFrameError(
   console.error("[truapi worker]", error);
   const core = state.cores.get(coreId);
   if (!core) return;
-  closeCoreState(core, new Error(`worker frame error: ${error}`));
+  const failure = new Error(`worker frame error: ${error}`);
+  closeCoreState(core, failure);
   state.cores.delete(coreId);
+  // Renders left registered would never settle: the worker cancels them with
+  // the core, so nothing further arrives to complete the sink.
+  failRendersForCore(state, coreId, failure);
   try {
     state.worker.postMessage({
       kind: "disposeCore",
@@ -1341,7 +1348,9 @@ function reportRenderFailure(
   cause: unknown,
 ): void {
   try {
-    sink.onError(cause instanceof Error ? cause : new Error(errorMessage(cause)));
+    sink.onError(
+      cause instanceof Error ? cause : new Error(errorMessage(cause)),
+    );
   } catch (err) {
     console.warn("[truapi worker] render onError threw:", err);
   }
@@ -1464,6 +1473,12 @@ function buildProvider(
       if (state.disposed || core.disposed) {
         return Promise.reject(new Error("product connection is closed"));
       }
+      let encoded: Uint8Array;
+      try {
+        encoded = HostChatActionSubscribeItemCodec.enc(action);
+      } catch (err) {
+        return Promise.reject(toError(err));
+      }
       const requestId = nextChatActionRequestId++;
       return new Promise((resolve, reject) => {
         state.pendingChatActions.set(requestId, { resolve, reject });
@@ -1471,7 +1486,7 @@ function buildProvider(
           kind: "publishChatAction",
           coreId: core.coreId,
           requestId,
-          action: HostChatActionSubscribeItemCodec.enc(action),
+          action: encoded,
         } satisfies MainToWorker);
       });
     },
@@ -1481,6 +1496,12 @@ function buildProvider(
       if (state.disposed || core.disposed) {
         return Promise.reject(new Error("product connection is closed"));
       }
+      let encoded: Uint8Array;
+      try {
+        encoded = HostRendererActionSubscribeItemCodec.enc(item);
+      } catch (err) {
+        return Promise.reject(toError(err));
+      }
       const requestId = nextRendererActionRequestId++;
       return new Promise((resolve, reject) => {
         state.pendingRendererActions.set(requestId, { resolve, reject });
@@ -1488,13 +1509,23 @@ function buildProvider(
           kind: "publishRendererAction",
           coreId: core.coreId,
           requestId,
-          item: HostRendererActionSubscribeItemCodec.enc(item),
+          item: encoded,
         } satisfies MainToWorker);
       });
     },
     render(request, sink) {
       if (state.disposed || core.disposed) {
         sink.onError?.(new Error("product connection is closed"));
+        return () => {};
+      }
+      // Encode before the ledger entry exists, so a request the codec rejects
+      // reaches the sink as an error rather than escaping `render` and leaving
+      // a render registered that the worker was never told about.
+      let encoded: Uint8Array;
+      try {
+        encoded = ProductRendererRenderRequestCodec.enc(request);
+      } catch (err) {
+        reportRenderFailure({ onError: (error) => sink.onError?.(error) }, err);
         return () => {};
       }
       const renderId = nextRenderId++;
@@ -1510,7 +1541,7 @@ function buildProvider(
         kind: "renderStart",
         coreId: core.coreId,
         renderId,
-        request: ProductRendererRenderRequestCodec.enc(request),
+        request: encoded,
       } satisfies MainToWorker);
       return () => {
         if (!takeRender(state, renderId)) return;
