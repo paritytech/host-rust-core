@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
+use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::bulletin_rpc::BulletinRpc;
 use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
@@ -41,6 +42,8 @@ pub(crate) struct RuntimeServices {
     /// by the host that knows its chain configuration. Unset leaves every
     /// manifest unresolvable, so no cross-product grant is honoured.
     asset_hub_chain_genesis_hash: OnceLock<[u8; 32]>,
+    /// Reference counts per product worker.
+    pub(crate) worker_ledger: WorkerLedger,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -91,6 +94,7 @@ impl RuntimeServices {
             chat_platform: None,
             permission_status: OnceLock::new(),
             asset_hub_chain_genesis_hash: OnceLock::new(),
+            worker_ledger: WorkerLedger::default(),
             chain,
             statement_store,
             bulletin,

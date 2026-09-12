@@ -36,6 +36,7 @@ use crate::host_logic::sso::messages::{
     RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
     decode_remote_message, v1,
 };
+use crate::host_logic::worker::WorkerTransition;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererSubscription};
@@ -574,7 +575,8 @@ pub struct NativeTrUApiHostRuntime {
     events: Arc<NativeEventBus>,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
-    chat_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
+    /// The one Worker execution per product; opening another replaces it.
+    worker_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
 }
 
 impl NativeTrUApiHostRuntime {
@@ -611,7 +613,7 @@ impl NativeTrUApiHostRuntime {
             events,
             #[cfg(feature = "ws-bridge")]
             spawner,
-            chat_executions: Mutex::new(HashMap::new()),
+            worker_executions: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -658,9 +660,9 @@ impl NativeTrUApiHostRuntime {
 
         if product.execution_kind == ProductExecutionKind::Worker {
             let previous = self
-                .chat_executions
+                .worker_executions
                 .lock()
-                .expect("native Chat execution registry mutex poisoned")
+                .expect("native worker execution registry mutex poisoned")
                 .insert(product.product_id, Arc::downgrade(&execution))
                 .and_then(|previous| previous.upgrade());
             if let Some(previous) = previous {
@@ -773,6 +775,20 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
         let product: ProductContext = execution_config.try_into()?;
         Ok(self.open_product_execution_with_callbacks(callbacks, chat_callbacks, product))
+    }
+
+    /// Take one reference on the product's worker for a modality holder.
+    /// `Start` means the host runs the worker now; pair every call with one
+    /// [`Self::release_worker`]. An acknowledgement grant is a reference the
+    /// host takes and releases on its own events.
+    pub fn acquire_worker(&self, product_id: String) -> Option<WorkerTransition> {
+        self.runtime.worker_ledger().acquire(&product_id)
+    }
+
+    /// Release one reference. `Stop` means nothing wants the worker and the
+    /// host may stop it; releasing with none held is a no-op.
+    pub fn release_worker(&self, product_id: String) -> Option<WorkerTransition> {
+        self.runtime.worker_ledger().release(&product_id)
     }
 
     /// Core-owned logout for the process-wide authentication session.
@@ -2212,6 +2228,24 @@ mod tests {
             native_execution_config(product_id, ProductExecutionKind::App),
         )
         .expect("product execution config should be valid")
+    }
+
+    #[test]
+    fn process_runtime_counts_worker_references_per_product() {
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let product = || "shared.dot".to_string();
+
+        assert_eq!(
+            host.acquire_worker(product()),
+            Some(WorkerTransition::Start)
+        );
+        assert_eq!(host.acquire_worker(product()), None);
+        assert_eq!(host.release_worker(product()), None);
+        assert_eq!(host.release_worker(product()), Some(WorkerTransition::Stop));
     }
 
     #[test]

@@ -250,6 +250,32 @@ await runtime.activateStoredSession().catch(() => {});
 const provider = await runtime.createProvider({ productId: "first.dot" });
 ```
 
+## Worker lifecycle
+
+A product has one worker, and the core keeps one reference count per worker. The host takes a reference while a
+modality holder is on screen or in flight, such as a chat room the product serves, and releases it when the holder
+leaves. An acknowledgement grant, such as a setup run after install, is a reference the host takes and releases on its
+own events. The host runs and stops the worker executable itself; the runtime only tells it when demand crosses zero.
+
+| Runtime method                    | Use it to                                                        |
+| --------------------------------- | ---------------------------------------------------------------- |
+| `acquireWorker(productId)`        | Take one reference while a holder is on screen or in flight.     |
+| `releaseWorker(productId)`        | Release one reference; with none held it is a no-op.             |
+| `subscribeWorkerDemand(listener)` | Learn which workers to run: current set first, then each change. |
+
+```ts
+const stop = runtime.subscribeWorkerDemand(({ productId, wanted }) => {
+  if (wanted) startProductWorker(productId);
+  else stopProductWorker(productId);
+});
+
+runtime.acquireWorker("chat-bot.dot"); // a room it serves came on screen
+runtime.releaseWorker("chat-bot.dot"); // the room left the screen
+```
+
+Two holders of one product hold one worker: the listener hears `wanted: true` once, on the first, and `wanted: false`
+once, after the last. A `wanted: false` is permission to stop, not an order: a host may keep the worker warm.
+
 ## Debugging (dev-only)
 
 The worker can stream every product↔core wire frame to the wire debugger. It is

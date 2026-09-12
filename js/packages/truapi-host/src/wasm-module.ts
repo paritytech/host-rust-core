@@ -33,6 +33,9 @@ export interface WorkerProductRuntime {
   ): WorkerCustomRendererSubscription;
 }
 
+/** What the host does with a product's worker after demand on it changed. */
+export type WorkerTransition = "Start" | "Stop";
+
 /** The long-lived pairing-host runtime product cores are created from. */
 export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime {
   productRuntime(
@@ -51,6 +54,10 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   activateStoredSession(): Promise<void>;
   activateExternalSession(blob: Uint8Array): Promise<void>;
   resetSessionState(): Promise<void>;
+  /** `"Start"` when this is the first reference on the product's worker. */
+  acquireWorker(productId: string): WorkerTransition | undefined;
+  /** `"Stop"` when it was the last reference. */
+  releaseWorker(productId: string): WorkerTransition | undefined;
   free(): void;
 }
 
