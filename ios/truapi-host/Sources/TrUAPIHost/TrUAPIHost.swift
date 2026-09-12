@@ -342,6 +342,22 @@ public protocol HostBridge: AnyObject, Sendable {
     /// per chain role. Invoked on the dispatcher thread; must return promptly.
     func supportedChains() throws -> HostChainSet
 
+    /// Observe demand on a product's worker crossing zero. `.start` means run
+    /// the worker now, `.stop` that nothing wants it any more. Every
+    /// transition arrives here in ledger order, the ones the app asks for by
+    /// taking a reference of its own included.
+    ///
+    /// Demand is runtime-wide, so the core invokes this only on the bridge
+    /// ``TrUAPIHostRuntime/init(bridge:runtimeConfig:)`` was given, never on
+    /// the per-execution bridge passed to
+    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:)``.
+    /// Can arrive on any thread, including synchronously on the calling
+    /// thread during `acquireWorker`/`releaseWorker`, often the main thread
+    /// and re-entrantly: hand the transition off rather than blocking on
+    /// another thread from inside it. Defaults to a no-op for a host that
+    /// runs no workers.
+    func workerDemandChanged(productId: String, transition: WorkerTransition)
+
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
 
@@ -411,6 +427,7 @@ public extension HostBridge {
         )
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
+    func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
 }
@@ -477,6 +494,10 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 
     func onCoreLog(marker: String, detail: String) {
         bridge.onCoreLog(marker: marker, detail: detail)
+    }
+
+    func workerDemandChanged(productId: String, transition: WorkerTransition) {
+        bridge.workerDemandChanged(productId: productId, transition: transition)
     }
 
     func navigateTo(url: String) async throws {

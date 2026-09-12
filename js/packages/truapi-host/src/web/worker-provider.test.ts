@@ -18,6 +18,7 @@ import type {
 import type {
   ProductRuntimeConfig,
   TrUApiProductProvider,
+  WorkerDemandChange,
 } from "../runtime.js";
 import { makeHostCallbacks, settle } from "../test-support.js";
 import { createWebWorkerPairingHostRuntime } from "./index.js";
@@ -1274,5 +1275,88 @@ describe("debugger enablement reporting", () => {
     const worker = new FakeWorker();
     const logged = await withStubbedStorage(null, () => readyRuntime(worker));
     expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
+  });
+});
+
+describe("worker demand", () => {
+  it("forwards references and fans the wanted level out", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const seen: WorkerDemandChange[] = [];
+
+    runtime.acquireWorker("a.dot");
+    expect(worker.messages.at(-1)).toEqual({
+      kind: "acquireWorker",
+      productId: "a.dot",
+    });
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    // A late subscriber first learns what is wanted right now.
+    const unsubscribe = runtime.subscribeWorkerDemand((change) =>
+      seen.push(change),
+    );
+    expect(seen).toEqual([{ productId: "a.dot", wanted: true }]);
+
+    runtime.acquireWorker("b.dot");
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "b.dot",
+      wanted: true,
+    });
+
+    runtime.releaseWorker("a.dot");
+    expect(worker.messages.at(-1)).toEqual({
+      kind: "releaseWorker",
+      productId: "a.dot",
+    });
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: false,
+    });
+    expect(seen).toEqual([
+      { productId: "a.dot", wanted: true },
+      { productId: "b.dot", wanted: true },
+      { productId: "a.dot", wanted: false },
+    ]);
+
+    unsubscribe();
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "b.dot",
+      wanted: false,
+    });
+    expect(seen).toHaveLength(3);
+    runtime.dispose();
+  });
+
+  it("reports every wanted worker as unwanted when the runtime goes away", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    runtime.dispose();
+    expect(seen).toEqual([
+      { productId: "a.dot", wanted: true },
+      { productId: "a.dot", wanted: false },
+    ]);
+
+    // Nothing is posted to a disposed worker, and a late subscriber sees nothing.
+    const before = worker.messages.length;
+    runtime.acquireWorker("a.dot");
+    expect(worker.messages.length).toBe(before);
+    const late: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => late.push(change));
+    expect(late).toEqual([]);
   });
 });

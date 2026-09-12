@@ -63,6 +63,7 @@ pub use host_core::{
 pub use host_logic::session::{
     ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
 };
+pub use host_logic::worker::{WorkerLedger, WorkerTransition};
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
 pub use native_debug::{DebugSinkError, WsDebugSink};
 #[cfg(not(target_arch = "wasm32"))]

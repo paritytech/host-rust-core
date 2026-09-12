@@ -250,6 +250,17 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 session/SSO crypto, key derivation, and permission policy, while all I/O
 (statement-store RPC, storage, prompts, chain RPC) stays in the layers above.
 
+`host_logic::worker::WorkerLedger` holds the reference count per product
+worker from the Worker Lifecycle RFC, one per host in `RuntimeServices`. Both
+bindings expose it as `acquire_worker` and `release_worker`. Every `Start` or
+`Stop` the counts produce is reported on one channel, the host's
+`worker_demand_changed` callback, in the order the ledger produced it and one
+at a time, whether the host asked for the transition or the core took the
+reference itself for an open render. An acknowledgement grant is a reference
+the host takes and releases on its own events. The host runs the executable
+and the core keeps the count; on the web `@parity/truapi-host` pushes the
+wanted level to the page.
+
 ### Inter-host SSO
 
 `PairingHost::call(request)` sends typed requests to

@@ -134,7 +134,8 @@ pub enum ProductExecutionKind {
     App,
     /// Visible embedded surface such as a dashboard card.
     Widget,
-    /// Headless executable that serves the Chat modality.
+    /// Headless executable the host runs while a modality holds a reference
+    /// to it; the only kind that may serve the Chat modality.
     Worker,
 }
 
