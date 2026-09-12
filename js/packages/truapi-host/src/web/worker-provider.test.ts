@@ -2,12 +2,17 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
-  CustomRendererNode,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  RendererNode,
 } from "@parity/truapi";
 import { bytesToHex } from "@parity/truapi/scale";
-import type { GenericError, Result, ThemeVariant } from "@parity/truapi";
+import type {
+  GenericError,
+  ProductRendererRenderRequest,
+  Result,
+  ThemeVariant,
+} from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import { AuthState, CoreStorageKey } from "../generated/host-callbacks.js";
@@ -117,6 +122,23 @@ function hostConfigFromRuntimeConfig(
     ...hostConfig
   } = config;
   return hostConfig;
+}
+
+/** One render request the provider-level render tests reuse. */
+function renderRequest(): ProductRendererRenderRequest {
+  return {
+    context: { tag: "PocketCard", value: { cardId: "card" } },
+    payload: "0x",
+  };
+}
+
+/** Position of the last message of `kind` in post order, or -1 if never sent. */
+function indexOfKind(worker: FakeWorker, kind: string): number {
+  let index = -1;
+  worker.messages.forEach((message, at) => {
+    if (message.kind === kind) index = at;
+  });
+  return index;
 }
 
 function lastMessageOfKind(worker: FakeWorker, kind: string): WorkerMessage {
@@ -1161,24 +1183,20 @@ describe("createWebWorkerPairingHostRuntime", () => {
   it("ends a render whose tree cannot be decoded instead of stranding it", async () => {
     const worker = new FakeWorker();
     const provider = await readyProvider(worker);
-    const coreId = lastMessageOfKind(worker, "createCore").coreId;
 
     const errors: Error[] = [];
     let completed = 0;
-    provider.renderCustomMessage!(
-      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
-      {
-        onUpdate: () => {},
-        onComplete: () => completed++,
-        onError: (error) => errors.push(error),
-      },
-    );
-    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+    provider.render!(renderRequest(), {
+      onUpdate: () => {},
+      onComplete: () => completed++,
+      onError: (error) => errors.push(error),
+    });
+    const { renderId } = lastMessageOfKind(worker, "renderStart");
 
-    // 0xff is not a CustomRendererNode discriminant.
+    // 0xff is not a RendererNode discriminant.
     expect(() =>
       worker.emit({
-        kind: "renderCustomMessageItem",
+        kind: "renderItem",
         renderId,
         node: new Uint8Array([0xff]),
       }),
@@ -1187,33 +1205,28 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(errors).toHaveLength(1);
     expect(completed).toBe(0);
     // The worker must be told to stop, or its wasm subscription leaks.
-    expect(lastMessageOfKind(worker, "renderCustomMessageStop").renderId).toBe(
-      renderId,
-    );
+    expect(lastMessageOfKind(worker, "renderStop").renderId).toBe(renderId);
   });
 
   it("keeps a throwing render sink from breaking the worker listener", async () => {
     const worker = new FakeWorker();
     const provider = await readyProvider(worker);
 
-    provider.renderCustomMessage!(
-      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
-      {
-        onUpdate: () => {
-          throw new Error("renderer exploded");
-        },
-        onError: () => {
-          throw new Error("and so did onError");
-        },
+    provider.render!(renderRequest(), {
+      onUpdate: () => {
+        throw new Error("renderer exploded");
       },
-    );
-    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+      onError: () => {
+        throw new Error("and so did onError");
+      },
+    });
+    const { renderId } = lastMessageOfKind(worker, "renderStart");
 
     expect(() =>
       worker.emit({
-        kind: "renderCustomMessageItem",
+        kind: "renderItem",
         renderId,
-        node: CustomRendererNode.enc({ tag: "Nil", value: undefined }),
+        node: RendererNode.enc({ tag: "Nil", value: undefined }),
       }),
     ).not.toThrow();
 
@@ -1221,6 +1234,49 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(() =>
       worker.emit({ kind: "frame", coreId: 0, bytes: new Uint8Array([1]) }),
     ).not.toThrow();
+  });
+
+  it("acquires and releases the worker for the render's product", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    provider.render!(renderRequest(), { onUpdate: () => {} });
+
+    // The reference must be in place before the worker starts the stream, or
+    // the product's worker can be stopped underneath a live render.
+    const acquireIndex = indexOfKind(worker, "acquireWorker");
+    const startIndex = indexOfKind(worker, "renderStart");
+    expect(worker.messages[acquireIndex]!.productId).toBe("dotli.dot");
+    expect(acquireIndex).toBeLessThan(startIndex);
+    expect(indexOfKind(worker, "releaseWorker")).toBe(-1);
+
+    const { renderId } = lastMessageOfKind(worker, "renderStart");
+    worker.emit({ kind: "renderComplete", renderId });
+
+    const releaseIndex = indexOfKind(worker, "releaseWorker");
+    expect(worker.messages[releaseIndex]!.productId).toBe("dotli.dot");
+    expect(releaseIndex).toBeGreaterThan(startIndex);
+
+    // A late disposer must not release the reference a second time.
+    worker.emit({ kind: "renderComplete", renderId });
+    expect(
+      worker.messages.filter((m) => m.kind === "releaseWorker"),
+    ).toHaveLength(1);
+  });
+
+  it("publishes a renderer action and settles on the worker's response", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const published = provider.publishRendererAction!({
+      context: { tag: "PocketCard", value: { cardId: "card" } },
+      actionId: "confirm",
+      payload: "0x",
+    });
+    const { requestId } = lastMessageOfKind(worker, "publishRendererAction");
+    worker.emit({ kind: "publishRendererActionResponse", requestId, ok: true });
+
+    await expect(published).resolves.toBeUndefined();
   });
 });
 

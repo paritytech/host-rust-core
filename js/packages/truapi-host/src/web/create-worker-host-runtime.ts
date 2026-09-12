@@ -11,13 +11,16 @@ import type {
 } from "../index.js";
 import type {
   Bytes32,
-  CustomRendererNode,
   GenericError,
   HostChatActionSubscribeItem,
+  HostRendererActionSubscribeItem,
+  RendererNode,
 } from "@parity/truapi";
 import {
-  CustomRendererNode as CustomRendererNodeCodec,
   HostChatActionSubscribeItem as HostChatActionSubscribeItemCodec,
+  HostRendererActionSubscribeItem as HostRendererActionSubscribeItemCodec,
+  ProductRendererRenderRequest as ProductRendererRenderRequestCodec,
+  RendererNode as RendererNodeCodec,
 } from "@parity/truapi";
 import { PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec } from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -126,6 +129,19 @@ interface CoreState {
   disposed: boolean;
 }
 
+/**
+ * One live render on the main thread. The core id rides along so disposing one
+ * provider fails only its own renders, and `release` drops the worker
+ * reference the render holds on its product.
+ */
+interface RenderEntry {
+  coreId: number;
+  onUpdate: (node: RendererNode) => void;
+  onComplete: () => void;
+  onError: (error: Error) => void;
+  release: () => void;
+}
+
 interface RuntimeState {
   worker: Worker;
   rawCallbacks: RawCallbacks;
@@ -188,19 +204,12 @@ interface RuntimeState {
     number,
     { resolve: () => void; reject: (error: Error) => void }
   >;
-  /**
-   * Sinks for live custom-message renders, keyed by render id. The core id
-   * rides along so disposing one provider fails only its own renders.
-   */
-  customRenders: Map<
+  pendingRendererActions: Map<
     number,
-    {
-      coreId: number;
-      onUpdate: (node: CustomRendererNode) => void;
-      onComplete: () => void;
-      onError: (error: Error) => void;
-    }
+    { resolve: () => void; reject: (error: Error) => void }
   >;
+  /** Sinks for live renders, keyed by render id. */
+  renders: Map<number, RenderEntry>;
   /** Products whose worker the core currently wants, for late subscribers. */
   wantedWorkers: Set<string>;
   workerDemandListeners: Set<(change: WorkerDemandChange) => void>;
@@ -222,7 +231,8 @@ let nextDeviceEncryptionKeyRequestId = 0;
 let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
 let nextChatActionRequestId = 0;
-let nextCustomRenderId = 0;
+let nextRendererActionRequestId = 0;
+let nextRenderId = 0;
 
 function encodePermissionAuthorizationRequest(
   request: PermissionAuthorizationRequest,
@@ -685,9 +695,10 @@ function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingDeviceEncryptionKeys, error);
   rejectAll(state.pendingProductSubtreePublicKeys, error);
   rejectAll(state.pendingChatActions, error);
-  for (const [renderId, sink] of [...state.customRenders]) {
-    state.customRenders.delete(renderId);
-    reportRenderFailure(sink, error);
+  rejectAll(state.pendingRendererActions, error);
+  for (const renderId of [...state.renders.keys()]) {
+    const sink = takeRender(state, renderId);
+    if (sink) reportRenderFailure(sink, error);
   }
   for (const pending of state.pendingCores.values()) {
     pending.reject(error);
@@ -820,7 +831,8 @@ export function createWebWorkerPairingHostRuntime(
       pendingProductSubtreePublicKeys: new Map(),
       pendingDeviceEncryptionKeys: new Map(),
       pendingChatActions: new Map(),
-      customRenders: new Map(),
+      pendingRendererActions: new Map(),
+      renders: new Map(),
       wantedWorkers: new Set(),
       workerDemandListeners: new Set(),
       closedError: null,
@@ -903,25 +915,33 @@ export function createWebWorkerPairingHostRuntime(
               : { ok: false, error: msg.error },
           );
           break;
-        case "renderCustomMessageItem": {
-          const sink = state.customRenders.get(msg.renderId);
+        case "publishRendererActionResponse":
+          settlePending(
+            state.pendingRendererActions,
+            msg.requestId,
+            msg.ok
+              ? { ok: true, value: undefined }
+              : { ok: false, error: msg.error },
+          );
+          break;
+        case "renderItem": {
+          const sink = state.renders.get(msg.renderId);
           if (!sink) break;
           // Escaping the listener would strand the render with no terminal.
           try {
-            sink.onUpdate(CustomRendererNodeCodec.dec(msg.node));
+            sink.onUpdate(RendererNodeCodec.dec(msg.node));
           } catch (err) {
-            state.customRenders.delete(msg.renderId);
+            takeRender(state, msg.renderId);
             state.worker.postMessage({
-              kind: "renderCustomMessageStop",
+              kind: "renderStop",
               renderId: msg.renderId,
             } satisfies MainToWorker);
             reportRenderFailure(sink, err);
           }
           break;
         }
-        case "renderCustomMessageComplete": {
-          const sink = state.customRenders.get(msg.renderId);
-          state.customRenders.delete(msg.renderId);
+        case "renderComplete": {
+          const sink = takeRender(state, msg.renderId);
           try {
             sink?.onComplete();
           } catch (err) {
@@ -929,9 +949,8 @@ export function createWebWorkerPairingHostRuntime(
           }
           break;
         }
-        case "renderCustomMessageError": {
-          const sink = state.customRenders.get(msg.renderId);
-          state.customRenders.delete(msg.renderId);
+        case "renderError": {
+          const sink = takeRender(state, msg.renderId);
           if (sink) reportRenderFailure(sink, new Error(msg.error));
           break;
         }
@@ -1310,16 +1329,32 @@ function reportRenderFailure(
   }
 }
 
+/**
+ * Drop one render from the ledger and release the worker reference it held.
+ * Returns the sink so the caller can settle it; undefined once the render is
+ * already gone, which is what keeps the release exactly once per render.
+ */
+function takeRender(
+  state: RuntimeState,
+  renderId: number,
+): RenderEntry | undefined {
+  const entry = state.renders.get(renderId);
+  if (!entry) return undefined;
+  state.renders.delete(renderId);
+  entry.release();
+  return entry;
+}
+
 /** Settle and drop every render belonging to one product connection. */
 function failRendersForCore(
   state: RuntimeState,
   coreId: number,
   error: Error,
 ): void {
-  for (const [renderId, sink] of [...state.customRenders]) {
-    if (sink.coreId !== coreId) continue;
-    state.customRenders.delete(renderId);
-    reportRenderFailure(sink, error);
+  for (const [renderId, entry] of [...state.renders]) {
+    if (entry.coreId !== coreId) continue;
+    const sink = takeRender(state, renderId);
+    if (sink) reportRenderFailure(sink, error);
   }
 }
 
@@ -1423,30 +1458,55 @@ function buildProvider(
         } satisfies MainToWorker);
       });
     },
-    renderCustomMessage(request, sink) {
+    publishRendererAction(
+      item: HostRendererActionSubscribeItem,
+    ): Promise<void> {
+      if (state.disposed || core.disposed) {
+        return Promise.reject(new Error("product connection is closed"));
+      }
+      const requestId = nextRendererActionRequestId++;
+      return new Promise((resolve, reject) => {
+        state.pendingRendererActions.set(requestId, { resolve, reject });
+        state.worker.postMessage({
+          kind: "publishRendererAction",
+          coreId: core.coreId,
+          requestId,
+          item: HostRendererActionSubscribeItemCodec.enc(item),
+        } satisfies MainToWorker);
+      });
+    },
+    render(request, sink) {
       if (state.disposed || core.disposed) {
         sink.onError?.(new Error("product connection is closed"));
         return () => {};
       }
-      const renderId = nextCustomRenderId++;
-      state.customRenders.set(renderId, {
+      const renderId = nextRenderId++;
+      // The render keeps the product's worker running for as long as it is
+      // open; every path out of the ledger goes through `takeRender`, so the
+      // reference is released exactly once.
+      let released = false;
+      runtime.acquireWorker(core.productId);
+      state.renders.set(renderId, {
         coreId: core.coreId,
         onUpdate: sink.onUpdate,
         onComplete: () => sink.onComplete?.(),
         onError: (error) => sink.onError?.(error),
+        release: () => {
+          if (released) return;
+          released = true;
+          runtime.releaseWorker(core.productId);
+        },
       });
       state.worker.postMessage({
-        kind: "renderCustomMessageStart",
+        kind: "renderStart",
         coreId: core.coreId,
         renderId,
-        messageId: request.messageId,
-        messageType: request.messageType,
-        payload: request.payload,
+        request: ProductRendererRenderRequestCodec.enc(request),
       } satisfies MainToWorker);
       return () => {
-        if (!state.customRenders.delete(renderId)) return;
+        if (!takeRender(state, renderId)) return;
         state.worker.postMessage({
-          kind: "renderCustomMessageStop",
+          kind: "renderStop",
           renderId,
         } satisfies MainToWorker);
       };
