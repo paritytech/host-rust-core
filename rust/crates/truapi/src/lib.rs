@@ -52,20 +52,24 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
+        AccountId, AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode,
+        BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction,
         ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
         ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
-        ContextualAlias, DerivationIndex, GenericError, HostAccountCreateProofRequest,
+        ColorToken, ColumnProps, ContentAlignment, ContextualAlias, DerivationIndex, Dimensions,
+        Effect, EffectProps, GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
         HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
-        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
-        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
-        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension, VrfSignature,
+        ImageFit, ImageProps, ImageSource, Modifier, NotificationId, OperationStartedResult,
+        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
+        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
+        RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
+        RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi, RuntimeSpec, RuntimeType,
+        Shape, SignedStatement, Size, Statement, StatementProof, StorageQueryItem,
+        StorageQueryType, StorageResultItem, TextFieldProps, TextProps, ThemeName, ThemeVariant,
+        TxPayloadExtension, TypographyStyle, VerticalAlignment, VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -96,12 +100,14 @@ pub mod latest {
     pub type HostChatPostMessageResponse = LatestOf<versioned::chat::HostChatPostMessageResponse>;
     /// Native chat message posting failure.
     pub type HostChatPostMessageError = LatestOf<versioned::chat::HostChatPostMessageError>;
-    /// Host-to-product custom render work request.
-    pub type ProductChatCustomMessageRenderRequest =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderRequest>;
-    /// Product-to-host custom renderer tree.
-    pub type ProductChatCustomMessageRenderItem =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderItem>;
+    /// Action triggered inside a product-rendered body, delivered to the worker.
+    pub type HostRendererActionSubscribeItem =
+        LatestOf<versioned::renderer::HostRendererActionSubscribeItem>;
+    /// Host-to-product render request for one body.
+    pub type ProductRendererRenderRequest =
+        LatestOf<versioned::renderer::ProductRendererRenderRequest>;
+    /// Product-to-host renderer tree.
+    pub type ProductRendererRenderItem = LatestOf<versioned::renderer::ProductRendererRenderItem>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
