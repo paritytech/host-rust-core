@@ -1035,10 +1035,7 @@ impl NativeProductExecution {
         if self.closed.load(Ordering::Acquire) {
             return Err(crate::ProductRuntimeError::Closed);
         }
-        crate::runtime::renderer_access_for(
-            self.product.execution_kind,
-            self.runtime.has_active_session(),
-        )
+        crate::runtime::renderer_access_for(self.product.execution_kind)
     }
 
     #[cfg(feature = "ws-bridge")]
@@ -2811,7 +2808,7 @@ mod tests {
         };
         execution
             .publish_renderer_action(published.clone())
-            .expect("a Worker execution with a session may publish renderer actions");
+            .expect("a Worker execution may publish renderer actions");
 
         let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
         let delivered = match actions.poll_next_unpin(&mut cx) {
