@@ -1,20 +1,18 @@
-//! Native observation of custom-renderer streams.
+//! Native observation of renderer streams.
 
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
-use truapi::{
-    CallError, Subscription, latest::GenericError, latest::ProductChatCustomMessageRenderItem,
-};
+use truapi::{CallError, Subscription, latest::GenericError, latest::ProductRendererRenderItem};
 
 use crate::subscription::{Spawner, interrupt_reason};
 
 /// Observer implemented by a native host to receive renderer tree replacements.
 #[uniffi::export(callback_interface)]
-pub trait NativeCustomRendererObserver: Send + Sync {
+pub trait NativeRendererObserver: Send + Sync {
     /// Deliver a complete replacement tree.
-    fn on_update(&self, node: ProductChatCustomMessageRenderItem);
+    fn on_update(&self, node: ProductRendererRenderItem);
 
     /// Report that the renderer stream ended without drawing further trees.
     /// The last tree delivered stands.
@@ -25,14 +23,14 @@ pub trait NativeCustomRendererObserver: Send + Sync {
     fn on_error(&self, reason: String);
 }
 
-/// Cancellable native observation of one custom-message render instance.
+/// Cancellable native observation of one render instance.
 #[derive(uniffi::Object)]
-pub struct NativeCustomRendererSubscription {
+pub struct NativeRendererSubscription {
     abort: Mutex<Option<AbortHandle>>,
 }
 
 #[uniffi::export]
-impl NativeCustomRendererSubscription {
+impl NativeRendererSubscription {
     /// Stop delivering renderer updates to the native observer.
     pub fn cancel(&self) {
         if let Some(abort) = self
@@ -46,7 +44,7 @@ impl NativeCustomRendererSubscription {
     }
 }
 
-impl Drop for NativeCustomRendererSubscription {
+impl Drop for NativeRendererSubscription {
     fn drop(&mut self) {
         self.cancel();
     }
@@ -54,10 +52,10 @@ impl Drop for NativeCustomRendererSubscription {
 
 #[cfg_attr(not(feature = "ws-bridge"), allow(dead_code))]
 pub(crate) fn observe_renderer(
-    mut stream: Subscription<ProductChatCustomMessageRenderItem, CallError<GenericError>>,
-    observer: Arc<dyn NativeCustomRendererObserver>,
+    mut stream: Subscription<ProductRendererRenderItem, CallError<GenericError>>,
+    observer: Arc<dyn NativeRendererObserver>,
     spawner: Spawner,
-) -> Arc<NativeCustomRendererSubscription> {
+) -> Arc<NativeRendererSubscription> {
     let (abort, registration) = AbortHandle::new_pair();
     (spawner)(Box::pin(async move {
         let _ = Abortable::new(
@@ -74,7 +72,7 @@ pub(crate) fn observe_renderer(
         )
         .await;
     }));
-    Arc::new(NativeCustomRendererSubscription {
+    Arc::new(NativeRendererSubscription {
         abort: Mutex::new(Some(abort)),
     })
 }
