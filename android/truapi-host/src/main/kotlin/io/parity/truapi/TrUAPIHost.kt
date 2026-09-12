@@ -36,14 +36,16 @@ import uniffi.truapi.ChatBotRegistrationStatus
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatRoom
 import uniffi.truapi.ChatRoomRegistrationStatus
-import uniffi.truapi.CustomRendererNode
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostLocaleSubscribeItem
 import uniffi.truapi.HostPlatform
 import uniffi.truapi.HostPushNotificationRequest
+import uniffi.truapi.HostRendererActionSubscribeItem
+import uniffi.truapi.ProductRendererRenderRequest
 import uniffi.truapi.RemotePermission
+import uniffi.truapi.RendererNode
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
@@ -56,7 +58,7 @@ import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatCallbacks
-import uniffi.truapi_server.NativeCustomRendererObserver
+import uniffi.truapi_server.NativeRendererObserver
 import uniffi.truapi_server.NativeDevicePermissionStatus
 import uniffi.truapi_server.NativeProductExecution
 import uniffi.truapi_server.NativeTrUApiHostRuntime
@@ -852,7 +854,7 @@ class TrUAPIHostRuntime private constructor(
 }
 
 /** A render the product declined or could not encode. */
-class CustomRendererStreamException(
+class RendererStreamException(
     /** Why the product ended the render. */
     val reason: String,
 ) : Exception(reason)
@@ -896,25 +898,21 @@ class TrUAPIProductExecution internal constructor(
     }
 
     /**
-     * Request typed native UI for one stored custom Chat message. The flow
-     * subscribes on collection, so a closed or non-Chat execution fails the
-     * collector with [ProductRuntimeException] rather than this call. It
+     * Request a native renderer tree for one render context. The flow
+     * subscribes on collection, so a closed or non-matching execution fails
+     * the collector with [ProductRuntimeException] rather than this call. It
      * cancels the renderer when collection ends;
      * each emission is a complete replacement tree, so only the latest is kept
      * when the collector falls behind.
      */
-    fun renderCustomMessage(
-        messageId: String,
-        messageType: String,
-        payload: ByteArray,
-    ): Flow<CustomRendererNode> =
+    fun render(request: ProductRendererRenderRequest): Flow<RendererNode> =
         callbackFlow {
             val observer =
-                object : NativeCustomRendererObserver {
+                object : NativeRendererObserver {
                     // The core declares all three infallible, so uniffi has no
                     // error type to convert a throw into and panics -- which
                     // aborts under `panic = "abort"`.
-                    override fun onUpdate(node: CustomRendererNode) {
+                    override fun onUpdate(node: RendererNode) {
                         runCatching { trySend(node) }
                     }
 
@@ -925,15 +923,24 @@ class TrUAPIProductExecution internal constructor(
                     // The last tree sent is partial, so closing with a cause
                     // keeps this distinct from a clean end for the collector.
                     override fun onError(reason: String) {
-                        runCatching { close(CustomRendererStreamException(reason)) }
+                        runCatching { close(RendererStreamException(reason)) }
                     }
                 }
-            val subscription = inner.renderCustomMessage(messageId, messageType, payload, observer)
+            val subscription = inner.render(request, observer)
             awaitClose {
                 subscription.cancel()
                 subscription.close()
             }
         }.conflate()
+
+    /**
+     * Publish one native renderer action, buffering it until the product
+     * connection subscribes.
+     */
+    @Throws(ProductRuntimeException::class)
+    fun publishRendererAction(item: HostRendererActionSubscribeItem) {
+        inner.publishRendererAction(item)
+    }
 
     /** Read the active session's X25519 chat identity private key, if any. */
     @Throws(HostRejection::class)

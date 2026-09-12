@@ -174,9 +174,10 @@ untrusted: they may name a message in another room, or one that never existed.
 
 On the execution: `publishChatAction` delivers a user's action back to the
 product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
-republishes the room list; `renderCustomMessage` returns a stream of typed UI
-for a stored custom message; and `sessionChatIdentityKey` reads the session's
-X25519 chat identity private key, which must not be logged or persisted.
+republishes the room list; `render` returns a stream of `RendererNode` trees
+for one render context; `publishRendererAction` delivers a renderer action
+back to the product; and `sessionChatIdentityKey` reads the session's X25519
+chat identity private key, which must not be logged or persisted.
 
 ## Architecture
 
