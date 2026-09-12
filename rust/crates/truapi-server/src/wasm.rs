@@ -848,6 +848,35 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     }
 }
 
+/// Reports every worker demand transition to the host's
+/// `workerDemandChanged(productId, transition)` callback.
+struct WasmWorkerDemand {
+    changed: SendWrapper<Function>,
+}
+
+impl crate::host_logic::worker::WorkerDemandObserver for WasmWorkerDemand {
+    fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
+        let _ = self.changed.call2(
+            &JsValue::NULL,
+            &JsValue::from_str(product_id),
+            &JsValue::from_str(worker_transition_name(transition)),
+        );
+    }
+}
+
+/// Install the host's `workerDemandChanged` callback as `ledger`'s observer.
+/// Required: a host that omits it would never learn that a worker is wanted.
+fn install_worker_demand_observer(
+    ledger: &crate::host_logic::worker::WorkerLedger,
+    callbacks: &JsValue,
+) -> Result<(), JsValue> {
+    let changed = get_function(callbacks, "workerDemandChanged")?;
+    ledger.install_demand_observer(Arc::new(WasmWorkerDemand {
+        changed: SendWrapper::new(changed),
+    }));
+    Ok(())
+}
+
 /// JS-callable handle to a long-lived pairing-host runtime shared by product
 /// cores.
 #[wasm_bindgen]
@@ -880,6 +909,7 @@ impl WasmPairingHostRuntime {
         if let Some(status_host) = status_host {
             runtime.set_permission_status_host(status_host);
         }
+        install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
             runtime: Rc::new(runtime),
         })
@@ -1059,28 +1089,27 @@ impl WasmPairingHostRuntime {
         self.runtime.reset_session_state().await;
     }
 
-    /// Take one reference on the product's worker for a modality holder.
-    /// `"Start"` means the host runs the worker now; `undefined` means it is
-    /// already wanted. Pair every call with one `releaseWorker`.
+    /// Take one reference on the product's worker for a modality holder. The
+    /// first one reports `"Start"` to the host's `workerDemandChanged`
+    /// callback. Pair every call with one `releaseWorker`.
     #[wasm_bindgen(js_name = acquireWorker)]
-    pub fn acquire_worker(&self, product_id: String) -> JsValue {
-        worker_transition_to_js(self.runtime.worker_ledger().acquire(&product_id))
+    pub fn acquire_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().acquire(&product_id);
     }
 
-    /// Release one reference. `"Stop"` means nothing wants the worker and the
-    /// host may stop it; releasing with none held is a no-op.
+    /// Release one reference. The last one reports `"Stop"`, after which the
+    /// host may stop the worker; releasing with none held is a no-op.
     #[wasm_bindgen(js_name = releaseWorker)]
-    pub fn release_worker(&self, product_id: String) -> JsValue {
-        worker_transition_to_js(self.runtime.worker_ledger().release(&product_id))
+    pub fn release_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().release(&product_id);
     }
 }
 
-/// `"Start"`, `"Stop"`, or `undefined` for no transition.
-fn worker_transition_to_js(transition: Option<WorkerTransition>) -> JsValue {
+/// The JS name of a transition.
+fn worker_transition_name(transition: WorkerTransition) -> &'static str {
     match transition {
-        Some(WorkerTransition::Start) => JsValue::from_str("Start"),
-        Some(WorkerTransition::Stop) => JsValue::from_str("Stop"),
-        None => JsValue::UNDEFINED,
+        WorkerTransition::Start => "Start",
+        WorkerTransition::Stop => "Stop",
     }
 }
 
@@ -1129,8 +1158,10 @@ impl WasmSigningHostRuntime {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = signing_host_config_from_js(&host_config)?;
+        let runtime = SigningHostRuntime::new(platform, host_config, spawner);
+        install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
-            runtime: Rc::new(SigningHostRuntime::new(platform, host_config, spawner)),
+            runtime: Rc::new(runtime),
         })
     }
 
@@ -1282,6 +1313,7 @@ impl WasmProductRuntime {
         if let Some(status_host) = status_host {
             pairing.set_permission_status_host(status_host);
         }
+        install_worker_demand_observer(pairing.worker_ledger(), &callbacks)?;
         let core = pairing.product_runtime(product, frame_sink);
         Ok(Self::from_parts(core, channel.dispose))
     }
