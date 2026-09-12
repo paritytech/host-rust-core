@@ -1208,6 +1208,49 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(lastMessageOfKind(worker, "renderStop").renderId).toBe(renderId);
   });
 
+  it("fails a render the codec rejects without registering it", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const errors: Error[] = [];
+    const stop = provider.render!(
+      // Odd-length hex: a `HexString` the codec cannot turn into bytes.
+      {
+        context: { tag: "PocketCard", value: { cardId: "card" } },
+        payload: "0xabc",
+      },
+      { onUpdate: () => {}, onError: (error) => errors.push(error) },
+    );
+
+    expect(errors).toHaveLength(1);
+    // Nothing was registered, so nothing is left for the worker to stop.
+    expect(indexOfKind(worker, "renderStart")).toBe(-1);
+    stop();
+    expect(indexOfKind(worker, "renderStop")).toBe(-1);
+  });
+
+  it("fails every open render of a core the worker reported a frame error for", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const errors: Error[] = [];
+    provider.render!(renderRequest(), {
+      onUpdate: () => {},
+      onError: (error) => errors.push(error),
+    });
+    const { coreId } = lastMessageOfKind(worker, "renderStart");
+
+    worker.emit({ kind: "frameError", coreId, error: "bad frame" });
+
+    // The worker cancels the subscription with the core, so the sink's only
+    // terminal is this one.
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toMatch(/worker frame error: bad frame/);
+
+    provider.dispose();
+    expect(errors).toHaveLength(1);
+  });
+
   it("keeps a throwing render sink from breaking the worker listener", async () => {
     const worker = new FakeWorker();
     const provider = await readyProvider(worker);
