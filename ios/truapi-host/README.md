@@ -179,7 +179,10 @@ for one render context; `publishRendererAction` delivers a renderer action
 back to the product; and `sessionChatIdentityKey` reads the session's X25519
 chat identity private key, which must not be logged or persisted. An open
 render stream is one worker reference the core holds on the product's behalf;
-the transition it causes arrives on `workerDemandChanged`.
+the transition it causes arrives on `workerDemandChanged`. Two rules the core
+cannot check are the host's to keep: send a render context only for a surface
+the product's manifest `includes`, and publish a renderer action only from the
+current tree of an open render stream.
 
 ## Architecture
 

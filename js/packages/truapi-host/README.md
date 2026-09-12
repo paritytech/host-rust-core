@@ -160,10 +160,14 @@ renderer all arrive as `onError`. An open render holds one worker reference for
 the provider's product, released when the stream ends or the disposer runs, so
 the product's worker stays up for as long as something is being drawn.
 
-`publishChatAction` remains the path for posted messages, commands and
-host-drawn `Actions` buttons. Both action entry points sit behind the same
-access policy as every other call on their service: a connection that is not a
-`Worker` execution with a live session is refused.
+`publishChatAction` is the path for posted messages, commands and host-drawn
+`Actions` buttons. Both action entry points sit behind the same access policy
+as every other call on their service: a connection that is not a `Worker`
+execution with a live session is refused.
+
+Two rules the core cannot check are the host's to keep: send a render context
+only for a surface the product's manifest `includes`, and publish a renderer
+action only from the current tree of an open render stream.
 
 ## Product account addresses
 
