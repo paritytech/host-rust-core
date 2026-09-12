@@ -1,5 +1,20 @@
 # @parity/truapi-host
 
+## 0.13.0
+
+### Minor Changes
+
+- 4a93ac4: Add temporary deprecated unwatermarked signing for product and legacy accounts to unblock runtime ownership
+  proofs while runtimes adopt watermarked verification (#612). Existing signing APIs retain their names and wrapping
+  behavior. The temporary implementations log a deprecation warning when called. Raw signing reviews now include a
+  `watermarked` flag; host confirmation UIs must display the matching bytes and warn that unwatermarked signatures may
+  authorize transactions.
+
+### Patch Changes
+
+- Updated dependencies [4a93ac4]
+  - @parity/truapi@0.16.0
+
 ## 0.12.0
 
 ### Minor Changes
