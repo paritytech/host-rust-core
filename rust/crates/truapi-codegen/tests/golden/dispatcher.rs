@@ -24,6 +24,7 @@ use truapi::api::{
     Payment,
     Permissions,
     Preimage,
+    Renderer,
     ResourceAllocation,
     Signing,
     StatementStore,
@@ -57,6 +58,7 @@ where
     register_payment(dispatcher, host.clone());
     register_permissions(dispatcher, host.clone());
     register_preimage(dispatcher, host.clone());
+    register_renderer(dispatcher, host.clone());
     register_resource_allocation(dispatcher, host.clone());
     register_signing(dispatcher, host.clone());
     register_statement_store(dispatcher, host.clone());
@@ -64,14 +66,14 @@ where
     register_theme(dispatcher, host);
 }
 
-/// Start the host-initiated `chat_custom_message_render` subscription.
-pub(crate) fn chat_custom_message_render(
+/// Start the host-initiated `renderer_render` subscription.
+pub(crate) fn renderer_render(
     subscriptions: &HostInitiatedSubscriptionManager,
     transport: Arc<dyn Transport>,
-    request: versioned::chat::ProductChatCustomMessageRenderRequest,
-) -> truapi::Subscription<versioned::chat::ProductChatCustomMessageRenderItem, truapi::CallError<truapi::latest::GenericError>> {
+    request: versioned::renderer::ProductRendererRenderRequest,
+) -> truapi::Subscription<versioned::renderer::ProductRendererRenderItem, truapi::CallError<truapi::latest::GenericError>> {
     subscriptions.start(
-        wire_table::CHAT_CUSTOM_MESSAGE_RENDER,
+        wire_table::RENDERER_RENDER,
         parity_scale_codec::Encode::encode(&request),
         transport,
     )
@@ -1724,6 +1726,48 @@ where
                         Err(err) => Err(downgrade_call_error(err, target_version)),
                     };
                 result.encode()
+            })
+        });
+    }
+}
+
+fn register_renderer<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Renderer + Send + Sync + 'static,
+{
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host;
+        dispatcher.on_subscription(wire_table::RENDERER_ACTION_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let _request: () = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<truapi::latest::GenericError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Err(subscription_interrupt(error));
+                    }
+                };
+                let target_version = <versioned::renderer::HostRendererActionSubscribeItem as truapi::versioned::Versioned>::LATEST;
+                let cx = CallContext::with_request_id(request_id);
+                if !execution_allowed {
+                    let error: truapi::CallError<truapi::latest::GenericError> = truapi::CallError::Denied;
+                    return Err(subscription_interrupt(error));
+                }
+                let stream = host.action_subscribe(&cx).await;
+                let stream = futures::StreamExt::map(
+                    stream,
+                    move |item: Result<versioned::renderer::HostRendererActionSubscribeItem, truapi::CallError<truapi::latest::GenericError>>| {
+                        item.map(|item| {
+                            <versioned::renderer::HostRendererActionSubscribeItem as truapi::versioned::FromLatest>::from_latest(
+                                truapi::versioned::IntoLatest::into_latest(item),
+                                target_version,
+                            )
+                        })
+                    },
+                );
+                Ok(subscription_stream(stream))
             })
         });
     }

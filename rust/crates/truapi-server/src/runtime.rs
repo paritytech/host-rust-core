@@ -7,6 +7,8 @@
 //! permission cache layer). Methods with no platform backing return
 //! `CallError::unavailable()`.
 
+/// Connection-scoped, host-fed action streams.
+pub(crate) mod actions;
 mod allowances;
 /// Core-owned auth/session UI state machine.
 pub(crate) mod auth_state;
@@ -21,6 +23,7 @@ pub(crate) mod login_failure;
 mod pairing_host;
 pub(crate) mod product_manifest;
 mod product_subtree;
+mod renderer;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;
@@ -43,13 +46,15 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
+pub(crate) use actions::ActionChannel;
 use authority::{AuthorityCancelError, AuthoritySession};
 pub(crate) use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
-pub(crate) use chat::{ChatConnection, chat_platform_for};
+pub(crate) use chat::chat_platform_for;
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
+pub(crate) use renderer::renderer_access_for;
 pub(crate) use services::RuntimeServices;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
@@ -59,7 +64,7 @@ pub(crate) use signing_host::{
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 use tracing::{instrument, warn};
-use truapi::api::Chat;
+use truapi::api::{Chat, Renderer};
 use truapi::latest::GenericError;
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
@@ -69,6 +74,7 @@ use truapi::versioned::chat::{
     HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
 use truapi::versioned::preimage::RemotePreimageSubmitError;
+use truapi::versioned::renderer::HostRendererActionSubscribeItem;
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 use truapi_platform::{
     AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
@@ -244,7 +250,8 @@ pub struct ProductRuntimeHost {
     /// Stable per-product-runtime id used to scope long-lived chain follow
     /// operation ids within one shared host runtime.
     core_instance: u64,
-    chat: Arc<ChatConnection>,
+    chat: Arc<ActionChannel<HostChatActionSubscribeItem>>,
+    renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
 }
 
 impl ProductRuntimeHost {
@@ -266,6 +273,7 @@ impl ProductRuntimeHost {
             product,
             core_instance,
             chat: adapters.chat,
+            renderer: adapters.renderer,
         }
     }
 
@@ -377,7 +385,8 @@ impl ProductRuntimeHost {
         );
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let core_instance = services.next_core_instance();
-        let chat = Arc::new(ChatConnection::new());
+        let chat = Arc::new(ActionChannel::chat());
+        let renderer = Arc::new(ActionChannel::renderer());
         let host = Self {
             services,
             platform,
@@ -387,6 +396,7 @@ impl ProductRuntimeHost {
             product,
             core_instance,
             chat,
+            renderer,
         };
         (host, pairing_host)
     }
@@ -950,7 +960,42 @@ impl ProductRuntimeHost {
         action: truapi::versioned::chat::HostChatActionSubscribeItem,
     ) -> Result<(), crate::host_core::ProductRuntimeError> {
         self.native_chat_platform()?;
-        self.chat.publish_action(action)
+        self.chat.publish(action)
+    }
+
+    /// Renderer access policy for this connection; see [`renderer_access_for`].
+    pub(crate) fn renderer_access(&self) -> Result<(), crate::host_core::ProductRuntimeError> {
+        renderer_access_for(self.product.execution_kind)
+    }
+
+    /// Take one core-held reference on this connection's product worker, for
+    /// a body the product is drawing. Pair every call with one
+    /// [`Self::release_worker_reference`].
+    pub(crate) fn acquire_worker_reference(&self) {
+        self.services
+            .worker_ledger
+            .acquire(&self.product.product_id);
+    }
+
+    /// Release one core-held reference on this connection's product worker.
+    pub(crate) fn release_worker_reference(&self) {
+        self.services
+            .worker_ledger
+            .release(&self.product.product_id);
+    }
+
+    /// End the renderer action stream this connection's product is reading.
+    pub(crate) fn detach_renderer(&self) {
+        self.renderer.detach();
+    }
+
+    /// Buffer one renderer action for this connection's product.
+    pub(crate) fn publish_renderer_action(
+        &self,
+        item: HostRendererActionSubscribeItem,
+    ) -> Result<(), crate::host_core::ProductRuntimeError> {
+        self.renderer_access()?;
+        self.renderer.publish(item)
     }
 }
 
@@ -1056,7 +1101,21 @@ impl Chat for ProductRuntimeHost {
         if let Err(error) = self.chat_platform::<GenericError>() {
             return Subscription::interrupted(error);
         }
-        self.chat.subscribe_actions()
+        self.chat.subscribe()
+    }
+}
+
+#[truapi_platform::async_trait]
+impl Renderer for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "renderer.action_subscribe"))]
+    async fn action_subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostRendererActionSubscribeItem, CallError<GenericError>> {
+        if self.renderer_access().is_err() {
+            return Subscription::interrupted(CallError::Denied);
+        }
+        self.renderer.subscribe()
     }
 }
 /// Report a rejected chat bot field as a bot-registration domain error.

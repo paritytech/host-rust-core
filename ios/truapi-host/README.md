@@ -174,9 +174,16 @@ untrusted: they may name a message in another room, or one that never existed.
 
 On the execution: `publishChatAction` delivers a user's action back to the
 product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
-republishes the room list; `renderCustomMessage` returns a stream of typed UI
-for a stored custom message; and `sessionChatIdentityKey` reads the session's
-X25519 chat identity private key, which must not be logged or persisted.
+republishes the room list; `render` returns a stream of `RendererNode` trees
+for one render context; `publishRendererAction` delivers a renderer action
+back to the product; and `sessionChatIdentityKey` reads the session's X25519
+chat identity private key, which must not be logged or persisted. An open
+render stream is one worker reference the core holds on the product's behalf;
+the transition it causes arrives on the runtime bridge's
+`workerDemandChanged`, never on the execution's. Two rules the core
+cannot check are the host's to keep: send a render context only for a surface
+the product's manifest `includes`, and publish a renderer action only from the
+current tree of an open render stream.
 
 ## Architecture
 

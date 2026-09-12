@@ -113,15 +113,24 @@ Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
 reported to the worker in its `init` message, so the core sees the same
 capability set on both sides of the boundary.
 
-### Custom chat messages
+### Product-rendered bodies
 
-A host that serves `chat` can also draw product-authored custom messages and
-send back what the user does with them. Both live on the product provider and
-are present only on runtimes holding a live channel to the core:
+A host can ask a product to draw one body — a chat message, an input-widget
+candidate, a Pocket card — and send back what the user does with it. Both entry
+points live on the product provider and are present only on runtimes holding a
+live channel to the core:
 
 ```ts
-const stop = provider.renderCustomMessage!(
-  { messageId, messageType, payload },
+import type { RenderContext } from "@parity/truapi";
+
+// `payload` here is the product-defined body, hex-encoded.
+const context: RenderContext = {
+  tag: "ChatMessage",
+  value: { roomId, messageId, messageType },
+};
+
+const stop = provider.render!(
+  { context, payload },
   {
     onUpdate: (node) => setTree(node), // complete replacement tree each time
     onComplete: () => setTree(null),
@@ -130,23 +139,35 @@ const stop = provider.renderCustomMessage!(
 );
 
 // A button inside the rendered tree was tapped:
-await provider.publishChatAction!({
-  roomId,
-  peer: productId,
-  payload: { tag: "ActionTriggered", value: { messageId, actionId, payload } },
+await provider.publishRendererAction!({
+  context,
+  actionId,
+  payload: "0x", // a `Button` press carries no data
 });
 
 stop(); // stop rendering; safe to call more than once
 ```
 
-`renderCustomMessage` reports failure through `onError` rather than throwing, so
-one dead render cannot take the surrounding message list with it. Exactly one
-terminal fires per render: `onComplete` means the last tree delivered stands,
-`onError` means it is partial and must not be shown as final. A product that
-declines the render, a tree that fails to decode, a closed connection, and a
-throwing renderer all arrive as `onError`. Both entry points sit behind the same
-access policy as every other Chat call: a connection that is not a `Worker`
-execution with a live session is refused.
+A `TextField` value change instead carries the UTF-8 bytes of the new value,
+with no length prefix.
+
+`render` reports failure through `onError` rather than throwing, so one dead
+render cannot take the surrounding surface with it. Exactly one terminal fires
+per render: `onComplete` means the last tree delivered stands, `onError` means
+it is partial and must not be shown as final. A product that declines the
+render, a tree that fails to decode, a closed connection, and a throwing
+renderer all arrive as `onError`. An open render holds one worker reference for
+the provider's product, released when the stream ends or the disposer runs, so
+the product's worker stays up for as long as something is being drawn.
+
+`publishChatAction` is the path for posted messages, commands and host-drawn
+`Actions` buttons. Each action entry point sits behind its own service's access
+policy: the renderer refuses a connection that is not a `Worker` execution, and
+chat additionally requires a live session.
+
+Two rules the core cannot check are the host's to keep: send a render context
+only for a surface the product's manifest `includes`, and publish a renderer
+action only from the current tree of an open render stream.
 
 ## Product account addresses
 

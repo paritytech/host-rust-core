@@ -39,7 +39,7 @@ use crate::host_logic::sso::messages::{
 use crate::host_logic::worker::WorkerTransition;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
-use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererSubscription};
+use crate::native_renderer::{NativeRendererObserver, NativeRendererSubscription};
 use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
@@ -685,7 +685,8 @@ impl NativeTrUApiHostRuntime {
             #[cfg(feature = "ws-bridge")]
             callbacks,
             closed: AtomicBool::new(false),
-            chat_connection: Arc::new(crate::runtime::ChatConnection::new()),
+            chat_connection: Arc::new(crate::runtime::ActionChannel::chat()),
+            renderer_connection: Arc::new(crate::runtime::ActionChannel::renderer()),
             #[cfg(feature = "ws-bridge")]
             bridge: Mutex::new(None),
             #[cfg(feature = "ws-bridge")]
@@ -984,7 +985,13 @@ pub struct NativeProductExecution {
     callbacks: Arc<dyn HostCallbacks>,
     /// Single Chat action buffer shared with every product connection this
     /// execution opens; survives bridge restarts until [`Self::shutdown`].
-    chat_connection: Arc<crate::runtime::ChatConnection>,
+    chat_connection:
+        Arc<crate::runtime::ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
+    /// Single renderer action buffer shared with every product connection this
+    /// execution opens; survives bridge restarts until [`Self::shutdown`].
+    renderer_connection: Arc<
+        crate::runtime::ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>,
+    >,
     closed: AtomicBool,
     #[cfg(feature = "ws-bridge")]
     bridge: Mutex<Option<WsBridge>>,
@@ -999,6 +1006,7 @@ impl NativeProductExecution {
             chat_platform: self.chat.clone(),
             permission_status: Some(self.permission_status.clone()),
             chat: self.chat_connection.clone(),
+            renderer: self.renderer_connection.clone(),
         }
     }
 
@@ -1017,6 +1025,13 @@ impl NativeProductExecution {
             self.chat.as_ref(),
         )
         .map(drop)
+    }
+
+    fn require_renderer(&self) -> Result<(), crate::ProductRuntimeError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(crate::ProductRuntimeError::Closed);
+        }
+        crate::runtime::renderer_access_for(self.product.execution_kind)
     }
 
     #[cfg(feature = "ws-bridge")]
@@ -1138,20 +1153,20 @@ impl NativeProductExecution {
         action: v01::HostChatActionSubscribeItem,
     ) -> Result<(), crate::ProductRuntimeError> {
         self.require_chat()?;
-        self.chat_connection.publish_action(
-            truapi::versioned::chat::HostChatActionSubscribeItem::V1(action),
-        )
+        self.chat_connection
+            .publish(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
+                action,
+            ))
     }
 
-    /// Request typed native UI for one stored custom Chat message.
-    pub fn render_custom_message(
+    /// Ask the product to draw one body, delivering each replacement tree to
+    /// `observer` until the returned subscription is cancelled.
+    pub fn render(
         &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
-        observer: Box<dyn NativeCustomRendererObserver>,
-    ) -> Result<Arc<NativeCustomRendererSubscription>, crate::ProductRuntimeError> {
-        self.require_chat()?;
+        request: v01::ProductRendererRenderRequest,
+        observer: Box<dyn NativeRendererObserver>,
+    ) -> Result<Arc<NativeRendererSubscription>, crate::ProductRuntimeError> {
+        self.require_renderer()?;
         #[cfg(feature = "ws-bridge")]
         {
             let control = self
@@ -1160,15 +1175,26 @@ impl NativeProductExecution {
                 .expect("native product control mutex poisoned")
                 .clone()
                 .ok_or(crate::ProductRuntimeError::NotConnected)?;
-            let stream = control.render_custom_message(message_id, message_type, payload)?;
-            let observer: Arc<dyn NativeCustomRendererObserver> = observer.into();
+            let stream = control.render(request)?;
+            let observer: Arc<dyn NativeRendererObserver> = observer.into();
             Ok(observe_renderer(stream, observer, self.spawner.clone()))
         }
         #[cfg(not(feature = "ws-bridge"))]
         {
-            let _ = (message_id, message_type, payload, observer);
+            let _ = (request, observer);
             Err(crate::ProductRuntimeError::NotConnected)
         }
+    }
+
+    /// Publish one action triggered inside a product-rendered body, buffering
+    /// it until the product connection subscribes.
+    pub fn publish_renderer_action(
+        &self,
+        item: v01::HostRendererActionSubscribeItem,
+    ) -> Result<(), crate::ProductRuntimeError> {
+        self.require_renderer()?;
+        self.renderer_connection
+            .publish(truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(item))
     }
 
     /// Permanently shut down this executable and all of its connection state.
@@ -1183,6 +1209,7 @@ impl NativeProductExecution {
         #[cfg(feature = "ws-bridge")]
         self.stop_bridge();
         self.chat_connection.close();
+        self.renderer_connection.close();
     }
 }
 
@@ -2674,7 +2701,7 @@ mod tests {
             ProductExecutionKind::Worker,
         )
         .unwrap();
-        let connection = crate::runtime::ChatConnection::new();
+        let connection = crate::runtime::ActionChannel::chat();
 
         let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
             &platform,
@@ -2693,9 +2720,9 @@ mod tests {
         ))
         .expect("an action set must reach the host");
 
-        let mut actions = connection.subscribe_actions();
+        let mut actions = connection.subscribe();
         connection
-            .publish_action(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
+            .publish(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
                 v01::HostChatActionSubscribeItem {
                     room_id: "support".to_string(),
                     peer: "alice".to_string(),
@@ -2736,6 +2763,59 @@ mod tests {
         // The id the product must match on to find the message it posted.
         assert_eq!(trigger.message_id, posted.message_id);
         assert_eq!(trigger.action_id, "approve");
+    }
+
+    #[test]
+    fn a_renderer_action_reaches_the_product_that_rendered_it() {
+        // The renderer half of the same loop: the host publishes an action
+        // triggered inside a body it asked the product to draw, and the
+        // product's `Renderer::action_subscribe` stream delivers it unaltered,
+        // context included. The channel is execution-scoped, so the admin
+        // handle built from the same execution reads what the execution
+        // published.
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::new()),
+                None,
+                native_execution_config("chat.dot", ProductExecutionKind::Worker),
+            )
+            .expect("Worker execution should open");
+
+        let admin = execution.admin();
+        let mut actions = futures::executor::block_on(truapi::api::Renderer::action_subscribe(
+            admin.product_runtime().as_ref(),
+            &truapi::CallContext::with_request_id("renderer-1".to_string()),
+        ));
+
+        let published = v01::HostRendererActionSubscribeItem {
+            context: v01::RenderContext::ChatMessage {
+                room_id: "support".to_string(),
+                message_id: "message-1".to_string(),
+                message_type: "vote".to_string(),
+            },
+            action_id: "approve".to_string(),
+            payload: Vec::new(),
+        };
+        execution
+            .publish_renderer_action(published.clone())
+            .expect("a Worker execution may publish renderer actions");
+
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        let delivered = match actions.poll_next_unpin(&mut cx) {
+            core::task::Poll::Ready(Some(item)) => item,
+            other => panic!("a published renderer action must be ready, got {other:?}"),
+        };
+        let Ok(truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(delivered)) =
+            delivered
+        else {
+            panic!("expected a renderer action item")
+        };
+        assert_eq!(delivered, published);
     }
 
     #[test]

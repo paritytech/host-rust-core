@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "9b243e62120ef031";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "e883e2c0b9857933";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -252,12 +252,6 @@ pub const CHAT_POST_MESSAGE: MethodIds = MethodIds {
 pub const CHAT_ACTION_SUBSCRIBE: MethodIds = MethodIds {
     trait_id: 4,
     method_id: 4,
-};
-
-/// Wire discriminants for `chat_custom_message_render`.
-pub const CHAT_CUSTOM_MESSAGE_RENDER: MethodIds = MethodIds {
-    trait_id: 4,
-    method_id: 5,
 };
 
 /// Wire discriminants for `coin_payment_create_purse`.
@@ -488,6 +482,18 @@ pub const LOCALE_SUBSCRIBE: MethodIds = MethodIds {
     method_id: 0,
 };
 
+/// Wire discriminants for `renderer_render`.
+pub const RENDERER_RENDER: MethodIds = MethodIds {
+    trait_id: 17,
+    method_id: 0,
+};
+
+/// Wire discriminants for `renderer_action_subscribe`.
+pub const RENDERER_ACTION_SUBSCRIBE: MethodIds = MethodIds {
+    trait_id: 17,
+    method_id: 1,
+};
+
 /// The full wire table. Trait ids and per-trait method ordering are
 /// part of the wire protocol; only ever append within a trait.
 /// Removed methods leave their slot empty.
@@ -631,10 +637,6 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "chat_action_subscribe",
         kind: WireKind::Subscription(CHAT_ACTION_SUBSCRIBE),
-    },
-    WireEntry {
-        method: "chat_custom_message_render",
-        kind: WireKind::Subscription(CHAT_CUSTOM_MESSAGE_RENDER),
     },
     WireEntry {
         method: "coin_payment_create_purse",
@@ -787,5 +789,13 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "locale_subscribe",
         kind: WireKind::Subscription(LOCALE_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "renderer_render",
+        kind: WireKind::Subscription(RENDERER_RENDER),
+    },
+    WireEntry {
+        method: "renderer_action_subscribe",
+        kind: WireKind::Subscription(RENDERER_ACTION_SUBSCRIBE),
     },
 ];

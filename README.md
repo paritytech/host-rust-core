@@ -275,7 +275,7 @@ does not provision or pair a signer-bot user.
 To exercise the shared-core Chat path with the first-party TrUAPI Playground
 worker, build and serve the local product, install its worker into the
 simulator app's product storage, and open its native Chat application. The
-worker drives all six Chat methods, so a host without bot registration reports
+worker drives all five Chat methods and both Renderer methods, so a host without bot registration reports
 that row red:
 
 ```bash

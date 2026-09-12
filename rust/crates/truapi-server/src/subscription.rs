@@ -806,10 +806,10 @@ mod tests {
         // The fixture above recurses through `Box`, which uses a different
         // `Decode` impl than the `Vec<Self>` the production type recurses
         // through. Pin the boundary on the type actually decoded here.
-        fn nested(depth: u32) -> truapi::versioned::chat::ProductChatCustomMessageRenderItem {
-            let mut node = truapi::v01::CustomRendererNode::Nil;
+        fn nested(depth: u32) -> truapi::versioned::renderer::ProductRendererRenderItem {
+            let mut node = truapi::v01::RendererNode::Nil;
             for _ in 0..depth {
-                node = truapi::v01::CustomRendererNode::Box {
+                node = truapi::v01::RendererNode::Box {
                     modifiers: Vec::new(),
                     props: truapi::v01::BoxProps {
                         content_alignment: None,
@@ -817,13 +817,13 @@ mod tests {
                     children: vec![node],
                 };
             }
-            truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node)
+            truapi::versioned::renderer::ProductRendererRenderItem::V1(node)
         }
 
         let decode = |depth: u32| {
             let bytes = nested(depth).encode();
             let mut input = &bytes[..];
-            truapi::versioned::chat::ProductChatCustomMessageRenderItem::decode_with_depth_limit(
+            truapi::versioned::renderer::ProductRendererRenderItem::decode_with_depth_limit(
                 MAX_SUBSCRIPTION_DECODE_DEPTH,
                 &mut input,
             )

@@ -11,13 +11,16 @@ import type {
 } from "../index.js";
 import type {
   Bytes32,
-  CustomRendererNode,
   GenericError,
   HostChatActionSubscribeItem,
+  HostRendererActionSubscribeItem,
+  RendererNode,
 } from "@parity/truapi";
 import {
-  CustomRendererNode as CustomRendererNodeCodec,
   HostChatActionSubscribeItem as HostChatActionSubscribeItemCodec,
+  HostRendererActionSubscribeItem as HostRendererActionSubscribeItemCodec,
+  ProductRendererRenderRequest as ProductRendererRenderRequestCodec,
+  RendererNode as RendererNodeCodec,
 } from "@parity/truapi";
 import { PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec } from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -30,7 +33,7 @@ import type {
 } from "../worker-protocol.js";
 import { bytesToHex } from "@parity/truapi/scale";
 import { startRawSubscription } from "../generated/worker-callbacks.js";
-import { errorMessage } from "../error.js";
+import { errorMessage, toError } from "../error.js";
 
 export type WebWorkerHostConfig = Omit<
   ProductRuntimeConfig,
@@ -126,6 +129,17 @@ interface CoreState {
   disposed: boolean;
 }
 
+/**
+ * One live render on the main thread. The core id rides along so disposing one
+ * provider fails only its own renders.
+ */
+interface RenderEntry {
+  coreId: number;
+  onUpdate: (node: RendererNode) => void;
+  onComplete: () => void;
+  onError: (error: Error) => void;
+}
+
 interface RuntimeState {
   worker: Worker;
   rawCallbacks: RawCallbacks;
@@ -184,23 +198,13 @@ interface RuntimeState {
       reject: (error: Error) => void;
     }
   >;
-  pendingChatActions: Map<
+  /** Host-authored Chat and Renderer actions awaiting the worker's response. */
+  pendingActions: Map<
     number,
     { resolve: () => void; reject: (error: Error) => void }
   >;
-  /**
-   * Sinks for live custom-message renders, keyed by render id. The core id
-   * rides along so disposing one provider fails only its own renders.
-   */
-  customRenders: Map<
-    number,
-    {
-      coreId: number;
-      onUpdate: (node: CustomRendererNode) => void;
-      onComplete: () => void;
-      onError: (error: Error) => void;
-    }
-  >;
+  /** Sinks for live renders, keyed by render id. */
+  renders: Map<number, RenderEntry>;
   /** Products whose worker the core currently wants, for late subscribers. */
   wantedWorkers: Set<string>;
   workerDemandListeners: Set<(change: WorkerDemandChange) => void>;
@@ -221,8 +225,8 @@ let nextSessionChatIdentityKeyRequestId = 0;
 let nextDeviceEncryptionKeyRequestId = 0;
 let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
-let nextChatActionRequestId = 0;
-let nextCustomRenderId = 0;
+let nextActionRequestId = 0;
+let nextRenderId = 0;
 
 function encodePermissionAuthorizationRequest(
   request: PermissionAuthorizationRequest,
@@ -279,7 +283,8 @@ function readPersistedDebuggerUrl(): DebuggerEnablement {
   // (tsc output run under Node, unit tests), where the access throws.
   let dev = false;
   try {
-    dev = (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
+    dev =
+      (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
   } catch {
     dev = false;
   }
@@ -344,7 +349,9 @@ function reportDebuggerEnablement(e: DebuggerEnablement): void {
   }
   const origin = globalThis.location?.origin ?? "(unknown origin)";
   if (e.reason === "enabled") {
-    console.info(`[truapi] wire debugger: dialling ${e.url} (origin ${origin})`);
+    console.info(
+      `[truapi] wire debugger: dialling ${e.url} (origin ${origin})`,
+    );
     return;
   }
   const why =
@@ -684,10 +691,10 @@ function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingSessionChatIdentityKeys, error);
   rejectAll(state.pendingDeviceEncryptionKeys, error);
   rejectAll(state.pendingProductSubtreePublicKeys, error);
-  rejectAll(state.pendingChatActions, error);
-  for (const [renderId, sink] of [...state.customRenders]) {
-    state.customRenders.delete(renderId);
-    reportRenderFailure(sink, error);
+  rejectAll(state.pendingActions, error);
+  for (const renderId of [...state.renders.keys()]) {
+    const sink = takeRender(state, renderId);
+    if (sink) reportRenderFailure(sink, error);
   }
   for (const pending of state.pendingCores.values()) {
     pending.reject(error);
@@ -819,8 +826,8 @@ export function createWebWorkerPairingHostRuntime(
       pendingSessionChatIdentityKeys: new Map(),
       pendingProductSubtreePublicKeys: new Map(),
       pendingDeviceEncryptionKeys: new Map(),
-      pendingChatActions: new Map(),
-      customRenders: new Map(),
+      pendingActions: new Map(),
+      renders: new Map(),
       wantedWorkers: new Set(),
       workerDemandListeners: new Set(),
       closedError: null,
@@ -895,33 +902,33 @@ export function createWebWorkerPairingHostRuntime(
           handleWorkerDemandChanged(state, msg.productId, msg.wanted);
           break;
         case "publishChatActionResponse":
+        case "publishRendererActionResponse":
           settlePending(
-            state.pendingChatActions,
+            state.pendingActions,
             msg.requestId,
             msg.ok
               ? { ok: true, value: undefined }
               : { ok: false, error: msg.error },
           );
           break;
-        case "renderCustomMessageItem": {
-          const sink = state.customRenders.get(msg.renderId);
+        case "renderItem": {
+          const sink = state.renders.get(msg.renderId);
           if (!sink) break;
           // Escaping the listener would strand the render with no terminal.
           try {
-            sink.onUpdate(CustomRendererNodeCodec.dec(msg.node));
+            sink.onUpdate(RendererNodeCodec.dec(msg.node));
           } catch (err) {
-            state.customRenders.delete(msg.renderId);
+            takeRender(state, msg.renderId);
             state.worker.postMessage({
-              kind: "renderCustomMessageStop",
+              kind: "renderStop",
               renderId: msg.renderId,
             } satisfies MainToWorker);
             reportRenderFailure(sink, err);
           }
           break;
         }
-        case "renderCustomMessageComplete": {
-          const sink = state.customRenders.get(msg.renderId);
-          state.customRenders.delete(msg.renderId);
+        case "renderComplete": {
+          const sink = takeRender(state, msg.renderId);
           try {
             sink?.onComplete();
           } catch (err) {
@@ -929,9 +936,8 @@ export function createWebWorkerPairingHostRuntime(
           }
           break;
         }
-        case "renderCustomMessageError": {
-          const sink = state.customRenders.get(msg.renderId);
-          state.customRenders.delete(msg.renderId);
+        case "renderError": {
+          const sink = takeRender(state, msg.renderId);
           if (sink) reportRenderFailure(sink, new Error(msg.error));
           break;
         }
@@ -1080,8 +1086,12 @@ function handleFrameError(
   console.error("[truapi worker]", error);
   const core = state.cores.get(coreId);
   if (!core) return;
-  closeCoreState(core, new Error(`worker frame error: ${error}`));
+  const failure = new Error(`worker frame error: ${error}`);
+  closeCoreState(core, failure);
   state.cores.delete(coreId);
+  // Renders left registered would never settle: the worker cancels them with
+  // the core, so nothing further arrives to complete the sink.
+  failRendersForCore(state, coreId, failure);
   try {
     state.worker.postMessage({
       kind: "disposeCore",
@@ -1304,10 +1314,27 @@ function reportRenderFailure(
   cause: unknown,
 ): void {
   try {
-    sink.onError(cause instanceof Error ? cause : new Error(errorMessage(cause)));
+    sink.onError(
+      cause instanceof Error ? cause : new Error(errorMessage(cause)),
+    );
   } catch (err) {
     console.warn("[truapi worker] render onError threw:", err);
   }
+}
+
+/**
+ * Drop one render from the ledger. Returns the sink so the caller can settle
+ * it, and undefined once the render is already gone, which is what keeps a
+ * render settled exactly once.
+ */
+function takeRender(
+  state: RuntimeState,
+  renderId: number,
+): RenderEntry | undefined {
+  const entry = state.renders.get(renderId);
+  if (!entry) return undefined;
+  state.renders.delete(renderId);
+  return entry;
 }
 
 /** Settle and drop every render belonging to one product connection. */
@@ -1316,11 +1343,40 @@ function failRendersForCore(
   coreId: number,
   error: Error,
 ): void {
-  for (const [renderId, sink] of [...state.customRenders]) {
-    if (sink.coreId !== coreId) continue;
-    state.customRenders.delete(renderId);
-    reportRenderFailure(sink, error);
+  for (const [renderId, entry] of [...state.renders]) {
+    if (entry.coreId !== coreId) continue;
+    const sink = takeRender(state, renderId);
+    if (sink) reportRenderFailure(sink, error);
   }
+}
+
+/**
+ * Post one host-authored action to the worker and settle on its response.
+ * Encoding runs before the pending entry exists, so a payload the codec
+ * rejects fails the promise without leaving one behind.
+ */
+function publishAction(
+  state: RuntimeState,
+  core: CoreState,
+  kind: "publishChatAction" | "publishRendererAction",
+  encode: () => Uint8Array,
+): Promise<void> {
+  if (state.disposed || core.disposed) {
+    return Promise.reject(new Error("product connection is closed"));
+  }
+  let action: Uint8Array;
+  try {
+    action = encode();
+  } catch (err) {
+    return Promise.reject(toError(err));
+  }
+  return sendWorkerRequest<void>(
+    state,
+    state.pendingActions,
+    () => nextActionRequestId++,
+    undefined,
+    (requestId) => ({ kind, coreId: core.coreId, requestId, action }),
+  );
 }
 
 function buildProvider(
@@ -1409,44 +1465,57 @@ function buildProvider(
       runtime.setLogLevel(level);
     },
     publishChatAction(action: HostChatActionSubscribeItem): Promise<void> {
-      if (state.disposed || core.disposed) {
-        return Promise.reject(new Error("product connection is closed"));
-      }
-      const requestId = nextChatActionRequestId++;
-      return new Promise((resolve, reject) => {
-        state.pendingChatActions.set(requestId, { resolve, reject });
-        state.worker.postMessage({
-          kind: "publishChatAction",
-          coreId: core.coreId,
-          requestId,
-          action: HostChatActionSubscribeItemCodec.enc(action),
-        } satisfies MainToWorker);
-      });
+      return publishAction(state, core, "publishChatAction", () =>
+        HostChatActionSubscribeItemCodec.enc(action),
+      );
     },
-    renderCustomMessage(request, sink) {
+    publishRendererAction(
+      item: HostRendererActionSubscribeItem,
+    ): Promise<void> {
+      return publishAction(state, core, "publishRendererAction", () =>
+        HostRendererActionSubscribeItemCodec.enc(item),
+      );
+    },
+    render(request, sink) {
       if (state.disposed || core.disposed) {
         sink.onError?.(new Error("product connection is closed"));
         return () => {};
       }
-      const renderId = nextCustomRenderId++;
-      state.customRenders.set(renderId, {
+      // Encode before the ledger entry exists, so a request the codec rejects
+      // reaches the sink as an error rather than escaping `render` and leaving
+      // a render registered that the worker was never told about.
+      let encoded: Uint8Array;
+      try {
+        encoded = ProductRendererRenderRequestCodec.enc(request);
+      } catch (err) {
+        reportRenderFailure({ onError: (error) => sink.onError?.(error) }, err);
+        return () => {};
+      }
+      const renderId = nextRenderId++;
+      // The core holds the worker reference an open render is worth, and
+      // reports every demand transition through `workerDemandChanged`.
+      state.renders.set(renderId, {
         coreId: core.coreId,
-        onUpdate: sink.onUpdate,
+        onUpdate: (node) => sink.onUpdate(node),
         onComplete: () => sink.onComplete?.(),
         onError: (error) => sink.onError?.(error),
       });
-      state.worker.postMessage({
-        kind: "renderCustomMessageStart",
-        coreId: core.coreId,
-        renderId,
-        messageId: request.messageId,
-        messageType: request.messageType,
-        payload: request.payload,
-      } satisfies MainToWorker);
-      return () => {
-        if (!state.customRenders.delete(renderId)) return;
+      try {
         state.worker.postMessage({
-          kind: "renderCustomMessageStop",
+          kind: "renderStart",
+          coreId: core.coreId,
+          renderId,
+          request: encoded,
+        } satisfies MainToWorker);
+      } catch (err) {
+        const failed = takeRender(state, renderId);
+        if (failed) reportRenderFailure(failed, err);
+        return () => {};
+      }
+      return () => {
+        if (!takeRender(state, renderId)) return;
+        state.worker.postMessage({
+          kind: "renderStop",
           renderId,
         } satisfies MainToWorker);
       };

@@ -65,6 +65,7 @@ const TRAIT_MODULE_MAP: &[(&str, &str)] = &[
     ("Payment", "payment"),
     ("Permissions", "permissions"),
     ("Preimage", "preimage"),
+    ("Renderer", "renderer"),
     ("ResourceAllocation", "resource_allocation"),
     ("Signing", "signing"),
     ("StatementStore", "statement_store"),

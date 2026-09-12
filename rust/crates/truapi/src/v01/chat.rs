@@ -1,7 +1,3 @@
-/// UI tree types for host-rendered custom chat messages.
-pub mod custom_renderer;
-pub use custom_renderer::*;
-
 use parity_scale_codec::{Decode, Encode};
 
 /// Request to create a chat room.
@@ -180,7 +176,9 @@ pub struct ChatReaction {
     pub emoji: String,
 }
 
-/// A custom message with application-defined type and binary payload.
+/// A custom message with application-defined type and binary payload. The
+/// host draws it through `Renderer::render`, with a `ChatMessage` context
+/// carrying `message_type` and `payload` as the render payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatCustomMessage {
@@ -242,7 +240,8 @@ pub enum HostChatPostMessageError {
     },
 }
 
-/// Payload when a user clicks an action button.
+/// A press on a button the host draws for a `ChatMessageContent::Actions`
+/// message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ActionTrigger {
@@ -271,7 +270,7 @@ pub struct ChatCommand {
 pub enum ChatActionPayload {
     /// A peer posted a message.
     MessagePosted(ChatMessageContent),
-    /// A user triggered an action button.
+    /// A user pressed a host-drawn `Actions` button.
     ActionTriggered(ActionTrigger),
     /// A user issued a command.
     Command(ChatCommand),

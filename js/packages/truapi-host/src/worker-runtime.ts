@@ -29,12 +29,16 @@ import type {
 } from "./wasm-module.js";
 import { errorMessage } from "./error.js";
 import {
-  handlePublishChatAction,
-  handleRenderCustomMessageStart,
+  CHAT_ACTION_ENTRY_POINT,
+  RENDERER_ACTION_ENTRY_POINT,
+  handlePublishAction,
+} from "./worker-actions.js";
+import {
+  handleRenderStart,
   stopRender,
   stopRendersForCore,
   type RenderSubscriptions,
-} from "./worker-chat.js";
+} from "./worker-renderer.js";
 import {
   dispatchChainResponse,
   dispatchSubscriptionError,
@@ -635,7 +639,7 @@ const cores = new Map<number, WorkerProductRuntime>();
 // core for the whole duration of an async method, so `free()` throws while one
 // is in flight. `disposeCore` aborts these then awaits them before freeing.
 const inFlightFrames = new Map<number, Set<Promise<void>>>();
-/** Live custom-message render subscriptions, keyed by main-thread render id. */
+/** Live render subscriptions, keyed by main-thread render id. */
 const renders: RenderSubscriptions = new Map();
 let wasm: WasmModuleShape | null = null;
 
@@ -841,7 +845,8 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       break;
     }
     case "publishChatAction":
-      handlePublishChatAction(
+      handlePublishAction(
+        CHAT_ACTION_ENTRY_POINT,
         cores.get(msg.coreId),
         postToMain,
         msg.coreId,
@@ -849,19 +854,27 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         msg.action,
       );
       break;
-    case "renderCustomMessageStart":
-      handleRenderCustomMessageStart(
+    case "publishRendererAction":
+      handlePublishAction(
+        RENDERER_ACTION_ENTRY_POINT,
+        cores.get(msg.coreId),
+        postToMain,
+        msg.coreId,
+        msg.requestId,
+        msg.action,
+      );
+      break;
+    case "renderStart":
+      handleRenderStart(
         cores.get(msg.coreId),
         postToMain,
         renders,
         msg.coreId,
         msg.renderId,
-        msg.messageId,
-        msg.messageType,
-        msg.payload,
+        msg.request,
       );
       break;
-    case "renderCustomMessageStop":
+    case "renderStop":
       stopRender(renders, msg.renderId);
       break;
     case "disposeCore":
