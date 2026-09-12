@@ -125,25 +125,25 @@ function accountGetResponsePayload(
 
 function rendererStart(
     requestId: string,
-    request: T.ProductChatCustomMessageRenderRequest,
+    request: T.ProductRendererRenderRequest,
 ): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_START,
-        T.VersionedProductChatCustomMessageRenderRequest.enc({
+        T.VersionedProductRendererRenderRequest.enc({
             tag: "V1",
             value: request,
         }),
     );
 }
 
-function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Array {
+function rendererReceive(requestId: string, node: T.RendererNode): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_RECEIVE,
-        T.VersionedProductChatCustomMessageRenderItem.enc({
+        T.VersionedProductRendererRenderItem.enc({
             tag: "V1",
             value: node,
         }),
@@ -159,7 +159,7 @@ function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Ar
 function rendererInterrupt(requestId: string): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_INTERRUPT,
         new Uint8Array([
             1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101,
@@ -174,7 +174,7 @@ function rendererTypedInterrupt(
 ): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_INTERRUPT,
         S.Result(S._void, S.CallError(T.GenericError)).enc({
             success: false,
@@ -187,7 +187,7 @@ function rendererTypedInterrupt(
 function rendererCleanInterrupt(requestId: string): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_INTERRUPT,
         S.Result(S._void, S.CallError(T.GenericError)).enc({
             success: true,
@@ -197,7 +197,7 @@ function rendererCleanInterrupt(requestId: string): Uint8Array {
 }
 
 function rendererStop(requestId: string): Uint8Array {
-    return wireFrame(requestId, W.CHAT_CUSTOM_MESSAGE_RENDER, MESSAGE_TYPE_STOP);
+    return wireFrame(requestId, W.RENDERER_RENDER, MESSAGE_TYPE_STOP);
 }
 
 function protocolError(requestId: string, payload: Uint8Array): Uint8Array {
@@ -546,15 +546,15 @@ describe("generated client transport", () => {
         fixture.receive(
             // No handler is ever registered in this test (no client is created),
             // so this never reaches a typed decode of the rest.
-            wireFrame("h:known", W.CHAT_CUSTOM_MESSAGE_RENDER, MESSAGE_TYPE_START),
+            wireFrame("h:known", W.RENDERER_RENDER, MESSAGE_TYPE_START),
         );
 
         expect(fixture.sent.map(toHex)).toEqual([
             toHex(
                 unsupportedMessage(
                     "h:known",
-                    W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                    W.CHAT_CUSTOM_MESSAGE_RENDER.method,
+                    W.RENDERER_RENDER.trait,
+                    W.RENDERER_RENDER.method,
                 ),
             ),
         ]);
@@ -863,16 +863,18 @@ describe("generated client transport", () => {
     it("buffers a host render start until the product registers its handler", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        const request: T.ProductChatCustomMessageRenderRequest = {
-            messageId: "message-1",
-            messageType: "vote",
+        const request: T.ProductRendererRenderRequest = {
+            context: {
+                tag: "ChatMessage",
+                value: { roomId: "room", messageId: "message-1", messageType: "vote" },
+            },
             payload: "0x0102",
         };
         // Legacy hosts use opaque ids rather than the Rust host's `h:` prefix.
         fixture.receive(rendererStart("legacy-render-1", request));
 
-        const handled: T.ProductChatCustomMessageRenderRequest[] = [];
-        client.chat.onCustomMessageRender((value) => {
+        const handled: T.ProductRendererRenderRequest[] = [];
+        client.renderer.onRender((value) => {
             handled.push(value);
         });
 
@@ -883,15 +885,17 @@ describe("generated client transport", () => {
     it("streams complete replacement trees on the host-owned request id", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        let send: ((node: T.CustomRendererNode) => void) | undefined;
-        client.chat.onCustomMessageRender((_request, sendItem) => {
+        let send: ((node: T.RendererNode) => void) | undefined;
+        client.renderer.onRender((_request, sendItem) => {
             send = sendItem;
         });
 
         fixture.receive(
             rendererStart("h:7", {
-                messageId: "message-7",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-7", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
@@ -908,14 +912,16 @@ describe("generated client transport", () => {
     it("declines a render when the handler throws", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        client.chat.onCustomMessageRender(() => {
+        client.renderer.onRender(() => {
             throw new Error("unsupported renderer");
         });
 
         fixture.receive(
             rendererStart("h:2", {
-                messageId: "message-2",
-                messageType: "unknown",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-2", messageType: "unknown" },
+                },
                 payload: "0x",
             }),
         );
@@ -926,14 +932,16 @@ describe("generated client transport", () => {
     it("ends a render with the interrupt value its handler supplies", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        client.chat.onCustomMessageRender((_request, _send, interrupt) => {
+        client.renderer.onRender((_request, _send, interrupt) => {
             interrupt({ tag: "HostFailure", value: { reason: "renderer failed" } });
         });
 
         fixture.receive(
             rendererStart("h:3", {
-                messageId: "message-3",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-3", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
@@ -952,15 +960,17 @@ describe("generated client transport", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
         let disposed = false;
-        client.chat.onCustomMessageRender((_request, _send, interrupt) => {
+        client.renderer.onRender((_request, _send, interrupt) => {
             interrupt();
             return () => (disposed = true);
         });
 
         fixture.receive(
             rendererStart("h:4", {
-                messageId: "message-4",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-4", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
@@ -975,8 +985,10 @@ describe("generated client transport", () => {
         for (let index = 1; index <= 65; index += 1) {
             fixture.receive(
                 rendererStart(`h:${index}`, {
-                    messageId: `message-${index}`,
-                    messageType: "vote",
+                    context: {
+                        tag: "ChatMessage",
+                        value: { roomId: "room", messageId: `message-${index}`, messageType: "vote" },
+                    },
                     payload: "0x",
                 }),
             );
@@ -990,20 +1002,26 @@ describe("generated client transport", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
         const disposed: string[] = [];
-        client.chat.onCustomMessageRender(
-            (request) => () => disposed.push(request.messageId),
-        );
+        client.renderer.onRender((request) => () => {
+            if (request.context.tag === "ChatMessage") {
+                disposed.push(request.context.value.messageId);
+            }
+        });
         fixture.receive(
             rendererStart("h:1", {
-                messageId: "one",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "one", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
         fixture.receive(
             rendererStart("h:2", {
-                messageId: "two",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "two", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
