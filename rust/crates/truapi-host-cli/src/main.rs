@@ -17,6 +17,7 @@ mod attestation;
 mod bootstrap;
 mod chain;
 mod chat;
+mod dev_purse;
 mod dotns_read;
 mod frame_server;
 mod network;
@@ -60,6 +61,7 @@ use truapi_server::{
 };
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
+use crate::dev_purse::DevPurse;
 use crate::network::{Network, NetworkConfig};
 use crate::platform::{ApprovalPolicy, CliPlatform, CliStoragePaths};
 use crate::sessions::{
@@ -1557,6 +1559,9 @@ fn build_signing_runtime(
         chat.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
     runtime.set_permission_status_host(status_host);
+    // Headless hosts have no Coinage; a development purse stands in so the
+    // RFC 0006 surface answers instead of refusing (`dev_purse.rs`).
+    runtime.set_payment_purse(DevPurse::load(platform.clone()));
     runtime.start_statement_allowance_renewal();
     Ok((runtime, platform))
 }

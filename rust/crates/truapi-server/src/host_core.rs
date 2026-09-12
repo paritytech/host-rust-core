@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost};
+use truapi_platform::{ChatPlatform, PaymentPurse, PermissionStatusHost};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -592,6 +592,14 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_permission_status_host"))]
     pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
         self.services.install_permission_status_host(host)
+    }
+
+    /// Install the host's [`PaymentPurse`], the backend of the RFC 0006
+    /// Payment surface. Set-once; returns whether this call installed it.
+    /// Call it before serving any product runtime.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_payment_purse"))]
+    pub fn set_payment_purse(&self, purse: Arc<dyn PaymentPurse>) -> bool {
+        self.services.install_payment_purse(purse)
     }
 
     /// Build a product-facing runtime from this signing host.

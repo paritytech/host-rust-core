@@ -25,6 +25,8 @@ import {
 } from "@parity/truapi";
 
 import type {
+  Balance,
+  CoinPaymentPurseId,
   GenericError,
   HostChatCreateRoomRequest,
   HostChatCreateRoomResponse,
@@ -41,6 +43,7 @@ import type {
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
   NotificationId,
+  PaymentTopUpSource,
   RemotePermissionResponse,
   Result,
 } from "@parity/truapi";
@@ -1249,6 +1252,31 @@ export interface PairingHostAdmin {
    * decoding that blob into live `SessionState` / `AuthState`.
    */
   notifySessionStoreChanged(): void;
+}
+
+/**
+ * A purse a host can disclose and fund (RFC 0006), installed once at startup
+ * like `PermissionStatusHost`. Without one the core answers products as a
+ * host with no payment surface. Balances are in the host's single payment
+ * asset.
+ */
+export interface PaymentPurse {
+  /**
+   * The current balance of `purse` (``undefined`` = main purse) first, then every
+   * change, until the stream is dropped.
+   */
+  subscribeBalance(
+    purse: CoinPaymentPurseId | undefined,
+  ): AsyncIterable<Balance>;
+
+  /**
+   * Move `amount` from `source` into `purse` (``undefined`` = main purse).
+   */
+  topUp(
+    purse: CoinPaymentPurseId | undefined,
+    amount: Balance,
+    source: PaymentTopUpSource,
+  ): Promise<void>;
 }
 
 /**
