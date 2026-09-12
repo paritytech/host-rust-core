@@ -54,10 +54,15 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   activateStoredSession(): Promise<void>;
   activateExternalSession(blob: Uint8Array): Promise<void>;
   resetSessionState(): Promise<void>;
-  /** `"Start"` when this is the first reference on the product's worker. */
-  acquireWorker(productId: string): WorkerTransition | undefined;
-  /** `"Stop"` when it was the last reference. */
-  releaseWorker(productId: string): WorkerTransition | undefined;
+  /**
+   * Take one reference on the product's worker. The first one reports
+   * `"Start"` through the runtime's `workerDemandChanged` callback.
+   */
+  acquireWorker(productId: string): void;
+  /**
+   * Release one reference. The last one reports `"Stop"` the same way.
+   */
+  releaseWorker(productId: string): void;
   free(): void;
 }
 
