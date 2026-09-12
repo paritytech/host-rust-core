@@ -5,7 +5,7 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
-## [0.15.0] - 2026-09-11
+## [0.16.0] - 2026-09-12
 
 ### RFCs
 
@@ -13,6 +13,8 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Added
 
+- notify removed devices (#584)
+- add temporary deprecated unwrapped signing (#731)
 - address every frame with a (trait, method, message_type) envelope (#357)
 - generate typed dispatch and wire conversions (#651)
 - resolve the core from this tree for the iOS host (#725)
@@ -23,6 +25,8 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- RFC: Scoped grants in trustedProducts (#454)
+- @parity/truapi 0.15.0, @parity/truapi-host 0.12.0 (#732)
 - serve inter-host requests through typed handlers (#628)
 - @parity/truapi 0.14.0, @parity/truapi-host 0.11.0, @parity/ios-host 0.14.0, @parity/android-host 0.1.0 (#722)
 - Clarify TrUAPI README and documentation paths (#721)
