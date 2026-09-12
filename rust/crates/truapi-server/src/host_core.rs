@@ -31,6 +31,7 @@ use truapi_platform::{
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
+use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
     ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
@@ -365,6 +366,12 @@ impl PairingHostRuntime {
             .map_err(ring_vrf_admin_error)
     }
 
+    /// Reference counts per product worker, shared by every connection of
+    /// this host.
+    pub fn worker_ledger(&self) -> &WorkerLedger {
+        &self.services.worker_ledger
+    }
+
     /// Read the active session's X25519 chat identity private key, for hosts
     /// running their own P2P chat channel for the paired identity.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.session_chat_identity_key"))]
@@ -653,6 +660,12 @@ impl SigningHostRuntime {
             product,
             adapters,
         )
+    }
+
+    /// Reference counts per product worker, shared by every connection of
+    /// this host.
+    pub fn worker_ledger(&self) -> &WorkerLedger {
+        &self.services.worker_ledger
     }
 
     /// Return whether this host currently has an authenticated signing session.

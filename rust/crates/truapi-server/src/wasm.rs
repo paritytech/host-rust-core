@@ -36,6 +36,7 @@ use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "wasm-signing-host")]
 use crate::SigningHostRuntime;
+use crate::host_logic::worker::WorkerTransition;
 use crate::subscription::Spawner;
 use crate::{
     ChannelId, DebugEvent, DebugSink, FrameSink, PairingHostRuntime,
@@ -1056,6 +1057,30 @@ impl WasmPairingHostRuntime {
     #[wasm_bindgen(js_name = resetSessionState)]
     pub async fn reset_session_state(&self) {
         self.runtime.reset_session_state().await;
+    }
+
+    /// Take one reference on the product's worker for a modality holder.
+    /// `"Start"` means the host runs the worker now; `undefined` means it is
+    /// already wanted. Pair every call with one `releaseWorker`.
+    #[wasm_bindgen(js_name = acquireWorker)]
+    pub fn acquire_worker(&self, product_id: String) -> JsValue {
+        worker_transition_to_js(self.runtime.worker_ledger().acquire(&product_id))
+    }
+
+    /// Release one reference. `"Stop"` means nothing wants the worker and the
+    /// host may stop it; releasing with none held is a no-op.
+    #[wasm_bindgen(js_name = releaseWorker)]
+    pub fn release_worker(&self, product_id: String) -> JsValue {
+        worker_transition_to_js(self.runtime.worker_ledger().release(&product_id))
+    }
+}
+
+/// `"Start"`, `"Stop"`, or `undefined` for no transition.
+fn worker_transition_to_js(transition: Option<WorkerTransition>) -> JsValue {
+    match transition {
+        Some(WorkerTransition::Start) => JsValue::from_str("Start"),
+        Some(WorkerTransition::Stop) => JsValue::from_str("Stop"),
+        None => JsValue::UNDEFINED,
     }
 }
 

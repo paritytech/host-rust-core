@@ -136,6 +136,16 @@ export interface CustomMessageRenderSink {
   onError?(error: Error): void;
 }
 
+/**
+ * Demand on one product's worker crossed zero. `wanted: true` when the first
+ * reference or grant formed, so the host runs the worker; `wanted: false` when
+ * the last one left, so the host may stop it.
+ */
+export interface WorkerDemandChange {
+  productId: string;
+  wanted: boolean;
+}
+
 export interface TrUApiProductProvider extends WireProvider, CoreAdmin {
   /**
    * Re-tune the wasm core's log level at runtime. Present on runtimes that

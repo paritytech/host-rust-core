@@ -25,6 +25,7 @@ import type {
   WasmModuleShape,
   WorkerPairingHostRuntime,
   WorkerProductRuntime,
+  WorkerTransition,
 } from "./wasm-module.js";
 import { errorMessage } from "./error.js";
 import {
@@ -722,6 +723,12 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     case "notifySessionStoreChanged":
       runtime?.notifySessionStoreChanged();
       break;
+    case "acquireWorker":
+      reportWorkerTransition(msg.productId, runtime?.acquireWorker(msg.productId));
+      break;
+    case "releaseWorker":
+      reportWorkerTransition(msg.productId, runtime?.releaseWorker(msg.productId));
+      break;
     case "activateStoredSession":
       void handleSessionActivation(
         msg.requestId,
@@ -871,6 +878,19 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     }
   }
 });
+
+/** Post the wanted level when a ledger call crossed zero. */
+function reportWorkerTransition(
+  productId: string,
+  transition: WorkerTransition | undefined,
+): void {
+  if (transition === undefined) return;
+  postToMain({
+    kind: "workerDemandChanged",
+    productId,
+    wanted: transition === "Start",
+  });
+}
 
 async function disposeCore(coreId: number): Promise<void> {
   const core = cores.get(coreId);
