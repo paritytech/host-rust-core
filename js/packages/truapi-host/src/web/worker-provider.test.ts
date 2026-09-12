@@ -1236,32 +1236,40 @@ describe("createWebWorkerPairingHostRuntime", () => {
     ).not.toThrow();
   });
 
-  it("acquires and releases the worker for the render's product", async () => {
+  it("leaves the render's worker reference to the core", async () => {
     const worker = new FakeWorker();
-    const provider = await readyProvider(worker);
+    const runtime = await readyRuntime(worker);
+    const provider = await finishProviderReady(
+      worker,
+      runtime.createProvider({ productId: "dotli.dot" }),
+    );
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
 
-    provider.render!(renderRequest(), { onUpdate: () => {} });
+    const stop = provider.render!(renderRequest(), { onUpdate: () => {} });
 
-    // The reference must be in place before the worker starts the stream, or
-    // the product's worker can be stopped underneath a live render.
-    const acquireIndex = indexOfKind(worker, "acquireWorker");
-    const startIndex = indexOfKind(worker, "renderStart");
-    expect(worker.messages[acquireIndex]!.productId).toBe("dotli.dot");
-    expect(acquireIndex).toBeLessThan(startIndex);
+    // The core holds the reference, so this thread asks for none of its own.
+    expect(indexOfKind(worker, "acquireWorker")).toBe(-1);
+    // The demand the core's own reference caused still reaches the host.
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "dotli.dot",
+      wanted: true,
+    });
+    expect(seen).toEqual([{ productId: "dotli.dot", wanted: true }]);
+
+    stop();
     expect(indexOfKind(worker, "releaseWorker")).toBe(-1);
-
-    const { renderId } = lastMessageOfKind(worker, "renderStart");
-    worker.emit({ kind: "renderComplete", renderId });
-
-    const releaseIndex = indexOfKind(worker, "releaseWorker");
-    expect(worker.messages[releaseIndex]!.productId).toBe("dotli.dot");
-    expect(releaseIndex).toBeGreaterThan(startIndex);
-
-    // A late disposer must not release the reference a second time.
-    worker.emit({ kind: "renderComplete", renderId });
-    expect(
-      worker.messages.filter((m) => m.kind === "releaseWorker"),
-    ).toHaveLength(1);
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "dotli.dot",
+      wanted: false,
+    });
+    expect(seen).toEqual([
+      { productId: "dotli.dot", wanted: true },
+      { productId: "dotli.dot", wanted: false },
+    ]);
+    runtime.dispose();
   });
 
   it("binds a method-valued onUpdate to its own receiver", async () => {

@@ -131,15 +131,13 @@ interface CoreState {
 
 /**
  * One live render on the main thread. The core id rides along so disposing one
- * provider fails only its own renders, and `release` drops the worker
- * reference the render holds on its product.
+ * provider fails only its own renders.
  */
 interface RenderEntry {
   coreId: number;
   onUpdate: (node: RendererNode) => void;
   onComplete: () => void;
   onError: (error: Error) => void;
-  release: () => void;
 }
 
 interface RuntimeState {
@@ -1330,9 +1328,9 @@ function reportRenderFailure(
 }
 
 /**
- * Drop one render from the ledger and release the worker reference it held.
- * Returns the sink so the caller can settle it; undefined once the render is
- * already gone, which is what keeps the release exactly once per render.
+ * Drop one render from the ledger. Returns the sink so the caller can settle
+ * it, and undefined once the render is already gone, which is what keeps a
+ * render settled exactly once.
  */
 function takeRender(
   state: RuntimeState,
@@ -1341,7 +1339,6 @@ function takeRender(
   const entry = state.renders.get(renderId);
   if (!entry) return undefined;
   state.renders.delete(renderId);
-  entry.release();
   return entry;
 }
 
@@ -1481,21 +1478,13 @@ function buildProvider(
         return () => {};
       }
       const renderId = nextRenderId++;
-      // The render keeps the product's worker running for as long as it is
-      // open; every path out of the ledger goes through `takeRender`, so the
-      // reference is released exactly once.
-      let released = false;
-      runtime.acquireWorker(core.productId);
+      // The core holds the worker reference an open render is worth, and
+      // reports the demand it changes through `workerDemandChanged`.
       state.renders.set(renderId, {
         coreId: core.coreId,
         onUpdate: (node) => sink.onUpdate(node),
         onComplete: () => sink.onComplete?.(),
         onError: (error) => sink.onError?.(error),
-        release: () => {
-          if (released) return;
-          released = true;
-          runtime.releaseWorker(core.productId);
-        },
       });
       state.worker.postMessage({
         kind: "renderStart",

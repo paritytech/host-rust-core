@@ -980,6 +980,22 @@ impl ProductRuntimeHost {
         })
     }
 
+    /// Take one core-held reference on this connection's product worker, for
+    /// a body the product is drawing. Pair every call with one
+    /// [`Self::release_worker_reference`].
+    pub(crate) fn acquire_worker_reference(&self) {
+        self.services
+            .worker_ledger
+            .acquire_reported(&self.product.product_id);
+    }
+
+    /// Release one core-held reference on this connection's product worker.
+    pub(crate) fn release_worker_reference(&self) {
+        self.services
+            .worker_ledger
+            .release_reported(&self.product.product_id);
+    }
+
     /// End the renderer action stream this connection's product is reading.
     pub(crate) fn detach_renderer(&self) {
         self.renderer.detach();

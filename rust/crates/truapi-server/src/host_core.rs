@@ -1179,6 +1179,11 @@ impl ProductRuntimeControl {
 
     /// Ask this connection's product to draw one body, streaming replacement
     /// trees until the returned subscription is dropped.
+    ///
+    /// An open render stream is one reference on the product's worker, held by
+    /// the core for exactly as long as the returned subscription lives. A
+    /// transition it causes reaches the host through the observer installed on
+    /// [`WorkerLedger::install_demand_observer`].
     pub fn render(
         &self,
         request: v01::ProductRendererRenderRequest,
@@ -1187,6 +1192,7 @@ impl ProductRuntimeControl {
         ProductRuntimeError,
     > {
         self.runtime()?.renderer_access()?;
+        let reference = WorkerReference::acquire(self.runtime.clone());
         let request = truapi::versioned::renderer::ProductRendererRenderRequest::V1(request);
         let transport: Arc<dyn Transport> = self.transport.clone();
         let stream = crate::generated::dispatcher::renderer_render(
@@ -1199,7 +1205,53 @@ impl ProductRuntimeControl {
                 truapi::versioned::renderer::ProductRendererRenderItem::V1(node) => node,
             })
         });
-        Ok(truapi::Subscription::new(Box::pin(stream)))
+        Ok(truapi::Subscription::new(WorkerScopedStream {
+            inner: Box::pin(stream),
+            _reference: reference,
+        }))
+    }
+}
+
+/// One reference the core holds on a product's worker, released on drop.
+struct WorkerReference {
+    runtime: Arc<ProductRuntimeHost>,
+}
+
+impl WorkerReference {
+    /// Take a reference on the worker of the product `runtime` serves.
+    fn acquire(runtime: Arc<ProductRuntimeHost>) -> Self {
+        runtime.acquire_worker_reference();
+        Self { runtime }
+    }
+}
+
+impl Drop for WorkerReference {
+    fn drop(&mut self) {
+        self.runtime.release_worker_reference();
+    }
+}
+
+/// Render stream that owns the worker reference its body's product needs, so
+/// the reference ends when the host stops reading the stream.
+struct WorkerScopedStream {
+    inner: core::pin::Pin<
+        Box<
+            dyn futures::Stream<
+                    Item = Result<v01::RendererNode, truapi::CallError<v01::GenericError>>,
+                > + Send,
+        >,
+    >,
+    _reference: WorkerReference,
+}
+
+impl futures::Stream for WorkerScopedStream {
+    type Item = Result<v01::RendererNode, truapi::CallError<v01::GenericError>>;
+
+    fn poll_next(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Option<Self::Item>> {
+        self.get_mut().inner.as_mut().poll_next(cx)
     }
 }
 
@@ -1540,6 +1592,7 @@ mod tests {
         PairingBootstrap, derive_x25519_keypair_from_entropy, establish_sso_session_info,
         x25519_public_key,
     };
+    use crate::host_logic::worker::WorkerTransition;
     use crate::test_support::{StubPlatform, runtime_config, test_spawner, wait_until};
     use parity_scale_codec::Encode;
     use std::sync::atomic::Ordering;
@@ -2207,6 +2260,72 @@ mod tests {
             panic!("expected a renderer action item")
         };
         assert_eq!(delivered, published);
+    }
+
+    #[test]
+    fn an_open_render_holds_one_worker_reference() {
+        // The RFC makes an open render stream one worker reference, and the
+        // core owns it: nothing outside this call acquires or releases.
+        #[derive(Default)]
+        struct RecordingDemand {
+            transitions: Mutex<Vec<(String, WorkerTransition)>>,
+        }
+        impl crate::host_logic::worker::WorkerDemandObserver for RecordingDemand {
+            fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
+                self.transitions
+                    .lock()
+                    .expect("transition mutex poisoned")
+                    .push((product_id.to_string(), transition));
+            }
+        }
+
+        let (host_config, _) = runtime_config("worker.dot");
+        let product = ProductContext::new_with_execution(
+            "worker.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("worker product context is valid");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+        let services = runtime.admin.product_runtime().services().clone();
+        let demand = Arc::new(RecordingDemand::default());
+        assert!(
+            services
+                .worker_ledger
+                .install_demand_observer(demand.clone()),
+            "the observer installs once"
+        );
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+
+        let render = runtime
+            .control()
+            .render(v01::ProductRendererRenderRequest {
+                context: v01::RenderContext::PocketCard {
+                    card_id: "loyalty".into(),
+                },
+                payload: vec![],
+            })
+            .expect("a Worker connection may render");
+        assert_eq!(services.worker_ledger.count("worker.dot"), 1);
+
+        drop(render);
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+        assert_eq!(
+            demand
+                .transitions
+                .lock()
+                .expect("transition mutex poisoned")
+                .as_slice(),
+            [
+                ("worker.dot".to_string(), WorkerTransition::Start),
+                ("worker.dot".to_string(), WorkerTransition::Stop),
+            ]
+        );
     }
 
     #[test]
