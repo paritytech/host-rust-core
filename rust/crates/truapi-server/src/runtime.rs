@@ -60,6 +60,7 @@ pub(crate) use signing_host::{
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 use tracing::{instrument, warn};
 use truapi::api::Chat;
+use truapi::latest::GenericError;
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
@@ -998,30 +999,30 @@ impl Chat for ProductRuntimeHost {
     }
 
     #[instrument(skip_all, fields(runtime.method = "chat.list_subscribe"))]
-    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
-        let Ok(platform) = self.chat_platform::<()>() else {
-            return Subscription::empty();
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostChatListSubscribeItem, CallError<GenericError>> {
+        let platform = match self.chat_platform::<GenericError>() {
+            Ok(platform) => platform,
+            Err(error) => return Subscription::interrupted(error),
         };
-        Subscription::new(Box::pin(
+        Subscription::new(
             platform
                 .subscribe_chat_rooms(&self.product)
-                .filter_map(|item| async {
-                    // TODO: preserve platform stream errors as terminal
-                    // subscription interrupts once subscription items can carry
-                    // in-stream failures. Until then a dropped error freezes the
-                    // product's room list on its last value, so record why.
-                    match item {
-                        Ok(item) => Some(HostChatListSubscribeItem::V1(item)),
-                        Err(error) => {
-                            warn!(
-                                reason = %error.reason,
-                                "chat room list platform stream failed"
-                            );
-                            None
-                        }
+                .map(|item| match item {
+                    Ok(item) => Ok(HostChatListSubscribeItem::V1(item)),
+                    Err(error) => {
+                        warn!(
+                            reason = %error.reason,
+                            "chat room list platform stream failed"
+                        );
+                        Err(CallError::HostFailure {
+                            reason: error.reason,
+                        })
                     }
                 }),
-        ))
+        )
     }
 
     #[instrument(skip_all, fields(runtime.method = "chat.post_message"))]
@@ -1051,9 +1052,9 @@ impl Chat for ProductRuntimeHost {
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostChatActionSubscribeItem> {
-        if self.chat_platform::<()>().is_err() {
-            return Subscription::empty();
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<GenericError>> {
+        if let Err(error) = self.chat_platform::<GenericError>() {
+            return Subscription::interrupted(error);
         }
         self.chat.subscribe_actions()
     }

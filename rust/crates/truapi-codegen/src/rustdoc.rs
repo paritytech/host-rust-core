@@ -137,8 +137,6 @@ pub enum MethodKind {
     Request,
     /// One request, a stream of items terminated by interrupt.
     Subscription,
-    /// One request, a stream of `Result<item, err>` items.
-    ResultSubscription,
 }
 
 /// Trait method parameter (name + type).
@@ -156,10 +154,8 @@ pub struct ParamDef {
 pub enum ReturnType {
     /// `Result<ok, err>`-shaped return.
     Result { ok: TypeRef, err: TypeRef },
-    /// Subscription that yields `TypeRef` items.
-    Subscription(TypeRef),
-    /// Subscription that yields `Result<item, err>` items.
-    ResultSubscription { item: TypeRef, err: TypeRef },
+    /// Subscription that yields `item`s and ends with an `interrupt`.
+    Subscription { item: TypeRef, interrupt: TypeRef },
 }
 
 /// Type reference parsed from rustdoc into a structural form codegen can emit.
@@ -727,25 +723,30 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
     };
 
     let (kind, return_type) = if is_result_subscription_return(output) {
-        (
-            MethodKind::ResultSubscription,
-            ReturnType::ResultSubscription {
-                item: extract_result_subscription_inner(output, names).with_context(|| {
-                    format!("Method `{name}` has invalid Result<Subscription<..>, E> return type")
-                })?,
-                err: extract_generic_arg(output, 1, names).with_context(|| {
-                    format!(
-                        "Method `{name}` is missing the error type in Result<Subscription<..>, E>"
-                    )
-                })?,
-            },
+        bail!(
+            "Method `{name}` returns Result<Subscription<..>, E>. A subscription declares its \
+             failure as its own interrupt type: Subscription<Item, CallError<E>>"
         )
     } else if is_subscription_return(output) {
+        let item = extract_generic_arg(output, 0, names).with_context(|| {
+            format!("Method `{name}` is missing the Subscription<Item, Interrupt> item type")
+        })?;
+        let interrupt = extract_generic_arg(output, 1, names).with_context(|| {
+            format!("Method `{name}` is missing the Subscription<Item, Interrupt> interrupt type")
+        })?;
+        // The framework puts `MalformedFrame`, `Denied` and `Unsupported` on
+        // the interrupt leg of every method, so it has to be able to construct
+        // one in whatever the method declared.
+        if !matches!(&interrupt, TypeRef::Named { name, args } if name == "CallError" && args.len() == 1)
+        {
+            bail!(
+                "Method `{name}` declares an interrupt type that is not `CallError<E>`, which the \
+                 framework cannot put its own failures in"
+            )
+        }
         (
             MethodKind::Subscription,
-            ReturnType::Subscription(extract_generic_arg(output, 0, names).with_context(|| {
-                format!("Method `{name}` is missing Subscription<T> item type")
-            })?),
+            ReturnType::Subscription { item, interrupt },
         )
     } else if is_result_return(output) {
         (
@@ -813,7 +814,7 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
     }
 
     if wire.host_initiated && !matches!(kind, MethodKind::Subscription) {
-        bail!("Host-initiated method `{name}` must return Subscription<T>");
+        bail!("Host-initiated method `{name}` must return Subscription<Item, Interrupt>");
     }
 
     Ok(Some(MethodDef {
@@ -1007,23 +1008,6 @@ fn is_result_return(output: &serde_json::Value) -> bool {
     get_resolved_name(output)
         .map(|name| name == "Result")
         .unwrap_or(false)
-}
-
-fn extract_result_subscription_inner(
-    output: &serde_json::Value,
-    names: &NameContext,
-) -> Result<TypeRef> {
-    let ok_type = get_generic_arg_value(output, 0)
-        .context("Result<Subscription<T>, E> return type is missing its ok type")?;
-
-    if get_resolved_name(&ok_type).as_deref() != Some("Subscription") {
-        bail!(
-            "Expected Result<Subscription<T>, E> return type, got {}",
-            summarize_json(&ok_type)
-        );
-    }
-
-    extract_generic_arg(&ok_type, 0, names)
 }
 
 fn get_resolved_name(ty: &serde_json::Value) -> Option<String> {

@@ -3,8 +3,10 @@
 //! Account management uses shared session state and the account authority
 //! for alias, proof, and login operations.
 
+use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::Account;
+use truapi::latest::GenericError;
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
@@ -419,8 +421,8 @@ impl Account for ProductRuntimeHost {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem> {
-        Subscription::new(self.authority.session_state().subscribe())
+    ) -> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+        Subscription::new(self.authority.session_state().subscribe().map(Ok))
     }
 
     #[instrument(skip_all, fields(runtime.method = "account.request_login", product = %self.product.product_id))]
