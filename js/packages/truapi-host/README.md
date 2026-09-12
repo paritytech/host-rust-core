@@ -161,9 +161,9 @@ the provider's product, released when the stream ends or the disposer runs, so
 the product's worker stays up for as long as something is being drawn.
 
 `publishChatAction` is the path for posted messages, commands and host-drawn
-`Actions` buttons. Both action entry points sit behind the same access policy
-as every other call on their service: a connection that is not a `Worker`
-execution with a live session is refused.
+`Actions` buttons. Each action entry point sits behind its own service's access
+policy: the renderer refuses a connection that is not a `Worker` execution, and
+chat additionally requires a live session.
 
 Two rules the core cannot check are the host's to keep: send a render context
 only for a surface the product's manifest `includes`, and publish a renderer
