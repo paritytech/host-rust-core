@@ -1648,9 +1648,10 @@ reports:
 
 Deliberately unavailable methods:
 
-- all six product-initiated Chat methods, because the CLI installs no
-  `ChatPlatform`; the host-initiated `Renderer` render subscription is also
-  unused because the CLI draws no product-rendered bodies;
+- all five product-initiated Chat methods and the product-initiated
+  `Renderer/action_subscribe`, because the CLI installs no `ChatPlatform`;
+  the host-initiated `Renderer` render subscription is also unused because
+  the CLI draws no product-rendered bodies;
 - all nine Coin Payment methods, which answer `CallError::Unsupported`; and
 - all four Payment methods, which answer typed `Unknown` domain errors.
 
