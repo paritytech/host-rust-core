@@ -11,8 +11,8 @@ product streams `RendererNode` trees, and a press inside a tree reaches `rendere
 button presses.
 
 `RendererNode` replaces `CustomRendererNode` with `Image` (`ImageSource`, `ImageFit`), `Effect`, `Shape.Square`,
-`Modifier.Opacity` and `Modifier.BlendingMode`; `Spacer`, `TextField` and `Image` carry no `children`, and single-field
-variants are tuple variants.
+`Modifier.Opacity` and `Modifier.BlendingMode`; `Spacer`, `TextField` and `Image` carry no `children`, and the
+single-field `Modifier` and `Shape` variants are tuple variants.
 
-Hosts call `provider.render(request, sink)` and `provider.publishRendererAction(item)`; `publishChatAction` remains for
-posted messages, commands and host-drawn `Actions` buttons.
+Hosts call `provider.render(request, sink)` and `provider.publishRendererAction(item)`; `publishChatAction` is the path
+for posted messages, commands and host-drawn `Actions` buttons.

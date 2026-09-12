@@ -17,7 +17,7 @@ The playground is an interactive reference for the App-compatible TrUAPI surface
 - **Chat diagnosis**: the same build emits `out/worker/index.js`, a `Worker`
   executable that tests room creation and idempotency, bot registration and
   idempotency, live room-list updates, text and renderer-drawn messages, user actions,
-  and host-initiated custom-render streams. It
+  and host-initiated `Renderer` streams. It
   displays live results in Chat and posts a Chat-only Markdown report after
   `!diagnose` completes the action check.
 
