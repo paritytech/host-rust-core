@@ -148,6 +148,9 @@ await provider.publishRendererAction!({
 stop(); // stop rendering; safe to call more than once
 ```
 
+A `TextField` value change instead carries the UTF-8 bytes of the new value,
+with no length prefix.
+
 `render` reports failure through `onError` rather than throwing, so one dead
 render cannot take the surrounding surface with it. Exactly one terminal fires
 per render: `onComplete` means the last tree delivered stands, `onError` means

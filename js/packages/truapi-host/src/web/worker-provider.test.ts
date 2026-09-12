@@ -1264,6 +1264,33 @@ describe("createWebWorkerPairingHostRuntime", () => {
     ).toHaveLength(1);
   });
 
+  it("binds a method-valued onUpdate to its own receiver", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    class RecordingSink {
+      nodes: RendererNode[] = [];
+      onUpdate(node: RendererNode) {
+        this.nodes.push(node);
+      }
+    }
+    const sink = new RecordingSink();
+
+    provider.render!(renderRequest(), sink);
+    const { renderId } = lastMessageOfKind(worker, "renderStart");
+
+    expect(() =>
+      worker.emit({
+        kind: "renderItem",
+        renderId,
+        node: RendererNode.enc({ tag: "Nil", value: undefined }),
+      }),
+    ).not.toThrow();
+
+    expect(sink.nodes).toHaveLength(1);
+    expect(sink.nodes[0]).toEqual({ tag: "Nil", value: undefined });
+  });
+
   it("publishes a renderer action and settles on the worker's response", async () => {
     const worker = new FakeWorker();
     const provider = await readyProvider(worker);

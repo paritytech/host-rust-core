@@ -176,7 +176,9 @@ pub struct ChatReaction {
     pub emoji: String,
 }
 
-/// A custom message with application-defined type and binary payload.
+/// A custom message with application-defined type and binary payload. The
+/// host draws it through `Renderer::render`, with a `ChatMessage` context
+/// carrying `message_type` and `payload` as the render payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatCustomMessage {

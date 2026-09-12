@@ -1488,7 +1488,7 @@ function buildProvider(
       runtime.acquireWorker(core.productId);
       state.renders.set(renderId, {
         coreId: core.coreId,
-        onUpdate: sink.onUpdate,
+        onUpdate: (node) => sink.onUpdate(node),
         onComplete: () => sink.onComplete?.(),
         onError: (error) => sink.onError?.(error),
         release: () => {
