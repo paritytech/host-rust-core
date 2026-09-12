@@ -121,7 +121,10 @@ points live on the product provider and are present only on runtimes holding a
 live channel to the core:
 
 ```ts
-const context = {
+import type { RenderContext } from "@parity/truapi";
+
+// `payload` here is the product-defined body, hex-encoded.
+const context: RenderContext = {
   tag: "ChatMessage",
   value: { roomId, messageId, messageType },
 };
@@ -139,7 +142,7 @@ const stop = provider.render!(
 await provider.publishRendererAction!({
   context,
   actionId,
-  payload: new Uint8Array(),
+  payload: "0x", // a `Button` press carries no data
 });
 
 stop(); // stop rendering; safe to call more than once
