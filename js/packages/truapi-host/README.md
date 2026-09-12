@@ -11,17 +11,21 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | Import                               | Provides                                                                                                            |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | `@parity/truapi-host`                | Shared runtime types plus generated typed host callback contracts.                                                  |
-| `@parity/truapi-host/web`            | Browser pairing host: `createIframeHost` (iframe MessageChannel handshake) and `createWebWorkerPairingHostRuntime`. |
+| `@parity/truapi-host/web`            | Browser pairing and signing hosts: `createIframeHost`, `createWebWorkerPairingHostRuntime`, and `createWebWorkerSigningHostRuntime`. |
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
 
-The shipped WASM is built by `scripts/build-wasm.mjs` with
-`--no-default-features`, so it excludes `WasmSigningHostRuntime`.
-`ProductRuntimeConfig` configures the pairing host and requires no network
-suffix. A custom build enabling the Rust `wasm-signing-host` feature exposes
-the signing constructor, whose configuration requires
+The shipped WASM includes `WasmSigningHostRuntime`. Its configuration requires
 `runtimeConfig.networkSuffix`: the bare TLD (`dot`, `paseo`, or `testnet`)
 matching the People chain and the wallet's onboarding configuration.
+
+When a product requests a Statement Store allowance, the signing runtime first
+uses `confirmUserAction` for host-owned approval UI, then registers the
+product-scoped allowance account through the platform's People-chain
+connection. Registration requires the activated wallet root to belong to an
+eligible personhood ring. A randomly generated browser account can still sign,
+but it cannot spend another identity's personhood allowance; use a pairing host
+with the mobile Account Holder when that identity remains on the phone.
 
 ## Bundler requirements
 

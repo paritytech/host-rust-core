@@ -12,6 +12,8 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 - isolate the optional PolkaVM runtime in `truapi-polkavm-host`; keep the base
   server and browser asset distribution independent, and pin cooperative update
   deadlines, multi-touch input, and image clipboard output (#540)
+- let browser signing hosts request personhood-backed Statement Store
+  allowances for products instead of reporting the allocator as native-only
 
 ### Added
 

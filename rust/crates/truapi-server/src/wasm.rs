@@ -1099,13 +1099,22 @@ impl WasmSigningHostRuntime {
         console_error_panic_hook::set_once();
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
-        let platform = Arc::new(WasmPlatform::new(bridge));
+        let WasmPlatformAdapters {
+            platform,
+            chat_platform,
+            status_host,
+        } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = signing_host_config_from_js(&host_config)?;
+        let runtime =
+            SigningHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        if let Some(status_host) = status_host {
+            runtime.set_permission_status_host(status_host);
+        }
         Ok(Self {
-            runtime: Rc::new(SigningHostRuntime::new(platform, host_config, spawner)),
+            runtime: Rc::new(runtime),
         })
     }
 
@@ -1129,6 +1138,92 @@ impl WasmSigningHostRuntime {
     #[wasm_bindgen(js_name = disconnectSession)]
     pub async fn disconnect_session(&self) {
         self.runtime.disconnect_session().await;
+    }
+
+    /// Read the active local session's X25519 chat identity private key.
+    #[wasm_bindgen(js_name = sessionChatIdentityKey)]
+    pub fn session_chat_identity_key(&self) -> Option<Vec<u8>> {
+        self.runtime
+            .session_chat_identity_key()
+            .map(|key| key.to_vec())
+    }
+
+    /// Read this browser's X25519 encryption secret, generating and persisting
+    /// it on first read.
+    #[wasm_bindgen(js_name = deviceEncryptionKey)]
+    pub async fn device_encryption_key(&self) -> Result<Vec<u8>, JsValue> {
+        self.runtime
+            .device_encryption_key()
+            .await
+            .map(|key| key.to_vec())
+            .map_err(generic_error_to_js)
+    }
+
+    /// Resolve a product's hard-subtree public key from the active local
+    /// signing session.
+    #[wasm_bindgen(js_name = productSubtreePublicKey)]
+    pub async fn product_subtree_public_key(
+        &self,
+        product_id: String,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
+        self.runtime
+            .product_subtree_public_key(&product_id, timeout_ms)
+            .await
+            .map(|key| key.map(|key| key.to_vec()))
+            .map_err(generic_error_to_js)
+    }
+
+    /// Read one permission authorization status for a product.
+    #[wasm_bindgen(js_name = permissionAuthorizationStatus)]
+    pub async fn permission_authorization_status(
+        &self,
+        product_id: String,
+        payload: Vec<u8>,
+    ) -> Result<JsValue, JsValue> {
+        let request = decode_permission_authorization_request(&payload)?;
+        let status = self
+            .runtime
+            .permission_authorization_status(&product_id, request)
+            .await
+            .map_err(generic_error_to_js)?;
+        Ok(permission_authorization_status_to_js(status))
+    }
+
+    /// Read permission authorization statuses for a product.
+    #[wasm_bindgen(js_name = permissionAuthorizationStatuses)]
+    pub async fn permission_authorization_statuses(
+        &self,
+        product_id: String,
+        payloads: Array,
+    ) -> Result<Array, JsValue> {
+        let requests = decode_permission_authorization_requests(&payloads)?;
+        let statuses = self
+            .runtime
+            .permission_authorization_statuses(&product_id, requests)
+            .await
+            .map_err(generic_error_to_js)?;
+        let values = Array::new();
+        for status in statuses {
+            values.push(&permission_authorization_status_to_js(status));
+        }
+        Ok(values)
+    }
+
+    /// Update one stored permission authorization status for a product.
+    #[wasm_bindgen(js_name = setPermissionAuthorizationStatus)]
+    pub async fn set_permission_authorization_status(
+        &self,
+        product_id: String,
+        payload: Vec<u8>,
+        status: String,
+    ) -> Result<(), JsValue> {
+        let request = decode_permission_authorization_request(&payload)?;
+        let status = permission_authorization_status_from_js(&status)?;
+        self.runtime
+            .set_permission_authorization_status(&product_id, request, status)
+            .await
+            .map_err(generic_error_to_js)
     }
 
     /// Activate a wallet-local session from raw BIP-39 entropy.

@@ -24,7 +24,6 @@ use super::{SigningHost, SigningHostSsoService};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
     ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
@@ -49,10 +48,8 @@ use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::fresh_statement_expiry;
 use crate::runtime::sso_service::Dispatch;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
 /// RFC-0022 domain for the responder's persistent SSO X25519 key.
@@ -166,16 +163,10 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("supported chains: {0}")]
     SupportedChains(String),
-    /// Product-account key derivation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     ProductAccount(#[from] ProductAccountError),
-    /// Chain state, metadata, ring, slot, proof, or extrinsic allocation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementAllowance(#[from] StatementAllowanceError),
-    /// Runtime service could not open the required Statement Store RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementStoreRpcClient(#[from] StatementStoreRpcClientError),
     /// Runtime service could not open the required Bulletin RPC client.
@@ -199,8 +190,6 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("system clock before UNIX epoch")]
     SystemClockBeforeUnixEpoch,
-    /// The signing account is not in any personhood ring.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("signing account is not a personhood ring member; cannot grant {resource} allowance")]
     MissingPersonhoodMembership {
         /// Resource name.
@@ -592,7 +581,6 @@ fn response_cli_summary(
     summary
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_statement_store_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -621,7 +609,6 @@ pub(super) async fn allocate_statement_store_allowance(
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_product_statement_store_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -655,7 +642,6 @@ pub(super) async fn allocate_product_statement_store_allowance(
     .await
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 async fn register_statement_store_target(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -878,33 +864,6 @@ pub(super) async fn allocate_bulletin_allowance(
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_statement_store_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "statement-store",
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_product_statement_store_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _derivation_index: &v01::DerivationIndex,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<(), AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "statement-store",
-    })
-}
-
 /// Claim an Asset Hub PGAS allowance for the product account `derivation_index`
 /// selects.
 ///
@@ -1045,6 +1004,11 @@ pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|_| AllowanceAllocationError::SystemClockBeforeUnixEpoch)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
+    Ok(statement_current_unix_secs())
 }
 
 #[cfg(test)]

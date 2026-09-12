@@ -46,7 +46,7 @@ function args(target, outDir) {
       `Unsupported TRUAPI_WASM_PROFILE=${wasmProfile}; expected release, dev, or profiling`,
     );
   }
-  command.push(rustCrate, "--no-default-features");
+  command.push(rustCrate);
   return command;
 }
 

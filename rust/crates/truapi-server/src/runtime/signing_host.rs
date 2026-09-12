@@ -10,9 +10,8 @@
 //! signing, v4 transaction construction (payload fields and extensions arrive
 //! pre-encoded, so no chain metadata is needed), RFC-0007 product entropy,
 //! bandersnatch ring-VRF aliases and membership proofs, and product-scoped
-//! Statement Store and Bulletin allowance keys (native only).
-
-#[cfg(not(target_arch = "wasm32"))]
+//! Statement Store allowance keys (native and browser), and Bulletin allowance
+//! keys (native only).
 mod allowance_renewal;
 mod local_activation;
 pub(super) mod ring_vrf;
@@ -55,7 +54,6 @@ use crate::host_logic::product_account::{
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
     derive_root_keypair_from_entropy,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
 };
@@ -63,9 +61,7 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
 use crate::runtime::auth_state::AuthStateMachine;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
@@ -136,7 +132,6 @@ pub(crate) struct SigningHost {
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
     /// Serializes replay-ledger updates within each wallet and peer scope.
     sso_replay_locks: SsoReplayLocks,
-    #[cfg(not(target_arch = "wasm32"))]
     renewal: allowance_renewal::RenewalState,
 }
 
@@ -157,7 +152,6 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -199,7 +193,6 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -438,7 +431,6 @@ impl SigningHost {
     /// actually a member of is settled on chain by looking for a ring that
     /// includes each member key, not by local state. That keeps the two hosts
     /// from disagreeing about personhood.
-    #[cfg(not(target_arch = "wasm32"))]
     fn reserved_person_collection_candidates(
         &self,
         session: &AuthoritySession,

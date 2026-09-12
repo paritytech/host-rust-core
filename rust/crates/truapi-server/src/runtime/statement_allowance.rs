@@ -1,10 +1,10 @@
 //! On-chain statement-store allowance registration (`set_statement_store_account`).
 //!
-//! Mirrors how an iOS/web client obtains statement-store allowance from the real
-//! People chain: build the `Resources.set_statement_store_account` call, prove
-//! personhood ring membership with the caller's registry-selected ring-VRF key,
-//! and submit the resulting unsigned General (v5) extrinsic. Native only
-//! (needs the `verifiable` prover and live chain reads).
+//! Mirrors how iOS and browser account holders obtain statement-store
+//! allowance from the real People chain: build the
+//! `Resources.set_statement_store_account` call, prove personhood ring
+//! membership with the caller's registry-selected ring-VRF key, and submit the
+//! resulting unsigned General (v5) extrinsic.
 
 pub mod collection;
 pub mod extension;
