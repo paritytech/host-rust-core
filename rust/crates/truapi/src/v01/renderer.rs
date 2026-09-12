@@ -375,7 +375,8 @@ pub struct TextFieldProps {
     pub label: Option<String>,
     /// Whether the field accepts input. Absent leaves the default to the host.
     pub enabled: OptionBool,
-    /// Action triggered on every value change, carrying the new value.
+    /// Action triggered on every value change. The action carries the new
+    /// value as UTF-8 bytes, with no length prefix.
     pub value_change_action: Option<String>,
 }
 
@@ -508,7 +509,9 @@ pub struct HostRendererActionSubscribeItem {
     pub context: RenderContext,
     /// Which action was triggered, as named in the renderer tree.
     pub action_id: String,
-    /// Data the node attached to the action. Empty for a `Button` press.
+    /// Data the node attached to the action. A `Button` press carries an
+    /// empty payload; a `TextField` value change carries the UTF-8 bytes of
+    /// the new value, with no length prefix.
     pub payload: Vec<u8>,
 }
 

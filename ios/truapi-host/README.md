@@ -177,7 +177,9 @@ product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
 republishes the room list; `render` returns a stream of `RendererNode` trees
 for one render context; `publishRendererAction` delivers a renderer action
 back to the product; and `sessionChatIdentityKey` reads the session's X25519
-chat identity private key, which must not be logged or persisted.
+chat identity private key, which must not be logged or persisted. While a
+render stream is open, the embedding app holds a worker reference for the
+product via `acquireWorker`/`releaseWorker` on the host runtime.
 
 ## Architecture
 

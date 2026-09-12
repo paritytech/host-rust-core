@@ -125,6 +125,28 @@ describe("worker renderer entry points", () => {
     expect(renders.has(5)).toBe(false);
   });
 
+  it("frees a subscription that completes synchronously inside core.render, instead of leaking it", () => {
+    const messages: WorkerToMain[] = [];
+    const log: string[] = [];
+    const renders: RenderSubscriptions = new Map();
+    const core = fakeCore(log, (e) => e.complete());
+
+    handleRenderStart(
+      core,
+      (msg) => messages.push(msg),
+      renders,
+      1,
+      5,
+      renderRequest,
+    );
+
+    expect(messages).toEqual([{ kind: "renderComplete", renderId: 5 }]);
+    // Never registered: a synchronous terminal must not leave a subscription
+    // stranded in the map with nothing left to cancel it later.
+    expect(renders.has(5)).toBe(false);
+    expect(log).toEqual(["cancel", "free"]);
+  });
+
   it("reports a render for an unknown core as a render error", () => {
     const messages: WorkerToMain[] = [];
     const renders: RenderSubscriptions = new Map();
