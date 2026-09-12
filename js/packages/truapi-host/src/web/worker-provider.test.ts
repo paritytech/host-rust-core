@@ -1356,6 +1356,47 @@ describe("createWebWorkerPairingHostRuntime", () => {
 
     await expect(published).resolves.toBeUndefined();
   });
+
+  it("publishes a chat action and settles on the worker's response", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const published = provider.publishChatAction!({
+      roomId: "room",
+      peer: "peer",
+      payload: {
+        tag: "ActionTriggered",
+        value: { messageId: "message", actionId: "confirm" },
+      },
+    });
+    const { requestId } = lastMessageOfKind(worker, "publishChatAction");
+    worker.emit({ kind: "publishChatActionResponse", requestId, ok: true });
+
+    await expect(published).resolves.toBeUndefined();
+  });
+
+  it("rejects a chat action the worker could not publish", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const published = provider.publishChatAction!({
+      roomId: "room",
+      peer: "peer",
+      payload: {
+        tag: "ActionTriggered",
+        value: { messageId: "message", actionId: "confirm" },
+      },
+    });
+    const { requestId } = lastMessageOfKind(worker, "publishChatAction");
+    worker.emit({
+      kind: "publishChatActionResponse",
+      requestId,
+      ok: false,
+      error: "Denied",
+    });
+
+    await expect(published).rejects.toThrow("Denied");
+  });
 });
 
 describe("debugger enablement reporting", () => {

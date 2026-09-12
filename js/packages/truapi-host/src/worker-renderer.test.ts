@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { ProductRendererRenderRequest } from "@parity/truapi";
 
 import {
-  handlePublishRendererAction,
   handleRenderStart,
   stopRender,
   stopRendersForCore,
@@ -48,51 +47,7 @@ function fakeCore(
   };
 }
 
-describe("worker renderer entry points", () => {
-  it("answers publishRendererAction for an unknown core instead of throwing", () => {
-    const messages: WorkerToMain[] = [];
-    handlePublishRendererAction(
-      undefined,
-      (msg) => messages.push(msg),
-      4,
-      9,
-      new Uint8Array([1]),
-    );
-    expect(messages).toEqual([
-      {
-        kind: "publishRendererActionResponse",
-        requestId: 9,
-        ok: false,
-        error: "publishRendererAction received for unknown core 4",
-      },
-    ]);
-  });
-
-  it("reports a core that refuses the action rather than dropping it", () => {
-    const messages: WorkerToMain[] = [];
-    const core = fakeCore([]);
-    core.publishRendererAction = () => {
-      throw new Error("Denied");
-    };
-
-    handlePublishRendererAction(
-      core,
-      (msg) => messages.push(msg),
-      1,
-      3,
-      new Uint8Array([7]),
-    );
-
-    expect(messages).toEqual([
-      {
-        kind: "publishRendererActionResponse",
-        requestId: 3,
-        ok: false,
-        error: "Denied",
-      },
-    ]);
-  });
-
+describe("worker render subscription", () => {
   it("streams render items and releases the subscription on complete", () => {
     const messages: WorkerToMain[] = [];
     const log: string[] = [];

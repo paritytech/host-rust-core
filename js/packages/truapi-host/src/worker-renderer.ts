@@ -1,7 +1,7 @@
-// Worker half of the two host-initiated Renderer entry points. Both reach the
-// core directly rather than through the frame path, because neither is a
-// product request: the host starts the render subscription, and the host
-// publishes the action a rendered body produced.
+// Worker half of the host-initiated Renderer render subscription. It reaches
+// the core directly rather than through the frame path, because it is not a
+// product request: the host starts the subscription when a body comes on
+// screen.
 
 import type {
   WorkerRendererSubscription,
@@ -20,36 +20,6 @@ export type RenderSubscriptions = Map<
   number,
   { coreId: number; subscription: WorkerRendererSubscription }
 >;
-
-/** Hand one host-authored renderer action to the core and answer the caller. */
-export function handlePublishRendererAction(
-  core: WorkerProductRuntime | undefined,
-  postToMain: PostToMain,
-  coreId: number,
-  requestId: number,
-  item: Uint8Array,
-): void {
-  if (!core) {
-    postToMain({
-      kind: "publishRendererActionResponse",
-      requestId,
-      ok: false,
-      error: `publishRendererAction received for unknown core ${coreId}`,
-    });
-    return;
-  }
-  try {
-    core.publishRendererAction(item);
-    postToMain({ kind: "publishRendererActionResponse", requestId, ok: true });
-  } catch (err) {
-    postToMain({
-      kind: "publishRendererActionResponse",
-      requestId,
-      ok: false,
-      error: errorMessage(err),
-    });
-  }
-}
 
 /**
  * Open one render stream on the core and forward its items to the main thread.

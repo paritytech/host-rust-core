@@ -113,6 +113,7 @@ export type MainToWorker =
       kind: "publishChatAction";
       coreId: number;
       requestId: number;
+      /** SCALE-encoded `HostChatActionSubscribeItem`. */
       action: Uint8Array;
     }
   | {
@@ -120,7 +121,7 @@ export type MainToWorker =
       coreId: number;
       requestId: number;
       /** SCALE-encoded `HostRendererActionSubscribeItem`. */
-      item: Uint8Array;
+      action: Uint8Array;
     }
   | {
       kind: "renderStart";
