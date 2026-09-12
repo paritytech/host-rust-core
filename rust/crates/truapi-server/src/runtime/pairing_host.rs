@@ -25,9 +25,9 @@ use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningKey, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
-    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session,
-    require_current_session,
+    CreateTransactionAuthorityRequest, ProductAuthority, ProductDeviceChatAuthorityError,
+    ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    StatementStoreAllowanceKey, authority_session, require_current_session,
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
@@ -2270,6 +2270,19 @@ impl PairingHost {
             .await
     }
 
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        let private_session = self
+            .current_private_session(session)
+            .map_err(|_| ProductDeviceChatAuthorityError::Disconnected)?;
+        self.remote_product_device_chat(cx, &private_session, request)
+            .await
+    }
+
     async fn allocate_resources(
         &self,
         cx: &CallContext,
@@ -2317,17 +2330,14 @@ impl PairingHost {
 
     async fn sign_statement_store_product_payload(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         session: &AuthoritySession,
-        _account: v01::ProductAccountId,
-        _payload: Vec<u8>,
+        account: v01::ProductAccountId,
+        payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError> {
-        self.current_private_session(session)?;
-        Err(AuthorityError::Unavailable {
-            reason: "pairing host: exact statement proof signing is not supported over the \
-                     current SSO raw-signing protocol"
-                .to_string(),
-        })
+        let session = self.current_private_session(session)?;
+        self.remote_sign_statement_store_product_payload(cx, &session, account, payload)
+            .await
     }
 
     fn derive_entropy(
@@ -2516,6 +2526,15 @@ impl ProductAuthority for PairingHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         PairingHost::ring_vrf_sign(self, cx, session, request).await
+    }
+
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        PairingHost::product_device_chat(self, cx, session, request).await
     }
 
     async fn allocate_resources(

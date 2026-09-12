@@ -2,6 +2,7 @@
 
 use super::super::authority::{
     AuthorityCancelError, AuthorityError, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
+    ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
 };
 use super::super::sso_remote::{
@@ -17,7 +18,8 @@ use crate::host_logic::sso::messages::{
     CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
     ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
     RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
-    SsoAllocationOutcome, SsoSessionStatement, build_outgoing_request_statement,
+    SsoAllocationOutcome, SsoProductDeviceChatOperation, SsoSessionStatement,
+    StatementStoreProductSignRequest, build_outgoing_request_statement,
     decode_sso_session_statement, v1,
 };
 use crate::host_logic::sso::wire::SsoRequest;
@@ -26,7 +28,7 @@ use crate::host_logic::statement_store::parse_new_statements_result;
 use futures::FutureExt;
 use futures::future::{AbortHandle, Abortable};
 use tracing::{debug, instrument, warn};
-use truapi::{CallContext, latest};
+use truapi::{CallContext, latest, v01};
 
 /// Active peer-disconnect watcher for one SSO session; aborts on drop.
 pub(super) struct SsoDisconnectMonitor {
@@ -470,6 +472,117 @@ impl PairingHost {
             .await
             .map_err(ring_vrf_transport_error)?
     }
+    /// Forward exact Statement Store product-account signing to the Account Holder.
+    pub(super) async fn remote_sign_statement_store_product_payload(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        account: v01::ProductAccountId,
+        payload: Vec<u8>,
+    ) -> Result<[u8; 64], AuthorityError> {
+        let calling_product_id = account.dot_ns_identifier.clone();
+        self.call(
+            cx,
+            session,
+            StatementStoreProductSignRequest {
+                calling_product_id,
+                account,
+                payload,
+            },
+        )
+        .await
+        .map_err(remote_authority_error)?
+        .map_err(remote_authority_error)
+    }
+
+    /// Forward a product-device Chat v2 operation without exposing wallet key material.
+    pub(super) async fn remote_product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        let (calling_product_id, operation) = match request {
+            ProductDeviceChatAuthorityRequest::Bind {
+                calling_product_id,
+                derivation_index,
+                peer_identity_account_id,
+                peer_chat_public_key,
+                ..
+            } => (
+                calling_product_id,
+                SsoProductDeviceChatOperation::Bind {
+                    derivation_index,
+                    peer_identity_account_id,
+                    peer_chat_public_key,
+                },
+            ),
+            ProductDeviceChatAuthorityRequest::Seal {
+                calling_product_id,
+                peer_chat_public_key,
+                cipher_suite,
+                plaintext,
+            } => (
+                calling_product_id,
+                SsoProductDeviceChatOperation::Seal {
+                    peer_chat_public_key,
+                    cipher_suite,
+                    plaintext,
+                },
+            ),
+            ProductDeviceChatAuthorityRequest::Open {
+                calling_product_id,
+                peer_chat_public_key,
+                cipher_suite,
+                combined_ciphertext,
+            } => (
+                calling_product_id,
+                SsoProductDeviceChatOperation::Open {
+                    peer_chat_public_key,
+                    cipher_suite,
+                    combined_ciphertext,
+                },
+            ),
+            ProductDeviceChatAuthorityRequest::SignRequestProof {
+                calling_product_id,
+                product_account_id,
+                payload,
+            } => (
+                calling_product_id,
+                SsoProductDeviceChatOperation::SignRequestProof {
+                    derivation_index: product_account_id.derivation_index,
+                    payload,
+                },
+            ),
+        };
+        self.call(
+            cx,
+            session,
+            ProductRequest {
+                calling_product_id,
+                payload: operation,
+            },
+        )
+        .await
+        .map_err(|error| {
+            ProductDeviceChatAuthorityError::Unavailable(remote_authority_error(error).to_string())
+        })?
+        .map_err(|error| match error {
+            v01::HostProductDeviceChatError::NotConnected => {
+                ProductDeviceChatAuthorityError::Disconnected
+            }
+            v01::HostProductDeviceChatError::Rejected => ProductDeviceChatAuthorityError::Rejected,
+            v01::HostProductDeviceChatError::InvalidPeerKey => {
+                ProductDeviceChatAuthorityError::InvalidPeerKey
+            }
+            v01::HostProductDeviceChatError::InvalidCiphertext => {
+                ProductDeviceChatAuthorityError::InvalidCiphertext
+            }
+            v01::HostProductDeviceChatError::Unknown { reason } => {
+                ProductDeviceChatAuthorityError::Unavailable(reason)
+            }
+        })
+    }
 
     /// Ask the paired signing host to allocate product resources, caching any
     /// returned allowance keys.
@@ -681,6 +794,7 @@ impl PairingHost {
                         .await?;
                     }
                     SsoAllocatedResource::SmartContractAllowance => {}
+                    SsoAllocatedResource::ProductStatementStoreAllowance => {}
                     SsoAllocatedResource::AutoSigning {
                         product_root_private_key,
                         ring_vrf_domain_entropy,

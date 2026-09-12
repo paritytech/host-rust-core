@@ -38,8 +38,9 @@ pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
     AuthorityError, AuthoritySession, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
-    ProductAuthority, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    StatementStoreAllowanceKey, authority_session_validation_id,
+    ProductAuthority, ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
+    SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
+    authority_session_validation_id, execute_product_device_chat,
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
@@ -996,6 +997,50 @@ impl ProductAuthority for SigningHost {
         sign_from_entropy(&entropy, &request.payload.message)
     }
 
+    async fn product_device_chat(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        self.require_current_session(session)
+            .map_err(|_| ProductDeviceChatAuthorityError::Disconnected)?;
+        let request = match request {
+            ProductDeviceChatAuthorityRequest::SignRequestProof {
+                calling_product_id,
+                product_account_id,
+                payload,
+            } => {
+                if product_account_id.dot_ns_identifier != calling_product_id {
+                    return Err(ProductDeviceChatAuthorityError::Unavailable(
+                        "product account does not belong to the calling product".to_string(),
+                    ));
+                }
+                let keypair = self.product_keypair(&product_account_id).map_err(|error| {
+                    ProductDeviceChatAuthorityError::Unavailable(error.to_string())
+                })?;
+                let signature = keypair
+                    .secret
+                    .sign_simple(SR25519_SIGNING_CONTEXT, &payload, &keypair.public)
+                    .to_bytes();
+                return Ok(v01::HostProductDeviceChatResponse::RequestProofSigned { signature });
+            }
+            request => request,
+        };
+        let entropy = self
+            .root_entropy()
+            .map_err(|error| ProductDeviceChatAuthorityError::Unavailable(error.to_string()))?;
+        let (identity, identity_chat_private_key) =
+            sso_responder::derive_responder_identity(&entropy, self.network_suffix())
+                .map_err(|error| ProductDeviceChatAuthorityError::Unavailable(error.to_string()))?;
+        let identity_chat_private_key = Zeroizing::new(identity_chat_private_key);
+        execute_product_device_chat(
+            &identity_chat_private_key,
+            identity.statement_public_key,
+            request,
+        )
+    }
+
     async fn allocate_resources(
         &self,
         _cx: &CallContext,
@@ -1045,6 +1090,18 @@ impl ProductAuthority for SigningHost {
                     .grant_auto_signing(session, &product_id)
                     .map(|_| v01::AllocationOutcome::Allocated)
                     .map_err(sso_responder::AllowanceAllocationError::Authority),
+                v01::AllocatableResource::ProductStatementStoreAllowance(index) => {
+                    sso_responder::allocate_product_statement_store_allowance(
+                        &self.services,
+                        self,
+                        session,
+                        &product_id,
+                        &index,
+                        OnExistingAllowancePolicy::Increase,
+                    )
+                    .await
+                    .map(|()| v01::AllocationOutcome::Allocated)
+                }
             };
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),
@@ -2613,6 +2670,57 @@ mod tests {
                 )
                 .is_err(),
             "payload was not double-wrapped",
+        );
+    }
+
+    #[test]
+    fn product_chat_request_proof_signs_unframed_payload() {
+        let (services, activation) = signing_runtime_with_platform(Arc::new(StubPlatform {
+            identity_disclosure_confirmed: true,
+            ..StubPlatform::default()
+        }));
+        futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let runtime = product_runtime(services, activation);
+        let cx = CallContext::default();
+        let payload = b"canonical chat request proof".to_vec();
+        let request = truapi::versioned::account::HostProductDeviceChatRequest::V1(
+            v01::HostProductDeviceChatRequest::SignRequestProof {
+                product_account_id: v01::ProductAccountId {
+                    dot_ns_identifier: "myapp.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                payload: payload.clone(),
+            },
+        );
+        let response = futures::executor::block_on(runtime.product_device_chat(&cx, request))
+            .expect("Chat request proof signing succeeds");
+        let truapi::versioned::account::HostProductDeviceChatResponse::V1(
+            v01::HostProductDeviceChatResponse::RequestProofSigned { signature },
+        ) = response
+        else {
+            panic!("unexpected Chat response");
+        };
+        let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
+        let signature = schnorrkel::Signature::from_bytes(&signature).expect("64-byte signature");
+        assert!(
+            keypair
+                .public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &payload, &signature)
+                .is_ok(),
+            "signature verifies over the canonical unframed payload",
+        );
+        assert!(
+            keypair
+                .public
+                .verify_simple(
+                    SR25519_SIGNING_CONTEXT,
+                    b"<Bytes>canonical chat request proof</Bytes>",
+                    &signature,
+                )
+                .is_err(),
+            "Chat proof signing never applies wallet-message framing",
         );
     }
 

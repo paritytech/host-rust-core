@@ -25,7 +25,7 @@ use truapi::v01;
 use truapi::versioned::account::{HostAccountCreateProofRequest, HostAccountGetAliasRequest};
 use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest;
 use truapi_platform::{
-    AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
+    AccountAccessReview, AuthPresenter, AuthState, ChainProvider, ChatAuthorityReview,
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
     JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
     Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
@@ -95,6 +95,9 @@ pub(crate) struct StubPlatform {
     pub(crate) identity_disclosure_confirmed: bool,
     pub(crate) identity_disclosure_error: Option<&'static str>,
     pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
+    pub(crate) chat_authority_confirmed: bool,
+    pub(crate) chat_authority_error: Option<&'static str>,
+    pub(crate) chat_authority_reviews: Arc<Mutex<Vec<ChatAuthorityReview>>>,
     pub(crate) sign_payload_confirmed: bool,
     pub(crate) sign_payload_error: Option<&'static str>,
     pub(crate) sign_raw_confirmed: bool,
@@ -1555,6 +1558,13 @@ impl UserConfirmation for StubPlatform {
                     self.identity_disclosure_error,
                     self.identity_disclosure_confirmed,
                 )
+            }
+            UserConfirmationReview::ChatAuthority(review) => {
+                self.chat_authority_reviews
+                    .lock()
+                    .expect("Chat authority review list mutex poisoned")
+                    .push(review);
+                (self.chat_authority_error, self.chat_authority_confirmed)
             }
             UserConfirmationReview::ResourceAllocation(review) => {
                 self.resource_allocation_reviews

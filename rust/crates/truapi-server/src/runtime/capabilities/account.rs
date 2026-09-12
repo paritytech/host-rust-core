@@ -16,8 +16,9 @@ use truapi::versioned::account::{
     HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse, HostAccountSignVrfError,
     HostAccountSignVrfRequest, HostAccountSignVrfResponse, HostGetLegacyAccountsError,
     HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse, HostGetUserIdError,
-    HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
-    HostRequestLoginResponse,
+    HostGetUserIdRequest, HostGetUserIdResponse, HostProductDeviceChatError,
+    HostProductDeviceChatRequest, HostProductDeviceChatResponse, HostRequestLoginError,
+    HostRequestLoginRequest, HostRequestLoginResponse,
 };
 use truapi::{CallContext, CallError, Subscription, latest, v01};
 use truapi_platform::{
@@ -26,8 +27,10 @@ use truapi_platform::{
 };
 
 use crate::host_logic::sso::messages::ProductRequest;
+use crate::runtime::authority::ProductDeviceChatAuthorityRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
+    product_device_chat_account_authority_error, product_device_chat_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
     ring_vrf_proof_error, ring_vrf_register_error, ring_vrf_sign_error, validate_vrf_transcript,
     vrf_call_error,
@@ -321,6 +324,116 @@ impl Account for ProductRuntimeHost {
         .await
         .map(HostAccountRingVrfSignResponse::V1)
         .map_err(|err| CallError::Domain(HostAccountRingVrfSignError::V1(ring_vrf_sign_error(err))))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "account.product_device_chat"))]
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        request: HostProductDeviceChatRequest,
+    ) -> Result<HostProductDeviceChatResponse, CallError<HostProductDeviceChatError>> {
+        let HostProductDeviceChatRequest::V1(request) = request;
+        let product_account_id = match &request {
+            v01::HostProductDeviceChatRequest::Bind {
+                product_account_id, ..
+            }
+            | v01::HostProductDeviceChatRequest::Seal {
+                product_account_id, ..
+            }
+            | v01::HostProductDeviceChatRequest::Open {
+                product_account_id, ..
+            }
+            | v01::HostProductDeviceChatRequest::SignRequestProof {
+                product_account_id, ..
+            } => product_account_id.clone(),
+        };
+        let product_account_id =
+            Self::normalize_product_account_id(product_account_id).map_err(|()| {
+                CallError::Domain(HostProductDeviceChatError::V1(
+                    v01::HostProductDeviceChatError::Unknown {
+                        reason: "Invalid product account".to_string(),
+                    },
+                ))
+            })?;
+        if product_account_id.dot_ns_identifier != self.product_id() {
+            return Err(CallError::Domain(HostProductDeviceChatError::V1(
+                v01::HostProductDeviceChatError::Unknown {
+                    reason: "product account does not belong to the calling product".to_string(),
+                },
+            )));
+        }
+        let Some(session) = self.authority.current_session() else {
+            return Err(CallError::Domain(HostProductDeviceChatError::V1(
+                v01::HostProductDeviceChatError::NotConnected,
+            )));
+        };
+        if self
+            .identity_disclosure_authorization()
+            .await
+            .map_err(|reason| CallError::HostFailure { reason })?
+            != PermissionAuthorizationStatus::Authorized
+        {
+            return Err(CallError::Domain(HostProductDeviceChatError::V1(
+                v01::HostProductDeviceChatError::Rejected,
+            )));
+        }
+        let cx = remote_authority_context(cx);
+        let authority_request = match request {
+            v01::HostProductDeviceChatRequest::Bind {
+                peer_identity_account_id,
+                peer_chat_public_key,
+                ..
+            } => {
+                let device_account_id = self
+                    .product_account_public_key(&cx, &session, &product_account_id)
+                    .await
+                    .map_err(product_device_chat_account_authority_error)?;
+                ProductDeviceChatAuthorityRequest::Bind {
+                    calling_product_id: self.product_id(),
+                    device_account_id,
+                    derivation_index: product_account_id.derivation_index.clone(),
+                    peer_identity_account_id,
+                    peer_chat_public_key,
+                }
+            }
+            v01::HostProductDeviceChatRequest::Seal {
+                peer_chat_public_key,
+                cipher_suite,
+                plaintext,
+                ..
+            } => ProductDeviceChatAuthorityRequest::Seal {
+                calling_product_id: self.product_id(),
+                peer_chat_public_key,
+                cipher_suite,
+                plaintext,
+            },
+            v01::HostProductDeviceChatRequest::Open {
+                peer_chat_public_key,
+                cipher_suite,
+                combined_ciphertext,
+                ..
+            } => ProductDeviceChatAuthorityRequest::Open {
+                calling_product_id: self.product_id(),
+                peer_chat_public_key,
+                cipher_suite,
+                combined_ciphertext,
+            },
+            v01::HostProductDeviceChatRequest::SignRequestProof { payload, .. } => {
+                ProductDeviceChatAuthorityRequest::SignRequestProof {
+                    calling_product_id: self.product_id(),
+                    product_account_id,
+                    payload,
+                }
+            }
+        };
+        remote_authority_call(
+            &cx,
+            self.authority
+                .product_device_chat(&cx, &session, authority_request),
+        )
+        .await
+        .map(HostProductDeviceChatResponse::V1)
+        .map_err(product_device_chat_authority_error)
     }
 
     #[instrument(skip_all, fields(runtime.method = "account.sign_vrf"))]

@@ -40,7 +40,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use authority::{AuthorityCancelError, AuthoritySession};
+use authority::{AuthorityCancelError, AuthoritySession, ProductDeviceChatAuthorityError};
 pub(crate) use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
 pub(crate) use chat::{ChatConnection, chat_platform_for};
 use futures::{FutureExt, StreamExt, pin_mut};
@@ -57,7 +57,9 @@ pub(crate) use signing_host::{
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 use tracing::{instrument, warn};
 use truapi::api::Chat;
-use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
+use truapi::versioned::account::{
+    HostAccountGetError, HostAccountSignVrfError, HostProductDeviceChatError,
+};
 use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
@@ -67,7 +69,7 @@ use truapi::versioned::chat::{
 use truapi::versioned::preimage::RemotePreimageSubmitError;
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 use truapi_platform::{
-    AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
+    AccountAccessReview, ChatFieldError, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, ProductStorageKey, SessionUiInfo,
     UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
     validate_chat_icon, validate_chat_message_content, validate_chat_name,
@@ -575,41 +577,10 @@ impl ProductRuntimeHost {
         &self,
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
-        let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        let service = self.permissions_service(&product_id);
-        let cached = service
-            .authorization_status(&request)
+        self.permissions_service(&product_id)
+            .check_or_prompt_identity_disclosure()
             .await
-            .map_err(|err| format!("permission storage failed: {err:?}"))?;
-        if cached != PermissionAuthorizationStatus::NotDetermined {
-            return Ok(cached);
-        }
-
-        // A dismissed/unavailable confirmation has no durable user decision.
-        // Fail the current disclosure request closed but keep authorization in
-        // the ask/default state so the next request can prompt again.
-        let confirmed = match self
-            .platform
-            .confirm_user_action(UserConfirmationReview::IdentityDisclosure(
-                IdentityDisclosureReview {
-                    product_id: product_id.clone(),
-                },
-            ))
-            .await
-        {
-            Ok(confirmed) => confirmed,
-            Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
-        };
-        let status = if confirmed {
-            PermissionAuthorizationStatus::Authorized
-        } else {
-            PermissionAuthorizationStatus::Denied
-        };
-        service
-            .set_authorization_status(&request, status)
-            .await
-            .map_err(|err| format!("permission storage failed: {err:?}"))?;
-        Ok(status)
+            .map_err(|err| format!("permission storage failed: {err:?}"))
     }
 
     async fn classify_legacy_address_signer(
@@ -765,6 +736,43 @@ fn account_get_authority_error(err: AuthorityError) -> CallError<HostAccountGetE
         | AuthorityError::Unknown { reason } => v01::HostAccountGetError::Unknown { reason },
     };
     CallError::Domain(HostAccountGetError::V1(error))
+}
+
+fn product_device_chat_account_authority_error(
+    error: AuthorityError,
+) -> CallError<HostProductDeviceChatError> {
+    let error = match error {
+        AuthorityError::Disconnected => v01::HostProductDeviceChatError::NotConnected,
+        AuthorityError::Rejected => v01::HostProductDeviceChatError::Rejected,
+        AuthorityError::Cancelled(error) => v01::HostProductDeviceChatError::Unknown {
+            reason: error.to_string(),
+        },
+        AuthorityError::Unavailable { reason }
+        | AuthorityError::NotSupported { reason }
+        | AuthorityError::Unknown { reason } => v01::HostProductDeviceChatError::Unknown { reason },
+    };
+    CallError::Domain(HostProductDeviceChatError::V1(error))
+}
+
+fn product_device_chat_authority_error(
+    error: ProductDeviceChatAuthorityError,
+) -> CallError<HostProductDeviceChatError> {
+    let error = match error {
+        ProductDeviceChatAuthorityError::Disconnected => {
+            v01::HostProductDeviceChatError::NotConnected
+        }
+        ProductDeviceChatAuthorityError::Rejected => v01::HostProductDeviceChatError::Rejected,
+        ProductDeviceChatAuthorityError::InvalidPeerKey => {
+            v01::HostProductDeviceChatError::InvalidPeerKey
+        }
+        ProductDeviceChatAuthorityError::InvalidCiphertext => {
+            v01::HostProductDeviceChatError::InvalidCiphertext
+        }
+        ProductDeviceChatAuthorityError::Unavailable(reason) => {
+            v01::HostProductDeviceChatError::Unknown { reason }
+        }
+    };
+    CallError::Domain(HostProductDeviceChatError::V1(error))
 }
 
 fn ring_vrf_alias_error(err: RingVrfError) -> v01::HostAccountGetAliasError {

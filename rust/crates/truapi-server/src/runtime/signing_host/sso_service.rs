@@ -4,32 +4,39 @@
 use std::sync::Arc;
 
 use tracing::warn;
-use truapi::latest as api;
+use truapi::{latest as api, v01};
 use truapi_platform::{
-    CreateTransactionReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
-    UserConfirmationReview,
+    CreateTransactionReview, PermissionAuthorizationStatus, ResourceAllocationReview,
+    SignPayloadReview, SignRawReview, StatementStoreProductSignReview, UserConfirmationReview,
+    normalize_product_identifier,
 };
 
 use super::SigningHost;
 use super::sso_responder::{
-    AllowanceAllocationError, allocate_bulletin_allowance, allocate_smart_contract_allowance,
+    AllowanceAllocationError, allocate_bulletin_allowance,
+    allocate_product_statement_store_allowance, allocate_smart_contract_allowance,
     allocate_statement_store_allowance,
 };
+use crate::host_logic::permissions::PermissionsService;
 use crate::host_logic::product_account::{
     derive_ring_vrf_domain_entropy, product_public_key_to_address,
 };
 use crate::host_logic::sso::messages::{
     CreateAccountProofResponse, CreateTransactionLegacyPayload, CreateTransactionPayload,
     CreateTransactionRequest, CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest,
-    GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy, ProductRequest,
-    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
-    ResourceAllocationRequest, ResourceAllocationResponse, RingVrfSignResponse,
-    SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
-    SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
+    GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy,
+    ProductDeviceChatResponse, ProductRequest, ProductSubtreeRequest, ProductSubtreeResponse,
+    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse,
+    RingVrfSignResponse, SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse,
+    SignRequest, SignResponse, SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
+    SsoProductDeviceChatOperation, StatementStoreProductSignRequest,
+    StatementStoreProductSignResponse,
 };
 use crate::host_logic::sso::wire::ResponseOutcome;
+use crate::host_logic::statement_store::validate_unsigned_statement_signing_payload;
 use crate::runtime::authority::{
     AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
+    ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
 use crate::runtime::sso_service::{SsoReply, SsoRequestContext};
@@ -179,6 +186,22 @@ impl SigningHostSsoService {
                         ring_vrf_domain_entropy,
                     },
                 ))
+            }
+            api::AllocatableResource::ProductStatementStoreAllowance(index) => {
+                allocate_product_statement_store_allowance(
+                    services,
+                    signing_host,
+                    session,
+                    calling_product_id,
+                    &index,
+                    on_existing,
+                )
+                .await
+                .map(|()| {
+                    SsoAllocationOutcome::Allocated(
+                        SsoAllocatedResource::ProductStatementStoreAllowance,
+                    )
+                })
             }
         }
     }
@@ -474,6 +497,141 @@ impl SigningHostSsoService {
         self.signing_host
             .ring_vrf_sign(&cx.call, &cx.session, request)
             .await
+    }
+    /// Sign a canonical unsigned Statement Store payload with a product account.
+    async fn statement_store_product_sign(
+        &self,
+        cx: &SsoRequestContext,
+        request: StatementStoreProductSignRequest,
+    ) -> StatementStoreProductSignResponse {
+        let calling_product_id = normalize_product_identifier(&request.calling_product_id)
+            .map_err(|_| "invalid calling product identifier".to_string())?;
+        let mut account = request.account;
+        let account_product_id = normalize_product_identifier(&account.dot_ns_identifier)
+            .map_err(|_| "invalid product account identifier".to_string())?;
+        if account_product_id != calling_product_id {
+            return Err("product account does not belong to the calling product".to_string());
+        }
+        account.dot_ns_identifier = calling_product_id;
+        validate_unsigned_statement_signing_payload(&request.payload)
+            .map_err(|error| error.to_string())?;
+        self.confirm(UserConfirmationReview::StatementStoreProductSign(
+            StatementStoreProductSignReview {
+                account: account.clone(),
+                payload: request.payload.clone(),
+            },
+        ))
+        .await?;
+        self.signing_host
+            .sign_statement_store_product_payload(&cx.call, &cx.session, account, request.payload)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Perform a Chat identity operation without exposing wallet key material.
+    async fn product_device_chat(
+        &self,
+        cx: &SsoRequestContext,
+        request: ProductRequest<SsoProductDeviceChatOperation>,
+    ) -> ProductDeviceChatResponse {
+        let calling_product_id = normalize_product_identifier(&request.calling_product_id)
+            .map_err(|_| v01::HostProductDeviceChatError::Unknown {
+                reason: "invalid calling product identifier".to_string(),
+            })?;
+        let permissions = PermissionsService::new(
+            self.signing_host.platform.as_ref(),
+            self.signing_host.platform.as_ref(),
+            &calling_product_id,
+        );
+        if permissions
+            .check_or_prompt_chat_authority()
+            .await
+            .map_err(|error| v01::HostProductDeviceChatError::Unknown {
+                reason: error.reason,
+            })?
+            != PermissionAuthorizationStatus::Authorized
+        {
+            return Err(v01::HostProductDeviceChatError::Rejected);
+        }
+
+        let authority_request = match request.payload {
+            SsoProductDeviceChatOperation::Bind {
+                derivation_index,
+                peer_identity_account_id,
+                peer_chat_public_key,
+            } => {
+                let product_account = api::ProductAccountId {
+                    dot_ns_identifier: calling_product_id.clone(),
+                    derivation_index: derivation_index.clone(),
+                };
+                let device_account_id = self
+                    .signing_host
+                    .product_keypair(&product_account)
+                    .map_err(|error| v01::HostProductDeviceChatError::Unknown {
+                        reason: error.to_string(),
+                    })?
+                    .public
+                    .to_bytes();
+                ProductDeviceChatAuthorityRequest::Bind {
+                    calling_product_id,
+                    device_account_id,
+                    derivation_index,
+                    peer_identity_account_id,
+                    peer_chat_public_key,
+                }
+            }
+            SsoProductDeviceChatOperation::Seal {
+                peer_chat_public_key,
+                cipher_suite,
+                plaintext,
+            } => ProductDeviceChatAuthorityRequest::Seal {
+                calling_product_id,
+                peer_chat_public_key,
+                cipher_suite,
+                plaintext,
+            },
+            SsoProductDeviceChatOperation::Open {
+                peer_chat_public_key,
+                cipher_suite,
+                combined_ciphertext,
+            } => ProductDeviceChatAuthorityRequest::Open {
+                calling_product_id,
+                peer_chat_public_key,
+                cipher_suite,
+                combined_ciphertext,
+            },
+            SsoProductDeviceChatOperation::SignRequestProof {
+                derivation_index,
+                payload,
+            } => ProductDeviceChatAuthorityRequest::SignRequestProof {
+                product_account_id: api::ProductAccountId {
+                    dot_ns_identifier: calling_product_id.clone(),
+                    derivation_index,
+                },
+                calling_product_id,
+                payload,
+            },
+        };
+        self.signing_host
+            .product_device_chat(&cx.call, &cx.session, authority_request)
+            .await
+            .map_err(|error| match error {
+                ProductDeviceChatAuthorityError::Disconnected => {
+                    v01::HostProductDeviceChatError::NotConnected
+                }
+                ProductDeviceChatAuthorityError::Rejected => {
+                    v01::HostProductDeviceChatError::Rejected
+                }
+                ProductDeviceChatAuthorityError::InvalidPeerKey => {
+                    v01::HostProductDeviceChatError::InvalidPeerKey
+                }
+                ProductDeviceChatAuthorityError::InvalidCiphertext => {
+                    v01::HostProductDeviceChatError::InvalidCiphertext
+                }
+                ProductDeviceChatAuthorityError::Unavailable(reason) => {
+                    v01::HostProductDeviceChatError::Unknown { reason }
+                }
+            })
     }
 }
 

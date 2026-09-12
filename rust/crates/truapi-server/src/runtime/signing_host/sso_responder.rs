@@ -62,7 +62,7 @@ const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::fr
 /// Upper bound on undecodable request ids acknowledged within one serve loop.
 const MAX_DECODE_FAILURE_REQUEST_IDS: usize = 1024;
 
-fn derive_responder_identity(
+pub(super) fn derive_responder_identity(
     entropy: &[u8],
     network_suffix: &str,
 ) -> Result<(ResponderIdentity, [u8; 32]), ProductAccountError> {
@@ -588,17 +588,76 @@ pub(super) async fn allocate_statement_store_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
-    use super::allowance_renewal::{self, StatementRenewalTarget};
+    use super::allowance_renewal::StatementRenewalTarget;
+
+    signing_host.require_current_session(session)?;
+    let entropy = signing_host.root_entropy()?;
+    let allowance =
+        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
+    register_statement_store_target(
+        services,
+        signing_host,
+        session,
+        product_id,
+        allowance.public.to_bytes(),
+        policy,
+        StatementRenewalTarget::ProductStatementAllowance {
+            product_id: product_id.to_string(),
+        },
+    )
+    .await?;
+    Ok(allowance.secret.to_bytes().to_vec())
+}
+
+pub(super) async fn allocate_product_statement_store_allowance(
+    services: &RuntimeServices,
+    signing_host: &SigningHost,
+    session: &AuthoritySession,
+    product_id: &str,
+    derivation_index: &v01::DerivationIndex,
+    policy: OnExistingAllowancePolicy,
+) -> Result<(), AllowanceAllocationError> {
+    use super::allowance_renewal::StatementRenewalTarget;
+
+    signing_host.require_current_session(session)?;
+    let target = signing_host
+        .product_keypair(&v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index: derivation_index.clone(),
+        })?
+        .public
+        .to_bytes();
+    register_statement_store_target(
+        services,
+        signing_host,
+        session,
+        product_id,
+        target,
+        policy,
+        StatementRenewalTarget::Account {
+            account_id: target,
+            label: format!("product-account:{product_id}"),
+        },
+    )
+    .await
+}
+
+async fn register_statement_store_target(
+    services: &RuntimeServices,
+    signing_host: &SigningHost,
+    session: &AuthoritySession,
+    product_id: &str,
+    target: [u8; 32],
+    policy: OnExistingAllowancePolicy,
+    renewal_target: super::allowance_renewal::StatementRenewalTarget,
+) -> Result<(), AllowanceAllocationError> {
+    use super::allowance_renewal;
     use crate::runtime::statement_allowance::{
         self, PooledRegistrationParams, allocated_in, find_including_rings,
         register_statement_account_pooled, scan_collections,
     };
 
     signing_host.require_current_session(session)?;
-    let entropy = signing_host.root_entropy()?;
-    let allowance =
-        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
-    let target = allowance.public.to_bytes();
     let candidates = signing_host.reserved_person_collection_candidates(session)?;
     let client = services
         .statement_store
@@ -612,13 +671,8 @@ pub(super) async fn allocate_statement_store_allowance(
 
     // Held from the scan through the submission, not just around the submission:
     // the scan is what picks the free slot, so a renewal pass scanning in the gap
-    // would choose the same one. Released on the early return below, which
-    // submits nothing.
+    // would choose the same one.
     let _registration = signing_host.renewal.registration_lock().lock().await;
-
-    // One read of the period's slot tables, reused below rather than rescanned:
-    // when an allowance is already recorded on chain neither a proof nor a
-    // submission is needed, and a ring snapshot pages in every member key.
     let scans = scan_collections(
         rpc,
         &chain.metadata,
@@ -637,76 +691,67 @@ pub(super) async fn allocate_statement_store_allowance(
             %collection,
             "statement-store allowance already allocated"
         );
+    } else {
+        // Every ring back to index 0, because a membership that stopped being
+        // re-included still proves against the ring that holds it.
+        let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
+        if memberships.is_empty() {
+            return Err(AllowanceAllocationError::MissingPersonhoodMembership {
+                resource: "statement-store",
+            });
+        }
         signing_host.require_current_session(session)?;
-        return Ok(allowance.secret.to_bytes().to_vec());
-    }
-
-    // Every ring back to index 0, because a membership that stopped being
-    // re-included still proves against the ring that holds it.
-    let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
-    if memberships.is_empty() {
-        return Err(AllowanceAllocationError::MissingPersonhoodMembership {
-            resource: "statement-store",
-        });
-    }
-    signing_host.require_current_session(session)?;
-    let outcome = register_statement_account_pooled(
-        rpc,
-        &chain.metadata,
-        &chain.state,
-        &scans,
-        &memberships,
-        PooledRegistrationParams {
-            target: &target,
-            period,
-            network_suffix: &network_suffix,
-            reuse_existing,
-            // Connecting a product must not revoke another product's allowance.
-            // A full period is reported as exhaustion; reclaiming space is the
-            // renewal pass's job, which only ever replaces for its own ledger.
-            allow_eviction: false,
-            protected: &[],
-        },
-    )
-    .await?;
-    match outcome {
-        statement_allowance::RegistrationOutcome::Registered {
-            block_hash,
-            seq,
-            ring_index,
-            collection,
-        } => {
-            debug!(
-                %product_id,
-                %block_hash,
+        let outcome = register_statement_account_pooled(
+            rpc,
+            &chain.metadata,
+            &chain.state,
+            &scans,
+            &memberships,
+            PooledRegistrationParams {
+                target: &target,
+                period,
+                network_suffix: &network_suffix,
+                reuse_existing,
+                // Connecting a product must not revoke another product's allowance.
+                // A full period is reported as exhaustion; reclaiming space is the
+                // renewal pass's job, which only ever replaces for its own ledger.
+                allow_eviction: false,
+                protected: &[],
+            },
+        )
+        .await?;
+        match outcome {
+            statement_allowance::RegistrationOutcome::Registered {
+                block_hash,
                 seq,
                 ring_index,
-                %collection,
-                "registered statement-store allowance"
-            );
-        }
-        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq, collection } => {
-            debug!(
-                %product_id,
-                seq,
-                %collection,
-                "statement-store allowance already allocated"
-            );
+                collection,
+            } => {
+                debug!(
+                    %product_id,
+                    %block_hash,
+                    seq,
+                    ring_index,
+                    %collection,
+                    "registered statement-store allowance"
+                );
+            }
+            statement_allowance::RegistrationOutcome::AlreadyAllocated { seq, collection } => {
+                debug!(
+                    %product_id,
+                    seq,
+                    %collection,
+                    "statement-store allowance already allocated"
+                );
+            }
         }
     }
     signing_host.require_current_session(session)?;
-    if let Err(reason) = allowance_renewal::track(
-        signing_host,
-        vec![StatementRenewalTarget::ProductStatementAllowance {
-            product_id: product_id.to_string(),
-        }],
-    )
-    .await
-    {
+    if let Err(reason) = allowance_renewal::track(signing_host, vec![renewal_target]).await {
         warn!(%product_id, %reason, "failed to record statement-store renewal target");
     }
     signing_host.require_current_session(session)?;
-    Ok(allowance.secret.to_bytes().to_vec())
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
