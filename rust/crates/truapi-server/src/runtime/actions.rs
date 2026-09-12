@@ -37,11 +37,21 @@ pub(crate) struct ActionChannel<Item> {
 impl<Item: Send + 'static> ActionChannel<Item> {
     /// Create an empty channel; `closed_reason` names the stream in the
     /// interrupt a late subscriber sees after `close`.
-    pub(crate) fn new(closed_reason: &'static str) -> Self {
+    fn new(closed_reason: &'static str) -> Self {
         Self {
             state: Arc::new(Mutex::new(State::default())),
             closed_reason,
         }
+    }
+
+    /// One connection's Chat action stream.
+    pub(crate) fn chat() -> Self {
+        Self::new("chat is closed for this product connection")
+    }
+
+    /// One connection's Renderer action stream.
+    pub(crate) fn renderer() -> Self {
+        Self::new("renderer is closed for this product connection")
     }
 
     /// Open the product's subscription and drain buffered items first.

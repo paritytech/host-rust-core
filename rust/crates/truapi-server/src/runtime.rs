@@ -385,12 +385,8 @@ impl ProductRuntimeHost {
         );
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let core_instance = services.next_core_instance();
-        let chat = Arc::new(ActionChannel::new(
-            "chat is closed for this product connection",
-        ));
-        let renderer = Arc::new(ActionChannel::new(
-            "renderer is closed for this product connection",
-        ));
+        let chat = Arc::new(ActionChannel::chat());
+        let renderer = Arc::new(ActionChannel::renderer());
         let host = Self {
             services,
             platform,

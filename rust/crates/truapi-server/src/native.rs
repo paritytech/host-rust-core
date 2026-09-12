@@ -685,12 +685,8 @@ impl NativeTrUApiHostRuntime {
             #[cfg(feature = "ws-bridge")]
             callbacks,
             closed: AtomicBool::new(false),
-            chat_connection: Arc::new(crate::runtime::ActionChannel::new(
-                "chat is closed for this product connection",
-            )),
-            renderer_connection: Arc::new(crate::runtime::ActionChannel::new(
-                "renderer is closed for this product connection",
-            )),
+            chat_connection: Arc::new(crate::runtime::ActionChannel::chat()),
+            renderer_connection: Arc::new(crate::runtime::ActionChannel::renderer()),
             #[cfg(feature = "ws-bridge")]
             bridge: Mutex::new(None),
             #[cfg(feature = "ws-bridge")]
@@ -2705,8 +2701,7 @@ mod tests {
             ProductExecutionKind::Worker,
         )
         .unwrap();
-        let connection =
-            crate::runtime::ActionChannel::new("chat is closed for this product connection");
+        let connection = crate::runtime::ActionChannel::chat();
 
         let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
             &platform,
