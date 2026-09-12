@@ -1229,6 +1229,40 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(indexOfKind(worker, "renderStop")).toBe(-1);
   });
 
+  it("settles a render exactly once when postMessage throws for renderStart", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const post = worker.postMessage.bind(worker);
+    worker.postMessage = (message: WorkerMessage) => {
+      if (message.kind === "renderStart") {
+        throw new Error("worker gone");
+      }
+      post(message);
+    };
+
+    const errors: Error[] = [];
+    const stop = provider.render!(renderRequest(), {
+      onUpdate: () => {},
+      onError: (error) => errors.push(error),
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toMatch(/worker gone/);
+    // The post never reached the worker, so there is nothing to stop.
+    expect(indexOfKind(worker, "renderStart")).toBe(-1);
+    expect(indexOfKind(worker, "renderStop")).toBe(-1);
+
+    // The returned disposer is a safe no-op: the ledger entry is already gone.
+    expect(() => stop()).not.toThrow();
+    expect(indexOfKind(worker, "renderStop")).toBe(-1);
+    expect(errors).toHaveLength(1);
+
+    // A later core disposal must not settle the already-settled sink again.
+    provider.dispose();
+    expect(errors).toHaveLength(1);
+  });
+
   it("fails every open render of a core the worker reported a frame error for", async () => {
     const worker = new FakeWorker();
     const provider = await readyProvider(worker);
