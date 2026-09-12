@@ -1425,27 +1425,27 @@ impl WasmProductRuntime {
         Ok(())
     }
 
-    /// Start the host-initiated render subscription for one stored custom Chat
-    /// message. `onUpdate` receives each replacement tree as a SCALE-encoded
-    /// `CustomRendererNode`. Exactly one terminal follows: `onComplete` when the
-    /// stream ended with the last tree standing, or `onError` when the product
-    /// could not serve the render and the last tree is partial. Rejects when
-    /// this connection may not reach Chat.
-    #[wasm_bindgen(js_name = renderCustomMessage)]
-    pub fn render_custom_message(
+    /// Start the host-initiated render subscription for one body. `request` is
+    /// a SCALE-encoded `ProductRendererRenderRequest`. `onUpdate` receives each
+    /// replacement tree as a SCALE-encoded `RendererNode`. Exactly one terminal
+    /// follows: `onComplete` when the stream ended with the last tree standing,
+    /// or `onError` when the product could not serve the render and the last
+    /// tree is partial. Rejects when this connection may not render.
+    #[wasm_bindgen(js_name = render)]
+    pub fn render(
         &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
+        request: Vec<u8>,
         on_update: Function,
         on_complete: Function,
         on_error: Function,
-    ) -> Result<WasmCustomRendererSubscription, JsValue> {
+    ) -> Result<WasmRendererSubscription, JsValue> {
+        let request = v01::ProductRendererRenderRequest::decode(&mut request.as_slice())
+            .map_err(|err| JsValue::from_str(&format!("render request did not decode: {err}")))?;
         let mut stream = self
             .inner
             .core
             .control()
-            .render_custom_message(message_id, message_type, payload)
+            .render(request)
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
         let on_update = SendWrapper::new(on_update);
         let on_complete = SendWrapper::new(on_complete);
@@ -1473,7 +1473,7 @@ impl WasmProductRuntime {
             )
             .await;
         });
-        Ok(WasmCustomRendererSubscription { abort: Some(abort) })
+        Ok(WasmRendererSubscription { abort: Some(abort) })
     }
 
     /// Publish one host-authored Chat action into this connection's action
@@ -1489,17 +1489,31 @@ impl WasmProductRuntime {
             .publish_chat_action(action)
             .map_err(|err| JsValue::from_str(&err.to_string()))
     }
+
+    /// Publish one action triggered inside a product-rendered body, buffered
+    /// until the product subscribes. Takes a SCALE-encoded
+    /// `HostRendererActionSubscribeItem`.
+    #[wasm_bindgen(js_name = publishRendererAction)]
+    pub fn publish_renderer_action(&self, item: Vec<u8>) -> Result<(), JsValue> {
+        let item = v01::HostRendererActionSubscribeItem::decode(&mut item.as_slice())
+            .map_err(|err| JsValue::from_str(&format!("renderer action did not decode: {err}")))?;
+        self.inner
+            .core
+            .control()
+            .publish_renderer_action(item)
+            .map_err(|err| JsValue::from_str(&err.to_string()))
+    }
 }
 
-/// Cancellable observation of one custom-message render instance. Dropping the
-/// handle on the JS side does not stop the stream; call `cancel`.
+/// Cancellable observation of one render instance. Dropping the handle on the
+/// JS side does not stop the stream; call `cancel`.
 #[wasm_bindgen]
-pub struct WasmCustomRendererSubscription {
+pub struct WasmRendererSubscription {
     abort: Option<AbortHandle>,
 }
 
 #[wasm_bindgen]
-impl WasmCustomRendererSubscription {
+impl WasmRendererSubscription {
     /// Stop delivering renderer updates. Idempotent.
     pub fn cancel(&mut self) {
         if let Some(abort) = self.abort.take() {

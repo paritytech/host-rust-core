@@ -34,7 +34,7 @@ use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
 use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
-    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
+    ActionChannel, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
     PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
     SigningHostRole, SigningHostSsoService, disconnect_paired_host, establish_pairing,
     respond_to_pairing, resume_pairing,
@@ -886,8 +886,8 @@ impl SigningHostRuntime {
 }
 
 /// Adapters scoped to one product connection: the platform serving its
-/// syscalls, the optional native Chat adapter, and the connection's Chat
-/// stream state. Non-native connections use [`Self::from_services`].
+/// syscalls, the optional native Chat adapter, and the connection's
+/// host-fed action streams. Non-native connections use [`Self::from_services`].
 #[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
@@ -897,7 +897,9 @@ pub(crate) struct ConnectionAdapters {
     /// product execution, so the object that reports OS state has to be the
     /// same one that presents the prompt.
     pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
-    pub(crate) chat: Arc<ChatConnection>,
+    pub(crate) chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
+    pub(crate) renderer:
+        Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
 }
 
 impl ConnectionAdapters {
@@ -907,7 +909,12 @@ impl ConnectionAdapters {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
             permission_status: services.permission_status_host(),
-            chat: Arc::new(ChatConnection::new()),
+            chat: Arc::new(ActionChannel::new(
+                "chat is closed for this product connection",
+            )),
+            renderer: Arc::new(ActionChannel::new(
+                "renderer is closed for this product connection",
+            )),
         }
     }
 }
@@ -933,6 +940,12 @@ pub struct HostAdmin {
 }
 
 impl HostAdmin {
+    /// Test-only access to the product-facing runtime this handle wraps.
+    #[cfg(test)]
+    pub(crate) fn product_runtime(&self) -> &Arc<ProductRuntimeHost> {
+        &self.product_runtime
+    }
+
     /// Build an admin handle from a long-lived host runtime and the adapters
     /// scoped to one product connection.
     #[instrument(skip_all, fields(runtime.method = "host_admin.new"))]
@@ -1152,33 +1165,38 @@ impl ProductRuntimeControl {
         )
     }
 
-    /// Request custom-message UI from this connection's product renderer.
-    pub fn render_custom_message(
+    /// Publish one action triggered inside a product-rendered body into this
+    /// connection's renderer action stream, buffering it until the product
+    /// subscribes.
+    pub fn publish_renderer_action(
         &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
+        item: v01::HostRendererActionSubscribeItem,
+    ) -> Result<(), ProductRuntimeError> {
+        self.runtime()?.publish_renderer_action(
+            truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(item),
+        )
+    }
+
+    /// Ask this connection's product to draw one body, streaming replacement
+    /// trees until the returned subscription is dropped.
+    pub fn render(
+        &self,
+        request: v01::ProductRendererRenderRequest,
     ) -> Result<
-        truapi::Subscription<v01::CustomRendererNode, truapi::CallError<v01::GenericError>>,
+        truapi::Subscription<v01::RendererNode, truapi::CallError<v01::GenericError>>,
         ProductRuntimeError,
     > {
-        self.runtime()?.native_chat_platform()?;
-        let request = truapi::versioned::chat::ProductChatCustomMessageRenderRequest::V1(
-            v01::ProductChatCustomMessageRenderRequest {
-                message_id,
-                message_type,
-                payload,
-            },
-        );
+        self.runtime()?.renderer_access()?;
+        let request = truapi::versioned::renderer::ProductRendererRenderRequest::V1(request);
         let transport: Arc<dyn Transport> = self.transport.clone();
-        let stream = crate::generated::dispatcher::chat_custom_message_render(
+        let stream = crate::generated::dispatcher::renderer_render(
             &self.host_subscriptions,
             transport,
             request,
         )
         .map(|item| {
             item.map(|item| match item {
-                truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
+                truapi::versioned::renderer::ProductRendererRenderItem::V1(node) => node,
             })
         });
         Ok(truapi::Subscription::new(Box::pin(stream)))
@@ -1399,6 +1417,7 @@ impl ProductRuntime {
             handle.abort();
         }
         self.admin.product_runtime.detach_chat();
+        self.admin.product_runtime.detach_renderer();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -2103,7 +2122,31 @@ mod tests {
     }
 
     #[test]
-    fn app_connection_rejects_custom_rendering() {
+    fn app_connection_rejects_rendering() {
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+
+        assert!(matches!(
+            runtime.control().render(v01::ProductRendererRenderRequest {
+                context: v01::RenderContext::ChatMessage {
+                    room_id: "room".into(),
+                    message_id: "message".into(),
+                    message_type: "vote".into(),
+                },
+                payload: vec![],
+            }),
+            Err(ProductRuntimeError::Denied)
+        ));
+    }
+
+    #[test]
+    fn app_connection_rejects_publishing_a_renderer_action() {
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
             Arc::new(StubPlatform::default()),
@@ -2116,7 +2159,13 @@ mod tests {
         assert!(matches!(
             runtime
                 .control()
-                .render_custom_message("message".into(), "vote".into(), vec![]),
+                .publish_renderer_action(v01::HostRendererActionSubscribeItem {
+                    context: v01::RenderContext::PocketCard {
+                        card_id: "card".into()
+                    },
+                    action_id: "vote".into(),
+                    payload: vec![],
+                }),
             Err(ProductRuntimeError::Denied)
         ));
     }
