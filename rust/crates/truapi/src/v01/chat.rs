@@ -238,7 +238,8 @@ pub enum HostChatPostMessageError {
     },
 }
 
-/// Payload when a user clicks an action button.
+/// A press on a button the host draws for a `ChatMessageContent::Actions`
+/// message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ActionTrigger {
@@ -267,7 +268,7 @@ pub struct ChatCommand {
 pub enum ChatActionPayload {
     /// A peer posted a message.
     MessagePosted(ChatMessageContent),
-    /// A user triggered an action button.
+    /// A user pressed a host-drawn `Actions` button.
     ActionTriggered(ActionTrigger),
     /// A user issued a command.
     Command(ChatCommand),
