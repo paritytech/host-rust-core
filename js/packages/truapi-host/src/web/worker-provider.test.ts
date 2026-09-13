@@ -1019,7 +1019,6 @@ describe("createWebWorkerPairingHostRuntime", () => {
       executionKind: "Worker",
     });
 
-    // Open a pending operation.
     worker.emit({
       kind: "callbackRequest",
       requestId: 1,
@@ -1028,13 +1027,11 @@ describe("createWebWorkerPairingHostRuntime", () => {
     });
     await settle();
 
-    // Disposing while the operation is open defers the worker teardown.
     provider.dispose();
     await settle();
     expect(worker.terminated).toBe(false);
 
-    // Ending the operation runs the deferred teardown, which terminates the
-    // worker on a zero-delay timer.
+    // The deferred teardown terminates the worker on a zero-delay timer.
     worker.emit({
       kind: "callbackRequest",
       requestId: 2,
@@ -1094,6 +1091,62 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(worker.terminated).toBe(false);
 
     end(6, 2);
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(worker.terminated).toBe(true);
+  });
+
+  it("keeps two products' operation holds apart when their ids collide", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      // `OperationId` is unique per product, so a host may hand the same id to
+      // every product it serves.
+      makeHostCallbacks({
+        productOperations: { beginOperation: async () => ({ id: 1 }) },
+      }),
+      { runtimeConfig: runtimeConfig({ executionKind: "Worker" }) },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const productFor = (productId: string) =>
+      ProductContext.enc({ productId, executionKind: "Worker" });
+    const first = productFor("first.dot");
+    const second = productFor("second.dot");
+
+    worker.emit({
+      kind: "callbackRequest",
+      requestId: 1,
+      name: "beginOperation",
+      args: [first, ""],
+    });
+    worker.emit({
+      kind: "callbackRequest",
+      requestId: 2,
+      name: "beginOperation",
+      args: [second, ""],
+    });
+    await settle();
+    provider.dispose();
+
+    worker.emit({
+      kind: "callbackRequest",
+      requestId: 3,
+      name: "endOperation",
+      args: [first, 1],
+    });
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(worker.terminated).toBe(false);
+
+    worker.emit({
+      kind: "callbackRequest",
+      requestId: 4,
+      name: "endOperation",
+      args: [second, 1],
+    });
     await settle();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(worker.terminated).toBe(true);
