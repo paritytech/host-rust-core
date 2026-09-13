@@ -485,9 +485,8 @@ impl ProductStorage for CliPlatform {
         &self,
         key: Vec<u8>,
     ) -> BoxStream<'static, Result<api::HostLocalStorageChangeItem, api::GenericError>> {
-        // ponytail: emits the current value once; the CLI host does not push
-        // later changes. Wire a per-key broadcast off write/clear if e2e needs
-        // cross-context storage sync against the CLI signing host.
+        // TODO: current value only; the CLI never pushes later changes. Needs a
+        // per-key broadcast off write/clear for cross-context storage sync.
         let key = String::from_utf8_lossy(&key).into_owned();
         let value = ProductStorageKey::decode(&key).ok().and_then(|scoped| {
             self.product_storage
@@ -510,9 +509,8 @@ impl ProductOperations for CliPlatform {
         _product: &ProductContext,
         _label: String,
     ) -> Result<api::HostWorkerBeginOperationResponse, api::HostWorkerOperationError> {
-        // ponytail: the headless CLI has no worker to keep alive; hand back a
-        // unique id so a product can pair begin/end. Add refcounting if the CLI
-        // ever backgrounds worker executions.
+        // The headless CLI has no worker to keep alive, so the id exists only so
+        // a product can pair begin/end.
         Ok(api::HostWorkerBeginOperationResponse {
             id: NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed),
         })

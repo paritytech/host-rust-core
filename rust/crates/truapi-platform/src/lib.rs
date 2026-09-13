@@ -990,10 +990,9 @@ pub trait ProductStorage: Send + Sync {
     /// Clear a value at a key.
     async fn clear(&self, key: String) -> Result<(), truapi::v01::HostLocalStorageReadError>;
 
-    /// Emit the current value of a key, then each later change to it, from any
-    /// of the product's runtimes. A write that leaves the stored bytes
-    /// unchanged emits nothing. `key` is the UTF-8 bytes of the namespaced
-    /// storage key, the same key passed to [`Self::read`] as a `String`.
+    /// Emit `key`'s current value, then each later change from any of the
+    /// product's runtimes. A write that leaves the bytes unchanged emits
+    /// nothing. `key` is [`Self::read`]'s namespaced key as UTF-8 bytes.
     fn subscribe_storage(
         &self,
         key: Vec<u8>,
@@ -2992,14 +2991,13 @@ pub trait PermissionStatusHost: Send + Sync {
     ) -> Result<DevicePermissionStatus, GenericError>;
 }
 
-/// Host store for a product's pending operations. The host keeps the product's
-/// worker runtime alive while it holds at least one open operation. Worker
-/// products reach these through the `Worker` protocol trait, which is gated to
-/// the Worker execution kind, so non-worker products never call them.
+/// Host store for a product's pending operations, which the host uses to keep
+/// the product's worker runtime alive. Reached only through the `Worker`
+/// protocol trait, so non-worker products never call these.
 #[async_trait]
 pub trait ProductOperations: Send + Sync {
-    /// Record a pending operation for this product. Returns its id. `label` is
-    /// a host log and UI hint, empty when the product gave none.
+    /// Record a pending operation. `label` is a host log and UI hint, empty
+    /// when the product gave none.
     async fn begin_operation(
         &self,
         product: &ProductContext,
@@ -3007,7 +3005,7 @@ pub trait ProductOperations: Send + Sync {
     ) -> Result<HostWorkerBeginOperationResponse, HostWorkerOperationError>;
 
     /// Remove a pending operation. Idempotent: an unknown or already-ended id
-    /// returns `Ok`.
+    /// returns `Ok`, so a retry after an ambiguous failure is safe.
     async fn end_operation(
         &self,
         product: &ProductContext,
