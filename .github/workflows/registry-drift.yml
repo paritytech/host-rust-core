@@ -1,0 +1,93 @@
+name: Registry drift
+
+# A release commit lands on the default branch before the publish it describes
+# is attempted, and nothing reverts it when that publish does not finish. The
+# repository then advertises versions the registry has never served, which
+# looks exactly like a completed release from the inside: manifests, changelogs
+# and tags all agree, and only npm disagrees. This compares the two on a
+# schedule so the gap surfaces on its own rather than when a consumer hits it.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Manifests versus registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Compare every published manifest against npm
+        id: compare
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for manifest in js/packages/*/package.json; do
+            if [ "$(jq -r '.private // false' "${manifest}")" = "true" ]; then
+              continue
+            fi
+            name="$(jq -r '.name' "${manifest}")"
+            version="$(jq -r '.version' "${manifest}")"
+
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "${name}@${version} is on npm."
+            else
+              latest="$(npm view "${name}" version 2>/dev/null || echo 'unknown')"
+              echo "${name}@${version} is NOT on npm (latest published: ${latest})."
+              missing+=("${name}: this branch says ${version}, npm serves ${latest}")
+            fi
+          done
+
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "drift=true"
+            echo "report<<EOF"
+            printf '%s\n' "${missing[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report the drift
+        if: steps.compare.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.compare.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TITLE: "Release drift: published versions do not match the default branch"
+        run: |
+          set -euo pipefail
+
+          # One issue for as long as the condition holds: a daily run that
+          # opened a new one every morning would be noise, and noise is how the
+          # previous silence happened.
+          existing="$(gh issue list --state open --search "${TITLE} in:title" --json number,title \
+            --jq "[.[] | select(.title == \"${TITLE}\")] | .[0].number // empty")"
+
+          body="$(printf 'The default branch declares package versions the registry does not serve.\n\n```\n%s\n```\n\nA release commit is already merged, so the repository reads as released while consumers still install the previous version. Check the most recent `Release` run for where the publish stopped.\n\n%s\n' "${REPORT}" "${RUN_URL}")"
+
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+          else
+            gh issue create --title "${TITLE}" --body "${body}"
+          fi
+
+          echo "::error::Published versions do not match the default branch."
+          exit 1

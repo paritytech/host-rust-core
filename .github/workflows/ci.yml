@@ -649,6 +649,111 @@ jobs:
           path: playground/playwright-report
           retention-days: 14
 
+  release-guard:
+    name: Release guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A release commit states the versions it publishes, and those versions
+      # are computed from the changesets present when `version-packages` ran.
+      # A changeset that merged after that moment is not in the computation, so
+      # publishing would ship a version whose number and changelog do not
+      # describe everything in it.
+      #
+      # The invariant is checked against the merge result rather than the
+      # branch, which is the whole point: on a pull request the checkout is the
+      # merge commit, and in a merge group it is the queued stack. A release
+      # branch that went stale while it waited therefore fails here, before the
+      # bump reaches the default branch, rather than in the publish that runs
+      # after the merge is already permanent.
+      #
+      # Keyed on the version bump rather than on the commit subject, so it
+      # holds in every event context and cannot be stepped around by writing a
+      # different title.
+      - name: A version bump must consume every changeset
+        run: |
+          set -euo pipefail
+
+          case "${{ github.event_name }}" in
+            pull_request) base="HEAD^1" ;;
+            merge_group) base="${{ github.event.merge_group.base_sha }}" ;;
+            *) base="HEAD^" ;;
+          esac
+
+          bumped=()
+          for manifest in js/packages/*/package.json; do
+            if [ "$(jq -r '.private // false' "${manifest}")" = "true" ]; then
+              continue
+            fi
+            head_version="$(jq -r '.version' "${manifest}")"
+            base_version="$(git show "${base}:${manifest}" 2>/dev/null | jq -r '.version' 2>/dev/null || true)"
+            if [ -n "${base_version}" ] && [ "${base_version}" != "${head_version}" ]; then
+              bumped+=("$(jq -r '.name' "${manifest}") ${base_version} -> ${head_version}")
+            fi
+          done
+
+          if [ "${#bumped[@]}" -eq 0 ]; then
+            echo "No published package version changed; nothing to guard."
+            exit 0
+          fi
+
+          printf 'Version bump in this change:\n'
+          printf '  %s\n' "${bumped[@]}"
+
+          remaining_changesets="$(find .changeset -maxdepth 1 -type f -name '*.md' -print)"
+          if [ -n "${remaining_changesets}" ]; then
+            echo "::error::A changeset merged after these versions were computed, so the bump does not describe it. Rebuild the release commit from the default branch: reset to it, then rerun \`npm run version-packages\` and \`scripts/cut-version.sh\`. Rebasing and rerunning compounds the bump instead of replacing it."
+            echo "${remaining_changesets}"
+            exit 1
+          fi
+
+          echo "Every changeset is consumed by this bump."
+
+  changeset-guard:
+    name: Changeset guard
+    # Release pull requests consume changesets and add none, and a change that
+    # genuinely ships nothing opts out with the `no-changeset` label rather
+    # than by saying nothing.
+    if: >-
+      github.event_name == 'pull_request' &&
+      !startsWith(github.event.pull_request.title, 'release:') &&
+      !contains(github.event.pull_request.labels.*.name, 'no-changeset')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # Version numbers and changelogs are computed from changeset files, so a
+      # change that reaches a published artifact without one is released at
+      # whatever level an unrelated change happened to pick, and is described
+      # nowhere a consumer reads. The paths below are the sources the published
+      # npm packages and the prebuilt CLI are built from.
+      - name: Released code needs a changeset
+        run: |
+          set -euo pipefail
+
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          released='^(rust/crates/truapi(-server|-platform|-provider|-macros|-host-cli)?/|js/packages/[^/]+/src/)'
+
+          if ! grep -qE "${released}" <<<"${changed}"; then
+            echo "No published sources touched."
+            exit 0
+          fi
+
+          if grep -qE '^\.changeset/[^/]+\.md$' <<<"${changed}"; then
+            echo "Changeset present."
+            exit 0
+          fi
+
+          echo "::error::This change reaches a published artifact but adds no changeset, so it would ship undescribed and at a version level chosen by some other change. Run \`npm run changeset\`, or add the \`no-changeset\` label if it genuinely ships nothing."
+          exit 1
+
   ci-status:
     name: CI Status
     if: always()
@@ -674,6 +779,8 @@ jobs:
         playground,
         explorer,
         e2e,
+        release-guard,
+        changeset-guard,
       ]
     steps:
       # The results come from the needs context itself rather than a second list
@@ -701,7 +808,7 @@ jobs:
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
             android-bindings ts-client ts-host ts-debugger playground explorer
-            e2e
+            e2e release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |

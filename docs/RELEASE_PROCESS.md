@@ -20,6 +20,12 @@ npm run changeset            # interactive: pick patch / minor / major + a short
 npm run version-packages     # consumes the changeset, bumps package.json + writes CHANGELOG.md
 ```
 
+A change that reaches a published artifact carries its own changeset, added by
+the pull request that makes it: the `Changeset guard` job in CI fails a pull
+request that touches the sources the npm packages or the prebuilt CLI are built
+from without adding one. A change that genuinely ships nothing says so with the
+`no-changeset` label rather than by saying nothing at all.
+
 The first command writes a markdown file under `.changeset/`; the second
 consumes it, bumps the selected package `package.json`, appends the package
 `CHANGELOG.md`, deletes the changeset file, and then runs
@@ -251,6 +257,23 @@ has to be one of ours rather than a personal one.
 - A `release:` PR with mismatched `js/packages/truapi/package.json` and
   `rust/crates/truapi/Cargo.toml` versions is blocked at PR time by the
   `Release version check` workflow.
+- A release commit publishes the versions its changesets computed, so those
+  changesets have to be the ones present when it merges. The `Release guard` job
+  in CI holds that: whenever a change bumps a published package version,
+  `.changeset/` must be empty. It runs in the merge queue as well as on the pull
+  request, so it sees the merge result rather than the branch, and a release
+  branch that went stale while it waited fails before the bump reaches `main`.
+- Rebuild a stale release branch by resetting it to `main` and running
+  `npm run version-packages` and `scripts/cut-version.sh` again. Rebasing and
+  rerunning does not work: `version-packages` consumes the changeset files it
+  reads and bumps from whatever version the manifests currently hold, so a
+  second run on top of the first compounds the bump and writes a changelog entry
+  for a version nobody publishes.
+- `Registry drift` compares every published manifest version against npm on a
+  daily schedule and opens an issue when the registry does not serve one. A
+  release commit is merged before the publish it describes is attempted and
+  nothing reverts it, so the repository can otherwise read as released while
+  consumers still install the previous version.
 - Publishing uses the default `GITHUB_TOKEN`. The only other credentials are the
   org-level `NPM_PUBLISH_AUTOMATION_TOKEN` that the automation itself relies on,
   and the notification app's client id and private key, which are read by the
