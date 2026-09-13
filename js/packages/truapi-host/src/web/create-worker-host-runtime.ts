@@ -23,7 +23,10 @@ import {
   ProductRendererRenderRequest as ProductRendererRenderRequestCodec,
   RendererNode as RendererNodeCodec,
 } from "@parity/truapi";
-import { PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec } from "../generated/host-callbacks.js";
+import {
+  PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec,
+  ProductContext as ProductContextCodec,
+} from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type {
@@ -156,15 +159,13 @@ interface RuntimeState {
   >;
   subscriptionDisposers: Map<number, () => void>;
   /**
-   * Ids of open worker pending operations (`worker.beginOperation`). While
-   * this is non-empty the worker is kept alive: a `dispose()` is deferred
-   * until the last operation ends. Keyed by id so ending an unknown or
-   * already-ended id releases nothing. Worker-global, not per-core, because a
-   * `callbackRequest` carries no core id and "keep the worker alive" is
-   * worker-scoped. ponytail: no cap on how long an operation may hold the
-   * worker; add a timeout ceiling here if a stuck operation becomes a problem.
+   * Open `worker.beginOperation` holds. A non-empty set defers `dispose()`.
+   * Worker-wide rather than per-core, since a `callbackRequest` carries no core
+   * id, so entries are product-scoped: `OperationId` is only unique per product
+   * and two products sharing this worker may be handed the same id.
+   * TODO: no ceiling on how long one operation may hold the worker.
    */
-  openOperations: Set<number>;
+  openOperations: Set<string>;
   /** A dispose() arrived while operations were open; run it once they drain. */
   disposePending: boolean;
   chainConnections: Map<number, ChainConnection>;
@@ -396,6 +397,21 @@ interface TrUApiDevConsole {
   getLogLevel(): LogLevel | null;
 }
 
+/**
+ * Key one pending-operation hold. `OperationId` is unique per product, not per
+ * worker, so the product a `beginOperation`/`endOperation` arrived for has to be
+ * part of the key. Returns null if the encoded product will not decode, which
+ * drops the hold rather than letting it pin the worker forever.
+ */
+function operationHold(encodedProduct: unknown, id: number): string | null {
+  if (!(encodedProduct instanceof Uint8Array)) return null;
+  try {
+    return `${ProductContextCodec.dec(encodedProduct).productId}\u0000${id}`;
+  } catch {
+    return null;
+  }
+}
+
 function handleCallbackRequest(
   state: RuntimeState,
   msg: {
@@ -425,18 +441,19 @@ function handleCallbackRequest(
     .then(() => fn(...msg.args))
     .then(
       (value) => {
-        // Keep the worker alive across an open pending operation: track ids
-        // only on success, so a rejected begin never leaves a stuck hold.
-        // When the last operation ends and a dispose is pending, run it.
+        // Tracked in the success arm only: a rejected begin must not leave a
+        // hold that nothing will ever release.
         if (msg.name === "beginOperation") {
-          state.openOperations.add(
+          const hold = operationHold(
+            msg.args[0],
             HostWorkerBeginOperationResponseCodec.dec(value as Uint8Array).id,
           );
+          if (hold !== null) state.openOperations.add(hold);
         } else if (msg.name === "endOperation") {
           const id = msg.args[1];
-          if (typeof id === "number") {
-            state.openOperations.delete(id);
-          }
+          const hold =
+            typeof id === "number" ? operationHold(msg.args[0], id) : null;
+          if (hold !== null) state.openOperations.delete(hold);
           if (state.openOperations.size === 0 && state.disposePending) {
             state.disposePending = false;
             teardown(state, new Error("runtime disposed"), false);
@@ -1355,10 +1372,8 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
     },
     dispose(): void {
       devGlobalTargets.delete(runtime);
-      // Defer a clean dispose while the worker holds an open operation, so a
-      // background task (e.g. a funding transaction) runs to completion. The
-      // last endOperation runs the deferred teardown. Fault teardown is never
-      // deferred.
+      // Let a background task (e.g. a funding transaction) finish; the last
+      // endOperation runs the teardown. Fault teardown is never deferred.
       if (state.openOperations.size > 0) {
         state.disposePending = true;
         return;
