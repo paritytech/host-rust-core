@@ -899,8 +899,8 @@ class TrUAPIProductExecution internal constructor(
 
     /**
      * Request a native renderer tree for one render context. The flow
-     * subscribes on collection, so a closed or non-matching execution fails
-     * the collector with [ProductRuntimeException] rather than this call. It
+     * subscribes on collection, so a closed or non-Worker execution fails the
+     * collector with [ProductRuntimeException] rather than this call. It
      * cancels the renderer when collection ends;
      * each emission is a complete replacement tree, so only the latest is kept
      * when the collector falls behind.

@@ -80,11 +80,8 @@ renderer.actionSubscribe().subscribe({
     diagnosis.fail("Renderer/action_subscribe", error);
   },
 });
-// A renderer action stream has no self-triggering item: only the host
-// delivers one, in response to a human pressing something inside the
-// rendered tree. Prove the row from the subscription itself so the
-// diagnosis can complete without waiting on that press; a real action, if
-// one arrives, replaces this detail with the richer one below.
+// Only a human press produces a renderer action, so the row passes on the
+// open subscription; an action that does arrive replaces this detail.
 diagnosis.pass(
   "Renderer/action_subscribe",
   "renderer action stream is open; a press inside the rendered tree is delivered on it",

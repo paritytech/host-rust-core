@@ -121,4 +121,6 @@ pub trait Chat: Send + Sync {
     ) -> Subscription<HostChatActionSubscribeItem, CallError<GenericError>> {
         Subscription::interrupted(CallError::unavailable())
     }
+
+    // Id 5 is spent and must never be reassigned; the next method takes 6.
 }

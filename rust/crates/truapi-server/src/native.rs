@@ -2767,12 +2767,8 @@ mod tests {
 
     #[test]
     fn a_renderer_action_reaches_the_product_that_rendered_it() {
-        // The renderer half of the same loop: the host publishes an action
-        // triggered inside a body it asked the product to draw, and the
-        // product's `Renderer::action_subscribe` stream delivers it unaltered,
-        // context included. The channel is execution-scoped, so the admin
-        // handle built from the same execution reads what the execution
-        // published.
+        // The channel is execution-scoped, so the admin handle built from this
+        // execution reads what the execution published.
         let host = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),

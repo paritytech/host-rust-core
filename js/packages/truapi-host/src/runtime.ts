@@ -159,10 +159,9 @@ export interface TrUApiProductProvider extends WireProvider, CoreAdmin {
   publishChatAction?(action: HostChatActionSubscribeItem): Promise<void>;
 
   /**
-   * Publish one action triggered inside a product-rendered body — the path a
-   * tapped node in a rendered tree takes back to the product. Buffered until
-   * the product subscribes. Rejects when this connection may not reach the
-   * product's renderer.
+   * Publish one action triggered inside a product-rendered body. Buffered
+   * until the product subscribes. Rejects when this connection may not reach
+   * the product's renderer.
    *
    * Present only on runtimes that keep a live channel to the core.
    */

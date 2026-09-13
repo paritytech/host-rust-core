@@ -1,6 +1,6 @@
-// Worker half of the host-initiated action entry points. Both reach the core
-// directly rather than through the frame path, because neither is a product
-// request: the host publishes the action a surface it drew produced.
+// Worker half of the host-authored action entry points. Both call the core
+// directly rather than going through the frame path, which carries product
+// requests only.
 
 import type { WorkerProductRuntime } from "./wasm-module.js";
 import type { WorkerToMain } from "./worker-protocol.js";
@@ -8,11 +8,10 @@ import { errorMessage } from "./error.js";
 
 type PostToMain = (msg: WorkerToMain) => void;
 
-/** One host-initiated action entry point: what it is called and what it calls. */
+/** One host-authored action stream, as the worker sees it. */
 export interface ActionEntryPoint {
   /** Request kind the host posts; the response kind is this plus `Response`. */
   name: "publishChatAction" | "publishRendererAction";
-  /** Core method the encoded action item is handed to. */
   publish: (core: WorkerProductRuntime, item: Uint8Array) => void;
 }
 

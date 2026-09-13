@@ -49,13 +49,9 @@ function fakeObservable<Item>() {
 }
 
 /**
- * Drives `worker/index.ts` against a fake `TrUApiClient` far enough to prove
- * the diagnosis can complete after only the `!diagnose` chat command, with no
- * renderer action ever delivered. A regression that makes
- * `Renderer/action_subscribe` pass only from a received renderer action (as
- * opposed to the subscription itself being established) leaves that row
- * `running` forever, so the final report this test waits for never posts and
- * the test fails.
+ * Guards the one row no automated run can satisfy: if
+ * `Renderer/action_subscribe` ever waits for a delivered action instead of the
+ * open subscription, it stays `running` and the final report never posts.
  */
 test("worker diagnosis completes after !diagnose alone, without a renderer action", async () => {
   const chatActions = fakeObservable<HostChatActionSubscribeItem>();
