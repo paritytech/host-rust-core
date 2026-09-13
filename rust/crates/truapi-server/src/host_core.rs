@@ -1197,8 +1197,9 @@ impl ProductRuntimeControl {
             request,
         )
         .map(move |item| {
-            // The reference the stream owns, kept alive by this closure and
-            // released when the host drops the subscription.
+            // Named so the closure captures it: a `move` closure that never
+            // mentions a binding does not take it, and the reference would
+            // drop before the stream it belongs to.
             let _reference = &reference;
             item.map(|item| match item {
                 truapi::versioned::renderer::ProductRendererRenderItem::V1(node) => node,
@@ -2172,9 +2173,8 @@ mod tests {
 
     #[test]
     fn worker_connection_renders_and_receives_actions_without_a_session() {
-        // Renderer is gated on Worker execution alone: a host drawing a body
-        // while signed out still reaches the product, and the action stream it
-        // opens is live rather than one-shot interrupted.
+        // Renderer is gated on Worker execution alone, so a signed-out host
+        // still reaches the product.
         let (host_config, _) = runtime_config("worker.dot");
         let product = ProductContext::new_with_execution(
             "worker.dot".to_string(),
@@ -2236,8 +2236,7 @@ mod tests {
 
     #[test]
     fn an_open_render_holds_one_worker_reference() {
-        // The RFC makes an open render stream one worker reference, and the
-        // core owns it: nothing outside this call acquires or releases.
+        // The core owns the reference: no caller above it acquires or releases.
         #[derive(Default)]
         struct RecordingDemand {
             transitions: Mutex<Vec<(String, WorkerTransition)>>,

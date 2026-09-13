@@ -29,8 +29,8 @@ export interface WorkerProductRuntime {
    * SCALE-encoded `ProductRendererRenderRequest`. `onUpdate` receives each
    * SCALE-encoded `RendererNode`, then exactly one of `onComplete` (last tree
    * stands) or `onError` (the product could not serve the render; the last
-   * tree is partial). Every terminal is delivered asynchronously, never during
-   * the `render` call itself; a request the core refuses outright throws.
+   * tree is partial). Terminals never arrive during the call itself; a request
+   * the core refuses outright throws instead.
    */
   render(
     request: Uint8Array,

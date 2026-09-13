@@ -14,7 +14,7 @@ mod tests {
     use parity_scale_codec::{Decode, Encode};
 
     #[test]
-    fn render_item_string_matches_the_legacy_wire_fixture() {
+    fn render_item_string_matches_the_wire_fixture() {
         let item = ProductRendererRenderItem::V1(v01::RendererNode::String {
             text: "Votes: 1".into(),
         });

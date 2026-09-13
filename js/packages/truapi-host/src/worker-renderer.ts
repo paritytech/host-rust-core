@@ -1,7 +1,6 @@
-// Worker half of the host-initiated Renderer render subscription. It reaches
-// the core directly rather than through the frame path, because it is not a
-// product request: the host starts the subscription when a body comes on
-// screen.
+// Worker half of the host-initiated render subscription. It calls the core
+// directly rather than going through the frame path, which carries product
+// requests only.
 
 import type {
   WorkerRendererSubscription,

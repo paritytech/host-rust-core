@@ -1330,22 +1330,19 @@ function handleWorkerDemandChanged(
 
 /** Deliver a render failure without letting the sink's own throw escape. */
 function reportRenderFailure(
-  sink: { onError: (error: Error) => void },
+  sink: { onError?: (error: Error) => void },
   cause: unknown,
 ): void {
   try {
-    sink.onError(
-      cause instanceof Error ? cause : new Error(errorMessage(cause)),
-    );
+    sink.onError?.(toError(cause));
   } catch (err) {
     console.warn("[truapi worker] render onError threw:", err);
   }
 }
 
 /**
- * Drop one render from the ledger. Returns the sink so the caller can settle
- * it, and undefined once the render is already gone, which is what keeps a
- * render settled exactly once.
+ * Drop one render from the ledger, returning its sink only the first time,
+ * which is what keeps a render settled exactly once.
  */
 function takeRender(
   state: RuntimeState,
@@ -1372,8 +1369,8 @@ function failRendersForCore(
 
 /**
  * Post one host-authored action to the worker and settle on its response.
- * Encoding runs before the pending entry exists, so a payload the codec
- * rejects fails the promise without leaving one behind.
+ * Encoding runs before registering, so a payload the codec rejects leaves no
+ * pending entry behind.
  */
 function publishAction(
   state: RuntimeState,
@@ -1501,19 +1498,18 @@ function buildProvider(
         sink.onError?.(new Error("product connection is closed"));
         return () => {};
       }
-      // Encode before the ledger entry exists, so a request the codec rejects
-      // reaches the sink as an error rather than escaping `render` and leaving
-      // a render registered that the worker was never told about.
+      // Encode before registering, so a request the codec rejects leaves no
+      // render behind that the worker was never told about.
       let encoded: Uint8Array;
       try {
         encoded = ProductRendererRenderRequestCodec.enc(request);
       } catch (err) {
-        reportRenderFailure({ onError: (error) => sink.onError?.(error) }, err);
+        reportRenderFailure(sink, err);
         return () => {};
       }
       const renderId = nextRenderId++;
-      // The core holds the worker reference an open render is worth, and
-      // reports every demand transition through `workerDemandChanged`.
+      // No worker reference is taken here: the core holds the one an open
+      // render is worth and reports it through `workerDemandChanged`.
       state.renders.set(renderId, {
         coreId: core.coreId,
         onUpdate: (node) => sink.onUpdate(node),
