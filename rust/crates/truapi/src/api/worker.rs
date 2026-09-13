@@ -10,14 +10,13 @@ use crate::{wire, wire_trait};
 
 /// Worker background-operation APIs.
 ///
-/// A worker holds itself alive by keeping an operation open. The host keeps
-/// the product's worker running while it has at least one open operation.
+/// The host keeps a product's worker running while it holds at least one open
+/// operation, which is how a worker outlives the surface that started it.
 #[wire_trait(id = 19)]
 #[crate::service(required_execution = Worker)]
 #[crate::async_trait]
 pub trait Worker: Send + Sync {
-    /// Begin a pending operation. The worker is kept alive while it has at
-    /// least one open operation. Returns an id for `end_operation`.
+    /// Begin a pending operation.
     ///
     /// ```ts
     /// const result = await truapi.worker.beginOperation({ label: "funding" });
@@ -35,7 +34,7 @@ pub trait Worker: Send + Sync {
     }
 
     /// End a pending operation. Idempotent: an unknown or already-ended id
-    /// returns success.
+    /// succeeds, so a retry after an ambiguous failure is safe.
     ///
     /// ```ts
     /// const begun = await truapi.worker.beginOperation({});

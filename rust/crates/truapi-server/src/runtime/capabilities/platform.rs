@@ -232,10 +232,8 @@ impl LocalStorage for ProductRuntimeHost {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
         let storage_key = self.product_storage_key(self.product.product_id.as_str(), key);
-        // Skip the store write when the value is byte-identical to what the key
-        // already holds, so a subscriber sees only real changes and no
-        // redundant persistence happens. A failed pre-read falls through to the
-        // write rather than blocking it.
+        // Dedupe so subscribers see only real changes. A failed pre-read falls
+        // through to the write rather than blocking it.
         if let Ok(Some(current)) = self.platform.read(storage_key.clone()).await
             && current == value
         {

@@ -394,15 +394,14 @@ interface HostBridge {
     fun workerDemandChanged(productId: String, transition: WorkerTransition) {}
 
     /**
-     * Begin a pending operation for a product's worker, returning a
-     * host-assigned id. The host keeps the product's worker alive while it holds
-     * at least one open operation. [label] is a log/UI hint, empty when the
-     * product gave none. Default: no worker keep-alive.
+     * Begin a pending operation. [label] is a log/UI hint, empty when the
+     * product gave none. Leave unimplemented to opt out of worker keep-alive;
+     * override to run background work past the product's surface.
      */
     @Throws(HostRejection::class)
     suspend fun beginOperation(productId: String, label: String): UInt = 0u
 
-    /** End a pending operation. Idempotent: an unknown or already-ended id succeeds. */
+    /** End a pending operation. Idempotent, so a retry after an ambiguous failure is safe. */
     @Throws(HostRejection::class)
     suspend fun endOperation(productId: String, id: UInt) {}
 
@@ -1116,8 +1115,8 @@ class TrUAPIProductExecution internal constructor(
     }
 
     /**
-     * Push a host storage change for [key] to active TrUAPI storage
-     * subscriptions. A null [value] represents a cleared or absent key.
+     * Push a host storage change to active TrUAPI storage subscriptions. Call
+     * this for changes the host makes itself; a null [value] means cleared.
      */
     fun notifyStorageChanged(key: String, value: ByteArray?) {
         inner.notifyStorageChanged(key, value)

@@ -618,16 +618,15 @@ pub trait HostCallbacks: Send + Sync {
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
 
-    /// Record a pending operation for a product's worker, returning a
-    /// host-assigned id. The host keeps the product's worker alive while it
-    /// holds at least one open operation.
+    /// Record a pending operation, whose id keeps the product's worker alive
+    /// until it ends.
     async fn begin_operation(
         &self,
         product_id: String,
         label: String,
     ) -> Result<u32, HostRejection>;
     /// End a pending operation. Idempotent: an unknown or already-ended id
-    /// succeeds.
+    /// succeeds, so a retry after an ambiguous failure is safe.
     async fn end_operation(&self, product_id: String, id: u32) -> Result<(), HostRejection>;
 }
 
@@ -1893,9 +1892,9 @@ impl ProductStorage for CallbackPlatform {
         &self,
         key: Vec<u8>,
     ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
-        // Register the change receiver first so no event between the read and
-        // the subscription is lost, then read the current value lazily. The
-        // host pushes later changes through `notify_storage_changed`.
+        // Subscribe before reading, so a change landing between the two repeats
+        // rather than being lost. The host pushes later changes via
+        // `notify_storage_changed`.
         let key = String::from_utf8_lossy(&key).into_owned();
         let rx = self.events.subscribe_storage_changes(key.clone());
         let callbacks = self.callbacks.clone();

@@ -367,14 +367,12 @@ public protocol HostBridge: AnyObject, Sendable {
     /// runs no workers.
     func workerDemandChanged(productId: String, transition: WorkerTransition)
 
-    /// Begin a pending operation for a product's worker, returning a
-    /// host-assigned id. The host keeps the product's worker alive while it
-    /// holds at least one open operation. `label` is a log/UI hint, empty when
-    /// the product gave none.
+    /// Begin a pending operation, whose id keeps the product's worker alive
+    /// until it ends. `label` is a log/UI hint, empty when the product gave none.
     func beginOperation(productId: String, label: String) async throws -> UInt32
 
     /// End a pending operation. Idempotent: an unknown or already-ended id
-    /// succeeds.
+    /// succeeds, so a retry after an ambiguous failure is safe.
     func endOperation(productId: String, id: UInt32) async throws
 
     /// Scoped key-value storage for the Rust core.
@@ -469,8 +467,8 @@ public extension HostBridge {
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
-    /// Default: no worker keep-alive. Override to run background operations to
-    /// completion after the product's surface goes away.
+    /// Defaults opt out of worker keep-alive; override to run background work
+    /// past the product's surface.
     func beginOperation(productId: String, label: String) async throws -> UInt32 { 0 }
     func endOperation(productId: String, id: UInt32) async throws {}
 }
@@ -1088,8 +1086,8 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         inner.notifyLocaleChanged(locale: locale)
     }
 
-    /// Push a host storage change for `key` to active TrUAPI storage
-    /// subscriptions. `value == nil` represents a cleared or absent key.
+    /// Push a host storage change to active TrUAPI storage subscriptions. Call
+    /// this for changes the host makes itself; `nil` means cleared.
     public func notifyStorageChanged(key: String, value: Data?) {
         inner.notifyStorageChanged(key: key, value: value)
     }
