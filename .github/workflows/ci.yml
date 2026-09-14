@@ -199,6 +199,8 @@ jobs:
       sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
       sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
       workflows: ${{ steps.filter.outputs.workflows }}
+      needs_changeset: ${{ steps.filter.outputs.needs_changeset }}
+      adds_changeset: ${{ steps.filter.outputs.adds_changeset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -222,10 +224,12 @@ jobs:
       # exercises the jobs that filter gates.
       - name: Detect which areas changed
         id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
+          if [ "$EVENT_NAME" != "pull_request" ]; then
             {
               echo "sdk_swift=true"
               echo "sdk_kotlin=true"
@@ -246,6 +250,16 @@ jobs:
           gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
           gate workflows '^(\.github/workflows/|\.github/actions/|hosts/[a-z]+/\.github/)'
           gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+
+          # Include generators, dependency pins and package build configuration:
+          # these can change a published artifact without touching its sources.
+          gate needs_changeset '^(rust/crates/truapi(-server|-platform|-provider|-macros|-host-cli|-codegen)?/|js/packages/[^/]+/(src/|scripts/|package\.json$|tsconfig[^/]*\.json$)|Cargo\.(toml|lock)$|package(-lock)?\.json$|rust-toolchain(\.toml)?$|\.cargo/|Makefile$|scripts/(codegen\.sh|bundle-truapi-dts\.mjs|regen-explorer-versions\.mjs)$)'
+
+          # Deleting, editing or renaming an old changeset does not declare a
+          # new change. README.md is Changesets' documentation, not a release.
+          changed="$(git diff --name-only --find-renames --diff-filter=A HEAD^1 HEAD -- .changeset/)"
+          changed="$(sed '\|^\.changeset/README\.md$|d' <<<"$changed")"
+          gate adds_changeset '^\.changeset/[^/]+\.md$'
 
   ios-swift:
     name: iOS package (swift compile)
@@ -415,7 +429,7 @@ jobs:
         with:
           bun-version: latest
 
-      # Node builtins only, so this needs neither the codegen output nor npm ci.
+      # No npm dependencies, so this needs neither the codegen output nor npm ci.
       - name: Test scripts
         run: npm run test:scripts
 
@@ -701,6 +715,110 @@ jobs:
           "$RUNNER_TEMP/actionlint" \
             -ignore 'constant expression "false" in condition' \
             -color
+  release-guard:
+    name: Release guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Check the merge result, including a queued stack, for unconsumed changes
+      # whenever a published version changes. The PR title cannot bypass this.
+      - name: A version bump must consume every changeset
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request) base="HEAD^1" ;;
+            merge_group) base="$MERGE_BASE" ;;
+            push) base="$PUSH_BASE" ;;
+            *) base="HEAD^" ;;
+          esac
+          git rev-parse --verify "${base}^{commit}" >/dev/null
+
+          # Match by package name so moving a manifest cannot hide its bump.
+          base_paths="$(git ls-tree -r --name-only "$base" -- js/packages/)"
+          base_packages='[]'
+          while IFS= read -r manifest; do
+            if [[ ! "$manifest" =~ ^js/packages/[^/]+/package\.json$ ]]; then
+              continue
+            fi
+            package="$(git show "${base}:${manifest}")"
+            if [ "$(jq -r '.private // false' <<<"$package")" = true ]; then
+              continue
+            fi
+            package="$(jq -ce '{name, version} | if (.name | type == "string" and length > 0) and (.version | type == "string" and length > 0) then . else error("Invalid package manifest") end' <<<"$package")"
+            base_packages="$(jq -c --argjson package "$package" '. + [$package]' <<<"$base_packages")"
+          done <<<"$base_paths"
+
+          bumped=()
+          for manifest in js/packages/*/package.json; do
+            if [ "$(jq -r '.private // false' "${manifest}")" = "true" ]; then
+              continue
+            fi
+            name="$(jq -er '.name | select(type == "string" and length > 0)' "$manifest")"
+            head_version="$(jq -er '.version | select(type == "string" and length > 0)' "$manifest")"
+            base_version="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .version' <<<"$base_packages")"
+            if [ -n "${base_version}" ] && [ "${base_version}" != "${head_version}" ]; then
+              bumped+=("${name} ${base_version} -> ${head_version}")
+            fi
+          done
+
+          if [ "${#bumped[@]}" -eq 0 ]; then
+            echo "No published package version changed; nothing to guard."
+            exit 0
+          fi
+
+          printf 'Version bump in this change:\n'
+          printf '  %s\n' "${bumped[@]}"
+
+          remaining_changesets="$(find .changeset -maxdepth 1 -type f -name '*.md' ! -name README.md -print)"
+          if [ -n "${remaining_changesets}" ]; then
+            echo "::error::A changeset merged after these versions were computed, so the bump does not describe it. Rebuild the release commit from the default branch: reset to it, then rerun \`npm run version-packages\` and \`scripts/cut-version.sh\`. Rebasing and rerunning compounds the bump instead of replacing it."
+            echo "${remaining_changesets}"
+            exit 1
+          fi
+
+          echo "Every changeset is consumed by this bump."
+
+  changeset-guard:
+    name: Changeset guard
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.needs_changeset == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # Read live metadata so "Re-run failed jobs" sees a label or title edit
+      # without restarting the compile jobs on every metadata change.
+      - name: Released code needs a changeset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ADDS_CHANGESET: ${{ needs.changes.outputs.adds_changeset }}
+        run: |
+          set -euo pipefail
+
+          pr="$(gh pr view "$PR_NUMBER" --json title,labels)"
+          if jq -e '(.title | startswith("release:")) or any(.labels[]; .name == "no-changeset")' <<<"$pr" >/dev/null; then
+            echo "Release PR or explicit no-changeset opt-out."
+            exit 0
+          fi
+
+          if [ "$ADDS_CHANGESET" = true ]; then
+            echo "Changeset present."
+            exit 0
+          fi
+
+          echo "::error::This change reaches a published artifact but adds no changeset, so it would ship undescribed and at a version level chosen by some other change. Run \`npm run changeset\`, or add the \`no-changeset\` label if it genuinely ships nothing."
+          exit 1
 
   ci-status:
     name: CI Status
@@ -728,6 +846,8 @@ jobs:
         explorer,
         e2e,
         workflow-lint,
+        release-guard,
+        changeset-guard,
       ]
     steps:
       # The results come from the needs context itself rather than a second list
@@ -755,7 +875,7 @@ jobs:
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
             android-bindings ts-client ts-host ts-debugger playground explorer
-            e2e workflow-lint
+            e2e workflow-lint release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |

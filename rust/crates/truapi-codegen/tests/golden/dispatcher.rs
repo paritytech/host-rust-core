@@ -1876,7 +1876,7 @@ where
         });
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_request(wire_table::SIGNING_SIGN_PAYLOAD, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
@@ -1894,6 +1894,62 @@ where
                 let result: Result<versioned::signing::HostSignPayloadResponse, truapi::CallError<versioned::signing::HostSignPayloadError>> =
                     match host.sign_payload(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostSignPayloadResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::signing::HostSignRawRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::signing::HostSignRawError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::signing::HostSignRawResponse, truapi::CallError<versioned::signing::HostSignRawError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let result: Result<versioned::signing::HostSignRawResponse, truapi::CallError<versioned::signing::HostSignRawError>> =
+                    match host.sign_raw_unwatermarked_deprecated(&cx, request).await {
+                        Ok(response) => Ok(<versioned::signing::HostSignRawResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::signing::HostSignRawWithLegacyAccountRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::signing::HostSignRawWithLegacyAccountError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::signing::HostSignRawWithLegacyAccountResponse, truapi::CallError<versioned::signing::HostSignRawWithLegacyAccountError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let result: Result<versioned::signing::HostSignRawWithLegacyAccountResponse, truapi::CallError<versioned::signing::HostSignRawWithLegacyAccountError>> =
+                    match host.sign_raw_unwatermarked_deprecated_with_legacy_account(&cx, request).await {
+                        Ok(response) => Ok(<versioned::signing::HostSignRawWithLegacyAccountResponse as truapi::versioned::FromLatest>::from_latest(
                             truapi::versioned::IntoLatest::into_latest(response),
                             target_version,
                         )),

@@ -345,6 +345,11 @@ Android host artifacts alongside them. A release also opens a bump issue on each
 repository listed in [`.github/consumers.json`](.github/consumers.json) that pins
 one of the published packages.
 
+CI requires changesets for published build inputs and rejects version bumps
+with unconsumed changesets, including in the merge queue. The daily
+`Registry drift` workflow reports manifest versions missing from npm; see the
+release guide for opt-outs and recovery.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for issue reports, feature proposals, and the RFC process.

@@ -79,22 +79,70 @@ impl SigningHostSsoService {
                         SignPayloadAuthorityRequest::Product(request),
                     )
                     .await
+                    .map_err(|err| err.to_string())
             }
-            SignRequest::Raw(request) => {
-                self.confirm(UserConfirmationReview::SignRaw(SignRawReview::Product(
-                    request.clone(),
-                )))
-                .await?;
-                self.signing_host
-                    .sign_raw(
-                        &cx.call,
-                        &cx.session,
-                        SignRawAuthorityRequest::Product(request),
-                    )
+            SignRequest::Raw(request) => self.serve_sign_raw(cx, request, true).await,
+            SignRequest::RawUnwatermarkedDeprecated(request) => {
+                self.serve_sign_raw(cx, request, false).await
+            }
+            SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request) => {
+                self.serve_sign_raw_with_legacy_account(cx, request, false)
                     .await
             }
         }
-        .map_err(|err| err.to_string())
+    }
+
+    async fn serve_sign_raw(
+        &self,
+        cx: &SsoRequestContext,
+        request: api::HostSignRawRequest,
+        watermarked: bool,
+    ) -> Result<api::HostSignPayloadResponse, String> {
+        self.confirm(UserConfirmationReview::SignRaw(SignRawReview::Product {
+            request: request.clone(),
+            watermarked,
+        }))
+        .await?;
+        self.signing_host
+            .sign_raw(
+                &cx.call,
+                &cx.session,
+                SignRawAuthorityRequest::Product(request),
+                watermarked,
+            )
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn serve_sign_raw_with_legacy_account(
+        &self,
+        cx: &SsoRequestContext,
+        request: SignRawWithLegacyAccountRequest,
+        watermarked: bool,
+    ) -> Result<api::HostSignPayloadResponse, String> {
+        let public_request = api::HostSignRawWithLegacyAccountRequest {
+            signer: product_public_key_to_address(request.account),
+            payload: request.data,
+        };
+        self.confirm(UserConfirmationReview::SignRaw(
+            SignRawReview::LegacyAccount {
+                request: public_request.clone(),
+                watermarked,
+            },
+        ))
+        .await?;
+        self.signing_host
+            .sign_raw(
+                &cx.call,
+                &cx.session,
+                SignRawAuthorityRequest::LegacyAccount {
+                    account: request.account,
+                    request: public_request,
+                },
+                watermarked,
+            )
+            .await
+            .map_err(|err| err.to_string())
     }
 
     async fn serve_create_transaction(
@@ -381,26 +429,9 @@ impl SigningHostSsoService {
         cx: &SsoRequestContext,
         request: SignRawWithLegacyAccountRequest,
     ) -> SignRawWithLegacyAccountResponse {
-        let public_request = api::HostSignRawWithLegacyAccountRequest {
-            signer: product_public_key_to_address(request.account),
-            payload: request.data,
-        };
-        self.confirm(UserConfirmationReview::SignRaw(
-            SignRawReview::LegacyAccount(public_request.clone()),
-        ))
-        .await?;
-        self.signing_host
-            .sign_raw(
-                &cx.call,
-                &cx.session,
-                SignRawAuthorityRequest::LegacyAccount {
-                    account: request.account,
-                    request: public_request,
-                },
-            )
+        self.serve_sign_raw_with_legacy_account(cx, request, true)
             .await
             .map(|response| response.signature)
-            .map_err(|err| err.to_string())
     }
 
     /// Create a ring-VRF proof bound to a context and message.

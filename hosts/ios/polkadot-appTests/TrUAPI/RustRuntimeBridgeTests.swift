@@ -275,7 +275,7 @@ struct RustRuntimeBridgeTests {
         let bridge = makeBridge(productId: "confirm.product", confirmationPresenter: presenter)
 
         let review = UserConfirmationReview.signRaw(
-            .legacyAccount(HostSignRawWithLegacyAccountRequest(signer: "5Ffff", payload: .payload(payload: "hello")))
+            .legacyAccount(request: HostSignRawWithLegacyAccountRequest(signer: "5Ffff", payload: .payload(payload: "hello")), watermarked: true)
         )
         let result = try await bridge.confirmUserAction(review: review)
 
@@ -397,7 +397,7 @@ struct RustRuntimeBridgeTests {
         )
 
         let review = UserConfirmationReview.signRaw(
-            .legacyAccount(HostSignRawWithLegacyAccountRequest(signer: "5Ffff", payload: .payload(payload: "hello")))
+            .legacyAccount(request: HostSignRawWithLegacyAccountRequest(signer: "5Ffff", payload: .payload(payload: "hello")), watermarked: true)
         )
         let task = Task {
             await presenter.confirm(review: review, from: "test.product")
