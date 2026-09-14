@@ -65,9 +65,15 @@ fn dialable_spec(specification: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// The smoldot platform backing this target.
-#[cfg(not(target_arch = "wasm32"))]
+/// The smoldot platform backing this target. Tests wrap it to collapse the
+/// sync-mode decision deadline they would otherwise wait out offline; see
+/// [`crate::light_platform_test`].
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
 type Platform = Arc<smoldot_light::platform::DefaultPlatform>;
+#[cfg(all(not(target_arch = "wasm32"), test))]
+type Platform = crate::light_platform_test::ShortDeadlinePlatform<
+    Arc<smoldot_light::platform::DefaultPlatform>,
+>;
 #[cfg(target_arch = "wasm32")]
 type Platform = crate::light_platform_web::SubxtPlatform;
 
@@ -76,10 +82,18 @@ fn new_platform() -> Platform {
     {
         // Before the client starts, or its first log lines are dropped.
         crate::logging_native::init_from_env();
-        smoldot_light::platform::DefaultPlatform::new(
+        let platform = smoldot_light::platform::DefaultPlatform::new(
             env!("CARGO_PKG_NAME").into(),
             env!("CARGO_PKG_VERSION").into(),
-        )
+        );
+        #[cfg(test)]
+        {
+            crate::light_platform_test::ShortDeadlinePlatform::new(platform)
+        }
+        #[cfg(not(test))]
+        {
+            platform
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
