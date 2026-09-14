@@ -40,6 +40,38 @@ on:
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
       - ".github/actions/bootstrap-ios-core/**"
+  # Also on the default branch, which is the only way the SPM cache becomes
+  # useful. A cache written during a pull request is scoped to that pull
+  # request's ref, so nothing else can read it. Only a run on the default
+  # branch writes one every later pull request restores from, and this
+  # workflow never ran there, so every run resolved 27 local packages and the
+  # remote graph from cold.
+  push:
+    branches: [main]
+    paths:
+      - "hosts/ios/**"
+      - "ios/**"
+      - "Package.swift"
+      - "Makefile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "js/container/**"
+      # The bootstrap runs npm ci before codegen, and codegen shells out to
+      # scripts beyond codegen.sh itself, regen-explorer-versions.mjs and
+      # bundle-truapi-dts.mjs, so the whole directory and both npm manifests
+      # are inputs to this job.
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "rust/crates/truapi/**"
+      - "rust/crates/truapi-codegen/**"
+      - "rust/crates/truapi-macros/**"
+      - "rust/crates/truapi-platform/**"
+      - "rust/crates/truapi-server/**"
+      - "rust/crates/truapi-provider/**"
+      - "rust/crates/uniffi-bindgen-cli/**"
+      - ".github/workflows/ios-pr.yml"
+      - ".github/actions/bootstrap-ios-core/**"
   # Kept alongside pull_request so a build can be reproduced on demand without
   # pushing a commit.
   workflow_dispatch:
