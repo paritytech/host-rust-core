@@ -54,7 +54,7 @@ suite("createMockClient", () => {
       const denied = await client.permissions.requestDevicePermission("Camera");
       expect(denied._unsafeUnwrap().granted).toBe(false);
       expect(host.getPermissionLog()).toEqual([
-        { kind: "device", permission: "Camera", granted: false },
+        { tag: "Camera", value: "Camera", approved: false, kind: "device" },
       ]);
 
       // The core caches a decided authorization, so flipping the host's answer

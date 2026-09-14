@@ -323,7 +323,7 @@ describe("createMockHost control surface", () => {
     host.revokePermission("Camera");
     await host.callbacks.permissions.devicePermission("Camera");
     expect(host.getPermissionLog()).toEqual([
-      { kind: "device", permission: "Camera", granted: false },
+      { tag: "Camera", value: "Camera", approved: false, kind: "device" },
     ]);
   });
 

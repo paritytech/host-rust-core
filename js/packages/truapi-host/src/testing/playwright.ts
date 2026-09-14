@@ -36,6 +36,14 @@ export interface TestHostFixtureOptions {
    * across tests instead of paying page-load and WASM-init per case.
    */
   hostUrl: string;
+  /**
+   * dotNS identifier the host runs the product under.
+   *
+   * Must match the identifier the product signs with: the core rejects a
+   * signing request whose account is scoped to a different product, so a
+   * mismatch surfaces as `PermissionDenied` rather than as a config error.
+   */
+  productId?: string;
   /** Behaviour knobs forwarded to the mock host. */
   mock?: MockHostConfig;
   /** Accounts the host can sign as. Defaults to `["alice"]`. */
@@ -132,6 +140,9 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
       url.searchParams.set("product", defaults.productUrl);
       if (defaults.mock) {
         url.searchParams.set("mock", JSON.stringify(defaults.mock));
+      }
+      if (defaults.productId) {
+        url.searchParams.set("productId", defaults.productId);
       }
       if (defaults.accounts) {
         url.searchParams.set("accounts", defaults.accounts.join(","));

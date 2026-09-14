@@ -124,12 +124,12 @@ pub enum PermissionKind {
 /// One permission answer the mock gave, recorded for assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionDecision {
+    /// The permission's `Display` form, the same key `grant_permission` takes.
+    pub tag: String,
+    /// What the mock answered.
+    pub approved: bool,
     /// Which prompt surface asked.
     pub kind: PermissionKind,
-    /// The permission's `Display` form, the same key `grant_permission` takes.
-    pub permission: String,
-    /// What the mock answered.
-    pub granted: bool,
 }
 
 /// State of the mock's chain connection, as the host sees it.
@@ -447,9 +447,9 @@ impl MockPlatform {
             .lock()
             .expect("permission log poisoned")
             .push(PermissionDecision {
+                tag: permission,
+                approved: granted,
                 kind,
-                permission,
-                granted,
             });
         granted
     }
@@ -1662,14 +1662,14 @@ mod tests {
             p.permission_log(),
             vec![
                 PermissionDecision {
+                    tag: latest::HostDevicePermissionRequest::Camera.to_string(),
+                    approved: false,
                     kind: PermissionKind::Device,
-                    permission: latest::HostDevicePermissionRequest::Camera.to_string(),
-                    granted: false,
                 },
                 PermissionDecision {
+                    tag: latest::RemotePermission::ChainSubmit.to_string(),
+                    approved: true,
                     kind: PermissionKind::Remote,
-                    permission: latest::RemotePermission::ChainSubmit.to_string(),
-                    granted: true,
                 },
             ]
         );

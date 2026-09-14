@@ -74,14 +74,21 @@ export interface MockFaults {
 /** Which prompt surface a permission decision came from. */
 export type PermissionKind = "device" | "remote";
 
-/** One permission answer the mock gave, recorded for assertions. */
+/**
+ * One permission answer the mock gave, recorded for assertions.
+ *
+ * Field names follow `@parity/host-api-test-sdk`'s `PermissionLogEntry` so a
+ * migrating suite's assertions keep working.
+ */
 export interface PermissionDecision {
+  /** The request's tag, the same key `grantPermission` takes. */
+  tag: string;
+  /** The full request, for a permission that carries one. */
+  value: unknown;
+  /** What the mock answered. */
+  approved: boolean;
   /** Which prompt surface asked. */
   kind: PermissionKind;
-  /** The request's tag, the same key `grantPermission` takes. */
-  permission: string;
-  /** What the mock answered. */
-  granted: boolean;
 }
 
 /**
@@ -390,18 +397,19 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
    */
   const decidePermission = (
     kind: PermissionKind,
-    permission: string,
+    tag: string,
+    value: unknown,
     policy: PermissionPolicy,
   ): boolean => {
-    const explicit = permissionDecisions.get(permission);
-    const isGranted =
+    const explicit = permissionDecisions.get(tag);
+    const approved =
       explicit !== undefined
         ? explicit
         : enforcePermissions
           ? false
           : granted(policy);
-    permissionLog.push({ kind, permission, granted: isGranted });
-    return isGranted;
+    permissionLog.push({ tag, value, approved, kind });
+    return approved;
   };
 
   // Product keys are namespaced from core slots so neither can shadow the other.
@@ -483,7 +491,12 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       async devicePermission(request) {
         if (faults.permissionError) throw new Error(faults.permissionError);
         return {
-          granted: decidePermission("device", request, devicePermissions),
+          granted: decidePermission(
+            "device",
+            request,
+            request,
+            devicePermissions,
+          ),
         };
       },
       async remotePermission(request) {
@@ -492,6 +505,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
           granted: decidePermission(
             "remote",
             request.permission.tag,
+            request.permission,
             remotePermissions,
           ),
         };
