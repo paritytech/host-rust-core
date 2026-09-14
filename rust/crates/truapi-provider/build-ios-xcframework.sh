@@ -24,9 +24,12 @@ SLICES=(aarch64-apple-ios-sim)
 
 for target in "${SLICES[@]}"; do
   rustup target add "$target" >/dev/null 2>&1 || true
-  echo "==> building $target ($PROFILE)"
-  cargo build "${CARGO_FLAGS[@]}" --target "$target"
+  CARGO_FLAGS+=(--target "$target")
 done
+# One invocation for every slice, so cargo schedules both target graphs
+# together rather than draining one before it starts the next.
+echo "==> building ${SLICES[*]} ($PROFILE)"
+cargo build "${CARGO_FLAGS[@]}"
 
 BINDINGS="target/ios-bindings"
 rm -rf "$BINDINGS" && mkdir -p "$BINDINGS"
