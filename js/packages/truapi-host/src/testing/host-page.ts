@@ -95,7 +95,14 @@ export async function startTestHost(
     options.runtimeConfig ?? {},
   );
   const runtime = new glue.WasmPairingHostRuntime(
-    createWasmRawCallbacks(host.callbacks),
+    {
+      // `workerDemandChanged` is a raw bridge callback rather than a generated
+      // host callback, so it is supplied here the way the worker runtime does.
+      // The test host runs one product and starts no workers, so observing the
+      // transition has nothing to act on.
+      ...createWasmRawCallbacks(host.callbacks),
+      workerDemandChanged: () => {},
+    },
     hostConfig,
   );
 

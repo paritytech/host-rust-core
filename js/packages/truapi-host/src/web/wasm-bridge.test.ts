@@ -51,7 +51,13 @@ suite("real WASM core ↔ createMockHost bridge", () => {
 
     // The pairing-host runtime takes the platform callbacks and host config;
     // the per-product core is derived from it with its own frame sink.
-    const raw = createWasmRawCallbacks(mock.callbacks);
+    // `workerDemandChanged` is a raw bridge callback rather than a generated
+    // host callback, so the worker runtime supplies it outside the adapter and
+    // a harness has to do the same.
+    const raw = {
+      ...createWasmRawCallbacks(mock.callbacks),
+      workerDemandChanged: () => {},
+    };
     const { productId, ...hostConfig } = mockRuntimeConfig();
     const runtime = new WasmPairingHostRuntime(raw, hostConfig);
     // The core emits response frames through `emitFrame`; the worker supplies
@@ -79,7 +85,10 @@ suite("real WASM core ↔ createMockHost bridge", () => {
     const { productId, ...hostConfig } = mockRuntimeConfig();
     const boot = async () => {
       const runtime = new WasmPairingHostRuntime(
-        createWasmRawCallbacks(mock.callbacks),
+        {
+          ...createWasmRawCallbacks(mock.callbacks),
+          workerDemandChanged: () => {},
+        },
         hostConfig,
       );
       runtime.productRuntime({ productId }, { emitFrame: () => {} });

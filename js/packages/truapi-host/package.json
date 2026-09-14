@@ -33,6 +33,18 @@
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
     },
+    "./testing/playwright": {
+      "types": "./dist/testing/playwright.d.ts",
+      "import": "./dist/testing/playwright.js"
+    },
+    "./testing/host-page": {
+      "types": "./dist/testing/host-page.d.ts",
+      "import": "./dist/testing/host-page.js"
+    },
+    "./wasm/testing": {
+      "types": "./dist/wasm/testing/truapi_server.d.ts",
+      "import": "./dist/wasm/testing/truapi_server.js"
+    },
     "./worker-runtime": {
       "types": "./dist/worker-runtime.d.ts",
       "import": "./dist/worker-runtime.js"
