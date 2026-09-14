@@ -13,6 +13,9 @@ value. Frame bytes are unchanged.
 no items before it. Methods that could only fail at start now report the same failure at any point. A chain follow that
 cannot be opened, or whose upstream events stop being readable, ends with that failure rather than completing.
 
+A method the host has not implemented ends with `HostFailure { reason: "unavailable" }` rather than completing, so a
+product can tell an unimplemented method from one that had nothing to report.
+
 A product serves a host-initiated method with `(request, send, interrupt) => teardown` rather than by returning an
 observable. `interrupt()` ends the host's stream, and `interrupt(reason)` ends it with the method's own interrupt value,
 which the host reads as `Err(reason)` instead of a fixed generic error. A stream the product ends this way ends the

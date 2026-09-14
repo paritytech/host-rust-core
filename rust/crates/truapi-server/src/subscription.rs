@@ -81,6 +81,10 @@ where
 /// Render the value a subscription ended with as the diagnostic string a
 /// host-side observer reports. Bridges that hand an interrupt to a native or
 /// JavaScript callback have only a string to give it.
+///
+/// `CallError<GenericError>` is the interrupt type the custom-renderer
+/// bridges that call this declare, and a versioned domain wrapper has no
+/// `Display`, so there is nothing for a generic version to render.
 pub(crate) fn interrupt_reason(error: CallError<truapi::latest::GenericError>) -> String {
     match error {
         CallError::Domain(truapi::latest::GenericError { reason }) => reason,
@@ -896,6 +900,38 @@ mod tests {
         );
         assert_eq!(futures::executor::block_on(declined.next()), None);
         assert_eq!(transport_typed.sent().len(), 1);
+    }
+
+    /// An interrupt payload this build cannot read must settle the stream
+    /// with an error. Reading it as a clean end would tell the product its
+    /// render finished, on a frame that never said so.
+    #[test]
+    fn an_unreadable_host_interrupt_ends_the_stream_with_a_malformed_frame() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut undecodable =
+            manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport.clone());
+        let mut trailing = manager.start::<u32, v01::GenericError>(host_ids(), vec![], transport);
+
+        // A `Result` discriminant this build does not know, and a clean end
+        // that does not stop where its payload does.
+        manager.handle_message(host_frame("h:1", MESSAGE_TYPE_INTERRUPT, vec![0xff]));
+        manager.handle_message(host_frame(
+            "h:2",
+            MESSAGE_TYPE_INTERRUPT,
+            [encode_clean_interrupt(), vec![0xff]].concat(),
+        ));
+
+        let malformed = Some(Err(CallError::MalformedFrame {
+            reason: "host-initiated subscription interrupt did not decode".to_string(),
+        }));
+        assert_eq!(futures::executor::block_on(undecodable.next()), malformed);
+        assert_eq!(futures::executor::block_on(undecodable.next()), None);
+        assert_eq!(futures::executor::block_on(trailing.next()), malformed);
+        assert_eq!(futures::executor::block_on(trailing.next()), None);
+        // Only the two Start frames: a settled stream does not echo Stop.
+        assert_eq!(transport_typed.sent().len(), 2);
     }
 
     #[test]
