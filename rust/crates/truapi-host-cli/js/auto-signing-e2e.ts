@@ -158,23 +158,20 @@ export async function runAutoSigningE2e(
     const beforePayload = readTranscript();
     const payload = await client.signing.signPayload({
       account,
+      // Optional fields are absent rather than null: the codec wraps each in
+      // `Option`, so a null reaches the hex encoder as a value.
       payload: {
-        address: "",
-        assetId: null,
         blockHash: `0x${"00".repeat(32)}`,
         blockNumber: "0x00000000",
         era: "0x0000",
         genesisHash: `0x${"00".repeat(32)}`,
-        metadataHash: null,
         method: "0x00003448656c6c6f2c20776f726c6421",
-        mode: null,
         nonce: "0x00000000",
         signedExtensions: [],
         specVersion: "0x00000000",
         tip: "0x00000000000000000000000000000000",
         transactionVersion: "0x00000000",
         version: 4,
-        withSignedTransaction: null,
       },
     });
     if (!payload.isOk()) {
