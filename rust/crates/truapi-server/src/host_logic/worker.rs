@@ -82,10 +82,12 @@ impl WorkerLedger {
             let Some(count) = state.references.get_mut(product_id) else {
                 return;
             };
-            *count -= 1;
-            if *count > 0 {
+            if *count > 1 {
+                *count -= 1;
                 return;
             }
+            // The last one: an entry is dropped rather than left at zero, so
+            // every stored count is at least one and none of this can wrap.
             state.references.remove(product_id);
             state
                 .pending
@@ -97,8 +99,17 @@ impl WorkerLedger {
     /// Install the host's observer for every transition the ledger produces.
     /// Set-once, so a host cannot be swapped out from under a live reference.
     /// Returns whether this call installed it.
+    ///
+    /// Anything that crossed zero before this is still queued and is delivered
+    /// now: the counts that produced it stand, so dropping it would leave the
+    /// ledger holding a reference the host was never told to start.
+    #[must_use]
     pub fn install_demand_observer(&self, observer: Arc<dyn WorkerDemandObserver>) -> bool {
-        self.observer.set(observer).is_ok()
+        if self.observer.set(observer).is_err() {
+            return false;
+        }
+        self.drain();
+        true
     }
 
     /// References currently held on a product's worker.
@@ -129,8 +140,9 @@ impl WorkerLedger {
     /// it. The panic itself is not caught here: it keeps unwinding into
     /// whichever `acquire` or `release` call triggered this drain.
     fn drain(&self) {
+        // Nothing to deliver to yet. The queue keeps its order and its
+        // contents until an observer is installed, which drains it.
         let Some(observer) = self.observer.get() else {
-            self.state().pending.clear();
             return;
         };
         {
@@ -422,6 +434,31 @@ mod tests {
         fn worker_demand_changed(&self, _product_id: &str, _transition: WorkerTransition) {
             *self.delivered.lock().expect("counter mutex poisoned") += 1;
         }
+    }
+
+    #[test]
+    fn a_reference_taken_before_the_observer_is_reported_once_it_arrives() {
+        let ledger = WorkerLedger::default();
+        // A host that counts before it listens still owns the reference, so
+        // the transition has to survive the wait rather than be dropped: the
+        // count never crosses zero again to produce a second one.
+        ledger.acquire("a.dot");
+
+        let recorder = Arc::new(Recorder::default());
+        assert!(ledger.install_demand_observer(recorder.clone()));
+        assert_eq!(
+            recorder.seen(),
+            vec![("a.dot".to_string(), WorkerTransition::Start)]
+        );
+
+        ledger.release("a.dot");
+        assert_eq!(
+            recorder.seen(),
+            vec![
+                ("a.dot".to_string(), WorkerTransition::Start),
+                ("a.dot".to_string(), WorkerTransition::Stop),
+            ]
+        );
     }
 
     /// Nothing stays queued once the ledger falls quiet, however two threads

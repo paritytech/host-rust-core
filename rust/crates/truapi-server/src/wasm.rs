@@ -875,9 +875,12 @@ fn install_worker_demand_observer(
     callbacks: &JsValue,
 ) -> Result<(), JsValue> {
     let changed = get_function(callbacks, "workerDemandChanged")?;
-    ledger.install_demand_observer(Arc::new(WasmWorkerDemand {
-        changed: SendWrapper::new(changed),
-    }));
+    assert!(
+        ledger.install_demand_observer(Arc::new(WasmWorkerDemand {
+            changed: SendWrapper::new(changed),
+        })),
+        "a freshly built runtime installs its worker demand observer once"
+    );
     Ok(())
 }
 

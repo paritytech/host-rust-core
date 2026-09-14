@@ -616,7 +616,10 @@ impl NativeTrUApiHostRuntime {
             runtime_config.signing,
             spawner.clone(),
         ));
-        runtime.worker_ledger().install_demand_observer(platform);
+        assert!(
+            runtime.worker_ledger().install_demand_observer(platform),
+            "a freshly built runtime installs its worker demand observer once"
+        );
         if let Some(secret) = runtime_config.local_session_secret {
             futures::executor::block_on(runtime.activate_local_session_with_identity(
                 secret,
