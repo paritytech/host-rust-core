@@ -132,6 +132,19 @@ pub struct PermissionDecision {
     pub granted: bool,
 }
 
+/// State of the mock's chain connection, as the host sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChainStatus {
+    /// No connection has been opened yet.
+    #[default]
+    Idle,
+    /// At least one connection is open.
+    Connected,
+    /// [`MockPlatform::simulate_disconnect`] closed the open connections, and
+    /// further `connect` calls fail until [`MockPlatform::simulate_reconnect`].
+    Disconnected,
+}
+
 /// One chat message the product posted through the mock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessageRecord {
@@ -176,6 +189,17 @@ pub struct MockFaults {
     pub navigate_error: Option<String>,
     /// `push_notification` fails with this reason.
     pub notification_error: Option<String>,
+    /// `confirm_user_action` fails with this reason instead of answering.
+    ///
+    /// Distinct from a declined confirmation: the host could not put the
+    /// question to the user at all, which the core must not read as a refusal.
+    pub confirmation_error: Option<String>,
+    /// Device and remote permission prompts fail with this reason.
+    pub permission_error: Option<String>,
+    /// `feature_supported` and `supported_chains` fail with this reason.
+    pub feature_error: Option<String>,
+    /// Chat room, bot, and message calls fail with this reason.
+    pub chat_error: Option<String>,
 }
 
 /// Behavior knobs for [`MockPlatform`], read on every call.
@@ -193,6 +217,12 @@ pub struct MockConfig {
     pub language_tag: String,
     /// Whether `confirm_user_action` confirms reviewed actions.
     pub confirm_user_actions: bool,
+    /// Chains the mock reports serving (RFC 0026).
+    ///
+    /// Empty by default. An empty set type-checks and then fails every
+    /// chain-routed call, so a test that exercises one must declare the chain
+    /// here with the same genesis hash its runtime config carries.
+    pub supported_chains: crate::HostChainSet,
     /// Chain connection behavior.
     pub chain: ChainBehavior,
     /// Error injection.
@@ -208,6 +238,10 @@ impl Default for MockConfig {
             theme: latest::ThemeVariant::Dark,
             language_tag: "en".to_string(),
             confirm_user_actions: true,
+            supported_chains: crate::HostChainSet {
+                network: "mock".to_string(),
+                chains: Vec::new(),
+            },
             chain: ChainBehavior::Silent,
             faults: MockFaults::default(),
         }
@@ -243,6 +277,12 @@ pub struct MockPlatform {
     chat_room_subscribers:
         Arc<Mutex<Vec<mpsc::UnboundedSender<latest::HostChatListSubscribeItem>>>>,
     next_chat_message_id: Arc<AtomicU32>,
+    /// Current theme. Seeded from the config and replaced by `set_theme`.
+    theme: Arc<Mutex<latest::ThemeVariant>>,
+    theme_subscribers: Arc<Mutex<Vec<mpsc::UnboundedSender<latest::HostThemeSubscribeItem>>>>,
+    chain_status: Arc<Mutex<ChainStatus>>,
+    /// One per live connection; sending ends that connection's response stream.
+    chain_disconnectors: Arc<Mutex<Vec<mpsc::UnboundedSender<()>>>>,
 }
 
 impl Default for MockPlatform {
@@ -260,6 +300,7 @@ impl MockPlatform {
 
     /// Build a mock platform with explicit behavior.
     pub fn with_config(config: MockConfig) -> Self {
+        let theme = config.theme;
         Self {
             config: Arc::new(config),
             storage: Arc::new(Mutex::new(HashMap::new())),
@@ -279,6 +320,10 @@ impl MockPlatform {
             chat_messages: Arc::new(Mutex::new(Vec::new())),
             chat_room_subscribers: Arc::new(Mutex::new(Vec::new())),
             next_chat_message_id: Arc::new(AtomicU32::new(0)),
+            theme: Arc::new(Mutex::new(theme)),
+            theme_subscribers: Arc::new(Mutex::new(Vec::new())),
+            chain_status: Arc::new(Mutex::new(ChainStatus::Idle)),
+            chain_disconnectors: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -503,6 +548,65 @@ impl MockPlatform {
         self.storage.lock().expect("storage poisoned").clear();
     }
 
+    /// Seeded preimages as `(key, value)`, in key order.
+    pub fn preimages(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut entries: Vec<(Vec<u8>, Vec<u8>)> = self
+            .preimages
+            .lock()
+            .expect("preimages poisoned")
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        entries
+    }
+
+    /// The theme the mock currently reports.
+    pub fn theme(&self) -> latest::ThemeVariant {
+        *self.theme.lock().expect("theme poisoned")
+    }
+
+    /// Replace the reported theme and push it to every live subscriber.
+    pub fn set_theme(&self, variant: latest::ThemeVariant) {
+        *self.theme.lock().expect("theme poisoned") = variant;
+        let item = latest::HostThemeSubscribeItem {
+            name: latest::ThemeName::Default,
+            variant,
+        };
+        self.theme_subscribers
+            .lock()
+            .expect("theme subscribers poisoned")
+            .retain(|subscriber| subscriber.unbounded_send(item.clone()).is_ok());
+    }
+
+    /// State of the mock's chain connection.
+    pub fn chain_status(&self) -> ChainStatus {
+        *self.chain_status.lock().expect("chain status poisoned")
+    }
+
+    /// End every live chain connection's response stream and fail subsequent
+    /// `connect` calls, as a dropped transport would.
+    pub fn simulate_disconnect(&self) {
+        *self.chain_status.lock().expect("chain status poisoned") = ChainStatus::Disconnected;
+        for disconnector in self
+            .chain_disconnectors
+            .lock()
+            .expect("chain disconnectors poisoned")
+            .drain(..)
+        {
+            // A receiver dropped with its connection needs no signal.
+            let _ = disconnector.unbounded_send(());
+        }
+    }
+
+    /// Allow `connect` to succeed again after a simulated disconnect.
+    ///
+    /// Connections closed by the disconnect stay closed: the core reconnects
+    /// by opening a new one, which is what this makes possible.
+    pub fn simulate_reconnect(&self) {
+        *self.chain_status.lock().expect("chain status poisoned") = ChainStatus::Idle;
+    }
+
     /// Chat rooms the product registered, in room-id order.
     pub fn chat_rooms(&self) -> Vec<latest::ChatRoom> {
         self.chat_rooms
@@ -573,6 +677,8 @@ impl MockPlatform {
         self.clear_preimages();
         self.clear_storage();
         self.clear_chat_state();
+        self.set_theme(self.config.theme);
+        self.simulate_reconnect();
         self.set_enforce_permissions(false);
         self.next_notification_id.store(0, Ordering::SeqCst);
         self.next_chat_message_id.store(0, Ordering::SeqCst);
@@ -794,6 +900,11 @@ impl Permissions for MockPlatform {
         &self,
         request: latest::HostDevicePermissionRequest,
     ) -> Result<latest::HostDevicePermissionResponse, latest::GenericError> {
+        if let Some(reason) = &self.config.faults.permission_error {
+            return Err(latest::GenericError {
+                reason: reason.clone(),
+            });
+        }
         Ok(latest::HostDevicePermissionResponse {
             granted: self.decide_permission(
                 PermissionKind::Device,
@@ -807,6 +918,11 @@ impl Permissions for MockPlatform {
         &self,
         request: latest::RemotePermissionRequest,
     ) -> Result<latest::RemotePermissionResponse, latest::GenericError> {
+        if let Some(reason) = &self.config.faults.permission_error {
+            return Err(latest::GenericError {
+                reason: reason.clone(),
+            });
+        }
         Ok(latest::RemotePermissionResponse {
             granted: self.decide_permission(
                 PermissionKind::Remote,
@@ -819,18 +935,24 @@ impl Permissions for MockPlatform {
 
 #[async_trait]
 impl Features for MockPlatform {
-    /// The mock serves no chains by default; the network label is inert.
     async fn supported_chains(&self) -> Result<crate::HostChainSet, latest::GenericError> {
-        Ok(crate::HostChainSet {
-            network: "mock".to_string(),
-            chains: Vec::new(),
-        })
+        if let Some(reason) = &self.config.faults.feature_error {
+            return Err(latest::GenericError {
+                reason: reason.clone(),
+            });
+        }
+        Ok(self.config.supported_chains.clone())
     }
 
     async fn feature_supported(
         &self,
         _request: latest::HostFeatureSupportedRequest,
     ) -> Result<latest::HostFeatureSupportedResponse, latest::GenericError> {
+        if let Some(reason) = &self.config.faults.feature_error {
+            return Err(latest::GenericError {
+                reason: reason.clone(),
+            });
+        }
         Ok(latest::HostFeatureSupportedResponse {
             supported: self.config.feature_supported,
         })
@@ -842,6 +964,8 @@ impl Features for MockPlatform {
 struct MockConnection {
     sent: Arc<Mutex<Vec<String>>>,
     responses: Option<Vec<String>>,
+    /// Taken by the first `responses()` call; firing ends that stream.
+    disconnected: Mutex<Option<mpsc::UnboundedReceiver<()>>>,
 }
 
 impl JsonRpcConnection for MockConnection {
@@ -850,10 +974,21 @@ impl JsonRpcConnection for MockConnection {
     }
 
     fn responses(&self) -> BoxStream<'static, String> {
-        match &self.responses {
+        let base: BoxStream<'static, String> = match &self.responses {
             None => Box::pin(stream::pending()),
             Some(frames) => Box::pin(stream::iter(frames.clone())),
-        }
+        };
+        let Some(disconnected) = self
+            .disconnected
+            .lock()
+            .expect("disconnect signal poisoned")
+            .take()
+        else {
+            // Only the first stream carries the signal; later ones behave as
+            // before, which is enough for the single-stream core.
+            return base;
+        };
+        Box::pin(base.take_until(disconnected.into_future()))
     }
 
     // No real transport to release. A `None` (silent) `responses()` stream stays
@@ -867,23 +1002,33 @@ impl ChainProvider for MockPlatform {
         &self,
         _genesis_hash: [u8; 32],
     ) -> Result<Box<dyn JsonRpcConnection>, latest::GenericError> {
-        match &self.config.chain {
-            ChainBehavior::ConnectError(reason) => Err(latest::GenericError {
-                reason: reason.clone(),
-            }),
-            ChainBehavior::Silent => Ok(Box::new(MockConnection {
-                sent: self.sent_rpc.clone(),
-                responses: None,
-            })),
-            ChainBehavior::Scripted(frames) => Ok(Box::new(MockConnection {
-                sent: self.sent_rpc.clone(),
-                responses: Some(frames.clone()),
-            })),
-            ChainBehavior::Closed => Ok(Box::new(MockConnection {
-                sent: self.sent_rpc.clone(),
-                responses: Some(Vec::new()),
-            })),
+        if self.chain_status() == ChainStatus::Disconnected {
+            return Err(latest::GenericError {
+                reason: "mock chain is disconnected".to_string(),
+            });
         }
+        if let ChainBehavior::ConnectError(reason) = &self.config.chain {
+            return Err(latest::GenericError {
+                reason: reason.clone(),
+            });
+        }
+        let responses = match &self.config.chain {
+            ChainBehavior::Silent => None,
+            ChainBehavior::Scripted(frames) => Some(frames.clone()),
+            ChainBehavior::Closed => Some(Vec::new()),
+            ChainBehavior::ConnectError(_) => unreachable!("handled above"),
+        };
+        let (disconnector, disconnected) = mpsc::unbounded();
+        self.chain_disconnectors
+            .lock()
+            .expect("chain disconnectors poisoned")
+            .push(disconnector);
+        *self.chain_status.lock().expect("chain status poisoned") = ChainStatus::Connected;
+        Ok(Box::new(MockConnection {
+            sent: self.sent_rpc.clone(),
+            responses,
+            disconnected: Mutex::new(Some(disconnected)),
+        }))
     }
 }
 
@@ -903,6 +1048,11 @@ impl UserConfirmation for MockPlatform {
         review: UserConfirmationReview,
     ) -> Result<bool, latest::GenericError> {
         self.reviews.lock().expect("reviews poisoned").push(review);
+        if let Some(reason) = &self.config.faults.confirmation_error {
+            return Err(latest::GenericError {
+                reason: reason.clone(),
+            });
+        }
         Ok(self.config.confirm_user_actions)
     }
 }
@@ -911,20 +1061,20 @@ impl ThemeHost for MockPlatform {
     fn subscribe_theme(
         &self,
     ) -> BoxStream<'static, Result<latest::HostThemeSubscribeItem, latest::GenericError>> {
-        let item = latest::HostThemeSubscribeItem {
-            name: latest::ThemeName::Default,
-            variant: self.config.theme,
-        };
-        // Emit the current theme, then stay open (a live subscription never
-        // ends), matching the real host contract.
-        Box::pin(
-            stream::once(async move {
-                Ok::<latest::HostThemeSubscribeItem, latest::GenericError>(item)
+        let (sender, receiver) = mpsc::unbounded();
+        // Seed the current theme before registering, so a subscriber that
+        // never sees a change still sees what it subscribed to.
+        sender
+            .unbounded_send(latest::HostThemeSubscribeItem {
+                name: latest::ThemeName::Default,
+                variant: self.theme(),
             })
-            .chain(stream::pending::<
-                Result<latest::HostThemeSubscribeItem, latest::GenericError>,
-            >()),
-        )
+            .expect("a fresh receiver is open");
+        self.theme_subscribers
+            .lock()
+            .expect("theme subscribers poisoned")
+            .push(sender);
+        Box::pin(receiver.map(Ok))
     }
 }
 
@@ -1638,6 +1788,145 @@ mod tests {
         assert!(p.chat_rooms().is_empty());
         assert!(p.chat_bots().is_empty());
         assert!(p.posted_chat_messages().is_empty());
+    }
+
+    #[test]
+    fn a_theme_subscriber_sees_the_current_theme_and_later_changes() {
+        let p = MockPlatform::new();
+        let mut themes = p.subscribe_theme();
+
+        let seeded = themes
+            .next()
+            .now_or_never()
+            .expect("the seeded theme is ready immediately")
+            .expect("a seeded item")
+            .expect("theme stream is infallible here");
+        assert_eq!(seeded.variant, latest::ThemeVariant::Dark);
+
+        p.set_theme(latest::ThemeVariant::Light);
+        let changed = themes
+            .next()
+            .now_or_never()
+            .expect("set_theme must deliver to live subscribers")
+            .expect("a changed item")
+            .expect("theme stream is infallible here");
+        assert_eq!(changed.variant, latest::ThemeVariant::Light);
+        assert_eq!(p.theme(), latest::ThemeVariant::Light);
+    }
+
+    #[test]
+    fn a_simulated_disconnect_ends_the_response_stream_and_blocks_reconnect() {
+        let p = MockPlatform::with_config(MockConfig {
+            // Silent responses stay pending forever, so if the disconnect is
+            // not observed this assertion fails rather than passing by luck.
+            chain: ChainBehavior::Silent,
+            ..MockConfig::default()
+        });
+        let connection = block_on(p.connect([0; 32])).expect("first connect succeeds");
+        assert_eq!(p.chain_status(), ChainStatus::Connected);
+        let mut responses = connection.responses();
+        assert!(
+            responses.next().now_or_never().is_none(),
+            "a silent connection has nothing to deliver yet",
+        );
+
+        p.simulate_disconnect();
+
+        assert_eq!(p.chain_status(), ChainStatus::Disconnected);
+        assert!(
+            matches!(responses.next().now_or_never(), Some(None)),
+            "the disconnect must end the stream, not leave it pending",
+        );
+        assert!(
+            block_on(p.connect([0; 32])).is_err(),
+            "a disconnected chain must refuse new connections",
+        );
+
+        p.simulate_reconnect();
+        assert!(block_on(p.connect([0; 32])).is_ok());
+    }
+
+    #[test]
+    fn seeded_preimages_are_readable_in_key_order() {
+        let p = MockPlatform::new();
+        let first = p.insert_preimage(vec![1, 2, 3]);
+        let second = p.insert_preimage(vec![4, 5, 6]);
+        let mut expected = vec![(first, vec![1, 2, 3]), (second, vec![4, 5, 6])];
+        expected.sort_by(|(left, _), (right, _)| left.cmp(right));
+        assert_eq!(p.preimages(), expected);
+
+        p.clear_preimages();
+        assert!(p.preimages().is_empty());
+    }
+
+    #[test]
+    fn an_injected_confirmation_fault_is_not_a_refusal() {
+        // A host that could not ask is not a user who said no, and the mock
+        // has to be able to express the difference.
+        let p = MockPlatform::with_config(MockConfig {
+            faults: MockFaults {
+                confirmation_error: Some("no UI available".to_string()),
+                ..MockFaults::default()
+            },
+            ..MockConfig::default()
+        });
+        let err = block_on(p.confirm_user_action(allocation_review("mock.dot")))
+            .expect_err("the confirmation fails");
+        assert_eq!(err.reason, "no UI available");
+        // It still records what was asked, so a test can assert the prompt fired.
+        assert_eq!(p.confirmations(), vec![ConfirmKind::ResourceAllocation]);
+    }
+
+    #[test]
+    fn injected_permission_and_feature_faults_surface_as_errors() {
+        let p = MockPlatform::with_config(MockConfig {
+            faults: MockFaults {
+                permission_error: Some("permission backend down".to_string()),
+                feature_error: Some("feature backend down".to_string()),
+                ..MockFaults::default()
+            },
+            ..MockConfig::default()
+        });
+        assert!(
+            block_on(p.device_permission(latest::HostDevicePermissionRequest::Camera)).is_err()
+        );
+        assert!(
+            block_on(p.remote_permission(latest::RemotePermissionRequest {
+                permission: latest::RemotePermission::ChainSubmit,
+            }))
+            .is_err()
+        );
+        assert!(block_on(p.supported_chains()).is_err());
+        // A failed prompt is not a recorded decision.
+        assert!(p.permission_log().is_empty());
+    }
+
+    #[test]
+    fn declared_supported_chains_are_what_the_mock_reports() {
+        // An empty set type-checks and then fails every chain-routed call, so
+        // the declared set is what a chain test has to be able to control.
+        let p = MockPlatform::new();
+        assert!(
+            block_on(p.supported_chains())
+                .expect("default set")
+                .chains
+                .is_empty()
+        );
+
+        let p = MockPlatform::with_config(MockConfig {
+            supported_chains: crate::HostChainSet {
+                network: "paseo".to_string(),
+                chains: vec![crate::HostChainEntry {
+                    identifier: latest::ChainIdentifier::AssetHub,
+                    genesis_hash: [0xaa; 32],
+                }],
+            },
+            ..MockConfig::default()
+        });
+        let set = block_on(p.supported_chains()).expect("declared set");
+        assert_eq!(set.network, "paseo");
+        assert_eq!(set.chains.len(), 1);
+        assert_eq!(set.chains[0].genesis_hash, [0xaa; 32]);
     }
 
     #[test]

@@ -199,7 +199,26 @@ So the branch reads as parked because the ground shifted and the need was met up
 not because it hit a wall — though only its author can confirm that. The practical
 consequence is favourable: a seam retarget needs no bespoke provider at all.
 
-## 7. Where this leaves the plan
+## 7. The 40-member surface spans three layers, not one
+
+"Grow the mock to 40 members" is the wrong target. `TestHostAPI` is shaped around a
+host that *performs* signing, accounts and statements; a TrUAPI host only *confirms*.
+Several members therefore have no `MockPlatform` home at all:
+
+| Member | Where it belongs in TrUAPI |
+| --- | --- |
+| `injectChatAction` | The runtime. `publish_chat_action` (`host_core.rs:1155`) already exists, gated on a chat platform being installed — implementing `ChatPlatform` is what unlocks it. |
+| `switchAccount`, `setAccounts`, `setLoginBehavior` | The runtime. Accounts derive from entropy, so these are `activate_local_session` with different material, not a host callback. |
+| `getSubmittedStatements`, `injectStatement`, `clearStatements` | The chain responder. `truapi-platform` declares no statement trait or seam; `lib.rs:11` states that statement-store protocol flows live in the core. Statements are observable through `sent_rpc()` and injectable through scripted responses. |
+| `getConnectionStatus` | The transport. `MockPlatform` models the chain connection, not the product-host link. |
+| `getIsAuthenticated` | Already covered by `auth_states()`. `AuthPresenter` is observation-only. |
+| The 5 payment members | Nowhere, until the decision above is made. |
+
+What genuinely belongs on `MockPlatform` — and is now implemented — is the confirmation
+and permission surface, chat, theme, preimages, chain connection simulation, and fault
+injection.
+
+## 8. Where this leaves the plan
 
 | Step | Original | What the code says |
 | --- | --- | --- |
