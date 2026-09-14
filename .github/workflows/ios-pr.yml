@@ -47,10 +47,49 @@ jobs:
             const skip = pr ? labels.includes('skip-ci') : false;
             core.setOutput('skip', skip.toString());
 
-  build:
+  # The app jobs all need the core generated from this commit, and it is the
+  # same output for each of them, so it is built once here and carried across.
+  # Built on the larger runner because it is Rust compilation and CPU bound:
+  # the same work measured 11m13s on macos-26 and 5m44s on macos-26-xlarge.
+  core:
+    name: Build the in-tree core
     needs: check-skip-label
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
-    runs-on: macos-26
+    runs-on: macos-26-xlarge
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      # The xcframework targets iOS, so this needs the SDK.
+      - name: Setup iOS Environment
+        uses: ./hosts/ios/.github/actions/install
+
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
+
+      # Through tar rather than the raw paths, so the xcframework keeps its
+      # layout and executable bits, which upload-artifact does not preserve.
+      - name: Package the generated core
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/ios-core.tgz" \
+            ios/truapi-host/Sources \
+            ios/truapi-host/Binaries \
+            ios/truapi-provider/Sources \
+            ios/truapi-provider/Binaries
+          ls -lh "$RUNNER_TEMP/ios-core.tgz"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-core.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+  build:
+    needs: [check-skip-label, core]
+    if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
+    runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@v6
 
@@ -60,11 +99,18 @@ jobs:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
-      # The app resolves the core from this tree, and the core's generated
-      # bindings are gitignored, so the package graph cannot resolve until
-      # they exist.
-      - name: Bootstrap the in-tree core
-        uses: ./.github/actions/bootstrap-ios-core
+      - name: Restore the in-tree core
+        uses: actions/download-artifact@v5
+        with:
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the generated core
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/ios-core.tgz"
+          test -d ios/truapi-host/Binaries/truapi_server.xcframework
+          test -d ios/truapi-host/Sources/truapi_serverFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -151,7 +197,7 @@ jobs:
   # came from. A build that cannot say is a failure, not something to publish.
   preview:
     name: Simulator preview build
-    needs: check-skip-label
+    needs: [check-skip-label, core]
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
     runs-on: macos-26-xlarge
     timeout-minutes: 60
@@ -161,12 +207,18 @@ jobs:
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
 
-      # Simulator slice only here, unlike the build job, which archives for a
-      # device through gym and needs both.
-      - name: Bootstrap the in-tree core
-        uses: ./.github/actions/bootstrap-ios-core
+      - name: Restore the in-tree core
+        uses: actions/download-artifact@v5
         with:
-          sim-only: "true"
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the generated core
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/ios-core.tgz"
+          test -d ios/truapi-host/Binaries/truapi_server.xcframework
+          test -d ios/truapi-host/Sources/truapi_serverFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -233,7 +285,7 @@ jobs:
           if-no-files-found: error
 
   test:
-    needs: check-skip-label
+    needs: [check-skip-label, core]
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
     runs-on: macos-26-xlarge
     steps:
@@ -242,11 +294,18 @@ jobs:
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
 
-      # The app resolves the core from this tree, and the core's generated
-      # bindings are gitignored, so the package graph cannot resolve until
-      # they exist.
-      - name: Bootstrap the in-tree core
-        uses: ./.github/actions/bootstrap-ios-core
+      - name: Restore the in-tree core
+        uses: actions/download-artifact@v5
+        with:
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the generated core
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/ios-core.tgz"
+          test -d ios/truapi-host/Binaries/truapi_server.xcframework
+          test -d ios/truapi-host/Sources/truapi_serverFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
