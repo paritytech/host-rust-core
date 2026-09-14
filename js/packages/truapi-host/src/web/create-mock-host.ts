@@ -23,7 +23,9 @@ import { ok } from "neverthrow";
 
 import type {
   GenericError,
+  HostLocaleSubscribeItem,
   HostPushNotificationRequest,
+  HostThemeSubscribeItem,
   Result,
   ThemeVariant,
 } from "@parity/truapi";
@@ -31,6 +33,7 @@ import type {
 import type {
   AuthState,
   CoreStorageKey,
+  HostChainSet,
   JsonRpcConnection,
   RequiredHostCallbacks,
 } from "../generated/host-callbacks.js";
@@ -49,6 +52,8 @@ export interface MockHostConfig {
   featureSupported?: boolean;
   /** Theme emitted by `subscribeTheme`. Default `"Dark"`. */
   theme?: ThemeVariant;
+  /** BCP 47 tag emitted by `subscribeLocale`. Default `"en"`. */
+  languageTag?: string;
   /** Whether `confirmUserAction` confirms reviewed actions. Default `true`. */
   confirmUserActions?: boolean;
   /**
@@ -63,6 +68,15 @@ export interface MockHostConfig {
    * `chainResponses` is non-empty.
    */
   chainClosed?: boolean;
+  /**
+   * Chains the host reports serving (RFC 0026). Defaults to the three
+   * {@link MOCK_GENESIS} chains, which are what {@link mockRuntimeConfig}
+   * declares.
+   *
+   * An empty set type-checks and then fails every chain-routed call, so
+   * override this only to assert that failure.
+   */
+  supportedChains?: HostChainSet;
 }
 
 /** A mock host: the callbacks to wire into a provider, plus assertion oracles. */
@@ -127,6 +141,15 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     confirmUserActions = true,
     chainResponses = [],
     chainClosed = false,
+    languageTag = "en",
+    supportedChains = {
+      network: "mock",
+      chains: [
+        { identifier: "People", genesisHash: MOCK_GENESIS.people },
+        { identifier: "Bulletin", genesisHash: MOCK_GENESIS.bulletin },
+        { identifier: "AssetHub", genesisHash: MOCK_GENESIS.assetHub },
+      ],
+    },
   } = config;
 
   const storage = new Map<string, Uint8Array>();
@@ -207,6 +230,9 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       async featureSupported() {
         return { supported: featureSupported };
       },
+      async supportedChains() {
+        return supportedChains;
+      },
     },
 
     chain: {
@@ -249,10 +275,20 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
 
     theme: {
       async *subscribeTheme(): AsyncGenerator<
-        Result<ThemeVariant, GenericError>
+        Result<HostThemeSubscribeItem, GenericError>
       > {
-        yield ok(theme);
+        yield ok({ name: { tag: "Default" }, variant: theme });
         // A live subscription never ends: emit the current theme, then stay open.
+        await new Promise<never>(() => {});
+      },
+    },
+
+    locale: {
+      async *subscribeLocale(): AsyncGenerator<
+        Result<HostLocaleSubscribeItem, GenericError>
+      > {
+        yield ok({ languageTag });
+        // A live subscription never ends, matching `subscribeTheme`.
         await new Promise<never>(() => {});
       },
     },
@@ -285,6 +321,23 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
 }
 
 /**
+ * Genesis hashes the mock host serves, one distinct non-zero value per chain.
+ *
+ * Distinct matters: chain routing is keyed on the genesis hash, so equal
+ * hashes make the chains indistinguishable and a chain-routed call resolves to
+ * whichever entry is found first. Non-zero matters for the same reason -- an
+ * all-zero hash is also the natural placeholder a caller passes by accident.
+ */
+export const MOCK_GENESIS = {
+  people:
+    "0x1111111111111111111111111111111111111111111111111111111111111111",
+  bulletin:
+    "0x2222222222222222222222222222222222222222222222222222222222222222",
+  assetHub:
+    "0x3333333333333333333333333333333333333333333333333333333333333333",
+} as const;
+
+/**
  * A default {@link ProductRuntimeConfig} for a mock host. Override any field;
  * the genesis hashes and product id are placeholders suitable for tests.
  */
@@ -302,14 +355,9 @@ export function mockRuntimeConfig(
       type: "node",
       version: "0",
     },
-    people: {
-      genesisHash:
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
-    },
-    bulletin: {
-      genesisHash:
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
-    },
+    people: { genesisHash: MOCK_GENESIS.people },
+    bulletin: { genesisHash: MOCK_GENESIS.bulletin },
+    assetHub: { genesisHash: MOCK_GENESIS.assetHub },
     pairing: {
       deeplinkScheme: "polkadotapp",
     },

@@ -68,7 +68,7 @@ describe("createMockHost callbacks", () => {
       .subscribeTheme()
       [Symbol.asyncIterator]()
       .next();
-    expect(theme.value).toEqual(ok("Light"));
+    expect(theme.value).toEqual(ok({ name: { tag: "Default" }, variant: "Light" }));
   });
 
   it("records navigations and assigns monotonic notification ids", async () => {
@@ -92,7 +92,7 @@ describe("createMockHost callbacks", () => {
     expect(
       await denied.callbacks.userConfirmation.confirmUserAction({
         tag: "ResourceAllocation",
-        value: { resources: [] },
+        value: { callingProductId: "mock.dot", resources: [] },
       }),
     ).toBe(false);
 
@@ -116,7 +116,7 @@ describe("createMockHost callbacks", () => {
     const host = createMockHost();
     await host.callbacks.userConfirmation.confirmUserAction({
       tag: "ResourceAllocation",
-      value: { resources: [] },
+      value: { callingProductId: "mock.dot", resources: [] },
     });
     expect(host.confirmations()).toEqual(["ResourceAllocation"]);
 
