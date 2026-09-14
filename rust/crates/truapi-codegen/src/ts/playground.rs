@@ -76,7 +76,7 @@ fn generate_playground_services_code(
             let docs = split_playground_docs(method.docs.as_deref())?;
             let method_type = match method.kind {
                 MethodKind::Request => "unary",
-                MethodKind::Subscription | MethodKind::ResultSubscription => "subscription",
+                MethodKind::Subscription => "subscription",
             };
             let signature = build_method_signature(method, &payload, &wrappers, wire_version)?;
             let doc_url = build_doc_url(trait_def, method);
@@ -325,13 +325,9 @@ pub(super) fn method_response_inner_ts(
             let err_resp = emit_error_response(err, wrappers, wire_version)?;
             Ok((Some(ok_resp.inner_type_ts), Some(err_resp.inner_type_ts)))
         }
-        ReturnType::Subscription(item) => {
+        ReturnType::Subscription { item, interrupt } => {
             let resp = emit_response(item, wrappers, wire_version)?;
-            Ok((Some(resp.inner_type_ts), None))
-        }
-        ReturnType::ResultSubscription { item, err } => {
-            let resp = emit_response(item, wrappers, wire_version)?;
-            let err_resp = emit_error_response(err, wrappers, wire_version)?;
+            let err_resp = emit_error_response(interrupt, wrappers, wire_version)?;
             Ok((Some(resp.inner_type_ts), Some(err_resp.inner_type_ts)))
         }
     }
@@ -379,16 +375,9 @@ fn build_method_signature(
                 playground_type_name(&err_resp.inner_type_ts),
             )
         }
-        ReturnType::Subscription(item) => {
+        ReturnType::Subscription { item, interrupt } => {
             let response = emit_response(item, wrappers, wire_version)?;
-            format!(
-                "ObservableLike<{}>",
-                playground_type_name(&response.inner_type_ts),
-            )
-        }
-        ReturnType::ResultSubscription { item, err } => {
-            let response = emit_response(item, wrappers, wire_version)?;
-            let err_resp = emit_error_response(err, wrappers, wire_version)?;
+            let err_resp = emit_error_response(interrupt, wrappers, wire_version)?;
             format!(
                 "ObservableLike<{}, {}>",
                 playground_type_name(&response.inner_type_ts),

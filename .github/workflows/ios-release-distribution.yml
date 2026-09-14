@@ -1,10 +1,13 @@
 name: Release Distribution
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    branches:
-      - main
+  # Held on workflow_dispatch until the build credentials tracked in #672
+  # land. The trigger below is the one this workflow runs on; restoring it
+  # is the change that puts this workflow live.
+#   pull_request:
+#     types: [opened, synchronize, reopened]
+#     branches:
+#       - main
   workflow_dispatch:
     inputs:
       release_branch:
@@ -30,7 +33,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (startsWith(github.head_ref, 'release/') &&
        !contains(github.event.pull_request.body, 'nightly_build=true'))
-    uses: ./.github/workflows/_build_distribute.yml
+    uses: ./.github/workflows/ios-build-distribute.yml
     with:
       release_branch: ${{ inputs.release_branch || github.head_ref }}
       release_pr_number: ${{ inputs.release_pr_number || github.event.pull_request.number || '' }}

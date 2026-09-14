@@ -1,7 +1,8 @@
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use futures::stream::{self, BoxStream};
 use truapi::v01;
@@ -20,11 +21,31 @@ use truapi_server::transport::Transport;
 pub struct RecordingTransport {
     /// Frames captured in send order.
     pub sent: Mutex<Vec<ProtocolMessage>>,
+    recorded: Condvar,
+}
+
+impl RecordingTransport {
+    /// Wait until at least `count` frames have been recorded, or `timeout`
+    /// elapses. A subscription's frames are produced by the spawner, so a
+    /// dispatch that starts one returns before they are sent.
+    pub fn wait_for(&self, count: usize, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut sent = self.sent.lock().unwrap();
+        while sent.len() < count {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let (guard, _) = self.recorded.wait_timeout(sent, deadline - now).unwrap();
+            sent = guard;
+        }
+    }
 }
 
 impl Transport for RecordingTransport {
     fn send(&self, message: ProtocolMessage) {
         self.sent.lock().unwrap().push(message);
+        self.recorded.notify_all();
     }
     fn on_message(
         &self,

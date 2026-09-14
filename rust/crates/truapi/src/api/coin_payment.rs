@@ -79,11 +79,11 @@ pub trait CoinPayment: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentRebalancePurseRequest,
-    ) -> Result<
-        Subscription<HostCoinPaymentRebalancePurseItem>,
+    ) -> Subscription<
+        HostCoinPaymentRebalancePurseItem,
         CallError<HostCoinPaymentRebalancePurseError>,
     > {
-        Err(CallError::unavailable())
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Delete a purse after draining its balance into another local purse.
@@ -105,11 +105,9 @@ pub trait CoinPayment: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentDeletePurseRequest,
-    ) -> Result<
-        Subscription<HostCoinPaymentDeletePurseItem>,
-        CallError<HostCoinPaymentDeletePurseError>,
-    > {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostCoinPaymentDeletePurseItem, CallError<HostCoinPaymentDeletePurseError>>
+    {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Create a receivable public key for depositing into a purse.
@@ -174,9 +172,8 @@ pub trait CoinPayment: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentDepositRequest,
-    ) -> Result<Subscription<HostCoinPaymentDepositItem>, CallError<HostCoinPaymentDepositError>>
-    {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostCoinPaymentDepositItem, CallError<HostCoinPaymentDepositError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Attempt to return coins associated with a receivable.
@@ -201,9 +198,8 @@ pub trait CoinPayment: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentRefundRequest,
-    ) -> Result<Subscription<HostCoinPaymentRefundItem>, CallError<HostCoinPaymentRefundError>>
-    {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostCoinPaymentRefundItem, CallError<HostCoinPaymentRefundError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Listen for a cheque delivered through a standard transmission channel.
@@ -228,8 +224,7 @@ pub trait CoinPayment: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentListenForRequest,
-    ) -> Result<Subscription<HostCoinPaymentListenForItem>, CallError<HostCoinPaymentListenForError>>
-    {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostCoinPaymentListenForItem, CallError<HostCoinPaymentListenForError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 }

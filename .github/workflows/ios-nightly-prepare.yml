@@ -17,8 +17,11 @@ on:
         type: string
         required: false
         default: ""
-  schedule:
-    - cron: "0 16 * * 1-5" # 16:00 UTC Monday-Friday
+  # Held on workflow_dispatch until the build credentials tracked in #672
+  # land. The trigger below is the one this workflow runs on; restoring it
+  # is the change that puts this workflow live.
+#   schedule:
+#     - cron: "0 16 * * 1-5" # 16:00 UTC Monday-Friday
 
 permissions:
   contents: write
@@ -27,7 +30,7 @@ permissions:
 
 jobs:
   prepare:
-    uses: ./.github/workflows/_prepare_pipeline.yml
+    uses: ./.github/workflows/ios-prepare-pipeline.yml
     with:
       is_nightly: true
       bump_level: "no-bump"

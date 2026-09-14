@@ -1,11 +1,11 @@
 //! Unified [`Chat`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
     HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
-    HostChatRegisterBotRequest, HostChatRegisterBotResponse, ProductChatCustomMessageRenderItem,
-    ProductChatCustomMessageRenderRequest,
+    HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -66,8 +66,11 @@ pub trait Chat: Send + Sync {
     /// console.log("room list received:", item);
     /// ```
     #[wire(id = 2)]
-    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
-        Subscription::empty()
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostChatListSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Post a message to a chat room.
@@ -115,24 +118,9 @@ pub trait Chat: Send + Sync {
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostChatActionSubscribeItem> {
-        Subscription::empty()
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
-    /// Streams renderer trees for one stored custom message.
-    ///
-    /// ```ts
-    /// import { of } from "rxjs";
-    /// truapi.chat.onCustomMessageRender(({ messageType, payload }) => {
-    ///   return of({ tag: "String", value: { text: `${messageType}: ${payload}` } });
-    /// });
-    /// ```
-    #[wire(host_initiated, id = 5)]
-    fn custom_message_render(
-        &self,
-        _cx: &CallContext,
-        _request: ProductChatCustomMessageRenderRequest,
-    ) -> Subscription<ProductChatCustomMessageRenderItem> {
-        Subscription::empty()
-    }
+    // Id 5 is spent and must never be reassigned; the next method takes 6.
 }

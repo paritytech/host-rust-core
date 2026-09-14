@@ -55,11 +55,11 @@ impl CoinPayment for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentRebalancePurseRequest,
-    ) -> Result<
-        Subscription<HostCoinPaymentRebalancePurseItem>,
+    ) -> Subscription<
+        HostCoinPaymentRebalancePurseItem,
         CallError<HostCoinPaymentRebalancePurseError>,
     > {
-        Err(CallError::Unsupported)
+        Subscription::interrupted(CallError::Unsupported)
     }
 
     #[instrument(skip_all, fields(runtime.method = "coin_payment.delete_purse"))]
@@ -67,11 +67,9 @@ impl CoinPayment for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentDeletePurseRequest,
-    ) -> Result<
-        Subscription<HostCoinPaymentDeletePurseItem>,
-        CallError<HostCoinPaymentDeletePurseError>,
-    > {
-        Err(CallError::Unsupported)
+    ) -> Subscription<HostCoinPaymentDeletePurseItem, CallError<HostCoinPaymentDeletePurseError>>
+    {
+        Subscription::interrupted(CallError::Unsupported)
     }
 
     #[instrument(skip_all, fields(runtime.method = "coin_payment.create_receivable"))]
@@ -101,9 +99,8 @@ impl CoinPayment for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentDepositRequest,
-    ) -> Result<Subscription<HostCoinPaymentDepositItem>, CallError<HostCoinPaymentDepositError>>
-    {
-        Err(CallError::Unsupported)
+    ) -> Subscription<HostCoinPaymentDepositItem, CallError<HostCoinPaymentDepositError>> {
+        Subscription::interrupted(CallError::Unsupported)
     }
 
     #[instrument(skip_all, fields(runtime.method = "coin_payment.refund"))]
@@ -111,9 +108,8 @@ impl CoinPayment for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentRefundRequest,
-    ) -> Result<Subscription<HostCoinPaymentRefundItem>, CallError<HostCoinPaymentRefundError>>
-    {
-        Err(CallError::Unsupported)
+    ) -> Subscription<HostCoinPaymentRefundItem, CallError<HostCoinPaymentRefundError>> {
+        Subscription::interrupted(CallError::Unsupported)
     }
 
     #[instrument(skip_all, fields(runtime.method = "coin_payment.listen_for_payment"))]
@@ -121,9 +117,8 @@ impl CoinPayment for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostCoinPaymentListenForRequest,
-    ) -> Result<Subscription<HostCoinPaymentListenForItem>, CallError<HostCoinPaymentListenForError>>
-    {
-        Err(CallError::Unsupported)
+    ) -> Subscription<HostCoinPaymentListenForItem, CallError<HostCoinPaymentListenForError>> {
+        Subscription::interrupted(CallError::Unsupported)
     }
 }
 
@@ -134,11 +129,9 @@ impl Payment for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostPaymentBalanceSubscribeRequest,
-    ) -> Result<
-        Subscription<HostPaymentBalanceSubscribeItem>,
-        CallError<HostPaymentBalanceSubscribeError>,
-    > {
-        Err(CallError::Domain(HostPaymentBalanceSubscribeError::V1(
+    ) -> Subscription<HostPaymentBalanceSubscribeItem, CallError<HostPaymentBalanceSubscribeError>>
+    {
+        Subscription::interrupted(CallError::Domain(HostPaymentBalanceSubscribeError::V1(
             v01::HostPaymentBalanceSubscribeError::PermissionDenied,
         )))
     }
@@ -161,11 +154,9 @@ impl Payment for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostPaymentStatusSubscribeRequest,
-    ) -> Result<
-        Subscription<HostPaymentStatusSubscribeItem>,
-        CallError<HostPaymentStatusSubscribeError>,
-    > {
-        Err(CallError::Domain(HostPaymentStatusSubscribeError::V1(
+    ) -> Subscription<HostPaymentStatusSubscribeItem, CallError<HostPaymentStatusSubscribeError>>
+    {
+        Subscription::interrupted(CallError::Domain(HostPaymentStatusSubscribeError::V1(
             v01::HostPaymentStatusSubscribeError::Unknown {
                 reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
             },

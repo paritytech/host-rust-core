@@ -1,5 +1,6 @@
 //! Unified [`Chain`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::chain::{
     RemoteChainHeadBodyError, RemoteChainHeadBodyRequest, RemoteChainHeadBodyResponse,
     RemoteChainHeadCallError, RemoteChainHeadCallRequest, RemoteChainHeadCallResponse,
@@ -51,8 +52,8 @@ pub trait Chain: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: RemoteChainHeadFollowRequest,
-    ) -> Subscription<RemoteChainHeadFollowItem> {
-        Subscription::empty()
+    ) -> Subscription<RemoteChainHeadFollowItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Fetch a block header.

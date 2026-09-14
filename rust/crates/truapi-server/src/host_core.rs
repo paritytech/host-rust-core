@@ -31,9 +31,10 @@ use truapi_platform::{
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
+use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
-    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
+    ActionChannel, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
     PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
     SigningHostRole, SigningHostSsoService, disconnect_paired_host, establish_pairing,
     respond_to_pairing, resume_pairing,
@@ -365,6 +366,12 @@ impl PairingHostRuntime {
             .map_err(ring_vrf_admin_error)
     }
 
+    /// Reference counts per product worker, shared by every connection of
+    /// this host.
+    pub fn worker_ledger(&self) -> &WorkerLedger {
+        &self.services.worker_ledger
+    }
+
     /// Read the active session's X25519 chat identity private key, for hosts
     /// running their own P2P chat channel for the paired identity.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.session_chat_identity_key"))]
@@ -655,6 +662,12 @@ impl SigningHostRuntime {
         )
     }
 
+    /// Reference counts per product worker, shared by every connection of
+    /// this host.
+    pub fn worker_ledger(&self) -> &WorkerLedger {
+        &self.services.worker_ledger
+    }
+
     /// Return whether this host currently has an authenticated signing session.
     pub fn has_active_session(&self) -> bool {
         self.signing_host.session_state().current().is_some()
@@ -873,8 +886,8 @@ impl SigningHostRuntime {
 }
 
 /// Adapters scoped to one product connection: the platform serving its
-/// syscalls, the optional native Chat adapter, and the connection's Chat
-/// stream state. Non-native connections use [`Self::from_services`].
+/// syscalls, the optional native Chat adapter, and the connection's
+/// host-fed action streams. Non-native connections use [`Self::from_services`].
 #[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
@@ -884,7 +897,9 @@ pub(crate) struct ConnectionAdapters {
     /// product execution, so the object that reports OS state has to be the
     /// same one that presents the prompt.
     pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
-    pub(crate) chat: Arc<ChatConnection>,
+    pub(crate) chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
+    pub(crate) renderer:
+        Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
 }
 
 impl ConnectionAdapters {
@@ -894,7 +909,8 @@ impl ConnectionAdapters {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
             permission_status: services.permission_status_host(),
-            chat: Arc::new(ChatConnection::new()),
+            chat: Arc::new(ActionChannel::chat()),
+            renderer: Arc::new(ActionChannel::renderer()),
         }
     }
 }
@@ -920,6 +936,12 @@ pub struct HostAdmin {
 }
 
 impl HostAdmin {
+    /// Test-only access to the product-facing runtime this handle wraps.
+    #[cfg(test)]
+    pub(crate) fn product_runtime(&self) -> &Arc<ProductRuntimeHost> {
+        &self.product_runtime
+    }
+
     /// Build an admin handle from a long-lived host runtime and the adapters
     /// scoped to one product connection.
     #[instrument(skip_all, fields(runtime.method = "host_admin.new"))]
@@ -1139,36 +1161,76 @@ impl ProductRuntimeControl {
         )
     }
 
-    /// Request custom-message UI from this connection's product renderer.
-    pub fn render_custom_message(
+    /// Publish one action triggered inside a product-rendered body into this
+    /// connection's renderer action stream, buffering it until the product
+    /// subscribes.
+    pub fn publish_renderer_action(
         &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
+        item: v01::HostRendererActionSubscribeItem,
+    ) -> Result<(), ProductRuntimeError> {
+        self.runtime()?.publish_renderer_action(
+            truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(item),
+        )
+    }
+
+    /// Ask this connection's product to draw one body, streaming replacement
+    /// trees until the returned subscription is dropped.
+    ///
+    /// An open render stream is one reference on the product's worker, held by
+    /// the core for exactly as long as the returned subscription lives. A
+    /// transition it causes reaches the host through the observer installed on
+    /// [`WorkerLedger::install_demand_observer`].
+    pub fn render(
+        &self,
+        request: v01::ProductRendererRenderRequest,
     ) -> Result<
-        truapi::Subscription<Result<v01::CustomRendererNode, v01::GenericError>>,
+        truapi::Subscription<v01::RendererNode, truapi::CallError<v01::GenericError>>,
         ProductRuntimeError,
     > {
-        self.runtime()?.native_chat_platform()?;
-        let request = truapi::versioned::chat::ProductChatCustomMessageRenderRequest::V1(
-            v01::ProductChatCustomMessageRenderRequest {
-                message_id,
-                message_type,
-                payload,
-            },
-        );
+        self.runtime()?.renderer_access()?;
+        let reference = WorkerReference::acquire(self.runtime.clone());
+        let request = truapi::versioned::renderer::ProductRendererRenderRequest::V1(request);
         let transport: Arc<dyn Transport> = self.transport.clone();
-        let stream = crate::generated::dispatcher::chat_custom_message_render(
+        let stream = crate::generated::dispatcher::renderer_render(
             &self.host_subscriptions,
             transport,
             request,
-        )
-        .map(|item| {
-            item.map(|item| match item {
-                truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
-            })
-        });
-        Ok(truapi::Subscription::new(Box::pin(stream)))
+        );
+        // The reference lives in the stream's state, so a subscription dropped
+        // unpolled still releases it. An interrupt ends the stream by contract
+        // and is not polled past, so it releases there rather than waiting for
+        // the caller to drop the handle.
+        let stream = futures::stream::unfold(
+            (stream, Some(reference)),
+            |(mut stream, reference)| async move {
+                match stream.next().await? {
+                    Ok(truapi::versioned::renderer::ProductRendererRenderItem::V1(node)) => {
+                        Some((Ok(node), (stream, reference)))
+                    }
+                    Err(interrupt) => Some((Err(interrupt), (stream, None))),
+                }
+            },
+        );
+        Ok(truapi::Subscription::new(stream))
+    }
+}
+
+/// One reference the core holds on a product's worker, released on drop.
+struct WorkerReference {
+    runtime: Arc<ProductRuntimeHost>,
+}
+
+impl WorkerReference {
+    /// Take a reference on the worker of the product `runtime` serves.
+    fn acquire(runtime: Arc<ProductRuntimeHost>) -> Self {
+        runtime.acquire_worker_reference();
+        Self { runtime }
+    }
+}
+
+impl Drop for WorkerReference {
+    fn drop(&mut self) {
+        self.runtime.release_worker_reference();
     }
 }
 
@@ -1386,6 +1448,7 @@ impl ProductRuntime {
             handle.abort();
         }
         self.admin.product_runtime.detach_chat();
+        self.admin.product_runtime.detach_renderer();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -1508,6 +1571,7 @@ mod tests {
         PairingBootstrap, derive_x25519_keypair_from_entropy, establish_sso_session_info,
         x25519_public_key,
     };
+    use crate::host_logic::worker::WorkerTransition;
     use crate::test_support::{StubPlatform, runtime_config, test_spawner, wait_until};
     use parity_scale_codec::Encode;
     use std::sync::atomic::Ordering;
@@ -2090,7 +2154,368 @@ mod tests {
     }
 
     #[test]
-    fn app_connection_rejects_custom_rendering() {
+    fn app_connection_rejects_rendering() {
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+
+        assert!(matches!(
+            runtime.control().render(v01::ProductRendererRenderRequest {
+                context: v01::RenderContext::ChatMessage {
+                    room_id: "room".into(),
+                    message_id: "message".into(),
+                    message_type: "vote".into(),
+                },
+                payload: vec![],
+            }),
+            Err(ProductRuntimeError::Denied)
+        ));
+    }
+
+    #[test]
+    fn worker_connection_renders_and_receives_actions_without_a_session() {
+        // Renderer is gated on Worker execution alone, so a signed-out host
+        // still reaches the product.
+        let (host_config, _) = runtime_config("worker.dot");
+        let product = ProductContext::new_with_execution(
+            "worker.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("worker product context is valid");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+        let host = runtime.admin.product_runtime().clone();
+        assert!(
+            host.test_session_state().current().is_none(),
+            "the fixture must be signed out for this test to mean anything"
+        );
+
+        let mut actions = futures::executor::block_on(truapi::api::Renderer::action_subscribe(
+            host.as_ref(),
+            &CallContext::with_request_id("renderer:1".to_string()),
+        ));
+
+        let _render = runtime
+            .control()
+            .render(v01::ProductRendererRenderRequest {
+                context: v01::RenderContext::PocketCard {
+                    card_id: "loyalty".into(),
+                },
+                payload: vec![],
+            })
+            .expect("a signed-out Worker connection may render");
+
+        let published = v01::HostRendererActionSubscribeItem {
+            context: v01::RenderContext::PocketCard {
+                card_id: "loyalty".into(),
+            },
+            action_id: "vote".into(),
+            payload: vec![],
+        };
+        runtime
+            .control()
+            .publish_renderer_action(published.clone())
+            .expect("a signed-out Worker connection may receive actions");
+
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        let delivered = match actions.poll_next_unpin(&mut cx) {
+            core::task::Poll::Ready(Some(item)) => item,
+            other => panic!("a published renderer action must be ready, got {other:?}"),
+        };
+        let Ok(truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(delivered)) =
+            delivered
+        else {
+            panic!("expected a renderer action item")
+        };
+        assert_eq!(delivered, published);
+    }
+
+    #[test]
+    fn an_open_render_holds_one_worker_reference() {
+        // The core owns the reference: no caller above it acquires or releases.
+        #[derive(Default)]
+        struct RecordingDemand {
+            transitions: Mutex<Vec<(String, WorkerTransition)>>,
+        }
+        impl crate::host_logic::worker::WorkerDemandObserver for RecordingDemand {
+            fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
+                self.transitions
+                    .lock()
+                    .expect("transition mutex poisoned")
+                    .push((product_id.to_string(), transition));
+            }
+        }
+
+        let (host_config, _) = runtime_config("worker.dot");
+        let product = ProductContext::new_with_execution(
+            "worker.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("worker product context is valid");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+        let services = runtime.admin.product_runtime().services().clone();
+        let demand = Arc::new(RecordingDemand::default());
+        assert!(
+            services
+                .worker_ledger
+                .install_demand_observer(demand.clone()),
+            "the observer installs once"
+        );
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+
+        let render = runtime
+            .control()
+            .render(v01::ProductRendererRenderRequest {
+                context: v01::RenderContext::PocketCard {
+                    card_id: "loyalty".into(),
+                },
+                payload: vec![],
+            })
+            .expect("a Worker connection may render");
+        assert_eq!(services.worker_ledger.count("worker.dot"), 1);
+
+        drop(render);
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+        assert_eq!(
+            demand
+                .transitions
+                .lock()
+                .expect("transition mutex poisoned")
+                .as_slice(),
+            [
+                ("worker.dot".to_string(), WorkerTransition::Start),
+                ("worker.dot".to_string(), WorkerTransition::Stop),
+            ]
+        );
+    }
+
+    /// A signed-out Worker runtime, which may render, and the sink holding the
+    /// start frames its renders send.
+    fn render_runtime() -> (ProductRuntime, Arc<RecordingSink>) {
+        let (host_config, _) = runtime_config("worker.dot");
+        let product = ProductContext::new_with_execution(
+            "worker.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("worker product context is valid");
+        let sink = Arc::new(RecordingSink::default());
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            sink.clone(),
+        );
+        (runtime, sink)
+    }
+
+    /// Open one render for a Pocket card.
+    fn start_render(
+        runtime: &ProductRuntime,
+        card_id: &str,
+    ) -> truapi::Subscription<v01::RendererNode, truapi::CallError<v01::GenericError>> {
+        runtime
+            .control()
+            .render(v01::ProductRendererRenderRequest {
+                context: v01::RenderContext::PocketCard {
+                    card_id: card_id.to_string(),
+                },
+                payload: vec![],
+            })
+            .expect("a Worker connection may render")
+    }
+
+    /// Request id of the render start frame sent at `index`.
+    fn render_request_id(sink: &RecordingSink, index: usize) -> String {
+        let frames = sink.frames.lock().expect("recording sink mutex poisoned");
+        let frame = frames.get(index).expect("the render sent a start frame");
+        ProtocolMessage::decode(&mut frame.as_slice())
+            .expect("a start frame decodes")
+            .request_id
+    }
+
+    /// Deliver one product frame on the render stream `request_id` names.
+    fn deliver_render_frame(
+        runtime: &ProductRuntime,
+        request_id: &str,
+        message_type: u8,
+        value: Vec<u8>,
+    ) {
+        let ids = subscription_ids("renderer_render").expect("known subscription");
+        let frame = ProtocolMessage {
+            request_id: request_id.to_string(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type,
+                value,
+            },
+        }
+        .encode();
+        futures::executor::block_on(runtime.receive_frame(frame))
+            .expect("the product frame is well formed");
+    }
+
+    /// Poll one render once with a waker that does nothing.
+    fn poll_render(
+        render: &mut truapi::Subscription<v01::RendererNode, truapi::CallError<v01::GenericError>>,
+    ) -> core::task::Poll<Option<Result<v01::RendererNode, truapi::CallError<v01::GenericError>>>>
+    {
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        render.poll_next_unpin(&mut cx)
+    }
+
+    #[test]
+    fn a_render_the_product_ends_releases_its_worker_reference() {
+        let (runtime, sink) = render_runtime();
+        let services = runtime.admin.product_runtime().services().clone();
+        let mut render = start_render(&runtime, "loyalty");
+        assert_eq!(services.worker_ledger.count("worker.dot"), 1);
+
+        let request_id = render_request_id(&sink, 0);
+        deliver_render_frame(
+            &runtime,
+            &request_id,
+            crate::frame::MESSAGE_TYPE_INTERRUPT,
+            crate::frame::encode_clean_interrupt(),
+        );
+        assert!(matches!(
+            poll_render(&mut render),
+            core::task::Poll::Ready(None)
+        ));
+
+        assert_eq!(
+            services.worker_ledger.count("worker.dot"),
+            0,
+            "an ended stream holds no reference, whether or not the handle lives on"
+        );
+        drop(render);
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+    }
+
+    #[test]
+    fn a_render_the_product_interrupts_releases_its_worker_reference() {
+        let (runtime, sink) = render_runtime();
+        let services = runtime.admin.product_runtime().services().clone();
+        let mut render = start_render(&runtime, "loyalty");
+
+        let request_id = render_request_id(&sink, 0);
+        deliver_render_frame(
+            &runtime,
+            &request_id,
+            crate::frame::MESSAGE_TYPE_INTERRUPT,
+            Result::<(), truapi::CallError<v01::GenericError>>::Err(
+                truapi::CallError::HostFailure {
+                    reason: "the product stopped drawing".to_string(),
+                },
+            )
+            .encode(),
+        );
+        assert!(matches!(
+            poll_render(&mut render),
+            core::task::Poll::Ready(Some(Err(truapi::CallError::HostFailure { .. })))
+        ));
+
+        assert_eq!(
+            services.worker_ledger.count("worker.dot"),
+            0,
+            "an interrupt ends the stream, so the reference goes with it"
+        );
+        drop(render);
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+    }
+
+    #[test]
+    fn a_render_refused_for_a_malformed_tree_releases_its_worker_reference() {
+        let (runtime, sink) = render_runtime();
+        let services = runtime.admin.product_runtime().services().clone();
+        let mut render = start_render(&runtime, "loyalty");
+
+        let request_id = render_request_id(&sink, 0);
+        deliver_render_frame(
+            &runtime,
+            &request_id,
+            crate::frame::MESSAGE_TYPE_RECEIVE,
+            vec![0xff],
+        );
+        assert!(matches!(
+            poll_render(&mut render),
+            core::task::Poll::Ready(Some(Err(truapi::CallError::MalformedFrame { .. })))
+        ));
+
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+        drop(render);
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+    }
+
+    #[test]
+    fn disposing_the_core_releases_an_open_renders_worker_reference() {
+        let (runtime, _sink) = render_runtime();
+        let services = runtime.admin.product_runtime().services().clone();
+        let mut render = start_render(&runtime, "loyalty");
+        assert_eq!(services.worker_ledger.count("worker.dot"), 1);
+
+        runtime.dispose();
+        assert!(matches!(
+            poll_render(&mut render),
+            core::task::Poll::Ready(None)
+        ));
+
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+        drop(render);
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+    }
+
+    #[test]
+    fn one_render_ending_leaves_the_other_renders_worker_reference() {
+        let (runtime, sink) = render_runtime();
+        let services = runtime.admin.product_runtime().services().clone();
+        let mut first = start_render(&runtime, "loyalty");
+        let second = start_render(&runtime, "rewards");
+        assert_eq!(services.worker_ledger.count("worker.dot"), 2);
+
+        let request_id = render_request_id(&sink, 0);
+        deliver_render_frame(
+            &runtime,
+            &request_id,
+            crate::frame::MESSAGE_TYPE_INTERRUPT,
+            crate::frame::encode_clean_interrupt(),
+        );
+        assert!(matches!(
+            poll_render(&mut first),
+            core::task::Poll::Ready(None)
+        ));
+        assert_eq!(services.worker_ledger.count("worker.dot"), 1);
+
+        drop(first);
+        assert_eq!(
+            services.worker_ledger.count("worker.dot"),
+            1,
+            "dropping a stream that already released must not release again"
+        );
+
+        drop(second);
+        assert_eq!(services.worker_ledger.count("worker.dot"), 0);
+    }
+
+    #[test]
+    fn app_connection_rejects_publishing_a_renderer_action() {
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
             Arc::new(StubPlatform::default()),
@@ -2103,7 +2528,13 @@ mod tests {
         assert!(matches!(
             runtime
                 .control()
-                .render_custom_message("message".into(), "vote".into(), vec![]),
+                .publish_renderer_action(v01::HostRendererActionSubscribeItem {
+                    context: v01::RenderContext::PocketCard {
+                        card_id: "card".into()
+                    },
+                    action_id: "vote".into(),
+                    payload: vec![],
+                }),
             Err(ProductRuntimeError::Denied)
         ));
     }
