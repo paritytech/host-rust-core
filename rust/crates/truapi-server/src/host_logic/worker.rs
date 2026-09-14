@@ -2,9 +2,8 @@
 //!
 //! A product has one worker. The host keeps one reference count per worker:
 //! the first reference starts it, and when the count returns to zero the host
-//! may stop it. An acknowledgement grant is a reference the host takes and
-//! releases on its own events. The ledger owns the counts; starting and
-//! stopping the executable stays with the host.
+//! may stop it. The ledger owns the counts; starting and stopping the
+//! executable stays with the host.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -288,7 +287,7 @@ mod tests {
 
     /// Observer that takes and drops a reference of its own from inside the
     /// callback, which is what a host does when a `Stop` makes it tear down a
-    /// holder that still owned a grant.
+    /// holder that still held a reference.
     struct Reentrant {
         ledger: Weak<WorkerLedger>,
         seen: Mutex<Vec<WorkerTransition>>,

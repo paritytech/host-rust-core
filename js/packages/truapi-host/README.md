@@ -254,8 +254,7 @@ const provider = await runtime.createProvider({ productId: "first.dot" });
 
 A product has one worker, and the core keeps one reference count per worker. The host takes a reference while a
 modality holder is on screen or in flight, such as a chat room the product serves, and releases it when the holder
-leaves. An acknowledgement grant, such as a setup run after install, is a reference the host takes and releases on its
-own events. The host runs and stops the worker executable itself; the runtime only tells it when demand crosses zero.
+leaves. The host runs and stops the worker executable itself; the runtime only tells it when demand crosses zero.
 
 | Runtime method                    | Use it to                                                        |
 | --------------------------------- | ---------------------------------------------------------------- |

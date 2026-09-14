@@ -138,8 +138,8 @@ export interface CustomMessageRenderSink {
 
 /**
  * Demand on one product's worker crossed zero. `wanted: true` when the first
- * reference or grant formed, so the host runs the worker; `wanted: false` when
- * the last one left, so the host may stop it.
+ * reference formed, so the host runs the worker; `wanted: false` when the last
+ * one left, so the host may stop it.
  */
 export interface WorkerDemandChange {
   productId: string;

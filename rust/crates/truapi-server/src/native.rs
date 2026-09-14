@@ -801,8 +801,7 @@ impl NativeTrUApiHostRuntime {
     /// Take one reference on the product's worker for a modality holder. The
     /// first one reports [`WorkerTransition::Start`] to the runtime's
     /// [`HostCallbacks::worker_demand_changed`]; pair every call with one
-    /// [`Self::release_worker`]. An acknowledgement grant is a reference the
-    /// host takes and releases on its own events.
+    /// [`Self::release_worker`].
     pub fn acquire_worker(&self, product_id: String) {
         self.runtime.worker_ledger().acquire(&product_id);
     }
