@@ -748,6 +748,9 @@ export function mockRuntimeConfig(
     pairing: {
       deeplinkScheme: "polkadotapp",
     },
+    // A signing host refuses to start without this; a pairing host ignores it.
+    // Setting it unconditionally keeps one config usable for both roles.
+    networkSuffix: "paseo",
     ...overrides,
   };
 }

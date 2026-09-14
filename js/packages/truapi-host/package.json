@@ -41,6 +41,10 @@
       "types": "./dist/testing/server.d.ts",
       "import": "./dist/testing/server.js"
     },
+    "./testing/dev-accounts": {
+      "types": "./dist/testing/dev-accounts.d.ts",
+      "import": "./dist/testing/dev-accounts.js"
+    },
     "./testing/host-page": {
       "types": "./dist/testing/host-page.d.ts",
       "import": "./dist/testing/host-page.js"

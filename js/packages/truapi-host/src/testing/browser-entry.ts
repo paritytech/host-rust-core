@@ -6,6 +6,7 @@
 
 import { startTestHost } from "./host-page.js";
 import type { MockHostConfig } from "../web/create-mock-host.js";
+import type { DevAccountName } from "./dev-accounts.js";
 
 const params = new URLSearchParams(window.location.search);
 const productUrl = params.get("product");
@@ -22,10 +23,15 @@ if (!container) {
   throw new Error("test host page is missing its #product-container element");
 }
 
+const accounts = params.get("accounts")?.split(",").filter(Boolean);
+const login = params.get("login");
+
 void startTestHost({
   productUrl,
   container,
   mock: rawMock ? (JSON.parse(rawMock) as MockHostConfig) : undefined,
+  accounts: accounts as DevAccountName[] | undefined,
+  loginBehavior: login === "manual" ? "manual" : "auto",
 }).catch((error: unknown) => {
   // Surface boot failures in the page rather than only the console: a fixture
   // that times out waiting for the control surface should be able to read why.

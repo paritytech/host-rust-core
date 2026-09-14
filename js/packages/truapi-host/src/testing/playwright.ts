@@ -36,6 +36,10 @@ export interface TestHostFixtureOptions {
   hostUrl: string;
   /** Behaviour knobs forwarded to the mock host. */
   mock?: MockHostConfig;
+  /** Accounts the host can sign as. Defaults to `["alice"]`. */
+  accounts?: string[];
+  /** Whether the host starts signed in. Defaults to `"auto"`. */
+  loginBehavior?: "auto" | "manual";
   /** How long to wait for the host page to publish its control surface. */
   readyTimeoutMs?: number;
 }
@@ -74,6 +78,16 @@ export interface TestHost {
   getConnectionStatus(): Promise<ChainStatus>;
   simulateDisconnect(): Promise<void>;
   simulateReconnect(): Promise<void>;
+  /** Names the host can currently sign as. */
+  getAccounts(): Promise<string[]>;
+  /** The account the current session is activated from, if any. */
+  getActiveAccount(): Promise<string | undefined>;
+  /** Re-activate the session as `name`. */
+  switchAccount(name: string): Promise<void>;
+  /** Replace the roster, activating the first entry. */
+  setAccounts(names: string[]): Promise<void>;
+  /** Drop the session, leaving the host signed out. */
+  signOut(): Promise<void>;
   /** Return the host to its constructed state between cases. */
   reset(): Promise<void>;
 }
@@ -98,6 +112,12 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
       url.searchParams.set("product", defaults.productUrl);
       if (defaults.mock) {
         url.searchParams.set("mock", JSON.stringify(defaults.mock));
+      }
+      if (defaults.accounts) {
+        url.searchParams.set("accounts", defaults.accounts.join(","));
+      }
+      if (defaults.loginBehavior) {
+        url.searchParams.set("login", defaults.loginBehavior);
       }
       await page.goto(url.toString());
 
@@ -155,6 +175,25 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         getConnectionStatus: () => call("getConnectionStatus"),
         simulateDisconnect: () => call("simulateDisconnect"),
         simulateReconnect: () => call("simulateReconnect"),
+        getAccounts: () => call("getAccounts"),
+        getActiveAccount: () => call("getActiveAccount"),
+        // Switching account re-activates the session, which reloads the
+        // product iframe; wait for it so the next action does not race it.
+        switchAccount: async (name) => {
+          await call("switchAccount", name);
+          await page
+            .frameLocator(PRODUCT_FRAME)
+            .locator("body")
+            .waitFor({ state: "attached" });
+        },
+        setAccounts: async (names) => {
+          await call("setAccounts", names);
+          await page
+            .frameLocator(PRODUCT_FRAME)
+            .locator("body")
+            .waitFor({ state: "attached" });
+        },
+        signOut: () => call("signOut"),
         reset: () => call("reset"),
       };
 

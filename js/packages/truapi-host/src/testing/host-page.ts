@@ -31,6 +31,11 @@ import {
   type MockHostConfig,
 } from "../web/create-mock-host.js";
 import type { ProductRuntimeConfig } from "../runtime.js";
+import {
+  resolveAccount,
+  type DevAccount,
+  type DevAccountName,
+} from "./dev-accounts.js";
 
 /** Options for {@link startTestHost}. */
 export interface TestHostPageOptions {
@@ -48,12 +53,49 @@ export interface TestHostPageOptions {
    * wallet that is not there.
    */
   wasmUrl?: string;
+  /** Accounts the host can sign as. Defaults to `["alice"]`. */
+  accounts?: (DevAccountName | DevAccount)[];
+  /**
+   * Whether the host activates a session at boot.
+   *
+   * `"auto"` (the default) starts signed in, which is what most suites want.
+   * `"manual"` boots with no session so a test can drive the signed-out path;
+   * call `switchAccount` to sign in.
+   */
+  loginBehavior?: LoginBehavior;
 }
+
+/** How the test host answers login at boot. */
+export type LoginBehavior = "auto" | "manual";
+
+/**
+ * Account control, which lives on the runtime rather than the platform.
+ *
+ * A TrUAPI host derives accounts from session entropy, so switching account
+ * means re-activating the session -- it is not a host callback the mock can
+ * answer, which is why these sit alongside the mock's surface rather than in
+ * it.
+ */
+export interface AccountControl {
+  /** Names the host can currently sign as, in order. */
+  getAccounts(): string[];
+  /** The account the current session is activated from, if any. */
+  getActiveAccount(): string | undefined;
+  /** Re-activate the session as `name`. */
+  switchAccount(name: string): Promise<void>;
+  /** Replace the roster, activating the first entry. */
+  setAccounts(names: (DevAccountName | DevAccount)[]): Promise<void>;
+  /** Drop the session, leaving the host signed out. */
+  signOut(): Promise<void>;
+}
+
+/** What the fixture reaches on `window.__TRUAPI_TEST_HOST__`. */
+export type TestHostControl = MockHost & AccountControl;
 
 /** The running test host. */
 export interface TestHostPage {
-  /** The mock's control surface, the same object the fixture reaches. */
-  host: MockHost;
+  /** The control surface the fixture reaches. */
+  host: TestHostControl;
   /** The embedded product iframe. */
   iframe: HTMLIFrameElement;
   /** Tear down the iframe, the core and the channel. */
@@ -63,7 +105,7 @@ export interface TestHostPage {
 declare global {
   interface Window {
     /** Published for the Playwright fixture; see the module comment. */
-    __TRUAPI_TEST_HOST__?: MockHost;
+    __TRUAPI_TEST_HOST__?: TestHostControl;
   }
 }
 
@@ -79,10 +121,10 @@ export async function startTestHost(
   const wasmUrl = options.wasmUrl ?? "./wasm/testing/truapi_server.js";
   const glue = (await import(/* @vite-ignore */ wasmUrl)) as {
     default: () => Promise<unknown>;
-    WasmPairingHostRuntime: new (
+    WasmSigningHostRuntime: new (
       callbacks: unknown,
       config: unknown,
-    ) => WasmRuntime;
+    ) => WasmSigningRuntime;
   };
   await glue.default();
 
@@ -94,7 +136,11 @@ export async function startTestHost(
   const { productId, ...hostConfig } = mockRuntimeConfig(
     options.runtimeConfig ?? {},
   );
-  const runtime = new glue.WasmPairingHostRuntime(
+  // A signing host, not a pairing host: a test host owns its keys. Note the
+  // behavioural consequence -- a signing host answers `request_login` with
+  // AlreadyConnected instead of starting a pairing flow, so a suite asserting
+  // on pairing UI is asserting on a host role this is not.
+  const runtime = new glue.WasmSigningHostRuntime(
     {
       // `workerDemandChanged` is a raw bridge callback rather than a generated
       // host callback, so it is supplied here the way the worker runtime does.
@@ -105,6 +151,21 @@ export async function startTestHost(
     },
     hostConfig,
   );
+
+  let roster: DevAccount[] = (options.accounts ?? ["alice"]).map(resolveAccount);
+  let active: DevAccount | undefined;
+
+  const activate = async (account: DevAccount) => {
+    if (active) await runtime.disconnectSession();
+    await runtime.activateLocalSession(account.entropy);
+    active = account;
+  };
+
+  if ((options.loginBehavior ?? "auto") === "auto") {
+    const first = roster[0];
+    if (!first) throw new Error("test host needs at least one account");
+    await activate(first);
+  }
 
   // The core and the product each hold one end of a MessageChannel. Frames
   // are raw SCALE bytes in both directions; nothing interprets them here.
@@ -129,10 +190,37 @@ export async function startTestHost(
     },
   });
 
-  window.__TRUAPI_TEST_HOST__ = host;
+  const control: TestHostControl = Object.assign(host, {
+    getAccounts: () => roster.map((account) => account.name),
+    getActiveAccount: () => active?.name,
+    async switchAccount(name: string) {
+      const account = roster.find((entry) => entry.name === name);
+      if (!account) {
+        throw new Error(
+          `no account "${name}" on this host; have ${roster
+            .map((entry) => entry.name)
+            .join(", ")}`,
+        );
+      }
+      await activate(account);
+    },
+    async setAccounts(names: (DevAccountName | DevAccount)[]) {
+      roster = names.map(resolveAccount);
+      const first = roster[0];
+      if (!first) throw new Error("test host needs at least one account");
+      await activate(first);
+    },
+    async signOut() {
+      if (!active) return;
+      await runtime.disconnectSession();
+      active = undefined;
+    },
+  });
+
+  window.__TRUAPI_TEST_HOST__ = control;
 
   return {
-    host,
+    host: control,
     iframe: iframeHost.iframe,
     dispose() {
       delete window.__TRUAPI_TEST_HOST__;
@@ -143,8 +231,10 @@ export async function startTestHost(
   };
 }
 
-/** The subset of the generated WASM runtime this page drives. */
-interface WasmRuntime {
+/** The subset of the generated signing runtime this page drives. */
+interface WasmSigningRuntime {
+  activateLocalSession(secret: Uint8Array): Promise<void>;
+  disconnectSession(): Promise<void>;
   productRuntime(
     product: { productId: string },
     sink: { emitFrame(frame: Uint8Array): void },
