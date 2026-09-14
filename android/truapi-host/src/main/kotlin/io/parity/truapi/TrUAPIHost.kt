@@ -787,6 +787,24 @@ class TrUAPIHostRuntime private constructor(
         return TrUAPIProductExecution(execution, adapter, chatAdapter)
     }
 
+    /**
+     * Take one reference on the product's worker for a modality holder that is
+     * on screen or in flight. The first one reports a start transition to
+     * [HostBridge.workerDemandChanged], which is where the host starts the
+     * worker. Pair every call with one [releaseWorker].
+     */
+    fun acquireWorker(productId: String) {
+        inner.acquireWorker(productId)
+    }
+
+    /**
+     * Release one reference. The last one reports a stop transition, after
+     * which the host may stop the worker. Releasing with none held is a no-op.
+     */
+    fun releaseWorker(productId: String) {
+        inner.releaseWorker(productId)
+    }
+
     /** Core-owned logout for the process-wide authentication session. */
     fun disconnect() {
         inner.disconnect()

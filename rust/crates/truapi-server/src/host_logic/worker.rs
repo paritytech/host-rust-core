@@ -140,39 +140,56 @@ impl WorkerLedger {
             }
             state.draining = true;
         }
-        let _guard = DrainGuard { ledger: self };
+        let mut guard = DrainGuard {
+            ledger: self,
+            armed: true,
+        };
         loop {
             let next = {
                 let mut state = self.state();
-                match state.pending.pop_front() {
-                    Some(next) => next,
-                    None => return,
-                }
+                let Some(next) = state.pending.pop_front() else {
+                    // Clearing the flag under the same lock that found the
+                    // queue empty is what makes stopping safe. Clearing it
+                    // after the unlock leaves a gap in which another thread
+                    // queues a transition, sees a drain still in progress and
+                    // returns, and then finds no drain left to deliver it.
+                    state.draining = false;
+                    guard.armed = false;
+                    return;
+                };
+                next
             };
             observer.worker_demand_changed(&next.0, next.1);
         }
     }
 }
 
-/// Resets [`LedgerState::draining`] to `false` when a drain scope ends,
-/// whether it returns normally or unwinds out of an observer panic, so the
-/// remaining queue stays drainable by the next `acquire` or `release`.
+/// Clears [`LedgerState::draining`] for a drain that ends without clearing it
+/// itself, which is a delivery unwinding out of an observer panic, so the
+/// transitions queued behind it stay drainable by the next `acquire` or
+/// `release`. A drain that runs the queue dry clears the flag under the lock
+/// and disarms this guard.
 ///
 /// This protects only an unwinding panic. `truapi-server` also builds for
 /// `wasm32-unknown-unknown`, where a trap has no unwind to run this guard's
 /// `Drop`: an observer that traps on that target still leaves `draining` set.
 struct DrainGuard<'a> {
     ledger: &'a WorkerLedger,
+    armed: bool,
 }
 
 impl Drop for DrainGuard<'_> {
     fn drop(&mut self) {
-        self.ledger.state().draining = false;
+        if self.armed {
+            self.ledger.state().draining = false;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Weak;
+
     use super::*;
 
     /// Observer recording every transition in delivery order.
@@ -261,7 +278,7 @@ mod tests {
     /// callback, which is what a host does when a `Stop` makes it tear down a
     /// holder that still owned a grant.
     struct Reentrant {
-        ledger: OnceLock<Arc<WorkerLedger>>,
+        ledger: Weak<WorkerLedger>,
         seen: Mutex<Vec<WorkerTransition>>,
         /// Cleared after the one re-entrant pair, so the pair it produces does
         /// not produce another.
@@ -281,7 +298,7 @@ mod tests {
                 }
                 *reenter_on = None;
             }
-            let ledger = self.ledger.get().expect("ledger installed").clone();
+            let ledger = self.ledger.upgrade().expect("ledger outlives its observer");
             ledger.acquire(product_id);
             ledger.release(product_id);
         }
@@ -291,11 +308,10 @@ mod tests {
     fn a_reentrant_call_from_the_observer_does_not_deadlock() {
         let ledger = Arc::new(WorkerLedger::default());
         let observer = Arc::new(Reentrant {
-            ledger: OnceLock::new(),
+            ledger: Arc::downgrade(&ledger),
             seen: Mutex::new(Vec::new()),
             reenter_on: Mutex::new(Some(WorkerTransition::Stop)),
         });
-        let _ = observer.ledger.set(ledger.clone());
         assert!(ledger.install_demand_observer(observer.clone()));
 
         ledger.acquire("a.dot");
@@ -388,6 +404,81 @@ mod tests {
                 WorkerTransition::Start,
             ]
         );
+    }
+
+    /// Counts every transition it is handed, from any thread.
+    #[derive(Default)]
+    struct Counter {
+        delivered: Mutex<usize>,
+    }
+
+    impl Counter {
+        fn delivered(&self) -> usize {
+            *self.delivered.lock().expect("counter mutex poisoned")
+        }
+    }
+
+    impl WorkerDemandObserver for Counter {
+        fn worker_demand_changed(&self, _product_id: &str, _transition: WorkerTransition) {
+            *self.delivered.lock().expect("counter mutex poisoned") += 1;
+        }
+    }
+
+    /// Nothing stays queued once the ledger falls quiet, however two threads
+    /// crossing zero at the same time interleaved.
+    ///
+    /// This covers the window between a drain finding the queue empty and
+    /// giving up its claim on delivery. A transition queued inside that window
+    /// finds a drain apparently still in progress, so unless the claim is
+    /// dropped under the same lock that found the queue empty, nothing is left
+    /// to deliver it. Later traffic would hide that by draining it late, so
+    /// each round is checked while both threads are idle. The interleaving is
+    /// the scheduler's, so a regression fails this often rather than always.
+    #[test]
+    fn nothing_stays_queued_once_the_ledger_falls_quiet() {
+        const ROUNDS: usize = 5_000;
+        const THREADS: usize = 2;
+
+        let ledger = Arc::new(WorkerLedger::default());
+        let counter = Arc::new(Counter::default());
+        assert!(ledger.install_demand_observer(counter.clone()));
+
+        // Both threads run each round together and the round is checked only
+        // after both are done, so a transition left queued is not drained by
+        // the next round's traffic before the check sees it missing.
+        let start = Arc::new(std::sync::Barrier::new(THREADS + 1));
+        let finished = Arc::new(std::sync::Barrier::new(THREADS + 1));
+        let threads: Vec<_> = (0..THREADS)
+            .map(|index| {
+                let ledger = ledger.clone();
+                let start = start.clone();
+                let finished = finished.clone();
+                std::thread::spawn(move || {
+                    // One product per thread, so each round owes exactly one
+                    // `Start` and one `Stop` per thread whatever the order.
+                    let product_id = format!("product-{index}.dot");
+                    for _ in 0..ROUNDS {
+                        start.wait();
+                        ledger.acquire(&product_id);
+                        ledger.release(&product_id);
+                        finished.wait();
+                    }
+                })
+            })
+            .collect();
+
+        for round in 1..=ROUNDS {
+            start.wait();
+            finished.wait();
+            assert_eq!(
+                counter.delivered(),
+                round * THREADS * 2,
+                "a transition was still queued at the end of round {round}"
+            );
+        }
+        for thread in threads {
+            thread.join().expect("worker thread panicked");
+        }
     }
 
     /// Observer that panics on its first call and records every call after.

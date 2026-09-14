@@ -585,18 +585,6 @@ pub trait NativeChatCallbacks: Send + Sync {
     fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
 }
 
-/// Reports the worker references the core holds to the host's callbacks.
-struct CallbackWorkerDemand {
-    callbacks: Arc<dyn HostCallbacks>,
-}
-
-impl crate::host_logic::worker::WorkerDemandObserver for CallbackWorkerDemand {
-    fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
-        self.callbacks
-            .worker_demand_changed(product_id.to_string(), transition);
-    }
-}
-
 /// Process-owned native TrUAPI runtime shared by all executable connections.
 #[derive(uniffi::Object)]
 pub struct NativeTrUApiHostRuntime {
@@ -624,15 +612,11 @@ impl NativeTrUApiHostRuntime {
         });
         let spawner = native_thread_pool_spawner(&callbacks);
         let runtime = Arc::new(SigningHostRuntime::new(
-            platform,
+            platform.clone(),
             runtime_config.signing,
             spawner.clone(),
         ));
-        runtime
-            .worker_ledger()
-            .install_demand_observer(Arc::new(CallbackWorkerDemand {
-                callbacks: callbacks.clone(),
-            }));
+        runtime.worker_ledger().install_demand_observer(platform);
         if let Some(secret) = runtime_config.local_session_secret {
             futures::executor::block_on(runtime.activate_local_session_with_identity(
                 secret,
@@ -1277,6 +1261,13 @@ fn native_thread_pool_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
 struct CallbackPlatform {
     callbacks: Arc<dyn HostCallbacks>,
     events: Arc<NativeEventBus>,
+}
+
+impl crate::host_logic::worker::WorkerDemandObserver for CallbackPlatform {
+    fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
+        self.callbacks
+            .worker_demand_changed(product_id.to_string(), transition);
+    }
 }
 
 #[derive(Default)]

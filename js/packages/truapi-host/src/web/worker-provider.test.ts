@@ -1359,4 +1359,76 @@ describe("worker demand", () => {
     runtime.subscribeWorkerDemand((change) => late.push(change));
     expect(late).toEqual([]);
   });
+
+  it("ignores a level that was already in flight when the runtime went away", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    runtime.dispose();
+
+    // The worker posted this before it saw the dispose, so it lands afterwards.
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
+    expect(seen).toEqual([]);
+  });
+
+  it("delivers one change once to a listener that subscribes from a listener", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const nested: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand(() => {
+      if (nested.length === 0) {
+        runtime.subscribeWorkerDemand((change) => nested.push(change));
+      }
+    });
+
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    // The replay tells it the product is wanted; the delivery still running
+    // must not tell it again.
+    expect(nested).toEqual([{ productId: "a.dot", wanted: true }]);
+    runtime.dispose();
+  });
+
+  it("keeps delivering after a listener throws, in replay and in updates", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    // A throw during the initial replay must still return the unsubscribe,
+    // otherwise the listener is registered with no way to remove it.
+    const thrower = (): never => {
+      throw new Error("listener exploded");
+    };
+    const unsubscribe = runtime.subscribeWorkerDemand(thrower);
+    expect(typeof unsubscribe).toBe("function");
+
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "b.dot",
+      wanted: true,
+    });
+    expect(seen).toEqual([
+      { productId: "a.dot", wanted: true },
+      { productId: "b.dot", wanted: true },
+    ]);
+
+    unsubscribe();
+    runtime.dispose();
+  });
 });

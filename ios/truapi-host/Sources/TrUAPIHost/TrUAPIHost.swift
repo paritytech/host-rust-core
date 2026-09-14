@@ -724,6 +724,21 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         inner.disconnect()
     }
 
+    /// Take one reference on the product's worker for a modality holder that
+    /// is on screen or in flight. The first one reports `.start` to
+    /// ``HostBridge/workerDemandChanged(productId:transition:)``, which is
+    /// where the host starts the worker. Pair every call with one
+    /// ``releaseWorker(productId:)``.
+    public func acquireWorker(productId: String) {
+        inner.acquireWorker(productId: productId)
+    }
+
+    /// Release one reference. The last one reports `.stop`, after which the
+    /// host may stop the worker. Releasing with none held is a no-op.
+    public func releaseWorker(productId: String) {
+        inner.releaseWorker(productId: productId)
+    }
+
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
         try inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
     }

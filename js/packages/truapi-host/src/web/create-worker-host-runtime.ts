@@ -892,7 +892,11 @@ export function createWebWorkerPairingHostRuntime(
           handleProductSubtreePublicKeyResponse(state, msg);
           break;
         case "workerDemandChanged":
-          handleWorkerDemandChanged(state, msg.productId, msg.wanted);
+          // Teardown has already reported every worker unwanted, so a level
+          // still in flight would put one back that nothing can serve.
+          if (!state.disposed) {
+            handleWorkerDemandChanged(state, msg.productId, msg.wanted);
+          }
           break;
         case "publishChatActionResponse":
           settlePending(
@@ -1189,9 +1193,12 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
       postUnlessDisposed(state, { kind: "releaseWorker", productId });
     },
     subscribeWorkerDemand(listener) {
+      // Teardown cleared the listeners, so one added now would only be
+      // retained, never called.
+      if (state.disposed) return () => {};
       state.workerDemandListeners.add(listener);
       for (const productId of state.wantedWorkers) {
-        listener({ productId, wanted: true });
+        deliverWorkerDemand(listener, { productId, wanted: true });
       }
       return () => {
         state.workerDemandListeners.delete(listener);
@@ -1281,6 +1288,18 @@ function postUnlessDisposed(state: RuntimeState, message: MainToWorker): void {
   state.worker.postMessage(message);
 }
 
+/** Hand one change to one listener, keeping its throw off the caller. */
+function deliverWorkerDemand(
+  listener: (change: WorkerDemandChange) => void,
+  change: WorkerDemandChange,
+): void {
+  try {
+    listener(change);
+  } catch (err) {
+    console.warn("[truapi worker] worker demand listener threw:", err);
+  }
+}
+
 /** Record one product's wanted level and fan it out to every listener. */
 function handleWorkerDemandChanged(
   state: RuntimeState,
@@ -1289,12 +1308,13 @@ function handleWorkerDemandChanged(
 ): void {
   if (wanted) state.wantedWorkers.add(productId);
   else state.wantedWorkers.delete(productId);
-  for (const listener of state.workerDemandListeners) {
-    try {
-      listener({ productId, wanted });
-    } catch (err) {
-      console.warn("[truapi worker] worker demand listener threw:", err);
-    }
+  // Delivery runs over a snapshot, and skips anyone no longer subscribed when
+  // their turn comes: a listener that subscribes from inside a listener has
+  // already had this change replayed to it, and one that unsubscribes, or
+  // disposes the runtime, must hear nothing further.
+  for (const listener of [...state.workerDemandListeners]) {
+    if (!state.workerDemandListeners.has(listener)) continue;
+    deliverWorkerDemand(listener, { productId, wanted });
   }
 }
 

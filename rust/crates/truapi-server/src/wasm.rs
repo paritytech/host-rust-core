@@ -856,10 +856,14 @@ struct WasmWorkerDemand {
 
 impl crate::host_logic::worker::WorkerDemandObserver for WasmWorkerDemand {
     fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
+        let name = match transition {
+            WorkerTransition::Start => "Start",
+            WorkerTransition::Stop => "Stop",
+        };
         let _ = self.changed.call2(
             &JsValue::NULL,
             &JsValue::from_str(product_id),
-            &JsValue::from_str(worker_transition_name(transition)),
+            &JsValue::from_str(name),
         );
     }
 }
@@ -1105,14 +1109,6 @@ impl WasmPairingHostRuntime {
     }
 }
 
-/// The JS name of a transition.
-fn worker_transition_name(transition: WorkerTransition) -> &'static str {
-    match transition {
-        WorkerTransition::Start => "Start",
-        WorkerTransition::Stop => "Stop",
-    }
-}
-
 /// Strictly decode a SCALE-encoded core-storage key for host storage policy.
 #[wasm_bindgen(js_name = describeCoreStorageKey)]
 pub fn describe_core_storage_key_for_wasm(encoded: Vec<u8>) -> Result<JsValue, JsValue> {
@@ -1216,6 +1212,21 @@ impl WasmSigningHostRuntime {
             .clear_product_state(&product_id)
             .await
             .map_err(generic_error_to_js)
+    }
+
+    /// Take one reference on the product's worker for a modality holder. The
+    /// first one reports `"Start"` to the host's `workerDemandChanged`
+    /// callback. Pair every call with one `releaseWorker`.
+    #[wasm_bindgen(js_name = acquireWorker)]
+    pub fn acquire_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().acquire(&product_id);
+    }
+
+    /// Release one reference. The last one reports `"Stop"`, after which the
+    /// host may stop the worker; releasing with none held is a no-op.
+    #[wasm_bindgen(js_name = releaseWorker)]
+    pub fn release_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().release(&product_id);
     }
 }
 
