@@ -1,12 +1,12 @@
 //! Unified [`LocalStorage`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::local_storage::{
     HostLocalStorageChangeItem, HostLocalStorageClearError, HostLocalStorageClearRequest,
     HostLocalStorageClearResponse, HostLocalStorageReadError, HostLocalStorageReadRequest,
     HostLocalStorageReadResponse, HostLocalStorageSubscribeRequest, HostLocalStorageWriteError,
     HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
-use crate::latest::GenericError;
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 

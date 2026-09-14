@@ -2207,16 +2207,20 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
     );
 }
 
-fn storage_item(value: Option<&[u8]>) -> HostLocalStorageChangeItem {
-    HostLocalStorageChangeItem::V1(v01::HostLocalStorageChangeItem {
-        value: value.map(<[u8]>::to_vec),
-    })
+fn storage_item(
+    value: Option<&[u8]>,
+) -> Result<HostLocalStorageChangeItem, CallError<GenericError>> {
+    Ok(HostLocalStorageChangeItem::V1(
+        v01::HostLocalStorageChangeItem {
+            value: value.map(<[u8]>::to_vec),
+        },
+    ))
 }
 
 fn subscribe_storage_key(
     host: &ProductRuntimeHost,
     key: &str,
-) -> Subscription<HostLocalStorageChangeItem> {
+) -> Subscription<HostLocalStorageChangeItem, CallError<GenericError>> {
     futures::executor::block_on(LocalStorage::subscribe(
         host,
         &CallContext::default(),
@@ -2246,9 +2250,10 @@ fn local_storage_subscribe_sees_writes_and_clears_but_not_identical_rewrites() {
         test_spawner(),
     );
     let mut subscription = subscribe_storage_key(&host, "progress");
-    let next = |subscription: &mut Subscription<HostLocalStorageChangeItem>| {
-        futures::executor::block_on(subscription.next()).expect("storage item")
-    };
+    let next = |subscription: &mut Subscription<
+        HostLocalStorageChangeItem,
+        CallError<GenericError>,
+    >| { futures::executor::block_on(subscription.next()).expect("storage item") };
 
     assert_eq!(
         next(&mut subscription),
@@ -2315,6 +2320,34 @@ fn local_storage_subscribe_is_scoped_to_the_calling_product() {
     assert!(
         futures::FutureExt::now_or_never(other_items.next()).is_none(),
         "another product's write never reaches this subscriber"
+    );
+}
+
+#[test]
+fn local_storage_subscribe_interrupts_on_a_platform_stream_failure() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let mut subscription = subscribe_storage_key(&host, "progress");
+    assert_eq!(
+        futures::executor::block_on(subscription.next()),
+        Some(storage_item(None))
+    );
+
+    platform.fail_storage_subscriptions(
+        &host.product_storage_key("myapp.dot", "progress".to_string()),
+        "store unavailable",
+    );
+
+    assert_eq!(
+        futures::executor::block_on(subscription.next()),
+        Some(Err(CallError::HostFailure {
+            reason: "store unavailable".to_string(),
+        })),
+        "a platform failure reaches the product instead of freezing it on the last value"
     );
 }
 
