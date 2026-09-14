@@ -37,6 +37,14 @@ import {
   type DevAccountName,
 } from "./dev-accounts.js";
 
+/**
+ * Id the test host gives the product iframe.
+ *
+ * The Playwright fixture's `productFrame()` resolves against this, so the two
+ * must agree; it is exported rather than duplicated as a string literal.
+ */
+export const PRODUCT_FRAME_ID = "product-frame";
+
 /** Options for {@link startTestHost}. */
 export interface TestHostPageOptions {
   /** URL of the product under test. */
@@ -216,6 +224,10 @@ export async function startTestHost(
       active = undefined;
     },
   });
+
+  // The fixture locates the product by id. `createIframeHost` does not set
+  // one -- a production host has no reason to -- so the test host does.
+  iframeHost.iframe.id = PRODUCT_FRAME_ID;
 
   window.__TRUAPI_TEST_HOST__ = control;
 

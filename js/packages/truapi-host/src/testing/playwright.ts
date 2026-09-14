@@ -20,8 +20,10 @@ import type {
   SigningLogEntry,
 } from "../web/create-mock-host.js";
 
-/** Id of the product iframe the host page creates. */
-const PRODUCT_FRAME = "#product-frame";
+import { PRODUCT_FRAME_ID } from "./host-page.js";
+
+/** Selector for the product iframe the host page creates. */
+const PRODUCT_FRAME = `#${PRODUCT_FRAME_ID}`;
 
 /** Options for {@link createTestHostFixture}. */
 export interface TestHostFixtureOptions {
@@ -68,8 +70,18 @@ export interface TestHost {
   getChatBots(): Promise<unknown[]>;
   getChatMessageLog(): Promise<ChatMessageRecord[]>;
   clearChatState(): Promise<void>;
+  /** Product-scoped storage the core has written, keyed without the prefix. */
+  getProductStorage(): Promise<Record<string, Uint8Array>>;
   getPreimages(): Promise<Uint8Array[]>;
   seedPreimage(value: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Find the value the product stored under `key`.
+   *
+   * The core namespaces product storage keys before the host ever sees them,
+   * so a test matching on the product's own key wants a suffix match rather
+   * than the full namespaced string, which is an internal shape.
+   */
+  findProductStorage(key: string): Promise<Uint8Array | undefined>;
   clearPreimages(): Promise<void>;
   getTheme(): Promise<string>;
   setTheme(variant: string): Promise<void>;
@@ -78,6 +90,14 @@ export interface TestHost {
   getConnectionStatus(): Promise<ChainStatus>;
   simulateDisconnect(): Promise<void>;
   simulateReconnect(): Promise<void>;
+  /**
+   * Wait until the product has an open channel to the host.
+   *
+   * Resolves once the core has answered at least one product call, which is
+   * the first observable evidence that frames are crossing the wire in both
+   * directions.
+   */
+  waitForConnection(timeoutMs?: number): Promise<void>;
   /** Names the host can currently sign as. */
   getAccounts(): Promise<string[]>;
   /** The account the current session is activated from, if any. */
@@ -165,7 +185,43 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         getChatBots: () => call("getChatBots"),
         getChatMessageLog: () => call("getChatMessageLog"),
         clearChatState: () => call("clearChatState"),
-        getPreimages: () => call("getPreimages"),
+        // `page.evaluate` serialises a Uint8Array as a plain index object, so
+        // binary values are converted to arrays in the page and rebuilt here.
+        // Without this a caller gets `{0: 114, …}` and any decode of it
+        // silently yields "".
+        getProductStorage: async () => {
+          const raw = await page.evaluate(() => {
+            const host = window.__TRUAPI_TEST_HOST__;
+            if (!host) throw new Error("test host is not running on this page");
+            return Object.fromEntries(
+              Object.entries(host.getProductStorage()).map(([key, value]) => [
+                key,
+                Array.from(value),
+              ]),
+            );
+          });
+          return Object.fromEntries(
+            Object.entries(raw).map(([key, value]) => [
+              key,
+              Uint8Array.from(value),
+            ]),
+          );
+        },
+        async findProductStorage(key: string) {
+          const stored = await testHost.getProductStorage();
+          const match = Object.entries(stored).find(([stored]) =>
+            stored.endsWith(`:${key}`),
+          );
+          return match?.[1];
+        },
+        getPreimages: async () => {
+          const raw = await page.evaluate(() => {
+            const host = window.__TRUAPI_TEST_HOST__;
+            if (!host) throw new Error("test host is not running on this page");
+            return host.getPreimages().map((value) => Array.from(value));
+          });
+          return raw.map((value) => Uint8Array.from(value));
+        },
         seedPreimage: (value) => call("seedPreimage", value),
         clearPreimages: () => call("clearPreimages"),
         getTheme: () => call("getTheme"),
@@ -175,6 +231,14 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         getConnectionStatus: () => call("getConnectionStatus"),
         simulateDisconnect: () => call("simulateDisconnect"),
         simulateReconnect: () => call("simulateReconnect"),
+        async waitForConnection(timeoutMs = 30_000) {
+          // A live wire means the core has actually called the host, not
+          // merely that the page finished loading.
+          await page.waitForFunction(
+            () => (window.__TRUAPI_TEST_HOST__?.getHostCallCount() ?? 0) > 0,
+            { timeout: timeoutMs },
+          );
+        },
         getAccounts: () => call("getAccounts"),
         getActiveAccount: () => call("getActiveAccount"),
         // Switching account re-activates the session, which reloads the

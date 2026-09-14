@@ -204,6 +204,13 @@ export interface MockHost {
    * signature, shaped the way a signing log is usually read.
    */
   getSigningLog(): SigningLogEntry[];
+  /**
+   * How many calls the core has made into the host.
+   *
+   * Non-zero is the first observable evidence that frames are crossing the
+   * wire, which is what a harness waits on before asserting anything.
+   */
+  getHostCallCount(): number;
   /** Whether the core has reported an authenticated session. */
   getIsAuthenticated(): boolean;
   /**
@@ -249,6 +256,16 @@ export interface MockHost {
   getChatBots(): HostChatRegisterBotRequest[];
   /** Messages the product posted, with the ids the mock assigned. */
   getChatMessageLog(): ChatMessageRecord[];
+  /**
+   * Product-scoped storage the core has written, keyed without the internal
+   * namespace prefix.
+   *
+   * A test asserting what the product stored should read it here rather than
+   * reach into whatever the host keeps underneath: the namespacing is an
+   * implementation detail and tying a suite to it is what makes a host
+   * impossible to replace.
+   */
+  getProductStorage(): Record<string, Uint8Array>;
   /** Seeded preimage values. */
   getPreimages(): Uint8Array[];
   /** Drop the recorded navigations. */
@@ -396,6 +413,26 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       ? `core:permission:${key.value.productId}:${JSON.stringify(key.value.request)}`
       : `core:${key.tag}`;
   const granted = (policy: PermissionPolicy): boolean => policy === "allow-all";
+
+  let hostCallCount = 0;
+
+  /**
+   * Wrap every callback in a namespace so each core->host call is counted.
+   *
+   * A test needs to know the wire is live before asserting on anything, and
+   * the only honest evidence of that is the core actually having called the
+   * host. Counting is cheap and needs no per-capability bookkeeping.
+   */
+  const countCallsIn = (namespace: Record<string, unknown>): void => {
+    for (const [name, value] of Object.entries(namespace)) {
+      if (typeof value !== "function") continue;
+      const original = value as (...a: unknown[]) => unknown;
+      namespace[name] = (...args: unknown[]) => {
+        hostCallCount += 1;
+        return original.apply(namespace, args);
+      };
+    }
+  };
 
   // `RequiredHostCallbacks` (each capability wrapped in `Required<…>`): every
   // optional callback must be present, so a capability added to the generated
@@ -587,6 +624,12 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     },
   };
 
+  // Wrapped in place so the declared `RequiredHostCallbacks` type is preserved
+  // rather than cast back on.
+  for (const namespace of Object.values(callbacks)) {
+    countCallsIn(namespace as Record<string, unknown>);
+  }
+
   return {
     callbacks,
     getNavigationLog: () => [...navigations],
@@ -609,6 +652,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
           ? []
           : [{ type, payload: (review as { value: unknown }).value }];
       }),
+    getHostCallCount: () => hostCallCount,
     getIsAuthenticated: () =>
       authStates.at(-1)?.tag === "Connected",
     getConnectionStatus: () => chainStatus,
@@ -657,6 +701,14 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       preimages.set(hex(key), value);
       return key;
     },
+    getProductStorage: () => {
+      const prefix = productKey("");
+      const entries: Record<string, Uint8Array> = {};
+      for (const [key, value] of storage) {
+        if (key.startsWith(prefix)) entries[key.slice(prefix.length)] = value;
+      }
+      return entries;
+    },
     getPreimages: () => [...preimages.values()],
     clearNavigationLog: () => {
       navigations.length = 0;
@@ -701,6 +753,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       enforcePermissions = false;
       nextNotificationId = 0;
       nextChatMessageId = 0;
+      hostCallCount = 0;
     },
     payment: notModeled("payment"),
     coinPayment: notModeled("coinPayment"),

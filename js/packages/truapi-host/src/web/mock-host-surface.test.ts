@@ -42,6 +42,7 @@ const ALIASES: Record<string, string> = {
   chat_rooms: "getChatRooms",
   chat_bots: "getChatBots",
   posted_chat_messages: "getChatMessageLog",
+  product_storage: "getProductStorage",
 };
 
 /** snake_case -> camelCase, unless the name is an explicit alias. */

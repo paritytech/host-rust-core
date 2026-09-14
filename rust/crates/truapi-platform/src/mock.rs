@@ -548,6 +548,29 @@ impl MockPlatform {
         self.storage.lock().expect("storage poisoned").clear();
     }
 
+    /// Product-scoped storage the core has written, as `(key, value)` in key
+    /// order, with the internal namespace prefix stripped.
+    ///
+    /// A test asserting what the product stored should read it here rather
+    /// than reach into whatever the host keeps underneath: the namespacing is
+    /// an implementation detail and tying a suite to it is what makes a host
+    /// impossible to replace.
+    pub fn product_storage(&self) -> Vec<(String, Vec<u8>)> {
+        let prefix = product_key("");
+        let mut entries: Vec<(String, Vec<u8>)> = self
+            .storage
+            .lock()
+            .expect("storage poisoned")
+            .iter()
+            .filter_map(|(key, value)| {
+                key.strip_prefix(&prefix)
+                    .map(|bare| (bare.to_string(), value.clone()))
+            })
+            .collect();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        entries
+    }
+
     /// Seeded preimages as `(key, value)`, in key order.
     pub fn preimages(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut entries: Vec<(Vec<u8>, Vec<u8>)> = self

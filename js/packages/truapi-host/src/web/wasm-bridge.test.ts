@@ -68,6 +68,10 @@ suite("real WASM core ↔ createMockHost bridge", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     expect(invoked.some((c) => c.startsWith("readCoreStorage:"))).toBe(true);
+
+    // The same traffic must be visible through the control surface, because
+    // that count is what a harness waits on to decide the wire is live.
+    expect(mock.getHostCallCount()).toBeGreaterThan(0);
   });
 
   it("isolates one real-core boot from the next through reset()", async () => {
