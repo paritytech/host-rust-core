@@ -162,11 +162,11 @@ jobs:
             core.setOutput('increment_step', incrementStep);
 
       - name: Setup iOS Environment
-        uses: ./.github/actions/install
+        uses: ./hosts/ios/.github/actions/install
 
       - name: Read version and build number
         id: build_version
-        uses: ./.github/actions/read-build-version
+        uses: ./hosts/ios/.github/actions/read-build-version
         with:
           increment_step: ${{ steps.release_notes.outputs.increment_step }}
           # Safetynet has its own App Store Connect record, so it carries a TestFlight
@@ -220,6 +220,7 @@ jobs:
         env:
           # The leaf xcconfig is named after the configuration being built.
           BUILD_CONFIGURATION: ${{ inputs.build_configuration }}
+        working-directory: hosts/ios
         run: |
           set -euo pipefail
           config_name=$(echo "${BUILD_CONFIGURATION}" | tr '[:upper:]' '[:lower:]')
@@ -228,14 +229,14 @@ jobs:
             "${{ matrix.variant.extra_swift_flags }}"
 
       - name: Setup iOS Environment
-        uses: ./.github/actions/install
+        uses: ./hosts/ios/.github/actions/install
         with:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
       - name: Distribute TestFlight build
         if: matrix.variant.upload_to_testflight
-        uses: ./.github/actions/distribute-testflight
+        uses: ./hosts/ios/.github/actions/distribute-testflight
         with:
           ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
           ios_extension_bundle_id: ${{ env.IOS_EXTENSION_BUNDLE_ID }}
@@ -261,14 +262,14 @@ jobs:
 
       - name: Configure Google services for non-TestFlight build
         if: ${{ !matrix.variant.upload_to_testflight }}
-        uses: ./.github/actions/configure-google-services
+        uses: ./hosts/ios/.github/actions/configure-google-services
         with:
           google_service_info_base64: ${{ inputs.build_configuration == 'Safetynet' && secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 || secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
           expected_bundle_id: ${{ env.IOS_BUNDLE_ID }}
 
       - name: Configure secrets for non-TestFlight build
         if: ${{ !matrix.variant.upload_to_testflight }}
-        uses: ./.github/actions/configure-secrets
+        uses: ./hosts/ios/.github/actions/configure-secrets
         with:
           sentry_dsn: ${{ secrets.SENTRY_DSN }}
           meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
@@ -280,6 +281,7 @@ jobs:
           BUILD_NUMBER: ${{ needs.prepare_build_metadata.outputs.build_number }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+        working-directory: hosts/ios
         run: |
           bundle exec fastlane build_app_ci
 
@@ -290,7 +292,7 @@ jobs:
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
           s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
           s3_bucket: ${{ env.S3_BUCKET }}
-          source_path: polkadot-app.ipa
+          source_path: hosts/ios/polkadot-app.ipa
           # Subdir keeps each configuration's archive in its own namespace: a nightly run
           # writes two different apps, whose build numbers come from independent counters.
           destination_path: /ios/${{ inputs.s3_static_subdir }}/polkadot-app-${{ needs.prepare_build_metadata.outputs.marketing_version }}-${{ needs.prepare_build_metadata.outputs.build_number }}${{ matrix.variant.s3_suffix }}.ipa
@@ -302,7 +304,7 @@ jobs:
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
           s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
           s3_bucket: ${{ env.S3_BUCKET }}
-          source_path: polkadot-app.ipa
+          source_path: hosts/ios/polkadot-app.ipa
           destination_path: /ios/${{ inputs.s3_static_subdir }}/polkadot-app${{ matrix.variant.s3_suffix }}.ipa
 
       - name: Comment on PR with build info
@@ -388,7 +390,7 @@ jobs:
         uses: actions/checkout@v6
       - name: Check default matrix leg conclusion
         id: check
-        uses: ./.github/actions/check-job-conclusion
+        uses: ./hosts/ios/.github/actions/check-job-conclusion
         with:
           job_name: "Check and Build TestFlight (${{ inputs.build_configuration }} / default)"
           github_token: ${{ github.token }}
