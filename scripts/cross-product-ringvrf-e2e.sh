@@ -32,6 +32,15 @@ network="${E2E_NETWORK:-paseo-next-v2}"
 # Point E2E_STATE_DIR elsewhere to run against a fresh identity, and expect to
 # supply an unused --lite-username-prefix with it.
 state="${E2E_STATE_DIR:-$repo_root/target/e2e/cross-product-ringvrf}"
+
+# Only consulted when the state directory above holds no account yet, which
+# is the first run on a machine or a deliberately fresh E2E_STATE_DIR. A
+# machine that stranded the default name before this script kept its state
+# cannot reach a single assertion without one. Lowercase ASCII letters only,
+# at least six: digits and hyphens are refused.
+lite_prefix="${E2E_LITE_USERNAME_PREFIX:-}"
+prefix_arg=()
+[ -n "$lite_prefix" ] && prefix_arg=(--lite-username-prefix "$lite_prefix")
 mkdir -p "$state"
 
 echo "==> building truapi-host"
@@ -47,6 +56,7 @@ run_phase() {
   E2E_PHASE="$phase" "$host" signing-host \
     --network "$network" \
     --base-path "$state" \
+      ${prefix_arg[@]+"${prefix_arg[@]}"} \
     --product-id "$product" \
     --product-config "$fixtures/peopl.paseo.json" \
     --product-config "$fixtures/dim2.paseo.json" \
