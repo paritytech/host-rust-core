@@ -24,9 +24,12 @@ use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
 
+use crate::host_logic::extrinsic::LocalTransactionError;
+use crate::host_logic::raw_signing::RawPayloadError;
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
+use crate::host_logic::transaction::ExtrinsicPayloadError;
 
 /// Secret key allocated for Bulletin preimage submission.
 ///
@@ -150,6 +153,48 @@ pub(crate) enum AuthorityError {
     /// Catch-all authority failure.
     #[display("{reason}")]
     Unknown { reason: String },
+}
+
+/// A preimage this host cannot assemble is a shape failure, not a transport one.
+impl From<ExtrinsicPayloadError> for AuthorityError {
+    fn from(err: ExtrinsicPayloadError) -> Self {
+        match err {
+            ExtrinsicPayloadError::UnsupportedPayloadVersion { .. }
+            | ExtrinsicPayloadError::UnsupportedSignedExtension { .. } => Self::NotSupported {
+                reason: err.to_string(),
+            },
+            other => Self::Unknown {
+                reason: other.to_string(),
+            },
+        }
+    }
+}
+
+/// A chain the host cannot reach is `Unavailable`; a request shape it cannot
+/// assemble is `NotSupported`.
+impl From<LocalTransactionError> for AuthorityError {
+    fn from(err: LocalTransactionError) -> Self {
+        match err {
+            LocalTransactionError::UnsupportedTxExtVersion { .. }
+            | LocalTransactionError::UnsupportedExtensions(_) => Self::NotSupported {
+                reason: err.to_string(),
+            },
+            LocalTransactionError::ChainUnavailable(_) => Self::Unavailable {
+                reason: err.to_string(),
+            },
+            LocalTransactionError::Other(_) => Self::Unknown {
+                reason: err.to_string(),
+            },
+        }
+    }
+}
+
+impl From<RawPayloadError> for AuthorityError {
+    fn from(err: RawPayloadError) -> Self {
+        Self::Unknown {
+            reason: err.to_string(),
+        }
+    }
 }
 
 impl From<AuthorityError> for RingVrfError {
