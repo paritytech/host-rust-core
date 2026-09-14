@@ -1,29 +1,88 @@
 import { describe, expect, test } from "bun:test";
 
 import { encodeWireMessage } from "@parity/truapi";
-import * as W from "@parity/truapi/wire-table";
+import * as REAL_W from "@parity/truapi/wire-table";
 
 import { createDebugIngest, DEFAULT_MAX_ID_CHARS, normalizeId } from "./ingest.js";
 import type { DebugFrameEnvelope } from "./ingest.js";
 import type { ObservedFrame } from "./observed-frame.js";
 import { detectRetryStorms } from "./retry-storm.js";
-import { createMethodNameMap, createWireDebugger } from "./wire-debugger.js";
+import {
+  createMethodNameMap,
+  createWireDebugger,
+  frameIdOf,
+} from "./wire-debugger.js";
+
+/**
+ * Test-only convenience view over the generated wire table: gives each entry
+ * per-leg "flat id" properties by encoding `(frameId, messageType)` as one
+ * number (`frameId * 4 + messageType`), so fixtures can address a method's
+ * specific leg by name (`W.ACCOUNT_GET_ACCOUNT.request`) instead of a bare
+ * pair. `envelope()` below decodes a leg id back into a real `(trait,
+ * method)` pair and a `messageType` byte.
+ */
+function legacyIds(table: Record<string, unknown>): Record<string, Record<string, number>> {
+  const legs = {
+    request: ["request", "response"],
+    subscription: ["start", "receive", "interrupt", "stop"],
+  } as const;
+  const out: Record<string, Record<string, number>> = {};
+  for (const [name, entry] of Object.entries(table)) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      !("trait" in entry) ||
+      !("method" in entry) ||
+      !("kind" in entry)
+    ) {
+      continue;
+    }
+    const { trait, method, kind } = entry as {
+      trait: number;
+      method: number;
+      kind: "request" | "subscription";
+    };
+    const base = frameIdOf(trait, method) * 4;
+    const rec: Record<string, number> = {};
+    legs[kind].forEach((leg, i) => {
+      rec[leg] = base + i;
+    });
+    out[name] = rec;
+  }
+  return out;
+}
+
+const W = legacyIds(REAL_W as unknown as Record<string, unknown>);
 
 /** The real generated table, keyed the way `createDebugSession` keys it. */
 const METHOD_NAMES = createMethodNameMap(
-  W as unknown as Record<string, unknown>,
+  REAL_W as unknown as Record<string, unknown>,
   ["account", "signing", "chain", "chat", "resourceAllocation"],
 );
 
-/** One host-tap envelope carrying `frameId` under correlation id `requestId`. */
+/**
+ * One host-tap envelope carrying `legId` (a leg id from {@link legacyIds})
+ * under correlation id `requestId`. `innerValue` is the leg's own payload
+ * bytes, unrelated to which leg `messageType` says this is.
+ */
 function envelope(
   requestId: string,
-  frameId: number,
-  value = new Uint8Array([0]),
+  legId: number,
+  innerValue = new Uint8Array([0]),
   dir: "in" | "out" = "out",
   channelId = "myapp.dot",
 ): DebugFrameEnvelope {
-  const encoded = encodeWireMessage({ requestId, payload: { id: frameId, value } });
+  const frameId = Math.floor(legId / 4);
+  const messageType = legId % 4;
+  const encoded = encodeWireMessage({
+    requestId,
+    payload: {
+      traitId: Math.floor(frameId / 256),
+      methodId: frameId % 256,
+      messageType,
+      value: innerValue,
+    },
+  });
   if (encoded.isErr()) throw encoded.error;
   return { channelId, dir, frame: encoded.value };
 }
@@ -73,8 +132,8 @@ describe("ingest resolves role from the wire table", () => {
 
   test("an off-table id and a map-less ingest both fall back to unknown", () => {
     const withMap = collect({ methodNames: METHOD_NAMES });
-    // 250 is above every id the current table assigns.
-    withMap.ingest(envelope("p:1", 250));
+    // (255, 255) is the reserved protocol-error address; no real method lives there.
+    withMap.ingest(envelope("p:1", (255 * 256 + 255) * 4));
     expect(withMap.seen[0]?.role).toBe("unknown");
 
     const withoutMap = collect();
@@ -112,7 +171,7 @@ describe("every consumer sees the resolved role, not just the view adapter", () 
     // This is the line the default `console.debug` sink prints. It read
     // "-> unknown account.getAccount" while role was resolved only downstream.
     expect(lines[0]).toBe(
-      `[wire p:1] → request account.getAccount (id=${W.ACCOUNT_GET_ACCOUNT.request}, 1B)`,
+      `[wire p:1] → request account.getAccount (id=${String(frameIdOf(REAL_W.ACCOUNT_GET_ACCOUNT.trait, REAL_W.ACCOUNT_GET_ACCOUNT.method))}, 1B)`,
     );
   });
 
@@ -199,7 +258,7 @@ describe("ingest bounds ids and gates raw bytes", () => {
     const off = collect({ methodNames: METHOD_NAMES });
     off.ingest(envelope("p:1", W.ACCOUNT_GET_ACCOUNT.request, new Uint8Array([7])));
     expect(off.seen[0]?.bytes).toBeUndefined();
-    // Byte length is recorded either way.
+    // Byte length is recorded either way: the 1 inner byte.
     expect(off.seen[0]?.byteLength).toBe(1);
 
     const on = collect({ methodNames: METHOD_NAMES, retainBytes: true });

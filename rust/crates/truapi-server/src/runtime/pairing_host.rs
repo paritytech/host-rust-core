@@ -263,6 +263,7 @@ pub(crate) struct PairingHost {
 impl PairingHost {
     /// Build a pairing host over the shared runtime services.
     pub(crate) fn new(services: Arc<RuntimeServices>, host_config: PairingHostConfig) -> Arc<Self> {
+        services.install_asset_hub_genesis_hash(host_config.asset_hub_chain_genesis_hash);
         let platform = services.platform.clone();
         let auth_state = AuthStateMachine::new(platform.clone());
         Arc::new_cyclic(|weak_self| Self {
@@ -2067,9 +2068,11 @@ impl PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         let session = self.current_private_session(session)?;
-        self.remote_sign_raw(cx, &session, request).await
+        self.remote_sign_raw(cx, &session, request, watermarked)
+            .await
     }
 
     async fn create_transaction(
@@ -2460,8 +2463,9 @@ impl ProductAuthority for PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: SignRawAuthorityRequest,
+        watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
-        PairingHost::sign_raw(self, cx, session, request).await
+        PairingHost::sign_raw(self, cx, session, request, watermarked).await
     }
 
     async fn create_transaction(

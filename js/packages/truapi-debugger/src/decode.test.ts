@@ -5,14 +5,16 @@ import { WIRE_DECODE_TABLE } from "@parity/truapi/wire-decode";
 
 import { createFrameDecoder, type FrameValueDetail } from "./decode.js";
 import type { ObservedFrame } from "./observed-frame.js";
+import { frameIdOf } from "./wire-debugger.js";
 
 /** A minimal observed frame for a given id/bytes; the fields decode ignores are stubbed. */
-function frame(frameId: number, bytes?: Uint8Array): ObservedFrame {
+function frame(frameId: number, bytes?: Uint8Array, messageType = 0): ObservedFrame {
   return {
     channelId: "myapp.dot",
     direction: "out",
     requestId: "p:1",
     frameId,
+    messageType,
     role: "unknown",
     byteLength: bytes?.length ?? 0,
     timestamp: 0,
@@ -37,28 +39,35 @@ function unattested(frameId: number, bytes?: Uint8Array): ObservedFrame {
 
 describe("frame decoder (real table) — decodes everything, no special-casing", () => {
   test("a non-sensitive frame decodes only with the toggle on", () => {
-    // `connection-status.subscribe` start payload is `V1(void)` = a single 0x00
-    // index byte: a real frame the generated table can decode.
-    const id = W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start;
-    const bytes = new Uint8Array([0]);
+    // `connection-status.subscribe` takes no request at all, so its Start leg
+    // (messageType 0, the frame's default) decodes to bare `undefined` - a real
+    // frame the generated table can decode, ignoring these two arbitrary bytes.
+    const id = frameIdOf(
+      W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+      W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+    );
+    const bytes = new Uint8Array([0, 0]);
 
     const off = createFrameDecoder({ enabled: false });
     const offDetail = off.detail(frame(id, bytes));
     expect(offDetail.kind).toBe("bytes");
-    if (offDetail.kind === "bytes") expect(offDetail.byteLength).toBe(1);
+    if (offDetail.kind === "bytes") expect(offDetail.byteLength).toBe(2);
 
     const on = createFrameDecoder({ enabled: true });
     const onDetail = on.detail(frame(id, bytes));
     expect(onDetail.kind).toBe("decoded");
-    // Sanity: the id really is in the generated decode table.
-    expect(typeof WIRE_DECODE_TABLE[id]).toBe("function");
+    // Sanity: the id's Start leg really is in the generated decode table.
+    expect(typeof WIRE_DECODE_TABLE[id]?.[0]).toBe("function");
   });
 
   test("a formerly-'sensitive' signing frame decodes too (dev-only tool)", () => {
     // No denylist any more: a signing request decodes like every other frame.
     const decoder = createFrameDecoder({ enabled: true });
     const detail = decoder.detail(
-      frame(W.SIGNING_SIGN_RAW.request, new Uint8Array([0])),
+      frame(
+        frameIdOf(W.SIGNING_SIGN_RAW.trait, W.SIGNING_SIGN_RAW.method),
+        new Uint8Array([0]),
+      ),
     );
     // It either decodes (id has a codec + valid bytes) or, on a codec throw for
     // the stub bytes, falls back to bytes — never a "redacted" state.
@@ -70,9 +79,9 @@ describe("frame decoder (real table) — decodes everything, no special-casing",
   test("disabled decoder is bytes-only for every frame", () => {
     const decoder = createFrameDecoder({ enabled: false });
     for (const id of [
-      W.ACCOUNT_GET_ACCOUNT.request,
-      W.SIGNING_SIGN_RAW.request,
-      W.CHAIN_CALL_HEAD.request,
+      frameIdOf(W.ACCOUNT_GET_ACCOUNT.trait, W.ACCOUNT_GET_ACCOUNT.method),
+      frameIdOf(W.SIGNING_SIGN_RAW.trait, W.SIGNING_SIGN_RAW.method),
+      frameIdOf(W.CHAIN_CALL_HEAD.trait, W.CHAIN_CALL_HEAD.method),
     ]) {
       expect(decoder.detail(frame(id, new Uint8Array([9]))).kind).toBe("bytes");
     }
@@ -80,7 +89,7 @@ describe("frame decoder (real table) — decodes everything, no special-casing",
 });
 
 describe("frame decoder (injected table)", () => {
-  const table = { 999: (b: Uint8Array) => ({ ok: Array.from(b) }) };
+  const table = { 999: { 0: (b: Uint8Array) => ({ ok: Array.from(b) }) } };
 
   test("decodes an id when enabled and bytes present", () => {
     const decoder = createFrameDecoder({ enabled: true, decodeTable: table });
@@ -94,7 +103,7 @@ describe("frame decoder (injected table)", () => {
   test("decodes a secret-named field too — no content guard withholds it", () => {
     const decoder = createFrameDecoder({
       enabled: true,
-      decodeTable: { 999: () => ({ source: { sr25519SecretKey: "0xdead" } }) },
+      decodeTable: { 999: { 0: () => ({ source: { sr25519SecretKey: "0xdead" } }) } },
     });
     const detail = decoder.detail(frame(999, new Uint8Array([1])));
     expect(detail.kind).toBe("decoded");
@@ -112,8 +121,10 @@ describe("frame decoder (injected table)", () => {
     const decoder = createFrameDecoder({
       enabled: true,
       decodeTable: {
-        999: () => {
-          throw new Error("bad payload");
+        999: {
+          0: () => {
+            throw new Error("bad payload");
+          },
         },
       },
     });
@@ -133,8 +144,11 @@ test("an unattested frame never decodes, whatever its channel did", () => {
   // host and a fresh one, and by every frame an embedding host tees before it
   // learns its core's schema hash.
   const decoder = createFrameDecoder({ enabled: true });
-  const id = W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start;
-  const bytes = new Uint8Array([0]);
+  const id = frameIdOf(
+    W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+    W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.method,
+  );
+  const bytes = new Uint8Array([0, 0]);
 
   // Same id, same bytes. The only difference is who vouched for the contract.
   const attested = decoder.detail(frame(id, bytes));
@@ -142,5 +156,5 @@ test("an unattested frame never decodes, whatever its channel did", () => {
 
   expect(attested.kind).toBe("decoded");
   expect(refused.kind).toBe("bytes");
-  if (refused.kind === "bytes") expect(refused.hex).toBe("0x00");
+  if (refused.kind === "bytes") expect(refused.hex).toBe("0x0000");
 });
