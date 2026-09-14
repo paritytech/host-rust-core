@@ -30,8 +30,10 @@ NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly}"
 # libLLVM, which dies with SIGSEGV in initialize_available_targets.
 unset DYLD_LIBRARY_PATH
 
-cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi -- -Z unstable-options --output-format json
-cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi-platform -- -Z unstable-options --output-format json
+# Both crates in one invocation: rustdoc starts once and truapi is documented
+# once for both, rather than a second process re-reading it.
+RUSTDOCFLAGS="-Z unstable-options --output-format json" \
+  cargo +"$NIGHTLY_TOOLCHAIN" doc -p truapi -p truapi-platform --no-deps
 cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
@@ -52,7 +54,8 @@ rustfmt +"$NIGHTLY_TOOLCHAIN" --edition 2024 \
 
 node scripts/regen-explorer-versions.mjs
 
-npm exec --yes -- prettier --write \
+# The local prettier, not `npm exec`, which re-resolves the package each run.
+./node_modules/.bin/prettier --write \
   "js/packages/truapi/src/generated/**/*.ts" \
   "js/packages/truapi/src/playground/**/*.ts" \
   "js/packages/truapi/src/explorer/**/*.ts" \
