@@ -109,7 +109,7 @@ impl ProductStorage for WireShapePlatform {
     }
     fn subscribe_storage(
         &self,
-        _key: Vec<u8>,
+        _key: String,
     ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
         Box::pin(stream::empty())
     }

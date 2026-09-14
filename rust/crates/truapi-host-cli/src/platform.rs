@@ -490,11 +490,10 @@ impl ProductStorage for CliPlatform {
 
     fn subscribe_storage(
         &self,
-        key: Vec<u8>,
+        key: String,
     ) -> BoxStream<'static, Result<api::HostLocalStorageChangeItem, api::GenericError>> {
         // TODO: current value only; the CLI never pushes later changes. Needs a
         // per-key broadcast off write/clear for cross-context storage sync.
-        let key = String::from_utf8_lossy(&key).into_owned();
         let value = ProductStorageKey::decode(&key).ok().and_then(|scoped| {
             self.product_storage
                 .lock()

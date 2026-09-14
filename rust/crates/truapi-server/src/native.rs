@@ -1890,12 +1890,11 @@ impl ProductStorage for CallbackPlatform {
 
     fn subscribe_storage(
         &self,
-        key: Vec<u8>,
+        key: String,
     ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
         // Subscribe before reading, so a change landing between the two repeats
         // rather than being lost. The host pushes later changes via
         // `notify_storage_changed`.
-        let key = String::from_utf8_lossy(&key).into_owned();
         let rx = self.events.subscribe_storage_changes(key.clone());
         let callbacks = self.callbacks.clone();
         let current = async move {

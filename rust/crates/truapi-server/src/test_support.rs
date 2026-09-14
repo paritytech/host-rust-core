@@ -920,9 +920,8 @@ impl PlatformProductStorage for StubPlatform {
 
     fn subscribe_storage(
         &self,
-        key: Vec<u8>,
+        key: String,
     ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
-        let key = String::from_utf8_lossy(&key).into_owned();
         let (tx, rx) = futures::channel::mpsc::unbounded();
         self.storage_subscribers
             .lock()
