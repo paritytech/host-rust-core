@@ -1076,8 +1076,18 @@ export function createWebWorkerPairingHostRuntime(
     // Armed for the whole dev session, independent of whether a URL is set right
     // now: the worker decides a core's tap once, when the core is built, so a
     // later `__truapi.debugger.attach()` has nothing to reach unless every core
-    // was built tappable. False in production, where no core ever gets a sink.
-    const debugTapArmed = debuggerEnablement.reason !== "production-build";
+    // was built tappable.
+    //
+    // Ask the BUILD GATE, never the reason. There are two production reasons -
+    // `production-build-configured` is returned whenever a build carries
+    // `VITE_TRUAPI_DEBUGGER_URL` or a host passed a non-empty `debugger` - and a
+    // `reason !== "production-build"` test silently armed those. `withDebugTap`
+    // then adds `debugEmit`, which is what makes the Rust side install its
+    // `DebugSink`, and `case "setDebuggerUrl"` guards only on this flag, so one
+    // `__truapi.debugger.attach()` streamed decoded frames out of a production
+    // bundle. The gate is the single source of truth for "may this build ever
+    // carry a tap"; adding a third reason must not be able to change that again.
+    const debugTapArmed = debuggerBuildAllows();
     // Seed the console's view so `__truapi.debugger.status()` reports the dial
     // this host actually has, rather than null until someone calls attach(). Only
     // when unset: an explicit attach() must not be undone by the next runtime

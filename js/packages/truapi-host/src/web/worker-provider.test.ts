@@ -1281,7 +1281,24 @@ describe("debugger enablement reporting", () => {
   // worker decides a core's `debugEmit` once, when the core is built, so a session
   // that starts detached must still arm or a later attach() reaches nothing. In a
   // production build it must stay false, or a core would carry a live sink.
-  it("never arms the tap when the build refuses", async () => {
+  // Asserted with a dial CONFIGURED, which is the only input that can fail. A
+  // build that carries `VITE_TRUAPI_DEBUGGER_URL`, or a host that passes
+  // `debugger:` unconditionally rather than behind its own dev flag, lands on
+  // `production-build-configured` - and deriving the flag as
+  // `reason !== "production-build"` armed exactly those. `withDebugTap` then adds
+  // `debugEmit`, which is what makes the Rust side install its `DebugSink`, and
+  // `case "setDebuggerUrl"` guards only on this flag, so a single
+  // `__truapi.debugger.attach()` streamed decoded frames out of a production
+  // bundle. Passing no option cannot see that: it is the one input where both
+  // production reasons agree.
+  it("never arms the tap when the build refuses, even with a dial configured", async () => {
+    const worker = new FakeWorker();
+    await readyRuntime(worker, { debugger: "ws://127.0.0.1:9231" });
+    const init = worker.messages.find((m) => m.kind === "init");
+    expect(init).toMatchObject({ debugTapArmed: false, debuggerUrl: null });
+  });
+
+  it("never arms the tap when nothing was configured either", async () => {
     const worker = new FakeWorker();
     await readyRuntime(worker);
     const init = worker.messages.find((m) => m.kind === "init");
