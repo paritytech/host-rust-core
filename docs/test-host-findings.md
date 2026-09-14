@@ -291,6 +291,56 @@ a different bug:
 Rebuild before trusting any test that reads them, and treat "it passed before my
 change" as evidence about the artefact rather than about the source.
 
+## 12. The core caches a decided permission, by design
+
+After a permission is decided for a `(product, permission)` pair, the core
+persists the answer and short-circuits on it: `host_logic/permissions.rs:379`
+keys the decision on `CoreStorageKey::device_permission_authorization` and reads
+it back before prompting, with a test at :702 named
+`check_or_prompt_device_caches_grant`.
+
+The consequence for testing is sharp and easy to lose an afternoon to: **a grant
+made after a denial does not take effect, and the second call never reaches the
+host at all.** The mock's `permissionLog` stays at one entry, because the core
+answered from its own storage.
+
+This explains product-sdk's two skipped `signing-rejected` tests. Their comment
+blames caching in product-sdk; the caching is in the *core*, and it is
+deliberate. No test host can make those tests pass — not this one, not
+`host-api-test-sdk` — without either a core change to per-call permissions or
+the tests changing shape. They are a known constraint rather than a gap.
+
+The same mechanism appears elsewhere with a coarser key: `IdentityDisclosure`'s
+durable grant is keyed by `product_id` alone with no capability discriminator,
+so one cached decision answers a finer-grained question.
+
+## 13. The test host runs a different topology from production
+
+Production web hosts run the core in a Web Worker
+(`createWebWorkerPairingHostRuntime`). The test host runs it on the page's main
+thread. That is not a preference: **the worker runtime supports pairing hosts
+only** -- `worker-runtime.ts` hardcodes `new wasm.WasmPairingHostRuntime(...)`
+in its `init` handler and contains no signing references -- while a test host
+needs a signing host to own dev accounts and sign locally.
+
+So today the choice is production topology *or* local signing, not both. The
+main-thread fixture is the deliberate trade.
+
+Closing it is small but not free, and it is protocol work on a surface every web
+host uses:
+
+- an optional `role?: "pairing" | "signing"` on the existing `init` message
+  (additive; a host that omits it behaves exactly as now);
+- one new `MainToWorker` kind, `activateLocalSession { requestId, secret }`,
+  an exact clone of the existing `activateExternalSession { requestId, blob }`;
+- no new response kind -- `handleSessionActivation` already covers it;
+- one branch in the `init` handler to pick the runtime class.
+
+The Rust side is already done: `WasmSigningHostRuntime` exists at
+`wasm.rs:1139` and the `testing` WASM bundle already carries it. There is no way
+to avoid the change and keep signing, because the worker's only session entry
+point is `activateExternalSession`, which needs a real pairing handshake.
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is
