@@ -235,6 +235,62 @@ has no protocol imports, rewrite the 40% seam onto `createIframeHost` +
 engineering and the stated goal of archiving `host-api-test-sdk`. Roughly 6–11 days
 plus the payments decision, against 25–33 as originally scoped.
 
+## 9. Migrating product-sdk needs a truapi bump first
+
+`@parity/truapi` 0.13.1 and 0.15.0 are not wire-compatible, and the handshake
+says so rather than hanging: #357 moved `WIRE_CODEC_VERSION` from 1 to 2
+(`truapi/src/lib.rs:219`), and `system.rs` refuses a mismatched codec with
+`UnsupportedProtocolVersion`. product-sdk's catalog pins ^0.13.1, so its suites
+cannot run against a 0.15-derived host until that is bumped.
+
+That bump is not free. Building product-sdk against 0.15 surfaces two compile
+errors in **its own** code, both in `packages/host/src/testing.ts`
+(`createFakeHost`):
+
+- the signing stub is missing `signRawUnwatermarkedDeprecated` and
+  `signRawUnwatermarkedDeprecatedWithLegacyAccount`, which 0.15 added to
+  `SigningClient`;
+- `PublicTruApiClient` is missing the whole `renderer` domain, which 0.15 added.
+
+Both are two-line fixes -- the second follows the file's existing `notModeled`
+pattern -- but they are a sequencing dependency nobody had costed: the test-host
+migration cannot start until product-sdk compiles against the newer protocol.
+
+## 10. Test suites couple to the host's internals, and that is the real churn
+
+Running `storage-demo` against the TrUAPI mock host, 6 of 8 tests passed
+unmodified. The 2 that failed did so for the same reason, and it is the reason
+that matters: they assert on `@parity/host-api-test-sdk`'s internal storage
+keys, reading `localStorage.getItem("test-host:demo:mykey")` out of the host
+page. That is a test coupled to one host's implementation rather than to product
+behaviour, and no amount of API compatibility ports it.
+
+The fix is to read through the control surface -- `getProductStorage()`, or
+`findProductStorage(key)` on the fixture -- not to teach the new mock to fake
+the old one's key scheme, which would bake another host's internals into ours.
+
+**Budget ~25% assertion churn per suite**, and expect it to be concentrated in
+tests that verify routing rather than behaviour.
+
+## 11. Compiled artefacts silently lag their source
+
+Three separate incidents in one session, each costing time and each looking like
+a different bug:
+
+- `worker-wasm-import.test.ts` failed against a stale `dist/`, and its own
+  failure message said so;
+- rebuilding the WASM broke both bridge tests with
+  `callbacks.workerDemandChanged must be a function` -- a raw bridge callback
+  outside the generated `RequiredHostCallbacks`, so `tsc` cannot see it, and the
+  old bundle predated the requirement. The tests had been passing against an
+  older core;
+- the served test-host bundle lacked `getHostCallCount` because `dist/`
+  predated it.
+
+`dist/` and `dist/wasm/` are gitignored build outputs with no freshness check.
+Rebuild before trusting any test that reads them, and treat "it passed before my
+change" as evidence about the artefact rather than about the source.
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is
