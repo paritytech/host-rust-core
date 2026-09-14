@@ -37,7 +37,7 @@ pub(crate) use sso_responder::{
 pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
-    AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningOperation, BulletinAllowanceKey,
+    AuthorityError, AuthoritySession, AutoSigningGrant, BulletinAllowanceKey,
     CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
     SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session_validation_id,
 };
@@ -677,11 +677,7 @@ impl ProductAuthority for SigningHost {
         session: &AuthoritySession,
         calling_product_id: &str,
         account: &v01::ProductAccountId,
-        operation: AutoSigningOperation,
     ) -> Result<AutoSigningGrant, AuthorityError> {
-        if !operation.is_grantable() {
-            return Ok(AutoSigningGrant::Absent);
-        }
         // A stale session is not a grant, and is answered here rather than
         // raising a prompt against a session that no longer exists.
         // `grant_auto_signing` refuses to record a grant whose owner is not

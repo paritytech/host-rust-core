@@ -288,36 +288,6 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
-/// A product-account operation an AutoSigning grant may cover.
-///
-/// Legacy- and identity-account signing is absent by construction: the grant
-/// material is one product subtree secret, which cannot produce those keys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AutoSigningOperation {
-    /// `signing.sign_raw`. The unwatermarked form is the deprecated API, whose
-    /// signatures can authorize transactions, so no grant covers it.
-    SignRaw {
-        /// Whether the message carries the `<Bytes>` watermark.
-        watermarked: bool,
-    },
-    /// `signing.sign_payload`.
-    SignPayload,
-    /// `signing.create_transaction`.
-    CreateTransaction,
-}
-
-impl AutoSigningOperation {
-    /// Whether a grant may cover this operation at all.
-    ///
-    /// The unwatermarked raw-signing API is excluded: its signatures are not
-    /// domain-separated from transaction signatures, so a standing grant over
-    /// it would waive the prompt on the one surface that can authorize a
-    /// transfer. It is deprecated and prompts regardless of any grant.
-    pub(crate) fn is_grantable(self) -> bool {
-        !matches!(self, Self::SignRaw { watermarked: false })
-    }
-}
-
 /// Whether an active AutoSigning grant covers one product-account call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AutoSigningGrant {
@@ -419,8 +389,12 @@ pub(crate) trait ProductAuthority: Send + Sync {
         product_id: &str,
     ) -> bool;
 
-    /// Whether an active AutoSigning grant covers `operation` on `account` for
+    /// Whether an active AutoSigning grant covers `account` for
     /// `calling_product_id`.
+    ///
+    /// Only a product's own accounts are ever covered: the grant material is
+    /// one product subtree secret, so legacy and identity accounts cannot be
+    /// produced from it.
     ///
     /// [`AutoSigningGrant::Active`] is a promise, not a hint: the matching
     /// `sign_*` call on this authority serves the request from local key
@@ -440,7 +414,6 @@ pub(crate) trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         calling_product_id: &str,
         account: &ProductAccountId,
-        operation: AutoSigningOperation,
     ) -> Result<AutoSigningGrant, AuthorityError>;
 
     /// Sign an RFC-0023 Merlin transcript with a product account.

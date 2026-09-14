@@ -17,8 +17,8 @@ use truapi_platform::{
 };
 
 use crate::runtime::authority::{
-    AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningOperation,
-    CreateTransactionAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    AuthorityError, AuthoritySession, AutoSigningGrant, CreateTransactionAuthorityRequest,
+    SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
 use crate::runtime::{
     LEGACY_ACCOUNT_UNAVAILABLE_REASON, LEGACY_PRODUCT_ACCOUNT_MISMATCH_REASON, LegacySigner,
@@ -56,7 +56,7 @@ impl Signing for ProductRuntimeHost {
             )));
         };
         let grant = self
-            .auto_signing_status(&session, &inner.account, AutoSigningOperation::SignPayload)
+            .auto_signing_status(&session, &inner.account)
             .await
             .map_err(|reason| signing_call_error(HostSignPayloadError::V1, reason))?;
         if grant == AutoSigningGrant::Absent {
@@ -135,11 +135,7 @@ impl Signing for ProductRuntimeHost {
             )));
         };
         let grant = self
-            .auto_signing_status(
-                &session,
-                &inner.signer,
-                AutoSigningOperation::CreateTransaction,
-            )
+            .auto_signing_status(&session, &inner.signer)
             .await
             .map_err(|reason| transaction_call_error(HostCreateTransactionError::V1, reason))?;
         if grant == AutoSigningGrant::Absent {
@@ -353,10 +349,9 @@ impl ProductRuntimeHost {
         &self,
         session: &AuthoritySession,
         account: &v01::ProductAccountId,
-        operation: AutoSigningOperation,
     ) -> Result<AutoSigningGrant, AuthorityError> {
         self.authority
-            .auto_signing_status(session, &self.product_id(), account, operation)
+            .auto_signing_status(session, &self.product_id(), account)
             .await
     }
 
@@ -387,14 +382,17 @@ impl ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
-        let grant = self
-            .auto_signing_status(
-                &session,
-                &inner.account,
-                AutoSigningOperation::SignRaw { watermarked },
-            )
-            .await
-            .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))?;
+        // The deprecated unwatermarked API is never grant-covered: its
+        // signatures are not domain-separated from transaction signatures, so a
+        // standing grant would waive the prompt on the one surface that can
+        // authorize a transfer.
+        let grant = if watermarked {
+            self.auto_signing_status(&session, &inner.account)
+                .await
+                .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))?
+        } else {
+            AutoSigningGrant::Absent
+        };
         if grant == AutoSigningGrant::Absent {
             let confirmed = self
                 .platform

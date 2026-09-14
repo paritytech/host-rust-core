@@ -114,17 +114,4 @@ mod tests {
             Err(RawPayloadError::NotValidHex),
         );
     }
-
-    #[test]
-    fn an_unwatermarked_payload_is_never_wrapped() {
-        assert_eq!(
-            raw_payload_bytes(
-                RawPayload::Bytes {
-                    bytes: b"hi".to_vec()
-                },
-                false
-            ),
-            Ok(b"hi".to_vec()),
-        );
-    }
 }

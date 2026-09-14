@@ -24,10 +24,10 @@ use zeroize::Zeroize;
 use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
-    AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningKey, AutoSigningOperation,
-    BulletinAllowanceKey, CreateTransactionAuthorityRequest, ProductAuthority,
-    SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
-    authority_session, require_current_session,
+    AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningKey, BulletinAllowanceKey,
+    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session,
+    require_current_session,
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
@@ -2048,9 +2048,8 @@ impl PairingHost {
         session: &AuthoritySession,
         calling_product_id: &str,
         account: &v01::ProductAccountId,
-        operation: AutoSigningOperation,
     ) -> Result<AutoSigningGrant, AuthorityError> {
-        if !operation.is_grantable() || calling_product_id != account.dot_ns_identifier {
+        if calling_product_id != account.dot_ns_identifier {
             return Ok(AutoSigningGrant::Absent);
         }
         let session = self.current_private_session(session)?;
@@ -2554,10 +2553,8 @@ impl ProductAuthority for PairingHost {
         session: &AuthoritySession,
         calling_product_id: &str,
         account: &v01::ProductAccountId,
-        operation: AutoSigningOperation,
     ) -> Result<AutoSigningGrant, AuthorityError> {
-        PairingHost::auto_signing_status(self, session, calling_product_id, account, operation)
-            .await
+        PairingHost::auto_signing_status(self, session, calling_product_id, account).await
     }
 
     async fn sign_vrf(

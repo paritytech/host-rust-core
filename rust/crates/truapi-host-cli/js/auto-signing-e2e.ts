@@ -139,82 +139,77 @@ export async function runAutoSigningE2e(
     const promptsSince = (before: string[], action: string): string[] =>
       actionLines(newLinesSince(before, readTranscript()), action);
 
-    const beforeRaw = readTranscript();
-    const raw = await client.signing.signRaw({
-      account,
-      payload: { tag: "Bytes", value: { bytes: "0x48656c6c6f" } },
-    });
-    if (!raw.isOk()) {
-      return finish("fail", `sign_raw failed: ${JSON.stringify(raw.error)}`);
-    }
-    const rawPrompts = promptsSince(beforeRaw, SIGN_RAW_APPROVAL_ACTION);
-    if (rawPrompts.length > 0) {
-      return finish(
-        "fail",
-        `sign_raw consulted a confirmation despite the AutoSigning grant: ${rawPrompts.join("; ")}`,
+    /**
+     * Run one covered call and require it to append no line for `action`.
+     * Returns an error row, or null when the call was served prompt-free.
+     */
+    const requireNoPrompt = async (
+      name: string,
+      action: string,
+      call: () => Promise<{ isOk: () => boolean; error: unknown }>,
+    ): Promise<DiagnosisRow | null> => {
+      const before = readTranscript();
+      const result = await call();
+      if (!result.isOk()) {
+        return finish(
+          "fail",
+          `${name} failed: ${JSON.stringify(result.error)}`,
+        );
+      }
+      const prompts = actionLines(
+        newLinesSince(before, readTranscript()),
+        action,
       );
-    }
+      return prompts.length > 0
+        ? finish(
+            "fail",
+            `${name} consulted a confirmation despite the AutoSigning grant: ${prompts.join("; ")}`,
+          )
+        : null;
+    };
 
-    const beforePayload = readTranscript();
-    const payload = await client.signing.signPayload({
-      account,
-      // Optional fields are absent rather than null: the codec wraps each in
-      // `Option`, so a null reaches the hex encoder as a value.
-      payload: {
-        blockHash: `0x${"00".repeat(32)}`,
-        blockNumber: "0x00000000",
-        era: "0x0000",
-        genesisHash: `0x${"00".repeat(32)}`,
-        method: "0x00003448656c6c6f2c20776f726c6421",
-        nonce: "0x00000000",
-        signedExtensions: [],
-        specVersion: "0x00000000",
-        tip: "0x00000000000000000000000000000000",
-        transactionVersion: "0x00000000",
-        version: 4,
-      },
-    });
-    if (!payload.isOk()) {
-      return finish(
-        "fail",
-        `sign_payload failed: ${JSON.stringify(payload.error)}`,
-      );
-    }
-    const payloadPrompts = promptsSince(
-      beforePayload,
-      SIGN_PAYLOAD_APPROVAL_ACTION,
-    );
-    if (payloadPrompts.length > 0) {
-      return finish(
-        "fail",
-        `sign_payload consulted a confirmation despite the AutoSigning grant: ${payloadPrompts.join("; ")}`,
-      );
-    }
-
-    const beforeTx = readTranscript();
-    // V4 is assembled offline, so the grant is the only variable here.
-    const tx = await client.signing.createTransaction({
-      signer: account,
-      genesisHash: `0x${"01".repeat(32)}`,
-      callData: "0x0400",
-      extensions: [],
-      txExtVersion: 0,
-    });
-    if (!tx.isOk()) {
-      return finish(
-        "fail",
-        `create_transaction failed: ${JSON.stringify(tx.error)}`,
-      );
-    }
-    const txPrompts = promptsSince(
-      beforeTx,
-      CREATE_TRANSACTION_APPROVAL_ACTION,
-    );
-    if (txPrompts.length > 0) {
-      return finish(
-        "fail",
-        `create_transaction consulted a confirmation despite the AutoSigning grant: ${txPrompts.join("; ")}`,
-      );
+    const failure =
+      (await requireNoPrompt("sign_raw", SIGN_RAW_APPROVAL_ACTION, () =>
+        client.signing.signRaw({
+          account,
+          payload: { tag: "Bytes", value: { bytes: "0x48656c6c6f" } },
+        }),
+      )) ??
+      (await requireNoPrompt("sign_payload", SIGN_PAYLOAD_APPROVAL_ACTION, () =>
+        // Optional fields are absent rather than null: the codec wraps each in
+        // `Option`, so a null reaches the hex encoder as a value.
+        client.signing.signPayload({
+          account,
+          payload: {
+            blockHash: `0x${"00".repeat(32)}`,
+            blockNumber: "0x00000000",
+            era: "0x0000",
+            genesisHash: `0x${"00".repeat(32)}`,
+            method: "0x00003448656c6c6f2c20776f726c6421",
+            nonce: "0x00000000",
+            signedExtensions: [],
+            specVersion: "0x00000000",
+            tip: "0x00000000000000000000000000000000",
+            transactionVersion: "0x00000000",
+            version: 4,
+          },
+        }),
+      )) ??
+      (await requireNoPrompt(
+        "create_transaction",
+        CREATE_TRANSACTION_APPROVAL_ACTION,
+        () =>
+          // V4 is assembled offline, so the grant is the only variable here.
+          client.signing.createTransaction({
+            signer: account,
+            genesisHash: `0x${"01".repeat(32)}`,
+            callData: "0x0400",
+            extensions: [],
+            txExtVersion: 0,
+          }),
+      ));
+    if (failure) {
+      return failure;
     }
 
     return finish(
