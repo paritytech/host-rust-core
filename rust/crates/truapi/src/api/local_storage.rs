@@ -3,10 +3,9 @@
 use crate::versioned::local_storage::{
     HostLocalStorageChangeItem, HostLocalStorageClearError, HostLocalStorageClearRequest,
     HostLocalStorageClearResponse, HostLocalStorageReadError, HostLocalStorageReadRequest,
-    HostLocalStorageReadResponse, HostLocalStorageSubscribeRequest, HostLocalStorageWriteError,
-    HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
+    HostLocalStorageReadResponse, HostLocalStorageSubscribeError, HostLocalStorageSubscribeRequest,
+    HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
-use crate::latest::GenericError;
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 
@@ -78,7 +77,7 @@ pub trait LocalStorage: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostLocalStorageSubscribeRequest,
-    ) -> Subscription<HostLocalStorageChangeItem, CallError<GenericError>> {
+    ) -> Subscription<HostLocalStorageChangeItem, CallError<HostLocalStorageSubscribeError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 }

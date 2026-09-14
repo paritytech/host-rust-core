@@ -3,13 +3,12 @@
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme, Worker};
-use truapi::latest::GenericError;
 use truapi::versioned::IntoLatest;
 use truapi::versioned::local_storage::{
     HostLocalStorageChangeItem, HostLocalStorageClearError, HostLocalStorageClearRequest,
     HostLocalStorageClearResponse, HostLocalStorageReadError, HostLocalStorageReadRequest,
-    HostLocalStorageReadResponse, HostLocalStorageSubscribeRequest, HostLocalStorageWriteError,
-    HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
+    HostLocalStorageReadResponse, HostLocalStorageSubscribeError, HostLocalStorageSubscribeRequest,
+    HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
 use truapi::versioned::locale::{
     HostLocaleSubscribeError, HostLocaleSubscribeItem, HostLocaleSubscribeRequest,
@@ -265,7 +264,7 @@ impl LocalStorage for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         request: HostLocalStorageSubscribeRequest,
-    ) -> Subscription<HostLocalStorageChangeItem, CallError<GenericError>> {
+    ) -> Subscription<HostLocalStorageChangeItem, CallError<HostLocalStorageSubscribeError>> {
         let HostLocalStorageSubscribeRequest::V1(v01::HostLocalStorageSubscribeRequest { key }) =
             request;
         let stream = self

@@ -31,6 +31,7 @@ use truapi::api::{
     StatementStore,
     System,
     Theme,
+    Worker,
 };
 use truapi::versioned::{self, Versioned};
 use truapi_platform::ProductExecutionKind;
@@ -65,7 +66,8 @@ where
     register_signing(dispatcher, host.clone());
     register_statement_store(dispatcher, host.clone());
     register_system(dispatcher, host.clone());
-    register_theme(dispatcher, host);
+    register_theme(dispatcher, host.clone());
+    register_worker(dispatcher, host);
 }
 
 /// Start the host-initiated `renderer_render` subscription.
@@ -1356,7 +1358,7 @@ where
         });
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_request(wire_table::LOCAL_STORAGE_CLEAR, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
@@ -1380,6 +1382,38 @@ where
                         Err(err) => Err(downgrade_call_error(err, target_version)),
                     };
                 result.encode()
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_subscription(wire_table::LOCAL_STORAGE_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::local_storage::HostLocalStorageSubscribeRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::local_storage::HostLocalStorageSubscribeError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Err(subscription_interrupt(error));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let stream = host.subscribe(&cx, request).await;
+                let stream = futures::StreamExt::map(
+                    stream,
+                    move |item: Result<versioned::local_storage::HostLocalStorageChangeItem, truapi::CallError<versioned::local_storage::HostLocalStorageSubscribeError>>| {
+                        item.map(|item| {
+                            <versioned::local_storage::HostLocalStorageChangeItem as truapi::versioned::FromLatest>::from_latest(
+                                truapi::versioned::IntoLatest::into_latest(item),
+                                target_version,
+                            )
+                        })
+                        .map_err(|error| downgrade_call_error(error, target_version))
+                    },
+                );
+                Ok(subscription_stream(stream))
             })
         });
     }
@@ -2424,6 +2458,80 @@ where
                     },
                 );
                 Ok(subscription_stream(stream))
+            })
+        });
+    }
+}
+
+fn register_worker<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Worker + Send + Sync + 'static,
+{
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host.clone();
+        dispatcher.on_request(wire_table::WORKER_BEGIN_OPERATION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::worker::HostWorkerBeginOperationRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::worker::HostWorkerBeginOperationError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::worker::HostWorkerBeginOperationResponse, truapi::CallError<versioned::worker::HostWorkerBeginOperationError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_parts(request_id, cancel);
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::worker::HostWorkerBeginOperationError> = truapi::CallError::Denied;
+                    let result: Result<versioned::worker::HostWorkerBeginOperationResponse, truapi::CallError<versioned::worker::HostWorkerBeginOperationError>> = Err(error);
+                    return result.encode();
+                }
+                let result: Result<versioned::worker::HostWorkerBeginOperationResponse, truapi::CallError<versioned::worker::HostWorkerBeginOperationError>> =
+                    match host.begin_operation(&cx, request).await {
+                        Ok(response) => Ok(<versioned::worker::HostWorkerBeginOperationResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host;
+        dispatcher.on_request(wire_table::WORKER_END_OPERATION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::worker::HostWorkerEndOperationRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::worker::HostWorkerEndOperationError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::worker::HostWorkerEndOperationResponse, truapi::CallError<versioned::worker::HostWorkerEndOperationError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_parts(request_id, cancel);
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::worker::HostWorkerEndOperationError> = truapi::CallError::Denied;
+                    let result: Result<versioned::worker::HostWorkerEndOperationResponse, truapi::CallError<versioned::worker::HostWorkerEndOperationError>> = Err(error);
+                    return result.encode();
+                }
+                let result: Result<versioned::worker::HostWorkerEndOperationResponse, truapi::CallError<versioned::worker::HostWorkerEndOperationError>> =
+                    match host.end_operation(&cx, request).await {
+                        Ok(response) => Ok(<versioned::worker::HostWorkerEndOperationResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
             })
         });
     }

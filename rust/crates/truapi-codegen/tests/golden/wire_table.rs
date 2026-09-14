@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "176fc98966149d38";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "7e298b33bf55effb";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -332,6 +332,12 @@ pub const LOCAL_STORAGE_CLEAR: MethodIds = MethodIds {
     method_id: 2,
 };
 
+/// Wire discriminants for `local_storage_subscribe`.
+pub const LOCAL_STORAGE_SUBSCRIBE: MethodIds = MethodIds {
+    trait_id: 7,
+    method_id: 3,
+};
+
 /// Wire discriminants for `notifications_send_push_notification`.
 pub const NOTIFICATIONS_SEND_PUSH_NOTIFICATION: MethodIds = MethodIds {
     trait_id: 8,
@@ -503,6 +509,18 @@ pub const POCKET_LIST_SUBSCRIBE: MethodIds = MethodIds {
 /// Wire discriminants for `pocket_remove_card`.
 pub const POCKET_REMOVE_CARD: MethodIds = MethodIds {
     trait_id: 18,
+    method_id: 1,
+};
+
+/// Wire discriminants for `worker_begin_operation`.
+pub const WORKER_BEGIN_OPERATION: MethodIds = MethodIds {
+    trait_id: 19,
+    method_id: 0,
+};
+
+/// Wire discriminants for `worker_end_operation`.
+pub const WORKER_END_OPERATION: MethodIds = MethodIds {
+    trait_id: 19,
     method_id: 1,
 };
 
@@ -703,6 +721,10 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Request(LOCAL_STORAGE_CLEAR),
     },
     WireEntry {
+        method: "local_storage_subscribe",
+        kind: WireKind::Subscription(LOCAL_STORAGE_SUBSCRIBE),
+    },
+    WireEntry {
         method: "notifications_send_push_notification",
         kind: WireKind::Request(NOTIFICATIONS_SEND_PUSH_NOTIFICATION),
     },
@@ -817,5 +839,13 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "pocket_remove_card",
         kind: WireKind::Request(POCKET_REMOVE_CARD),
+    },
+    WireEntry {
+        method: "worker_begin_operation",
+        kind: WireKind::Request(WORKER_BEGIN_OPERATION),
+    },
+    WireEntry {
+        method: "worker_end_operation",
+        kind: WireKind::Request(WORKER_END_OPERATION),
     },
 ];

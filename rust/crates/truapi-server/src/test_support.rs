@@ -216,6 +216,22 @@ pub(crate) type StorageChangeSender = futures::channel::mpsc::UnboundedSender<
 >;
 
 impl StubPlatform {
+    /// Fail every open subscription on `key`, as a host whose store broke
+    /// mid-stream would.
+    pub(crate) fn fail_storage_subscriptions(&self, key: &str, reason: &str) {
+        self.storage_subscribers
+            .lock()
+            .expect("storage subscribers mutex poisoned")
+            .retain(|(subscribed, tx)| {
+                subscribed != key
+                    || tx
+                        .unbounded_send(Err(v01::GenericError {
+                            reason: reason.to_string(),
+                        }))
+                        .is_ok()
+            });
+    }
+
     fn push_storage_change(&self, key: &str, value: Option<Vec<u8>>) {
         self.storage_subscribers
             .lock()
