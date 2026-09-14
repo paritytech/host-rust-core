@@ -32,15 +32,16 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
+use futures::channel::mpsc;
 use futures::stream::{self, BoxStream};
 
 use truapi::latest;
 
 use crate::async_trait;
 use crate::{
-    AuthPresenter, AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features,
+    AuthPresenter, AuthState, ChainProvider, ChatPlatform, CoreStorage, CoreStorageKey, Features,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, Permissions, PreimageHost,
-    ProductStorage, ThemeHost, UserConfirmation, UserConfirmationReview,
+    ProductContext, ProductStorage, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 
 /// How the mock answers a permission prompt for one capability.
@@ -129,6 +130,17 @@ pub struct PermissionDecision {
     pub permission: String,
     /// What the mock answered.
     pub granted: bool,
+}
+
+/// One chat message the product posted through the mock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatMessageRecord {
+    /// Id the mock assigned and returned to the product.
+    pub message_id: String,
+    /// Room the message was posted to.
+    pub room_id: String,
+    /// What was posted.
+    pub payload: latest::ChatMessageContent,
 }
 
 /// How the mock's chain connection behaves.
@@ -224,6 +236,13 @@ pub struct MockPlatform {
     /// falling back to the config policy.
     enforce_permissions: Arc<AtomicBool>,
     permission_log: Arc<Mutex<Vec<PermissionDecision>>>,
+    chat_rooms: Arc<Mutex<BTreeMap<String, latest::ChatRoom>>>,
+    chat_bots: Arc<Mutex<BTreeMap<String, latest::HostChatRegisterBotRequest>>>,
+    chat_messages: Arc<Mutex<Vec<ChatMessageRecord>>>,
+    /// Live `subscribe_chat_rooms` streams, fed a fresh list on every change.
+    chat_room_subscribers:
+        Arc<Mutex<Vec<mpsc::UnboundedSender<latest::HostChatListSubscribeItem>>>>,
+    next_chat_message_id: Arc<AtomicU32>,
 }
 
 impl Default for MockPlatform {
@@ -255,6 +274,11 @@ impl MockPlatform {
             permission_decisions: Arc::new(Mutex::new(BTreeMap::new())),
             enforce_permissions: Arc::new(AtomicBool::new(false)),
             permission_log: Arc::new(Mutex::new(Vec::new())),
+            chat_rooms: Arc::new(Mutex::new(BTreeMap::new())),
+            chat_bots: Arc::new(Mutex::new(BTreeMap::new())),
+            chat_messages: Arc::new(Mutex::new(Vec::new())),
+            chat_room_subscribers: Arc::new(Mutex::new(Vec::new())),
+            next_chat_message_id: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -479,6 +503,60 @@ impl MockPlatform {
         self.storage.lock().expect("storage poisoned").clear();
     }
 
+    /// Chat rooms the product registered, in room-id order.
+    pub fn chat_rooms(&self) -> Vec<latest::ChatRoom> {
+        self.chat_rooms
+            .lock()
+            .expect("chat rooms poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Chat bots the product registered, in bot-id order.
+    pub fn chat_bots(&self) -> Vec<latest::HostChatRegisterBotRequest> {
+        self.chat_bots
+            .lock()
+            .expect("chat bots poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Messages the product posted, in order, with the ids the mock assigned.
+    pub fn posted_chat_messages(&self) -> Vec<ChatMessageRecord> {
+        self.chat_messages
+            .lock()
+            .expect("chat messages poisoned")
+            .clone()
+    }
+
+    /// Drop the registered rooms and bots and the posted-message log.
+    ///
+    /// Live `subscribe_chat_rooms` streams stay open and see the emptied list,
+    /// the same as they would see any other replacement.
+    pub fn clear_chat_state(&self) {
+        self.chat_rooms.lock().expect("chat rooms poisoned").clear();
+        self.chat_bots.lock().expect("chat bots poisoned").clear();
+        self.chat_messages
+            .lock()
+            .expect("chat messages poisoned")
+            .clear();
+        self.publish_chat_rooms();
+    }
+
+    /// Send the current room list to every live subscriber, dropping the ones
+    /// whose stream has been closed.
+    fn publish_chat_rooms(&self) {
+        let item = latest::HostChatListSubscribeItem {
+            rooms: self.chat_rooms(),
+        };
+        self.chat_room_subscribers
+            .lock()
+            .expect("chat subscribers poisoned")
+            .retain(|subscriber| subscriber.unbounded_send(item.clone()).is_ok());
+    }
+
     /// Return the mock to its freshly-constructed state, keeping the
     /// [`MockConfig`] it was built with.
     ///
@@ -494,8 +572,10 @@ impl MockPlatform {
         self.clear_sent_rpc();
         self.clear_preimages();
         self.clear_storage();
+        self.clear_chat_state();
         self.set_enforce_permissions(false);
         self.next_notification_id.store(0, Ordering::SeqCst);
+        self.next_chat_message_id.store(0, Ordering::SeqCst);
     }
 }
 
@@ -884,6 +964,103 @@ impl PreimageHost for MockPlatform {
                 Result<Option<Vec<u8>>, latest::GenericError>,
             >()),
         )
+    }
+}
+
+#[async_trait]
+impl ChatPlatform for MockPlatform {
+    async fn create_chat_room(
+        &self,
+        _product: &ProductContext,
+        request: latest::HostChatCreateRoomRequest,
+    ) -> Result<latest::HostChatCreateRoomResponse, latest::HostChatCreateRoomError> {
+        let status = {
+            let mut rooms = self.chat_rooms.lock().expect("chat rooms poisoned");
+            if rooms.contains_key(&request.room_id) {
+                latest::ChatRoomRegistrationStatus::Exists
+            } else {
+                rooms.insert(
+                    request.room_id.clone(),
+                    latest::ChatRoom {
+                        room_id: request.room_id.clone(),
+                        // A product that creates a room hosts it; a product
+                        // reaching a room as a bot registers the bot instead.
+                        participating_as: latest::ChatRoomParticipation::RoomHost,
+                    },
+                );
+                latest::ChatRoomRegistrationStatus::New
+            }
+        };
+        if status == latest::ChatRoomRegistrationStatus::New {
+            self.publish_chat_rooms();
+        }
+        Ok(latest::HostChatCreateRoomResponse { status })
+    }
+
+    async fn register_chat_bot(
+        &self,
+        _product: &ProductContext,
+        request: latest::HostChatRegisterBotRequest,
+    ) -> Result<latest::HostChatRegisterBotResponse, latest::HostChatRegisterBotError> {
+        let mut bots = self.chat_bots.lock().expect("chat bots poisoned");
+        let status = if bots.contains_key(&request.bot_id) {
+            latest::ChatBotRegistrationStatus::Exists
+        } else {
+            bots.insert(request.bot_id.clone(), request);
+            latest::ChatBotRegistrationStatus::New
+        };
+        Ok(latest::HostChatRegisterBotResponse { status })
+    }
+
+    async fn post_chat_message(
+        &self,
+        _product: &ProductContext,
+        request: latest::HostChatPostMessageRequest,
+    ) -> Result<latest::HostChatPostMessageResponse, latest::HostChatPostMessageError> {
+        // Posting to a room the product never registered is a product bug, and
+        // a mock that silently accepted it would hide one.
+        if !self
+            .chat_rooms
+            .lock()
+            .expect("chat rooms poisoned")
+            .contains_key(&request.room_id)
+        {
+            return Err(latest::HostChatPostMessageError::Unknown {
+                reason: format!("unknown chat room {}", request.room_id),
+            });
+        }
+        let message_id = format!(
+            "mock-message:{}",
+            self.next_chat_message_id.fetch_add(1, Ordering::SeqCst)
+        );
+        self.chat_messages
+            .lock()
+            .expect("chat messages poisoned")
+            .push(ChatMessageRecord {
+                message_id: message_id.clone(),
+                room_id: request.room_id,
+                payload: request.payload,
+            });
+        Ok(latest::HostChatPostMessageResponse { message_id })
+    }
+
+    fn subscribe_chat_rooms(
+        &self,
+        _product: &ProductContext,
+    ) -> BoxStream<'static, Result<latest::HostChatListSubscribeItem, latest::GenericError>> {
+        let (sender, receiver) = mpsc::unbounded();
+        // Seed the current list before registering, so a subscriber that never
+        // sees a change still sees the state it subscribed to.
+        sender
+            .unbounded_send(latest::HostChatListSubscribeItem {
+                rooms: self.chat_rooms(),
+            })
+            .expect("a fresh receiver is open");
+        self.chat_room_subscribers
+            .lock()
+            .expect("chat subscribers poisoned")
+            .push(sender);
+        Box::pin(receiver.map(Ok))
     }
 }
 
@@ -1323,6 +1500,144 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn chat_product() -> ProductContext {
+        ProductContext::new("mock.dot".to_string()).expect("product context is valid")
+    }
+
+    fn create_room(p: &MockPlatform, room_id: &str) -> latest::ChatRoomRegistrationStatus {
+        block_on(p.create_chat_room(
+            &chat_product(),
+            latest::HostChatCreateRoomRequest {
+                room_id: room_id.to_string(),
+                name: format!("{room_id} room"),
+                icon: "https://example.invalid/i.png".to_string(),
+            },
+        ))
+        .expect("room registration succeeds")
+        .status
+    }
+
+    fn post_text(
+        p: &MockPlatform,
+        room_id: &str,
+        body: &str,
+    ) -> Result<latest::HostChatPostMessageResponse, latest::HostChatPostMessageError> {
+        block_on(p.post_chat_message(
+            &chat_product(),
+            latest::HostChatPostMessageRequest {
+                room_id: room_id.to_string(),
+                payload: latest::ChatMessageContent::Text {
+                    text: body.to_string(),
+                },
+            },
+        ))
+    }
+
+    #[test]
+    fn registering_a_room_twice_reports_the_second_as_existing() {
+        let p = MockPlatform::new();
+        assert_eq!(
+            create_room(&p, "lobby"),
+            latest::ChatRoomRegistrationStatus::New
+        );
+        assert_eq!(
+            create_room(&p, "lobby"),
+            latest::ChatRoomRegistrationStatus::Exists
+        );
+        // The repeat must not duplicate the room.
+        assert_eq!(p.chat_rooms().len(), 1);
+        assert_eq!(p.chat_rooms()[0].room_id, "lobby");
+    }
+
+    #[test]
+    fn posting_records_the_message_against_the_id_the_product_was_given() {
+        let p = MockPlatform::new();
+        create_room(&p, "lobby");
+        let first = post_text(&p, "lobby", "hello").expect("post succeeds");
+        let second = post_text(&p, "lobby", "again").expect("post succeeds");
+        assert_ne!(first.message_id, second.message_id);
+
+        let posted = p.posted_chat_messages();
+        assert_eq!(posted.len(), 2);
+        assert_eq!(posted[0].message_id, first.message_id);
+        assert_eq!(
+            posted[0].payload,
+            latest::ChatMessageContent::Text {
+                text: "hello".to_string()
+            }
+        );
+        assert_eq!(posted[1].message_id, second.message_id);
+    }
+
+    #[test]
+    fn posting_to_an_unregistered_room_is_an_error() {
+        // A mock that accepted this would hide a product bug rather than
+        // surface it.
+        let p = MockPlatform::new();
+        let err = post_text(&p, "never-created", "hi").expect_err("unknown room is rejected");
+        assert!(
+            matches!(err, latest::HostChatPostMessageError::Unknown { reason } if reason.contains("never-created")),
+        );
+        assert!(p.posted_chat_messages().is_empty());
+    }
+
+    #[test]
+    fn a_room_subscriber_sees_the_current_list_and_later_replacements() {
+        let p = MockPlatform::new();
+        create_room(&p, "first");
+        let mut rooms = p.subscribe_chat_rooms(&chat_product());
+
+        // Both items are already queued on an unbounded channel by the time
+        // they are asserted, so take them without blocking: a subscription
+        // that never delivers must fail this test rather than hang it.
+        let seeded = rooms
+            .next()
+            .now_or_never()
+            .expect("the seeded item is ready immediately")
+            .expect("a seeded item")
+            .expect("chat rooms stream is infallible here");
+        assert_eq!(seeded.rooms.len(), 1);
+
+        // A later registration is delivered as a replacement list, which is
+        // what the trait's "and later replacements" contract requires.
+        create_room(&p, "second");
+        let replacement = rooms
+            .next()
+            .now_or_never()
+            .expect("registering a room must deliver a replacement list")
+            .expect("a replacement item")
+            .expect("chat rooms stream is infallible here");
+        let ids: Vec<String> = replacement
+            .rooms
+            .into_iter()
+            .map(|room| room.room_id)
+            .collect();
+        assert_eq!(ids, vec!["first".to_string(), "second".to_string()]);
+    }
+
+    #[test]
+    fn clearing_chat_state_empties_rooms_bots_and_messages() {
+        let p = MockPlatform::new();
+        create_room(&p, "lobby");
+        post_text(&p, "lobby", "hi").expect("post succeeds");
+        block_on(p.register_chat_bot(
+            &chat_product(),
+            latest::HostChatRegisterBotRequest {
+                bot_id: "helper".to_string(),
+                name: "Helper".to_string(),
+                icon: "https://example.invalid/b.png".to_string(),
+            },
+        ))
+        .expect("bot registration succeeds");
+        assert_eq!(p.chat_bots().len(), 1);
+
+        p.clear_chat_state();
+
+        assert!(p.chat_rooms().is_empty());
+        assert!(p.chat_bots().is_empty());
+        assert!(p.posted_chat_messages().is_empty());
     }
 
     #[test]
