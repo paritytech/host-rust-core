@@ -59,6 +59,8 @@ scripts/battery.sh         run the generated battery against both headless CLI h
 scripts/truapi-host-installer.sh
                            one-liner installer for the prebuilt truapi-host CLI
 .github/consumers.json     maps each released package to the repos notified by a bump issue
+.github/registry-drift-exceptions.json
+                           documents intentionally unpublished npm package versions
 ```
 
 ### Crate + binding invariants
@@ -121,12 +123,20 @@ scripts/truapi-host-installer.sh
   the same class of drift; `make android-check` does it locally. The embedding
   apps are compiled by neither.
 - Both compile gates are path-filtered from one place. The `changes` job in
-  `ci.yml` computes `sdk_swift` and `sdk_kotlin`, and each gated job reads the
-  output. Because neither binding set is committed, a filter has to name every
+  `ci.yml` computes `sdk_swift`, `sdk_kotlin`, `needs_changeset`, and
+  `adds_changeset`, and each gated job reads the output. Because neither
+  binding set is committed, a filter has to name every
   crate its bindings are generated from, since a protocol change leaves no
   `ios/` or `android/` diff to key on. Every job in `ci.yml` is aggregated by
   `ci-status`, which is the check worth requiring: a job skipped by its filter
   counts as a pass, so a gate cannot stall a PR it does not apply to.
+  `Changeset guard` reads live PR titles and labels, so re-running failed jobs
+  picks up a `no-changeset` opt-out. `Release guard` rejects npm version changes
+  with unconsumed changesets on the merge result, including in the merge queue.
+  `registry-drift.yml` checks default-branch manifests against npm daily and
+  maintains one issue; explicit package-version exceptions live in
+  `.github/registry-drift-exceptions.json`. See `docs/RELEASE_PROCESS.md` for
+  label setup and release recovery.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
   To publish, include `@parity/ios-host <version>` in the `release:` PR title.
