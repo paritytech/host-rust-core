@@ -7,9 +7,12 @@ description: >-
 
 inputs:
   sim-only:
-    description: "Build the simulator slice only, which halves the xcframework build"
+    description: >-
+      Build the simulator slice only. Off by default: the app build archives for
+      a device, so it needs the device slice, and gym cannot use a simulator-only
+      xcframework.
     required: false
-    default: "true"
+    default: "false"
   cache-key:
     description: "shared-key for the Rust cache"
     required: false
@@ -46,8 +49,9 @@ runs:
         TRUAPI_SKIP_PACKAGE_BUILD=1 ./scripts/codegen.sh
 
     # rebuild.sh delegates to `make xcframework`, so SIM_ONLY reaches it through
-    # the environment. A pull request only ever builds for the simulator, so the
-    # device slice is waste here.
+    # the environment. Both slices by default, because build_app_ci archives for
+    # a device through gym and fails on a simulator-only xcframework with
+    # "no library for this platform was found".
     - name: Build the host bindings and xcframework
       shell: bash
       env:
