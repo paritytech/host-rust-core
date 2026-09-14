@@ -88,19 +88,19 @@ suite("real WASM core ↔ createMockHost bridge", () => {
 
     // A real core boot leaves state behind in the mock's storage: it reads its
     // auth session, and anything a test seeded is still there.
-    mock.insertPreimage(new Uint8Array([1, 2, 3]));
+    mock.seedPreimage(new Uint8Array([1, 2, 3]));
     await boot();
-    expect(mock.preimages()).toHaveLength(1);
+    expect(mock.getPreimages()).toHaveLength(1);
 
     mock.reset();
 
     // The same mock must now be as good as new for a second core.
-    expect(mock.preimages()).toEqual([]);
+    expect(mock.getPreimages()).toEqual([]);
     expect(mock.reviews()).toEqual([]);
-    expect(mock.permissionLog()).toEqual([]);
+    expect(mock.getPermissionLog()).toEqual([]);
     await boot();
     expect(
-      mock.preimages(),
+      mock.getPreimages(),
       "a second core boot must not resurrect what reset() cleared",
     ).toEqual([]);
   });

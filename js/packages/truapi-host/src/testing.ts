@@ -14,4 +14,5 @@ export type {
   PermissionDecision,
   PermissionKind,
   PermissionPolicy,
+  SigningLogEntry,
 } from "./web/create-mock-host.js";

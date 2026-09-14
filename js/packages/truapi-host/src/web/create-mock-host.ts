@@ -84,6 +84,20 @@ export interface PermissionDecision {
   granted: boolean;
 }
 
+/**
+ * One signing request the core put to the host.
+ *
+ * The signing-shaped view of {@link MockHost.reviews}: a TrUAPI host confirms
+ * signatures rather than performing them, so what it sees is the review, and
+ * `payload` is that review's own payload rather than a host-assembled one.
+ */
+export interface SigningLogEntry {
+  /** Which signing request was reviewed. */
+  type: "payload" | "raw" | "createTransaction";
+  /** The reviewed request. */
+  payload: unknown;
+}
+
 /** One chat message the product posted through the mock. */
 export interface ChatMessageRecord {
   /** Id the mock assigned and returned to the product. */
@@ -166,9 +180,9 @@ export interface MockHost {
    */
   callbacks: RequiredHostCallbacks;
   /** URLs the core asked the host to open, in order. */
-  navigations(): string[];
+  getNavigationLog(): string[];
   /** Notifications the core asked the host to show, in order. */
-  pushedNotifications(): HostPushNotificationRequest[];
+  getNotificationLog(): HostPushNotificationRequest[];
   /** Raw JSON-RPC the core sent over the chain connection, in order. */
   sentRpc(): string[];
   /** Auth-state transitions the core emitted, in order. */
@@ -183,10 +197,31 @@ export interface MockHost {
   reviews(): UserConfirmationReview[];
   /** Confirmation kinds the core requested (review `tag`s), in order. */
   confirmations(): string[];
+  /**
+   * Signing requests the core put to the host, in order.
+   *
+   * A filtered view of {@link MockHost.reviews}: only the reviews that gate a
+   * signature, shaped the way a signing log is usually read.
+   */
+  getSigningLog(): SigningLogEntry[];
+  /** Whether the core has reported an authenticated session. */
+  getIsAuthenticated(): boolean;
+  /**
+   * Whether the product-host link is up.
+   *
+   * The mock has no transport of its own, so this reports the chain-side
+   * connection it does model; a harness owning the real product link should
+   * report that instead.
+   */
+  getConnectionStatus(): ChainStatus;
+  /** Switch the answer both permission prompts fall back to. */
+  setPermissionBehavior(behavior: PermissionPolicy): void;
+  /** Release the mock's state. Equivalent to {@link MockHost.reset} here. */
+  dispose(): void;
   /** Permission answers the mock gave, in order. */
-  permissionLog(): PermissionDecision[];
+  getPermissionLog(): PermissionDecision[];
   /** Permissions with an explicit grant, in key order. */
-  grantedPermissions(): string[];
+  getGrantedPermissions(): string[];
   /** Answer `permission` with a grant, whatever the configured policy says. */
   grantPermission(permission: string): void;
   /** Answer `permission` with a denial, whatever the configured policy says. */
@@ -199,29 +234,29 @@ export interface MockHost {
    */
   setEnforcePermissions(enforce: boolean): void;
   /** The theme the mock currently reports. */
-  theme(): ThemeVariant;
+  getTheme(): ThemeVariant;
   /** Replace the reported theme. */
   setTheme(variant: ThemeVariant): void;
   /** State of the mock's chain connection. */
-  chainStatus(): ChainStatus;
+  getChainStatus(): ChainStatus;
   /** Mark the chain disconnected, as a dropped transport would. */
   simulateDisconnect(): void;
   /** Allow connections again after a simulated disconnect. */
   simulateReconnect(): void;
   /** Chat rooms the product registered. */
-  chatRooms(): ChatRoom[];
+  getChatRooms(): ChatRoom[];
   /** Chat bots the product registered. */
-  chatBots(): HostChatRegisterBotRequest[];
+  getChatBots(): HostChatRegisterBotRequest[];
   /** Messages the product posted, with the ids the mock assigned. */
-  postedChatMessages(): ChatMessageRecord[];
+  getChatMessageLog(): ChatMessageRecord[];
   /** Seeded preimage values. */
-  preimages(): Uint8Array[];
+  getPreimages(): Uint8Array[];
   /** Drop the recorded navigations. */
-  clearNavigations(): void;
+  clearNavigationLog(): void;
   /** Drop the recorded shown and cancelled notifications. */
-  clearNotifications(): void;
+  clearNotificationLog(): void;
   /** Drop the recorded confirmation reviews. */
-  clearReviews(): void;
+  clearSigningLog(): void;
   /** Drop the recorded permission answers, keeping explicit grants. */
   clearPermissionLog(): void;
   /** Drop every explicit permission grant and denial. */
@@ -258,7 +293,7 @@ export interface MockHost {
    * submission on current core; this is the host-side content store the mock's
    * `lookupPreimage` reads from.
    */
-  insertPreimage(value: Uint8Array): Uint8Array;
+  seedPreimage(value: Uint8Array): Uint8Array;
 }
 
 /** Deterministic 8-byte key for a preimage value (FNV-1a), so `insertPreimage`
@@ -288,8 +323,8 @@ function hex(bytes: Uint8Array): string {
  */
 export function createMockHost(config: MockHostConfig = {}): MockHost {
   const {
-    devicePermissions = "allow-all",
-    remotePermissions = "allow-all",
+    devicePermissions: devicePermissionsInitial = "allow-all",
+    remotePermissions: remotePermissionsInitial = "allow-all",
     featureSupported = true,
     theme = "Dark",
     confirmUserActions = true,
@@ -322,6 +357,8 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
   const chatMessages: ChatMessageRecord[] = [];
   let nextNotificationId = 0;
   let nextChatMessageId = 0;
+  let devicePermissions = devicePermissionsInitial;
+  let remotePermissions = remotePermissionsInitial;
   let enforcePermissions = false;
   let currentTheme = theme;
   let chainStatus: ChainStatus = "Idle";
@@ -552,15 +589,39 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
 
   return {
     callbacks,
-    navigations: () => [...navigations],
-    pushedNotifications: () => [...pushedNotifications],
+    getNavigationLog: () => [...navigations],
+    getNotificationLog: () => [...pushedNotifications],
     sentRpc: () => [...sentRpc],
     authStates: () => [...authStates],
     reviews: () => [...reviews],
     confirmations: () => reviews.map((review) => review.tag),
+    getSigningLog: () =>
+      reviews.flatMap((review) => {
+        const type =
+          review.tag === "SignRaw"
+            ? ("raw" as const)
+            : review.tag === "SignPayload"
+              ? ("payload" as const)
+              : review.tag === "CreateTransaction"
+                ? ("createTransaction" as const)
+                : undefined;
+        return type === undefined
+          ? []
+          : [{ type, payload: (review as { value: unknown }).value }];
+      }),
+    getIsAuthenticated: () =>
+      authStates.at(-1)?.tag === "Connected",
+    getConnectionStatus: () => chainStatus,
+    setPermissionBehavior: (behavior) => {
+      devicePermissions = behavior;
+      remotePermissions = behavior;
+    },
+    dispose() {
+      this.reset();
+    },
     cancelledNotifications: () => [...cancelledNotifications],
-    permissionLog: () => [...permissionLog],
-    grantedPermissions: () =>
+    getPermissionLog: () => [...permissionLog],
+    getGrantedPermissions: () =>
       [...permissionDecisions.entries()]
         .filter(([, isGranted]) => isGranted)
         .map(([permission]) => permission)
@@ -577,34 +638,34 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     setEnforcePermissions: (enforce) => {
       enforcePermissions = enforce;
     },
-    theme: () => currentTheme,
+    getTheme: () => currentTheme,
     setTheme: (variant) => {
       currentTheme = variant;
     },
-    chainStatus: () => chainStatus,
+    getChainStatus: () => chainStatus,
     simulateDisconnect: () => {
       chainStatus = "Disconnected";
     },
     simulateReconnect: () => {
       chainStatus = "Idle";
     },
-    chatRooms: () => [...chatRooms.values()],
-    chatBots: () => [...chatBots.values()],
-    postedChatMessages: () => [...chatMessages],
-    insertPreimage(value) {
+    getChatRooms: () => [...chatRooms.values()],
+    getChatBots: () => [...chatBots.values()],
+    getChatMessageLog: () => [...chatMessages],
+    seedPreimage(value) {
       const key = preimageKey(value);
       preimages.set(hex(key), value);
       return key;
     },
-    preimages: () => [...preimages.values()],
-    clearNavigations: () => {
+    getPreimages: () => [...preimages.values()],
+    clearNavigationLog: () => {
       navigations.length = 0;
     },
-    clearNotifications: () => {
+    clearNotificationLog: () => {
       pushedNotifications.length = 0;
       cancelledNotifications.length = 0;
     },
-    clearReviews: () => {
+    clearSigningLog: () => {
       reviews.length = 0;
     },
     clearPermissionLog: () => {
@@ -625,9 +686,9 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       chatMessages.length = 0;
     },
     reset() {
-      this.clearNavigations();
-      this.clearNotifications();
-      this.clearReviews();
+      this.clearNavigationLog();
+      this.clearNotificationLog();
+      this.clearSigningLog();
       this.clearPermissionLog();
       this.clearPermissionDecisions();
       this.clearAuthStates();

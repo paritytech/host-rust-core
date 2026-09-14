@@ -75,7 +75,7 @@ describe("createMockHost callbacks", () => {
     const host = createMockHost();
     await host.callbacks.navigation.navigateTo("https://a");
     await host.callbacks.navigation.navigateTo("https://b");
-    expect(host.navigations()).toEqual(["https://a", "https://b"]);
+    expect(host.getNavigationLog()).toEqual(["https://a", "https://b"]);
 
     const first = await host.callbacks.notifications.pushNotification({
       text: "one",
@@ -84,7 +84,7 @@ describe("createMockHost callbacks", () => {
       text: "two",
     });
     expect([first.id, second.id]).toEqual([0, 1]);
-    expect(host.pushedNotifications().length).toBe(2);
+    expect(host.getNotificationLog().length).toBe(2);
   });
 
   it("confirms per config and records chain sends", async () => {
@@ -138,7 +138,7 @@ describe("createMockHost callbacks", () => {
     // The core owns Bulletin submission on current core; the host only
     // retrieves content, so tests seed the content store directly.
     const host = createMockHost();
-    const key = host.insertPreimage(new Uint8Array([4, 5, 6]));
+    const key = host.seedPreimage(new Uint8Array([4, 5, 6]));
     expect(key).toBeDefined();
     const found = await host.callbacks.preimage
       .lookupPreimage(key)
@@ -149,7 +149,7 @@ describe("createMockHost callbacks", () => {
 
   it("preimage lookup misses on an unknown key", async () => {
     const host = createMockHost();
-    host.insertPreimage(new Uint8Array([1, 2, 3]));
+    host.seedPreimage(new Uint8Array([1, 2, 3]));
     const miss = await host.callbacks.preimage
       .lookupPreimage(new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]))
       [Symbol.asyncIterator]()
@@ -300,7 +300,7 @@ describe("createMockHost control surface", () => {
     expect(
       (await host.callbacks.permissions.devicePermission("Microphone")).granted,
     ).toBe(false);
-    expect(host.grantedPermissions()).toEqual(["Camera"]);
+    expect(host.getGrantedPermissions()).toEqual(["Camera"]);
 
     host.resetPermission("Camera");
     expect((await ask()).granted).toBe(false);
@@ -322,7 +322,7 @@ describe("createMockHost control surface", () => {
     const host = createMockHost();
     host.revokePermission("Camera");
     await host.callbacks.permissions.devicePermission("Camera");
-    expect(host.permissionLog()).toEqual([
+    expect(host.getPermissionLog()).toEqual([
       { kind: "device", permission: "Camera", granted: false },
     ]);
   });
@@ -340,21 +340,89 @@ describe("createMockHost control surface", () => {
     const host = createMockHost();
     await host.callbacks.navigation.navigateTo("https://a");
     await host.callbacks.userConfirmation.confirmUserAction(review("mock.dot"));
-    host.insertPreimage(new Uint8Array([1]));
+    host.seedPreimage(new Uint8Array([1]));
     host.setTheme("Light");
     host.setEnforcePermissions(true);
     host.revokePermission("Camera");
 
     host.reset();
 
-    expect(host.navigations()).toEqual([]);
+    expect(host.getNavigationLog()).toEqual([]);
     expect(host.reviews()).toEqual([]);
-    expect(host.permissionLog()).toEqual([]);
-    expect(host.grantedPermissions()).toEqual([]);
-    expect(host.preimages()).toEqual([]);
-    expect(host.theme()).toBe("Dark");
+    expect(host.getPermissionLog()).toEqual([]);
+    expect(host.getGrantedPermissions()).toEqual([]);
+    expect(host.getPreimages()).toEqual([]);
+    expect(host.getTheme()).toBe("Dark");
     expect(
       (await host.callbacks.permissions.devicePermission("Camera")).granted,
     ).toBe(true);
+  });
+});
+
+describe("createMockHost TestHostAPI parity", () => {
+  const signRaw = {
+    tag: "SignRaw",
+    value: { Product: { request: { account: "a", payload: { Bytes: [1] } } } },
+  } as const;
+  const allocation = {
+    tag: "ResourceAllocation",
+    value: { callingProductId: "mock.dot", resources: [] },
+  } as const;
+
+  it("getSigningLog reports only the reviews that gate a signature", async () => {
+    const host = createMockHost();
+    // A non-signing review must not appear in a signing log.
+    await host.callbacks.userConfirmation.confirmUserAction(allocation);
+    await host.callbacks.userConfirmation.confirmUserAction(signRaw);
+
+    expect(host.reviews()).toHaveLength(2);
+    const log = host.getSigningLog();
+    expect(log).toHaveLength(1);
+    expect(log[0].type).toBe("raw");
+    expect(log[0].payload).toEqual(signRaw.value);
+
+    host.clearSigningLog();
+    expect(host.getSigningLog()).toEqual([]);
+  });
+
+  it("getIsAuthenticated follows the last auth state the core reported", async () => {
+    const host = createMockHost();
+    expect(host.getIsAuthenticated()).toBe(false);
+    await host.callbacks.auth.authStateChanged({ tag: "Connected", value: {} });
+    expect(host.getIsAuthenticated()).toBe(true);
+    await host.callbacks.auth.authStateChanged({ tag: "Disconnected" });
+    expect(host.getIsAuthenticated()).toBe(false);
+  });
+
+  it("setPermissionBehavior switches the fallback for both prompts", async () => {
+    const host = createMockHost();
+    host.setPermissionBehavior("deny-all");
+    expect(
+      (await host.callbacks.permissions.devicePermission("Camera")).granted,
+    ).toBe(false);
+    expect(
+      (
+        await host.callbacks.permissions.remotePermission({
+          permission: { tag: "ChainSubmit" },
+        })
+      ).granted,
+    ).toBe(false);
+    // An explicit grant still wins over the policy.
+    host.grantPermission("Camera");
+    expect(
+      (await host.callbacks.permissions.devicePermission("Camera")).granted,
+    ).toBe(true);
+  });
+
+  it("getConnectionStatus and dispose track and release state", async () => {
+    const host = createMockHost();
+    expect(host.getConnectionStatus()).toBe("Idle");
+    host.simulateDisconnect();
+    expect(host.getConnectionStatus()).toBe("Disconnected");
+
+    await host.callbacks.navigation.navigateTo("https://a");
+    host.dispose();
+    expect(host.getNavigationLog()).toEqual([]);
+    expect(host.getConnectionStatus()).toBe("Idle");
   });
 });

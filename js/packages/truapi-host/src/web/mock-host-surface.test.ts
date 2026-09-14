@@ -19,9 +19,37 @@ const MOCK_RS = fileURLToPath(
   ),
 );
 
-/** snake_case -> camelCase, the only naming difference between the two. */
-function camel(name: string): string {
-  return name.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+/**
+ * Rust names that map to a deliberately different JS name.
+ *
+ * The JS surface matches `@parity/host-api-test-sdk`'s `TestHostAPI` so the
+ * suites migrating off it need no edits, while the Rust surface stays
+ * idiomatic -- Rust APIs do not prefix readers with `get_`. Every intentional
+ * divergence is listed here, so an *unintentional* one still fails the check.
+ */
+const ALIASES: Record<string, string> = {
+  navigations: "getNavigationLog",
+  clear_navigations: "clearNavigationLog",
+  pushed_notifications: "getNotificationLog",
+  clear_notifications: "clearNotificationLog",
+  permission_log: "getPermissionLog",
+  granted_permissions: "getGrantedPermissions",
+  insert_preimage: "seedPreimage",
+  preimages: "getPreimages",
+  clear_reviews: "clearSigningLog",
+  theme: "getTheme",
+  chain_status: "getChainStatus",
+  chat_rooms: "getChatRooms",
+  chat_bots: "getChatBots",
+  posted_chat_messages: "getChatMessageLog",
+};
+
+/** snake_case -> camelCase, unless the name is an explicit alias. */
+function jsName(name: string): string {
+  return (
+    ALIASES[name] ??
+    name.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase())
+  );
 }
 
 /**
@@ -49,7 +77,7 @@ describe("mock host surface agreement", () => {
   it("exposes every Rust MockPlatform control method", () => {
     const host = createMockHost();
     const missing = rustControlSurface()
-      .map(camel)
+      .map(jsName)
       .filter((name) => !(name in host));
 
     expect(
