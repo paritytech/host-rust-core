@@ -288,6 +288,46 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
+/// A product-account operation an AutoSigning grant may cover.
+///
+/// Legacy- and identity-account signing is absent by construction: the grant
+/// material is one product subtree secret, which cannot produce those keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoSigningOperation {
+    /// `signing.sign_raw`. The unwatermarked form is the deprecated API, whose
+    /// signatures can authorize transactions, so no grant covers it.
+    SignRaw {
+        /// Whether the message carries the `<Bytes>` watermark.
+        watermarked: bool,
+    },
+    /// `signing.sign_payload`.
+    SignPayload,
+    /// `signing.create_transaction`.
+    CreateTransaction,
+}
+
+impl AutoSigningOperation {
+    /// Whether a grant may cover this operation at all.
+    ///
+    /// The unwatermarked raw-signing API is excluded: its signatures are not
+    /// domain-separated from transaction signatures, so a standing grant over
+    /// it would waive the prompt on the one surface that can authorize a
+    /// transfer. It is deprecated and prompts regardless of any grant.
+    pub(crate) fn is_grantable(self) -> bool {
+        !matches!(self, Self::SignRaw { watermarked: false })
+    }
+}
+
+/// Whether an active AutoSigning grant covers one product-account call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoSigningGrant {
+    /// Covered: the matching authority call serves this request from local key
+    /// material and raises no prompt anywhere.
+    Active,
+    /// Not covered: the caller must obtain user consent.
+    Absent,
+}
+
 /// Statement-store allowance signing material held by the authority layer.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct StatementStoreAllowanceKey {
@@ -378,6 +418,30 @@ pub(crate) trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         product_id: &str,
     ) -> bool;
+
+    /// Whether an active AutoSigning grant covers `operation` on `account` for
+    /// `calling_product_id`.
+    ///
+    /// [`AutoSigningGrant::Active`] is a promise, not a hint: the matching
+    /// `sign_*` call on this authority serves the request from local key
+    /// material, without reaching a paired host and without raising a prompt on
+    /// either side. The capability layer skips its consent gate on that
+    /// promise, so an authority that cannot keep it answers `Absent`.
+    ///
+    /// `Err` is a hard failure - a broken or foreign grant slot, a stale
+    /// session, unreadable core storage - and is propagated rather than
+    /// downgraded into a prompt. A grant slot the authority has just decided to
+    /// erase must not produce a modal asking the user to approve it.
+    ///
+    /// Required rather than defaulted, so a new authority can neither skip the
+    /// consent gate nor silently claim a grant by omission.
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        calling_product_id: &str,
+        account: &ProductAccountId,
+        operation: AutoSigningOperation,
+    ) -> Result<AutoSigningGrant, AuthorityError>;
 
     /// Sign an RFC-0023 Merlin transcript with a product account.
     async fn sign_vrf(

@@ -17,6 +17,7 @@ use truapi_platform::{
 };
 
 use crate::runtime::authority::{
+    AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningOperation,
     CreateTransactionAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
 use crate::runtime::{
@@ -54,19 +55,25 @@ impl Signing for ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::SignPayload(
-                SignPayloadReview::Product(inner.clone()),
-            ))
+        let grant = self
+            .auto_signing_status(&session, &inner.account, AutoSigningOperation::SignPayload)
             .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("sign payload confirmation failed: {err:?}"),
-            })?;
-        if !confirmed {
-            return Err(CallError::Domain(HostSignPayloadError::V1(
-                v01::HostSignPayloadError::Rejected,
-            )));
+            .map_err(|reason| signing_call_error(HostSignPayloadError::V1, reason))?;
+        if grant == AutoSigningGrant::Absent {
+            let confirmed = self
+                .platform
+                .confirm_user_action(UserConfirmationReview::SignPayload(
+                    SignPayloadReview::Product(inner.clone()),
+                ))
+                .await
+                .map_err(|err| CallError::HostFailure {
+                    reason: format!("sign payload confirmation failed: {err:?}"),
+                })?;
+            if !confirmed {
+                return Err(CallError::Domain(HostSignPayloadError::V1(
+                    v01::HostSignPayloadError::Rejected,
+                )));
+            }
         }
         let cx = remote_authority_context(cx);
         remote_authority_call(
@@ -127,19 +134,29 @@ impl Signing for ProductRuntimeHost {
                 v01::HostCreateTransactionError::Rejected,
             )));
         };
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::CreateTransaction(
-                CreateTransactionReview::Product(inner.clone()),
-            ))
+        let grant = self
+            .auto_signing_status(
+                &session,
+                &inner.signer,
+                AutoSigningOperation::CreateTransaction,
+            )
             .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("create transaction confirmation failed: {err:?}"),
-            })?;
-        if !confirmed {
-            return Err(CallError::Domain(HostCreateTransactionError::V1(
-                v01::HostCreateTransactionError::Rejected,
-            )));
+            .map_err(|reason| transaction_call_error(HostCreateTransactionError::V1, reason))?;
+        if grant == AutoSigningGrant::Absent {
+            let confirmed = self
+                .platform
+                .confirm_user_action(UserConfirmationReview::CreateTransaction(
+                    CreateTransactionReview::Product(inner.clone()),
+                ))
+                .await
+                .map_err(|err| CallError::HostFailure {
+                    reason: format!("create transaction confirmation failed: {err:?}"),
+                })?;
+            if !confirmed {
+                return Err(CallError::Domain(HostCreateTransactionError::V1(
+                    v01::HostCreateTransactionError::Rejected,
+                )));
+            }
         }
         let cx = remote_authority_context(cx);
         remote_authority_call(
@@ -326,6 +343,23 @@ impl Signing for ProductRuntimeHost {
 }
 
 impl ProductRuntimeHost {
+    /// Whether an AutoSigning grant waives this product-account call's consent
+    /// prompt.
+    ///
+    /// Not wrapped in `remote_authority_call`: no authority answers this over
+    /// SSO, so there is no remote hop to cancel or time out. That is the same
+    /// locality assumption `confirm_user_action` already makes here.
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        account: &v01::ProductAccountId,
+        operation: AutoSigningOperation,
+    ) -> Result<AutoSigningGrant, AuthorityError> {
+        self.authority
+            .auto_signing_status(session, &self.product_id(), account, operation)
+            .await
+    }
+
     async fn sign_raw_with_watermark(
         &self,
         cx: &CallContext,
@@ -353,20 +387,30 @@ impl ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product {
-                request: inner.clone(),
-                watermarked,
-            }))
+        let grant = self
+            .auto_signing_status(
+                &session,
+                &inner.account,
+                AutoSigningOperation::SignRaw { watermarked },
+            )
             .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("sign raw confirmation failed: {err:?}"),
-            })?;
-        if !confirmed {
-            return Err(CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::Rejected,
-            )));
+            .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))?;
+        if grant == AutoSigningGrant::Absent {
+            let confirmed = self
+                .platform
+                .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product {
+                    request: inner.clone(),
+                    watermarked,
+                }))
+                .await
+                .map_err(|err| CallError::HostFailure {
+                    reason: format!("sign raw confirmation failed: {err:?}"),
+                })?;
+            if !confirmed {
+                return Err(CallError::Domain(HostSignRawError::V1(
+                    v01::HostSignPayloadError::Rejected,
+                )));
+            }
         }
         let cx = remote_authority_context(cx);
         remote_authority_call(

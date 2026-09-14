@@ -37,9 +37,9 @@ pub(crate) use sso_responder::{
 pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
-    AuthorityError, AuthoritySession, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
-    ProductAuthority, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    StatementStoreAllowanceKey, authority_session_validation_id,
+    AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningOperation, BulletinAllowanceKey,
+    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session_validation_id,
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
@@ -672,6 +672,34 @@ impl ProductAuthority for SigningHost {
         false
     }
 
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        calling_product_id: &str,
+        account: &v01::ProductAccountId,
+        operation: AutoSigningOperation,
+    ) -> Result<AutoSigningGrant, AuthorityError> {
+        if !operation.is_grantable() {
+            return Ok(AutoSigningGrant::Absent);
+        }
+        // A stale session is not a grant, and is answered here rather than
+        // raising a prompt against a session that no longer exists.
+        // `grant_auto_signing` refuses to record a grant whose owner is not
+        // the session's own key, so the session carries the owner a grant can
+        // be keyed on and no root derivation is needed to answer this.
+        let (current, activation_generation) = self.require_current_session(session)?;
+        if self.has_auto_signing_grant(
+            activation_generation,
+            current.public_key,
+            calling_product_id,
+            &account.dot_ns_identifier,
+        ) {
+            Ok(AutoSigningGrant::Active)
+        } else {
+            Ok(AutoSigningGrant::Absent)
+        }
+    }
+
     async fn sign_vrf(
         &self,
         _cx: &CallContext,
@@ -1166,6 +1194,7 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
 
 #[cfg(test)]
 mod tests {
+    mod auto_signing;
     mod raw_signing;
 
     use std::sync::Arc;

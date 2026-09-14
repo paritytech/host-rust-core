@@ -26,12 +26,13 @@ use truapi::versioned::account::{HostAccountCreateProofRequest, HostAccountGetAl
 use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest;
 use truapi_platform::{
     AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
-    CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
-    JsonRpcConnection, LocaleHost, Navigation as PlatformNavigation,
-    Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
-    PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
-    ProductSubtreeReview, ResourceAllocationReview, SignRawReview, SignVrfReview,
-    StatementStoreProductSignReview, ThemeHost, UserConfirmation, UserConfirmationReview,
+    CoreStorage as PlatformCoreStorage, CoreStorageKey, CreateTransactionReview,
+    Features as PlatformFeatures, HostInfo, JsonRpcConnection, LocaleHost,
+    Navigation as PlatformNavigation, Notifications as PlatformNotifications, PairingHostConfig,
+    Permissions as PlatformPermissions, PlatformInfo, PreimageHost, ProductContext,
+    ProductStorage as PlatformProductStorage, ProductSubtreeReview, ResourceAllocationReview,
+    SignPayloadReview, SignRawReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -96,6 +97,9 @@ pub(crate) struct StubPlatform {
     pub(crate) identity_disclosure_error: Option<&'static str>,
     pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
     pub(crate) sign_payload_confirmed: bool,
+    /// Every `SignPayload` review passed to `confirm_user_action`, in order.
+    /// Empty proves an AutoSigning grant suppressed the prompt.
+    pub(crate) sign_payload_reviews: Arc<Mutex<Vec<SignPayloadReview>>>,
     pub(crate) sign_payload_error: Option<&'static str>,
     pub(crate) sign_raw_confirmed: bool,
     pub(crate) sign_raw_error: Option<&'static str>,
@@ -107,6 +111,9 @@ pub(crate) struct StubPlatform {
     pub(crate) statement_store_product_sign_reviews:
         Arc<Mutex<Vec<StatementStoreProductSignReview>>>,
     pub(crate) create_transaction_confirmed: bool,
+    /// Every `CreateTransaction` review passed to `confirm_user_action`, in
+    /// order. Empty proves an AutoSigning grant suppressed the prompt.
+    pub(crate) create_transaction_reviews: Arc<Mutex<Vec<CreateTransactionReview>>>,
     pub(crate) create_transaction_error: Option<&'static str>,
     pub(crate) resource_allocation_confirmed: bool,
     pub(crate) resource_allocation_error: Option<&'static str>,
@@ -1514,7 +1521,11 @@ impl UserConfirmation for StubPlatform {
         review: UserConfirmationReview,
     ) -> Result<bool, v01::GenericError> {
         let (error, confirmed) = match review {
-            UserConfirmationReview::SignPayload(_) => {
+            UserConfirmationReview::SignPayload(review) => {
+                self.sign_payload_reviews
+                    .lock()
+                    .expect("sign payload review list mutex poisoned")
+                    .push(review);
                 (self.sign_payload_error, self.sign_payload_confirmed)
             }
             UserConfirmationReview::SignRaw(review) => {
@@ -1538,10 +1549,16 @@ impl UserConfirmation for StubPlatform {
                     .push(review);
                 (self.sign_raw_error, self.sign_raw_confirmed)
             }
-            UserConfirmationReview::CreateTransaction(_) => (
-                self.create_transaction_error,
-                self.create_transaction_confirmed,
-            ),
+            UserConfirmationReview::CreateTransaction(review) => {
+                self.create_transaction_reviews
+                    .lock()
+                    .expect("create transaction review list mutex poisoned")
+                    .push(review);
+                (
+                    self.create_transaction_error,
+                    self.create_transaction_confirmed,
+                )
+            }
             UserConfirmationReview::AccountAlias(_) => {
                 (self.account_alias_error, self.account_alias_confirmed)
             }

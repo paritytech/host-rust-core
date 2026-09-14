@@ -24,10 +24,10 @@ use zeroize::Zeroize;
 use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
-    AuthorityError, AuthoritySession, AutoSigningKey, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
-    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session,
-    require_current_session,
+    AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningKey, AutoSigningOperation,
+    BulletinAllowanceKey, CreateTransactionAuthorityRequest, ProductAuthority,
+    SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
+    authority_session, require_current_session,
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
@@ -2006,6 +2006,59 @@ impl PairingHost {
             .await
     }
 
+    /// The keypair that can serve `account` locally under an AutoSigning
+    /// capability, when this host holds one.
+    ///
+    /// The single source of truth for local serviceability: the grant
+    /// predicate and every local fast path call it, so a request can never be
+    /// told "no prompt" and then relayed to a signing host that will prompt
+    /// for it.
+    async fn local_product_signing_key(
+        &self,
+        session: &SessionInfo,
+        account: &v01::ProductAccountId,
+    ) -> Result<Option<schnorrkel::Keypair>, AuthorityError> {
+        let Some(key) = self
+            .auto_signing_key(session, &account.dot_ns_identifier)
+            .await?
+        else {
+            return Ok(None);
+        };
+        derive_product_keypair_from_subtree_secret(
+            *key.as_secret_bytes(),
+            derivation_index_bytes(&account.derivation_index),
+        )
+        .map(Some)
+        .map_err(|err| AuthorityError::Unknown {
+            reason: err.to_string(),
+        })
+    }
+
+    /// Whether an AutoSigning capability lets this host serve `account`
+    /// locally for `calling_product_id`.
+    ///
+    /// A capability this host cannot trust is an error, not a fall-through:
+    /// the lookup erases the slot as it rejects it, and prompting afterwards
+    /// would ask the user to approve a signature the host just refused to make.
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        calling_product_id: &str,
+        account: &v01::ProductAccountId,
+        operation: AutoSigningOperation,
+    ) -> Result<AutoSigningGrant, AuthorityError> {
+        if !operation.is_grantable() || calling_product_id != account.dot_ns_identifier {
+            return Ok(AutoSigningGrant::Absent);
+        }
+        let session = self.current_private_session(session)?;
+        Ok(
+            match self.local_product_signing_key(&session, account).await? {
+                Some(_) => AutoSigningGrant::Active,
+                None => AutoSigningGrant::Absent,
+            },
+        )
+    }
+
     async fn sign_vrf(
         &self,
         cx: &CallContext,
@@ -2437,6 +2490,17 @@ impl ProductAuthority for PairingHost {
         product_id: &str,
     ) -> bool {
         PairingHost::subtree_reaches_account_holder(self, session, product_id).await
+    }
+
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        calling_product_id: &str,
+        account: &v01::ProductAccountId,
+        operation: AutoSigningOperation,
+    ) -> Result<AutoSigningGrant, AuthorityError> {
+        PairingHost::auto_signing_status(self, session, calling_product_id, account, operation)
+            .await
     }
 
     async fn sign_vrf(
