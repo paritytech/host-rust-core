@@ -24,10 +24,11 @@
 //! the mock only implements host-side content retrieval via `lookup_preimage`.
 //! Seed retrievable content with [`MockPlatform::insert_preimage`].
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -108,6 +109,26 @@ impl ConfirmKind {
             UserConfirmationReview::ProductSubtree(_) => ConfirmKind::ProductSubtree,
         }
     }
+}
+
+/// Which prompt surface a permission decision came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionKind {
+    /// An OS capability prompt ([`Permissions::device_permission`]).
+    Device,
+    /// A remote-capability prompt ([`Permissions::remote_permission`]).
+    Remote,
+}
+
+/// One permission answer the mock gave, recorded for assertions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionDecision {
+    /// Which prompt surface asked.
+    pub kind: PermissionKind,
+    /// The permission's `Display` form, the same key `grant_permission` takes.
+    pub permission: String,
+    /// What the mock answered.
+    pub granted: bool,
 }
 
 /// How the mock's chain connection behaves.
@@ -192,10 +213,17 @@ pub struct MockPlatform {
     navigations: Arc<Mutex<Vec<String>>>,
     notifications: Arc<Mutex<Vec<latest::HostPushNotificationRequest>>>,
     cancelled_notifications: Arc<Mutex<Vec<latest::NotificationId>>>,
-    confirmations: Arc<Mutex<Vec<ConfirmKind>>>,
+    reviews: Arc<Mutex<Vec<UserConfirmationReview>>>,
     auth_states: Arc<Mutex<Vec<AuthState>>>,
     sent_rpc: Arc<Mutex<Vec<String>>>,
     next_notification_id: Arc<AtomicU32>,
+    /// Explicit per-permission answers, keyed by `Display` form. Set by
+    /// `grant_permission` / `revoke_permission`; overrides the config policy.
+    permission_decisions: Arc<Mutex<BTreeMap<String, bool>>>,
+    /// When set, a permission with no explicit answer is denied instead of
+    /// falling back to the config policy.
+    enforce_permissions: Arc<AtomicBool>,
+    permission_log: Arc<Mutex<Vec<PermissionDecision>>>,
 }
 
 impl Default for MockPlatform {
@@ -220,10 +248,13 @@ impl MockPlatform {
             navigations: Arc::new(Mutex::new(Vec::new())),
             notifications: Arc::new(Mutex::new(Vec::new())),
             cancelled_notifications: Arc::new(Mutex::new(Vec::new())),
-            confirmations: Arc::new(Mutex::new(Vec::new())),
+            reviews: Arc::new(Mutex::new(Vec::new())),
             auth_states: Arc::new(Mutex::new(Vec::new())),
             sent_rpc: Arc::new(Mutex::new(Vec::new())),
             next_notification_id: Arc::new(AtomicU32::new(0)),
+            permission_decisions: Arc::new(Mutex::new(BTreeMap::new())),
+            enforce_permissions: Arc::new(AtomicBool::new(false)),
+            permission_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -251,12 +282,107 @@ impl MockPlatform {
             .clone()
     }
 
+    /// Full confirmation reviews the core requested, in order.
+    ///
+    /// Carries the reviewed payload, not just its kind: a `SignRaw` review
+    /// holds the bytes the product asked to have signed, so a test can assert
+    /// *what* was put to the user rather than only that something was.
+    pub fn reviews(&self) -> Vec<UserConfirmationReview> {
+        self.reviews.lock().expect("reviews poisoned").clone()
+    }
+
     /// Confirmation kinds the core requested, in order.
+    ///
+    /// The kind-only view of [`MockPlatform::reviews`], for assertions that
+    /// only care that a given prompt fired.
     pub fn confirmations(&self) -> Vec<ConfirmKind> {
-        self.confirmations
+        self.reviews
             .lock()
-            .expect("confirmations poisoned")
+            .expect("reviews poisoned")
+            .iter()
+            .map(ConfirmKind::of)
+            .collect()
+    }
+
+    /// Permission answers the mock gave, in order.
+    pub fn permission_log(&self) -> Vec<PermissionDecision> {
+        self.permission_log
+            .lock()
+            .expect("permission log poisoned")
             .clone()
+    }
+
+    /// Permissions with an explicit grant, in `Display` order.
+    pub fn granted_permissions(&self) -> Vec<String> {
+        self.permission_decisions
+            .lock()
+            .expect("permission decisions poisoned")
+            .iter()
+            .filter(|(_, granted)| **granted)
+            .map(|(permission, _)| permission.clone())
+            .collect()
+    }
+
+    /// Answer `permission` with a grant, whatever the configured policy says.
+    ///
+    /// The key is the permission's `Display` form -- `"camera"`, or
+    /// `"access to example.com"` for a [`latest::RemotePermission::Remote`].
+    pub fn grant_permission(&self, permission: impl Into<String>) {
+        self.permission_decisions
+            .lock()
+            .expect("permission decisions poisoned")
+            .insert(permission.into(), true);
+    }
+
+    /// Answer `permission` with a denial, whatever the configured policy says.
+    pub fn revoke_permission(&self, permission: impl Into<String>) {
+        self.permission_decisions
+            .lock()
+            .expect("permission decisions poisoned")
+            .insert(permission.into(), false);
+    }
+
+    /// Drop the explicit answer for `permission`, restoring policy fallback.
+    pub fn reset_permission(&self, permission: &str) {
+        self.permission_decisions
+            .lock()
+            .expect("permission decisions poisoned")
+            .remove(permission);
+    }
+
+    /// When enforcing, deny every permission without an explicit grant instead
+    /// of falling back to the configured policy. Off by default.
+    pub fn set_enforce_permissions(&self, enforce: bool) {
+        self.enforce_permissions.store(enforce, Ordering::SeqCst);
+    }
+
+    /// Answer one permission prompt and record what was answered.
+    fn decide_permission(
+        &self,
+        kind: PermissionKind,
+        permission: String,
+        policy: PermissionPolicy,
+    ) -> bool {
+        let explicit = self
+            .permission_decisions
+            .lock()
+            .expect("permission decisions poisoned")
+            .get(&permission)
+            .copied();
+        let granted = match explicit {
+            Some(decision) => decision,
+            None if self.enforce_permissions.load(Ordering::SeqCst) => false,
+            None => policy.granted(),
+        };
+        self.permission_log
+            .lock()
+            .expect("permission log poisoned")
+            .push(PermissionDecision {
+                kind,
+                permission,
+                granted,
+            });
+        granted
     }
 
     /// Auth state transitions the core emitted, in order.
@@ -286,6 +412,90 @@ impl MockPlatform {
             .expect("preimages poisoned")
             .insert(key.clone(), value);
         key
+    }
+
+    /// Drop the recorded navigations.
+    pub fn clear_navigations(&self) {
+        self.navigations
+            .lock()
+            .expect("navigations poisoned")
+            .clear();
+    }
+
+    /// Drop the recorded shown and cancelled notifications.
+    pub fn clear_notifications(&self) {
+        self.notifications
+            .lock()
+            .expect("notifications poisoned")
+            .clear();
+        self.cancelled_notifications
+            .lock()
+            .expect("cancellations poisoned")
+            .clear();
+    }
+
+    /// Drop the recorded confirmation reviews.
+    pub fn clear_reviews(&self) {
+        self.reviews.lock().expect("reviews poisoned").clear();
+    }
+
+    /// Drop the recorded permission answers, keeping explicit grants.
+    pub fn clear_permission_log(&self) {
+        self.permission_log
+            .lock()
+            .expect("permission log poisoned")
+            .clear();
+    }
+
+    /// Drop every explicit permission grant and denial, restoring policy
+    /// fallback for all permissions.
+    pub fn clear_permission_decisions(&self) {
+        self.permission_decisions
+            .lock()
+            .expect("permission decisions poisoned")
+            .clear();
+    }
+
+    /// Drop the recorded auth-state transitions.
+    pub fn clear_auth_states(&self) {
+        self.auth_states
+            .lock()
+            .expect("auth states poisoned")
+            .clear();
+    }
+
+    /// Drop the recorded outbound JSON-RPC requests.
+    pub fn clear_sent_rpc(&self) {
+        self.sent_rpc.lock().expect("sent rpc poisoned").clear();
+    }
+
+    /// Drop the seeded preimages.
+    pub fn clear_preimages(&self) {
+        self.preimages.lock().expect("preimages poisoned").clear();
+    }
+
+    /// Drop the product and core storage contents.
+    pub fn clear_storage(&self) {
+        self.storage.lock().expect("storage poisoned").clear();
+    }
+
+    /// Return the mock to its freshly-constructed state, keeping the
+    /// [`MockConfig`] it was built with.
+    ///
+    /// Tests reset between cases; doing it in one call is what keeps a
+    /// recording from one case out of the assertions of the next.
+    pub fn reset(&self) {
+        self.clear_navigations();
+        self.clear_notifications();
+        self.clear_reviews();
+        self.clear_permission_log();
+        self.clear_permission_decisions();
+        self.clear_auth_states();
+        self.clear_sent_rpc();
+        self.clear_preimages();
+        self.clear_storage();
+        self.set_enforce_permissions(false);
+        self.next_notification_id.store(0, Ordering::SeqCst);
     }
 }
 
@@ -502,19 +712,27 @@ impl Notifications for MockPlatform {
 impl Permissions for MockPlatform {
     async fn device_permission(
         &self,
-        _request: latest::HostDevicePermissionRequest,
+        request: latest::HostDevicePermissionRequest,
     ) -> Result<latest::HostDevicePermissionResponse, latest::GenericError> {
         Ok(latest::HostDevicePermissionResponse {
-            granted: self.config.device_permissions.granted(),
+            granted: self.decide_permission(
+                PermissionKind::Device,
+                request.to_string(),
+                self.config.device_permissions,
+            ),
         })
     }
 
     async fn remote_permission(
         &self,
-        _request: latest::RemotePermissionRequest,
+        request: latest::RemotePermissionRequest,
     ) -> Result<latest::RemotePermissionResponse, latest::GenericError> {
         Ok(latest::RemotePermissionResponse {
-            granted: self.config.remote_permissions.granted(),
+            granted: self.decide_permission(
+                PermissionKind::Remote,
+                request.permission.to_string(),
+                self.config.remote_permissions,
+            ),
         })
     }
 }
@@ -604,10 +822,7 @@ impl UserConfirmation for MockPlatform {
         &self,
         review: UserConfirmationReview,
     ) -> Result<bool, latest::GenericError> {
-        self.confirmations
-            .lock()
-            .expect("confirmations poisoned")
-            .push(ConfirmKind::of(&review));
+        self.reviews.lock().expect("reviews poisoned").push(review);
         Ok(self.config.confirm_user_actions)
     }
 }
@@ -983,5 +1198,159 @@ mod tests {
         let clone = p.clone();
         block_on(clone.navigate_to("z".into())).unwrap();
         assert_eq!(p.navigations(), vec!["z".to_string()]);
+    }
+
+    fn allocation_review(product: &str) -> UserConfirmationReview {
+        UserConfirmationReview::ResourceAllocation(crate::ResourceAllocationReview {
+            calling_product_id: product.to_string(),
+            resources: vec![],
+        })
+    }
+
+    fn device_request(p: &MockPlatform, request: latest::HostDevicePermissionRequest) -> bool {
+        block_on(p.device_permission(request))
+            .expect("device permission answers")
+            .granted
+    }
+
+    fn remote_request(p: &MockPlatform, permission: latest::RemotePermission) -> bool {
+        block_on(p.remote_permission(latest::RemotePermissionRequest { permission }))
+            .expect("remote permission answers")
+            .granted
+    }
+
+    #[test]
+    fn reviews_carry_the_payload_not_just_the_kind() {
+        // Two reviews of the SAME kind with different payloads: a kind-only
+        // recording cannot tell these apart, which is the whole reason the
+        // payload log exists.
+        let p = MockPlatform::new();
+        block_on(p.confirm_user_action(allocation_review("first.dot"))).unwrap();
+        block_on(p.confirm_user_action(allocation_review("second.dot"))).unwrap();
+
+        assert_eq!(
+            p.confirmations(),
+            vec![ConfirmKind::ResourceAllocation; 2],
+            "the kind view should see two identical kinds",
+        );
+        let products: Vec<String> = p
+            .reviews()
+            .into_iter()
+            .map(|review| match review {
+                UserConfirmationReview::ResourceAllocation(inner) => inner.calling_product_id,
+                other => panic!("unexpected review {other:?}"),
+            })
+            .collect();
+        assert_eq!(products, vec!["first.dot", "second.dot"]);
+    }
+
+    #[test]
+    fn an_explicit_grant_overrides_a_deny_all_policy() {
+        let p = MockPlatform::with_config(MockConfig {
+            device_permissions: PermissionPolicy::DenyAll,
+            ..MockConfig::default()
+        });
+        assert!(!device_request(
+            &p,
+            latest::HostDevicePermissionRequest::Camera
+        ));
+        p.grant_permission(latest::HostDevicePermissionRequest::Camera.to_string());
+        assert!(device_request(
+            &p,
+            latest::HostDevicePermissionRequest::Camera
+        ));
+        // The grant is per permission, not a policy flip.
+        assert!(!device_request(
+            &p,
+            latest::HostDevicePermissionRequest::Microphone
+        ));
+        assert_eq!(
+            p.granted_permissions(),
+            vec![latest::HostDevicePermissionRequest::Camera.to_string()]
+        );
+    }
+
+    #[test]
+    fn an_explicit_revoke_overrides_an_allow_all_policy() {
+        let p = MockPlatform::new();
+        assert!(remote_request(&p, latest::RemotePermission::ChainSubmit));
+        p.revoke_permission(latest::RemotePermission::ChainSubmit.to_string());
+        assert!(!remote_request(&p, latest::RemotePermission::ChainSubmit));
+        assert!(p.granted_permissions().is_empty());
+        // Dropping the override restores the policy rather than leaving a denial.
+        p.reset_permission(&latest::RemotePermission::ChainSubmit.to_string());
+        assert!(remote_request(&p, latest::RemotePermission::ChainSubmit));
+    }
+
+    #[test]
+    fn enforcing_denies_whatever_was_not_explicitly_granted() {
+        let p = MockPlatform::new();
+        p.set_enforce_permissions(true);
+        assert!(
+            !device_request(&p, latest::HostDevicePermissionRequest::Camera),
+            "enforcing must not fall back to the allow-all policy",
+        );
+        p.grant_permission(latest::HostDevicePermissionRequest::Camera.to_string());
+        assert!(device_request(
+            &p,
+            latest::HostDevicePermissionRequest::Camera
+        ));
+        assert!(!device_request(
+            &p,
+            latest::HostDevicePermissionRequest::Location
+        ));
+    }
+
+    #[test]
+    fn the_permission_log_records_surface_key_and_answer() {
+        let p = MockPlatform::new();
+        p.revoke_permission(latest::HostDevicePermissionRequest::Camera.to_string());
+        device_request(&p, latest::HostDevicePermissionRequest::Camera);
+        remote_request(&p, latest::RemotePermission::ChainSubmit);
+
+        assert_eq!(
+            p.permission_log(),
+            vec![
+                PermissionDecision {
+                    kind: PermissionKind::Device,
+                    permission: latest::HostDevicePermissionRequest::Camera.to_string(),
+                    granted: false,
+                },
+                PermissionDecision {
+                    kind: PermissionKind::Remote,
+                    permission: latest::RemotePermission::ChainSubmit.to_string(),
+                    granted: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reset_clears_recordings_and_restores_policy_fallback() {
+        let p = MockPlatform::new();
+        block_on(p.navigate_to("u".into())).unwrap();
+        block_on(p.confirm_user_action(allocation_review("mock.dot"))).unwrap();
+        block_on(p.write("k".into(), vec![1])).unwrap();
+        p.insert_preimage(vec![9]);
+        p.auth_state_changed(AuthState::Disconnected);
+        p.set_enforce_permissions(true);
+        p.revoke_permission(latest::HostDevicePermissionRequest::Camera.to_string());
+        device_request(&p, latest::HostDevicePermissionRequest::Camera);
+
+        p.reset();
+
+        assert!(p.navigations().is_empty());
+        assert!(p.reviews().is_empty());
+        assert!(p.confirmations().is_empty());
+        assert!(p.auth_states().is_empty());
+        assert!(p.permission_log().is_empty());
+        assert!(p.granted_permissions().is_empty());
+        assert_eq!(block_on(p.read("k".into())).unwrap(), None);
+        // Enforcement and the explicit denial are both gone, so the allow-all
+        // policy answers again.
+        assert!(device_request(
+            &p,
+            latest::HostDevicePermissionRequest::Camera
+        ));
     }
 }
