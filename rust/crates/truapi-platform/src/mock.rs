@@ -113,10 +113,13 @@ impl ConfirmKind {
 /// How the mock's chain connection behaves.
 #[derive(Debug, Clone, Default)]
 pub enum ChainBehavior {
-    /// Record outbound requests, never answer. Chain-dependent flows (login,
-    /// signing, statement store) park rather than complete, so drive any test
-    /// that reaches them under a timeout; use [`ChainBehavior::Closed`] to make
-    /// a disconnect observable instead.
+    /// Record outbound requests, never answer. Whether a flow parks turns on
+    /// what it needs from the chain rather than on whether it signs:
+    /// `sign_raw` completes hermetically, while `create_transaction` and
+    /// `sign_payload` park because `build_local_transaction` needs chain
+    /// metadata. Login and the statement store park for the same reason. Drive
+    /// any test that reaches a parking flow under a timeout; use
+    /// [`ChainBehavior::Closed`] to make a disconnect observable instead.
     #[default]
     Silent,
     /// Record outbound requests and replay these response frames in order,

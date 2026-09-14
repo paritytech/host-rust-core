@@ -6,11 +6,13 @@
 // in-memory, permissions answer from a fixed policy, navigation/notifications
 // are recorded, and the chain connection is silent (or replays canned frames).
 //
-// Signing and login require a paired wallet answering over the statement-store
-// channel; the default silent chain records outbound requests and never
-// answers, so those flows park. Everything else (storage, permissions,
-// features, theme, navigation, notifications, preimage lookup) works without a
-// wallet.
+// Signing and login park here because this mock backs a *pairing* host, which
+// holds no key material of its own: both wait on a paired wallet answering
+// over the statement-store channel, and the default silent chain never
+// answers. The limit is the host role rather than the mock or the chain — a
+// signing host's `sign_raw` completes against this same silent chain.
+// Everything else (storage, permissions, features, theme, navigation,
+// notifications, preimage lookup) works without a wallet.
 //
 // Preimage submission is core-owned on current core (the core builds, signs,
 // and submits the Bulletin `TransactionStorage.store` transaction itself), so
