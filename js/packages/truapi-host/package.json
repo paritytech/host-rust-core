@@ -52,6 +52,7 @@
     "@parity/truapi": "^0.15.0"
   },
   "devDependencies": {
+    "happy-dom": "^20.11.2",
     "@types/bun": "^1.3.0",
     "neverthrow": "^8.2.0",
     "typescript": "^5.7"

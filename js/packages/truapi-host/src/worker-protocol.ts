@@ -69,6 +69,28 @@ export type MainToWorker =
       // Dev-only: when set, the worker dials this debugger and streams tapped
       // frames to it. Null in production, so the host tap stays inert.
       debuggerUrl: string | null;
+      /**
+       * Whether the wire tap may be installed at all, decided on the main thread
+       * by the `import.meta.env.DEV` gate. Distinct from `debuggerUrl`: the tap is
+       * armed for a whole dev session, while the URL comes and goes as the console
+       * attaches and detaches. The worker gives a core its `debugEmit` callback -
+       * and the Rust side installs its `DebugSink` - only when armed, and that
+       * decision is made once per core at construction, so a session that starts
+       * detached must still be armed or a later attach reaches nothing.
+       *
+       * False in production, where the main-thread gate refuses, so no core is
+       * ever built with a tap and nothing can turn one on afterwards.
+       */
+      debugTapArmed: boolean;
+    }
+  | {
+      /**
+       * Dev-only: point the tap at a different debugger, or at none. Null closes
+       * the link and leaves the (already installed) tap emitting into nothing.
+       * Ignored unless the session was armed at `init`.
+       */
+      kind: "setDebuggerUrl";
+      url: string | null;
     }
   | { kind: "createCore"; coreId: number; product: unknown }
   | { kind: "disposeCore"; coreId: number }
