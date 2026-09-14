@@ -615,18 +615,16 @@ fn numeric_js_arg(name: &str, primitive: &str) -> Result<String> {
     }
 }
 
+/// The `JsValue` a subscription hands its JS callback, or `None` when it takes
+/// no payload. Shares [`js_arg_expr`] with request callbacks, so a subscription
+/// accepts every parameter type a request already does.
 fn subscription_payload(method: &PlatformMethod, ctx: &BridgeCtx<'_>) -> Result<String> {
     match method.params.as_slice() {
         [] => Ok("None".to_string()),
-        [param] if is_bytes(&param.type_ref) => Ok(format!("Some({})", param.name)),
-        [param] if ctx.is_api_codec(&param.type_ref) || ctx.is_local_codec(&param.type_ref) => {
-            Ok(format!("Some({}.encode())", param.name))
-        }
-        [param] => bail!(
-            "unsupported subscription payload for `{}`: {:?}",
-            method.name,
-            param.type_ref
-        ),
+        [param] => Ok(format!(
+            "Some({})",
+            js_arg_expr(&param.name, &param.type_ref, ctx)?
+        )),
         _ => bail!(
             "subscription `{}` has more than one payload parameter",
             method.name

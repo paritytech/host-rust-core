@@ -93,7 +93,7 @@ function callbackRequest(
 
 function startSubscription<T>(
   name: SubscriptionName,
-  payload: Uint8Array | null,
+  payload: Uint8Array | string | null,
   sendItem: (value: T) => void,
   sendError: (error: GenericError) => void,
 ): () => void {

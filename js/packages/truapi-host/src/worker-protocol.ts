@@ -299,7 +299,7 @@ export type WorkerToMain =
       kind: "subscriptionStart";
       subId: number;
       name: SubscriptionName;
-      payload: Uint8Array | null;
+      payload: Uint8Array | string | null;
     }
   | { kind: "subscriptionStop"; subId: number }
   | { kind: "chainConnectStart"; connId: number; genesisHash: string }
