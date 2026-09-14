@@ -31,8 +31,8 @@ use crate::host_logic::product_account::{
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{
-    IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessageData, SsoResponseCode,
-    build_outgoing_request_statement, build_signed_session_response_statement,
+    IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessage, RemoteMessageData,
+    SsoResponseCode, build_outgoing_request_statement, build_signed_session_response_statement,
     decode_incoming_sso_request, v1,
 };
 use crate::host_logic::sso::pairing::{
@@ -47,7 +47,7 @@ use crate::host_logic::statement_store::{
 };
 use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
-use crate::runtime::sso_remote::fresh_statement_expiry;
+use crate::runtime::sso_remote::{fresh_statement_expiry, sso_message_id};
 use crate::runtime::sso_service::Dispatch;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::StatementAllowanceError;
@@ -322,6 +322,33 @@ pub(crate) async fn resume_pairing(
         },
     )
     .await
+}
+
+/// Notify a paired host that this signing host is ending their SSO session.
+pub(crate) async fn disconnect_paired_host(
+    services: Arc<RuntimeServices>,
+    signing_host: Arc<SigningHost>,
+    peer: PairedSsoPeer,
+) -> Result<(), String> {
+    let entropy = signing_host
+        .root_entropy()
+        .map_err(|err| format!("signing host has no active local session: {err}"))?;
+    let session = responder_session(&entropy, signing_host.network_suffix(), peer)?;
+    let message_id = sso_message_id();
+    let message = RemoteMessage {
+        message_id: message_id.clone(),
+        data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+    };
+    let statement = build_outgoing_request_statement(
+        &session,
+        message_id,
+        vec![message],
+        fresh_statement_expiry(),
+    )?;
+    services
+        .statement_store
+        .submit_sso(statement, "sso-responder disconnect")
+        .await
 }
 
 fn responder_session(

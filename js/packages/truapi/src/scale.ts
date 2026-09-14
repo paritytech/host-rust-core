@@ -16,6 +16,7 @@ import {
   u8,
   _void,
   type Codec,
+  type ResultPayload,
 } from "scale-ts";
 import {
   bytesToHex as encodeHex,
@@ -24,6 +25,14 @@ import {
 
 export type { Codec };
 export type { ResultPayload } from "scale-ts";
+
+/**
+ * Bare-named type alias matching generated codegen's naming convention for
+ * generic wire types: `Result<Ok, Err>` is used as both a value (the codec
+ * builder re-exported below) and a type (this alias for scale-ts's own
+ * `ResultPayload`) in generated `types.ts`.
+ */
+export type Result<Ok, Err> = ResultPayload<Ok, Err>;
 
 export {
   Bytes,

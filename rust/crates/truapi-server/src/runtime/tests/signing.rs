@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+#[allow(deprecated)] // Exercise the temporary API's paired-host wire routing.
+fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading() {
+    use crate::host_logic::sso::messages::SignRequest;
+
+    for legacy in [false, true] {
+        let session = sso_session_info();
+        let identity = session.identity_account_id.unwrap();
+        let platform = Arc::new(StubPlatform {
+            sign_raw_confirmed: true,
+            sso_response_script: Some(sso_success_response_script(
+                &session,
+                sign_response_message("unwatermarked", vec![7, 7], None),
+            )),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, session.clone());
+        let cx = CallContext::with_request_id("unwatermarked".to_string());
+        let payload = v01::RawPayload::Bytes {
+            bytes: vec![0x11; 32],
+        };
+        let signature = futures::executor::block_on(async {
+            if !legacy {
+                let HostSignRawResponse::V1(response) = host
+                    .sign_raw_unwatermarked_deprecated(
+                        &cx,
+                        HostSignRawRequest::V1(v01::HostSignRawRequest {
+                            account: account_id("myapp.dot", 0),
+                            payload: payload.clone(),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                response.signature
+            } else {
+                let signer = subxt::utils::AccountId32(identity).to_string();
+                let HostSignRawWithLegacyAccountResponse::V1(response) = host
+                    .sign_raw_unwatermarked_deprecated_with_legacy_account(
+                        &cx,
+                        HostSignRawWithLegacyAccountRequest::V1(
+                            v01::HostSignRawWithLegacyAccountRequest {
+                                signer,
+                                payload: payload.clone(),
+                            },
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                response.signature
+            }
+        });
+        assert_eq!(signature, vec![7, 7]);
+        let RemoteMessageData::V1(v1::RemoteMessage::SignRequest(request)) =
+            submitted_remote_message(&platform, &session).data
+        else {
+            panic!("expected an explicit unwatermarked SignRequest");
+        };
+        match request {
+            SignRequest::RawUnwatermarkedDeprecated(request) => {
+                assert!(!legacy);
+                assert_eq!(request.account, account_id("myapp.dot", 0));
+                assert_eq!(request.payload, payload);
+            }
+            SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request) => {
+                assert!(legacy);
+                assert_eq!(request.account, identity);
+                assert_eq!(request.data, payload);
+            }
+            request => panic!("unwatermarked signing was downgraded: {request:?}"),
+        }
+    }
+}
+
+#[test]
 fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
     let session = sso_session_info();
     let signature = v01::VrfSignature {
