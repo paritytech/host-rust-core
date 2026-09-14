@@ -1,7 +1,7 @@
 //! Connection-scoped, host-fed action streams buffered until the product subscribes.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -30,7 +30,7 @@ impl<Item> Default for State<Item> {
 
 /// One product connection's stream of host-authored items of one kind.
 pub(crate) struct ActionChannel<Item> {
-    state: Arc<Mutex<State<Item>>>,
+    state: Mutex<State<Item>>,
     closed_reason: &'static str,
 }
 
@@ -39,7 +39,7 @@ impl<Item: Send + 'static> ActionChannel<Item> {
     /// interrupt a late subscriber sees after `close`.
     fn new(closed_reason: &'static str) -> Self {
         Self {
-            state: Arc::new(Mutex::new(State::default())),
+            state: Mutex::new(State::default()),
             closed_reason,
         }
     }
