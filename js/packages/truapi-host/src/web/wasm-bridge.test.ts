@@ -1,17 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 import { createMockHost, mockRuntimeConfig } from "./create-mock-host.js";
+import { wasmIsBuilt } from "../testing/require-wasm.js";
 
 // Drives the REAL truapi-server WASM core against createMockHost's callbacks —
 // headless, no browser, no worker — to prove the JS↔SCALE↔WASM callback bridge.
 // Requires the built WASM artifact (`npm run build:wasm`); skipped when it is
 // absent so a plain `bun test` on a fresh checkout stays green.
 //
-// NOTE: no CI job builds the WASM. `release.yml` does at release time, but
-// `ts-host` runs `bun test` without `build:wasm` or `REQUIRE_WASM`, so this
-// suite skips on every pull request. Run it locally with `npm run build:wasm`
-// until a job builds the artifact and sets `REQUIRE_WASM=1`.
+// The `host-wasm` CI job builds both bundles and sets `REQUIRE_WASM=1`, so a
+// missing artefact fails that run loudly rather than skipping green. `ts-host`
+// does not build the WASM, so this suite skips there, which is why the two jobs
+// are separate.
 const wasmUrl = new URL(
   "../../dist/wasm/web/truapi_server_bg.wasm",
   import.meta.url,
@@ -20,18 +21,9 @@ const glueUrl = new URL(
   "../../dist/wasm/web/truapi_server.js",
   import.meta.url,
 );
-const built = existsSync(wasmUrl);
-
-// Setting REQUIRE_WASM=1 turns a missing artifact (a silent `build:wasm`
-// path/output drift) into a loud failure instead of a green skip. Nothing in CI
-// sets it today; see the note above.
-if (process.env.REQUIRE_WASM === "1" && !built) {
-  throw new Error(
-    `REQUIRE_WASM=1 but the WASM artifact is missing at ${wasmUrl.pathname} — run \`npm run build:wasm\` first.`,
-  );
-}
-
-const suite = built ? describe : describe.skip;
+// The gate lives in `require-wasm.ts` so rewriting any one suite cannot
+// quietly disable it for the others.
+const suite = wasmIsBuilt("web/truapi_server_bg.wasm") ? describe : describe.skip;
 
 suite("real WASM core ↔ createMockHost bridge", () => {
   it("the core invokes createMockHost callbacks across the JS↔SCALE↔WASM boundary", async () => {

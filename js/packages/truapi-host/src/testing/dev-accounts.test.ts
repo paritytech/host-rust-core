@@ -3,11 +3,12 @@
 // against the signing-enabled testing bundle -- the JS counterpart of the Rust
 // keystone test.
 import { describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { createMockHost, mockRuntimeConfig } from "../web/create-mock-host.js";
 import { DEV_ACCOUNTS, resolveAccount } from "./dev-accounts.js";
+import { wasmIsBuilt } from "./require-wasm.js";
 
 const wasmUrl = new URL(
   "../../dist/wasm/testing/truapi_server_bg.wasm",
@@ -17,7 +18,9 @@ const glueUrl = new URL(
   "../../dist/wasm/testing/truapi_server.js",
   import.meta.url,
 );
-const suite = existsSync(wasmUrl) ? describe : describe.skip;
+const suite = wasmIsBuilt("testing/truapi_server_bg.wasm")
+  ? describe
+  : describe.skip;
 
 describe("dev account specs", () => {
   it("rejects an unknown name and a wrong-sized key", () => {

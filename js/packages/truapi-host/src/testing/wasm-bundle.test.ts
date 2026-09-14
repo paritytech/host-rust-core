@@ -5,8 +5,10 @@
 // without anything failing — the bundle would still build, still load, and
 // simply have no signing host in it.
 import { describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+
+import { wasmIsBuilt } from "./require-wasm.js";
 
 const testingGlue = fileURLToPath(
   new URL("../../dist/wasm/testing/truapi_server.d.ts", import.meta.url),
@@ -15,8 +17,12 @@ const webGlue = fileURLToPath(
   new URL("../../dist/wasm/web/truapi_server.d.ts", import.meta.url),
 );
 
-const built = existsSync(testingGlue) && existsSync(webGlue);
-const suite = built ? describe : describe.skip;
+const suite = wasmIsBuilt(
+  "testing/truapi_server.d.ts",
+  "web/truapi_server.d.ts",
+)
+  ? describe
+  : describe.skip;
 
 suite("testing wasm bundle", () => {
   it("carries a signing host", () => {
