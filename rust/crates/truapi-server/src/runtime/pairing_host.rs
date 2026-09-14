@@ -2422,15 +2422,25 @@ impl PairingHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
-        _account: v01::ProductAccountId,
-        _payload: Vec<u8>,
+        account: v01::ProductAccountId,
+        payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError> {
-        self.current_private_session(session)?;
-        Err(AuthorityError::Unavailable {
-            reason: "pairing host: exact statement proof signing is not supported over the \
-                     current SSO raw-signing protocol"
-                .to_string(),
-        })
+        let session = self.current_private_session(session)?;
+        // The SSO raw-signing protocol cannot carry an exact, unwatermarked
+        // payload, so the capability's own key is the only way this role signs
+        // one. Statement proofs raise no confirmation on either role, so this
+        // unlocks the operation rather than waiving a prompt.
+        let Some(keypair) = self.local_product_signing_key(&session, &account).await? else {
+            return Err(AuthorityError::Unavailable {
+                reason: "pairing host: exact statement proof signing needs an AutoSigning \
+                         capability; the current SSO raw-signing protocol cannot carry it"
+                    .to_string(),
+            });
+        };
+        Ok(keypair
+            .secret
+            .sign_simple(SR25519_SIGNING_CONTEXT, &payload, &keypair.public)
+            .to_bytes())
     }
 
     fn derive_entropy(

@@ -14,6 +14,9 @@ import type { DiagnosisRow } from "./diagnosis.ts";
 
 export const VRF_APPROVAL_ACTION = "sign VRF transcript";
 export const ALLOCATION_APPROVAL_ACTION = "allocate resources";
+export const SIGN_RAW_APPROVAL_ACTION = "sign raw data";
+export const SIGN_PAYLOAD_APPROVAL_ACTION = "sign payload";
+export const CREATE_TRANSACTION_APPROVAL_ACTION = "create transaction";
 
 /** Non-empty transcript lines, oldest first. */
 export function approvalLines(text: string): string[] {
@@ -125,9 +128,102 @@ export async function runAutoSigningE2e(
         );
       }
     }
+    // The RFC-0023 VRF path is one of four the grant covers. The rest are
+    // product-account signing APIs, each asserted the same way: open a
+    // transcript window, call, and require the call's own action to be absent.
+    const account = {
+      dotNsIdentifier: productId,
+      derivationIndex: { tag: "Index", value: 0 } as const,
+    };
+    /** Lines for `action` appended since `before`. Empty means no prompt fired. */
+    const promptsSince = (before: string[], action: string): string[] =>
+      actionLines(newLinesSince(before, readTranscript()), action);
+
+    const beforeRaw = readTranscript();
+    const raw = await client.signing.signRaw({
+      account,
+      payload: { tag: "Bytes", value: { bytes: "0x48656c6c6f" } },
+    });
+    if (!raw.isOk()) {
+      return finish("fail", `sign_raw failed: ${JSON.stringify(raw.error)}`);
+    }
+    const rawPrompts = promptsSince(beforeRaw, SIGN_RAW_APPROVAL_ACTION);
+    if (rawPrompts.length > 0) {
+      return finish(
+        "fail",
+        `sign_raw consulted a confirmation despite the AutoSigning grant: ${rawPrompts.join("; ")}`,
+      );
+    }
+
+    const beforePayload = readTranscript();
+    const payload = await client.signing.signPayload({
+      account,
+      payload: {
+        address: "",
+        assetId: null,
+        blockHash: `0x${"00".repeat(32)}`,
+        blockNumber: "0x00000000",
+        era: "0x0000",
+        genesisHash: `0x${"00".repeat(32)}`,
+        metadataHash: null,
+        method: "0x00003448656c6c6f2c20776f726c6421",
+        mode: null,
+        nonce: "0x00000000",
+        signedExtensions: [],
+        specVersion: "0x00000000",
+        tip: "0x00000000000000000000000000000000",
+        transactionVersion: "0x00000000",
+        version: 4,
+        withSignedTransaction: null,
+      },
+    });
+    if (!payload.isOk()) {
+      return finish(
+        "fail",
+        `sign_payload failed: ${JSON.stringify(payload.error)}`,
+      );
+    }
+    const payloadPrompts = promptsSince(
+      beforePayload,
+      SIGN_PAYLOAD_APPROVAL_ACTION,
+    );
+    if (payloadPrompts.length > 0) {
+      return finish(
+        "fail",
+        `sign_payload consulted a confirmation despite the AutoSigning grant: ${payloadPrompts.join("; ")}`,
+      );
+    }
+
+    const beforeTx = readTranscript();
+    // V4 is assembled offline, so the grant is the only variable here.
+    const tx = await client.signing.createTransaction({
+      signer: account,
+      genesisHash: `0x${"01".repeat(32)}`,
+      callData: "0x0400",
+      extensions: [],
+      txExtVersion: 0,
+    });
+    if (!tx.isOk()) {
+      return finish(
+        "fail",
+        `create_transaction failed: ${JSON.stringify(tx.error)}`,
+      );
+    }
+    const txPrompts = promptsSince(
+      beforeTx,
+      CREATE_TRANSACTION_APPROVAL_ACTION,
+    );
+    if (txPrompts.length > 0) {
+      return finish(
+        "fail",
+        `create_transaction consulted a confirmation despite the AutoSigning grant: ${txPrompts.join("; ")}`,
+      );
+    }
+
     return finish(
       "pass",
-      "AutoSigning allocated with consent; 2 sign_vrf calls served without a confirmation prompt",
+      "AutoSigning allocated with consent; 2 sign_vrf calls plus sign_raw, " +
+        "sign_payload and create_transaction served without a confirmation prompt",
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

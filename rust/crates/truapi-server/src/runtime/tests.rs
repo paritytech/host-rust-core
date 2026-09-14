@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use parity_scale_codec::Encode;
 use truapi::api::{
     Account, Chain, Entropy, LocalStorage, Notifications, Permissions, Preimage,
-    ResourceAllocation, Signing, System, Theme,
+    ResourceAllocation, Signing, StatementStore, System, Theme,
 };
 use truapi::v02;
 use truapi::versioned::account::{
@@ -48,6 +48,9 @@ use truapi::versioned::signing::{
     HostSignPayloadWithLegacyAccountRequest, HostSignRawError, HostSignRawRequest,
     HostSignRawResponse, HostSignRawWithLegacyAccountError, HostSignRawWithLegacyAccountRequest,
     HostSignRawWithLegacyAccountResponse,
+};
+use truapi::versioned::statement_store::{
+    RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
 };
 use truapi::versioned::system::{
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostGetProductContextRequest,
@@ -2503,6 +2506,50 @@ fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
         "the product account signed it",
     );
     assert_eq!(call, vec![0x04, 0x00]);
+}
+
+#[test]
+fn auto_signing_serves_a_product_statement_proof_on_a_pairing_host() {
+    // The SSO raw-signing protocol cannot carry an exact, unwatermarked
+    // payload, so without a capability this role answers `UnableToSign`. The
+    // capability's own key is what makes the operation available at all;
+    // neither role prompts for statement proofs either way.
+    let (_platform, host) = granted_pairing_host();
+
+    let response = futures::executor::block_on(StatementStore::create_proof(
+        &host,
+        &CallContext::default(),
+        RemoteStatementStoreCreateProofRequest::V1(
+            truapi::latest::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("myapp.dot", 0),
+                statement: statement(),
+            },
+        ),
+    ))
+    .expect("the capability signs the statement locally");
+
+    let RemoteStatementStoreCreateProofResponse::V1(inner) = response;
+    let truapi::latest::StatementProof::Sr25519 { signer, signature } = inner.proof else {
+        panic!("expected an sr25519 statement proof");
+    };
+    let keypair = granted_keypair();
+    assert_eq!(
+        signer,
+        keypair.public.to_bytes(),
+        "the product account signed it",
+    );
+    let payload = crate::host_logic::statement_store::unsigned_statement_signing_payload(
+        crate::host_logic::statement_store::statement_fields_from_v01(statement()).unwrap(),
+    )
+    .unwrap();
+    let signature = schnorrkel::Signature::from_bytes(&signature).expect("64-byte signature");
+    assert!(
+        keypair
+            .public
+            .verify_simple(b"substrate", &payload, &signature)
+            .is_ok(),
+        "the signature is over the statement's signing payload",
+    );
 }
 
 #[test]
