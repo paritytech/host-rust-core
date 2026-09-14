@@ -120,6 +120,7 @@ extension DebugSettingsPresenter: DebugSettingsPresenterProtocol {
     }
 }
 
+@MainActor
 private extension DebugSettingsPresenter {
     func saveIssueLogs() {
         guard let attachment = interactor.makeLogsDraft()?.attachment else {
