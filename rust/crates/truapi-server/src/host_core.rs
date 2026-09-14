@@ -1197,9 +1197,8 @@ impl ProductRuntimeControl {
             request,
         )
         .map(move |item| {
-            // Named so the closure captures it: a `move` closure that never
-            // mentions a binding does not take it, and the reference would
-            // drop before the stream it belongs to.
+            // A `move` closure captures only what it names, so deleting this
+            // line drops the reference before the stream it belongs to.
             let _reference = &reference;
             item.map(|item| match item {
                 truapi::versioned::renderer::ProductRendererRenderItem::V1(node) => node,

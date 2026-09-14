@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn leaf_variants_carry_no_children() {
+    fn variants_encode_only_the_fields_they_carry() {
         let spacer = RendererNode::Spacer {
             modifiers: Vec::new(),
         };
