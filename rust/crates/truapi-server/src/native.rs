@@ -189,6 +189,9 @@ pub struct NativeHostRuntimeConfig {
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
+    /// Deliberate break for #682. A required field the iOS host does not pass,
+    /// so the Swift that constructs this type stops compiling. Not for merge.
+    pub probe_required_field: String,
     /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
     /// `testnet`). The wallet's reserved identities are derived under it:
     /// `uid.<suffix>` for the identity account, `peopl.<suffix>` for the person
