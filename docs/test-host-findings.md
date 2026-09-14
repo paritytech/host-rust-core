@@ -134,14 +134,35 @@ rather than ported, their work moving into the Rust core. Which is exactly what 
 
 ### The payments hole
 
-Verified three ways: zero payment references in the generated JS host callbacks; zero
-payment supertrait in Rust (`pub trait Platform` at `truapi-platform/src/lib.rs:2968`
-has exactly 12 supertraits, none of them payment); but 85 payment references in the
-product-facing client. **Payments are wholly core-owned in TrUAPI with no host seam.**
+There is no host seam for payments: zero payment references in the generated JS host
+callbacks, and `pub trait Platform` (`truapi-platform/src/lib.rs:2968`) has exactly 12
+supertraits, none of them payment. But the reason is not that the core owns payments.
+**Payments are unimplemented.**
 
-Five of the 40 control-plane members therefore have nothing to attach to. That is a
-gap, not a port, and it is not costable until someone decides between adding a host
-seam, dropping those members, or implementing them inside the Rust mock.
+`rust/crates/truapi-server/src/runtime/capabilities/payment.rs` is the only `Payment` /
+`CoinPayment` implementation in the workspace, and every method returns an error while
+ignoring both `_cx` and `_request`: `balance_subscribe` yields `PermissionDenied`,
+`request`, `status_subscribe` and `top_up` yield `PAYMENTS_NOT_IMPLEMENTED`, and all
+nine `CoinPayment` methods return `Unsupported`. The constant reads
+`"Payments are not supported in dot.li"` (`runtime.rs:931`). The wire surface is fully
+specified and the TS client encodes all of it, so a product can call these — it just
+always gets an error.
+
+Meanwhile RFC 0006 (accepted, `docs/rfcs/0006-payments.md`) assigns payments to **host
+implementors**, "including user consent flows, coin management, and settlement", and
+requires that every `host_payment_request` raise a confirmation prompt the host must
+not auto-approve (:27, :149).
+
+So the seam is designed and accepted but unbuilt. Adding a payment trait — most
+naturally to `OptionalPlatform`, which already carries `ChatPlatform` this way so
+existing hosts keep compiling — is implementing an accepted RFC rather than inventing
+protocol. The alternative is to accept that a TrUAPI test host's truthful payment
+behaviour today is "returns `PAYMENTS_NOT_IMPLEMENTED`", in which case any product test
+that exercises a *successful* payment cannot port, because TrUAPI cannot execute that
+path at all.
+
+That is the live decision, and it is a product decision rather than a test-host one.
+Note that mocking cannot close this gap: there is no behaviour to fake.
 
 A related second-order cost: several surviving members lose their *data source* even
 though their code survives. `getSigningLog()` records payloads today because the host
