@@ -22,14 +22,12 @@ CARGO_FLAGS=(-p truapi-provider --lib --no-default-features --features uniffi)
 SLICES=(aarch64-apple-ios-sim)
 [ "${1:-}" = "--device" ] && SLICES+=(aarch64-apple-ios)
 
-for target in "${SLICES[@]}"; do
-  rustup target add "$target" >/dev/null 2>&1 || true
-  CARGO_FLAGS+=(--target "$target")
-done
-# One invocation for every slice, so cargo schedules both target graphs
-# together rather than draining one before it starts the next.
+rustup target add "${SLICES[@]}" >/dev/null 2>&1 || true
+
+# One invocation carrying every slice, so the target graphs are scheduled
+# together rather than one draining before the next starts.
 echo "==> building ${SLICES[*]} ($PROFILE)"
-cargo build "${CARGO_FLAGS[@]}"
+cargo build "${CARGO_FLAGS[@]}" "${SLICES[@]/#/--target=}"
 
 BINDINGS="target/ios-bindings"
 rm -rf "$BINDINGS" && mkdir -p "$BINDINGS"

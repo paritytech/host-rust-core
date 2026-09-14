@@ -2,7 +2,8 @@
 # Regenerate js/packages/truapi/src/generated/* from rust/crates/truapi.
 #
 # Pipeline:
-#   1. cargo +nightly rustdoc -p truapi --output-format json -> target/doc/truapi.json
+#   1. cargo +nightly doc -p truapi -p truapi-platform --output-format json
+#      -> target/doc/{truapi,truapi_platform}.json
 #   2. cargo run -p truapi-codegen -- --input target/doc/truapi.json
 #                                     --output js/packages/truapi/src/generated
 #                                     --playground-output js/packages/truapi/src/playground
@@ -54,8 +55,8 @@ rustfmt +"$NIGHTLY_TOOLCHAIN" --edition 2024 \
 
 node scripts/regen-explorer-versions.mjs
 
-# The local prettier, not `npm exec`, which re-resolves the package each run.
-./node_modules/.bin/prettier --write \
+# --no: use the installed prettier, never resolve or fetch one.
+npm exec --no -- prettier --write \
   "js/packages/truapi/src/generated/**/*.ts" \
   "js/packages/truapi/src/playground/**/*.ts" \
   "js/packages/truapi/src/explorer/**/*.ts" \
