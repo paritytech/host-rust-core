@@ -37,6 +37,10 @@
       "types": "./dist/testing/playwright.d.ts",
       "import": "./dist/testing/playwright.js"
     },
+    "./testing/server": {
+      "types": "./dist/testing/server.d.ts",
+      "import": "./dist/testing/server.js"
+    },
     "./testing/host-page": {
       "types": "./dist/testing/host-page.d.ts",
       "import": "./dist/testing/host-page.js"
@@ -65,7 +69,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@parity/truapi": "^0.16.0"
+    "@parity/truapi": "^0.16.0",
+    "esbuild": "^0.28.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
