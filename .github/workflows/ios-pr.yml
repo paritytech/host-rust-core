@@ -5,7 +5,35 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  # Only what the iOS app is built from. The app itself, the crates its bindings
+  # are generated from, the manifests pinning the toolchain, and this workflow
+  # with the action it calls. A change to docs, TypeScript or an unrelated crate
+  # cannot affect the app, and three macOS jobs is too much to spend finding
+  # that out.
+  #
+  # The core crates are here because neither binding set is committed, so a
+  # UniFFI surface change leaves no hosts/ios diff to key on. That is the same
+  # reasoning as the sdk_swift gate in ci.yml, which is the list to keep this in
+  # step with.
   pull_request:
+    paths:
+      - "hosts/ios/**"
+      - "ios/**"
+      - "Package.swift"
+      - "Makefile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "js/container/**"
+      - "scripts/codegen.sh"
+      - "rust/crates/truapi/**"
+      - "rust/crates/truapi-codegen/**"
+      - "rust/crates/truapi-macros/**"
+      - "rust/crates/truapi-platform/**"
+      - "rust/crates/truapi-server/**"
+      - "rust/crates/truapi-provider/**"
+      - "rust/crates/uniffi-bindgen-cli/**"
+      - ".github/workflows/ios-pr.yml"
+      - ".github/actions/bootstrap-ios-core/**"
   # Kept alongside pull_request so a build can be reproduced on demand without
   # pushing a commit.
   workflow_dispatch:
