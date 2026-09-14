@@ -2256,6 +2256,7 @@ mod tests {
 
     fn native_host_runtime_config() -> NativeHostRuntimeConfig {
         NativeHostRuntimeConfig {
+            probe_required_field: String::new(),
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
@@ -3143,6 +3144,7 @@ mod tests {
     #[test]
     fn runtime_config_reports_the_declared_host_platform() {
         let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            probe_required_field: String::new(),
             host_platform: HostPlatform::Ios,
             ..native_host_runtime_config()
         })
@@ -3154,6 +3156,7 @@ mod tests {
     #[test]
     fn runtime_config_rejects_wrong_size_genesis_hash() {
         let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            probe_required_field: String::new(),
             people_chain_genesis_hash: vec![0; 31],
             ..native_host_runtime_config()
         })
@@ -3170,6 +3173,7 @@ mod tests {
         // The suffix ends every reserved derivation (`peopl.<suffix>`), so a
         // shell passing the dotted form would silently derive a stranger.
         let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            probe_required_field: String::new(),
             network_suffix: ".paseo".to_string(),
             ..native_host_runtime_config()
         })
@@ -3197,6 +3201,7 @@ mod tests {
     #[test]
     fn runtime_config_rejects_relative_host_icon() {
         let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            probe_required_field: String::new(),
             host_icon: Some("/dotli.png".to_string()),
             ..native_host_runtime_config()
         })
@@ -3211,6 +3216,7 @@ mod tests {
     #[test]
     fn runtime_config_rejects_non_https_host_icon() {
         let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            probe_required_field: String::new(),
             host_icon: Some("http://localhost:3000/dotli.png".to_string()),
             ..native_host_runtime_config()
         })
