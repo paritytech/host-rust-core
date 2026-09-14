@@ -14,10 +14,11 @@ enum KnownNetworkSuffix {
     #elseif NIGHTLY
         static let current = "paseo"
     #else
-        // Unconfirmed. The Release chains carry the same assets as the nightly
-        // ones, `pas` in the native slot and `pusd` alongside it, which points
-        // at Paseo rather than Polkadot. No CI configuration builds this
-        // branch. See the pull request that introduced this.
+        // Unconfirmed, tracked by
+        // https://github.com/paritytech/host-rust-core/issues/760. The Release
+        // chains carry the same assets as the nightly ones, `pas` in the native
+        // slot and `pusd` alongside it, which points at Paseo rather than
+        // Polkadot. No CI configuration builds this branch.
         static let current = "paseo"
     #endif
 }
