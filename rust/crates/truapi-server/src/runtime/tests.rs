@@ -2509,6 +2509,44 @@ fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
 }
 
 #[test]
+fn auto_signing_serves_sign_payload_locally_without_prompt() {
+    let (platform, host) = granted_pairing_host();
+    let payload = crate::test_support::sign_payload_data();
+    let preimage = crate::host_logic::transaction::extrinsic_payload_preimage(&payload)
+        .expect("preimage builds");
+
+    let HostSignPayloadResponse::V1(response) = futures::executor::block_on(host.sign_payload(
+        &CallContext::default(),
+        HostSignPayloadRequest::V1(v01::HostSignPayloadRequest {
+            account: account_id("myapp.dot", 0),
+            payload,
+        }),
+    ))
+    .expect("the capability signs the payload locally");
+
+    assert!(
+        platform
+            .sign_payload_reviews
+            .lock()
+            .expect("sign payload review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    // A `MultiSignature`: the sr25519 discriminant, then the raw signature.
+    assert_eq!(response.signature.len(), 65);
+    assert_eq!(response.signature[0], 1);
+    let signature =
+        schnorrkel::Signature::from_bytes(&response.signature[1..]).expect("64-byte signature");
+    assert!(
+        granted_keypair()
+            .public
+            .verify_simple(b"substrate", &preimage, &signature)
+            .is_ok(),
+        "the local signature is over the payload preimage, by the product account",
+    );
+}
+
+#[test]
 fn auto_signing_serves_a_product_statement_proof_on_a_pairing_host() {
     // The SSO raw-signing protocol cannot carry an exact, unwatermarked
     // payload, so without a capability this role answers `UnableToSign`. The
