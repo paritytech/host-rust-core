@@ -355,6 +355,15 @@ fail the host at the point it is read, not at first dial - a host that starts
 without the debugger it was asked for presents, from the debugger's side,
 exactly as a host nobody switched on.
 
+A host that is dialling **MUST** make that visible in its own surface, not only
+on a console: a line scrolls away, and a tap left on from an earlier session is
+then indistinguishable from one that was never started. The dial is what would
+carry decoded frames off the machine if it ever pointed somewhere that was not
+loopback (§6), so it is not enough that it be discoverable - it has to be
+apparent. A library that owns no surface of its own **SHOULD** provide the
+indicator itself and let a host replace it, rather than leaving each host to
+remember: the failure being guarded against is exactly a host that forgets.
+
 A browser host **MUST** also let a running session be repointed without a
 reload, and **MUST** publish that control where a developer finds it by
 inspection rather than by documentation. Enablement is otherwise a property of a

@@ -879,6 +879,14 @@ export interface CreateWebWorkerPairingHostRuntimeOptions {
    * `__truapi.debugger.attach(url)` / `.detach()`.
    */
   debugger?: string | null;
+  /**
+   * Dev-only: whether to show the built-in indicator while a dial is live.
+   *
+   * Defaults to `true`. Pass `false` only when this host renders its own visible
+   * signal - the point is that a tap streaming frames off this host is never
+   * invisible, not that this particular badge is used.
+   */
+  debuggerIndicator?: boolean;
 }
 
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
@@ -1095,6 +1103,10 @@ export function createWebWorkerPairingHostRuntime(
     if (devDebuggerUrlOverride === null && debuggerEnablement.url !== null) {
       devDebuggerUrlOverride = debuggerEnablement.url;
     }
+    if (options.debuggerIndicator === false) devIndicatorSuppressed = true;
+    // Only for an armed session: a production build must not paint a badge for a
+    // dial it compiled out.
+    renderDebuggerIndicator(debugTapArmed ? debuggerEnablement.url : null);
 
     const onInitMessage = (ev: MessageEvent<WorkerToMain>): void => {
       const msg = ev.data;
@@ -1546,6 +1558,57 @@ function buildProvider(
   return provider;
 }
 
+/** Element id of the dial indicator, so a re-render finds the existing node. */
+const DEBUGGER_INDICATOR_ID = "truapi-debugger-indicator";
+/** Whether any live runtime asked to suppress the indicator. */
+let devIndicatorSuppressed = false;
+
+/**
+ * Show, in the page, that wire frames are leaving this host.
+ *
+ * A console line is not enough on its own: it scrolls away, and a tap left on
+ * from an earlier session is then invisible for the rest of the day. Loopback
+ * makes that cheap today, but the dial is the thing that would carry decoded
+ * frames off the machine if it ever pointed anywhere else, so it should be
+ * something you can SEE is on.
+ *
+ * Default-on rather than opt-in, because the failure being prevented is a host
+ * forgetting. A host that renders its own affordance passes
+ * `debuggerIndicator: false` and takes the job on.
+ *
+ * Dev-only by construction: every caller sits behind the `import.meta.env.DEV`
+ * gate, so a production bundle neither arms a tap nor mounts this. Never throws
+ * - a host must not fail to start because a debug badge could not render.
+ */
+function renderDebuggerIndicator(url: string | null): void {
+  try {
+    const doc = globalThis.document;
+    if (doc === undefined || doc.body === null) return;
+    const existing = doc.getElementById(DEBUGGER_INDICATOR_ID);
+    if (url === null || devIndicatorSuppressed) {
+      existing?.remove();
+      return;
+    }
+    const el = existing ?? doc.createElement("div");
+    if (existing === null) {
+      el.id = DEBUGGER_INDICATOR_ID;
+      // Bottom-left: the ribbon and most host chrome live on the right, and a
+      // very high z-index keeps it above a modal that would otherwise hide the
+      // one signal saying frames are still leaving.
+      el.style.cssText =
+        "position:fixed;left:8px;bottom:8px;z-index:2147483647;" +
+        "padding:4px 8px;border-radius:6px;pointer-events:none;" +
+        "background:#7a1f3d;color:#fff;font:600 11px/1.4 ui-monospace,monospace;" +
+        "box-shadow:0 2px 8px rgba(0,0,0,.4)";
+      doc.body.appendChild(el);
+    }
+    el.textContent = `TrUAPI wire → ${url}`;
+    el.title = "This host is streaming product wire frames to a debugger.";
+  } catch {
+    // A badge that cannot render must never disturb the host.
+  }
+}
+
 function exposeDevGlobal(target: {
   setLogLevel?: (level: LogLevel) => void;
   setDebuggerUrl?: (url: string | null) => void;
@@ -1588,6 +1651,7 @@ function publishDevGlobal(): void {
         // Say how many runtimes took it. Zero is the case worth seeing: it means
         // the call landed before any host was created, so nothing is streaming
         // yet even though the URL was accepted.
+        renderDebuggerIndicator(url);
         console.info(
           `[truapi] wire debugger: attached ${url} (${devGlobalTargets.size} runtime(s))`,
         );
@@ -1597,6 +1661,7 @@ function publishDevGlobal(): void {
         for (const provider of [...devGlobalTargets]) {
           provider.setDebuggerUrl?.(null);
         }
+        renderDebuggerIndicator(null);
         console.info("[truapi] wire debugger: detached");
       },
       status(): string | null {

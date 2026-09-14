@@ -288,6 +288,12 @@ Two conditions must **both** hold or nothing dials and the core installs no tap:
    Passing `null` or `""` is how a host refuses the dial even when the build
    carries one; omitting the field takes the build's value.
 
+   While a dial is live the host shows a small fixed-position badge naming the
+   endpoint, so a tap left on from an earlier session is visible rather than
+   buried in a console line. Pass `debuggerIndicator: false` to suppress it —
+   only when the host renders its own signal, since the point is that a host
+   streaming frames is never silent about it.
+
    Attaching later works because arming and dialling are separate decisions: in
    a dev build every core is built with the tap installed, whether or not a dial
    is set, and detached it emits into nothing. Without that, `attach()` would

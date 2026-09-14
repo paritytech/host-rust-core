@@ -416,9 +416,18 @@ debugger: dev-bootstrap ## Wire debugger (:9231) + a DEV-MODE dotli host (:5173)
 	# going straight to the server instead leaves apps/sandbox unbuilt, and the
 	# server treats that one as required and exits 1. :5173 then never comes up at
 	# all, which on a laptop that has run `make dev` before is invisible: the stale
-	# dist from that run satisfies the check. Build the siblings first.
-	cd $(DOTLI) && VITE_APP_DEBUG=true bunx turbo run build \
-		--filter=@dotli/sandbox --filter=@dotli/protocol-app
+	# dist from that run satisfies the check.
+	#
+	# So build everything EXCEPT the host, then build the host below. Naming the
+	# siblings instead (`--filter=@dotli/sandbox --filter=@dotli/protocol-app`) put
+	# a list of dotli's apps in this repo, and an app added there later would be
+	# silently missed - the same empty-board failure, reintroduced.
+	#
+	# Excluding the host rather than building everything and overwriting it is not
+	# just to save a build: dotli's own host build runs `tsc` first, and dotli does
+	# not typecheck against this repo's newer `@parity/truapi`. `vite build` below
+	# does not typecheck, which is what makes a dev-mode host buildable here at all.
+	cd $(DOTLI) && VITE_APP_DEBUG=true bunx turbo run build --filter='!@dotli/host'
 	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true \
 		VITE_TRUAPI_DEBUGGER_URL=ws://127.0.0.1:$(DEBUGGER_PORT) bunx --bun vite build
 	@printf '\n  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'
