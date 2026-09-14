@@ -28,7 +28,10 @@ use crate::host_logic::dotns_gateway::{
 
 /// Budget for one step of a lookup: opening the follow, one storage read, one
 /// contract view. A step that stalls this long is not going to answer.
+#[cfg(not(test))]
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const OPERATION_TIMEOUT: Duration = Duration::from_millis(100);
 /// Budget for the best-block hash the follow opens on.
 const BEST_BLOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
