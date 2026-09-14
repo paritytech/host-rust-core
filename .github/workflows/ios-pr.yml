@@ -5,11 +5,10 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  pull_request:
+  # Kept alongside pull_request so a build can be reproduced on demand without
+  # pushing a commit.
   workflow_dispatch:
-  # Held on workflow_dispatch until the build credentials tracked in #672
-  # land. The trigger below is the one this workflow runs on; restoring it
-  # is the change that puts this workflow live.
-#   pull_request:
 
 permissions:
   contents: read
@@ -60,6 +59,12 @@ jobs:
         with:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
+
+      # The app resolves the core from this tree, and the core's generated
+      # bindings are gitignored, so the package graph cannot resolve until
+      # they exist.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -136,6 +141,97 @@ jobs:
             hosts/ios/fastlane/build_logs/
           retention-days: 3
 
+  # An installable build for every commit on the pull request. The simulator
+  # slice needs no provisioning profile and no signing identity, so it needs
+  # nothing the build job does not already have, and a reviewer can run the
+  # change rather than read it.
+  #
+  # The commit is written into the bundle rather than only into the artifact
+  # name, so a build that has been downloaded and unzipped still says what it
+  # came from. A build that cannot say is a failure, not something to publish.
+  preview:
+    name: Simulator preview build
+    needs: check-skip-label
+    if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
+    runs-on: macos-26-xlarge
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup iOS Environment
+        uses: ./hosts/ios/.github/actions/install
+
+      # Simulator slice only here, unlike the build job, which archives for a
+      # device through gym and needs both.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
+        with:
+          sim-only: "true"
+
+      - name: Configure Google services
+        uses: ./hosts/ios/.github/actions/configure-google-services
+        with:
+          google_service_info_base64: ${{ secrets.GOOGLE_SERVICE_INFO_DEV_BASE64 }}
+          expected_bundle_id: io.parity.polkadotapp.develop
+
+      - name: Configure secrets
+        uses: ./hosts/ios/.github/actions/configure-secrets
+        with:
+          sentry_dsn: ${{ secrets.SENTRY_DSN }}
+          meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+
+      # DevCI to match the build job, so the preview exercises the same chains
+      # and configuration the checks do.
+      - name: Build the simulator app
+        working-directory: hosts/ios
+        run: bundle exec fastlane build_app_simulator configuration:'DevCI'
+
+      - name: Stamp the bundle with its commit and package it
+        id: package
+        working-directory: hosts/ios
+        env:
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${COMMIT}" ]; then
+            echo "::error::No commit to stamp the build with; refusing to publish it"
+            exit 1
+          fi
+
+          cd build_simulator
+          shopt -s nullglob
+          apps=(*.app)
+          if [ ${#apps[@]} -ne 1 ]; then
+            echo "::error::Expected exactly one .app under build_simulator, found ${#apps[@]}"
+            exit 1
+          fi
+          app="${apps[0]}"
+
+          plist="${app}/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :TrUAPICommit string ${COMMIT}" "$plist"             || /usr/libexec/PlistBuddy -c "Set :TrUAPICommit ${COMMIT}" "$plist"
+
+          # Read it back. A stamp that did not take is the case this guards.
+          stamped="$(/usr/libexec/PlistBuddy -c "Print :TrUAPICommit" "$plist" 2>/dev/null || true)"
+          if [ "${stamped}" != "${COMMIT}" ]; then
+            echo "::error::Bundle is not stamped with its commit, got '${stamped}'"
+            exit 1
+          fi
+          echo "Stamped ${app} with ${COMMIT}"
+
+          archive="polkadot-app-${COMMIT:0:9}.app.zip"
+          zip -qry "${archive}" "${app}"
+          echo "archive=hosts/ios/build_simulator/${archive}" >> "$GITHUB_OUTPUT"
+          echo "short=${COMMIT:0:9}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the preview build
+        uses: actions/upload-artifact@v7
+        with:
+          name: simulator-preview-${{ steps.package.outputs.short }}
+          path: ${{ steps.package.outputs.archive }}
+          retention-days: 14
+          if-no-files-found: error
+
   test:
     needs: check-skip-label
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
@@ -145,6 +241,12 @@ jobs:
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
+
+      # The app resolves the core from this tree, and the core's generated
+      # bindings are gitignored, so the package graph cannot resolve until
+      # they exist.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services

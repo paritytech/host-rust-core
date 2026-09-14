@@ -144,17 +144,18 @@ pub const MESSAGE_TYPE_START: u8 = 0;
 pub const MESSAGE_TYPE_RESPONSE: u8 = 1;
 /// See [`MESSAGE_TYPE_REQUEST`].
 pub const MESSAGE_TYPE_RECEIVE: u8 = 1;
-/// A subscription's stream-ending frame: `Some(error)` for a failure,
-/// `None` for natural completion. The `Option`/`CallError` framing is fixed;
-/// a domain error inside it carries its own version wrapper.
+/// A subscription's stream-ending frame, carrying `Result<(), Interrupt>`:
+/// `Err(value)` for the method's own interrupt value, `Ok(())` for natural
+/// completion. The `Result` framing is fixed; a domain error inside the
+/// interrupt value carries its own version wrapper.
 pub const MESSAGE_TYPE_INTERRUPT: u8 = 2;
 /// A subscription's cancellation, product → host. Carries no payload at all.
 pub const MESSAGE_TYPE_STOP: u8 = 3;
 
-/// Encode `Interrupt(None)`, a subscription's natural (error-free)
-/// completion. `Option::None` always encodes as a single `0` byte, so a clean
-/// interrupt is one byte whatever the method's error type is. Pair it with
-/// [`MESSAGE_TYPE_INTERRUPT`].
+/// Encode `Interrupt(Ok(()))`, a subscription's natural (error-free)
+/// completion. `Ok(())` always encodes as a single `0` byte, so a clean
+/// interrupt is one byte whatever the method's interrupt type is. Pair it
+/// with [`MESSAGE_TYPE_INTERRUPT`].
 pub fn encode_clean_interrupt() -> Vec<u8> {
     vec![0]
 }
@@ -440,7 +441,7 @@ mod tests {
         let cases: &[(u8, Vec<u8>)] = &[
             (MESSAGE_TYPE_START, vec![0x00, 0xaa]), // start: [version, item bytes]
             (MESSAGE_TYPE_RECEIVE, vec![0x00, 0x01, 0x02, 0x03]), // receive: [version, item bytes]
-            (MESSAGE_TYPE_INTERRUPT, vec![0x00]),   // interrupt: None
+            (MESSAGE_TYPE_INTERRUPT, vec![0x00]),   // interrupt: Ok(())
             (MESSAGE_TYPE_STOP, vec![]),            // stop: no payload at all
         ];
         for (message_type, value) in cases {
@@ -483,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_clean_interrupt_is_a_bare_none() {
+    fn encode_clean_interrupt_is_a_unit_ok() {
         assert_eq!(encode_clean_interrupt(), vec![0]);
     }
 

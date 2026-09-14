@@ -125,25 +125,25 @@ function accountGetResponsePayload(
 
 function rendererStart(
     requestId: string,
-    request: T.ProductChatCustomMessageRenderRequest,
+    request: T.ProductRendererRenderRequest,
 ): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_START,
-        T.VersionedProductChatCustomMessageRenderRequest.enc({
+        T.VersionedProductRendererRenderRequest.enc({
             tag: "V1",
             value: request,
         }),
     );
 }
 
-function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Array {
+function rendererReceive(requestId: string, node: T.RendererNode): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_RECEIVE,
-        T.VersionedProductChatCustomMessageRenderItem.enc({
+        T.VersionedProductRendererRenderItem.enc({
             tag: "V1",
             value: node,
         }),
@@ -152,14 +152,14 @@ function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Ar
 
 /**
  * The fixed frame `transport.ts` sends to decline a host-initiated render:
- * `Some(CallError::HostFailure{reason: "unavailable"})`, with `messageType =
+ * `Err(CallError::HostFailure{reason: "unavailable"})`, with `messageType =
  * Interrupt`. `HostFailure`'s payload doesn't depend on the method's own
  * domain error type, so one constant frame covers every method.
  */
 function rendererInterrupt(requestId: string): Uint8Array {
     return wireFrame(
         requestId,
-        W.CHAT_CUSTOM_MESSAGE_RENDER,
+        W.RENDERER_RENDER,
         MESSAGE_TYPE_INTERRUPT,
         new Uint8Array([
             1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101,
@@ -167,8 +167,37 @@ function rendererInterrupt(requestId: string): Uint8Array {
     );
 }
 
+/** The interrupt frame a handler produces by ending its stream with `reason`. */
+function rendererTypedInterrupt(
+    requestId: string,
+    reason: CallErrorValue<T.GenericError>,
+): Uint8Array {
+    return wireFrame(
+        requestId,
+        W.RENDERER_RENDER,
+        MESSAGE_TYPE_INTERRUPT,
+        S.Result(S._void, S.CallError(T.GenericError)).enc({
+            success: false,
+            value: reason,
+        }),
+    );
+}
+
+/** The interrupt frame a handler produces by ending its stream cleanly. */
+function rendererCleanInterrupt(requestId: string): Uint8Array {
+    return wireFrame(
+        requestId,
+        W.RENDERER_RENDER,
+        MESSAGE_TYPE_INTERRUPT,
+        S.Result(S._void, S.CallError(T.GenericError)).enc({
+            success: true,
+            value: undefined,
+        }),
+    );
+}
+
 function rendererStop(requestId: string): Uint8Array {
-    return wireFrame(requestId, W.CHAT_CUSTOM_MESSAGE_RENDER, MESSAGE_TYPE_STOP);
+    return wireFrame(requestId, W.RENDERER_RENDER, MESSAGE_TYPE_STOP);
 }
 
 function protocolError(requestId: string, payload: Uint8Array): Uint8Array {
@@ -517,15 +546,15 @@ describe("generated client transport", () => {
         fixture.receive(
             // No handler is ever registered in this test (no client is created),
             // so this never reaches a typed decode of the rest.
-            wireFrame("h:known", W.CHAT_CUSTOM_MESSAGE_RENDER, MESSAGE_TYPE_START),
+            wireFrame("h:known", W.RENDERER_RENDER, MESSAGE_TYPE_START),
         );
 
         expect(fixture.sent.map(toHex)).toEqual([
             toHex(
                 unsupportedMessage(
                     "h:known",
-                    W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
-                    W.CHAT_CUSTOM_MESSAGE_RENDER.method,
+                    W.RENDERER_RENDER.trait,
+                    W.RENDERER_RENDER.method,
                 ),
             ),
         ]);
@@ -834,18 +863,19 @@ describe("generated client transport", () => {
     it("buffers a host render start until the product registers its handler", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        const request: T.ProductChatCustomMessageRenderRequest = {
-            messageId: "message-1",
-            messageType: "vote",
+        const request: T.ProductRendererRenderRequest = {
+            context: {
+                tag: "ChatMessage",
+                value: { roomId: "room", messageId: "message-1", messageType: "vote" },
+            },
             payload: "0x0102",
         };
         // Legacy hosts use opaque ids rather than the Rust host's `h:` prefix.
         fixture.receive(rendererStart("legacy-render-1", request));
 
-        const handled: T.ProductChatCustomMessageRenderRequest[] = [];
-        client.chat.onCustomMessageRender((value) => {
+        const handled: T.ProductRendererRenderRequest[] = [];
+        client.renderer.onRender((value) => {
             handled.push(value);
-            return { subscribe: () => ({ unsubscribe() {} }) };
         });
 
         expect(handled).toEqual([request]);
@@ -855,25 +885,24 @@ describe("generated client transport", () => {
     it("streams complete replacement trees on the host-owned request id", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        let observer: { next?: (node: T.CustomRendererNode) => void } = {};
-        client.chat.onCustomMessageRender(() => ({
-            subscribe(next) {
-                observer = next;
-                return { unsubscribe() {} };
-            },
-        }));
+        let send: ((node: T.RendererNode) => void) | undefined;
+        client.renderer.onRender((_request, sendItem) => {
+            send = sendItem;
+        });
 
         fixture.receive(
             rendererStart("h:7", {
-                messageId: "message-7",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-7", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
         const first = { tag: "String", value: { text: "Votes: 1" } } as const;
         const second = { tag: "String", value: { text: "Votes: 2" } } as const;
-        observer.next?.(first);
-        observer.next?.(second);
+        send?.(first);
+        send?.(second);
 
         expect(fixture.sent.map(toHex)).toEqual(
             [rendererReceive("h:7", first), rendererReceive("h:7", second)].map(toHex),
@@ -883,14 +912,16 @@ describe("generated client transport", () => {
     it("declines a render when the handler throws", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        client.chat.onCustomMessageRender(() => {
+        client.renderer.onRender(() => {
             throw new Error("unsupported renderer");
         });
 
         fixture.receive(
             rendererStart("h:2", {
-                messageId: "message-2",
-                messageType: "unknown",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-2", messageType: "unknown" },
+                },
                 payload: "0x",
             }),
         );
@@ -898,51 +929,54 @@ describe("generated client transport", () => {
         expect(toHex(fixture.sent[0])).toBe(toHex(rendererInterrupt("h:2")));
     });
 
-    it("declines a render when its handler stream errors", () => {
+    it("ends a render with the interrupt value its handler supplies", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
-        client.chat.onCustomMessageRender(() => ({
-            subscribe(observer) {
-                observer.error?.(new Error("renderer failed"));
-                return { unsubscribe() {} };
-            },
-        }));
+        client.renderer.onRender((_request, _send, interrupt) => {
+            interrupt({ tag: "HostFailure", value: { reason: "renderer failed" } });
+        });
 
         fixture.receive(
             rendererStart("h:3", {
-                messageId: "message-3",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-3", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
 
-        expect(toHex(fixture.sent[0])).toBe(toHex(rendererInterrupt("h:3")));
+        expect(toHex(fixture.sent[0])).toBe(
+            toHex(
+                rendererTypedInterrupt("h:3", {
+                    tag: "HostFailure",
+                    value: { reason: "renderer failed" },
+                }),
+            ),
+        );
     });
 
-    it("keeps a completed render alive until the host stops it", () => {
+    it("ends the host's stream when its handler interrupts with no reason", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
         let disposed = false;
-        client.chat.onCustomMessageRender(() => ({
-            subscribe(observer) {
-                observer.complete?.();
-                return { unsubscribe: () => (disposed = true) };
-            },
-        }));
+        client.renderer.onRender((_request, _send, interrupt) => {
+            interrupt();
+            return () => (disposed = true);
+        });
 
         fixture.receive(
             rendererStart("h:4", {
-                messageId: "message-4",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "message-4", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
-        expect(fixture.sent).toHaveLength(0);
-        expect(disposed).toBe(false);
 
-        fixture.receive(rendererStop("h:4"));
+        expect(toHex(fixture.sent[0])).toBe(toHex(rendererCleanInterrupt("h:4")));
         expect(disposed).toBe(true);
-        expect(fixture.sent).toHaveLength(0);
     });
 
     it("interrupts the oldest buffered render when capacity is exceeded", () => {
@@ -951,8 +985,10 @@ describe("generated client transport", () => {
         for (let index = 1; index <= 65; index += 1) {
             fixture.receive(
                 rendererStart(`h:${index}`, {
-                    messageId: `message-${index}`,
-                    messageType: "vote",
+                    context: {
+                        tag: "ChatMessage",
+                        value: { roomId: "room", messageId: `message-${index}`, messageType: "vote" },
+                    },
                     payload: "0x",
                 }),
             );
@@ -966,22 +1002,26 @@ describe("generated client transport", () => {
         const fixture = providerFixture();
         const client = createClient(createTransport(fixture.provider));
         const disposed: string[] = [];
-        client.chat.onCustomMessageRender((request) => ({
-            subscribe() {
-                return { unsubscribe: () => disposed.push(request.messageId) };
-            },
-        }));
+        client.renderer.onRender((request) => () => {
+            if (request.context.tag === "ChatMessage") {
+                disposed.push(request.context.value.messageId);
+            }
+        });
         fixture.receive(
             rendererStart("h:1", {
-                messageId: "one",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "one", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
         fixture.receive(
             rendererStart("h:2", {
-                messageId: "two",
-                messageType: "vote",
+                context: {
+                    tag: "ChatMessage",
+                    value: { roomId: "room", messageId: "two", messageType: "vote" },
+                },
                 payload: "0x",
             }),
         );
@@ -990,7 +1030,7 @@ describe("generated client transport", () => {
         expect(disposed).toEqual(["one"]);
     });
 
-    it("completes the observable on a payloadless interrupt terminator", () => {
+    it("completes the observable on a clean interrupt terminator", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
         const client = createClient(transport);
@@ -1004,11 +1044,64 @@ describe("generated client transport", () => {
             sub.subscriptionId,
             W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE,
             MESSAGE_TYPE_INTERRUPT,
-            S.Option(S.CallError(T.GenericError)).enc(undefined),
+            S.Result(S._void, S.CallError(T.GenericError)).enc({
+                success: true,
+                value: undefined,
+            }),
         );
         fixture.receive(frame);
 
         expect(completions).toEqual([[]]);
+    });
+
+    it("ends a running stream on an interrupt that arrives after its items", () => {
+        // A live subscription fails like any other stage: the items already
+        // delivered stand, and the interrupt that follows carries the reason.
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const events: unknown[] = [];
+        const errors: Error[] = [];
+        const completions: unknown[][] = [];
+
+        const sub = client.account.connectionStatusSubscribe().subscribe({
+            next: (value) => events.push(value),
+            error: (error) => errors.push(error),
+            complete: (...args) => completions.push(args),
+        });
+
+        fixture.receive(
+            wireFrame(
+                sub.subscriptionId,
+                W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE,
+                MESSAGE_TYPE_RECEIVE,
+                T.VersionedHostAccountConnectionStatusSubscribeItem.enc({
+                    tag: "V1",
+                    value: "Connected",
+                }),
+            ),
+        );
+
+        const reason: CallErrorValue<T.GenericError> = {
+            tag: "HostFailure",
+            value: { reason: "platform stream failed" },
+        };
+        fixture.receive(
+            wireFrame(
+                sub.subscriptionId,
+                W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE,
+                MESSAGE_TYPE_INTERRUPT,
+                S.Result(S._void, S.CallError(T.GenericError)).enc({
+                    success: false,
+                    value: reason,
+                }),
+            ),
+        );
+
+        expect(events).toEqual(["Connected"]);
+        expect(completions).toEqual([]);
+        expect(errors).toHaveLength(1);
+        expect((errors[0] as SubscriptionError).reason).toEqual(reason);
     });
 
     it("surfaces a framework interrupt as an observable error on a plain subscription", () => {
@@ -1034,7 +1127,10 @@ describe("generated client transport", () => {
             sub.subscriptionId,
             W.CHAT_LIST_SUBSCRIBE,
             MESSAGE_TYPE_INTERRUPT,
-            S.Option(S.CallError(T.GenericError)).enc(callError),
+            S.Result(S._void, S.CallError(T.GenericError)).enc({
+                success: false,
+                value: callError,
+            }),
         );
         fixture.receive(frame);
 

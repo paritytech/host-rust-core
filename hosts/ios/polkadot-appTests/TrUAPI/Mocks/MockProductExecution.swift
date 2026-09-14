@@ -30,13 +30,11 @@ final class MockProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sen
 
     func publishChatAction(_: HostChatActionSubscribeItem) throws {}
 
-    func renderCustomMessage(
-        messageId _: String,
-        messageType _: String,
-        payload _: Data
-    ) throws -> AsyncThrowingStream<CustomRendererNode, Error> {
+    func render(_: ProductRendererRenderRequest) throws -> AsyncThrowingStream<RendererNode, Error> {
         AsyncThrowingStream { $0.finish() }
     }
+
+    func publishRendererAction(_: HostRendererActionSubscribeItem) throws {}
 
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest

@@ -54,8 +54,10 @@ const sub: Subscription = truapi.chainInteraction
     next(event: RemoteChainHeadFollowItem) {
       console.log(event);
     },
-    error(error: Error) {
-      console.error(error);
+    // `reason` carries the method's declared interrupt value, and is
+    // undefined when the stream ended on a transport or decode failure.
+    error(error) {
+      console.error(error.reason ?? error);
     },
     complete() {
       console.log("stream ended");

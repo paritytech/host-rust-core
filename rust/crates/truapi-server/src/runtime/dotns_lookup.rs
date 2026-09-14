@@ -58,7 +58,7 @@ impl<'a> DotnsLookup<'a> {
         let genesis_hash = asset_hub_chain_genesis_hash.to_vec();
         let lookup_id = DOTNS_LOOKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let follow_id = format!("truapi:dotns:{lookup_id}:{label}");
-        let mut follow = chain.remote_chain_head_follow(
+        let mut follow = chain.remote_chain_head_follow_items(
             follow_id.clone(),
             RemoteChainHeadFollowRequest {
                 genesis_hash: genesis_hash.clone(),

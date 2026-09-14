@@ -1,5 +1,6 @@
 //! Unified [`Preimage`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::preimage::{
     RemotePreimageLookupSubscribeItem, RemotePreimageLookupSubscribeRequest,
     RemotePreimageSubmitError, RemotePreimageSubmitRequest, RemotePreimageSubmitResponse,
@@ -32,8 +33,8 @@ pub trait Preimage: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: RemotePreimageLookupSubscribeRequest,
-    ) -> Subscription<RemotePreimageLookupSubscribeItem> {
-        Subscription::empty()
+    ) -> Subscription<RemotePreimageLookupSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Submit a preimage. Returns the preimage key (hash) on success.
