@@ -142,8 +142,9 @@ export interface ObservableLike<Item, Reason = never> {
  * It receives the decoded request and two callbacks: `send` delivers one item
  * to the host, and `interrupt` ends the stream, cleanly when called with no
  * argument and with the method's interrupt value otherwise. The returned
- * teardown, if any, runs when the host stops the stream or the handler is
- * replaced.
+ * teardown, if any, runs once the stream ends: on the host's stop frame, on
+ * `interrupt`, when the transport closes, or when the host restarts the same
+ * request id.
  **/
 export type HostInitiatedSubscriptionHandler<Request, Item, Reason = never> = (
   request: Request,

@@ -48,7 +48,10 @@ impl Chain for ProductRuntimeHost {
             .services
             .chain
             .remote_chain_head_follow(follow_subscription_id, inner)
-            .map(|item| Ok(RemoteChainHeadFollowItem::V1(item)));
+            .map(|item| {
+                item.map(RemoteChainHeadFollowItem::V1)
+                    .map_err(runtime_failure_to_call_error)
+            });
         Subscription::new(stream)
     }
 

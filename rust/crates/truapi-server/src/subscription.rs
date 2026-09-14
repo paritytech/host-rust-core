@@ -860,10 +860,12 @@ mod tests {
         manager.handle_message(host_frame("h:2", 1, 9_u32.encode()));
 
         // A partial tree left on screen as final is the failure this prevents.
-        assert!(matches!(
+        assert_eq!(
             futures::executor::block_on(malformed.next()),
-            Some(Err(_))
-        ));
+            Some(Err(CallError::MalformedFrame {
+                reason: "host-initiated subscription item did not decode".to_string(),
+            }))
+        );
         assert_eq!(futures::executor::block_on(malformed.next()), None);
         assert_eq!(futures::executor::block_on(healthy.next()), Some(Ok(9)));
         assert_eq!(transport_typed.sent()[2].request_id, "h:1");
@@ -881,16 +883,17 @@ mod tests {
         // A declining product sends `Interrupt(Err(error))`. An
         // `Interrupt(Ok(()))` is a clean completion instead, covered by
         // `a_clean_host_interrupt_completes_the_stream_instead_of_erroring`.
-        let declining = Err::<(), _>(truapi::CallError::<v01::GenericError>::HostFailure {
+        let interrupt = truapi::CallError::<v01::GenericError>::HostFailure {
             reason: "unavailable".to_string(),
-        })
-        .encode();
+        };
+        let declining = Err::<(), _>(interrupt.clone()).encode();
         manager.handle_message(host_frame("h:1", MESSAGE_TYPE_INTERRUPT, declining));
 
-        assert!(matches!(
+        // The product's own reason reaches the host, rather than a canned one.
+        assert_eq!(
             futures::executor::block_on(declined.next()),
-            Some(Err(_))
-        ));
+            Some(Err(interrupt))
+        );
         assert_eq!(futures::executor::block_on(declined.next()), None);
         assert_eq!(transport_typed.sent().len(), 1);
     }
@@ -1129,7 +1132,11 @@ mod tests {
     fn a_mid_stream_interrupt_ends_the_subscription_where_it_happens() {
         let transport_typed = Arc::new(RecordingTransport::new());
         let transport_dyn: Arc<dyn Transport> = transport_typed.clone();
-        let manager = SubscriptionManager::new(thread_per_subscription_spawner());
+        // Drive the worker on the caller's thread so the frame list is
+        // complete by the time `register` returns: the assertion below is
+        // that nothing follows the interrupt.
+        let inline_spawner: Spawner = Arc::new(futures::executor::block_on);
+        let manager = SubscriptionManager::new(inline_spawner);
         let failure: CallError<v01::GenericError> = CallError::HostFailure {
             reason: "platform stream failed".to_string(),
         };
@@ -1140,18 +1147,14 @@ mod tests {
         ]));
         manager.register("p:1".to_string(), 7, 99, items, transport_dyn);
 
-        let observed = transport_typed.wait_for(2, std::time::Duration::from_secs(2));
-        assert_eq!(observed, 2, "expected 1 receive frame + 1 interrupt");
         let frames = transport_typed.sent();
+        // The item behind the interrupt is dropped, and a stream that ended
+        // with one does not also report a clean end.
+        assert_eq!(frames.len(), 2, "expected 1 receive frame + 1 interrupt");
         assert_eq!(frames[0].payload.message_type, MESSAGE_TYPE_RECEIVE);
         assert_eq!(frames[0].payload.value, 1_u32.encode());
         assert_eq!(frames[1].payload.message_type, MESSAGE_TYPE_INTERRUPT);
         assert_eq!(frames[1].payload.value, subscription_interrupt(failure));
-
-        // The item behind the interrupt is dropped, and a stream that ended
-        // with one does not also report a clean end.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert_eq!(transport_typed.sent().len(), 2);
     }
 
     /// A stream that yields 2 items then ends naturally must produce 2

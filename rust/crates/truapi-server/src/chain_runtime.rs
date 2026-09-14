@@ -46,7 +46,7 @@ use subxt::utils::H256;
 use subxt_rpcs::client::RpcClient;
 use subxt_rpcs::methods::chain_head as subxt_chain;
 use subxt_rpcs::{ChainHeadRpcMethods, Error as SubxtRpcError, RpcConfig};
-use tracing::instrument;
+use tracing::{instrument, warn};
 use truapi::v01::{
     OperationStartedResult, RemoteChainHeadBodyRequest, RemoteChainHeadBodyResponse,
     RemoteChainHeadCallRequest, RemoteChainHeadCallResponse, RemoteChainHeadContinueRequest,
@@ -287,19 +287,21 @@ impl ChainRuntime {
     }
 
     /// Start (or attach to an existing) `chainHead_v1_follow` subscription.
-    /// Returns a stream of typed follow items that closes when the remote
-    /// sends `stop` or the connection drops.
+    /// Returns a stream of typed follow items that ends with `Err` when setup
+    /// or the remote subscription fails, and without one when the remote sends
+    /// `stop`.
     #[instrument(skip_all, fields(runtime.method = "chain_runtime.follow"))]
     pub fn remote_chain_head_follow(
         &self,
         follow_subscription_id: String,
         request: RemoteChainHeadFollowRequest,
-    ) -> BoxStream<'static, RemoteChainHeadFollowItem> {
+    ) -> BoxStream<'static, Result<RemoteChainHeadFollowItem, RuntimeFailure>> {
         // Product SDKs assign operation aliases independently of the outer
         // subscription frame id. Publish the intent synchronously so the next
         // product frame can resolve its alias before async setup is polled.
         self.register_follow_intent(&request.genesis_hash, &follow_subscription_id);
         let (tx, rx) = mpsc::unbounded();
+        let setup_tx = tx.clone();
         let runtime = self.clone();
         let cleanup_runtime = self.clone();
         let cleanup_genesis_hash = request.genesis_hash.clone();
@@ -319,7 +321,11 @@ impl ChainRuntime {
             let result = runtime
                 .start_follow(follow_subscription_id, request, tx, setup_cancelled)
                 .await;
-            if result.is_err() {
+            if let Err(failure) = &result {
+                // Cleanup drops the sender the connection holds, which on its
+                // own reads as a clean end. Report the failure on this
+                // caller's own handle first.
+                let _ = setup_tx.unbounded_send(Err(failure.clone()));
                 runtime.cleanup_follow(&setup_genesis_hash, &setup_follow_id);
             }
             result
@@ -344,6 +350,20 @@ impl ChainRuntime {
             })),
         )
         .boxed()
+    }
+
+    /// [`Self::remote_chain_head_follow`] for host-internal callers that read
+    /// a follow themselves. They wait for the events one operation needs and
+    /// time out on their own, so a failure ends the stream rather than
+    /// becoming an item every one of them has to match.
+    pub(crate) fn remote_chain_head_follow_items(
+        &self,
+        follow_subscription_id: String,
+        request: RemoteChainHeadFollowRequest,
+    ) -> BoxStream<'static, RemoteChainHeadFollowItem> {
+        self.remote_chain_head_follow(follow_subscription_id, request)
+            .scan((), |_, item| core::future::ready(item.ok()))
+            .boxed()
     }
 
     /// Fetch a block header.
@@ -743,7 +763,7 @@ impl ChainRuntime {
         &self,
         local_follow_id: String,
         request: RemoteChainHeadFollowRequest,
-        sender: mpsc::UnboundedSender<RemoteChainHeadFollowItem>,
+        sender: mpsc::UnboundedSender<Result<RemoteChainHeadFollowItem, RuntimeFailure>>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<(), RuntimeFailure> {
         if cancelled.load(Ordering::SeqCst) {
@@ -1088,7 +1108,7 @@ impl ChainConnection {
         &self,
         local_follow_id: &str,
         with_runtime: bool,
-        sender: mpsc::UnboundedSender<RemoteChainHeadFollowItem>,
+        sender: mpsc::UnboundedSender<Result<RemoteChainHeadFollowItem, RuntimeFailure>>,
         cancelled: Arc<AtomicBool>,
     ) {
         let mut follows = self.follows.lock().unwrap();
@@ -1241,13 +1261,14 @@ impl ChainConnection {
                                 break;
                             }
                         }
-                        Err(_) => {
-                            connection.interrupt_follow(&pump_follow_id);
+                        Err(failure) => {
+                            connection.interrupt_follow(&pump_follow_id, failure);
                             break;
                         }
                     },
-                    Err(_) => {
-                        connection.interrupt_follow(&pump_follow_id);
+                    Err(error) => {
+                        connection
+                            .interrupt_follow(&pump_follow_id, rpc_failure(FOLLOW_METHOD, error));
                         break;
                     }
                 }
@@ -1301,26 +1322,38 @@ impl ChainConnection {
     /// Cleanup never aborts: the only caller is the pump itself, which the
     /// stored abort handle targets.
     fn deliver_follow_event(&self, local_follow_id: &str, event: RemoteChainHeadFollowItem) {
-        let sender = self
-            .follows
-            .lock()
-            .unwrap()
-            .get(local_follow_id)
-            .map(|follow| follow.sender.clone());
+        let sender = self.follow_sender(local_follow_id);
         let is_stop = matches!(event, RemoteChainHeadFollowItem::Stop);
         if let Some(sender) = sender {
-            let _ = sender.unbounded_send(event);
+            let _ = sender.unbounded_send(Ok(event));
         }
         if is_stop {
             self.remove_follow_without_abort(local_follow_id);
         }
     }
 
-    /// End the local follow stream on an abnormal close by tearing the follow
-    /// down (sender drop). Cleanup never aborts, same as
-    /// [`Self::deliver_follow_event`].
-    fn interrupt_follow(&self, local_follow_id: &str) {
+    /// End the local follow stream on an abnormal close, delivering `failure`
+    /// as its last item before tearing the follow down. Cleanup never aborts,
+    /// same as [`Self::deliver_follow_event`].
+    fn interrupt_follow(&self, local_follow_id: &str, failure: RuntimeFailure) {
+        warn!(%failure, "chain follow interrupted");
+        if let Some(sender) = self.follow_sender(local_follow_id) {
+            let _ = sender.unbounded_send(Err(failure));
+        }
         self.remove_follow_without_abort(local_follow_id);
+    }
+
+    /// Handle on the local subscriber of `local_follow_id`, cloned so the
+    /// `follows` lock is released before anything is sent through it.
+    fn follow_sender(
+        &self,
+        local_follow_id: &str,
+    ) -> Option<mpsc::UnboundedSender<Result<RemoteChainHeadFollowItem, RuntimeFailure>>> {
+        self.follows
+            .lock()
+            .unwrap()
+            .get(local_follow_id)
+            .map(|follow| follow.sender.clone())
     }
 }
 
@@ -1331,7 +1364,7 @@ struct FollowState {
     abort: Option<AbortHandle>,
     /// Local subscriber; dropping it (with the follow state) is what ends the
     /// local follow stream.
-    sender: mpsc::UnboundedSender<RemoteChainHeadFollowItem>,
+    sender: mpsc::UnboundedSender<Result<RemoteChainHeadFollowItem, RuntimeFailure>>,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -2676,7 +2709,7 @@ mod tests {
         let items: Vec<_> = futures::executor::block_on(async {
             let mut out = Vec::new();
             while let Some(item) = stream.next().await {
-                let is_stop = matches!(item, RemoteChainHeadFollowItem::Stop);
+                let is_stop = matches!(item, Ok(RemoteChainHeadFollowItem::Stop));
                 out.push(item);
                 if is_stop {
                     break;
@@ -2686,16 +2719,89 @@ mod tests {
         });
 
         match &items[0] {
-            RemoteChainHeadFollowItem::Initialized {
+            Ok(RemoteChainHeadFollowItem::Initialized {
                 finalized_block_hashes,
                 finalized_block_runtime,
-            } => {
+            }) => {
                 assert_eq!(finalized_block_hashes, &vec![vec![0xaa; 32]]);
                 assert!(finalized_block_runtime.is_none());
             }
             other => panic!("expected Initialized, got {other:?}"),
         }
-        assert!(matches!(items[1], RemoteChainHeadFollowItem::Stop));
+        assert!(matches!(items[1], Ok(RemoteChainHeadFollowItem::Stop)));
+    }
+
+    /// A follow whose setup never reaches the chain must end with that
+    /// failure. Ending without one reaches the product as `complete`, which
+    /// reads as a subscription that simply had nothing more to say.
+    #[test]
+    fn follow_setup_failure_ends_the_stream_with_the_failure() {
+        let runtime = ChainRuntime::new(Arc::new(UnavailableChainProvider), spawner_for_tests());
+
+        let mut stream = runtime.remote_chain_head_follow(
+            "local-follow".to_string(),
+            RemoteChainHeadFollowRequest {
+                genesis_hash: vec![0u8; 32],
+                with_runtime: false,
+            },
+        );
+
+        let failure = match futures::executor::block_on(stream.next()) {
+            Some(Err(failure)) => failure,
+            other => panic!("expected the setup failure, got {other:?}"),
+        };
+        assert_eq!(failure.kind(), RuntimeFailureKind::Unavailable);
+        assert_eq!(failure.method(), FOLLOW_METHOD);
+        assert!(futures::executor::block_on(stream.next()).is_none());
+    }
+
+    /// An upstream event the follow cannot read ends the stream with a
+    /// failure, after the items that arrived before it.
+    #[cfg_attr(target_arch = "wasm32", ignore)]
+    #[test]
+    fn an_unreadable_follow_event_interrupts_the_stream_after_earlier_items() {
+        let provider = Arc::new(ScriptedProvider::new(|request| {
+            let id = extract_id(request).unwrap();
+            if request.contains("chainHead_v1_follow") {
+                Some(format!(
+                    r#"{{"jsonrpc":"2.0","id":"{id}","result":"REMOTE-FOLLOW"}}"#
+                ))
+            } else {
+                None
+            }
+        }));
+        let runtime = ChainRuntime::new(provider.clone(), spawner_for_tests());
+
+        let mut stream = runtime.remote_chain_head_follow(
+            "local-follow".to_string(),
+            RemoteChainHeadFollowRequest {
+                genesis_hash: vec![0u8; 32],
+                with_runtime: false,
+            },
+        );
+
+        let tx = notification_sender(&provider);
+        tx.unbounded_send(
+            r#"{"jsonrpc":"2.0","method":"chainHead_v1_followEvent","params":{"subscription":"REMOTE-FOLLOW","result":{"event":"initialized","finalizedBlockHashes":["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}}}"#
+                .to_string(),
+        ).unwrap();
+        // `newBlock` without its `parentBlockHash`: an event the follow
+        // cannot read.
+        tx.unbounded_send(
+            r#"{"jsonrpc":"2.0","method":"chainHead_v1_followEvent","params":{"subscription":"REMOTE-FOLLOW","result":{"event":"newBlock","blockHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}"#
+                .to_string(),
+        ).unwrap();
+
+        assert!(matches!(
+            futures::executor::block_on(stream.next()),
+            Some(Ok(RemoteChainHeadFollowItem::Initialized { .. }))
+        ));
+        let failure = match futures::executor::block_on(stream.next()) {
+            Some(Err(failure)) => failure,
+            other => panic!("expected the follow to be interrupted, got {other:?}"),
+        };
+        assert_eq!(failure.method(), FOLLOW_METHOD);
+        assert!(futures::executor::block_on(stream.next()).is_none());
     }
 
     #[cfg_attr(target_arch = "wasm32", ignore)]

@@ -310,9 +310,7 @@ impl ProductRuntimeHost {
         let stream = futures::stream::iter(cached_page).chain(remote_stream);
         Ok(Subscription::new(stream.map(Ok)))
     }
-}
 
-impl ProductRuntimeHost {
     /// `StatementStoreRpc` bound to this runtime's people chain.
     pub(super) fn statement_store_rpc(&self) -> StatementStoreRpc {
         self.services.statement_store.clone()

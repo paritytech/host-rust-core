@@ -170,7 +170,7 @@ function rendererInterrupt(requestId: string): Uint8Array {
 /** The interrupt frame a handler produces by ending its stream with `reason`. */
 function rendererTypedInterrupt(
     requestId: string,
-    reason: S.CallErrorValue<T.GenericError>,
+    reason: CallErrorValue<T.GenericError>,
 ): Uint8Array {
     return wireFrame(
         requestId,
@@ -1012,7 +1012,7 @@ describe("generated client transport", () => {
         expect(disposed).toEqual(["one"]);
     });
 
-    it("completes the observable on a payloadless interrupt terminator", () => {
+    it("completes the observable on a clean interrupt terminator", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
         const client = createClient(transport);
@@ -1064,7 +1064,7 @@ describe("generated client transport", () => {
             ),
         );
 
-        const reason: CallErrorValue<never> = {
+        const reason: CallErrorValue<T.GenericError> = {
             tag: "HostFailure",
             value: { reason: "platform stream failed" },
         };

@@ -3626,8 +3626,9 @@ mod tests {
             "S.Result(T.VersionedFeatureSupportedResponse, T.VersionedFeatureSupportedError).dec(payload)"
         ));
         assert!(source.contains("T.VersionedStreamItem.dec(payload)"));
-        // message_type 2 (Interrupt) on a plain subscription still decodes a
-        // framework-level `CallError<GenericError>`, wrapped in `Option`.
+        // message_type 2 (Interrupt) on a subscription with no domain error
+        // still decodes a framework-level `CallError<GenericError>`, in the
+        // `Err` arm of the leg's `Result`.
         assert!(source.contains("S.Result(S._void, S.CallError(T.GenericError)).dec(payload)"));
     }
 

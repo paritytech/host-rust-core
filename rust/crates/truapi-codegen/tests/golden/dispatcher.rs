@@ -1060,7 +1060,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))
@@ -1092,7 +1092,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))
@@ -1180,7 +1180,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))
@@ -1212,7 +1212,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))
@@ -1244,7 +1244,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))
@@ -1505,7 +1505,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))
@@ -1565,7 +1565,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))
@@ -2022,7 +2022,7 @@ where
                                 target_version,
                             )
                         })
-                            .map_err(|error| downgrade_call_error(error, target_version))
+                        .map_err(|error| downgrade_call_error(error, target_version))
                     },
                 );
                 Ok(subscription_stream(stream))

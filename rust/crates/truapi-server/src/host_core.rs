@@ -1168,7 +1168,7 @@ impl ProductRuntimeControl {
                 truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
             })
         });
-        Ok(truapi::Subscription::new(Box::pin(stream)))
+        Ok(truapi::Subscription::new(stream))
     }
 }
 

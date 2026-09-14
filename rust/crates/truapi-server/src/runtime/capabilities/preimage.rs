@@ -74,7 +74,7 @@ impl Preimage for ProductRuntimeHost {
                 if !matches {
                     warn!(
                         "preimage lookup returned a value whose hash does not match the \
-                             requested key; downgrading to a miss"
+                         requested key; downgrading to a miss"
                     );
                 }
                 matches

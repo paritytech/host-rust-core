@@ -43,6 +43,7 @@ Implement one or more of the unified sub-traits. `TrUApi` is a blanket trait ove
 ```rust
 use truapi::{CallContext, CallError, Subscription};
 use truapi::api::{Account, TrUApi};
+use truapi::latest::GenericError;
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem,
     HostAccountGetError,

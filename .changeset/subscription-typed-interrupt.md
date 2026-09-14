@@ -10,7 +10,8 @@ failure reaches the product instead of freezing its last value. The `Interrupt` 
 value. Frame bytes are unchanged.
 
 `Result<Subscription<Item>, CallError<E>>` is no longer a subscription return: a start-time failure is an interrupt with
-no items before it. Methods that could only fail at start now report the same failure at any point.
+no items before it. Methods that could only fail at start now report the same failure at any point. A chain follow that
+cannot be opened, or whose upstream events stop being readable, ends with that failure rather than completing.
 
 A product serves a host-initiated method with `(request, send, interrupt) => teardown` rather than by returning an
 observable. `interrupt()` ends the host's stream, and `interrupt(reason)` ends it with the method's own interrupt value,

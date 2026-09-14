@@ -174,12 +174,10 @@ fn write_host_initiated_callers(
             };
             let item_name =
                 versioned_wrapper_root(&method.name, "host-initiated item", item, &wrappers)?;
-            let interrupt_path = match wire_payload_for_error(&method.name, interrupt, &wrappers)?
-                .versioned_name()
-            {
-                Some(name) => format!("versioned::{module}::{name}"),
-                None => "truapi::latest::GenericError".to_string(),
-            };
+            let interrupt_path = error_type_path(
+                &module,
+                &wire_payload_for_error(&method.name, interrupt, &wrappers)?,
+            );
             let wire_name = wire_method_name(&trait_def.name, &method.name);
             let ids = const_name(&wire_name);
             let request_path = format!("versioned::{module}::{request_name}");
@@ -484,12 +482,7 @@ impl MethodEmission {
         // of relying on a follow-up `let _ = request;` to silence it.
         let request_binding = if has_request { "request" } else { "_request" };
 
-        // A method with a domain error names its versioned wrapper; one
-        // without carries the framework error's own generic payload.
-        let error_ty = match self.error_payload.versioned_name() {
-            Some(error_name) => format!("versioned::{module}::{error_name}"),
-            None => "truapi::latest::GenericError".to_string(),
-        };
+        let error_ty = error_type_path(module, &self.error_payload);
 
         writeln!(out, "    {{").unwrap();
         self.write_execution_binding(out);
@@ -571,7 +564,7 @@ impl MethodEmission {
         // the items. A method without one interrupts with the framework's
         // single-version error, which has nothing to downgrade.
         let downgrade_interrupt = if self.error_payload.versioned_name().is_some() {
-            "\n            .map_err(|error| downgrade_call_error(error, target_version))"
+            "\n        .map_err(|error| downgrade_call_error(error, target_version))"
         } else {
             ""
         };
@@ -720,6 +713,16 @@ fn write_header(out: &mut String) {
         "#
     )
     .unwrap();
+}
+
+/// Rust path of the domain payload a method's `CallError` carries: its own
+/// versioned wrapper when it has one, and the framework error's
+/// single-version payload otherwise.
+fn error_type_path(module: &str, payload: &WirePayload) -> String {
+    match payload.versioned_name() {
+        Some(name) => format!("versioned::{module}::{name}"),
+        None => "truapi::latest::GenericError".to_string(),
+    }
 }
 
 fn write_imports(out: &mut String, traits: &[&TraitDef]) {
