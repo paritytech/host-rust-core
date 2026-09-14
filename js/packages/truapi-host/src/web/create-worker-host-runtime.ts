@@ -473,7 +473,7 @@ function handleSubscriptionStart(
   msg: {
     subId: number;
     name: SubscriptionName;
-    payload: Uint8Array | null;
+    payload: Uint8Array | string | null;
   },
 ): void {
   const sendItem = (value?: unknown): void => {
