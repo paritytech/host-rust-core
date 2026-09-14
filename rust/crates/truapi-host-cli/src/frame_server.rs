@@ -1106,4 +1106,215 @@ mod tests {
         assert!(!socket_directory.exists());
         Ok(())
     }
+
+    /// A grant between two products, declared the way a developer declares it.
+    ///
+    /// `peopl.paseo`'s local product config names `dim2` in `trustedProducts`,
+    /// exactly as the publisher will read it when the product is deployed. The
+    /// host applies that config and the grant resolves for the run, which is
+    /// the only way to exercise a partner flow before either product exists on
+    /// chain.
+    ///
+    /// This runs against the real `CliPlatform`, so it also pins the half a stub
+    /// cannot: the host keys storage off the owner encoded in the key rather
+    /// than off the product that asked, without which every granted read comes
+    /// back empty and the grant silently does nothing.
+    mod cross_product_storage {
+        use super::*;
+        use crate::product_config::{self, LocalProductConfig};
+        use parity_scale_codec::{Decode, Encode};
+        use std::sync::Mutex;
+        use truapi::versioned::local_storage::{
+            HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
+            HostLocalStorageWriteRequest,
+        };
+        use truapi::{v01, v02};
+        use truapi_server::frame::{
+            MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, Payload, ProtocolMessage, request_ids,
+        };
+
+        const OWNER: &str = "peopl.paseo";
+        const CALLER: &str = "dim2.paseo";
+        const KEY: &str = "unwrapped";
+        const VALUE: &[u8] = b"the collection state both products describe";
+
+        /// Collects the frames a product runtime answers with.
+        #[derive(Default)]
+        struct CapturedFrames(Mutex<Vec<Vec<u8>>>);
+
+        impl FrameSink for CapturedFrames {
+            fn emit_frame(&self, frame: Vec<u8>) {
+                self.0.lock().expect("frame mutex poisoned").push(frame);
+            }
+        }
+
+        impl CapturedFrames {
+            fn take_one(&self) -> Vec<u8> {
+                let mut frames = self.0.lock().expect("frame mutex poisoned");
+                assert_eq!(frames.len(), 1, "expected exactly one answer");
+                frames.remove(0)
+            }
+        }
+
+        fn host() -> Result<(Arc<crate::platform::CliPlatform>, SigningHostRuntime)> {
+            let network = crate::network::Network::default().config();
+            let platform = crate::platform::CliPlatform::new(
+                network,
+                None,
+                crate::platform::ApprovalPolicy::AutoAccept,
+                None,
+            );
+            let config = truapi_platform::SigningHostConfig::new(
+                truapi_platform::HostInfo {
+                    name: "Cross-product storage test".into(),
+                    icon: None,
+                    version: None,
+                    platform: truapi::latest::HostPlatform::Cli,
+                },
+                truapi_platform::PlatformInfo {
+                    kind: Some("test".into()),
+                    version: None,
+                },
+                network.people_genesis,
+                network.bulletin_genesis,
+                network.network_suffix.to_string(),
+            )?;
+            let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
+            Ok((
+                platform.clone(),
+                SigningHostRuntime::new(platform, config, spawner),
+            ))
+        }
+
+        /// Apply `OWNER`'s local product config, `trusted` being the
+        /// `trustedProducts` a developer wrote in it.
+        async fn apply_config(platform: &crate::platform::CliPlatform, trusted: &str) -> String {
+            let config: LocalProductConfig = serde_json::from_str(&format!(
+                r#"{{"productName":"{OWNER}","displayName":"Personhood",
+                     "trustedProducts":{trusted}}}"#
+            ))
+            .expect("the config parses");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after the epoch")
+                .as_secs();
+            let applied = product_config::apply(platform, std::slice::from_ref(&config), now)
+                .await
+                .expect("the config applies");
+            applied.lines.join("\n")
+        }
+
+        async fn call(
+            runtime: &SigningHostRuntime,
+            product: &str,
+            method: &str,
+            payload: Vec<u8>,
+        ) -> Vec<u8> {
+            let ids = request_ids(method).expect("the method is in the wire table");
+            let frames = Arc::new(CapturedFrames::default());
+            let connection = runtime.product_runtime(
+                ProductContext::new(product.to_string()).expect("the product id is valid"),
+                frames.clone(),
+            );
+            let frame = ProtocolMessage {
+                request_id: "1".to_string(),
+                payload: Payload {
+                    trait_id: ids.trait_id,
+                    method_id: ids.method_id,
+                    message_type: MESSAGE_TYPE_REQUEST,
+                    value: payload,
+                },
+            }
+            .encode();
+            connection
+                .receive_frame(frame)
+                .await
+                .expect("the host answers the frame");
+            let answered = ProtocolMessage::decode(&mut frames.take_one().as_slice())
+                .expect("the answer is a protocol message");
+            assert_eq!(
+                (
+                    answered.payload.trait_id,
+                    answered.payload.method_id,
+                    answered.payload.message_type,
+                ),
+                (ids.trait_id, ids.method_id, MESSAGE_TYPE_RESPONSE),
+                "answered on the wrong discriminant"
+            );
+            answered.payload.value
+        }
+
+        /// Store a value in `OWNER`'s own storage, through `OWNER`'s connection.
+        async fn write_owner_value(runtime: &SigningHostRuntime) {
+            let payload = HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest {
+                key: KEY.to_string(),
+                value: VALUE.to_vec(),
+            })
+            .encode();
+            call(runtime, OWNER, "local_storage_write", payload).await;
+        }
+
+        /// `CALLER` reads `OWNER`'s storage at `KEY`.
+        async fn read_across(
+            runtime: &SigningHostRuntime,
+        ) -> Result<Option<Vec<u8>>, v02::HostLocalStorageReadError> {
+            let payload = HostLocalStorageReadRequest::V2(v02::HostLocalStorageReadRequest {
+                product: Some(OWNER.to_string()),
+                key: KEY.to_string(),
+            })
+            .encode();
+            let answer = call(runtime, CALLER, "local_storage_read", payload).await;
+            // `[Result tag][version][body]`: the frame addresses the method, and
+            // the payload is the method's own versioned wrapper inside a Result.
+            let decoded: Result<
+                HostLocalStorageReadResponse,
+                truapi::CallError<HostLocalStorageReadError>,
+            > = Decode::decode(&mut answer.as_slice()).expect("the answer decodes");
+            match decoded {
+                Ok(HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse {
+                    value,
+                })) => Ok(value),
+                Ok(other) => panic!("expected a v0.2 answer: {other:?}"),
+                Err(truapi::CallError::Domain(HostLocalStorageReadError::V2(error))) => Err(error),
+                Err(other) => panic!("unexpected refusal: {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_granted_product_reads_the_granting_products_storage() -> Result<()> {
+            let (platform, runtime) = host()?;
+            let transcript = apply_config(&platform, r#"{"dim2":["storage"]}"#).await;
+            // Nobody should ship believing this grant is published.
+            assert_eq!(transcript, "peopl.paseo: dim2 -> [storage]");
+            write_owner_value(&runtime).await;
+            assert_eq!(read_across(&runtime).await, Ok(Some(VALUE.to_vec())));
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn an_ungranted_product_is_refused() -> Result<()> {
+            let (platform, runtime) = host()?;
+            apply_config(&platform, r#"{"stash":["storage"]}"#).await;
+            write_owner_value(&runtime).await;
+            assert_eq!(
+                read_across(&runtime).await,
+                Err(v02::HostLocalStorageReadError::AccessNotGranted)
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_product_with_no_config_is_refused_the_same_way() -> Result<()> {
+            // No config applied, and no Asset Hub on the signing role, so the
+            // lookup finds nothing. It must be the same refusal as a config
+            // that named someone else.
+            let (_platform, runtime) = host()?;
+            write_owner_value(&runtime).await;
+            assert_eq!(
+                read_across(&runtime).await,
+                Err(v02::HostLocalStorageReadError::AccessNotGranted)
+            );
+            Ok(())
+        }
+    }
 }

@@ -28,6 +28,7 @@ pub use async_trait::async_trait;
 
 pub mod api;
 pub mod v01;
+pub mod v02;
 pub mod versioned;
 
 /// A 32-byte value, passed as plain bytes on FFI surfaces. Version-neutral:

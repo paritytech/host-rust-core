@@ -14,6 +14,7 @@ pub mod extrinsic;
 pub mod features;
 pub mod permissions;
 pub mod product_account;
+pub mod product_manifest;
 pub mod session;
 pub mod session_store;
 pub mod sso;
