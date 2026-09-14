@@ -249,7 +249,7 @@ fn binary_emission_is_idempotent() {
     let tempdir = workspace_tempdir(&workspace);
     let rustdoc_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
 
-    let run_once = || -> (String, String) {
+    let run_once = || -> (String, String, String) {
         let tmp = workspace_tempdir(&workspace);
         let status = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
             .args([
@@ -267,13 +267,17 @@ fn binary_emission_is_idempotent() {
             fs::read_to_string(tmp.path().join("rust/dispatcher.rs")).expect("read dispatcher");
         let wire_table =
             fs::read_to_string(tmp.path().join("rust/wire_table.rs")).expect("read wire_table");
-        (dispatcher, wire_table)
+        // types.ts carries the public type names, which is where an
+        // order-dependent choice between two same-named types would land.
+        let types_ts = fs::read_to_string(tmp.path().join("ts/types.ts")).expect("read types.ts");
+        (dispatcher, wire_table, types_ts)
     };
 
-    let (a_disp, a_wire) = run_once();
-    let (b_disp, b_wire) = run_once();
+    let (a_disp, a_wire, a_types) = run_once();
+    let (b_disp, b_wire, b_types) = run_once();
     assert_eq!(a_disp, b_disp, "dispatcher.rs differs between runs");
     assert_eq!(a_wire, b_wire, "wire_table.rs differs between runs");
+    assert_eq!(a_types, b_types, "types.ts differs between runs");
 }
 
 #[test]

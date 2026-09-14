@@ -116,8 +116,20 @@ fn selected_public_aliases(
     target_version: u32,
 ) -> BTreeMap<String, String> {
     let mut selected_by_base: BTreeMap<String, (u32, String)> = BTreeMap::new();
-    for (wrapper_name, versions) in emit_versions {
+    // Several wrappers can select different versions of one base type: a
+    // wrapper whose only variant is V1 and another that has reached V2 both
+    // name `HostLocalStorageReadError`. The unprefixed alias belongs to the
+    // newest version any of them selected, which is the same rule the pass over
+    // `api.types` below applies. Wrapper names are walked in order so two
+    // wrappers selecting the same version of one base still resolve the same
+    // way on every run.
+    let mut wrapper_names: Vec<&String> = emit_versions.keys().collect();
+    wrapper_names.sort();
+    for wrapper_name in wrapper_names {
         let Some(wrapper) = wrappers.get(wrapper_name) else {
+            continue;
+        };
+        let Some(versions) = emit_versions.get(wrapper_name) else {
             continue;
         };
         for version in versions {
@@ -133,7 +145,12 @@ fn selected_public_aliases(
             let Some((inner_version, base)) = version_prefixed_type(name) else {
                 continue;
             };
-            selected_by_base.insert(base.to_string(), (inner_version, name.clone()));
+            let entry = selected_by_base
+                .entry(base.to_string())
+                .or_insert((inner_version, name.clone()));
+            if inner_version > entry.0 {
+                *entry = (inner_version, name.clone());
+            }
         }
     }
 
@@ -3445,6 +3462,55 @@ mod tests {
             ]),
             docs: None,
         }
+    }
+
+    /// Two wrappers can select different versions of one base type: a wrapper
+    /// still on V1 and another that has reached V2 both name the same base.
+    /// The unprefixed public alias belongs to the newest selected version, and
+    /// does not depend on the order the wrapper map happens to yield.
+    #[test]
+    fn public_alias_for_a_shared_base_follows_the_newest_selected_version() {
+        fn wrapper(version: u32, inner: &str) -> VersionedWrapper {
+            VersionedWrapper {
+                variants: BTreeMap::from([(
+                    version,
+                    VersionedWrapperVariant {
+                        version,
+                        kind: VersionedKind::Tuple(TypeRef::Named {
+                            name: inner.to_string(),
+                            args: Vec::new(),
+                        }),
+                    },
+                )]),
+            }
+        }
+
+        let api = ApiDefinition {
+            traits: Vec::new(),
+            public_trait_order: Vec::new(),
+            types: Vec::new(),
+            framework_types: Vec::new(),
+        };
+        let wrappers = HashMap::from([
+            ("ClearError".to_string(), wrapper(1, "V01Thing")),
+            ("ReadError".to_string(), wrapper(2, "V02Thing")),
+        ]);
+        let emit_versions = HashMap::from([
+            ("ClearError".to_string(), BTreeSet::from([1])),
+            ("ReadError".to_string(), BTreeSet::from([2])),
+        ]);
+
+        let aliases = selected_public_aliases(&api, &wrappers, &emit_versions, 2);
+
+        assert_eq!(
+            aliases.get("V02Thing").map(String::as_str),
+            Some("Thing"),
+            "the newest selected version owns the unprefixed name: {aliases:?}"
+        );
+        assert!(
+            !aliases.contains_key("V01Thing"),
+            "the older version keeps its prefix: {aliases:?}"
+        );
     }
 
     #[test]
