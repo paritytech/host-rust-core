@@ -327,13 +327,21 @@ describe("createMockHost control surface", () => {
     ]);
   });
 
-  it("throws descriptively for domains TrUAPI declares but no host implements", () => {
+  it("throws descriptively for domains the mock cannot model", () => {
     const host = createMockHost();
-    // Never a faked success for a path the real host cannot execute.
-    expect(() => (host.payment as unknown as { setBalance: unknown }).setBalance)
-      .toThrow(/not implemented in TrUAPI/);
-    expect(() => (host.coinPayment as unknown as { transfer: unknown }).transfer)
-      .toThrow(/not implemented in TrUAPI/);
+    // Never a faked success for a path the real host cannot execute, and the
+    // error has to say WHY so the reader knows whether it is a gap or a
+    // deliberate limit.
+    expect(
+      () => (host.payment as unknown as { setBalance: unknown }).setBalance,
+    ).toThrow(/no host implements them/);
+    expect(
+      () => (host.coinPayment as unknown as { transfer: unknown }).transfer,
+    ).toThrow(/no host implements them/);
+    expect(
+      () =>
+        (host.statements as unknown as { getSubmitted: unknown }).getSubmitted,
+    ).toThrow(/people chain/);
   });
 
   it("reset returns the mock to its constructed state", async () => {

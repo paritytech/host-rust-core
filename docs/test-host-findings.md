@@ -341,6 +341,75 @@ The Rust side is already done: `WasmSigningHostRuntime` exists at
 to avoid the change and keep signing, because the worker's only session entry
 point is `activateExternalSession`, which needs a real pairing handshake.
 
+## 14. Every product suite, run against the TrUAPI mock host
+
+Nine suites, real browser, real codec-2 core, real wire. Results, and the cause
+of every failure rather than a count:
+
+| Suite | Result | Why the failures fail |
+| --- | --- | --- |
+| storage-demo | **8/8** | 2 assertions read the old host's internal keys |
+| keys-demo | **8/8** | 1 assertion, same cause |
+| host-demo | **6/6** | 1 assertion, same cause |
+| signer-demo | 6/9 | 3 distinct causes, below |
+| statement-store-demo | 1/10 | 9 die on missing API, before reaching the store |
+| tx-demo | 0/7 (1 skipped) | chain: submit, finalization, dispatch error |
+| chain-client-demo | 0/2 | chain: boot gates on a live client |
+| contracts-demo | 0/2 (4 skipped) | chain |
+| cloud-storage-demo | 0/0 (7 skipped) | already skipped upstream |
+
+**22 of 22 pass across the three chain-free suites.** The churn to get there was
+4 assertion rewrites out of 22 tests -- **18%** -- and every one had the same
+cause: reading `localStorage.getItem("test-host:…")` out of the host page. Not
+one was a behavioural difference. The migration is mechanical, not semantic.
+
+`tx-demo`, `chain-client-demo` and `contracts-demo` produced **no** "is not a
+function" errors, so those tests genuinely reach the chain path and fail there.
+`statement-store-demo` is the opposite and the distinction matters: its 9
+failures are `testHost.clearStatements is not a function`, one layer *before*
+the store. Reporting those as "fails on chain" would be wrong.
+
+### signer-demo's three, none of which are churn
+
+- **permission rejection** -- blocked by the core's permission caching
+  (section 12). The test revokes `ChainSubmit` and reconnects expecting a fresh
+  prompt; the core answers from its own storage and never asks the host. Not
+  fixable by any test host.
+- **persistence across a page reload** -- the mock's storage is in-memory per
+  host-page load, where `host-api-test-sdk` used browser `localStorage`, which
+  survives a reload. A real behavioural difference, and a deliberate one: the
+  mock keeps no state outside the process that created it.
+- **stable product account across a host account switch** -- in TrUAPI a product
+  account derives from the session root, so switching the active account
+  *changes* it. `host-api-test-sdk` pinned it with a `productAccounts` mapping,
+  which made it stable. The test encodes that mapping's behaviour rather than
+  the protocol's.
+
+### Two fixture gaps this surfaced
+
+- `productId` must match the identifier the product signs with. The core rejects
+  a signing request whose account is scoped to a different product, and it
+  surfaces as `PermissionDenied` rather than as a config error. The fixture now
+  takes `productId`; without it, signer-demo failed 2 tests for a reason that
+  looked like a permission problem.
+- The permission log is now shaped as `{ tag, value, approved, kind }`, matching
+  `host-api-test-sdk`'s `PermissionLogEntry`, because suites assert on those
+  field names.
+
+## 15. What the mock will not pretend to do
+
+Three domains throw a descriptive error on any access rather than returning a
+plausible value, so a test reaching for them learns why instead of silently
+passing against a fake:
+
+- `payment` and `coinPayment` -- the protocol declares them and no host
+  implements them (section 9).
+- `statements` -- the core owns the statement store and submits it over the
+  people chain, so there is no host seam to record or inject through. This is
+  why `statement-store-demo` cannot pass without chain support, and stating it
+  as an explicit limit is the difference between "the method does not exist" and
+  "this needs a chain".
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is

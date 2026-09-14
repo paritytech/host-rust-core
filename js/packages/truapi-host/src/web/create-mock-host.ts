@@ -125,13 +125,26 @@ export type ChainStatus = "Idle" | "Connected" | "Disconnected";
  * `undefined is not a function`, and never fakes a success for a path the real
  * host cannot execute.
  */
+const NOT_MODELLED_REASONS: Record<string, string> = {
+  payment:
+    "the protocol declares payments but no host implements them; " +
+    "see docs/rfcs/0006-payments.md",
+  coinPayment:
+    "the protocol declares coin payments but no host implements them; " +
+    "see docs/rfcs/0006-payments.md",
+  statements:
+    "the core owns the statement store and submits it over the people chain, " +
+    "so there is no host seam for the mock to record or inject through",
+};
+
 function notModeled<T extends object>(domain: string): T {
   return new Proxy({} as T, {
     get(_target, property) {
+      const reason =
+        NOT_MODELLED_REASONS[domain] ?? "no host implements this domain";
       throw new Error(
-        `${domain}.${String(property)} is not implemented in TrUAPI: ` +
-          `the protocol declares ${domain} but no host implements it, so the ` +
-          `mock cannot model it. See docs/rfcs/0006-payments.md.`,
+        `${domain}.${String(property)} is not available in the TrUAPI mock ` +
+          `host: ${reason}.`,
       );
     },
   });
@@ -302,6 +315,12 @@ export interface MockHost {
    * from one case out of the assertions of the next.
    */
   reset(): void;
+  /**
+   * The statement store, which the core owns and submits over the people
+   * chain. Every access throws: there is no host seam to record or inject
+   * through, so the mock cannot model it without chain support.
+   */
+  statements: never;
   /**
    * Payments, which TrUAPI declares but no host implements. Every access
    * throws; see {@link notModeled}.
@@ -769,6 +788,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       nextChatMessageId = 0;
       hostCallCount = 0;
     },
+    statements: notModeled("statements"),
     payment: notModeled("payment"),
     coinPayment: notModeled("coinPayment"),
   };
