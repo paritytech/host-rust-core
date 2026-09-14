@@ -457,10 +457,13 @@ XCFRAMEWORK_CARGO_FLAGS := $(if $(filter release,$(XCFRAMEWORK_PROFILE)),--relea
 
 xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator (SIM_ONLY=1 for simulator only).
 	rustup target add $(XCFRAMEWORK_TARGETS)
-	for target in $(XCFRAMEWORK_TARGETS); do \
-		IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \
-			$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge --target $$target || exit 1; \
-	done
+	# One invocation for every slice: cargo then schedules both target graphs
+	# together instead of running the second only once the first has drained.
+	# The release profile's single codegen unit and fat LTO leave a long serial
+	# tail per slice, which is exactly what the other slice fills.
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \
+		$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge \
+		$(foreach target,$(XCFRAMEWORK_TARGETS),--target $(target))
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
 	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(UNIFFI_SWIFT_TMP)/truapi_platformFFI.h \
