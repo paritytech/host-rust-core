@@ -2411,6 +2411,201 @@ fn auto_signing_vrf_request() -> HostAccountSignVrfRequest {
     })
 }
 
+/// A pairing host holding an AutoSigning capability, with its SSO script
+/// already spent on the allocation: anything that relays from here fails, so a
+/// call that succeeds was served locally.
+fn granted_pairing_host() -> (Arc<StubPlatform>, ProductRuntimeHost) {
+    let session = sso_session_info();
+    let platform = auto_signing_test_platform(&session, "auto-1");
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session);
+    request_auto_signing(&host, "auto-1");
+    (platform, host)
+}
+
+/// The product account the capability in [`granted_pairing_host`] derives.
+fn granted_keypair() -> schnorrkel::Keypair {
+    let root =
+        crate::host_logic::product_account::derive_root_keypair_from_entropy(&[0xAB; 16]).unwrap();
+    crate::host_logic::product_account::derive_product_keypair(&root, "myapp.dot", index_bytes(0))
+        .unwrap()
+}
+
+#[test]
+fn auto_signing_serves_sign_raw_locally_without_prompt_or_sso() {
+    let (platform, host) = granted_pairing_host();
+
+    let HostSignRawResponse::V1(response) = futures::executor::block_on(host.sign_raw(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .expect("the capability signs locally, with no signing host to relay to");
+
+    assert!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    let signature =
+        schnorrkel::Signature::from_bytes(&response.signature).expect("64-byte signature");
+    let keypair = granted_keypair();
+    assert!(
+        keypair
+            .public
+            .verify_simple(b"substrate", b"<Bytes>hello world</Bytes>", &signature)
+            .is_ok(),
+        "the local signature is over the watermarked bytes, by the product account",
+    );
+}
+
+#[test]
+fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
+    let (platform, host) = granted_pairing_host();
+
+    let HostCreateTransactionResponse::V1(response) =
+        futures::executor::block_on(host.create_transaction(
+            &CallContext::default(),
+            HostCreateTransactionRequest::V1(v01::ProductAccountTxPayload {
+                signer: account_id("myapp.dot", 0),
+                genesis_hash: [1; 32],
+                call_data: vec![0x04, 0x00],
+                extensions: vec![],
+                // V4 needs no chain metadata, so the whole assembly is local.
+                tx_ext_version: 0,
+            }),
+        ))
+        .expect("a V4 transaction assembles locally under the capability");
+
+    assert!(
+        platform
+            .create_transaction_reviews
+            .lock()
+            .expect("create transaction review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    let (signer, _, call) = crate::host_logic::extrinsic::tests::split_v4(&response.transaction);
+    assert_eq!(
+        signer,
+        granted_keypair().public.to_bytes(),
+        "the product account signed it",
+    );
+    assert_eq!(call, vec![0x04, 0x00]);
+}
+
+#[test]
+fn a_broken_auto_signing_slot_fails_sign_raw_rather_than_prompting() {
+    // The lookup erases a capability it cannot trust as it rejects it, so
+    // falling through to a prompt here would ask the user to approve a
+    // signature the host has already refused to make. This is what the grant
+    // query's `Result` return is for: a `bool` predicate would answer "no
+    // grant" and raise the modal.
+    let session = sso_session_info();
+    let platform = auto_signing_test_platform(&session, "auto-broken");
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session.clone());
+    request_auto_signing(&host, "auto-broken");
+
+    let expected_subtree = test_product_subtree("myapp.dot");
+    let storage_key = core_storage_test_key(CoreStorageKey::AutoSigningKeys);
+    {
+        let mut storage = platform
+            .local_storage
+            .lock()
+            .expect("local storage mutex poisoned");
+        let blob = storage
+            .get_mut(&storage_key)
+            .expect("scoped AutoSigning capability persisted");
+        let expected_offset = blob
+            .windows(expected_subtree.len())
+            .position(|window| window == expected_subtree)
+            .expect("persisted expected subtree is present");
+        blob[expected_offset] ^= 0x01;
+    }
+
+    let restored = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&restored, session);
+    let error = futures::executor::block_on(restored.sign_raw(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Unknown {
+                reason
+            })) if reason == "AutoSigning capability is not for the current product subtree"
+        ),
+        "the broken capability is reported, not silently downgraded: {error:?}",
+    );
+    assert!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .is_empty(),
+        "no prompt is raised for a capability the host just erased",
+    );
+}
+
+#[test]
+fn an_unwatermarked_sign_raw_still_prompts_under_a_grant() {
+    let (platform, host) = granted_pairing_host();
+
+    #[allow(deprecated)]
+    let error = futures::executor::block_on(host.sign_raw_unwatermarked_deprecated(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .expect_err("the stub declines the confirmation");
+
+    assert!(matches!(
+        error,
+        CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Rejected))
+    ));
+    assert_eq!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .len(),
+        1,
+        "the deprecated API prompts whatever the capability says",
+    );
+}
+
 #[test]
 fn auto_signing_allocation_persists_and_serves_vrf_without_sso() {
     let session = sso_session_info();

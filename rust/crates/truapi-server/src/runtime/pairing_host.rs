@@ -40,13 +40,16 @@ use super::sso_remote::{
 use super::statement_store_rpc::StatementStoreRpc;
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::entropy::derive_product_entropy_from_source;
+use crate::host_logic::extrinsic::build_local_transaction;
 use crate::host_logic::product_account::{
-    derivation_index_bytes, derive_product_keypair_from_subtree_secret,
+    SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_product_keypair_from_subtree_secret,
     derive_ring_vrf_entropy_from_domain,
 };
+use crate::host_logic::raw_signing::raw_payload_bytes;
 use crate::host_logic::session::{SessionInfo, SessionState, encode_persisted_session};
 use crate::host_logic::session_store::SessionStoreChangeNotifier;
 use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
+use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::subscription::Spawner;
 
 use futures::StreamExt;
@@ -2113,6 +2116,13 @@ impl PairingHost {
         request: SignPayloadAuthorityRequest,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         let session = self.current_private_session(session)?;
+        if let SignPayloadAuthorityRequest::Product(payload) = &request
+            && let Some(keypair) = self
+                .local_product_signing_key(&session, &payload.account)
+                .await?
+        {
+            return Ok(sign_extrinsic_payload(&keypair, payload.payload.clone())?);
+        }
         self.remote_sign_payload(cx, &session, request).await
     }
 
@@ -2124,6 +2134,24 @@ impl PairingHost {
         watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         let session = self.current_private_session(session)?;
+        // The unwatermarked API is never grant-covered, so a local signature
+        // here would skip a prompt the gate deliberately raised.
+        if watermarked
+            && let SignRawAuthorityRequest::Product(payload) = &request
+            && let Some(keypair) = self
+                .local_product_signing_key(&session, &payload.account)
+                .await?
+        {
+            let message = raw_payload_bytes(payload.payload.clone(), watermarked)?;
+            let signature = keypair
+                .secret
+                .sign_simple(SR25519_SIGNING_CONTEXT, &message, &keypair.public)
+                .to_bytes();
+            return Ok(v01::HostSignPayloadResponse {
+                signature: signature.to_vec(),
+                signed_transaction: None,
+            });
+        }
         self.remote_sign_raw(cx, &session, request, watermarked)
             .await
     }
@@ -2135,6 +2163,25 @@ impl PairingHost {
         request: CreateTransactionAuthorityRequest,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
         let session = self.current_private_session(session)?;
+        if let CreateTransactionAuthorityRequest::Product(payload) = &request
+            && let Some(keypair) = self
+                .local_product_signing_key(&session, &payload.signer)
+                .await?
+        {
+            // A V5 payload this host cannot assemble is an error, not a
+            // fall-through to the relay: the gate already told the caller no
+            // prompt was coming, and relaying would raise one on the signing
+            // host after a chain timeout.
+            return Ok(build_local_transaction(
+                &self.chain,
+                &keypair,
+                payload.genesis_hash,
+                &payload.call_data,
+                &payload.extensions,
+                payload.tx_ext_version,
+            )
+            .await?);
+        }
         self.remote_create_transaction(cx, &session, request).await
     }
 
