@@ -50,12 +50,11 @@ The host owns the store both runtimes write to, so the host emits the changes an
 ```rust
 fn subscribe_storage(
     &self,
-    product: &ProductContext,
     key: String,
 ) -> BoxStream<'static, Result<HostLocalStorageChangeItem, GenericError>>;
 ```
 
-The core passes the calling product's context, the same scoping `read` and `write` use, so a product only sees its own keys. The first item is the current value, so there is no read-then-subscribe gap. After that a write emits `Some(value)` and a clear emits `None`. A burst of distinct values emits one item per value; nothing coalesces.
+The core namespaces the key before calling, exactly as it does for `read`, `write` and `clear`, so a product only sees its own keys and the host needs no separate product argument. The first item is the current value, so there is no read-then-subscribe gap; a change landing while that first read is in flight repeats rather than being dropped. After that a write emits `Some(value)` and a clear emits `None`. A burst of distinct values emits one item per value; nothing coalesces.
 
 If `write` gets the bytes the key already holds, the core skips the store write, so the host never sees it and nothing is emitted. `clear` always reaches the host and always emits `None`, even on an absent key.
 

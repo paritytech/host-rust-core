@@ -992,10 +992,10 @@ pub trait ProductStorage: Send + Sync {
 
     /// Emit `key`'s current value, then each later change from any of the
     /// product's runtimes. A write that leaves the bytes unchanged emits
-    /// nothing. `key` is [`Self::read`]'s namespaced key as UTF-8 bytes.
+    /// nothing. `key` is namespaced exactly as [`Self::read`] takes it.
     fn subscribe_storage(
         &self,
-        key: Vec<u8>,
+        key: String,
     ) -> BoxStream<'static, Result<HostLocalStorageChangeItem, GenericError>>;
 }
 

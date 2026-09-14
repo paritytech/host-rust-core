@@ -266,10 +266,7 @@ impl LocalStorage for ProductRuntimeHost {
             request;
         let stream = self
             .platform
-            .subscribe_storage(
-                self.product_storage_key(self.product.product_id.as_str(), key)
-                    .into_bytes(),
-            )
+            .subscribe_storage(self.product_storage_key(self.product.product_id.as_str(), key))
             .map(|item| match item {
                 Ok(item) => Ok(HostLocalStorageChangeItem::V1(item)),
                 Err(error) => {
