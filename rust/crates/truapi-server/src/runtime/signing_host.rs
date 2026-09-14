@@ -867,30 +867,49 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountGetAliasRequest>,
     ) -> Result<v01::ContextualAlias, RingVrfError> {
         self.require_current_session(session)?;
-        match super::account_access_authorization(
-            self.services.platform.as_ref(),
-            &request.calling_product_id,
-            &request.payload.key_handle.dot_ns_identifier,
-        )
-        .await
+        // A `context` grant covers this. RFC-0024 defines the scope as "acting
+        // as the granting product's account: reading it and the identity that
+        // follows from it", and the contextual alias is that identity: it and
+        // the proof come out of one VRF evaluation, so a grantee that may
+        // `create_proof` already holds the alias the proof attests. Prompting
+        // here would ask the user to approve what the publisher's grant has
+        // already authorized, and would leave the two calls disagreeing about
+        // what `context` means.
+        //
+        // The gate is the same one `create_proof` uses, so a stored refusal
+        // still overrides the grant. Falling through to the prompt keeps the
+        // ungranted case exactly as it was.
+        let key_handle = match self
+            .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
+            .await
         {
-            Ok(PermissionAuthorizationStatus::Authorized) => {}
-            Ok(
-                PermissionAuthorizationStatus::Denied
-                | PermissionAuthorizationStatus::NotDetermined,
-            ) => return Err(RingVrfError::Rejected),
-            Err(err) => {
-                return Err(RingVrfError::Unknown {
-                    reason: err.to_string(),
-                });
+            Ok(handle) => Some(handle),
+            Err(RingVrfError::NotAllowlisted) => None,
+            Err(err) => return Err(err),
+        };
+        if key_handle.is_none() {
+            match super::account_access_authorization(
+                self.services.platform.as_ref(),
+                &request.calling_product_id,
+                &request.payload.key_handle.dot_ns_identifier,
+            )
+            .await
+            {
+                Ok(PermissionAuthorizationStatus::Authorized) => {}
+                Ok(
+                    PermissionAuthorizationStatus::Denied
+                    | PermissionAuthorizationStatus::NotDetermined,
+                ) => return Err(RingVrfError::Rejected),
+                Err(err) => {
+                    return Err(RingVrfError::Unknown {
+                        reason: err.to_string(),
+                    });
+                }
             }
         }
+        let key_handle = key_handle.unwrap_or_else(|| request.payload.key_handle.clone());
         let entropy = self
-            .resolve_ring_vrf_key_for_ring(
-                session,
-                &request.payload.key_handle,
-                &request.payload.ring_location,
-            )
+            .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
             .await?;
         self.ring_resolver
             .validate(&request.payload.ring_location)
@@ -1706,6 +1725,69 @@ mod tests {
                 deny_account_access(platform, "dim2.dot", "peopl.dot")
             });
         assert_eq!(refusal.err(), Some(RingVrfError::NotAllowlisted));
+    }
+
+    /// A `context` grant covers the identity read, so the two calls agree.
+    ///
+    /// The contextual alias and the proof come out of one VRF evaluation, so a
+    /// grantee that may `create_proof` already holds the alias that proof
+    /// attests. Gating `account_alias` on a prompt while `create_proof` is
+    /// gated on the grant left the same bytes reachable one way and refused the
+    /// other, which is not a policy anyone chose. RFC-0024 defines `context` as
+    /// reading the account "and the identity that follows from it".
+    ///
+    /// A product with no grant still takes the prompt, and a stored refusal
+    /// still overrides the grant.
+    #[test]
+    fn a_context_grant_covers_the_identity_read() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+        let context = v01::ProductProofContext {
+            product_id: "dim2.dot".to_string(),
+            suffix: v01::DerivationIndex::Index(0),
+        };
+        let alias_for = |caller: &str| {
+            futures::executor::block_on(authority.account_alias(
+                &CallContext::default(),
+                &session,
+                ProductRequest {
+                    calling_product_id: caller.to_string(),
+                    payload: v01::HostAccountGetAliasRequest {
+                        key_handle: full_person_key_handle(),
+                        context: context.clone(),
+                        ring_location: ring.clone(),
+                    },
+                },
+            ))
+        };
+
+        let owner = alias_for("peopl.dot").expect("the owner reads its own alias");
+        let granted = alias_for("dim2.dot").expect("a context grant covers the identity read");
+        assert_eq!(
+            granted.alias, owner.alias,
+            "the grantee must read the owner's alias, not one derived for itself"
+        );
+        assert_eq!(
+            platform
+                .account_access_reviews
+                .lock()
+                .expect("review list mutex poisoned")
+                .len(),
+            0,
+            "a granted read must not raise the prompt the grant already answers"
+        );
+        assert_eq!(
+            alias_for("stash.dot").err(),
+            Some(RingVrfError::Rejected),
+            "a product with no grant still takes the prompt path and is refused"
+        );
     }
 
     /// A grant does not let the grantee choose whose pseudonym to mint.

@@ -19,6 +19,13 @@ function of the owner's key and the context, so an unconstrained context would
 let a grantee produce the alias the owner presents to a third product that
 granted nothing and cannot consent.
 
+The identity read `context` names is covered by the grant rather than prompted
+for again. The contextual alias and the ring-VRF proof come out of one VRF
+evaluation, so a grantee that may `create_account_proof` already holds the alias
+that proof attests; `get_account_alias` accepting the same grant makes the two
+calls agree about what the scope means. A product without a grant still takes
+the prompt.
+
 A stored account-access refusal still overrides a grant, and is now recorded
 against the product rather than one spelling of it, matching the granularity a
 manifest grant uses. Decisions stored under a full product id are not found under

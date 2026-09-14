@@ -50,7 +50,7 @@ Which calls each scope gates remains a Host runtime contract, as it already is f
 
 A grant never overrides a refusal the user already gave: the stored account-access decision is read before the manifest, and read-only, so a grant lookup never raises the prompt that would settle an undecided one.
 
-The account and identity *reads* `context` also names still take the user prompt.
+The account and identity *reads* `context` names are covered by the grant, not prompted for again: the contextual alias and the proof come out of one VRF evaluation, so a grantee that may `create_account_proof` already holds the alias that proof attests. Prompting for it would ask the user to approve what the grant has already authorized. A refusal the user already gave still overrides, as everywhere else.
 
 ## Drawbacks
 
