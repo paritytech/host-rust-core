@@ -265,3 +265,96 @@ describe("createMockHost with createWebWorkerPairingHostRuntime", () => {
     runtime.dispose();
   });
 });
+
+describe("createMockHost control surface", () => {
+  const review = (callingProductId: string) =>
+    ({
+      tag: "ResourceAllocation",
+      value: { callingProductId, resources: [] },
+    }) as const;
+
+  it("records review payloads, not just kinds", async () => {
+    // Two reviews of the same kind with different payloads: a kind-only
+    // recording cannot tell these apart.
+    const host = createMockHost();
+    await host.callbacks.userConfirmation.confirmUserAction(review("first.dot"));
+    await host.callbacks.userConfirmation.confirmUserAction(review("second.dot"));
+
+    expect(host.confirmations()).toEqual([
+      "ResourceAllocation",
+      "ResourceAllocation",
+    ]);
+    expect(
+      host.reviews().map((r) => (r as { value: { callingProductId: string } }).value.callingProductId),
+    ).toEqual(["first.dot", "second.dot"]);
+  });
+
+  it("answers permissions per capability, overriding the policy", async () => {
+    const host = createMockHost({ devicePermissions: "deny-all" });
+    const ask = () => host.callbacks.permissions.devicePermission("Camera");
+
+    expect((await ask()).granted).toBe(false);
+    host.grantPermission("Camera");
+    expect((await ask()).granted).toBe(true);
+    // Per permission, not a policy flip.
+    expect(
+      (await host.callbacks.permissions.devicePermission("Microphone")).granted,
+    ).toBe(false);
+    expect(host.grantedPermissions()).toEqual(["Camera"]);
+
+    host.resetPermission("Camera");
+    expect((await ask()).granted).toBe(false);
+  });
+
+  it("denies whatever was not explicitly granted when enforcing", async () => {
+    const host = createMockHost();
+    host.setEnforcePermissions(true);
+    expect(
+      (await host.callbacks.permissions.devicePermission("Camera")).granted,
+    ).toBe(false);
+    host.grantPermission("Camera");
+    expect(
+      (await host.callbacks.permissions.devicePermission("Camera")).granted,
+    ).toBe(true);
+  });
+
+  it("records the surface, key and answer of every permission prompt", async () => {
+    const host = createMockHost();
+    host.revokePermission("Camera");
+    await host.callbacks.permissions.devicePermission("Camera");
+    expect(host.permissionLog()).toEqual([
+      { kind: "device", permission: "Camera", granted: false },
+    ]);
+  });
+
+  it("throws descriptively for domains TrUAPI declares but no host implements", () => {
+    const host = createMockHost();
+    // Never a faked success for a path the real host cannot execute.
+    expect(() => (host.payment as unknown as { setBalance: unknown }).setBalance)
+      .toThrow(/not implemented in TrUAPI/);
+    expect(() => (host.coinPayment as unknown as { transfer: unknown }).transfer)
+      .toThrow(/not implemented in TrUAPI/);
+  });
+
+  it("reset returns the mock to its constructed state", async () => {
+    const host = createMockHost();
+    await host.callbacks.navigation.navigateTo("https://a");
+    await host.callbacks.userConfirmation.confirmUserAction(review("mock.dot"));
+    host.insertPreimage(new Uint8Array([1]));
+    host.setTheme("Light");
+    host.setEnforcePermissions(true);
+    host.revokePermission("Camera");
+
+    host.reset();
+
+    expect(host.navigations()).toEqual([]);
+    expect(host.reviews()).toEqual([]);
+    expect(host.permissionLog()).toEqual([]);
+    expect(host.grantedPermissions()).toEqual([]);
+    expect(host.preimages()).toEqual([]);
+    expect(host.theme()).toBe("Dark");
+    expect(
+      (await host.callbacks.permissions.devicePermission("Camera")).granted,
+    ).toBe(true);
+  });
+});

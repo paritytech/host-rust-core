@@ -22,7 +22,12 @@
 import { ok } from "neverthrow";
 
 import type {
+  ChatMessageContent,
+  ChatRoom,
   GenericError,
+  HostChatListSubscribeItem,
+  HostChatPostMessageResponse,
+  HostChatRegisterBotRequest,
   HostLocaleSubscribeItem,
   HostPushNotificationRequest,
   HostThemeSubscribeItem,
@@ -36,11 +41,80 @@ import type {
   HostChainSet,
   JsonRpcConnection,
   RequiredHostCallbacks,
+  UserConfirmationReview,
 } from "../generated/host-callbacks.js";
 import type { ProductRuntimeConfig } from "../runtime.js";
 
 /** How the mock answers a permission prompt for one capability. */
 export type PermissionPolicy = "allow-all" | "deny-all";
+
+/** Optional error injection, mirroring the Rust `MockFaults`. */
+export interface MockFaults {
+  /** Product and core storage reads/writes/clears fail with this reason. */
+  storageError?: string;
+  /** `navigateTo` fails with this reason. */
+  navigateError?: string;
+  /** `pushNotification` fails with this reason. */
+  notificationError?: string;
+  /**
+   * `confirmUserAction` fails with this reason instead of answering.
+   *
+   * Distinct from a declined confirmation: the host could not put the question
+   * to the user at all, which the core must not read as a refusal.
+   */
+  confirmationError?: string;
+  /** Device and remote permission prompts fail with this reason. */
+  permissionError?: string;
+  /** `featureSupported` and `supportedChains` fail with this reason. */
+  featureError?: string;
+  /** Chat room, bot, and message calls fail with this reason. */
+  chatError?: string;
+}
+
+/** Which prompt surface a permission decision came from. */
+export type PermissionKind = "device" | "remote";
+
+/** One permission answer the mock gave, recorded for assertions. */
+export interface PermissionDecision {
+  /** Which prompt surface asked. */
+  kind: PermissionKind;
+  /** The request's tag, the same key `grantPermission` takes. */
+  permission: string;
+  /** What the mock answered. */
+  granted: boolean;
+}
+
+/** One chat message the product posted through the mock. */
+export interface ChatMessageRecord {
+  /** Id the mock assigned and returned to the product. */
+  messageId: string;
+  /** Room the message was posted to. */
+  roomId: string;
+  /** What was posted. */
+  payload: ChatMessageContent;
+}
+
+/** State of the mock's chain connection, as the host sees it. */
+export type ChainStatus = "Idle" | "Connected" | "Disconnected";
+
+/**
+ * A domain TrUAPI declares but no host implements.
+ *
+ * Reaching one throws a descriptive error rather than failing later with
+ * `undefined is not a function`, and never fakes a success for a path the real
+ * host cannot execute.
+ */
+function notModeled<T extends object>(domain: string): T {
+  return new Proxy({} as T, {
+    get(_target, property) {
+      throw new Error(
+        `${domain}.${String(property)} is not implemented in TrUAPI: ` +
+          `the protocol declares ${domain} but no host implements it, so the ` +
+          `mock cannot model it. See docs/rfcs/0006-payments.md.`,
+      );
+    },
+  });
+}
 
 /** Behavior knobs for {@link createMockHost}. */
 export interface MockHostConfig {
@@ -69,6 +143,11 @@ export interface MockHostConfig {
    */
   chainClosed?: boolean;
   /**
+   * Error injection. When a field is set, the matching host call rejects with
+   * that reason instead of succeeding.
+   */
+  faults?: MockFaults;
+  /**
    * Chains the host reports serving (RFC 0026). Defaults to the three
    * {@link MOCK_GENESIS} chains, which are what {@link mockRuntimeConfig}
    * declares.
@@ -94,8 +173,83 @@ export interface MockHost {
   sentRpc(): string[];
   /** Auth-state transitions the core emitted, in order. */
   authStates(): AuthState[];
+  /**
+   * Full confirmation reviews the core requested, in order.
+   *
+   * Carries the reviewed payload, not just its kind: a `SignRaw` review holds
+   * the bytes the product asked to have signed, so a test can assert *what*
+   * was put to the user rather than only that something was.
+   */
+  reviews(): UserConfirmationReview[];
   /** Confirmation kinds the core requested (review `tag`s), in order. */
   confirmations(): string[];
+  /** Permission answers the mock gave, in order. */
+  permissionLog(): PermissionDecision[];
+  /** Permissions with an explicit grant, in key order. */
+  grantedPermissions(): string[];
+  /** Answer `permission` with a grant, whatever the configured policy says. */
+  grantPermission(permission: string): void;
+  /** Answer `permission` with a denial, whatever the configured policy says. */
+  revokePermission(permission: string): void;
+  /** Drop the explicit answer for `permission`, restoring policy fallback. */
+  resetPermission(permission: string): void;
+  /**
+   * When enforcing, deny every permission without an explicit grant instead of
+   * falling back to the configured policy. Off by default.
+   */
+  setEnforcePermissions(enforce: boolean): void;
+  /** The theme the mock currently reports. */
+  theme(): ThemeVariant;
+  /** Replace the reported theme. */
+  setTheme(variant: ThemeVariant): void;
+  /** State of the mock's chain connection. */
+  chainStatus(): ChainStatus;
+  /** Mark the chain disconnected, as a dropped transport would. */
+  simulateDisconnect(): void;
+  /** Allow connections again after a simulated disconnect. */
+  simulateReconnect(): void;
+  /** Chat rooms the product registered. */
+  chatRooms(): ChatRoom[];
+  /** Chat bots the product registered. */
+  chatBots(): HostChatRegisterBotRequest[];
+  /** Messages the product posted, with the ids the mock assigned. */
+  postedChatMessages(): ChatMessageRecord[];
+  /** Seeded preimage values. */
+  preimages(): Uint8Array[];
+  /** Drop the recorded navigations. */
+  clearNavigations(): void;
+  /** Drop the recorded shown and cancelled notifications. */
+  clearNotifications(): void;
+  /** Drop the recorded confirmation reviews. */
+  clearReviews(): void;
+  /** Drop the recorded permission answers, keeping explicit grants. */
+  clearPermissionLog(): void;
+  /** Drop every explicit permission grant and denial. */
+  clearPermissionDecisions(): void;
+  /** Drop the recorded auth-state transitions. */
+  clearAuthStates(): void;
+  /** Drop the recorded outbound JSON-RPC. */
+  clearSentRpc(): void;
+  /** Drop the seeded preimages. */
+  clearPreimages(): void;
+  /** Drop the product and core storage contents. */
+  clearStorage(): void;
+  /** Drop the registered rooms and bots and the posted-message log. */
+  clearChatState(): void;
+  /**
+   * Return the mock to its freshly-constructed state, keeping its config.
+   *
+   * Tests reset between cases; doing it in one call is what keeps a recording
+   * from one case out of the assertions of the next.
+   */
+  reset(): void;
+  /**
+   * Payments, which TrUAPI declares but no host implements. Every access
+   * throws; see {@link notModeled}.
+   */
+  payment: never;
+  /** Coin payments, unimplemented in the same way as {@link MockHost.payment}. */
+  coinPayment: never;
   /** Notification ids the core asked the host to cancel, in order. */
   cancelledNotifications(): number[];
   /**
@@ -142,6 +296,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     chainResponses = [],
     chainClosed = false,
     languageTag = "en",
+    faults = {},
     supportedChains = {
       network: "mock",
       chains: [
@@ -158,9 +313,42 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
   const pushedNotifications: HostPushNotificationRequest[] = [];
   const sentRpc: string[] = [];
   const authStates: AuthState[] = [];
-  const confirmations: string[] = [];
+  const reviews: UserConfirmationReview[] = [];
   const cancelledNotifications: number[] = [];
+  const permissionLog: PermissionDecision[] = [];
+  const permissionDecisions = new Map<string, boolean>();
+  const chatRooms = new Map<string, ChatRoom>();
+  const chatBots = new Map<string, HostChatRegisterBotRequest>();
+  const chatMessages: ChatMessageRecord[] = [];
   let nextNotificationId = 0;
+  let nextChatMessageId = 0;
+  let enforcePermissions = false;
+  let currentTheme = theme;
+  let chainStatus: ChainStatus = "Idle";
+
+  /**
+   * Answer one permission prompt and record it.
+   *
+   * The key is the request's tag -- `"Camera"`, `"ChainSubmit"`. This scheme is
+   * internal to the JS mock and deliberately independent of the Rust
+   * `MockPlatform`'s `Display` keys: no state crosses that boundary, and only
+   * the method names have to agree.
+   */
+  const decidePermission = (
+    kind: PermissionKind,
+    permission: string,
+    policy: PermissionPolicy,
+  ): boolean => {
+    const explicit = permissionDecisions.get(permission);
+    const isGranted =
+      explicit !== undefined
+        ? explicit
+        : enforcePermissions
+          ? false
+          : granted(policy);
+    permissionLog.push({ kind, permission, granted: isGranted });
+    return isGranted;
+  };
 
   // Product keys are namespaced from core slots so neither can shadow the other.
   // This in-JS key scheme is internal and independent from the Rust MockPlatform's
@@ -218,19 +406,31 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     },
 
     permissions: {
-      async devicePermission() {
-        return { granted: granted(devicePermissions) };
+      async devicePermission(request) {
+        if (faults.permissionError) throw new Error(faults.permissionError);
+        return {
+          granted: decidePermission("device", request, devicePermissions),
+        };
       },
-      async remotePermission() {
-        return { granted: granted(remotePermissions) };
+      async remotePermission(request) {
+        if (faults.permissionError) throw new Error(faults.permissionError);
+        return {
+          granted: decidePermission(
+            "remote",
+            request.permission.tag,
+            remotePermissions,
+          ),
+        };
       },
     },
 
     features: {
       async featureSupported() {
+        if (faults.featureError) throw new Error(faults.featureError);
         return { supported: featureSupported };
       },
       async supportedChains() {
+        if (faults.featureError) throw new Error(faults.featureError);
         return supportedChains;
       },
     },
@@ -268,7 +468,8 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
 
     userConfirmation: {
       async confirmUserAction(review) {
-        confirmations.push(review.tag);
+        reviews.push(review);
+        if (faults.confirmationError) throw new Error(faults.confirmationError);
         return confirmUserActions;
       },
     },
@@ -277,8 +478,53 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       async *subscribeTheme(): AsyncGenerator<
         Result<HostThemeSubscribeItem, GenericError>
       > {
-        yield ok({ name: { tag: "Default" }, variant: theme });
+        yield ok({ name: { tag: "Default" }, variant: currentTheme });
         // A live subscription never ends: emit the current theme, then stay open.
+        await new Promise<never>(() => {});
+      },
+    },
+
+    chat: {
+      async createChatRoom(_product, request) {
+        if (faults.chatError) throw new Error(faults.chatError);
+        if (chatRooms.has(request.roomId)) return { status: "Exists" };
+        chatRooms.set(request.roomId, {
+          roomId: request.roomId,
+          // A product that creates a room hosts it; a product reaching a room
+          // as a bot registers the bot instead.
+          participatingAs: "RoomHost",
+        });
+        return { status: "New" };
+      },
+      async registerChatBot(_product, request) {
+        if (faults.chatError) throw new Error(faults.chatError);
+        if (chatBots.has(request.botId)) return { status: "Exists" };
+        chatBots.set(request.botId, request);
+        return { status: "New" };
+      },
+      async postChatMessage(
+        _product,
+        request,
+      ): Promise<HostChatPostMessageResponse> {
+        if (faults.chatError) throw new Error(faults.chatError);
+        // Posting to a room the product never registered is a product bug,
+        // and a mock that silently accepted it would hide one.
+        if (!chatRooms.has(request.roomId)) {
+          throw new Error(`unknown chat room ${request.roomId}`);
+        }
+        const messageId = `mock-message:${nextChatMessageId++}`;
+        chatMessages.push({
+          messageId,
+          roomId: request.roomId,
+          payload: request.payload,
+        });
+        return { messageId };
+      },
+      async *subscribeChatRooms(): AsyncGenerator<
+        Result<HostChatListSubscribeItem, GenericError>
+      > {
+        yield ok({ rooms: [...chatRooms.values()] });
+        // A live subscription never ends, matching `subscribeTheme`.
         await new Promise<never>(() => {});
       },
     },
@@ -310,13 +556,93 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     pushedNotifications: () => [...pushedNotifications],
     sentRpc: () => [...sentRpc],
     authStates: () => [...authStates],
-    confirmations: () => [...confirmations],
+    reviews: () => [...reviews],
+    confirmations: () => reviews.map((review) => review.tag),
     cancelledNotifications: () => [...cancelledNotifications],
+    permissionLog: () => [...permissionLog],
+    grantedPermissions: () =>
+      [...permissionDecisions.entries()]
+        .filter(([, isGranted]) => isGranted)
+        .map(([permission]) => permission)
+        .sort(),
+    grantPermission: (permission) => {
+      permissionDecisions.set(permission, true);
+    },
+    revokePermission: (permission) => {
+      permissionDecisions.set(permission, false);
+    },
+    resetPermission: (permission) => {
+      permissionDecisions.delete(permission);
+    },
+    setEnforcePermissions: (enforce) => {
+      enforcePermissions = enforce;
+    },
+    theme: () => currentTheme,
+    setTheme: (variant) => {
+      currentTheme = variant;
+    },
+    chainStatus: () => chainStatus,
+    simulateDisconnect: () => {
+      chainStatus = "Disconnected";
+    },
+    simulateReconnect: () => {
+      chainStatus = "Idle";
+    },
+    chatRooms: () => [...chatRooms.values()],
+    chatBots: () => [...chatBots.values()],
+    postedChatMessages: () => [...chatMessages],
     insertPreimage(value) {
       const key = preimageKey(value);
       preimages.set(hex(key), value);
       return key;
     },
+    preimages: () => [...preimages.values()],
+    clearNavigations: () => {
+      navigations.length = 0;
+    },
+    clearNotifications: () => {
+      pushedNotifications.length = 0;
+      cancelledNotifications.length = 0;
+    },
+    clearReviews: () => {
+      reviews.length = 0;
+    },
+    clearPermissionLog: () => {
+      permissionLog.length = 0;
+    },
+    clearPermissionDecisions: () => permissionDecisions.clear(),
+    clearAuthStates: () => {
+      authStates.length = 0;
+    },
+    clearSentRpc: () => {
+      sentRpc.length = 0;
+    },
+    clearPreimages: () => preimages.clear(),
+    clearStorage: () => storage.clear(),
+    clearChatState: () => {
+      chatRooms.clear();
+      chatBots.clear();
+      chatMessages.length = 0;
+    },
+    reset() {
+      this.clearNavigations();
+      this.clearNotifications();
+      this.clearReviews();
+      this.clearPermissionLog();
+      this.clearPermissionDecisions();
+      this.clearAuthStates();
+      this.clearSentRpc();
+      this.clearPreimages();
+      this.clearStorage();
+      this.clearChatState();
+      currentTheme = theme;
+      chainStatus = "Idle";
+      enforcePermissions = false;
+      nextNotificationId = 0;
+      nextChatMessageId = 0;
+    },
+    payment: notModeled("payment"),
+    coinPayment: notModeled("coinPayment"),
   };
 }
 
