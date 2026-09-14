@@ -5,11 +5,10 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  pull_request:
+  # Kept alongside pull_request so a build can be reproduced on demand without
+  # pushing a commit.
   workflow_dispatch:
-  # Held on workflow_dispatch until the build credentials tracked in #672
-  # land. The trigger below is the one this workflow runs on; restoring it
-  # is the change that puts this workflow live.
-#   pull_request:
 
 permissions:
   contents: read
