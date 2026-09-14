@@ -56,8 +56,17 @@
     "@parity/truapi": "^0.16.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/bun": "^1.3.0",
     "neverthrow": "^8.2.0",
     "typescript": "^5.7"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
   }
 }
