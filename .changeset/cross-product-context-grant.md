@@ -36,6 +36,12 @@ characters, invisible bidirectional or zero-width formatting, whitespace, or pat
 separators. Each of these reached the grant key, the manifest cache key, the
 account-access prompt and the logs. Internationalised names are unaffected.
 
+A granted cross-product access is logged. It raises no prompt and writes no
+stored decision, so previously only the refusal was audible: a publisher's grant
+could let one product act with another's keys leaving no trace on the device.
+This does not make the access revocable, which needs a surface for the user to
+record a decision about a pair they were never asked about.
+
 Resolving a grant can require reading a product manifest from dotNS, so the
 lookup is bounded by the caller's timeout and cancellation rather than running
 outside both. A manifest is cached under the label it resolves by, so every

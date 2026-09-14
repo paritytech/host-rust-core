@@ -350,6 +350,19 @@ pub(crate) async fn ring_vrf_key_access_granted(
         return Ok(owner);
     }
     if grants_scope(services, platform, &caller, &owner, Granted::Context).await {
+        // Recorded, because nothing else records it. A granted cross-product
+        // access raises no prompt and writes no stored decision, so without this
+        // line the only audible half of the decision is the refusal below: a
+        // publisher's grant would let one product act with another's keys and
+        // leave no trace on the device that it happened. This does not make the
+        // access revocable — that needs a surface for the user to record a
+        // decision about a pair they were never asked about — but it is what any
+        // such surface would have to be built on.
+        info!(
+            caller = %caller,
+            owner = %owner,
+            "ring-VRF key access granted by the owner's manifest"
+        );
         return Ok(owner);
     }
     // The wire answer is one refusal for every reason, so the reason lives here
