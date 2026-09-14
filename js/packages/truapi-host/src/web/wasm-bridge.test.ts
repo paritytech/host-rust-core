@@ -6,8 +6,12 @@ import { createMockHost, mockRuntimeConfig } from "./create-mock-host.js";
 // Drives the REAL truapi-server WASM core against createMockHost's callbacks —
 // headless, no browser, no worker — to prove the JS↔SCALE↔WASM callback bridge.
 // Requires the built WASM artifact (`npm run build:wasm`); skipped when it is
-// absent so a plain `bun test` on a fresh checkout stays green. The `host-wasm`
-// CI job builds the WASM and runs this suite.
+// absent so a plain `bun test` on a fresh checkout stays green.
+//
+// NOTE: no CI job builds the WASM. `release.yml` does at release time, but
+// `ts-host` runs `bun test` without `build:wasm` or `REQUIRE_WASM`, so this
+// suite skips on every pull request. Run it locally with `npm run build:wasm`
+// until a job builds the artifact and sets `REQUIRE_WASM=1`.
 const wasmUrl = new URL(
   "../../dist/wasm/web/truapi_server_bg.wasm",
   import.meta.url,
@@ -18,10 +22,9 @@ const glueUrl = new URL(
 );
 const built = existsSync(wasmUrl);
 
-// The `host-wasm` CI job builds the WASM first and sets REQUIRE_WASM=1, so a
-// missing artifact (a silent `build:wasm` path/output drift) fails loudly here
-// instead of skipping green. A plain local `bun test` leaves REQUIRE_WASM unset
-// and skips this suite cleanly on a fresh checkout.
+// Setting REQUIRE_WASM=1 turns a missing artifact (a silent `build:wasm`
+// path/output drift) into a loud failure instead of a green skip. Nothing in CI
+// sets it today; see the note above.
 if (process.env.REQUIRE_WASM === "1" && !built) {
   throw new Error(
     `REQUIRE_WASM=1 but the WASM artifact is missing at ${wasmUrl.pathname} — run \`npm run build:wasm\` first.`,
@@ -59,5 +62,46 @@ suite("real WASM core ↔ createMockHost bridge", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     expect(invoked.some((c) => c.startsWith("readCoreStorage:"))).toBe(true);
+  });
+
+  it("isolates one real-core boot from the next through reset()", async () => {
+    // The surface-agreement test proves the Rust and JS mocks expose the same
+    // control methods. It cannot prove those methods hold against a real core.
+    // Test isolation is the property a product suite actually depends on: a
+    // recording made while one core ran must not leak into the next case.
+    const { initSync, WasmPairingHostRuntime } = await import(glueUrl.href);
+    const { createWasmRawCallbacks } = await import(
+      "../generated/host-callbacks-adapter.js"
+    );
+    initSync({ module: readFileSync(wasmUrl) });
+
+    const mock = createMockHost();
+    const { productId, ...hostConfig } = mockRuntimeConfig();
+    const boot = async () => {
+      const runtime = new WasmPairingHostRuntime(
+        createWasmRawCallbacks(mock.callbacks),
+        hostConfig,
+      );
+      runtime.productRuntime({ productId }, { emitFrame: () => {} });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    };
+
+    // A real core boot leaves state behind in the mock's storage: it reads its
+    // auth session, and anything a test seeded is still there.
+    mock.insertPreimage(new Uint8Array([1, 2, 3]));
+    await boot();
+    expect(mock.preimages()).toHaveLength(1);
+
+    mock.reset();
+
+    // The same mock must now be as good as new for a second core.
+    expect(mock.preimages()).toEqual([]);
+    expect(mock.reviews()).toEqual([]);
+    expect(mock.permissionLog()).toEqual([]);
+    await boot();
+    expect(
+      mock.preimages(),
+      "a second core boot must not resurrect what reset() cleared",
+    ).toEqual([]);
   });
 });
