@@ -98,6 +98,12 @@ scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
 
+Both mobile hosts offer **Create an issue** alongside **Share logs** in the
+shake-opened Debug menu. The action prepares a log ZIP and opens the
+`paritytech/platform-issues` bug report form with app and device details.
+Save the ZIP in Downloads on Android or Files on iOS, then attach it in GitHub
+before submitting the report.
+
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server

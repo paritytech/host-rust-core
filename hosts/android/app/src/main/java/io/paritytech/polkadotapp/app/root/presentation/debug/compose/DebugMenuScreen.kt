@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,6 +28,7 @@ import io.paritytech.polkadotapp.app.root.presentation.debug.DebugMenuContract
 import io.paritytech.polkadotapp.app.root.presentation.debug.DebugMenuState
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextButton
 import io.paritytech.polkadotapp.design.components.compound.NovaSwitch
+import io.paritytech.polkadotapp.design.components.dialog.NovaAlertDialog
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.Close
 import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
@@ -42,12 +44,14 @@ import io.paritytech.polkadotapp.common.R as RCommon
 @Composable
 fun DebugMenuScreen(contract: DebugMenuContract) {
     val state by contract.state.collectAsStateWithLifecycle()
+    var showCreateIssueDialog by rememberSaveable { mutableStateOf(false) }
 
     DebugMenuScreenInternal(
         state = state,
         onBackClick = contract::onBackClick,
         onClearBackupClick = contract::onClearBackupClick,
         onShareLogsClick = contract::onShareLogsClick,
+        onCreateIssueClick = { showCreateIssueDialog = true },
         onCopyWalletAccountClick = contract::onCopyWalletAccountClick,
         onCopyCandidateAccountClick = contract::onCopyCandidateAccountClick,
         onCopyWalletMnemonicClick = contract::onCopyWalletMnemonicClick,
@@ -62,6 +66,21 @@ fun DebugMenuScreen(contract: DebugMenuContract) {
         onSimulateGameResultsClick = contract::onSimulateGameResultsClick,
         onCoinageDebugWidgetsToggled = contract::onCoinageDebugWidgetsToggled,
     )
+
+    if (showCreateIssueDialog) {
+        NovaAlertDialog(
+            title = stringResource(RCommon.string.debug_menu_create_issue),
+            text = stringResource(RCommon.string.debug_report_bug_instructions),
+            positiveButtonTitle = stringResource(RCommon.string.debug_report_bug_open_github),
+            onPositiveButtonClick = {
+                showCreateIssueDialog = false
+                contract.onCreateIssueClick()
+            },
+            negativeButtonTitle = stringResource(RCommon.string.common_cancel),
+            onNegativeButtonClick = { showCreateIssueDialog = false },
+            onDismissRequest = { showCreateIssueDialog = false },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -74,6 +93,7 @@ private fun DebugMenuScreenInternal(
     onCopyCandidateAccountClick: () -> Unit,
     onCopyWalletMnemonicClick: () -> Unit,
     onShareLogsClick: () -> Unit,
+    onCreateIssueClick: () -> Unit,
     onOpenVideoGameClick: () -> Unit,
     onProductBotsClick: () -> Unit,
     onRandomizeAccountClick: () -> Unit,
@@ -147,6 +167,14 @@ private fun DebugMenuScreenInternal(
                 title = stringResource(RCommon.string.debug_menu_share_logs),
                 enabled = !state.isSharingLogs,
                 onClick = onShareLogsClick
+            )
+
+            VerticalSpacer { mediumIncreased }
+
+            DebugMenuItem(
+                title = stringResource(RCommon.string.debug_menu_create_issue),
+                enabled = !state.isCreatingIssue,
+                onClick = onCreateIssueClick
             )
 
             VerticalSpacer { mediumIncreased }
@@ -327,6 +355,7 @@ private fun DebugMenuScreenPreview() {
             onCopyWalletAccountClick = {},
             onCopyWalletMnemonicClick = {},
             onShareLogsClick = {},
+            onCreateIssueClick = {},
             onOpenVideoGameClick = {},
             onProductBotsClick = {},
             onCopyCandidateAccountClick = {},

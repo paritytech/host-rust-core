@@ -49,6 +49,12 @@ final class DebugSettingsViewController: UIViewController, ViewHolder {
             for: .touchUpInside
         )
 
+        rootView.createIssueButton.addTarget(
+            self,
+            action: #selector(actionCreateIssue),
+            for: .touchUpInside
+        )
+
         rootView.productsButton.addTarget(
             self,
             action: #selector(actionShowProducts),
@@ -116,6 +122,10 @@ final class DebugSettingsViewController: UIViewController, ViewHolder {
 
     @objc func actionShareLogs() {
         presenter.shareLogs()
+    }
+
+    @objc func actionCreateIssue() {
+        presenter.createIssue()
     }
 
     @objc func actionShowProducts() {

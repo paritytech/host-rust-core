@@ -2128,6 +2128,72 @@
         }
       }
     },
+    "debug.create.issue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create an issue"
+          }
+        }
+      }
+    },
+    "debug.issue.collect.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not collect logs. Please try again."
+          }
+        }
+      }
+    },
+    "debug.issue.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App: %@ (build %@)\niOS: %@\nDevice: %@\n\nLogs: %@\nAttach this ZIP from Files before submitting."
+          }
+        }
+      }
+    },
+    "debug.issue.instructions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save the log ZIP to Files, then attach it under “Versions, logs, screenshots” in the GitHub issue. You may need to sign in to GitHub in the browser."
+          }
+        }
+      }
+    },
+    "debug.issue.logs.too.large": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The log ZIP exceeds GitHub’s 25 MB attachment limit. Ask the development team for a smaller archive."
+          }
+        }
+      }
+    },
+    "debug.issue.save.logs": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save logs"
+          }
+        }
+      }
+    },
     "deposit.copy.action": {
       "extractionState": "manual",
       "localizations": {

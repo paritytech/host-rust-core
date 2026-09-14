@@ -52,6 +52,20 @@ extension DebugSettingsPresenter: DebugSettingsPresenterProtocol {
         }
     }
 
+    func createIssue() {
+        let viewModel = AlertPresentableViewModel(
+            title: String(localized: .debugCreateIssue),
+            message: String(localized: .debugIssueInstructions),
+            actions: [
+                AlertPresentableAction(title: String(localized: .debugIssueSaveLogs)) { [weak self] in
+                    self?.saveIssueLogs()
+                },
+                AlertPresentableAction(title: String(localized: .Common.cancel), style: .cancel)
+            ]
+        )
+        wireframe.present(viewModel: viewModel, style: .alert, from: view)
+    }
+
     func showProducts() {
         wireframe.showProducts(from: view)
     }
@@ -103,6 +117,31 @@ extension DebugSettingsPresenter: DebugSettingsPresenterProtocol {
 
     func openTrUAPIPlayground() {
         wireframe.showTrUAPIPlayground(from: view)
+    }
+}
+
+private extension DebugSettingsPresenter {
+    func saveIssueLogs() {
+        guard let attachment = interactor.makeLogsDraft()?.attachment else {
+            presentIssueError(String(localized: .debugIssueCollectFailed))
+            return
+        }
+
+        guard attachment.data.count <= 25 * 1_024 * 1_024 else {
+            presentIssueError(String(localized: .debugIssueLogsTooLarge))
+            return
+        }
+
+        wireframe.saveIssueLogs(attachment.url, from: view)
+    }
+
+    func presentIssueError(_ message: String) {
+        wireframe.present(
+            message: message,
+            title: String(localized: .Common.error),
+            closeAction: String(localized: .Common.close),
+            from: view
+        )
     }
 }
 

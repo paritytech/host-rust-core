@@ -6,6 +6,7 @@ import androidx.compose.runtime.Immutable
 data class DebugMenuState(
     val isClearingBackup: Boolean = false,
     val isSharingLogs: Boolean = false,
+    val isCreatingIssue: Boolean = false,
     val showSpaBrowserDialog: Boolean = false,
     val hasJWTToken: Boolean = false,
     val coinageDebugWidgetsEnabled: Boolean = true,
