@@ -247,7 +247,48 @@ To run the playground inside a real host instead, start it with `yarn dev` and
 open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
 [`playground/README.md`](playground/README.md) for deployment.
 
-To build the iOS host and open the playground in Simulator:
+### Working on the iOS host
+
+`hosts/ios/` is the iOS app, and it resolves the core from this tree rather than
+from a published version. The core's bindings, xcframework and FFI headers are
+gitignored build outputs, so a fresh clone cannot load the app's package graph
+until they exist. Generate them once:
+
+```bash
+make ios-bootstrap
+```
+
+Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
+the bindings are generated from, which is the `truapi`, `truapi-platform`,
+`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the device slice, which is enough for Simulator but not for an archive.
+
+Because the app builds against the core in this tree, a core change that breaks
+it fails here rather than at the next version bump. Every pull request touching
+the app, or the crates its bindings come from, runs:
+
+- `build`, a DevCI compile, failing on any build warning the committed baseline
+  does not already have
+- `test`, the unit test suite
+- `preview`, an installable simulator `.app` attached to the run, stamped with
+  the commit it came from in `TrUAPICommit`
+
+To run a preview build from a pull request:
+
+```bash
+gh run download <run-id> --name simulator-preview-<short-sha>
+unzip polkadot-app-*.app.zip
+xcrun simctl install booted polkadot-app.app
+xcrun simctl launch booted io.parity.polkadotapp.develop
+```
+
+It is an arm64 simulator slice, so it needs an Apple Silicon Mac and cannot be
+installed on a device.
+
+### Building the standalone iOS host app
+
+The targets below build `polkadot-app-ios-v2`, a separate checkout set by
+`IOS_HOST`, not `hosts/ios`. To build the playground in Simulator against it:
 
 ```bash
 make ios-run
