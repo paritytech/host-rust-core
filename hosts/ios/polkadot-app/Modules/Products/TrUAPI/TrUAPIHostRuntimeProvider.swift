@@ -130,6 +130,7 @@ extension TrUAPIHostRuntimeProvider {
             platformVersion: UIDevice.current.systemVersion,
             peopleChainGenesisHash: Data(hexString: peopleGenesisHex),
             bulletinChainGenesisHash: Data(hexString: bulletinGenesisHex),
+            networkSuffix: KnownNetworkSuffix.current,
             localSessionSecret: secret,
             localSessionLiteUsername: liteUsername
         )

@@ -1,6 +1,27 @@
 import Foundation
 import SubstrateSdk
 
+/// dotNS TLD of the network the chains below belong to, passed to the core as
+/// `HostRuntimeConfig.networkSuffix`. The wallet's reserved identities are
+/// derived under it, so it has to name the same network the chains do: a wrong
+/// value derives a different person from the same seed rather than failing.
+///
+/// It lives beside the chain selection, under the same conditions, so the two
+/// cannot drift apart.
+enum KnownNetworkSuffix {
+    #if UNSTABLE
+        static let current = "testnet"
+    #elseif NIGHTLY
+        static let current = "paseo"
+    #else
+        // Unconfirmed. The Release chains carry the same assets as the nightly
+        // ones, `pas` in the native slot and `pusd` alongside it, which points
+        // at Paseo rather than Polkadot. No CI configuration builds this
+        // branch. See the pull request that introduced this.
+        static let current = "paseo"
+    #endif
+}
+
 enum KnownChainId {
     #if UNSTABLE
         static let previewNetPeople = "preview-people"
