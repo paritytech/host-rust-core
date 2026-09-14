@@ -20,6 +20,23 @@ npm run changeset            # interactive: pick patch / minor / major + a short
 npm run version-packages     # consumes the changeset, bumps package.json + writes CHANGELOG.md
 ```
 
+A change that reaches a published artifact carries its own changeset, added by
+the pull request that makes it: the `Changeset guard` job in CI fails a pull
+request that touches the sources the npm packages or the prebuilt CLI are built
+from without adding one. This includes code generators, dependency manifests
+and lockfiles, and package build scripts and configuration. Deleting, editing
+or renaming an existing changeset, or adding `.changeset/README.md`, does not
+satisfy the guard.
+
+A change that ships nothing can use the `no-changeset` label. After adding the
+label or correcting a title to `release:`, select **Re-run failed jobs** on CI;
+the guard reads the current PR metadata, so no new commit or full CI run is
+needed. Repository maintainers must create the label once before using it:
+
+```bash
+gh label create no-changeset --color d4c5f9 --description "No published artifact changes; changeset not required"
+```
+
 The first command writes a markdown file under `.changeset/`; the second
 consumes it, bumps the selected package `package.json`, appends the package
 `CHANGELOG.md`, deletes the changeset file, and then runs
@@ -67,6 +84,14 @@ release: @parity/truapi 0.5.0, @parity/ios-host 0.5.0, @parity/android-host 0.1.
 Separate multiple package/version targets with commas. The workflow validates
 each declared version against its package manifest and publishes every target
 whose version is not already on npm in the same automation run.
+Include every npm package whose version was bumped, including dependent
+packages bumped by Changesets. If a version is deliberately left unpublished,
+record that exact `package@version` and a reason in
+[`.github/registry-drift-exceptions.json`](../.github/registry-drift-exceptions.json).
+For example, an entry could be
+`"@parity/truapi-debugger@0.1.2": "Deferred until the standalone debugger release"`.
+An exception applies only to that version; the next bump is checked normally.
+The exception list is empty by default and does not control publishing.
 
 ### 4. Get the PR reviewed and merged
 
@@ -77,6 +102,12 @@ the workflow checks the commit subject, and dropping the `release:`
 prefix will silently skip the publish. If that does happen, open a
 follow-up `release:` PR with any trivial change (a CHANGELOG note tweak,
 say); the tag-already-exists guard makes re-runs safe.
+
+The merge queue checks the release against the queued merge result, so there
+is no required "rebase immediately before enqueueing" step. A changeset ahead
+of or grouped with the release can still reject the group. Rebuild the release
+from current `main` as described below, then enqueue it again; other PRs in a
+rejected group may also need to be requeued.
 
 ### 5. Watch the publish
 
@@ -251,6 +282,33 @@ has to be one of ours rather than a personal one.
 - A `release:` PR with mismatched `js/packages/truapi/package.json` and
   `rust/crates/truapi/Cargo.toml` versions is blocked at PR time by the
   `Release version check` workflow.
+- `Release version check` also requires consumed changesets for a `release:`
+  PR without an npm version bump, including a publish retry or native-only
+  release. It remains alongside `Release guard`, which detects bumps without
+  relying on the title and also runs in the merge queue. Both checks give the
+  same recovery guidance for an unmerged release branch.
+- A release commit publishes the versions its changesets computed, so those
+  changesets have to be the ones present when it merges. The `Release guard` job
+  in CI holds that: whenever a change bumps a published package version,
+  `.changeset/` must contain no release markdown files (`README.md` is ignored).
+  It runs in the merge queue as well as on the pull request, so it sees the
+  merge result rather than the branch, and a release
+  branch that went stale while it waited fails before the bump reaches `main`.
+- Rebuild a stale release branch by resetting it to `main` and running
+  `npm run version-packages` and `scripts/cut-version.sh` again. Rebasing and
+  rerunning does not work: `version-packages` consumes the changeset files it
+  reads and bumps from whatever version the manifests currently hold, so a
+  second run on top of the first compounds the bump and writes a changelog entry
+  for a version nobody publishes.
+- `Registry drift` compares every published manifest version against npm on a
+  daily schedule, excluding documented exceptions for specific versions, and
+  opens an issue when the registry does not serve one. Manual runs also check
+  the default branch. It updates one open issue when the report changes and
+  leaves an identical report alone. Close the issue once resolved; there is
+  no daily comment loop. Registry lookup errors fail the job without filing or
+  updating an issue. A release commit is merged before the publish it describes is attempted and
+  nothing reverts it, so the repository can otherwise read as released while
+  consumers still install the previous version.
 - Publishing uses the default `GITHUB_TOKEN`. The only other credentials are the
   org-level `NPM_PUBLISH_AUTOMATION_TOKEN` that the automation itself relies on,
   and the notification app's client id and private key, which are read by the

@@ -7,10 +7,11 @@ use crate::versioned::chat::{
     HostChatRegisterBotRequest, HostChatRegisterBotResponse, ProductChatCustomMessageRenderItem,
     ProductChatCustomMessageRenderRequest,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Chat room, bot, and message APIs.
+#[wire_trait(id = 4)]
 #[crate::service(required_execution = Worker)]
 #[crate::async_trait]
 pub trait Chat: Send + Sync {
@@ -25,7 +26,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "createRoom failed:", result);
     /// console.log("room created:", result.value);
     /// ```
-    #[wire(request_id = 38)]
+    #[wire(id = 0)]
     async fn create_room(
         &self,
         _cx: &CallContext,
@@ -45,7 +46,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "registerBot failed:", result);
     /// console.log("bot registered:", result.value);
     /// ```
-    #[wire(request_id = 40)]
+    #[wire(id = 1)]
     async fn register_bot(
         &self,
         _cx: &CallContext,
@@ -64,7 +65,7 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("room list received:", item);
     /// ```
-    #[wire(start_id = 42)]
+    #[wire(id = 2)]
     async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
         Subscription::empty()
     }
@@ -91,7 +92,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "postMessage failed:", result);
     /// console.log("message posted:", result.value);
     /// ```
-    #[wire(request_id = 46)]
+    #[wire(id = 3)]
     async fn post_message(
         &self,
         _cx: &CallContext,
@@ -110,7 +111,7 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("action received:", item);
     /// ```
-    #[wire(start_id = 48)]
+    #[wire(id = 4)]
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
@@ -126,7 +127,7 @@ pub trait Chat: Send + Sync {
     ///   return of({ tag: "String", value: { text: `${messageType}: ${payload}` } });
     /// });
     /// ```
-    #[wire(host_initiated, start_id = 52)]
+    #[wire(host_initiated, id = 5)]
     fn custom_message_render(
         &self,
         _cx: &CallContext,

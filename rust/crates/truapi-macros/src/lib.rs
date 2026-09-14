@@ -21,27 +21,38 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
 /// Mark a TrUAPI trait method with its wire-protocol discriminant id.
 ///
 /// ```ignore
-/// #[wire(request_id = 4)]
+/// #[wire(id = 4)]
 /// async fn host_account_get(...) -> ...;
 ///
-/// #[wire(start_id = 42)]
+/// #[wire(id = 42)]
 /// async fn host_account_connection_status_subscribe(...) -> ...;
-///
-/// // Classify a method whose payloads carry key material or bearer secrets.
-/// // The flag is folded into the wire schema-hash fingerprint, so a change in a
-/// // frame's sensitivity classification is caught as contract drift. It is a
-/// // classification only, and grants no confidentiality: it reaches neither the
-/// // generated TypeScript nor any runtime, and nothing suppresses decoding of
-/// // the payload.
-/// #[wire(request_id = 114, sensitive)]
-/// async fn sign_raw(...) -> ...;
 /// ```
+///
+/// One id addresses the method regardless of shape (request/response or
+/// subscription): which leg a frame carries is named by its `message_type`
+/// byte, not by a separate wire id.
 ///
 /// Expands to the original method plus hidden doc tags that `truapi-codegen`
 /// extracts from rustdoc JSON to build the wire table and versioned clients.
 #[proc_macro_attribute]
 pub fn wire(args: TokenStream, item: TokenStream) -> TokenStream {
     wire::expand(args, item)
+}
+
+/// Mark a TrUAPI service trait with its wire-protocol trait discriminant.
+///
+/// ```ignore
+/// #[wire_trait(id = 1)]
+/// pub trait System: Send + Sync { ... }
+/// ```
+///
+/// The trait id is the first byte of the `(trait, method)` discriminant pair
+/// every frame of the trait's methods carries on the wire. Expands to the
+/// original trait plus a hidden `@wire_trait_id=N` doc tag that
+/// `truapi-codegen` extracts from rustdoc JSON.
+#[proc_macro_attribute]
+pub fn wire_trait(args: TokenStream, item: TokenStream) -> TokenStream {
+    wire::expand_trait(args, item)
 }
 
 /// Generate versioned message envelopes.
