@@ -60,6 +60,12 @@ jobs:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
+      # The app resolves the core from this tree, and the core's generated
+      # bindings are gitignored, so the package graph cannot resolve until
+      # they exist.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
+
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
         with:
@@ -144,6 +150,12 @@ jobs:
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
+
+      # The app resolves the core from this tree, and the core's generated
+      # bindings are gitignored, so the package graph cannot resolve until
+      # they exist.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
