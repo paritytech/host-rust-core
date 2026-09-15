@@ -45,6 +45,7 @@ use truapi::{CallContext, CallError, Subscription};
 use truapi::api::{Account, TrUApi};
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest,
     HostAccountGetError,
     HostAccountGetRequest,
     HostAccountGetResponse,
@@ -70,6 +71,7 @@ impl Account for MyHost {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
+        _request: HostAccountConnectionStatusSubscribeRequest,
     ) -> Subscription<HostAccountConnectionStatusSubscribeItem> {
         Subscription::empty()
     }

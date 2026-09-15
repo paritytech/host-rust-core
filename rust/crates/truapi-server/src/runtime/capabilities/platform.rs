@@ -8,7 +8,7 @@ use truapi::versioned::local_storage::{
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
-use truapi::versioned::locale::HostLocaleSubscribeItem;
+use truapi::versioned::locale::{HostLocaleSubscribeItem, HostLocaleSubscribeRequest};
 use truapi::versioned::notifications::{
     HostPushNotificationCancelError, HostPushNotificationCancelRequest,
     HostPushNotificationCancelResponse, HostPushNotificationError, HostPushNotificationRequest,
@@ -24,7 +24,7 @@ use truapi::versioned::system::{
     HostInfoError, HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
 };
-use truapi::versioned::theme::HostThemeSubscribeItem;
+use truapi::versioned::theme::{HostThemeSubscribeItem, HostThemeSubscribeRequest};
 use truapi::{CallContext, CallError, Subscription, v01};
 use truapi_platform::PermissionAuthorizationStatus;
 
@@ -215,7 +215,11 @@ impl LocalStorage for ProductRuntimeHost {
 #[truapi::async_trait]
 impl Theme for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "theme.subscribe"))]
-    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostThemeSubscribeItem> {
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostThemeSubscribeRequest,
+    ) -> Subscription<HostThemeSubscribeItem> {
         let stream = self.platform.subscribe_theme().filter_map(|item| async {
             // TODO: preserve platform stream errors as terminal
             // subscription interrupts once subscription items can carry
@@ -236,7 +240,11 @@ impl Theme for ProductRuntimeHost {
 #[truapi::async_trait]
 impl Locale for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "locale.subscribe"))]
-    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostLocaleSubscribeItem> {
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostLocaleSubscribeRequest,
+    ) -> Subscription<HostLocaleSubscribeItem> {
         let stream = self.platform.subscribe_locale().filter_map(|item| async {
             match item {
                 Ok(item) => Some(HostLocaleSubscribeItem::V1(item)),

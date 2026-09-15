@@ -172,6 +172,7 @@ mod tests {
     use truapi::versioned::local_storage::{
         HostLocalStorageClearRequest, HostLocalStorageReadRequest, HostLocalStorageWriteRequest,
     };
+    use truapi::versioned::account::HostAccountConnectionStatusSubscribeRequest;
     use truapi::versioned::notifications::HostPushNotificationRequest;
     use truapi::versioned::permissions::RemotePermissionRequest;
     use truapi::versioned::system::HostFeatureSupportedRequest;
@@ -346,7 +347,7 @@ mod tests {
             request_id: "p:1".into(),
             payload: Payload {
                 id: sub_ids.start_id,
-                value: Vec::new(),
+                value: HostAccountConnectionStatusSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(core.dispatch(frame, dyn_transport));

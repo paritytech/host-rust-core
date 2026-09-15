@@ -2226,7 +2226,7 @@ mod tests {
             request_id: "theme:1".to_string(),
             payload: Payload {
                 id: ids.start_id,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();

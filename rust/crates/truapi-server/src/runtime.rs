@@ -59,10 +59,11 @@ use tracing::{instrument, warn};
 use truapi::api::Chat;
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
-    HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
-    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
-    HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+    HostChatActionSubscribeItem, HostChatActionSubscribeRequest, HostChatCreateRoomError,
+    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
+    HostChatListSubscribeRequest, HostChatPostMessageError, HostChatPostMessageRequest,
+    HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
+    HostChatRegisterBotResponse,
 };
 use truapi::versioned::preimage::RemotePreimageSubmitError;
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
@@ -965,7 +966,11 @@ impl Chat for ProductRuntimeHost {
     }
 
     #[instrument(skip_all, fields(runtime.method = "chat.list_subscribe"))]
-    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostChatListSubscribeRequest,
+    ) -> Subscription<HostChatListSubscribeItem> {
         let Ok(platform) = self.chat_platform::<()>() else {
             return Subscription::empty();
         };
@@ -1018,6 +1023,7 @@ impl Chat for ProductRuntimeHost {
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
+        _request: HostChatActionSubscribeRequest,
     ) -> Subscription<HostChatActionSubscribeItem> {
         if self.chat_platform::<()>().is_err() {
             return Subscription::empty();

@@ -50,7 +50,7 @@ use truapi::versioned::system::{
     HostGetProductContextResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
 };
-use truapi::versioned::theme::HostThemeSubscribeItem;
+use truapi::versioned::theme::{HostThemeSubscribeItem, HostThemeSubscribeRequest};
 use truapi_platform::{AuthState, CoreStorageKey, PermissionAuthorizationRequest};
 
 use super::*;
@@ -1758,7 +1758,8 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
 fn theme_subscribe_maps_platform_values() {
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
     let cx = CallContext::default();
-    let mut subscription = futures::executor::block_on(Theme::subscribe(&host, &cx));
+    let mut subscription =
+        futures::executor::block_on(Theme::subscribe(&host, &cx, HostThemeSubscribeRequest::V1));
     let item = futures::executor::block_on(subscription.next()).expect("theme item");
     assert_eq!(
         item,

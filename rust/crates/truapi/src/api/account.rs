@@ -1,18 +1,18 @@
 //! Unified [`Account`] trait.
 
 use crate::versioned::account::{
-    HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
-    HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
-    HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
-    HostAccountGetRequest, HostAccountGetResponse, HostAccountListRingVrfKeysError,
-    HostAccountListRingVrfKeysRequest, HostAccountListRingVrfKeysResponse,
-    HostAccountRegisterRingVrfKeyError, HostAccountRegisterRingVrfKeyRequest,
-    HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignError,
-    HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse, HostAccountSignVrfError,
-    HostAccountSignVrfRequest, HostAccountSignVrfResponse, HostGetLegacyAccountsError,
-    HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse, HostGetUserIdError,
-    HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
-    HostRequestLoginResponse,
+    HostAccountConnectionStatusSubscribeItem, HostAccountConnectionStatusSubscribeRequest,
+    HostAccountCreateProofError, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
+    HostAccountGetAliasError, HostAccountGetAliasRequest, HostAccountGetAliasResponse,
+    HostAccountGetError, HostAccountGetRequest, HostAccountGetResponse,
+    HostAccountListRingVrfKeysError, HostAccountListRingVrfKeysRequest,
+    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyError,
+    HostAccountRegisterRingVrfKeyRequest, HostAccountRegisterRingVrfKeyResponse,
+    HostAccountRingVrfSignError, HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse,
+    HostAccountSignVrfError, HostAccountSignVrfRequest, HostAccountSignVrfResponse,
+    HostGetLegacyAccountsError, HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse,
+    HostGetUserIdError, HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError,
+    HostRequestLoginRequest, HostRequestLoginResponse,
 };
 use crate::wire;
 use crate::{CallContext, CallError, Subscription};
@@ -34,6 +34,7 @@ pub trait Account: Send + Sync {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
+        _request: HostAccountConnectionStatusSubscribeRequest,
     ) -> Subscription<HostAccountConnectionStatusSubscribeItem> {
         Subscription::empty()
     }

@@ -1,6 +1,6 @@
 //! Unified [`Theme`] trait.
 
-use crate::versioned::theme::HostThemeSubscribeItem;
+use crate::versioned::theme::{HostThemeSubscribeItem, HostThemeSubscribeRequest};
 use crate::wire;
 use crate::{CallContext, Subscription};
 
@@ -18,7 +18,11 @@ pub trait Theme: Send + Sync {
     /// console.log("theme received:", theme);
     /// ```
     #[wire(start_id = 104)]
-    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostThemeSubscribeItem> {
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostThemeSubscribeRequest,
+    ) -> Subscription<HostThemeSubscribeItem> {
         Subscription::empty()
     }
 }

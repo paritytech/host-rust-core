@@ -1,10 +1,11 @@
 //! Unified [`Chat`] trait.
 
 use crate::versioned::chat::{
-    HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
-    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
-    HostChatRegisterBotRequest, HostChatRegisterBotResponse, ProductChatCustomMessageRenderItem,
+    HostChatActionSubscribeItem, HostChatActionSubscribeRequest, HostChatCreateRoomError,
+    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
+    HostChatListSubscribeRequest, HostChatPostMessageError, HostChatPostMessageRequest,
+    HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
+    HostChatRegisterBotResponse, ProductChatCustomMessageRenderItem,
     ProductChatCustomMessageRenderRequest,
 };
 use crate::wire;
@@ -65,7 +66,11 @@ pub trait Chat: Send + Sync {
     /// console.log("room list received:", item);
     /// ```
     #[wire(start_id = 42)]
-    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostChatListSubscribeRequest,
+    ) -> Subscription<HostChatListSubscribeItem> {
         Subscription::empty()
     }
 
@@ -114,6 +119,7 @@ pub trait Chat: Send + Sync {
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
+        _request: HostChatActionSubscribeRequest,
     ) -> Subscription<HostChatActionSubscribeItem> {
         Subscription::empty()
     }

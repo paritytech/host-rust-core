@@ -477,7 +477,7 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         request_id: "p:1".into(),
         payload: Payload {
             id: ids.start_id,
-            value: Vec::new(),
+            value: account::HostAccountConnectionStatusSubscribeRequest::V1.encode(),
         },
     };
     futures::executor::block_on(core.dispatch(start, dyn_transport.clone()));

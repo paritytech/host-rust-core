@@ -89,9 +89,12 @@ where
         dispatcher.on_subscription(wire_table::ACCOUNT_CONNECTION_STATUS_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
-                let _ = bytes;
+                let request: versioned::account::HostAccountConnectionStatusSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(_) => return Err(Vec::new()),
+                };
                 let cx = CallContext::with_request_id(request_id.clone());
-                let stream = host.connection_status_subscribe(&cx).await;
+                let stream = host.connection_status_subscribe(&cx, request).await;
                 Ok(subscription_stream::<versioned::account::HostAccountConnectionStatusSubscribeItem, _>(stream))
             })
         });
@@ -1116,10 +1119,13 @@ where
         dispatcher.on_subscription(wire_table::CHAT_LIST_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
-                let _ = bytes;
+                let request: versioned::chat::HostChatListSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(_) => return Err(Vec::new()),
+                };
                 let cx = CallContext::with_request_id(request_id.clone());
                 if !execution_allowed { return Err(Vec::new()); }
-                let stream = host.list_subscribe(&cx).await;
+                let stream = host.list_subscribe(&cx, request).await;
                 Ok(subscription_stream::<versioned::chat::HostChatListSubscribeItem, _>(stream))
             })
         });
@@ -1175,10 +1181,13 @@ where
         dispatcher.on_subscription(wire_table::CHAT_ACTION_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
-                let _ = bytes;
+                let request: versioned::chat::HostChatActionSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(_) => return Err(Vec::new()),
+                };
                 let cx = CallContext::with_request_id(request_id.clone());
                 if !execution_allowed { return Err(Vec::new()); }
-                let stream = host.action_subscribe(&cx).await;
+                let stream = host.action_subscribe(&cx, request).await;
                 Ok(subscription_stream::<versioned::chat::HostChatActionSubscribeItem, _>(stream))
             })
         });
@@ -1674,9 +1683,12 @@ where
         dispatcher.on_subscription(wire_table::LOCALE_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
-                let _ = bytes;
+                let request: versioned::locale::HostLocaleSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(_) => return Err(Vec::new()),
+                };
                 let cx = CallContext::with_request_id(request_id.clone());
-                let stream = host.subscribe(&cx).await;
+                let stream = host.subscribe(&cx, request).await;
                 Ok(subscription_stream::<versioned::locale::HostLocaleSubscribeItem, _>(stream))
             })
         });
@@ -2703,9 +2715,12 @@ where
         dispatcher.on_subscription(wire_table::THEME_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
-                let _ = bytes;
+                let request: versioned::theme::HostThemeSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(_) => return Err(Vec::new()),
+                };
                 let cx = CallContext::with_request_id(request_id.clone());
-                let stream = host.subscribe(&cx).await;
+                let stream = host.subscribe(&cx, request).await;
                 Ok(subscription_stream::<versioned::theme::HostThemeSubscribeItem, _>(stream))
             })
         });

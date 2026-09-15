@@ -173,7 +173,13 @@ mod tests {
         MethodDef {
             name: name.to_string(),
             kind: MethodKind::Subscription,
-            params: vec![],
+            params: vec![ParamDef {
+                name: "request".to_string(),
+                type_ref: TypeRef::Named {
+                    name: "ReqWrapper".to_string(),
+                    args: vec![],
+                },
+            }],
             return_type: ReturnType::Subscription(TypeRef::Named {
                 name: "ItemWrapper".to_string(),
                 args: vec![],
@@ -674,7 +680,7 @@ mod tests {
         let err = generate_dispatcher(&api).expect_err("two-param method must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("expected at most one request parameter"),
+            msg.contains("expected exactly one request parameter"),
             "unexpected error message: {msg}",
         );
     }
@@ -702,7 +708,10 @@ mod tests {
                 docs: None,
             }],
             public_trait_order: vec!["Permissions".to_string()],
-            types: vec![],
+            types: vec![
+                versioned_test_type("ReqWrapper"),
+                versioned_test_type("ErrWrapper"),
+            ],
             framework_types: Vec::new(),
         };
         let err = generate_dispatcher(&api).expect_err("primitive response must error");
@@ -747,13 +756,13 @@ mod tests {
         let err = generate_dispatcher(&api).expect_err("raw error wrapper must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("versioned request methods must use versioned errors"),
+            msg.contains("error is not a versioned wrapper"),
             "unexpected error message: {msg}",
         );
     }
 
     #[test]
-    fn dispatcher_raw_request_with_versioned_response_errors() {
+    fn dispatcher_raw_request_errors() {
         let mut method = make_request_method("alpha", 10);
         method.params[0].type_ref = TypeRef::Named {
             name: "RawRequest".to_string(),
@@ -774,10 +783,10 @@ mod tests {
             framework_types: Vec::new(),
         };
 
-        let err = generate_dispatcher(&api).expect_err("missing target version must error");
+        let err = generate_dispatcher(&api).expect_err("raw request must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("versioned responses require a target version"),
+            msg.contains("request is not a versioned wrapper"),
             "unexpected error message: {msg}",
         );
     }
@@ -807,14 +816,17 @@ mod tests {
                 docs: None,
             }],
             public_trait_order: vec!["Account".to_string()],
-            types: vec![versioned_test_type("ItemWrapper")],
+            types: vec![
+                versioned_test_type("ReqWrapper"),
+                versioned_test_type("ItemWrapper"),
+            ],
             framework_types: Vec::new(),
         };
 
         let err = generate_dispatcher(&api).expect_err("raw result subscription error must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("result subscription methods must have an error wrapper"),
+            msg.contains("error is not a versioned wrapper"),
             "unexpected error message: {msg}",
         );
     }
