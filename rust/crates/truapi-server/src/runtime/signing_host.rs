@@ -46,7 +46,10 @@ use super::authority::{
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
-use crate::host_logic::entropy::derive_product_entropy;
+use schnorrkel::Keypair;
+
+use crate::host_logic::credential::{CredentialGrant, credential_keypair};
+use crate::host_logic::entropy::{derive_product_entropy, root_entropy_source};
 use crate::host_logic::extrinsic::{
     Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
     build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
@@ -1153,6 +1156,21 @@ impl ProductAuthority for SigningHost {
                 reason: err.to_string(),
             }
         })
+    }
+
+    fn credential_signing_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+        grant: &CredentialGrant,
+    ) -> Result<Keypair, AuthorityError> {
+        self.require_current_session(session)?;
+        let entropy = self.root_entropy()?;
+        Ok(credential_keypair(
+            &root_entropy_source(&entropy),
+            product_id,
+            grant,
+        ))
     }
 }
 

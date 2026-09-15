@@ -31,7 +31,9 @@ use truapi::versioned::notifications::{
     HostPushNotificationCancelRequest, HostPushNotificationCancelResponse,
     HostPushNotificationRequest, HostPushNotificationResponse,
 };
-use truapi::versioned::permissions::{HostDevicePermissionRequest, HostDevicePermissionResponse};
+use truapi::versioned::permissions::{
+    HostDevicePermissionRequest, HostDevicePermissionResponse, RemotePermissionRequest,
+};
 use truapi::versioned::preimage::{
     RemotePreimageLookupSubscribeItem, RemotePreimageLookupSubscribeRequest,
     RemotePreimageSubmitRequest,
@@ -969,6 +971,45 @@ fn navigate_to_external_prompts_for_the_host_then_reuses_the_grant() {
             .expect("navigation list mutex poisoned")
             .len(),
         2
+    );
+}
+
+/// The prompt is the user's only view of what they are approving, so it has
+/// to name the endpoint that will actually be granted. `/session/../../admin`
+/// reads as something beneath `/session` and resolves to `/admin`; asking on
+/// the raw triple would show one endpoint and grant another.
+#[test]
+fn a_credential_prompt_names_the_endpoint_that_gets_granted() {
+    let platform = Arc::new(StubPlatform::default());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    install_pairing_session(&host, session_info());
+    let cx = CallContext::default();
+
+    let request = RemotePermissionRequest::V1(v01::RemotePermissionRequest {
+        permission: v01::RemotePermission::Credential {
+            domain: "Onramp.Example.com".to_string(),
+            path: "/session/../../admin".to_string(),
+            method: "post".to_string(),
+        },
+    });
+    futures::executor::block_on(host.request_remote_permission(&cx, request))
+        .expect("the gate answers");
+
+    let asked = platform
+        .remote_permission_requests
+        .lock()
+        .expect("remote permission list mutex poisoned")
+        .clone();
+    assert_eq!(
+        asked,
+        vec![v01::RemotePermissionRequest {
+            permission: v01::RemotePermission::Credential {
+                domain: "onramp.example.com".to_string(),
+                path: "/admin".to_string(),
+                method: "POST".to_string(),
+            },
+        }],
+        "the user is asked about the resolved endpoint, not the raw triple"
     );
 }
 

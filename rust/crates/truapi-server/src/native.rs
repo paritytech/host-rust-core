@@ -20,6 +20,8 @@ use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
 use truapi::{Bytes32, latest::HostPlatform, v01};
+
+use crate::host_logic::credential::{self, CredentialHeader, CredentialRequestError};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
     HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
@@ -366,6 +368,17 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 #[uniffi::export]
 pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
+}
+
+/// Whether the host reserves this header name (RFC 0025).
+///
+/// A host drops every header this answers `true` for from a product's outgoing
+/// request before attaching the identity `credential_request_headers` returns.
+/// Otherwise a product could set `X-Polkadot-Key` itself and present whatever
+/// identity it liked to the backend. Pure and stateless.
+#[uniffi::export]
+pub fn is_reserved_credential_header(name: String) -> bool {
+    credential::is_reserved_header(&name)
 }
 
 /// OS status of a device capability, as a native host reports it.
@@ -1053,6 +1066,26 @@ impl NativeProductExecution {
             .admin()
             .permission_authorization_status(request)
             .await?)
+    }
+
+    /// Identity headers for one outbound request a credential grant covers,
+    /// for the host to attach as it forwards the request (RFC 0025).
+    ///
+    /// The host strips every `X-Polkadot-*` header the caller supplied before
+    /// attaching these, so a product cannot present an identity of its own
+    /// choosing. `body_hash` is the BLAKE2b-256 of the request body, empty body
+    /// included.
+    pub async fn credential_request_headers(
+        &self,
+        method: String,
+        url: String,
+        body_hash: Bytes32,
+    ) -> Result<Vec<CredentialHeader>, CredentialRequestError> {
+        Ok(self
+            .admin()
+            .credential_request_headers(method, url, body_hash)
+            .await?
+            .to_headers())
     }
 
     /// Update a product-scoped permission authorization.
@@ -2414,6 +2447,11 @@ mod tests {
             v01::RemotePermission::ChainSubmit,
             v01::RemotePermission::PreimageSubmit,
             v01::RemotePermission::StatementSubmit,
+            v01::RemotePermission::Credential {
+                domain: "onramp.example.com".to_string(),
+                path: "/session".to_string(),
+                method: "POST".to_string(),
+            },
         ];
 
         let mut cases: Vec<PermissionAuthorizationRequest> = Vec::new();

@@ -7,6 +7,7 @@
 //! `host_logic::sso::messages` for both local calls and SSO transport.
 
 use async_trait::async_trait;
+use schnorrkel::Keypair;
 use std::sync::Arc;
 use truapi::latest::{
     AccountId, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
@@ -24,6 +25,7 @@ use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
 
+use crate::host_logic::credential::CredentialGrant;
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
@@ -468,6 +470,17 @@ pub(crate) trait ProductAuthority: Send + Sync {
         product_id: &str,
         context: &[u8],
     ) -> Result<[u8; 32], AuthorityError>;
+
+    /// The key signing requests a credential grant covers (RFC 0025).
+    ///
+    /// Both roles derive it from the same pre-hashed root entropy source, so a
+    /// paired host reaches the same key as the signing host without asking it.
+    fn credential_signing_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+        grant: &CredentialGrant,
+    ) -> Result<Keypair, AuthorityError>;
 }
 
 /// Build the neutral authority-session snapshot for `session`.

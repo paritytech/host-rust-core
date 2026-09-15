@@ -39,6 +39,9 @@ use super::sso_remote::{
 };
 use super::statement_store_rpc::StatementStoreRpc;
 use crate::chain_runtime::ChainRuntime;
+use schnorrkel::Keypair;
+
+use crate::host_logic::credential::{CredentialGrant, credential_keypair};
 use crate::host_logic::entropy::derive_product_entropy_from_source;
 use crate::host_logic::product_account::{
     derivation_index_bytes, derive_product_keypair_from_subtree_secret,
@@ -2355,6 +2358,26 @@ impl PairingHost {
             },
         )
     }
+
+    /// The key signing requests a credential grant covers (RFC 0025).
+    fn credential_signing_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+        grant: &CredentialGrant,
+    ) -> Result<Keypair, AuthorityError> {
+        let session = self.current_private_session(session)?;
+        if session.sso.is_none() {
+            return Err(AuthorityError::Disconnected);
+        }
+        let root_entropy_source =
+            session
+                .root_entropy_source
+                .ok_or_else(|| AuthorityError::Unavailable {
+                    reason: "Session secret missing".to_string(),
+                })?;
+        Ok(credential_keypair(&root_entropy_source, product_id, grant))
+    }
 }
 
 fn apply_ring_vrf_disclosure(
@@ -2576,5 +2599,14 @@ impl ProductAuthority for PairingHost {
         context: &[u8],
     ) -> Result<[u8; 32], AuthorityError> {
         PairingHost::derive_entropy(self, session, product_id, context)
+    }
+
+    fn credential_signing_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+        grant: &CredentialGrant,
+    ) -> Result<Keypair, AuthorityError> {
+        PairingHost::credential_signing_key(self, session, product_id, grant)
     }
 }

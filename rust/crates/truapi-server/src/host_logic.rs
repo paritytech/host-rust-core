@@ -6,6 +6,7 @@
 
 pub mod attestation;
 pub mod bulletin;
+pub mod credential;
 pub mod device_key;
 pub mod dotns;
 pub mod dotns_gateway;

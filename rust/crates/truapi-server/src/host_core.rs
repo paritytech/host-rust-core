@@ -30,6 +30,7 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
+use crate::host_logic::credential::{CredentialRequestError, CredentialRequestHeaders};
 use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
 use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::sso_service::Dispatch;
@@ -984,6 +985,27 @@ impl HostAdmin {
             .await
     }
 
+    /// Identity headers for one outbound request a credential grant covers
+    /// (RFC 0025), for a host to attach as it forwards the request.
+    ///
+    /// The timestamp and nonce are minted by the core, so every host binds a
+    /// signature the same way. `body_hash` comes from the caller because a host
+    /// may stream a body it cannot hand over whole.
+    ///
+    /// Never prompts: an endpoint with no grant is refused, and the product
+    /// asks for one through `request_remote_permission`.
+    #[instrument(skip_all, fields(runtime.method = "host_admin.credential_request_headers"))]
+    pub async fn credential_request_headers(
+        &self,
+        method: String,
+        url: String,
+        body_hash: [u8; 32],
+    ) -> Result<CredentialRequestHeaders, CredentialRequestError> {
+        self.product_runtime
+            .credential_request_headers(method, url, body_hash)
+            .await
+    }
+
     /// Read stored permission authorization statuses without prompting.
     ///
     /// A device capability also resolves the host application's OS gate, so an
@@ -1402,6 +1424,20 @@ impl ProductRuntime {
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
         self.admin.permission_authorization_statuses(requests).await
+    }
+
+    /// Identity headers for one outbound request a credential grant covers
+    /// (RFC 0025), for a host to attach as it forwards the request.
+    #[instrument(skip_all, fields(runtime.method = "product_runtime.credential_request_headers"))]
+    pub async fn credential_request_headers(
+        &self,
+        method: String,
+        url: String,
+        body_hash: [u8; 32],
+    ) -> Result<CredentialRequestHeaders, CredentialRequestError> {
+        self.admin
+            .credential_request_headers(method, url, body_hash)
+            .await
     }
 
     /// Update a stored permission authorization status. `NotDetermined`

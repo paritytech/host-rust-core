@@ -736,6 +736,82 @@ mod tests {
         assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 1);
     }
 
+    /// A credential grant is one endpoint, so it takes the single-slot path: it
+    /// prompts once, the answer is cached, and none of the domain-bundle
+    /// machinery applies to it.
+    #[test]
+    fn a_credential_grant_is_asked_once_and_cached() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        let request = remote(credential_permission("/session"));
+        let first =
+            futures::executor::block_on(service.check_or_prompt_remote(request.clone())).unwrap();
+        let second = futures::executor::block_on(service.check_or_prompt_remote(request)).unwrap();
+
+        assert_eq!(first, PermissionAuthorizationStatus::Authorized);
+        assert_eq!(second, PermissionAuthorizationStatus::Authorized);
+        assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The grant is the endpoint. A second endpoint on the same domain is a
+    /// second question, which is the whole reason this variant exists rather
+    /// than a domain grant.
+    #[test]
+    fn one_endpoint_grant_does_not_cover_another() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(
+            service.check_or_prompt_remote(remote(credential_permission("/session"))),
+        )
+        .unwrap();
+
+        for other in [
+            credential_permission("/quote"),
+            RemotePermission::Credential {
+                domain: "onramp.example.com".to_string(),
+                path: "/session".to_string(),
+                method: "GET".to_string(),
+            },
+            RemotePermission::Credential {
+                domain: "other.example.com".to_string(),
+                path: "/session".to_string(),
+                method: "POST".to_string(),
+            },
+        ] {
+            assert_eq!(
+                futures::executor::block_on(service.peek_remote(&remote(other.clone()))).unwrap(),
+                PermissionAuthorizationStatus::NotDetermined,
+                "{other} is a separate question",
+            );
+        }
+    }
+
+    /// A domain grant is not a credential grant. Granting `onramp.example.com`
+    /// broadly must not silently authorize the host to sign requests to it.
+    #[test]
+    fn a_domain_grant_does_not_become_a_credential_grant() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["onramp.example.com"])),
+        )
+        .unwrap();
+
+        assert_eq!(
+            futures::executor::block_on(
+                service.peek_remote(&remote(credential_permission("/session")))
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::NotDetermined,
+        );
+    }
+
     /// The defect this storage model exists to fix: a product grants a bundle,
     /// then enforcement asks about one host in it. Keying the bundle as a set
     /// made that lookup miss and re-prompt, so a granted domain read as
@@ -1095,7 +1171,16 @@ mod tests {
             RemotePermission::ChainSubmit,
             RemotePermission::PreimageSubmit,
             RemotePermission::StatementSubmit,
+            credential_permission("/session"),
         ]
+    }
+
+    fn credential_permission(path: &str) -> RemotePermission {
+        RemotePermission::Credential {
+            domain: "onramp.example.com".to_string(),
+            path: path.to_string(),
+            method: "POST".to_string(),
+        }
     }
 
     #[test]
@@ -1312,15 +1397,20 @@ mod tests {
 
     #[test]
     fn an_untrusted_product_still_prompts_for_every_remote_permission() {
+        let permissions = every_remote_permission();
         let storage = MemStorage::default();
-        let prompt = ScriptedPrompt::new(vec![], vec![true; 5]);
+        let prompt = ScriptedPrompt::new(vec![], vec![true; permissions.len()]);
         let service = PermissionsService::new(&storage, &prompt, "product.dot");
 
-        for permission in every_remote_permission() {
-            futures::executor::block_on(service.check_or_prompt_remote(remote(permission)))
+        for permission in &permissions {
+            futures::executor::block_on(service.check_or_prompt_remote(remote(permission.clone())))
                 .unwrap();
         }
-        assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(
+            prompt.remote_calls.load(Ordering::SeqCst),
+            permissions.len(),
+            "each remote permission is its own question"
+        );
     }
 
     #[test]
