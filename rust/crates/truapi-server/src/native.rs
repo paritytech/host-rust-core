@@ -727,6 +727,7 @@ impl NativeTrUApiHostRuntime {
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         });
         let spawner = native_thread_pool_spawner(&callbacks);
         let runtime = Arc::new(SigningHostRuntime::new(
@@ -771,6 +772,7 @@ impl NativeTrUApiHostRuntime {
         let callback_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: self.events.clone(),
         });
         let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
             callback_platform.clone();
@@ -1338,9 +1340,12 @@ impl NativeProductExecution {
         self.events.notify_preimage_changed(&key, value);
     }
 
-    /// Push a host storage change to this execution's subscriptions for `key`.
+    /// Push a host storage change to the product's subscriptions for `key`.
+    ///
+    /// Storage is one namespace per product rather than per execution, so this
+    /// reaches every execution of the product, not only this one.
     pub fn notify_storage_changed(&self, key: String, value: Option<Vec<u8>>) {
-        self.events.notify_storage_changed(&key, value);
+        self.shared_events.notify_storage_changed(&key, value);
     }
 
     /// Notify this execution's chain adapter of one JSON-RPC response.
@@ -1527,6 +1532,10 @@ fn native_thread_pool_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
 struct CallbackPlatform {
     callbacks: Arc<dyn HostCallbacks>,
     events: Arc<NativeEventBus>,
+    /// Storage changes are product-wide rather than per-execution: a worker
+    /// and the screen share one namespace, so they subscribe and publish on
+    /// the runtime-wide bus instead of this execution's own.
+    storage_events: Arc<NativeEventBus>,
 }
 
 impl crate::host_logic::worker::WorkerDemandObserver for CallbackPlatform {
@@ -1880,12 +1889,19 @@ impl ProductStorage for CallbackPlatform {
         value: Vec<u8>,
     ) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
-            .local_storage_write(key, value)
-            .map_err(Into::into)
+            .local_storage_write(key.clone(), value.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events
+            .notify_storage_changed(&key, Some(value));
+        Ok(())
     }
 
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_clear(key).map_err(Into::into)
+        self.callbacks
+            .local_storage_clear(key.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events.notify_storage_changed(&key, None);
+        Ok(())
     }
 
     fn subscribe_storage(
@@ -1895,7 +1911,7 @@ impl ProductStorage for CallbackPlatform {
         // Subscribe before reading, so a change landing between the two repeats
         // rather than being lost. The host pushes later changes via
         // `notify_storage_changed`.
-        let rx = self.events.subscribe_storage_changes(key.clone());
+        let rx = self.storage_events.subscribe_storage_changes(key.clone());
         let callbacks = self.callbacks.clone();
         let current = async move {
             callbacks
@@ -2865,8 +2881,114 @@ mod tests {
         let platform = CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         };
         (callbacks, events, platform)
+    }
+
+    #[test]
+    fn a_product_write_reaches_a_storage_subscription_on_the_same_key() {
+        let (_callbacks, _events, platform) = event_platform();
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = platform.subscribe_storage(key.clone());
+
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(ProductStorage::write(&platform, key, vec![1, 2, 3]))
+            .expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![1, 2, 3]),
+            }))),
+            "a write the product made is a change its own subscribers must see"
+        );
+    }
+
+    #[test]
+    fn a_worker_write_reaches_a_storage_subscription_in_the_products_other_execution() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+            .expect("host runtime config should be valid");
+        let screen = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+        let worker = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::Worker),
+            )
+            .expect("open worker execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = screen.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(worker.platform.write(key, vec![9])).expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![9]),
+            }))),
+            "the screen and the worker share one storage namespace, so a write in one \
+             reaches a subscription in the other"
+        );
+    }
+
+    #[test]
+    fn a_host_pushed_storage_change_reaches_the_products_subscription() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+            .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = execution.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        execution.notify_storage_changed(key, Some(vec![7]));
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![7]),
+            }))),
+            "a change the host made itself still reaches the product"
+        );
     }
 
     fn native_host_runtime_config() -> NativeHostRuntimeConfig {
