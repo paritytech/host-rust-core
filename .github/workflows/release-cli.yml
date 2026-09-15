@@ -82,6 +82,24 @@ jobs:
           path: target/dist/runner.js
           if-no-files-found: error
 
+      # `truapi-server` declares `pub mod generated` unconditionally and those
+      # files stopped being tracked in #551, so every leg of the matrix needs
+      # them to compile at all. `codegen.sh` above has just produced them;
+      # carrying them as an artifact keeps the matrix from installing Node,
+      # bun and a nightly toolchain three more times to regenerate identical
+      # files, and guarantees all three legs build the same bytes.
+      #
+      # The paths share `rust/crates/truapi-server/src`, so the artifact holds
+      # `generated/` and `wasm/generated_bridge.rs` and unpacks back onto that
+      # directory.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generated-rust
+          path: |
+            rust/crates/truapi-server/src/generated
+            rust/crates/truapi-server/src/wasm/generated_bridge.rs
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.target }}
     needs: runner
@@ -123,6 +141,14 @@ jobs:
         with:
           name: runner-bundle
           path: target/dist
+
+      # Restores `generated/` and `wasm/generated_bridge.rs`, which
+      # `make cli-dist`'s `check-generated` prerequisite refuses to build
+      # without. Untracked since #551, so a fresh checkout does not have them.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: generated-rust
+          path: rust/crates/truapi-server/src
 
       - name: Verify the crate version matches the release
         env:
