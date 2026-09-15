@@ -291,6 +291,25 @@ a different bug:
 Rebuild before trusting any test that reads them, and treat "it passed before my
 change" as evidence about the artefact rather than about the source.
 
+### The wider pattern: the check was not checking
+
+Four instances, and the shape is worth naming because three of them produced a
+**false pass**, which is far more dangerous than a false failure. A broken clone
+reporting missing files announces itself; a green check that verified the wrong
+thing does not.
+
+- The `REQUIRE_WASM` guard lived in one of three suites, so rewriting that one
+  test would have silently disabled the gate for the other two.
+- A mutation check on a stream **hung** instead of reddening, so it taught
+  nothing while also being able to hang CI.
+- A `git apply --check` chained with `&&` reported success because the shell was
+  checking the exit status of the following command, not of `git apply`.
+- The stale artefacts above: suites passing against a bundle older than the
+  source they were meant to exercise.
+
+When a check passes, confirm it *can* fail. Every guard in this work was
+mutation-tested for that reason.
+
 ## 12. The core caches a decided permission, by design
 
 After a permission is decided for a `(product, permission)` pair, the core
