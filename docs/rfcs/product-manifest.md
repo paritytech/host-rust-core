@@ -119,7 +119,8 @@ type Icon = {
 type Granted =            // Grants v1 defines. Unrecognised values are ignored, not fatal.
   | 'all'                 // Wildcard: every mediated interaction, present and future.
   | 'storage'             // Read this product's host-local storage.
-  | 'context';            // Read this product's account and the identity behind it.
+  | 'context';            // Act as this product's account: read it, the identity
+                                 // behind it, and sign under its keys.
 ```
 
 #### Icons
@@ -137,7 +138,7 @@ Each such interaction is normally a consent decision; `trustedProducts` pre-appr
 **The grant is issued by the product being accessed.** An entry in A's manifest states what B may do *to A* — the only direction A's name can authenticate. It says nothing about what A may do to B, nor about the products B in turn trusts.
 
 - **Keys** are bare `<product_id>` labels, lowercase, with no TLD suffix: `"wallet"`, never `"wallet.dot"`. The Host appends the TLD of the network it resolves against. A key that does not resolve there is inert, not a validation error.
-- **Values** are that product's grants. v1 defines three. `all` is a wildcard for the complete set of cross-product permissions the Host mediates on this product's behalf: it is resolved against that set when the grant is used, not enumerated here, so a grant of `all` covers permissions added after it was published. `storage` covers reading this product's host-local storage, read-only. `context` covers reading this product's account and the identity that follows from it. Hosts MUST ignore unrecognised values, keep the recognised ones, and MUST NOT fail validation over them.
+- **Values** are that product's grants. v1 defines three. `all` is a wildcard for the complete set of cross-product permissions the Host mediates on this product's behalf: it is resolved against that set when the grant is used, not enumerated here, so a grant of `all` covers permissions added after it was published. `storage` covers reading this product's host-local storage, read-only. `context` covers acting as this product's account: reading it and the identity that follows from it, and producing ring-VRF proofs and signatures under its keys. Granting it to another product lets that product sign as this one, so it is materially wider than a read. Hosts MUST ignore unrecognised values, keep the recognised ones, and MUST NOT fail validation over them.
 - **`all` is a superset, not a peer.** `["all"]` implies `storage` and `context`, so `["all", "storage"]` is `["all"]` and a Host MUST NOT read a narrower value as a restriction on `all`. Enumerating the narrow values instead of granting `all` covers the same interactions today but does not widen when a further value is defined. Values are a set: order is not significant and duplicates collapse. Scopes are independent — a grant of `["storage"]` leaves account interactions prompting as usual.
 - **Absence means no grants.** Missing field, empty record, and empty array are equivalent: prompt as usual. A product listing itself is ignored.
 

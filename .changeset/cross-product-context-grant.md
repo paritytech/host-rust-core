@@ -27,9 +27,17 @@ calls agree about what the scope means. A product without a grant still takes
 the prompt.
 
 A stored account-access refusal still overrides a grant, and is now recorded
-against the product rather than one spelling of it, matching the granularity a
-manifest grant uses. Decisions stored under a full product id are not found under
-the new key, so an affected pair is prompted once more.
+against the product on both sides rather than one spelling of it, matching the
+granularity a manifest grant uses: a refusal for `peopl.dot` also covers
+`app.peopl.dot`. Decisions written by earlier releases under the full product id
+are still honoured, so upgrading does not discard a refusal a user has already
+given.
+
+`create_account_proof` with a foreign key handle and no active session now
+answers `Rejected` where it previously answered `NotAllowlisted`. The session is
+consulted before the grant so that the pair of refusals cannot be used to probe
+which product granted which; a product branching on the old tag for that case
+sees a different one.
 
 Product identifiers are rejected when they carry no name: an empty label, control
 characters, invisible bidirectional or zero-width formatting, whitespace, or path

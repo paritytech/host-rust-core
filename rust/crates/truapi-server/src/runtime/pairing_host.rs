@@ -1934,18 +1934,21 @@ impl PairingHost {
         &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<v01::ProductAccountId, RingVrfError> {
-        let owner = crate::runtime::product_manifest::ring_vrf_key_access_granted(
+    ) -> Result<(v01::ProductAccountId, String), RingVrfError> {
+        let access = crate::runtime::product_manifest::ring_vrf_key_access_granted(
             &self.services,
             self.platform.as_ref(),
             calling_product_id,
             handle,
         )
         .await?;
-        Ok(v01::ProductAccountId {
-            dot_ns_identifier: owner,
-            derivation_index: handle.derivation_index.clone(),
-        })
+        Ok((
+            v01::ProductAccountId {
+                dot_ns_identifier: access.owner,
+                derivation_index: handle.derivation_index.clone(),
+            },
+            access.caller,
+        ))
     }
 
     async fn local_ring_vrf_entropy(
@@ -2148,7 +2151,7 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
-        let key_handle = self
+        let (key_handle, caller) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         // A grant lets the caller act with the owner's key in the caller's own
@@ -2160,15 +2163,11 @@ impl PairingHost {
         //
         // The owner's own calls are unaffected; only a cross-product caller is
         // held to its own context.
-        {
-            use crate::host_logic::product_manifest::bare_product_label as label;
-            let caller = label(&request.calling_product_id);
-            if label(&key_handle.dot_ns_identifier) != caller
-                && label(&request.payload.context.product_id) != caller
-            {
-                return Err(RingVrfError::NotAllowlisted);
-            }
-        }
+        crate::runtime::product_manifest::require_own_context(
+            &caller,
+            &key_handle,
+            &request.payload.context,
+        )?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy_for_ring(
@@ -2306,7 +2305,7 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
-        let key_handle = self
+        let (key_handle, _caller) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         let private_session = self.current_private_session(session)?;

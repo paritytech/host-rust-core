@@ -709,8 +709,15 @@ async fn account_access_authorization(
         return Ok(PermissionAuthorizationStatus::Authorized);
     }
 
+    // Both sides bare-labelled, matching the grant this decision overrides and
+    // the key `user_denied_account_access` reads back. A decision filed against
+    // the full target would not be found when the grant is resolved for a
+    // subname of it.
     let request = PermissionAuthorizationRequest::AccountAccess {
-        target_product_id: target_product_id.to_string(),
+        target_product_id: crate::host_logic::product_manifest::bare_product_label(
+            target_product_id,
+        )
+        .to_string(),
     };
     // Stored per product, not per executable, because that is the granularity a
     // manifest grant uses: `dim2.dot`, `app.dim2.dot` and `worker.dim2.dot` are

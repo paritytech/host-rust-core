@@ -8,6 +8,9 @@
 //!
 //! [manifest]: ../../../../docs/rfcs/product-manifest.md
 
+use core::future::Future;
+use core::time::Duration;
+
 use parity_scale_codec::{Decode, Encode};
 use tracing::{info, instrument, warn};
 use truapi::v01;
@@ -238,7 +241,23 @@ pub(crate) async fn grants_scope(
     target: &str,
     scope: Granted,
 ) -> bool {
-    let Some(json) = root_manifest(services, platform, target).await else {
+    // Bounded here, not by the caller.
+    //
+    // The product-facing door runs this inside `remote_authority_call` and so
+    // carries the deadline its caller asked for. The wire door does not: the
+    // authority is the remote end, nothing races `cx.timeout()` there, and the
+    // peer sets no deadline of its own. The responder also dispatches serially,
+    // so one message naming enough uncached products would hold every other
+    // product's signing on this device behind it.
+    //
+    // A ceiling on the resolution itself covers both doors. Where a caller's
+    // deadline is shorter it still wins, because that race is applied outside.
+    let Some(json) = with_ceiling(
+        MANIFEST_RESOLUTION_CEILING,
+        root_manifest(services, platform, target),
+    )
+    .await
+    .flatten() else {
         return false;
     };
     let Ok(manifest) = RootManifest::parse(&json) else {
@@ -277,28 +296,44 @@ async fn user_denied_account_access(
     caller_id: &str,
     target: &str,
 ) -> bool {
-    let request = PermissionAuthorizationRequest::AccountAccess {
-        target_product_id: target.to_string(),
-    };
-    // Keyed by the bare label, matching the grant this overrides. The manifest
-    // grants a product, not an executable: `dim2.dot`, `app.dim2.dot` and
-    // `worker.dim2.dot` are one grantee. Reading the refusal under the full id
-    // instead let any of those spellings miss a refusal recorded against
-    // another, so a product the user had refused re-entered under a subname it
-    // already owns and kept the grant. The two halves of "a grant never
-    // overrides a refusal the user already gave" have to name the same party.
-    let service = PermissionsService::new(platform, platform, bare_product_label(caller_id));
-    // Fails closed. `Ok(Denied)` is an explicit refusal; an `Err` is a storage
-    // fault, and reading that as "not refused" would let a locked keychain or a
-    // corrupt entry turn the user's "no" into "yes" on the strength of a
-    // publisher's manifest. `account_access_authorization`, which writes this
-    // same decision, already propagates its errors rather than assuming access.
-    // Only a decision we positively read as absent lets the grant through.
-    !matches!(
-        service.authorization_status(&request).await,
-        Ok(PermissionAuthorizationStatus::NotDetermined
-            | PermissionAuthorizationStatus::Authorized)
-    )
+    // Checked under both the product-scoped key this release writes and the
+    // full-id key earlier releases wrote.
+    //
+    // Reading only the new shape would silently discard a decision a user has
+    // already made: on the ungranted path they are asked again, but on the
+    // granted path the lookup reads `NotDetermined`, admits the publisher's
+    // grant and never prompts. A stored "no" would become a "yes" on upgrade,
+    // which is the one case this override exists for.
+    //
+    // The product-scoped key uses the bare label on BOTH sides. The grant it
+    // overrides is resolved by `bare_product_label` for the target as well as
+    // the caller, so filing the refusal against the full target would let
+    // `app.peopl.dot` carry a grant the user refused for `peopl.dot`.
+    let candidates = [
+        (
+            bare_product_label(caller_id).to_string(),
+            bare_product_label(target).to_string(),
+        ),
+        (caller_id.to_string(), target.to_string()),
+    ];
+    for (caller, target) in candidates {
+        let request = PermissionAuthorizationRequest::AccountAccess {
+            target_product_id: target,
+        };
+        let service = PermissionsService::new(platform, platform, &caller);
+        // Fails closed. `Ok(Denied)` is an explicit refusal; an `Err` is a
+        // storage fault, and reading that as "not refused" would let a locked
+        // keychain turn the user's "no" into a "yes" on the strength of a
+        // publisher's manifest.
+        if !matches!(
+            service.authorization_status(&request).await,
+            Ok(PermissionAuthorizationStatus::NotDetermined
+                | PermissionAuthorizationStatus::Authorized)
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
@@ -320,12 +355,80 @@ async fn user_denied_account_access(
 /// The owner check runs first and costs nothing, so a product proving with its
 /// own key never touches the network. Everything after it is a cross-product
 /// access, and every reason it is refused answers the same way.
+/// Longest one grant lookup may spend resolving a manifest.
+///
+/// A cold-cache resolution is several sequential Asset Hub operations, each
+/// bounded only by its own operation timeout, so the walk's worst case is the
+/// sum of them. This caps the walk as a whole.
+const MANIFEST_RESOLUTION_CEILING: Duration = Duration::from_secs(30);
+
+/// Run `future`, giving up after `ceiling`.
+///
+/// `None` on expiry, which every caller here treats as "no manifest" — the same
+/// answer an unreachable chain gives, and the same uniform refusal.
+async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> Option<T> {
+    use futures::FutureExt;
+    let future = future.fuse();
+    let timeout = futures_timer::Delay::new(ceiling).fuse();
+    futures::pin_mut!(future, timeout);
+    futures::select! {
+        value = future => Some(value),
+        () = timeout => {
+            warn!(ceiling_secs = ceiling.as_secs(), "manifest resolution gave up");
+            None
+        }
+    }
+}
+
+/// A granted caller may act in its own proof context, not in anyone's.
+///
+/// The contextual alias is a function of (owner key, context), so an
+/// unconstrained context lets a grantee produce the alias the owner presents to
+/// a third product — one that granted nothing, is not a party to the grant, and
+/// cannot consent here. The owner's own calls are unaffected: minting your own
+/// aliases in any context is what the parameter is for.
+///
+/// Both identities come from the gate, already normalized. Re-deriving the
+/// caller from the request instead would compare a peer's spelling against a
+/// normalized owner and refuse an owner naming itself in another case.
+///
+/// This binds every call that returns the alias, not only the ones that return
+/// a proof: the alias and the proof come out of one VRF evaluation, so guarding
+/// the proof alone leaves the same bytes reachable through the read.
+pub(crate) fn require_own_context(
+    caller: &str,
+    key_handle: &v01::ProductAccountId,
+    context: &v01::ProductProofContext,
+) -> Result<(), RingVrfError> {
+    let caller_label = bare_product_label(caller);
+    if bare_product_label(&key_handle.dot_ns_identifier) != caller_label
+        && bare_product_label(&context.product_id) != caller_label
+    {
+        return Err(RingVrfError::NotAllowlisted);
+    }
+    Ok(())
+}
+
+/// The identities the gate decided about, both normalized.
+///
+/// Returned together because every consumer needs both and deriving either one
+/// again from the request re-introduces the raw-vs-normalized skew the gate
+/// exists to remove: `sso_responder` hands `calling_product_id` through
+/// untouched, so a caller that re-derives it compares a peer's spelling against
+/// a normalized owner.
+pub(crate) struct AuthorizedAccess {
+    /// The caller the gate authorized, normalized.
+    pub(crate) caller: String,
+    /// The owner of the key, normalized.
+    pub(crate) owner: String,
+}
+
 pub(crate) async fn ring_vrf_key_access_granted(
     services: &RuntimeServices,
     platform: &dyn Platform,
     calling_product_id: &str,
     handle: &v01::ProductAccountId,
-) -> Result<String, RingVrfError> {
+) -> Result<AuthorizedAccess, RingVrfError> {
     // A caller id that does not normalize names no product, so it holds no key
     // and no manifest can grant it. It takes the same refusal as a product that
     // granted nothing rather than an error carrying the string back: on the wire
@@ -347,7 +450,7 @@ pub(crate) async fn ring_vrf_key_access_granted(
         return Err(RingVrfError::NotAllowlisted);
     };
     if caller == owner {
-        return Ok(owner);
+        return Ok(AuthorizedAccess { caller, owner });
     }
     if grants_scope(services, platform, &caller, &owner, Granted::Context).await {
         // Recorded, because nothing else records it. A granted cross-product
@@ -363,7 +466,7 @@ pub(crate) async fn ring_vrf_key_access_granted(
             owner = %owner,
             "ring-VRF key access granted by the owner's manifest"
         );
-        return Ok(owner);
+        return Ok(AuthorizedAccess { caller, owner });
     }
     // The wire answer is one refusal for every reason, so the reason lives here
     // or nowhere. Which door the request came through is not repeated: the

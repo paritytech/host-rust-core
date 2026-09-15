@@ -540,18 +540,21 @@ impl SigningHost {
         &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<v01::ProductAccountId, RingVrfError> {
-        let owner = crate::runtime::product_manifest::ring_vrf_key_access_granted(
+    ) -> Result<(v01::ProductAccountId, String), RingVrfError> {
+        let access = crate::runtime::product_manifest::ring_vrf_key_access_granted(
             &self.services,
             self.platform.as_ref(),
             calling_product_id,
             handle,
         )
         .await?;
-        Ok(v01::ProductAccountId {
-            dot_ns_identifier: owner,
-            derivation_index: handle.derivation_index.clone(),
-        })
+        Ok((
+            v01::ProductAccountId {
+                dot_ns_identifier: access.owner,
+                derivation_index: handle.derivation_index.clone(),
+            },
+            access.caller,
+        ))
     }
 
     pub(crate) async fn ring_vrf_providers(
@@ -879,35 +882,60 @@ impl ProductAuthority for SigningHost {
         // The gate is the same one `create_proof` uses, so a stored refusal
         // still overrides the grant. Falling through to the prompt keeps the
         // ungranted case exactly as it was.
-        let key_handle = match self
+        let granted = match self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await
         {
-            Ok(handle) => Some(handle),
+            Ok(access) => Some(access),
             Err(RingVrfError::NotAllowlisted) => None,
             Err(err) => return Err(err),
         };
-        if key_handle.is_none() {
-            match super::account_access_authorization(
-                self.services.platform.as_ref(),
-                &request.calling_product_id,
-                &request.payload.key_handle.dot_ns_identifier,
-            )
-            .await
-            {
-                Ok(PermissionAuthorizationStatus::Authorized) => {}
-                Ok(
-                    PermissionAuthorizationStatus::Denied
-                    | PermissionAuthorizationStatus::NotDetermined,
-                ) => return Err(RingVrfError::Rejected),
-                Err(err) => {
-                    return Err(RingVrfError::Unknown {
-                        reason: err.to_string(),
-                    });
+        // The grant admits the caller's own context and no one else's, exactly
+        // as on `create_proof`. The alias this returns and the alias a proof
+        // attests are one VRF evaluation, so guarding only the proof would leave
+        // the same bytes reachable through this read.
+        let key_handle = match granted {
+            Some((key_handle, caller)) => {
+                crate::runtime::product_manifest::require_own_context(
+                    &caller,
+                    &key_handle,
+                    &request.payload.context,
+                )?;
+                key_handle
+            }
+            None => {
+                // No grant: the prompt path, as before. Both arguments are
+                // normalized first so the decision is filed under, and read
+                // back from, the identity the gate would have decided about.
+                let requester = normalize_product_identifier(&request.calling_product_id)
+                    .map_err(|_| RingVrfError::NotAllowlisted)?;
+                let owner =
+                    normalize_product_identifier(&request.payload.key_handle.dot_ns_identifier)
+                        .map_err(|_| RingVrfError::NotAllowlisted)?;
+                match super::account_access_authorization(
+                    self.services.platform.as_ref(),
+                    &requester,
+                    &owner,
+                )
+                .await
+                {
+                    Ok(PermissionAuthorizationStatus::Authorized) => {}
+                    Ok(
+                        PermissionAuthorizationStatus::Denied
+                        | PermissionAuthorizationStatus::NotDetermined,
+                    ) => return Err(RingVrfError::Rejected),
+                    Err(err) => {
+                        return Err(RingVrfError::Unknown {
+                            reason: err.to_string(),
+                        });
+                    }
+                }
+                v01::ProductAccountId {
+                    dot_ns_identifier: owner,
+                    derivation_index: request.payload.key_handle.derivation_index.clone(),
                 }
             }
-        }
-        let key_handle = key_handle.unwrap_or_else(|| request.payload.key_handle.clone());
+        };
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
             .await?;
@@ -929,7 +957,7 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
-        let key_handle = self
+        let (key_handle, caller) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         // A grant lets the caller act with the owner's key in the caller's own
@@ -941,15 +969,11 @@ impl ProductAuthority for SigningHost {
         //
         // The owner's own calls are unaffected; only a cross-product caller is
         // held to its own context.
-        {
-            use crate::host_logic::product_manifest::bare_product_label as label;
-            let caller = label(&request.calling_product_id);
-            if label(&key_handle.dot_ns_identifier) != caller
-                && label(&request.payload.context.product_id) != caller
-            {
-                return Err(RingVrfError::NotAllowlisted);
-            }
-        }
+        crate::runtime::product_manifest::require_own_context(
+            &caller,
+            &key_handle,
+            &request.payload.context,
+        )?;
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
             .await?;
@@ -1051,7 +1075,7 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         self.require_current_session(session)?;
-        let key_handle = self
+        let (key_handle, _caller) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         let entropy = self
@@ -1610,7 +1634,12 @@ mod tests {
             )
             .set_authorization_status(
                 &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
-                    target_product_id: target.to_string(),
+                    // Bare-labelled on both sides, as `account_access_authorization`
+                    // writes it in production.
+                    target_product_id: crate::host_logic::product_manifest::bare_product_label(
+                        target,
+                    )
+                    .to_string(),
                 },
                 truapi_platform::PermissionAuthorizationStatus::Denied,
             ),
@@ -1843,6 +1872,192 @@ mod tests {
         assert!(
             mint("peopl.dot", "bank.dot").is_ok(),
             "the owner may still mint its own alias in any context"
+        );
+    }
+
+    /// A refusal recorded by an earlier release still overrides a grant.
+    ///
+    /// This release files the decision under the product label; earlier ones
+    /// used the full product id. Reading only the new shape would discard the
+    /// old decision — and on the granted path it would not even re-ask, because
+    /// the lookup reads `NotDetermined`, admits the grant and raises no prompt.
+    /// A user's "no" would become a "yes" on upgrade.
+    #[test]
+    fn a_refusal_recorded_before_this_release_still_overrides_a_grant() {
+        use crate::host_logic::product_manifest::Granted;
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        // Written exactly as the previous release wrote it: full ids, both sides.
+        futures::executor::block_on(
+            crate::host_logic::permissions::PermissionsService::new(
+                platform.as_ref(),
+                platform.as_ref(),
+                "dim2.dot",
+            )
+            .set_authorization_status(
+                &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
+                    target_product_id: "peopl.dot".to_string(),
+                },
+                truapi_platform::PermissionAuthorizationStatus::Denied,
+            ),
+        )
+        .expect("stub core storage accepts the decision");
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+
+        assert!(
+            !futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                &services,
+                platform.as_ref(),
+                "dim2.dot",
+                "peopl.dot",
+                Granted::Context,
+            )),
+            "a decision stored under the previous key shape must still be honoured"
+        );
+        assert_eq!(
+            platform
+                .account_access_reviews
+                .lock()
+                .expect("review list mutex poisoned")
+                .len(),
+            0,
+            "and it must be honoured without re-asking"
+        );
+    }
+
+    /// A refusal covers the refused product's subnames on the grantor side too.
+    ///
+    /// The grant is resolved by the target's bare label, so filing the refusal
+    /// against the full target let `app.peopl.dot` carry a grant the user had
+    /// refused for `peopl.dot`. The argument the PR makes for the requester
+    /// applies unchanged to the grantor.
+    #[test]
+    fn a_refusal_covers_every_executable_of_the_refused_target() {
+        use crate::host_logic::product_manifest::Granted;
+        let platform = Arc::new(StubPlatform {
+            // The user declines, so the refusal is written by the production
+            // path rather than by a test helper: this has to pin where
+            // `account_access_authorization` files it, not where a fixture does.
+            account_access_confirmed: false,
+            ..StubPlatform::default()
+        });
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        futures::executor::block_on(crate::runtime::account_access_authorization(
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+        ))
+        .expect("the stub records the declined decision");
+        let (services, _authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        for target in ["peopl.dot", "app.peopl.dot", "worker.peopl.dot"] {
+            assert!(
+                !futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
+                    &services,
+                    platform.as_ref(),
+                    "dim2.dot",
+                    target,
+                    Granted::Context,
+                )),
+                "{target} is the refused product wearing another name"
+            );
+        }
+    }
+
+    /// The identity read is held to the caller's own context, like the proof.
+    ///
+    /// The alias and the proof come out of one VRF evaluation, so a guard on
+    /// `create_proof` alone leaves the same bytes reachable through
+    /// `account_alias`: a grantee could read the alias the owner presents to a
+    /// third product that granted nothing. Both calls now refuse it.
+    #[test]
+    fn a_grantee_cannot_read_the_owners_alias_in_a_third_partys_context() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+        let alias = |caller: &str, context: &str| {
+            futures::executor::block_on(authority.account_alias(
+                &CallContext::default(),
+                &session,
+                ProductRequest {
+                    calling_product_id: caller.to_string(),
+                    payload: v01::HostAccountGetAliasRequest {
+                        key_handle: full_person_key_handle(),
+                        context: v01::ProductProofContext {
+                            product_id: context.to_string(),
+                            suffix: v01::DerivationIndex::Index(0),
+                        },
+                        ring_location: ring.clone(),
+                    },
+                },
+            ))
+        };
+
+        assert_eq!(
+            alias("dim2.dot", "bank.dot").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "a grantee must not read the owner's pseudonym for a third product"
+        );
+        assert!(
+            alias("dim2.dot", "dim2.dot").is_ok(),
+            "the grant still covers the grantee's own context"
+        );
+        assert!(
+            alias("peopl.dot", "bank.dot").is_ok(),
+            "the owner may still read its own alias in any context"
+        );
+    }
+
+    /// An owner naming itself in another spelling is admitted, over the wire.
+    ///
+    /// The context guard compares the identities the gate normalized, not the
+    /// ones the request carried. Deriving the caller from the request again
+    /// compares a peer's spelling against a normalized owner and refuses the
+    /// owner on its own key — the gate two statements above exists to stop
+    /// exactly that, and `sso_responder` hands `calling_product_id` through
+    /// untouched.
+    #[test]
+    fn an_owner_spelled_differently_still_proves_with_its_own_key() {
+        let platform = Arc::new(StubPlatform::default());
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+        let prove = |caller: &str| {
+            futures::executor::block_on(authority.create_proof(
+                &CallContext::default(),
+                &session,
+                ProductRequest {
+                    calling_product_id: caller.to_string(),
+                    payload: v01::HostAccountCreateProofRequest {
+                        key_handle: full_person_key_handle(),
+                        context: v01::ProductProofContext {
+                            product_id: "peopl.dot".to_string(),
+                            suffix: v01::DerivationIndex::Index(0),
+                        },
+                        ring_location: ring.clone(),
+                        message: b"m".to_vec(),
+                    },
+                },
+            ))
+        };
+        assert!(
+            prove("peopl.dot").is_ok(),
+            "control: the canonical spelling"
+        );
+        assert!(
+            prove("PEOPL.DOT").is_ok(),
+            "the owner must not be refused on its own key for spelling itself differently"
         );
     }
 
