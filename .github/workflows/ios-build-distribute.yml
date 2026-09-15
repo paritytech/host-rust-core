@@ -28,14 +28,6 @@ on:
         required: false
         type: string
         default: ""
-      s3_static_subdir:
-        required: true
-        type: string
-      run_allure_tests:
-        description: "Trigger the Allure TestOps launch. One launch per run — a caller invoking this workflow twice must enable it on a single leg."
-        required: false
-        type: boolean
-        default: true
     outputs:
       build_number:
         value: ${{ jobs.prepare_build_metadata.outputs.build_number }}
@@ -51,8 +43,6 @@ on:
 env:
   MAIN_BRANCH: main
   CI_FAILURE_TELEGRAM_CHAT_IDS: "-1002068063370"
-  ALLURE_TESTPLAN_ID: "734"
-  ALLURE_LAUNCH_NAME: "iOS TestFlight Tests"
   # Safetynet ships as a separate app (`.safety` suffix, see Configs/base.safetynet.xcconfig),
   # so it has its own App Store Connect record, Match profiles and Firebase app. Every other
   # configuration builds the production app. The identity follows the configuration, not the
@@ -65,8 +55,6 @@ env:
   CODE_SIGN_IDENTITY: "Apple Distribution"
   EXPORT_METHOD: "app-store"
   RUN_IN_CI: true
-  S3_BUCKET: s3://polkadot-app-artefacts
-  S3_REGION: fr-par
   SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
 jobs:
@@ -202,11 +190,9 @@ jobs:
         variant:
           - name: "default"
             extra_swift_flags: ""
-            s3_suffix: ""
             upload_to_testflight: true
           - name: "no-auth"
             extra_swift_flags: "-DDISABLE_AUTH"
-            s3_suffix: "-no-auth"
             upload_to_testflight: false
     steps:
       - name: Checkout repository
@@ -284,28 +270,6 @@ jobs:
         working-directory: hosts/ios
         run: |
           bundle exec fastlane build_app_ci
-
-      - name: Upload to S3
-        uses: novasamatech/github-actions/s3-upload@v5
-        with:
-          s3_region: ${{ env.S3_REGION }}
-          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
-          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          s3_bucket: ${{ env.S3_BUCKET }}
-          source_path: hosts/ios/polkadot-app.ipa
-          # Subdir keeps each configuration's archive in its own namespace: a nightly run
-          # writes two different apps, whose build numbers come from independent counters.
-          destination_path: /ios/${{ inputs.s3_static_subdir }}/polkadot-app-${{ needs.prepare_build_metadata.outputs.marketing_version }}-${{ needs.prepare_build_metadata.outputs.build_number }}${{ matrix.variant.s3_suffix }}.ipa
-
-      - name: Upload to S3 (static path)
-        uses: novasamatech/github-actions/s3-upload@v5
-        with:
-          s3_region: ${{ env.S3_REGION }}
-          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
-          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          s3_bucket: ${{ env.S3_BUCKET }}
-          source_path: hosts/ios/polkadot-app.ipa
-          destination_path: /ios/${{ inputs.s3_static_subdir }}/polkadot-app${{ matrix.variant.s3_suffix }}.ipa
 
       - name: Comment on PR with build info
         if: matrix.variant.upload_to_testflight && inputs.release_pr_number != ''
@@ -394,21 +358,6 @@ jobs:
         with:
           job_name: "Check and Build TestFlight (${{ inputs.build_configuration }} / default)"
           github_token: ${{ github.token }}
-
-  trigger_allure_tests:
-    name: Trigger Allure TestOps
-    runs-on: ubuntu-latest
-    needs: check_default_build
-    if: >-
-      ${{ !cancelled() && inputs.run_allure_tests &&
-      needs.check_default_build.outputs.succeeded == 'true' }}
-    steps:
-      - name: Trigger Allure TestOps Job
-        uses: novasamatech/github-actions/trigger-allure-testops@v5
-        with:
-          testplan_id: ${{ env.ALLURE_TESTPLAN_ID }}
-          launch_name: ${{ env.ALLURE_LAUNCH_NAME }}
-          allure_token: ${{ secrets.ALLURE_TOKEN }}
 
   send_failure_notification:
     name: Send Failure Notification
