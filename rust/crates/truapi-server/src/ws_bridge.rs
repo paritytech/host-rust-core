@@ -783,11 +783,24 @@ type MatchedReservation = Arc<Mutex<Option<(Arc<RegistryEntry>, ConnectionCountG
 /// load-then-increment: two handshakes could otherwise both observe room for
 /// the last slot and both take it.
 fn try_reserve(counter: &AtomicUsize, limit: usize) -> bool {
-    counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            (current < limit).then_some(current + 1)
-        })
-        .is_ok()
+    // Spelled out rather than via `fetch_update`, which current nightly
+    // deprecates in favour of `try_update`, and `try_update` is still unstable
+    // on the stable toolchain this crate also builds on.
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        if current >= limit {
+            return false;
+        }
+        match counter.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// Complete the WebSocket handshake, resolving it against the registry to
