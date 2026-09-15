@@ -725,9 +725,10 @@ jobs:
       - name: Check shellcheck is available
         run: shellcheck --version
 
-      # The e2e job is deliberately disabled with a constant condition while its
-      # smoke test is stabilised, which actionlint reports as if-cond. Drop this
-      # ignore when #686 re-enables that job.
+      # Two deliberate uses of a constant condition, which actionlint reports as
+      # if-cond: the e2e job while its smoke test is stabilised, and the iOS
+      # distribution workflows held until the cutover. Drop this ignore only
+      # once both #686 and #764 have removed theirs, or workflow-lint goes red.
       # Two shellcheck rules are excluded by code rather than by lowering the
       # severity bar: SC2012 prefers find over ls, SC2129 prefers grouped
       # redirects, and both are preference. Severity is left alone because

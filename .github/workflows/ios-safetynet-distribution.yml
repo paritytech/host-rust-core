@@ -45,6 +45,16 @@ env:
 
 jobs:
   build_safetynet:
+    # Held until the iOS cutover. This tree is behind the app repository, so a
+    # build from here would ship stale code and, for this workflow, consume a
+    # TestFlight build number the production record depends on.
+    #
+    # This workflow calls the distribute action directly rather than through
+    # ios-build-distribute.yml, so it does not inherit that workflow's
+    # github-actions[bot] check and nothing else would stop a hand-started run.
+    #
+    # Removing this is part of the cutover, tracked on #764.
+    if: false
     name: Build and distribute Safetynet
     runs-on: macos-26
     timeout-minutes: 120
