@@ -26,9 +26,12 @@ vacuously green. Intentional naming differences live in one explicit alias map.
 
 **A Playwright fixture on the production topology.** The host page runs the core
 in a Web Worker, the way a web host does, and embeds the product in an iframe
-over a `MessagePort`. `@parity/truapi-host/testing/playwright` exports the
-fixture, `/testing/server` the node server, `/testing/client` a no-iframe variant
-for a product's own unit tests, `/testing/dev-accounts` the named dev accounts.
+over a `MessagePort`. It ships from the existing `@parity/truapi-host` package
+rather than a new one, on subpaths this branch adds:
+`./testing/playwright` for the fixture, `./testing/server` for the node server,
+`./testing/client` for a no-iframe variant a product's own unit tests can use,
+and `./testing/dev-accounts` for the named accounts. No published version
+carries them yet.
 
 **Dev accounts that sign.** The host runs a signing host and establishes sessions
 from fixed BIP-39 entropy, so a product exercises real sr25519 signatures.
@@ -68,11 +71,13 @@ rewrites out of 31 tests, and every one had the same cause: the test read a host
 implementation detail — internal storage keys — rather than product behaviour.
 None was a behavioural difference.
 
-Those rewrites are staged as a patch in `docs/migration/`, with a cover note. It
-applies cleanly to product-sdk `origin/main` and carries a hard ordering
-dependency: product-sdk's catalog pins `@parity/truapi` at `^0.13.1`, which is
-codec 1 and cannot negotiate with a codec-2 host, so the codec bump must land
-first.
+Those rewrites are staged as a patch in `docs/migration/`, with a cover note.
+The patch applies cleanly to a fresh clone of product-sdk main, and product-sdk
+builds against the published `@parity/truapi` 0.16.0 once `createFakeHost` gains
+the two members the newer client requires. Adoption additionally needs a
+`@parity/truapi-host` release carrying the `./testing` subpath, which no
+published version has yet — so the sequence is: this branch merges, a release is
+cut, then product-sdk adopts.
 
 ## What it deliberately does not do
 
@@ -95,6 +100,11 @@ In each case the mock refuses and explains rather than returning something
 plausible, so a test reaching for an unserved path learns why instead of passing
 against a fake.
 
+Funding the derived accounts would bring `tx-demo`, `contracts-demo` and
+`chain-client-demo` into reach, putting the ceiling at **8 of 9 suites**.
+`statement-store-demo` stays out regardless: its submission is rejected inside
+the core before any RPC is emitted, so no host-side work reaches it.
+
 ## Notes for review
 
 The mock is not a reimplementation of the protocol — it mocks only the platform
@@ -111,7 +121,7 @@ reading them can pass against a bundle older than its source. `make wasm` and
 
 ## Verification
 
-`cargo test` 1001 passed, `bun test` 151 passed, `clippy -D warnings` clean,
+`cargo test` 1001 passed, `bun test` 153 passed, `clippy -D warnings` clean,
 `cargo +nightly fmt --check` clean, `sync-release-versions --check` clean. Every
 guard in this branch was mutation-tested — including the drift guard, re-proved
 after the final rebase.
