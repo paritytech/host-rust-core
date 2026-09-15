@@ -2,7 +2,6 @@ package io.paritytech.polkadotapp.app.root.presentation.debug
 
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.paritytech.polkadotapp.app.root.domain.debug.ClearBackupUseCase
-import io.paritytech.polkadotapp.app.root.domain.debug.CollectIssueLogsUseCase
 import io.paritytech.polkadotapp.app.root.domain.debug.CollectLogsUseCase
 import io.paritytech.polkadotapp.app.root.domain.debug.GetAddressUseCase
 import io.paritytech.polkadotapp.app.root.domain.debug.GetWalletMnemonicUseCase
@@ -11,7 +10,6 @@ import io.paritytech.polkadotapp.app.root.presentation.root.RootRouter
 import io.paritytech.polkadotapp.common.presentation.clipboard.ClipboardService
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.utils.Urls
-import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.common.utils.launchUnit
 import io.paritytech.polkadotapp.feature_coinage_api.domain.debug.CoinageDebugSettings
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsResolver
@@ -29,8 +27,6 @@ class DebugMenuViewModel @Inject constructor(
     private val clipboardService: ClipboardService,
     private val clearBackupUseCase: ClearBackupUseCase,
     private val collectLogsUseCase: CollectLogsUseCase,
-    private val collectIssueLogsUseCase: CollectIssueLogsUseCase,
-    private val gitHubBugReport: GitHubBugReport,
     private val getAddressUseCase: GetAddressUseCase,
     private val getWalletMnemonicUseCase: GetWalletMnemonicUseCase,
     private val router: RootRouter,
@@ -72,20 +68,6 @@ class DebugMenuViewModel @Inject constructor(
             .onFailure(::showError)
 
         state.update { it.copy(isSharingLogs = false) }
-    }
-
-    override fun onCreateIssueClick() = launchUnit {
-        if (state.value.isCreatingIssue) return@launchUnit
-
-        state.update { it.copy(isCreatingIssue = true) }
-
-        try {
-            collectIssueLogsUseCase()
-                .flatMap { gitHubBugReport.report(it) }
-                .onFailure { showPresentationError(it as? BugReportError ?: BugReportError.CollectLogs(it)) }
-        } finally {
-            state.update { it.copy(isCreatingIssue = false) }
-        }
     }
 
     override fun onCopyWalletAccountClick() = launchUnit {

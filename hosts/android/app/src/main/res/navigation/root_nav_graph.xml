@@ -65,6 +65,11 @@
         android:name="io.paritytech.polkadotapp.app.root.presentation.debug.DebugMenuFragment"
         android:label="DebugMenuFragment" />
 
+    <dialog
+        android:id="@+id/reportIssueBottomSheet"
+        android:name="io.paritytech.polkadotapp.app.root.presentation.debug.reportIssue.ReportIssueBottomSheet"
+        android:label="ReportIssueBottomSheet" />
+
     <fragment
         android:id="@+id/productBotManagementFragment"
         android:name="io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductBotManagementFragment"
@@ -263,6 +268,11 @@
     <action
         android:id="@+id/action_global_to_debug_menu"
         app:destination="@id/debugMenuFragment"
+        app:launchSingleTop="true" />
+
+    <action
+        android:id="@+id/action_global_to_reportIssueBottomSheet"
+        app:destination="@id/reportIssueBottomSheet"
         app:launchSingleTop="true" />
 
     <action

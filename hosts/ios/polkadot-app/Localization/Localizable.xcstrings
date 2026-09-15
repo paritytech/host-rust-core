@@ -2128,72 +2128,6 @@
         }
       }
     },
-    "debug.create.issue": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Create an issue"
-          }
-        }
-      }
-    },
-    "debug.issue.collect.failed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Could not collect logs. Please try again."
-          }
-        }
-      }
-    },
-    "debug.issue.details": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "App: %@ (build %@)\niOS: %@\nDevice: %@\n\nLogs: %@\nAttach this ZIP from Files before submitting."
-          }
-        }
-      }
-    },
-    "debug.issue.instructions": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save the log ZIP to Files, then attach it under “Versions, logs, screenshots” in the GitHub issue. You may need to sign in to GitHub in the browser."
-          }
-        }
-      }
-    },
-    "debug.issue.logs.too.large": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The log ZIP exceeds GitHub’s 25 MB attachment limit. Ask the development team for a smaller archive."
-          }
-        }
-      }
-    },
-    "debug.issue.save.logs": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save logs"
-          }
-        }
-      }
-    },
     "deposit.copy.action": {
       "extractionState": "manual",
       "localizations": {
@@ -3593,6 +3527,160 @@
           "stringUnit": {
             "state": "translated",
             "value": "Recuperando la cuenta de Polkadot"
+          }
+        }
+      }
+    },
+    "report.issue.attachments": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your screenshot and app logs are included in this report."
+          }
+        }
+      }
+    },
+    "report.issue.capture.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not capture the app screen. Please take another screenshot."
+          }
+        }
+      }
+    },
+    "report.issue.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        }
+      }
+    },
+    "report.issue.collect.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not collect app logs. Please try again."
+          }
+        }
+      }
+    },
+    "report.issue.done": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
+    "report.issue.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tell us about the issue you encountered"
+          }
+        }
+      }
+    },
+    "report.issue.prepared": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Report prepared"
+          }
+        }
+      }
+    },
+    "report.issue.question": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What happened?"
+          }
+        }
+      }
+    },
+    "report.issue.screenshot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screenshot"
+          }
+        }
+      }
+    },
+    "report.issue.send": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        }
+      }
+    },
+    "report.issue.send.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not prepare the report. Please try again."
+          }
+        }
+      }
+    },
+    "report.issue.sending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending…"
+          }
+        }
+      }
+    },
+    "report.issue.simulated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending is simulated in this build. No report was uploaded."
+          }
+        }
+      }
+    },
+    "report.issue.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Report app issue"
           }
         }
       }

@@ -633,17 +633,6 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="debug_menu_title">Debug menu</string>
     <string name="debug_menu_clear_backup">Clear backup</string>
     <string name="debug_menu_share_logs">Share logs</string>
-    <string name="debug_menu_create_issue">Create an issue</string>
-    <string name="debug_report_bug_open_github">Open GitHub</string>
-    <string name="debug_report_bug_title">Android bug report</string>
-    <string name="debug_report_bug_product">Polkadot Mobile (Android)</string>
-    <string name="debug_report_bug_instructions">Your logs will be saved as a ZIP in Downloads.\n\nOn GitHub, describe the problem and attach the ZIP under “Versions, logs, screenshots” before submitting. You may need to sign in to GitHub in your browser.</string>
-    <string name="debug_report_bug_details">App: %1$s (%2$d)\nBuild: %3$s / %4$s\nAndroid: %5$s (API %6$d)\nDevice: %7$s %8$s\n\nAttach %9$s from Downloads here before submitting this report.</string>
-    <string name="debug_report_bug_missing_logs">No logs are available yet. Reproduce the problem, then try reporting it again.</string>
-    <string name="debug_report_bug_logs_too_large">The logs ZIP exceeds GitHub\'s 25 MB attachment limit. Contact the development team for help collecting a smaller archive.</string>
-    <string name="debug_report_bug_collect_failed">Couldn\'t collect the logs. Try reporting the problem again.</string>
-    <string name="debug_report_bug_save_failed">Couldn\'t save the logs to Downloads. Check your available storage and try again.</string>
-    <string name="debug_report_bug_browser_failed">Couldn\'t open a browser. Your logs are saved in Downloads. Install or enable a browser, then try again.</string>
     <string name="debug_menu_open_video_game">Open video game</string>
     <string name="debug_menu_copy_deposit_account">Copy wallet account address</string>
     <string name="debug_menu_copy_candidate_account">Copy candidate account address</string>
@@ -1558,4 +1547,14 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="chat_bot_weekly_game_welcome_message_4">🏃 Play 6 games in a row to achieve your Polkadot Peer status.</string>
     <string name="chat_bot_weekly_game_welcome_message_5">❣️️ Attendance. Attendance is important, missing the game pauses Peer status. Game has to be played constantly.</string>
     <string name="chat_bot_weekly_game_welcome_message_6">🕰️ Game Time! The game is played every Thursday at 6 PM CET.</string>
+    <string name="debug_report_title">Report app issue</string>
+    <string name="debug_report_what_happened">What happened?</string>
+    <string name="debug_report_placeholder">Tell us about the issue you encountered</string>
+    <string name="debug_report_character_count">%1$d / %2$d</string>
+    <string name="debug_report_attachments">Your report includes app logs and this screenshot.</string>
+    <string name="debug_report_screenshot">Screenshot included in the report</string>
+    <string name="debug_report_prepared">Report prepared</string>
+    <string name="debug_report_simulated">Sending is simulated in this build. No report was uploaded.</string>
+    <string name="debug_report_failed">Could not prepare your report. Please try again.</string>
+    <string name="debug_report_capture_failed">Could not capture the app screen. Please try another screenshot.</string>
 </resources>

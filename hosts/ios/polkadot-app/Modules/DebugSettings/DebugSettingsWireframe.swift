@@ -5,19 +5,11 @@ import SwiftUI
 import UIKit
 import UIKitExt
 
-final class DebugSettingsWireframe: NSObject, DebugSettingsWireframeProtocol, WebPresentable {
+final class DebugSettingsWireframe: DebugSettingsWireframeProtocol {
     private let flowStateProvider: any SPAFlowStateProviding
-    private weak var issueView: ControllerBackedProtocol?
 
     init(flowStateProvider: any SPAFlowStateProviding) {
         self.flowStateProvider = flowStateProvider
-    }
-
-    func saveIssueLogs(_ archive: URL, from view: ControllerBackedProtocol?) {
-        issueView = view
-        let picker = UIDocumentPickerViewController(forExporting: [archive], asCopy: true)
-        picker.delegate = self
-        view?.controller.present(picker, animated: true)
     }
 
     func showProducts(from view: ControllerBackedProtocol?) {
@@ -105,47 +97,5 @@ final class DebugSettingsWireframe: NSObject, DebugSettingsWireframeProtocol, We
         })
 
         view?.controller.present(alert, animated: true)
-    }
-}
-
-extension DebugSettingsWireframe: UIDocumentPickerDelegate {
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let view = issueView, let archive = urls.first else {
-            return
-        }
-        issueView = nil
-
-        controller.dismiss(animated: true) { [weak self, weak view] in
-            guard let self, let view, let url = issueURL(archiveName: archive.lastPathComponent) else {
-                return
-            }
-            showWeb(url: url, from: view, style: .init(mode: .modal(.fullScreen)))
-        }
-    }
-
-    func documentPickerWasCancelled(_: UIDocumentPickerViewController) {
-        issueView = nil
-    }
-}
-
-private extension DebugSettingsWireframe {
-    func issueURL(archiveName: String) -> URL? {
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = "github.com"
-        components.path = "/paritytech/platform-issues/issues/new"
-        components.queryItems = [
-            URLQueryItem(name: "template", value: "bug_report.yml"),
-            URLQueryItem(name: "title", value: "iOS bug report"),
-            URLQueryItem(name: "where", value: "Polkadot Mobile (iOS)"),
-            URLQueryItem(name: "details", value: String(localized: .debugIssueDetails(
-                Bundle.main.appVersion ?? "?",
-                Bundle.main.appBuild ?? "?",
-                UIDevice.current.systemVersion,
-                UIDevice.current.model,
-                archiveName
-            )))
-        ]
-        return components.url
     }
 }

@@ -11,8 +11,6 @@ interface DebugMenuContract {
 
     fun onShareLogsClick()
 
-    fun onCreateIssueClick()
-
     fun onCopyWalletAccountClick()
 
     fun onCopyCandidateAccountClick()

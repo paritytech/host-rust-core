@@ -22,11 +22,6 @@ final class DebugSettingsViewLayout: UIView {
         button.imageWithTitleView?.title = "Share Logs"
     }
 
-    let createIssueButton: RoundedButton = .create { button in
-        button.applyMainStyle()
-        button.imageWithTitleView?.title = String(localized: .debugCreateIssue)
-    }
-
     let productsButton: RoundedButton = .create { button in
         button.applyMainStyle()
         button.imageWithTitleView?.title = "Products"
@@ -144,7 +139,6 @@ final class DebugSettingsViewLayout: UIView {
             clearBackupButton,
             clearReferralButton,
             shareLogsButton,
-            createIssueButton,
             productsButton,
             dotNsBrowserButton,
             clearJWTTokenButton,

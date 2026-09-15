@@ -1,8 +1,10 @@
 package io.paritytech.polkadotapp.app.root.navigation.root
 
+import androidx.core.os.bundleOf
 import io.paritytech.polkadotapp.app.R
 import io.paritytech.polkadotapp.app.root.navigation.BaseNavigator
 import io.paritytech.polkadotapp.app.root.navigation.NavigationHolder
+import io.paritytech.polkadotapp.app.root.presentation.debug.reportIssue.ISSUE_SCREENSHOT_PATH
 import io.paritytech.polkadotapp.app.root.presentation.root.RootRouter
 import io.paritytech.polkadotapp.common.utils.toPayloadBundle
 import io.paritytech.polkadotapp.feature_products_api.presentation.SpaBrowserPayload
@@ -31,6 +33,11 @@ class RootNavigator @Inject constructor(
     )
 
     override fun openDebugMenu() = performNavigation(R.id.action_global_to_debug_menu)
+
+    override fun openIssueReport(screenshotPath: String) = performNavigation(
+        R.id.action_global_to_reportIssueBottomSheet,
+        args = bundleOf(ISSUE_SCREENSHOT_PATH to screenshotPath),
+    )
 
     override fun openVideoGame() = performNavigation(R.id.action_global_to_video_game_play_graph)
 

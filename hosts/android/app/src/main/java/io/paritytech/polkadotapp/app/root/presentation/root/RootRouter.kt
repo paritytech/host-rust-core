@@ -15,6 +15,8 @@ interface RootRouter : ReturnableRouter {
 
     fun openDebugMenu()
 
+    fun openIssueReport(screenshotPath: String)
+
     fun openVideoGame()
 
     fun openProductBotsManagement()

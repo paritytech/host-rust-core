@@ -16,7 +16,6 @@ protocol DebugSettingsPresenterProtocol: AnyObject {
     func clearReferral()
     func clearJWTToken()
     func shareLogs()
-    func createIssue()
     func showProducts()
     func showDotNsBrowser()
     func replaceWithRandomEntropy()
@@ -49,7 +48,6 @@ protocol DebugSettingsInteractorOutputProtocol: AnyObject {
 
 @MainActor
 protocol DebugSettingsWireframeProtocol: AnyObject, AlertPresentable {
-    func saveIssueLogs(_ archive: URL, from view: ControllerBackedProtocol?)
     func showProducts(from view: ControllerBackedProtocol?)
     func showDotNsBrowser(from view: ControllerBackedProtocol?)
     func showThemeSelection(from view: ControllerBackedProtocol?)
