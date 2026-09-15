@@ -98,9 +98,16 @@ fi
 # The battery imports the generated example manifest and the playground's
 # example runner, so both the codegen output and the playground's dependency
 # tree have to exist before a host starts.
+# The Rust dispatcher and wire table are ignored build outputs too, and the
+# host will not compile without them, so codegen is judged complete only when
+# every generated artifact exists rather than the TypeScript ones alone.
 generated=(
   "js/packages/truapi/src/generated/client.ts"
   "js/packages/truapi/src/playground/codegen/services.ts"
+  "rust/crates/truapi-server/src/generated/mod.rs"
+  "rust/crates/truapi-server/src/generated/dispatcher.rs"
+  "rust/crates/truapi-server/src/generated/wire_table.rs"
+  "rust/crates/truapi-server/src/wasm/generated_bridge.rs"
 )
 for path in "${generated[@]}"; do
   if [ ! -f "$path" ]; then
@@ -310,6 +317,23 @@ PAIRING_RC="skipped"
 CHAT_RC="skipped"
 POCKET_RC="skipped"
 
+# Each phase writes under the directory for the modality it exercises, so the
+# summary names the ones this run actually produced rather than always the App
+# directory.
+report_dirs() {
+  local dirs=""
+  if [ "$SIGNING_RC" != "skipped" ] || [ "$PAIRING_RC" != "skipped" ]; then
+    dirs="explorer/diagnosis-reports/spa/"
+  fi
+  if [ "$CHAT_RC" != "skipped" ]; then
+    dirs="${dirs:+$dirs, }explorer/diagnosis-reports/chat/"
+  fi
+  if [ "$POCKET_RC" != "skipped" ]; then
+    dirs="${dirs:+$dirs, }explorer/diagnosis-reports/pocket/"
+  fi
+  printf '%s' "${dirs:-explorer/diagnosis-reports/}"
+}
+
 if [ "$RUN_SIGNING" = 1 ]; then
   SIGNING_RC=0
   signing_phase || SIGNING_RC=$?
@@ -332,7 +356,7 @@ fi
 
 echo
 echo "battery: signing-host exit=$SIGNING_RC · pairing-host exit=$PAIRING_RC · chat-host exit=$CHAT_RC · pocket-host exit=$POCKET_RC"
-echo "battery: reports under $REPORTS/, logs under $LOG_DIR/"
+echo "battery: reports under $(report_dirs), logs under $LOG_DIR/"
 [ "$SIGNING_RC" = 0 ] || [ "$SIGNING_RC" = "skipped" ] || exit "$SIGNING_RC"
 [ "$PAIRING_RC" = 0 ] || [ "$PAIRING_RC" = "skipped" ] || exit "$PAIRING_RC"
 [ "$CHAT_RC" = 0 ] || [ "$CHAT_RC" = "skipped" ] || exit "$CHAT_RC"

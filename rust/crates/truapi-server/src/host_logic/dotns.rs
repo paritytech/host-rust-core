@@ -4,7 +4,7 @@
 //! same categorization and the `navigate_to` callback only receives
 //! already-validated input.
 
-use truapi_platform::{has_dotns_tld, normalize_remote_domain};
+use truapi_platform::{has_dotns_tld, normalize_chat_identifier, normalize_remote_domain};
 use unicode_normalization::UnicodeNormalization;
 use url::{Url, form_urlencoded};
 
@@ -188,14 +188,24 @@ fn classify_host_target(url: &Url, identifier: &str) -> Option<NavigateDecision>
     let card_id = url
         .query_pairs()
         .find(|(key, _)| key == "card")
-        .map(|(_, value)| value.into_owned())
-        .filter(|card_id| !card_id.is_empty());
+        .map(|(_, value)| value.into_owned());
     // A known action whose only argument is missing is a malformed link, not a
     // target this core lacks, so it is refused rather than sent to the App.
     let Some(card_id) = card_id else {
         return Some(NavigateDecision::Reject {
             reason: "pocket deeplink names no card".to_string(),
         });
+    };
+    // A deeplink and `remove_card` name the same card, so both screen the id
+    // the same way. Without this, `?card=%20loyalty%20` would add a card under
+    // a name removal can never match.
+    let card_id = match normalize_chat_identifier("card", &card_id) {
+        Ok(card_id) => card_id,
+        Err(error) => {
+            return Some(NavigateDecision::Reject {
+                reason: error.to_string(),
+            });
+        }
     };
     // `card` arrives percent-decoded, so it is encoded again here: a raw `#`
     // or `&` in a card id would make the canonical form parse as a different
@@ -660,6 +670,52 @@ mod tests {
                 NavigateDecision::DotName { identifier: b, .. },
             ) => assert_eq!(a, b, "NFC and NFD inputs must normalize to one identifier"),
             other => panic!("expected two DotName decisions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pocket_deeplinks_screen_the_card_id_the_way_removal_does() {
+        // A deeplink and `remove_card` name the same card, so they have to
+        // agree on what the name is. Removal normalizes, so navigation does
+        // too, or `?card=%20loyalty%20` adds a card that cannot be removed.
+        match parse_navigate("polkadot://game.dot/-/pocket/add?card=%20loyalty%20") {
+            NavigateDecision::Pocket {
+                card_id,
+                canonical_url,
+                ..
+            } => {
+                assert_eq!(card_id, "loyalty");
+                assert_eq!(
+                    canonical_url, "polkadot://game.dot/-/pocket/add?card=loyalty",
+                    "the canonical form carries the normalized id"
+                );
+            }
+            other => panic!("expected a Pocket decision, got {other:?}"),
+        }
+
+        // NFD and NFC spellings of one name must not be two cards.
+        let nfc = parse_navigate("polkadot://game.dot/-/pocket/open?card=caf%C3%A9");
+        let nfd = parse_navigate("polkadot://game.dot/-/pocket/open?card=cafe%CC%81");
+        match (&nfc, &nfd) {
+            (
+                NavigateDecision::Pocket { card_id: a, .. },
+                NavigateDecision::Pocket { card_id: b, .. },
+            ) => assert_eq!(a, b, "NFC and NFD spellings name one card"),
+            other => panic!("expected two Pocket decisions, got {other:?}"),
+        }
+
+        // The bounds chat applies to its own identifiers apply here too.
+        let too_long = "a".repeat(257);
+        for input in [
+            format!("polkadot://game.dot/-/pocket/add?card={too_long}"),
+            // A zero-width joiner lets two distinct ids render identically.
+            "polkadot://game.dot/-/pocket/add?card=loy%E2%80%8Dalty".to_string(),
+            "polkadot://game.dot/-/pocket/add?card=%20%20".to_string(),
+        ] {
+            assert!(
+                matches!(parse_navigate(&input), NavigateDecision::Reject { .. }),
+                "{input} should be refused"
+            );
         }
     }
 

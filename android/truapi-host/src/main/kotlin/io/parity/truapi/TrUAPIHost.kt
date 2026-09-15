@@ -60,6 +60,7 @@ import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatCallbacks
 import uniffi.truapi_server.NativePocketCallbacks
+import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
 import uniffi.truapi_server.NativeDevicePermissionStatus
 import uniffi.truapi_server.NativeProductExecution
@@ -449,16 +450,18 @@ interface ChatHostBridge {
 interface PocketHostBridge {
     /**
      * Return the product's cards as this host holds them, each carrying
-     * whether the host pinned it. The core reads this to refuse the removal of
-     * a privileged card itself, so [removeCard] is only asked for a removable
-     * one.
+     * whether the host pinned it.
      */
     @Throws(HostRejection::class)
     fun listCards(): List<PocketCard>
 
-    /** Remove one non-privileged card this host holds for the product. */
+    /**
+     * Remove one of the product's cards and report what happened. Decide and
+     * remove together, under whatever lock this host holds, so a card cannot
+     * be pinned between the two.
+     */
     @Throws(HostRejection::class)
-    fun removeCard(cardId: String)
+    fun removeCard(cardId: String): NativePocketRemoval
 }
 
 /**
@@ -633,7 +636,8 @@ private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeCh
 private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : NativePocketCallbacks {
     override fun listCards(): List<PocketCard> = withHostRejection { bridge.listCards() }
 
-    override fun removeCard(cardId: String) = withHostRejection { bridge.removeCard(cardId) }
+    override fun removeCard(cardId: String): NativePocketRemoval =
+        withHostRejection { bridge.removeCard(cardId) }
 }
 
 /**

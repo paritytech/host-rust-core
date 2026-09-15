@@ -24,18 +24,23 @@ use truapi::latest::{
 use truapi::v01;
 use truapi_platform::{PocketPlatform, ProductContext, async_trait};
 
-/// Cards and list subscribers for one process.
+/// Cards and list subscribers for one product.
 #[derive(Default)]
-struct State {
+struct ProductCards {
     /// Card id to whether this host pins it.
     cards: BTreeMap<String, bool>,
-    /// Live card-list subscribers, one per product connection.
+    /// Live card-list subscribers for this product.
     subscribers: Vec<mpsc::UnboundedSender<HostPocketListSubscribeItem>>,
 }
 
 /// A Pocket host that keeps everything in memory.
+///
+/// A card id is product-local, so each product gets its own collection seeded
+/// from the same spec. Two products sharing one map would let either observe
+/// and remove the other's cards after a `/product` switch.
 pub struct CliPocketHost {
-    state: Mutex<State>,
+    seed: BTreeMap<String, bool>,
+    products: Mutex<BTreeMap<String, ProductCards>>,
     transcript: Option<PathBuf>,
 }
 
@@ -72,23 +77,36 @@ impl CliPocketHost {
             tracing::warn!(?path, %error, "pocket transcript could not be truncated");
         }
         Arc::new(Self {
-            state: Mutex::new(State {
-                cards,
-                ..State::default()
-            }),
+            seed: cards,
+            products: Mutex::new(BTreeMap::new()),
             transcript,
         })
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ProductCards>> {
+        self.products
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// This product's collection, seeded on first use so every product starts
+    /// from the same spec and diverges from there.
+    fn entry<'a>(
+        &self,
+        products: &'a mut BTreeMap<String, ProductCards>,
+        product: &ProductContext,
+    ) -> &'a mut ProductCards {
+        products
+            .entry(product.product_id.clone())
+            .or_insert_with(|| ProductCards {
+                cards: self.seed.clone(),
+                subscribers: Vec::new(),
+            })
+    }
+
     /// Current card list, in card-id order so a replacement that changes
     /// nothing is byte-identical to the one before it.
-    fn card_list(state: &State) -> HostPocketListSubscribeItem {
+    fn card_list(state: &ProductCards) -> HostPocketListSubscribeItem {
         HostPocketListSubscribeItem {
             cards: state
                 .cards
@@ -102,7 +120,7 @@ impl CliPocketHost {
     }
 
     /// Send the current list to every live subscriber, dropping closed ones.
-    fn republish(state: &mut State) {
+    fn republish(state: &mut ProductCards) {
         let item = Self::card_list(state);
         state
             .subscribers
@@ -133,10 +151,11 @@ impl CliPocketHost {
 impl PocketPlatform for CliPocketHost {
     fn subscribe_pocket_cards(
         &self,
-        _product: &ProductContext,
+        product: &ProductContext,
     ) -> BoxStream<'static, Result<HostPocketListSubscribeItem, GenericError>> {
-        let mut state = self.lock();
-        let snapshot = Self::card_list(&state);
+        let mut products = self.lock();
+        let state = self.entry(&mut products, product);
+        let snapshot = Self::card_list(state);
         let (sender, receiver) = mpsc::unbounded();
         state.subscribers.push(sender);
         // The snapshot first, then every replacement, so a product that
@@ -148,13 +167,14 @@ impl PocketPlatform for CliPocketHost {
 
     async fn remove_pocket_card(
         &self,
-        _product: &ProductContext,
+        product: &ProductContext,
         request: HostPocketRemoveCardRequest,
     ) -> Result<(), HostPocketRemoveCardError> {
-        let mut state = self.lock();
+        let mut products = self.lock();
+        let state = self.entry(&mut products, product);
         match state.cards.get(&request.card_id) {
             Some(true) => {
-                drop(state);
+                drop(products);
                 self.record(serde_json::json!({
                     "kind": "remove_refused",
                     "cardId": request.card_id,
@@ -163,7 +183,7 @@ impl PocketPlatform for CliPocketHost {
             }
             // A card this host does not hold is already removed.
             None => {
-                drop(state);
+                drop(products);
                 self.record(serde_json::json!({
                     "kind": "remove_absent",
                     "cardId": request.card_id,
@@ -172,8 +192,8 @@ impl PocketPlatform for CliPocketHost {
             }
             Some(false) => {
                 state.cards.remove(&request.card_id);
-                Self::republish(&mut state);
-                drop(state);
+                Self::republish(state);
+                drop(products);
                 self.record(serde_json::json!({
                     "kind": "removed",
                     "cardId": request.card_id,
@@ -191,6 +211,41 @@ mod tests {
 
     fn product() -> ProductContext {
         ProductContext::new("pocket.dot".to_string()).expect("valid product id")
+    }
+
+    fn other_product() -> ProductContext {
+        ProductContext::new("other.dot".to_string()).expect("valid product id")
+    }
+
+    /// A card id is product-local, so one product must not see or remove
+    /// another's cards. The CLI serves every product from one process, and a
+    /// `/product` switch reuses the same host.
+    #[test]
+    fn one_product_cannot_see_or_remove_another_products_cards() {
+        let host = CliPocketHost::new(BTreeMap::from([("loyalty".to_string(), false)]), None);
+        let mine = product();
+        let theirs = other_product();
+
+        let removed = futures::executor::block_on(host.remove_pocket_card(
+            &mine,
+            HostPocketRemoveCardRequest {
+                card_id: "loyalty".to_string(),
+            },
+        ));
+        assert!(removed.is_ok());
+
+        let mut theirs_cards = host.subscribe_pocket_cards(&theirs);
+        let seen = futures::executor::block_on(theirs_cards.next())
+            .expect("the current list arrives on subscribe")
+            .expect("no stream error");
+        assert_eq!(
+            seen.cards,
+            vec![v01::PocketCard {
+                card_id: "loyalty".to_string(),
+                privileged: false,
+            }],
+            "the other product still holds its own copy"
+        );
     }
 
     fn host(spec: &str) -> (Arc<CliPocketHost>, tempfile::NamedTempFile) {

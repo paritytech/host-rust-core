@@ -350,7 +350,7 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Demand is runtime-wide, so the core invokes this only on the bridge
     /// ``TrUAPIHostRuntime/init(bridge:runtimeConfig:)`` was given, never on
     /// the per-execution bridge passed to
-    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:)``.
+    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``.
     /// Can arrive on any thread, including synchronously on the calling
     /// thread during `acquireWorker`/`releaseWorker`, often the main thread
     /// and re-entrantly: hand the transition off rather than blocking on
@@ -368,7 +368,7 @@ public protocol HostBridge: AnyObject, Sendable {
 }
 
 /// Native Chat storage and UI surface. Implement and pass to
-/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:)``
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``
 /// when the host supports the Chat modality; hosts without it pass nothing.
 /// Native Chat storage and UI surface, called from the process-wide dispatch
 /// pool shared by every product execution: implementations must be safe to
@@ -418,13 +418,13 @@ public protocol ChatHostBridge: AnyObject, Sendable {
 /// decline a call.
 public protocol PocketHostBridge: AnyObject, Sendable {
     /// Return the product's cards as this host holds them, each carrying
-    /// whether the host pinned it. The core reads this to refuse the removal
-    /// of a privileged card itself, so `removeCard` is only asked for a
-    /// removable one.
+    /// whether the host pinned it.
     func listCards() throws -> [PocketCard]
 
-    /// Remove one non-privileged card this host holds for the product.
-    func removeCard(cardId: String) throws
+    /// Remove one of the product's cards and report what happened. Decide and
+    /// remove together, under whatever lock this host holds, so a card cannot
+    /// be pinned between the two.
+    func removeCard(cardId: String) throws -> NativePocketRemoval
 }
 
 public extension HostBridge {
@@ -515,7 +515,7 @@ private final class PocketCallbackAdapter: NativePocketCallbacks, @unchecked Sen
         try withHostRejection { try bridge.listCards() }
     }
 
-    func removeCard(cardId: String) throws {
+    func removeCard(cardId: String) throws -> NativePocketRemoval {
         try withHostRejection { try bridge.removeCard(cardId: cardId) }
     }
 

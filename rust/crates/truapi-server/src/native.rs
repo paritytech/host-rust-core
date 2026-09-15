@@ -591,16 +591,29 @@ pub trait NativeChatCallbacks: Send + Sync {
 /// pool shared by every product execution, so one that blocks stalls the
 /// others.
 ///
-/// The core reads `list_cards` to decide `Privileged`, so `remove_card` is
-/// only ever asked for a card this host reported as present and removable.
+/// The host decides a removal and reports what it did, so the check and the
+/// removal happen together under whatever lock it holds. A card cannot be
+/// pinned between the two.
 #[uniffi::export(rust, foreign)]
 pub trait NativePocketCallbacks: Send + Sync {
     /// Return the product's cards as this host currently holds them, each with
     /// the flag saying whether the host pinned it.
     fn list_cards(&self) -> Result<Vec<v01::PocketCard>, HostRejection>;
 
-    /// Remove one non-privileged card this host holds for the product.
-    fn remove_card(&self, card_id: String) -> Result<(), HostRejection>;
+    /// Remove one of the product's cards, reporting whether the card was
+    /// taken out, was already gone, or is pinned and stays.
+    fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection>;
+}
+
+/// What a host did with a removal request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativePocketRemoval {
+    /// The card was present and not pinned, and the host took it out.
+    Removed,
+    /// The host does not hold the card, so it is already gone.
+    Absent,
+    /// The host pins the card and keeps it.
+    Privileged,
 }
 
 /// Process-owned native TrUAPI runtime shared by all executable connections.
@@ -1349,7 +1362,9 @@ struct NativeEventBus {
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
     chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
-    pocket_card_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostPocketListSubscribeItem>>>,
+    pocket_card_changes: Mutex<
+        Vec<mpsc::UnboundedSender<Result<v01::HostPocketListSubscribeItem, v01::GenericError>>>,
+    >,
 }
 
 struct PreimageSubscription {
@@ -1469,26 +1484,41 @@ impl NativeEventBus {
             .retain(|tx| tx.unbounded_send(item.clone()).is_ok());
     }
 
-    /// Subscribe to the host's card collection. `snapshot` supplies the
-    /// current list and runs after the subscriber is registered, and outside
-    /// the mutex: a change the host reports in between is then queued ahead of
-    /// the snapshot rather than dropped, and a host that notifies from the
-    /// thread it was called on cannot deadlock.
+    /// Subscribe to the host's card collection. `snapshot` reads the host's
+    /// cards while the subscriber mutex is held, so a replacement cannot land
+    /// between the read and the registration: the snapshot is always the first
+    /// item and every later change follows it in order. `snapshot` must not
+    /// call back into [`NativeProductExecution::notify_pocket_cards_changed`],
+    /// which takes the same mutex.
     fn subscribe_pocket_cards(
         &self,
-        snapshot: impl FnOnce() -> v01::HostPocketListSubscribeItem,
-    ) -> BoxStream<'static, v01::HostPocketListSubscribeItem> {
+        snapshot: impl FnOnce() -> Result<v01::HostPocketListSubscribeItem, v01::GenericError>,
+    ) -> BoxStream<'static, Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
         let (tx, rx) = mpsc::unbounded();
-        self.pocket_card_changes
+        let mut subscribers = self
+            .pocket_card_changes
             .lock()
-            .expect("native Pocket card subscribers mutex poisoned")
-            .push(tx.clone());
-        let _ = tx.unbounded_send(snapshot());
-        rx.boxed()
+            .expect("native Pocket card subscribers mutex poisoned");
+        let current = snapshot();
+        // Subscribers are dropped when their product stops listening, and
+        // nothing else prunes them between notifications.
+        subscribers.retain(|tx| !tx.is_closed());
+        subscribers.push(tx);
+        drop(subscribers);
+        stream::once(async move { current }).chain(rx).boxed()
     }
 
     fn notify_pocket_cards_changed(&self, cards: Vec<v01::PocketCard>) {
-        let item = v01::HostPocketListSubscribeItem { cards };
+        self.send_pocket_cards(Ok(v01::HostPocketListSubscribeItem { cards }));
+    }
+
+    /// Report that the host can no longer say what the collection holds. The
+    /// product reads it as a failed stream rather than as an empty collection.
+    fn notify_pocket_cards_failed(&self, error: v01::GenericError) {
+        self.send_pocket_cards(Err(error));
+    }
+
+    fn send_pocket_cards(&self, item: Result<v01::HostPocketListSubscribeItem, v01::GenericError>) {
         self.pocket_card_changes
             .lock()
             .expect("native Pocket card subscribers mutex poisoned")
@@ -1910,13 +1940,14 @@ impl truapi_platform::PocketPlatform for PocketCallbackPlatform {
         _product: &ProductContext,
     ) -> BoxStream<'static, Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
         let pocket = self.pocket.clone();
-        Box::pin(
-            self.events
-                .subscribe_pocket_cards(move || v01::HostPocketListSubscribeItem {
-                    cards: pocket.list_cards().unwrap_or_default(),
+        Box::pin(self.events.subscribe_pocket_cards(move || {
+            pocket
+                .list_cards()
+                .map(|cards| v01::HostPocketListSubscribeItem { cards })
+                .map_err(|error| v01::GenericError {
+                    reason: error.to_string(),
                 })
-                .map(Ok),
-        )
+        }))
     }
 
     async fn remove_pocket_card(
@@ -1927,15 +1958,19 @@ impl truapi_platform::PocketPlatform for PocketCallbackPlatform {
         let unknown = |error: HostRejection| v01::HostPocketRemoveCardError::Unknown {
             reason: error.to_string(),
         };
-        let cards = self.pocket.list_cards().map_err(unknown)?;
-        match cards.iter().find(|card| card.card_id == request.card_id) {
+        match self.pocket.remove_card(request.card_id).map_err(unknown)? {
+            NativePocketRemoval::Privileged => Err(v01::HostPocketRemoveCardError::Privileged),
             // A card this host does not hold is already removed.
-            None => Ok(()),
-            Some(card) if card.privileged => Err(v01::HostPocketRemoveCardError::Privileged),
-            Some(_) => {
-                self.pocket.remove_card(request.card_id).map_err(unknown)?;
-                if let Ok(cards) = self.pocket.list_cards() {
-                    self.events.notify_pocket_cards_changed(cards);
+            NativePocketRemoval::Absent => Ok(()),
+            NativePocketRemoval::Removed => {
+                // The removal stands either way. A host that can no longer
+                // list its cards says so on the stream rather than leaving the
+                // product on a list that still holds the removed card.
+                match self.pocket.list_cards() {
+                    Ok(cards) => self.events.notify_pocket_cards_changed(cards),
+                    Err(error) => self.events.notify_pocket_cards_failed(v01::GenericError {
+                        reason: error.to_string(),
+                    }),
                 }
                 Ok(())
             }
@@ -1953,39 +1988,115 @@ mod tests {
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
-    /// A Pocket subscriber registers before its snapshot is taken, so a change
-    /// the host reports while the snapshot is in flight is queued ahead of it
-    /// instead of being dropped. Taking the snapshot first would leave the
-    /// product holding a stale list with no later correction.
-    #[test]
-    fn a_pocket_change_during_the_snapshot_is_not_lost() {
-        let bus = NativeEventBus::default();
-        let card = |card_id: &str| v01::PocketCard {
+    fn pocket_card(card_id: &str, privileged: bool) -> v01::PocketCard {
+        v01::PocketCard {
             card_id: card_id.to_string(),
-            privileged: false,
-        };
+            privileged,
+        }
+    }
 
-        // The closure stands in for the host callback, and notifying from
-        // inside it is what makes the interleaving deterministic. It also
-        // proves the snapshot runs outside the subscriber mutex: a host that
-        // notifies from the same thread would otherwise deadlock.
-        let mut stream = bus.subscribe_pocket_cards(|| {
-            bus.notify_pocket_cards_changed(vec![card("during")]);
-            v01::HostPocketListSubscribeItem {
-                cards: vec![card("snapshot")],
-            }
-        });
-
-        // Both items are queued by the time the stream is polled, so a
-        // missing one reads as pending here rather than hanging the test.
+    /// Everything a Pocket stream has already queued, so a missing item reads
+    /// as pending here rather than hanging the test.
+    fn drain_pocket(
+        stream: &mut BoxStream<
+            'static,
+            Result<v01::HostPocketListSubscribeItem, v01::GenericError>,
+        >,
+    ) -> Vec<Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
         let mut seen = Vec::new();
         while let Some(Some(item)) = stream.next().now_or_never() {
-            seen.push(item.cards);
+            seen.push(item);
         }
+        seen
+    }
+
+    /// The snapshot is read while the subscriber mutex is held, so it is the
+    /// first item and every later change follows it in order. Delivering a
+    /// queued change first would leave the product on the older list, with the
+    /// snapshot overwriting it.
+    #[test]
+    fn a_pocket_subscriber_sees_its_snapshot_before_later_changes() {
+        let bus = NativeEventBus::default();
+        let mut stream = bus.subscribe_pocket_cards(|| {
+            Ok(v01::HostPocketListSubscribeItem {
+                cards: vec![pocket_card("loyalty", false)],
+            })
+        });
+        bus.notify_pocket_cards_changed(vec![
+            pocket_card("loyalty", false),
+            pocket_card("humanity", true),
+        ]);
+
         assert_eq!(
-            seen,
-            vec![vec![card("during")], vec![card("snapshot")]],
-            "the interleaved change must arrive, and the snapshot must land last"
+            drain_pocket(&mut stream),
+            vec![
+                Ok(v01::HostPocketListSubscribeItem {
+                    cards: vec![pocket_card("loyalty", false)],
+                }),
+                Ok(v01::HostPocketListSubscribeItem {
+                    cards: vec![pocket_card("loyalty", false), pocket_card("humanity", true)],
+                }),
+            ]
+        );
+    }
+
+    /// A host that cannot say what it holds reaches the product as a failed
+    /// stream. Reporting an empty list instead would read as "you own no
+    /// cards" and wipe the product's view of its own collection.
+    #[test]
+    fn a_pocket_host_failure_reaches_the_product_instead_of_an_empty_list() {
+        let bus = NativeEventBus::default();
+        let mut opening = bus.subscribe_pocket_cards(|| {
+            Err(v01::GenericError {
+                reason: "card store unavailable".to_string(),
+            })
+        });
+        assert_eq!(
+            drain_pocket(&mut opening),
+            vec![Err(v01::GenericError {
+                reason: "card store unavailable".to_string(),
+            })]
+        );
+
+        let mut live = bus.subscribe_pocket_cards(|| {
+            Ok(v01::HostPocketListSubscribeItem {
+                cards: vec![pocket_card("loyalty", false)],
+            })
+        });
+        bus.notify_pocket_cards_failed(v01::GenericError {
+            reason: "card store went away".to_string(),
+        });
+        assert_eq!(
+            drain_pocket(&mut live),
+            vec![
+                Ok(v01::HostPocketListSubscribeItem {
+                    cards: vec![pocket_card("loyalty", false)],
+                }),
+                Err(v01::GenericError {
+                    reason: "card store went away".to_string(),
+                }),
+            ]
+        );
+    }
+
+    /// A cancelled subscriber is pruned when the next one registers, so a
+    /// product that subscribes and drops repeatedly cannot grow the list
+    /// without bound between host notifications.
+    #[test]
+    fn a_cancelled_pocket_subscriber_is_pruned_on_the_next_registration() {
+        let bus = NativeEventBus::default();
+        let snapshot = || Ok(v01::HostPocketListSubscribeItem { cards: Vec::new() });
+        for _ in 0..5 {
+            drop(bus.subscribe_pocket_cards(snapshot));
+        }
+        let _live = bus.subscribe_pocket_cards(snapshot);
+
+        assert_eq!(
+            bus.pocket_card_changes
+                .lock()
+                .expect("native Pocket card subscribers mutex poisoned")
+                .len(),
+            1
         );
     }
 
@@ -2322,16 +2433,25 @@ mod tests {
                 .clone())
         }
 
-        fn remove_card(&self, card_id: String) -> Result<(), HostRejection> {
-            self.pocket_cards
+        fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection> {
+            let mut cards = self
+                .pocket_cards
                 .lock()
-                .expect("pocket cards mutex poisoned")
-                .retain(|card| card.card_id != card_id);
+                .expect("pocket cards mutex poisoned");
+            let outcome = match cards.iter().find(|card| card.card_id == card_id) {
+                None => NativePocketRemoval::Absent,
+                Some(card) if card.privileged => NativePocketRemoval::Privileged,
+                Some(_) => {
+                    cards.retain(|card| card.card_id != card_id);
+                    NativePocketRemoval::Removed
+                }
+            };
+            drop(cards);
             self.pocket_removed
                 .lock()
                 .expect("pocket removed mutex poisoned")
                 .push(card_id);
-            Ok(())
+            Ok(outcome)
         }
     }
 
@@ -2553,21 +2673,13 @@ mod tests {
     }
 
     #[test]
-    fn native_pocket_adapter_refuses_privileged_removal_before_calling_the_host() {
+    fn native_pocket_removal_outcomes_are_decided_by_the_host() {
         let pocket_host = Arc::new(EventCallbacks::new());
         *pocket_host
             .pocket_cards
             .lock()
-            .expect("pocket cards mutex poisoned") = vec![
-            v01::PocketCard {
-                card_id: "loyalty".to_string(),
-                privileged: false,
-            },
-            v01::PocketCard {
-                card_id: "humanity".to_string(),
-                privileged: true,
-            },
-        ];
+            .expect("pocket cards mutex poisoned") =
+            vec![pocket_card("loyalty", false), pocket_card("humanity", true)];
         let events = Arc::new(NativeEventBus::default());
         let platform = PocketCallbackPlatform {
             pocket: pocket_host.clone(),
@@ -2588,7 +2700,10 @@ mod tests {
         let first = futures::executor::block_on(cards.next())
             .expect("the current list arrives on subscribe")
             .expect("no stream error");
-        assert_eq!(first.cards.len(), 2);
+        assert_eq!(
+            first.cards,
+            vec![pocket_card("loyalty", false), pocket_card("humanity", true)]
+        );
 
         assert!(matches!(
             remove("humanity"),
@@ -2605,15 +2720,18 @@ mod tests {
                 .lock()
                 .expect("pocket removed mutex poisoned")
                 .as_slice(),
-            ["loyalty"],
-            "only a removable card the host holds reaches the host"
+            ["humanity", "absent", "loyalty"],
+            "the host decides every removal, so every request reaches it"
         );
 
         let republished = futures::executor::block_on(cards.next())
             .expect("a removal republishes the list")
             .expect("no stream error");
-        assert_eq!(republished.cards.len(), 1);
-        assert_eq!(republished.cards[0].card_id, "humanity");
+        assert_eq!(
+            republished.cards,
+            vec![pocket_card("humanity", true)],
+            "the pinned card stays and the removed one is gone"
+        );
     }
 
     #[test]

@@ -175,9 +175,10 @@ untrusted: they may name a message in another room, or one that never existed.
 ## Pocket
 
 A host with a Pocket surface owns the card collection and implements
-`PocketHostBridge`, passed as `pocket:` to `openProductExecution`. Only a
-Worker execution reaches Pocket. Hosts without the bridge pass nothing and
-Pocket calls answer unsupported.
+`PocketHostBridge`, passed as `pocket:` to `openProductExecution`. Pocket is
+reachable only from a Worker execution with an active session, so a product
+on a signed-out host is denied before the bridge is consulted. Hosts without
+the bridge pass nothing and Pocket calls answer unsupported.
 
 ```swift
 final class MyPocketBridge: PocketHostBridge, @unchecked Sendable {
@@ -185,12 +186,14 @@ final class MyPocketBridge: PocketHostBridge, @unchecked Sendable {
 
     init(store: PocketStore) { self.store = store }
 
-    // `privileged` marks a card this host pinned. The core reads it to refuse
-    // the product's own removal request, so `removeCard` is only ever called
-    // for a removable card this list reported.
+    // `privileged` marks a card this host pinned, which the product sees and
+    // cannot remove.
     func listCards() throws -> [PocketCard] { store.cards() }
 
-    func removeCard(cardId: String) throws { store.remove(cardId) }
+    // Decide and remove together so a card cannot be pinned in between.
+    func removeCard(cardId: String) throws -> NativePocketRemoval {
+        store.removeIfRemovable(cardId)
+    }
 }
 
 let execution = try runtime.openProductExecution(
@@ -198,6 +201,9 @@ let execution = try runtime.openProductExecution(
     configuration: ProductExecutionConfig(productId: "game.dot", executionKind: .worker),
     pocket: MyPocketBridge(store: pocketStore)
 )
+
+// Pocket needs an active session too: without `activateLocalSession` every
+// Pocket call answers denied, whatever this bridge holds.
 
 // Republish after the host's own collection changes.
 execution.notifyPocketCardsChanged(cards: pocketStore.cards())

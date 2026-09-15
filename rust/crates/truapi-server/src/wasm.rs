@@ -1160,12 +1160,19 @@ impl WasmSigningHostRuntime {
         console_error_panic_hook::set_once();
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
-        let platform = Arc::new(WasmPlatform::new(bridge));
+        let WasmPlatformAdapters {
+            platform,
+            pocket_platform,
+            ..
+        } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = signing_host_config_from_js(&host_config)?;
         let runtime = SigningHostRuntime::new(platform, host_config, spawner);
+        if let Some(pocket_platform) = pocket_platform {
+            runtime.set_pocket_platform(pocket_platform);
+        }
         install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
             runtime: Rc::new(runtime),
