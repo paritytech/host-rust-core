@@ -488,6 +488,29 @@ one-off per (account, product), but it is an operational step, not a code one.
 So the boundary is: **live-chain reads work today; live-chain writes need those
 addresses funded.**
 
+## 17. Statement store: transport works, submission does not
+
+Proxying the real people chain (`wss://paseo-people-next-system-rpc.polkadot.io`,
+genesis `0x4a2b5b73…ad48`) connects the statement store. The demo boots to
+"Statement store connected (host transport)" and
+`statement_subscribeStatement` appears in `getSentRpc`, so subscription traffic
+is real and observable.
+
+Submission is not. Publishing fails with `Statement submission rejected: {}`
+**inside the core, before any RPC is emitted** -- it needs a statement
+allowance, which is a per-period budget. So there is nothing on the transport to
+observe either, and `getSubmittedStatements` cannot be built as a recording over
+`getSentRpc`.
+
+The three controls therefore exist on the fixture and throw with that reason,
+rather than being absent. A product author reaching for one gets an explanation
+of which half is missing; before this they got
+`testHost.clearStatements is not a function`, which reads like an unfinished
+fixture rather than a boundary.
+
+So the honest status is **"connects; submission needs an allowance"**, not
+"needs chain support" -- a smaller and differently-shaped gap than it looked.
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is

@@ -126,7 +126,35 @@ export interface TestHost {
   signOut(): Promise<void>;
   /** Return the host to its constructed state between cases. */
   reset(): Promise<void>;
+
+  /**
+   * Statements the product submitted.
+   *
+   * Always throws. The statement store is core-owned and submission is
+   * rejected inside the core before any RPC is emitted, so there is nothing
+   * for the host to record -- not a host seam the mock declined to implement.
+   */
+  getSubmittedStatements(): Promise<never>;
+  /** Deliver a statement to the product. Always throws; see above. */
+  injectStatement(statement: unknown): Promise<never>;
+  /** Drop the recorded statements. Always throws; see above. */
+  clearStatements(): Promise<never>;
 }
+
+/**
+ * Why the statement-store controls cannot be served.
+ *
+ * Stated once so every one of them says the same thing, and says which half is
+ * missing: the transport works -- a proxied people chain connects and
+ * `statement_subscribeStatement` is visible in `getSentRpc` -- but submission
+ * never reaches it.
+ */
+const NO_STATEMENT_SEAM =
+  "is not available in the TrUAPI test host: the statement store is owned by " +
+  "the core, not the host, so there is no seam to record or inject through. " +
+  "Submission is rejected inside the core before any RPC is emitted (it needs " +
+  "a statement allowance), so it cannot be observed on the chain transport " +
+  "either. Subscription traffic IS visible via the proxied chain.";
 
 /**
  * Build the `testHost` fixture.
@@ -284,6 +312,16 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         },
         signOut: () => call("signOut"),
         reset: () => call("reset"),
+
+        getSubmittedStatements: () => {
+          throw new Error(`testHost.getSubmittedStatements ${NO_STATEMENT_SEAM}`);
+        },
+        injectStatement: () => {
+          throw new Error(`testHost.injectStatement ${NO_STATEMENT_SEAM}`);
+        },
+        clearStatements: () => {
+          throw new Error(`testHost.clearStatements ${NO_STATEMENT_SEAM}`);
+        },
       };
 
       await use(testHost);
