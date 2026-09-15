@@ -1037,9 +1037,23 @@ impl ProductRuntimeHost {
                 .lock()
                 .expect("open operations mutex poisoned"),
         );
-        for _ in open {
+        if open.is_empty() {
+            return;
+        }
+        for _ in &open {
             self.release_worker_reference();
         }
+        // The host holds its own record of each operation, and nothing else
+        // ever ends one for a connection that is gone: left alone they
+        // accumulate against the product's open-operation limit. Ending them
+        // reaches the host, so it runs off this thread.
+        let platform = self.platform.clone();
+        let product = self.product.clone();
+        (self.services.spawner)(Box::pin(async move {
+            for id in open {
+                let _ = platform.end_operation(&product, id).await;
+            }
+        }));
     }
 
     /// Drop the worker reference a pending operation held. An id that is not
