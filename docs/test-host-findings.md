@@ -579,10 +579,29 @@ method ran, not *which*. Both wrong leads rested on reading it as if it named
 configured answer immediately, so a recorded review cannot be lost to a park.
 An empty log means the call never arrived.
 
-So the symptom is most likely not a hang at all: either the call returned
-`Rejected` at step 4 and the product writes no failure line, or
-`create_transaction` never ran and the `ChainSubmit` entry came from elsewhere.
-Settling it needs the product promise's rejection, not another log.
+**It is a genuine hang.** `tx-demo`'s handler wraps the flow in
+`try`/`catch`/`finally` and writes `remark failed: ...` on both a returned error
+and a throw, then re-enables the controls (`examples/tx-demo/src/main.ts:129`).
+A `Rejected` return would therefore have left a failure line. The log stops dead
+at `Submitting`, so an await never resolved -- a swallowed error is ruled out.
+
+**The signing log is not a second witness.** `getSigningLog()` is
+`reviews.flatMap(...)` (`create-mock-host.ts:816`) -- a filtered view of the
+same reviews. "0 confirmations and 0 signing requests" is one measurement, not
+two agreeing ones. Zero reviews implies zero signing entries trivially.
+
+**The one site that fits.** `broadcast_transaction`
+(`capabilities/chain.rs:217`) is the only `require_chain_submit` caller with no
+confirmation after it and an unbounded chain await immediately following:
+`require_chain_submit`, then `remote_chain_transaction_broadcast(...).await`.
+Every `signing.rs` site instead confirms first, so it would leave a review or
+return an error the product logs. That makes broadcast the only known shape
+consistent with ChainSubmit approved + zero reviews + a real hang.
+
+The tension left: broadcast implies a transaction was already signed, which
+needs `create_transaction`, which would have left a review. Something in that
+chain is not what it appears, and settling it needs the wire between product and
+core -- which method was actually invoked -- not another host-side log.
 
 **Unreconciled, and it matters.** Section 16 records `tx-demo` reaching the
 chain and failing with `Invalid.Payment`, which requires a transaction to have
