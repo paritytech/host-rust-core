@@ -58,14 +58,14 @@ jobs:
           fetch-depth: 0
 
       - name: Setup iOS Environment
-        uses: ./.github/actions/install
+        uses: ./hosts/ios/.github/actions/install
         with:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
       - name: Read version and build number
         id: build_version
-        uses: ./.github/actions/read-build-version
+        uses: ./hosts/ios/.github/actions/read-build-version
         with:
           increment_step: ${{ inputs.increment_step }}
           ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
@@ -75,7 +75,7 @@ jobs:
           asc_key_base64: ${{ secrets.ASC_KEY_BASE64 }}
 
       - name: Distribute TestFlight build
-        uses: ./.github/actions/distribute-testflight
+        uses: ./hosts/ios/.github/actions/distribute-testflight
         with:
           ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
           ios_extension_bundle_id: ${{ env.IOS_EXTENSION_BUNDLE_ID }}
@@ -107,7 +107,7 @@ jobs:
           s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
           s3_bucket: ${{ env.S3_BUCKET }}
           destination_path: /ios/safetynet/polkadot-app-${{ steps.build_version.outputs.marketing_version }}-${{ steps.build_version.outputs.build_number }}.ipa
-          source_path: polkadot-app.ipa
+          source_path: hosts/ios/polkadot-app.ipa
 
       - name: Upload to S3 (static path)
         uses: novasamatech/github-actions/s3-upload@v5
@@ -117,4 +117,4 @@ jobs:
           s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
           s3_bucket: ${{ env.S3_BUCKET }}
           destination_path: /ios/safetynet/polkadot-app.ipa
-          source_path: polkadot-app.ipa
+          source_path: hosts/ios/polkadot-app.ipa

@@ -77,6 +77,8 @@ export type MainToWorker =
   | { kind: "disconnectSession"; requestId: number }
   | { kind: "cancelPairing" }
   | { kind: "notifySessionStoreChanged" }
+  | { kind: "acquireWorker"; productId: string }
+  | { kind: "releaseWorker"; productId: string }
   | { kind: "activateStoredSession"; requestId: number }
   | { kind: "activateExternalSession"; requestId: number; blob: Uint8Array }
   | { kind: "resetSessionState"; requestId: number }
@@ -111,17 +113,24 @@ export type MainToWorker =
       kind: "publishChatAction";
       coreId: number;
       requestId: number;
+      /** SCALE-encoded `HostChatActionSubscribeItem`. */
       action: Uint8Array;
     }
   | {
-      kind: "renderCustomMessageStart";
+      kind: "publishRendererAction";
+      coreId: number;
+      requestId: number;
+      /** SCALE-encoded `HostRendererActionSubscribeItem`. */
+      action: Uint8Array;
+    }
+  | {
+      kind: "renderStart";
       coreId: number;
       renderId: number;
-      messageId: string;
-      messageType: string;
-      payload: Uint8Array;
+      /** SCALE-encoded `ProductRendererRenderRequest`. */
+      request: Uint8Array;
     }
-  | { kind: "renderCustomMessageStop"; renderId: number }
+  | { kind: "renderStop"; renderId: number }
   | { kind: "callbackResponse"; requestId: number; ok: true; value: unknown }
   | { kind: "callbackResponse"; requestId: number; ok: false; error: string }
   | { kind: "subscriptionItem"; subId: number; value: unknown }
@@ -250,11 +259,23 @@ export type WorkerToMain =
       ok: false;
       error: string;
     }
-  /** One replacement tree, as a SCALE-encoded `CustomRendererNode`. */
-  | { kind: "renderCustomMessageItem"; renderId: number; node: Uint8Array }
+  /**
+   * Demand on one product's worker crossed zero. Posted in ledger order, so
+   * the latest message for a product is its current level.
+   */
+  | { kind: "workerDemandChanged"; productId: string; wanted: boolean }
+  | { kind: "publishRendererActionResponse"; requestId: number; ok: true }
+  | {
+      kind: "publishRendererActionResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  /** One replacement tree, as a SCALE-encoded `RendererNode`. */
+  | { kind: "renderItem"; renderId: number; node: Uint8Array }
   /** The product ended the render stream; no further items follow. */
-  | { kind: "renderCustomMessageComplete"; renderId: number }
-  | { kind: "renderCustomMessageError"; renderId: number; error: string }
+  | { kind: "renderComplete"; renderId: number }
+  | { kind: "renderError"; renderId: number; error: string }
   | {
       kind: "callbackRequest";
       requestId: number;

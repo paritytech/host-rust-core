@@ -18,6 +18,7 @@ jobs:
   rust:
     needs: codegen
     name: Rust workspace
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-D warnings"
@@ -69,6 +70,7 @@ jobs:
 
   wasm-provider:
     name: truapi-provider (wasm browser tests)
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,6 +92,7 @@ jobs:
 
   licenses:
     name: Dependency licenses
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,6 +106,7 @@ jobs:
 
   codegen:
     name: Codegen
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -161,6 +165,7 @@ jobs:
   ios-bindings:
     name: iOS bindings (uniffi)
     needs: codegen
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -194,10 +199,12 @@ jobs:
 
   changes:
     name: Change filter
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     outputs:
       sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
       sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
+      workflows: ${{ steps.filter.outputs.workflows }}
       needs_changeset: ${{ steps.filter.outputs.needs_changeset }}
       adds_changeset: ${{ steps.filter.outputs.adds_changeset }}
     steps:
@@ -232,6 +239,7 @@ jobs:
             {
               echo "sdk_swift=true"
               echo "sdk_kotlin=true"
+              echo "workflows=true"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -246,6 +254,7 @@ jobs:
           }
 
           gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate workflows '^(\.github/workflows/|\.github/actions/|hosts/[a-z]+/\.github/)'
           gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
           # Include generators, dependency pins and package build configuration:
@@ -409,6 +418,7 @@ jobs:
 
   ts-client:
     name: "@parity/truapi"
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: codegen
     env:
@@ -446,6 +456,7 @@ jobs:
 
   ts-host:
     name: "@parity/truapi-host"
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: codegen
     env:
@@ -479,6 +490,7 @@ jobs:
 
   ts-debugger:
     name: "@parity/truapi-debugger"
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: codegen
     env:
@@ -518,6 +530,7 @@ jobs:
 
   playground:
     name: Playground (build + lint + unit)
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: ts-client
     env:
@@ -571,6 +584,7 @@ jobs:
 
   explorer:
     name: Explorer (build + lint)
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: ts-client
     env:
@@ -663,8 +677,58 @@ jobs:
           path: playground/playwright-report
           retention-days: 14
 
+  workflow-lint:
+    name: Workflow lint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned by version and checksum rather than piping an install script, so
+      # a change in what gets linted is a change in this file.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
+
+      # actionlint runs shellcheck over every run: block when shellcheck is on
+      # PATH, which is what catches the quoting and expansion mistakes the inline
+      # shell here carries a lot of. Fail if it is missing rather than quietly
+      # linting less than intended.
+      - name: Check shellcheck is available
+        run: shellcheck --version
+
+      # The e2e job is deliberately disabled with a constant condition while its
+      # smoke test is stabilised, which actionlint reports as if-cond. Drop this
+      # ignore when #686 re-enables that job.
+      # Two shellcheck rules are excluded by code rather than by lowering the
+      # severity bar: SC2012 prefers find over ls, SC2129 prefers grouped
+      # redirects, and both are preference. Severity is left alone because
+      # SC2086, unquoted expansions that word-split, is only info and is exactly
+      # what this job exists to catch.
+      - name: Lint the workflows
+        env:
+          SHELLCHECK_OPTS: "--exclude=SC2012,SC2129"
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/actionlint" \
+            -ignore 'constant expression "false" in condition' \
+            -color
   release-guard:
     name: Release guard
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -739,6 +803,7 @@ jobs:
     name: Changeset guard
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.needs_changeset == 'true'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
@@ -771,6 +836,7 @@ jobs:
   ci-status:
     name: CI Status
     if: always()
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     # Writing the sticky summary needs more than the workflow's read-only
     # default. Nothing else here writes anything.
@@ -793,6 +859,7 @@ jobs:
         playground,
         explorer,
         e2e,
+        workflow-lint,
         release-guard,
         changeset-guard,
       ]
@@ -822,7 +889,7 @@ jobs:
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
             android-bindings ts-client ts-host ts-debugger playground explorer
-            e2e release-guard changeset-guard
+            e2e workflow-lint release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |

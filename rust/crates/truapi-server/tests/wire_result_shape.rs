@@ -2,7 +2,7 @@
 //!
 //! The TS host/client codec expects every request/response frame to be
 //! `Result<{Method}Response, CallError<{Method}Error>>`, and every
-//! subscription's `Interrupt` frame to be `Option<CallError<{Method}Error>>`
+//! subscription's `Interrupt` frame to be `Result<(), CallError<{Method}Error>>`
 //! — both leg types already-versioned wrappers (their own `V<N>` tag is the
 //! wire's only version signal), with which leg a frame carries named by the
 //! outer wire's own `messageType` byte rather than anything inside these
@@ -192,7 +192,7 @@ fn versioned_result_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<
 }
 
 /// Expected bytes for a subscription's `Interrupt`-leg payload ending with a
-/// domain error: `[Option::Some=0x01][CallError::Domain=0x00][encoded,
+/// domain error: `[Result::Err=0x01][CallError::Domain=0x00][encoded,
 /// already-versioned error wrapper]`.
 fn versioned_interrupt_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<u8> {
     let mut expected = vec![0x01u8, 0x00u8];
@@ -251,6 +251,8 @@ fn assert_subscription_start_interrupts_error<Wrapper: Encode>(
         },
         transport.clone(),
     ));
+
+    transport.wait_for(1, std::time::Duration::from_secs(5));
 
     let sent = transport.sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
@@ -423,7 +425,7 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
     assert_eq!(sent[0].payload.trait_id, ids.trait_id);
     assert_eq!(sent[0].payload.method_id, ids.method_id);
     assert_eq!(sent[0].payload.message_type, MESSAGE_TYPE_INTERRUPT);
-    assert_eq!(sent[0].payload.value.first(), Some(&0x01), "Option::Some");
+    assert_eq!(sent[0].payload.value.first(), Some(&0x01), "Result::Err");
     assert_eq!(
         sent[0].payload.value.get(1),
         Some(&0x03),
@@ -431,15 +433,65 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
     );
 
     let mut payload = &sent[0].payload.value[..];
-    let error =
-        Option::<CallError<truapi::versioned::payment::HostPaymentBalanceSubscribeError>>::decode(
-            &mut payload,
-        )
-        .expect("decode malformed interrupt error");
+    let interrupt = Result::<
+        (),
+        CallError<truapi::versioned::payment::HostPaymentBalanceSubscribeError>,
+    >::decode(&mut payload)
+    .expect("decode malformed interrupt error");
     assert!(payload.is_empty());
-    match error {
-        Some(CallError::MalformedFrame { reason }) => assert!(!reason.is_empty()),
+    match interrupt {
+        Err(CallError::MalformedFrame { reason }) => assert!(!reason.is_empty()),
         other => panic!("expected MalformedFrame interrupt, got {other:?}"),
+    }
+}
+
+/// A chain follow that cannot reach its provider must end with the failure,
+/// not with `Ok(())`. A clean end reaches the product as `complete`, which
+/// reads as a chain that simply stopped having blocks to report.
+#[test]
+fn a_chain_follow_that_cannot_start_interrupts_with_the_failure() {
+    let core = make_core();
+    let ids = subscription_ids("chain_follow_head_subscribe").expect("known subscription method");
+    let transport = Arc::new(RecordingTransport::default());
+    let value = truapi::versioned::chain::RemoteChainHeadFollowRequest::V1(
+        v01::RemoteChainHeadFollowRequest {
+            genesis_hash: vec![0u8; 32],
+            with_runtime: false,
+        },
+    )
+    .encode();
+
+    futures::executor::block_on(core.dispatch(
+        ProtocolMessage {
+            request_id: "p:chain-follow".into(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: MESSAGE_TYPE_START,
+                value,
+            },
+        },
+        transport.clone(),
+    ));
+
+    transport.wait_for(1, std::time::Duration::from_secs(5));
+
+    let sent = transport.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].payload.message_type, MESSAGE_TYPE_INTERRUPT);
+
+    let mut payload = &sent[0].payload.value[..];
+    let interrupt = Result::<(), CallError<v01::GenericError>>::decode(&mut payload)
+        .expect("decode the follow interrupt");
+    assert!(payload.is_empty());
+    match interrupt {
+        Err(CallError::HostFailure { reason }) => {
+            assert!(
+                reason.contains("remote_chain_head_follow"),
+                "unexpected reason: {reason}"
+            );
+        }
+        other => panic!("expected the follow failure, got {other:?}"),
     }
 }
 

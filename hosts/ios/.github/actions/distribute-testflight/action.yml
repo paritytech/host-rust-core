@@ -105,13 +105,13 @@ runs:
       uses: actions/checkout@v6
 
     - name: Configure secrets
-      uses: ./.github/actions/configure-secrets
+      uses: ./hosts/ios/.github/actions/configure-secrets
       with:
         sentry_dsn: ${{ inputs.sentry_dsn }}
         meld_basic_auth_token: ${{ inputs.meld_basic_auth_token }}
 
     - name: Configure Google services for tests
-      uses: ./.github/actions/configure-google-services
+      uses: ./hosts/ios/.github/actions/configure-google-services
       with:
         google_service_info_base64: ${{ inputs.google_service_info_dev_base64 }}
         expected_bundle_id: io.parity.polkadotapp.develop
@@ -120,11 +120,12 @@ runs:
       shell: bash
       env:
         RUN_IN_CI: ${{ inputs.run_in_ci }}
+      working-directory: hosts/ios
       run: |
         bundle exec fastlane run_unit_tests
 
     - name: Configure Google services for TestFlight
-      uses: ./.github/actions/configure-google-services
+      uses: ./hosts/ios/.github/actions/configure-google-services
       with:
         google_service_info_base64: ${{ inputs.google_service_info_release_base64 }}
         expected_bundle_id: ${{ inputs.ios_bundle_id }}
@@ -148,6 +149,7 @@ runs:
         ASC_KEY_BASE64: ${{ inputs.asc_key_base64 }}
         KEYCHAIN_PASSWORD: ${{ inputs.keychain_password }}
         MATCH_PASSWORD: ${{ inputs.match_password }}
+      working-directory: hosts/ios
       run: |
         set -euo pipefail
         bundle exec fastlane distribute_testflight

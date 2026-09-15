@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   prepare:
-    uses: ./.github/workflows/_prepare_pipeline.yml
+    uses: ./.github/workflows/ios-prepare-pipeline.yml
     with:
       is_nightly: false
       bump_level: ${{ inputs.bump_level }}

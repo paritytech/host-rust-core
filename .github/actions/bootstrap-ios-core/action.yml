@@ -1,0 +1,68 @@
+name: "Bootstrap the in-tree core for iOS"
+description: >-
+  Generates the core artifacts hosts/ios resolves from this tree: the Rust
+  codegen output, the TrUAPIHost bindings and xcframework, and the
+  TrUAPIProvider bindings. Without these the app's package graph cannot
+  resolve, because the generated directories are gitignored.
+
+inputs:
+  sim-only:
+    description: >-
+      Build the simulator slice only. Off by default: the app build archives for
+      a device, so it needs the device slice, and gym cannot use a simulator-only
+      xcframework.
+    required: false
+    default: "false"
+  cache-key:
+    description: "shared-key for the Rust cache"
+    required: false
+    default: "ios-core-bootstrap"
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: "22"
+
+    # codegen.sh formats its generated Rust with `cargo +nightly fmt`.
+    - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      with:
+        toolchain: nightly
+        components: rustfmt
+
+    - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+      with:
+        toolchain: stable
+
+    - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+
+    # truapi-server declares its generated modules unconditionally and they are
+    # gitignored, so the crate does not compile until codegen has run.
+    - name: Generate the Rust codegen output
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm ci --ignore-scripts
+        TRUAPI_SKIP_PACKAGE_BUILD=1 ./scripts/codegen.sh
+
+    # rebuild.sh delegates to `make xcframework`, so SIM_ONLY reaches it through
+    # the environment. Both slices by default, because build_app_ci archives for
+    # a device through gym and fails on a simulator-only xcframework with
+    # "no library for this platform was found".
+    - name: Build the host bindings and xcframework
+      shell: bash
+      env:
+        SIM_ONLY: ${{ inputs.sim-only == 'true' && '1' || '0' }}
+      run: ./ios/truapi-host/scripts/rebuild.sh
+
+    # Package.swift declares TrUAPIProvider as a source target, so its bindings
+    # have to exist even for a consumer that only imports TrUAPIHost.
+    - name: Generate the provider bindings
+      shell: bash
+      run: |
+        set -euo pipefail
+        make provider-swift
+        ./ios/truapi-provider/scripts/sync-bindings.sh

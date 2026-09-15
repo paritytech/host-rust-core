@@ -25,7 +25,7 @@ runs:
           exit 1
         fi
 
-        destination="${GITHUB_WORKSPACE:?}/polkadot-app/GoogleService-Info.plist"
+        destination="${GITHUB_WORKSPACE:?}/hosts/ios/polkadot-app/GoogleService-Info.plist"
         temporary="$(mktemp "${RUNNER_TEMP:?}/GoogleService-Info.XXXXXX")"
         trap 'rm -f "${temporary}"' EXIT
 

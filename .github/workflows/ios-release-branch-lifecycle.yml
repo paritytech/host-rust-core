@@ -1,10 +1,14 @@
 name: Release Branch Lifecycle
 
 on:
-  pull_request:
-    types: [closed]
-    branches:
-      - main
+  workflow_dispatch:
+  # Held on workflow_dispatch until the build credentials tracked in #672
+  # land. The trigger below is the one this workflow runs on; restoring it
+  # is the change that puts this workflow live.
+#   pull_request:
+#     types: [closed]
+#     branches:
+#       - main
 
 permissions:
   contents: write

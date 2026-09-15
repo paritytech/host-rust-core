@@ -1,5 +1,6 @@
 //! Unified [`Account`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
@@ -35,8 +36,8 @@ pub trait Account: Send + Sync {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem> {
-        Subscription::empty()
+    ) -> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Retrieve a product-scoped account.

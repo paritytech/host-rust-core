@@ -14,7 +14,7 @@ on:
 
 jobs:
   build_nightly:
-    uses: ./.github/workflows/_build_distribute.yml
+    uses: ./.github/workflows/ios-build-distribute.yml
     with:
       release_branch: ${{ inputs.release_branch }}
       release_pr_number: ${{ inputs.release_pr_number }}
@@ -33,7 +33,7 @@ jobs:
   # environment, under its own bundle id so it installs alongside the real app. See
   # Configs/base.safetynet.xcconfig.
   build_safetynet:
-    uses: ./.github/workflows/_build_distribute.yml
+    uses: ./.github/workflows/ios-build-distribute.yml
     with:
       release_branch: ${{ inputs.release_branch }}
       release_pr_number: ${{ inputs.release_pr_number }}

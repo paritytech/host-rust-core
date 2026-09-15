@@ -1,19 +1,24 @@
 import { describe, expect, it } from "bun:test";
+import { ProductRendererRenderRequest } from "@parity/truapi";
 
 import {
-  handlePublishChatAction,
-  handleRenderCustomMessageStart,
+  handleRenderStart,
   stopRender,
   stopRendersForCore,
   type RenderSubscriptions,
-} from "./worker-chat.js";
+} from "./worker-renderer.js";
 import type {
-  WorkerCustomRendererSubscription,
+  WorkerRendererSubscription,
   WorkerProductRuntime,
 } from "./wasm-module.js";
 import type { WorkerToMain } from "./worker-protocol.js";
 
-function fakeSubscription(log: string[]): WorkerCustomRendererSubscription {
+const renderRequest = ProductRendererRenderRequest.enc({
+  context: { tag: "PocketCard", value: { cardId: "card" } },
+  payload: "0x",
+});
+
+function fakeSubscription(log: string[]): WorkerRendererSubscription {
   return {
     cancel: () => log.push("cancel"),
     free: () => log.push("free"),
@@ -33,66 +38,16 @@ function fakeCore(
     receiveFrame: async () => {},
     dispose: () => {},
     free: () => {},
-    publishChatAction: (action) => log.push(`publish:${action.join(",")}`),
-    renderCustomMessage: (
-      _id,
-      _type,
-      _payload,
-      onUpdate,
-      onComplete,
-      onError,
-    ) => {
+    publishChatAction: (action) => log.push(`chat:${action.join(",")}`),
+    publishRendererAction: (item) => log.push(`renderer:${item.join(",")}`),
+    render: (_request, onUpdate, onComplete, onError) => {
       onStart?.({ update: onUpdate, complete: onComplete, fail: onError });
       return fakeSubscription(log);
     },
   };
 }
 
-describe("worker chat entry points", () => {
-  it("answers publishChatAction for an unknown core instead of throwing", () => {
-    const messages: WorkerToMain[] = [];
-    handlePublishChatAction(
-      undefined,
-      (msg) => messages.push(msg),
-      4,
-      9,
-      new Uint8Array([1]),
-    );
-    expect(messages).toEqual([
-      {
-        kind: "publishChatActionResponse",
-        requestId: 9,
-        ok: false,
-        error: "publishChatAction received for unknown core 4",
-      },
-    ]);
-  });
-
-  it("reports a core that refuses the action rather than dropping it", () => {
-    const messages: WorkerToMain[] = [];
-    const core = fakeCore([]);
-    core.publishChatAction = () => {
-      throw new Error("Denied");
-    };
-
-    handlePublishChatAction(
-      core,
-      (msg) => messages.push(msg),
-      1,
-      3,
-      new Uint8Array([7]),
-    );
-
-    expect(messages).toEqual([
-      {
-        kind: "publishChatActionResponse",
-        requestId: 3,
-        ok: false,
-        error: "Denied",
-      },
-    ]);
-  });
-
+describe("worker render subscription", () => {
   it("streams render items and releases the subscription on complete", () => {
     const messages: WorkerToMain[] = [];
     const log: string[] = [];
@@ -103,15 +58,13 @@ describe("worker chat entry points", () => {
       fail: (reason: string) => void;
     };
 
-    handleRenderCustomMessageStart(
+    handleRenderStart(
       fakeCore(log, (e) => (emit = e)),
       (msg) => messages.push(msg),
       renders,
       1,
       5,
-      "message",
-      "vote",
-      new Uint8Array([1]),
+      renderRequest,
     );
     expect(renders.has(5)).toBe(true);
 
@@ -119,16 +72,35 @@ describe("worker chat entry points", () => {
     emit.complete();
 
     expect(messages).toEqual([
-      {
-        kind: "renderCustomMessageItem",
-        renderId: 5,
-        node: new Uint8Array([2, 3]),
-      },
-      { kind: "renderCustomMessageComplete", renderId: 5 },
+      { kind: "renderItem", renderId: 5, node: new Uint8Array([2, 3]) },
+      { kind: "renderComplete", renderId: 5 },
     ]);
     // Completing must free the wasm handle, not just stop delivering.
     expect(log).toEqual(["cancel", "free"]);
     expect(renders.has(5)).toBe(false);
+  });
+
+  it("reports a render for an unknown core as a render error", () => {
+    const messages: WorkerToMain[] = [];
+    const renders: RenderSubscriptions = new Map();
+
+    handleRenderStart(
+      undefined,
+      (msg) => messages.push(msg),
+      renders,
+      7,
+      2,
+      renderRequest,
+    );
+
+    expect(messages).toEqual([
+      {
+        kind: "renderError",
+        renderId: 2,
+        error: "render received for unknown core 7",
+      },
+    ]);
+    expect(renders.size).toBe(0);
   });
 
   it("cancels only the renders belonging to the disposed core", () => {
@@ -155,6 +127,7 @@ describe("worker chat entry points", () => {
 
     expect(log).toEqual(["cancel", "free"]);
   });
+
   it("reports a declined render as an error, not a completion", () => {
     const messages: WorkerToMain[] = [];
     const log: string[] = [];
@@ -165,15 +138,13 @@ describe("worker chat entry points", () => {
       fail: (reason: string) => void;
     };
 
-    handleRenderCustomMessageStart(
+    handleRenderStart(
       fakeCore(log, (e) => (emit = e)),
       (msg) => messages.push(msg),
       renders,
       1,
       6,
-      "message",
-      "vote",
-      new Uint8Array(),
+      renderRequest,
     );
 
     emit.update(new Uint8Array([9]));
@@ -181,13 +152,9 @@ describe("worker chat entry points", () => {
 
     // The partial tree must be followed by an error, never a completion.
     expect(messages).toEqual([
+      { kind: "renderItem", renderId: 6, node: new Uint8Array([9]) },
       {
-        kind: "renderCustomMessageItem",
-        renderId: 6,
-        node: new Uint8Array([9]),
-      },
-      {
-        kind: "renderCustomMessageError",
+        kind: "renderError",
         renderId: 6,
         error: "product interrupted the host-initiated subscription",
       },

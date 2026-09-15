@@ -13,6 +13,14 @@ uniffi = "0.32.0"
 missing_docs = "warn"
 unsafe_code = "deny"
 
+# Line tables carry the file and line a failing test's backtrace needs, without
+# the variable-level DWARF only an attached debugger reads. Measured on a cold
+# `cargo test -p truapi-server --all-features --lib`: 41.7s and 1.9G of
+# artifacts with full debuginfo, 31.9s and 1.6G with line tables. Warm rebuilds
+# are unaffected. Step-through debugging with locals wants `debug = true` here.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = "z"
 lto = "fat"

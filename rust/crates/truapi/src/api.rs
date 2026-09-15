@@ -11,6 +11,7 @@ pub mod notifications;
 pub mod payment;
 pub mod permissions;
 pub mod preimage;
+pub mod renderer;
 pub mod resource_allocation;
 pub mod signing;
 pub mod statement_store;
@@ -28,6 +29,7 @@ pub use notifications::Notifications;
 pub use payment::Payment;
 pub use permissions::Permissions;
 pub use preimage::Preimage;
+pub use renderer::Renderer;
 pub use resource_allocation::ResourceAllocation;
 pub use signing::Signing;
 pub use statement_store::StatementStore;
@@ -47,6 +49,7 @@ pub trait TrUApi:
     + Payment
     + Permissions
     + Preimage
+    + Renderer
     + ResourceAllocation
     + Signing
     + StatementStore
@@ -69,6 +72,7 @@ impl<T> TrUApi for T where
         + Payment
         + Permissions
         + Preimage
+        + Renderer
         + ResourceAllocation
         + Signing
         + StatementStore

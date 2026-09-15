@@ -28,7 +28,10 @@ use crate::host_logic::dotns_gateway::{
 
 /// Budget for one step of a lookup: opening the follow, one storage read, one
 /// contract view. A step that stalls this long is not going to answer.
+#[cfg(not(test))]
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const OPERATION_TIMEOUT: Duration = Duration::from_millis(100);
 /// Budget for the best-block hash the follow opens on.
 const BEST_BLOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -58,7 +61,7 @@ impl<'a> DotnsLookup<'a> {
         let genesis_hash = asset_hub_chain_genesis_hash.to_vec();
         let lookup_id = DOTNS_LOOKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let follow_id = format!("truapi:dotns:{lookup_id}:{label}");
-        let mut follow = chain.remote_chain_head_follow(
+        let mut follow = chain.remote_chain_head_follow_items(
             follow_id.clone(),
             RemoteChainHeadFollowRequest {
                 genesis_hash: genesis_hash.clone(),

@@ -342,6 +342,22 @@ public protocol HostBridge: AnyObject, Sendable {
     /// per chain role. Invoked on the dispatcher thread; must return promptly.
     func supportedChains() throws -> HostChainSet
 
+    /// Observe demand on a product's worker crossing zero. `.start` means run
+    /// the worker now, `.stop` that nothing wants it any more. Every
+    /// transition arrives here in ledger order, the ones the app asks for by
+    /// taking a reference of its own included.
+    ///
+    /// Demand is runtime-wide, so the core invokes this only on the bridge
+    /// ``TrUAPIHostRuntime/init(bridge:runtimeConfig:)`` was given, never on
+    /// the per-execution bridge passed to
+    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:)``.
+    /// Can arrive on any thread, including synchronously on the calling
+    /// thread during `acquireWorker`/`releaseWorker`, often the main thread
+    /// and re-entrantly: hand the transition off rather than blocking on
+    /// another thread from inside it. Defaults to a no-op for a host that
+    /// runs no workers.
+    func workerDemandChanged(productId: String, transition: WorkerTransition)
+
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
 
@@ -411,6 +427,7 @@ public extension HostBridge {
         )
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
+    func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
 }
@@ -477,6 +494,10 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 
     func onCoreLog(marker: String, detail: String) {
         bridge.onCoreLog(marker: marker, detail: detail)
+    }
+
+    func workerDemandChanged(productId: String, transition: WorkerTransition) {
+        bridge.workerDemandChanged(productId: productId, transition: transition)
     }
 
     func navigateTo(url: String) async throws {
@@ -703,6 +724,21 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         inner.disconnect()
     }
 
+    /// Take one reference on the product's worker for a modality holder that
+    /// is on screen or in flight. The first one reports `.start` to
+    /// ``HostBridge/workerDemandChanged(productId:transition:)``, which is
+    /// where the host starts the worker. Pair every call with one
+    /// ``releaseWorker(productId:)``.
+    public func acquireWorker(productId: String) {
+        inner.acquireWorker(productId: productId)
+    }
+
+    /// Release one reference. The last one reports `.stop`, after which the
+    /// host may stop the worker. Releasing with none held is a no-op.
+    public func releaseWorker(productId: String) {
+        inner.releaseWorker(productId: productId)
+    }
+
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
         try inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
     }
@@ -814,11 +850,8 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func stopWsBridge()
     func close()
     func publishChatAction(_ action: HostChatActionSubscribeItem) throws
-    func renderCustomMessage(
-        messageId: String,
-        messageType: String,
-        payload: Data
-    ) throws -> AsyncThrowingStream<CustomRendererNode, Error>
+    func render(_ request: ProductRendererRenderRequest) throws -> AsyncThrowingStream<RendererNode, Error>
+    func publishRendererAction(_ item: HostRendererActionSubscribeItem) throws
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
     ) async throws -> PermissionAuthorizationStatus
@@ -871,19 +904,16 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         try inner.publishChatAction(action: action)
     }
 
-    public func renderCustomMessage(
-        messageId: String,
-        messageType: String,
-        payload: Data
-    ) throws -> AsyncThrowingStream<CustomRendererNode, Error> {
-        try customRendererStream { observer in
-            try inner.renderCustomMessage(
-                messageId: messageId,
-                messageType: messageType,
-                payload: payload,
-                observer: observer
-            )
+    public func render(
+        _ request: ProductRendererRenderRequest
+    ) throws -> AsyncThrowingStream<RendererNode, Error> {
+        try rendererStream { observer in
+            try inner.render(request: request, observer: observer)
         }
+    }
+
+    public func publishRendererAction(_ item: HostRendererActionSubscribeItem) throws {
+        try inner.publishRendererAction(item: item)
     }
 
     public func permissionAuthorizationStatus(
@@ -955,13 +985,13 @@ private func hostRejectionReason(_ error: Error) -> String {
 /// whole failed statement.
 private let hostRejectionReasonMaxCharacters = 256
 
-private func customRendererStream(
-    _ subscribe: (CustomRendererStreamObserver) throws -> NativeCustomRendererSubscription
-) throws -> AsyncThrowingStream<CustomRendererNode, Error> {
+private func rendererStream(
+    _ subscribe: (RendererStreamObserver) throws -> NativeRendererSubscription
+) throws -> AsyncThrowingStream<RendererNode, Error> {
     let (stream, continuation) = AsyncThrowingStream.makeStream(
-        of: CustomRendererNode.self
+        of: RendererNode.self
     )
-    let observer = CustomRendererStreamObserver(continuation: continuation)
+    let observer = RendererStreamObserver(continuation: continuation)
     let subscription = try subscribe(observer)
     continuation.onTermination = { @Sendable _ in
         subscription.cancel()
@@ -969,14 +999,14 @@ private func customRendererStream(
     return stream
 }
 
-private final class CustomRendererStreamObserver: NativeCustomRendererObserver, @unchecked Sendable {
-    private let continuation: AsyncThrowingStream<CustomRendererNode, Error>.Continuation
+private final class RendererStreamObserver: NativeRendererObserver, @unchecked Sendable {
+    private let continuation: AsyncThrowingStream<RendererNode, Error>.Continuation
 
-    init(continuation: AsyncThrowingStream<CustomRendererNode, Error>.Continuation) {
+    init(continuation: AsyncThrowingStream<RendererNode, Error>.Continuation) {
         self.continuation = continuation
     }
 
-    func onUpdate(node: CustomRendererNode) {
+    func onUpdate(node: RendererNode) {
         continuation.yield(node)
     }
 
@@ -987,12 +1017,12 @@ private final class CustomRendererStreamObserver: NativeCustomRendererObserver, 
     /// The product could not serve the render, so the last tree yielded is
     /// partial. Finishing with an error keeps that distinct from a clean end.
     func onError(reason: String) {
-        continuation.finish(throwing: CustomRendererStreamError(reason: reason))
+        continuation.finish(throwing: RendererStreamError(reason: reason))
     }
 }
 
 /// A render the product declined or could not encode.
-public struct CustomRendererStreamError: Error, CustomStringConvertible {
+public struct RendererStreamError: Error, CustomStringConvertible {
     /// Why the product ended the render.
     public let reason: String
 
