@@ -5,7 +5,73 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  # Only what the iOS app is built from. The app itself, the crates its bindings
+  # are generated from, the manifests pinning the toolchain, and this workflow
+  # with the action it calls. A change to docs, TypeScript or an unrelated crate
+  # cannot affect the app, and three macOS jobs is too much to spend finding
+  # that out.
+  #
+  # The core crates are here because neither binding set is committed, so a
+  # UniFFI surface change leaves no hosts/ios diff to key on. That is the same
+  # reasoning as the sdk_swift gate in ci.yml, which is the list to keep this in
+  # step with.
   pull_request:
+    paths:
+      - "hosts/ios/**"
+      - "ios/**"
+      - "Package.swift"
+      - "Makefile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "js/container/**"
+      # The bootstrap runs npm ci before codegen, and codegen shells out to
+      # scripts beyond codegen.sh itself, regen-explorer-versions.mjs and
+      # bundle-truapi-dts.mjs, so the whole directory and both npm manifests
+      # are inputs to this job.
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "rust/crates/truapi/**"
+      - "rust/crates/truapi-codegen/**"
+      - "rust/crates/truapi-macros/**"
+      - "rust/crates/truapi-platform/**"
+      - "rust/crates/truapi-server/**"
+      - "rust/crates/truapi-provider/**"
+      - "rust/crates/uniffi-bindgen-cli/**"
+      - ".github/workflows/ios-pr.yml"
+      - ".github/actions/bootstrap-ios-core/**"
+  # Also on the default branch, which is the only way the SPM cache becomes
+  # useful. A cache written during a pull request is scoped to that pull
+  # request's ref, so nothing else can read it. Only a run on the default
+  # branch writes one every later pull request restores from, and this
+  # workflow never ran there, so every run resolved 27 local packages and the
+  # remote graph from cold.
+  push:
+    branches: [main]
+    paths:
+      - "hosts/ios/**"
+      - "ios/**"
+      - "Package.swift"
+      - "Makefile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "js/container/**"
+      # The bootstrap runs npm ci before codegen, and codegen shells out to
+      # scripts beyond codegen.sh itself, regen-explorer-versions.mjs and
+      # bundle-truapi-dts.mjs, so the whole directory and both npm manifests
+      # are inputs to this job.
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "rust/crates/truapi/**"
+      - "rust/crates/truapi-codegen/**"
+      - "rust/crates/truapi-macros/**"
+      - "rust/crates/truapi-platform/**"
+      - "rust/crates/truapi-server/**"
+      - "rust/crates/truapi-provider/**"
+      - "rust/crates/uniffi-bindgen-cli/**"
+      - ".github/workflows/ios-pr.yml"
+      - ".github/actions/bootstrap-ios-core/**"
   # Kept alongside pull_request so a build can be reproduced on demand without
   # pushing a commit.
   workflow_dispatch:
@@ -33,6 +99,7 @@ env:
 
 jobs:
   check-skip-label:
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     outputs:
       skip: ${{ steps.check_skip.outputs.skip }}
@@ -47,10 +114,69 @@ jobs:
             const skip = pr ? labels.includes('skip-ci') : false;
             core.setOutput('skip', skip.toString());
 
-  build:
+  # The app jobs all need the core generated from this commit, and it is the
+  # same output for each of them, so it is built once here and carried across.
+  # Built on the larger runner because it is Rust compilation and CPU bound:
+  # the same work measured 11m13s on macos-26 and 5m44s on macos-26-xlarge.
+  core:
+    name: Build the in-tree core
     needs: check-skip-label
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
-    runs-on: macos-26
+    runs-on: macos-26-xlarge
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      # The xcframework targets iOS, so this needs the SDK.
+      - name: Setup iOS Environment
+        uses: ./hosts/ios/.github/actions/install
+
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
+
+      # Through tar rather than the raw paths, so the xcframework keeps its
+      # layout and executable bits, which upload-artifact does not preserve.
+      #
+      # The provider has no Binaries here on purpose: ios-bootstrap generates its
+      # Swift bindings but not its xcframework, and the root manifest resolves
+      # that binary from the published release unless
+      # TRUAPI_PROVIDER_USE_LOCAL_BINARY is set. Each path is checked, so a
+      # bootstrap that quietly stops producing one fails here rather than in
+      # three app jobs.
+      - name: Package the generated core
+        run: |
+          set -euo pipefail
+          paths=(
+            ios/truapi-host/Sources
+            ios/truapi-host/Binaries
+            ios/truapi-provider/Sources
+          )
+          for path in "${paths[@]}"; do
+            if [ ! -e "$path" ]; then
+              echo "::error::$path was not generated, so the core is incomplete"
+              exit 1
+            fi
+          done
+          tar -czf "$RUNNER_TEMP/ios-core.tgz" "${paths[@]}"
+          ls -lh "$RUNNER_TEMP/ios-core.tgz"
+
+      # github.run_id is stable across attempts, so a rerun uploads the same
+      # name. Overwriting rather than adding the attempt to the name, because
+      # "re-run failed jobs" does not rerun core, and the app jobs would then
+      # look for a name that was never uploaded.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-core.tgz
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  build:
+    needs: [check-skip-label, core]
+    if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
+    timeout-minutes: 30
+    runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@v6
 
@@ -60,11 +186,18 @@ jobs:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
-      # The app resolves the core from this tree, and the core's generated
-      # bindings are gitignored, so the package graph cannot resolve until
-      # they exist.
-      - name: Bootstrap the in-tree core
-        uses: ./.github/actions/bootstrap-ios-core
+      - name: Restore the in-tree core
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the generated core
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/ios-core.tgz"
+          test -d ios/truapi-host/Binaries/truapi_server.xcframework
+          test -d ios/truapi-host/Sources/truapi_serverFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -151,22 +284,28 @@ jobs:
   # came from. A build that cannot say is a failure, not something to publish.
   preview:
     name: Simulator preview build
-    needs: check-skip-label
+    needs: [check-skip-label, core]
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
     runs-on: macos-26-xlarge
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
 
-      # Simulator slice only here, unlike the build job, which archives for a
-      # device through gym and needs both.
-      - name: Bootstrap the in-tree core
-        uses: ./.github/actions/bootstrap-ios-core
+      - name: Restore the in-tree core
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          sim-only: "true"
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the generated core
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/ios-core.tgz"
+          test -d ios/truapi-host/Binaries/truapi_server.xcframework
+          test -d ios/truapi-host/Sources/truapi_serverFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -233,8 +372,9 @@ jobs:
           if-no-files-found: error
 
   test:
-    needs: check-skip-label
+    needs: [check-skip-label, core]
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
+    timeout-minutes: 30
     runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@v6
@@ -242,11 +382,18 @@ jobs:
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
 
-      # The app resolves the core from this tree, and the core's generated
-      # bindings are gitignored, so the package graph cannot resolve until
-      # they exist.
-      - name: Bootstrap the in-tree core
-        uses: ./.github/actions/bootstrap-ios-core
+      - name: Restore the in-tree core
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ios-core-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the generated core
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/ios-core.tgz"
+          test -d ios/truapi-host/Binaries/truapi_server.xcframework
+          test -d ios/truapi-host/Sources/truapi_serverFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
