@@ -530,10 +530,10 @@ fixture rather than a boundary.
 So the honest status is **"connects; submission needs an allowance"**, not
 "needs chain support" -- a smaller and differently-shaped gap than it looked.
 
-## 18. The tx-demo submit stall: two wrong leads, and what the evidence supports
+## 18. The tx-demo submit stall: three wrong leads, and what survives
 
-Two confident diagnoses died here. Recording them because both were built on
-evidence that looked stronger than it was.
+Three confident diagnoses died here. Recording them because each was built on
+evidence that looked stronger than it was, and the same reading error recurs.
 
 **Wrong lead 1: the chain proxy.** The mock pooled one WebSocket per `rpcUrl`
 while giving each lease its own reader, so three proxied chains numbered their
@@ -567,6 +567,13 @@ write the mock answers. And step 4 is **synchronous**: `current_session` at
 hang. The signing host's own `create_transaction` (`signing_host.rs:778`) raises
 no confirmation at all, so a review can only come from step 5.
 
+**Wrong lead 3: transaction broadcast.** `broadcast_transaction`
+(`capabilities/chain.rs:217`) is the only `require_chain_submit` caller with no
+confirmation after it and an unbounded chain await immediately following, which
+made it the only shape fitting "permission approved, no review, real hang". It
+did not run either -- see the host-call count below. It was the best available
+explanation of an event that never happened.
+
 **The permission log cannot attribute a call.** `require_chain_submit` has seven
 call sites -- `capabilities/signing.rs` at :48, :121, :188, :278, :347, :407 and
 `capabilities/chain.rs:227` (transaction broadcast). A single
@@ -590,30 +597,50 @@ at `Submitting`, so an await never resolved -- a swallowed error is ruled out.
 same reviews. "0 confirmations and 0 signing requests" is one measurement, not
 two agreeing ones. Zero reviews implies zero signing entries trivially.
 
-**The one site that fits.** `broadcast_transaction`
-(`capabilities/chain.rs:217`) is the only `require_chain_submit` caller with no
-confirmation after it and an unbounded chain await immediately following:
-`require_chain_submit`, then `remote_chain_transaction_broadcast(...).await`.
-Every `signing.rs` site instead confirms first, so it would leave a review or
-return an error the product logs. That makes broadcast the only known shape
-consistent with ChainSubmit approved + zero reviews + a real hang.
+**Nothing reaches the host after the click.** `getHostCallCount()` is 18 before
+and 18 after, `getSentRpc` shows 0 transaction requests out of 18, and there are
+no page errors. So no host callback runs at all once the button is pressed.
 
-The tension left: broadcast implies a transaction was already signed, which
-needs `create_transaction`, which would have left a review. Something in that
-chain is not what it appears, and settling it needs the wire between product and
-core -- which method was actually invoked -- not another host-side log.
+That is conclusive rather than suggestive, because a permission check cannot be
+free: `peek_stored` (`host_logic/permissions.rs:489`) calls
+`storage.read_core_storage(...)` with no in-memory cache in front of it -- the
+"cached" decision lives in core storage and is read through the host every time
+(the `HashMap` at :530 is a test double). `coreStorage` is one of the namespaces
+`countCallsIn` wraps (`create-mock-host.ts:587`), so any of the seven
+`require_chain_submit` sites would have moved the counter. None did.
 
-**Unreconciled, and it matters.** Section 16 records `tx-demo` reaching the
-chain and failing with `Invalid.Payment`, which requires a transaction to have
-been constructed, confirmed and broadcast. That cannot coexist with a run
-recording zero confirmations. Either the runs differ in some way nobody has
-isolated, or one observation is wrong. Do not treat either as settled until
-that is resolved.
+**So the `ChainSubmit` entry came from boot, not from the click.** There was
+never a post-click permission event to explain. Every hypothesis above --
+construction, and then broadcast -- was built to explain an artefact. Note
+particularly that `getHostCallCount` counts namespace members only, so a chain
+connection's `send()` is not counted; `getSentRpc` is what covers that, and it
+is also empty of transaction traffic.
 
-**Method note.** `getSentRpc` killed both hypotheses within an hour of
-existing -- the first by showing no transaction traffic after the proxy fix, the
-second by making "which method ran" answerable at all. It was built because we
-hit something we could not see. Build the instrument before the theory.
+What survives: after the click the product awaits something that never resolves
+and never reaches the core. Combined with the product logging any error it
+receives, that puts the fault product-side or in the product-core transport,
+before any host callback. It is outside the test host.
+
+**Pre-funding and post-funding are different experiments.** Section 16 records
+`tx-demo` constructing, confirming and broadcasting a transaction that the chain
+then rejected for fees. That run predates the accounts being funded; every run
+since is post-funding, and the branch has moved too. Neither observation is
+wrong and they should not be reconciled as if one must be. The honest finding is
+the transition itself: funding moved the failure *earlier*, from a chain-side
+fee rejection to a flow that never reaches the host. That is strange, and it is
+strange in a way nobody has explained.
+
+**Method note.** Every one of these leads died to an instrument, not to an
+argument. `getSentRpc` killed the first by showing no transaction traffic after
+the proxy fix; `getHostCallCount` killed the third by showing the click produced
+no host activity at all. Both were built because we hit something we could not
+see, and both paid for themselves within a day.
+
+The recurring error is worth naming: three times we read a log as evidence of
+something it could not report. `ChainSubmit` names a permission, not a caller.
+`getSigningLog` is a view of `reviews`, not a second source. A boot-time entry
+is not a click-time event. Before a log is used to localise a fault, check what
+it is physically capable of distinguishing.
 
 ## Working notes
 
