@@ -586,49 +586,66 @@ method ran, not *which*. Both wrong leads rested on reading it as if it named
 configured answer immediately, so a recorded review cannot be lost to a park.
 An empty log means the call never arrived.
 
-**It is a genuine hang.** `tx-demo`'s handler wraps the flow in
-`try`/`catch`/`finally` and writes `remark failed: ...` on both a returned error
-and a throw, then re-enables the controls (`examples/tx-demo/src/main.ts:129`).
-A `Rejected` return would therefore have left a failure line. The log stops dead
-at `Submitting`, so an await never resolved -- a swallowed error is ruled out.
+**It is not a hang, and it is not silent.** `submitAndWatch` carries a
+`DEFAULT_TIMEOUT_MS` of 300_000 (`packages/tx/src/submit.ts:19`), armed at :108
+*before* `signSubmitAndWatch` is called, so signing and submission both sit
+inside the timed region; the only await outside it, `resolveTransaction`
+(:30-36), cannot park for a plain extrinsic. Every probe before this one waited
+45-90 seconds, and the suite's own assertion gives up at 90s. We were measuring
+a five-minute budget with a one-minute stopwatch.
 
-**The signing log is not a second witness.** `getSigningLog()` is
-`reviews.flatMap(...)` (`create-mock-host.ts:816`) -- a filtered view of the
-same reviews. "0 confirmations and 0 signing requests" is one measurement, not
-two agreeing ones. Zero reviews implies zero signing entries trivially.
+Run past it and the flow ends on its own, at 300s to the second:
 
-**Nothing reaches the host after the click.** `getHostCallCount()` is 18 before
-and 18 after, `getSentRpc` shows 0 transaction requests out of 18, and there are
-no page errors. So no host callback runs at all once the button is pressed.
+```
+[2:53:29] Submitting System.remark("Hello from tx-demo")…
+[2:58:29] remark: error
+[2:58:29] remark failed: Transaction timed out after 300s.
+```
 
-That is conclusive rather than suggestive, because a permission check cannot be
-free: `peek_stored` (`host_logic/permissions.rs:489`) calls
-`storage.read_core_storage(...)` with no in-memory cache in front of it -- the
-"cached" decision lives in core storage and is read through the host every time
-(the `HashMap` at :530 is a test double). `coreStorage` is one of the namespaces
-`countCallsIn` wraps (`create-mock-host.ts:587`), so any of the seven
-`require_chain_submit` sites would have moved the counter. None did.
+**What the transport actually does.** Sampling `getSentRpc` against a baseline
+taken before the click, rather than only after it:
 
-**So the `ChainSubmit` entry came from boot, not from the click.** There was
-never a post-click permission event to explain. Every hypothesis above --
-construction, and then broadcast -- was built to explain an artefact. Note
-particularly that `getHostCallCount` counts namespace members only, so a chain
-connection's `send()` is not counted; `getSentRpc` is what covers that, and it
-is also empty of transaction traffic.
+| | rpc | new methods |
+| --- | --- | --- |
+| baseline | 3 | `chainHead_v1_follow` x3 (one per chain) |
+| t+30s | 18 | `header` x3, `storage` x6, `call` x6 |
+| t+60s, t+120s | 18 | -- nothing -- |
+| t+240s | 46 | `unpin` x21, `call` x2, `chainSpec_*` x3, `unfollow`, `follow` |
+| t+330s | 46 | -- nothing -- |
 
-What survives: after the click the product awaits something that never resolves
-and never reaches the core. Combined with the product logging any error it
-receives, that puts the fault product-side or in the product-core transport,
-before any host callback. It is outside the test host.
+So the submit is not inert. polkadot-api issues its pre-signing reads --
+header for mortality, storage for the account nonce, runtime calls for
+metadata -- and then stalls with them outstanding. At around t+240s the
+chainHead subscription is torn down and rebuilt (`unfollow`, 21 `unpin`, a fresh
+`follow`), and the submit never resumes across that rebuild. It just runs out
+the clock.
+
+**The signer is never invoked.** Reviews stay at 0 for the whole run, so
+`confirm_user_action` never fires and `create_transaction` never runs. The fault
+is upstream of signing, in the chain reads. Permissions stay at 1 for the whole
+run too -- and that 1 is present in the BASELINE, before the click. The
+`ChainSubmit` entry every earlier theory was built on is a boot artefact. There
+was never a post-click permission event to explain.
+
+**Corrections to earlier readings, including the previous version of this
+section.** "Never reaches the host" was wrong: 43 RPC requests go out after the
+click. "A genuine hang" was wrong: the SDK's own timeout fires and the product
+reports it. And a probe that sampled only after the click reported `18 total`,
+which is exactly the t+30s plateau -- a pause read as a terminus.
 
 **Pre-funding and post-funding are different experiments.** Section 16 records
-`tx-demo` constructing, confirming and broadcasting a transaction that the chain
-then rejected for fees. That run predates the accounts being funded; every run
-since is post-funding, and the branch has moved too. Neither observation is
-wrong and they should not be reconciled as if one must be. The honest finding is
-the transition itself: funding moved the failure *earlier*, from a chain-side
-fee rejection to a flow that never reaches the host. That is strange, and it is
-strange in a way nobody has explained.
+`tx-demo` constructing, confirming and broadcasting a transaction the chain then
+rejected for fees. That run predates the accounts being funded. Neither
+observation is wrong and they should not be reconciled as if one must be, but
+the earlier one did reach signing and this one does not get near it. What
+changed between them is not established.
+
+**Where this leaves it.** A named, reproducible symptom rather than a mystery:
+pre-signing chain reads go out over the proxied live chain and are never
+satisfied, and the chainHead follow is rebuilt mid-flight. Whether that is the
+proxy, the endpoint, or subxt's recovery is not determined here. It is not the
+socket pooling -- that is fixed and its isolation is mutation-proved -- and not
+the test host's platform seam, which is never reached.
 
 **Method note.** Every one of these leads died to an instrument, not to an
 argument. `getSentRpc` killed the first by showing no transaction traffic after
@@ -636,11 +653,17 @@ the proxy fix; `getHostCallCount` killed the third by showing the click produced
 no host activity at all. Both were built because we hit something we could not
 see, and both paid for themselves within a day.
 
-The recurring error is worth naming: three times we read a log as evidence of
-something it could not report. `ChainSubmit` names a permission, not a caller.
-`getSigningLog` is a view of `reviews`, not a second source. A boot-time entry
-is not a click-time event. Before a log is used to localise a fault, check what
-it is physically capable of distinguishing.
+The recurring error is worth naming, because it happened four times.
+`ChainSubmit` names a permission, not a caller. `getSigningLog` is a view of
+`reviews`, not a second source. A boot-time entry is not a click-time event. A
+plateau is not a terminus. Each time a measurement was read as answering a
+question it could not answer. Before a log localises a fault, check what it can
+physically distinguish -- and sample it against a baseline, not once at the end.
+
+The instruments also have to exist where they are used. `getHostCallCount` is on
+`MockHost` but is not exposed on the Playwright fixture, so a host-call figure
+quoted from a fixture-level probe has no source behind it. Either expose it or
+stop citing it.
 
 ## Working notes
 
