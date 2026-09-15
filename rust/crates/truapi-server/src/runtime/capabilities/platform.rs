@@ -312,11 +312,13 @@ impl Worker for ProductRuntimeHost {
         request: HostWorkerEndOperationRequest,
     ) -> Result<HostWorkerEndOperationResponse, CallError<HostWorkerEndOperationError>> {
         let HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }) = request;
-        self.platform
-            .end_operation(&self.product, id)
-            .await
-            .map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))?;
+        let ended = self.platform.end_operation(&self.product, id).await;
+        // The product has declared the operation over, so the core stops
+        // counting it whatever the host made of the call. A host that dropped
+        // the operation and still failed would otherwise leave demand standing
+        // with nothing left able to end it, and a retry releases nothing.
         self.release_worker_for_operation(id);
+        ended.map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))?;
         Ok(HostWorkerEndOperationResponse::V1)
     }
 }

@@ -2672,6 +2672,122 @@ fn ending_an_operation_twice_releases_only_the_demand_it_held() {
     );
 }
 
+/// Records every worker-demand transition the ledger reports.
+#[derive(Default)]
+struct DemandRecorder {
+    transitions: Mutex<Vec<(String, crate::host_logic::worker::WorkerTransition)>>,
+}
+
+impl DemandRecorder {
+    fn seen(&self) -> Vec<(String, crate::host_logic::worker::WorkerTransition)> {
+        self.transitions
+            .lock()
+            .expect("demand recorder mutex poisoned")
+            .clone()
+    }
+}
+
+impl crate::host_logic::worker::WorkerDemandObserver for DemandRecorder {
+    fn worker_demand_changed(
+        &self,
+        product_id: &str,
+        transition: crate::host_logic::worker::WorkerTransition,
+    ) {
+        self.transitions
+            .lock()
+            .expect("demand recorder mutex poisoned")
+            .push((product_id.to_string(), transition));
+    }
+}
+
+#[test]
+fn tearing_down_a_connection_reports_the_stop_before_its_last_reference_goes() {
+    use crate::host_logic::worker::WorkerTransition;
+
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let recorder = Arc::new(DemandRecorder::default());
+    assert!(
+        host.services()
+            .worker_ledger
+            .install_demand_observer(recorder.clone())
+    );
+    let cx = CallContext::default();
+
+    futures::executor::block_on(host.begin_operation(
+        &cx,
+        HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label: None }),
+    ))
+    .expect("begin operation");
+
+    host.release_open_operations();
+
+    // A native reconnect drops the replaced connection's last reference only
+    // after the new one exists, so a stop deferred to that point would reach
+    // the host as a stop for the worker it had just restarted.
+    assert_eq!(
+        recorder.seen(),
+        vec![
+            ("myapp.dot".to_string(), WorkerTransition::Start),
+            ("myapp.dot".to_string(), WorkerTransition::Stop),
+        ],
+        "teardown reports the stop, rather than leaving it to the last Arc"
+    );
+
+    drop(host);
+
+    assert_eq!(
+        recorder.seen().len(),
+        2,
+        "the eventual drop has nothing left to report"
+    );
+}
+
+#[test]
+fn a_failed_end_still_drops_the_demand_the_operation_held() {
+    let platform = Arc::new(StubPlatform {
+        end_operation_error: Some("store unavailable"),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+    let ledger = &host.services().worker_ledger;
+
+    let HostWorkerBeginOperationResponse::V1(response) =
+        futures::executor::block_on(host.begin_operation(
+            &cx,
+            HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                label: None,
+            }),
+        ))
+        .expect("begin operation");
+    assert_eq!(ledger.count("myapp.dot"), 1);
+
+    let ended = futures::executor::block_on(host.end_operation(
+        &cx,
+        HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id: response.id }),
+    ));
+    assert!(
+        ended.is_err(),
+        "the host's failure still reaches the product"
+    );
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        0,
+        "the product declared the operation over, so the core stops counting it \
+         whatever the host made of the call"
+    );
+}
+
 #[test]
 fn dropping_a_connection_releases_the_demand_its_open_operations_held() {
     let platform = stub_platform();
