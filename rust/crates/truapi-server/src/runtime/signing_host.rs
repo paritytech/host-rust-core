@@ -540,7 +540,13 @@ impl SigningHost {
         &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<(v01::ProductAccountId, String), RingVrfError> {
+    ) -> Result<
+        (
+            v01::ProductAccountId,
+            crate::runtime::product_manifest::AuthorizedAccess,
+        ),
+        RingVrfError,
+    > {
         let access = crate::runtime::product_manifest::ring_vrf_key_access_granted(
             &self.services,
             self.platform.as_ref(),
@@ -550,10 +556,10 @@ impl SigningHost {
         .await?;
         Ok((
             v01::ProductAccountId {
-                dot_ns_identifier: access.owner,
+                dot_ns_identifier: access.owner.clone(),
                 derivation_index: handle.derivation_index.clone(),
             },
-            access.caller,
+            access,
         ))
     }
 
@@ -886,7 +892,7 @@ impl ProductAuthority for SigningHost {
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await
         {
-            Ok(access) => Some(access),
+            Ok(granted) => Some(granted),
             Err(RingVrfError::NotAllowlisted) => None,
             Err(err) => return Err(err),
         };
@@ -895,10 +901,9 @@ impl ProductAuthority for SigningHost {
         // attests are one VRF evaluation, so guarding only the proof would leave
         // the same bytes reachable through this read.
         let key_handle = match granted {
-            Some((key_handle, caller)) => {
+            Some((key_handle, access)) => {
                 crate::runtime::product_manifest::require_own_context(
-                    &caller,
-                    &key_handle,
+                    &access,
                     &request.payload.context,
                 )?;
                 key_handle
@@ -957,7 +962,7 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
-        let (key_handle, caller) = self
+        let (key_handle, access) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         // A grant lets the caller act with the owner's key in the caller's own
@@ -969,11 +974,7 @@ impl ProductAuthority for SigningHost {
         //
         // The owner's own calls are unaffected; only a cross-product caller is
         // held to its own context.
-        crate::runtime::product_manifest::require_own_context(
-            &caller,
-            &key_handle,
-            &request.payload.context,
-        )?;
+        crate::runtime::product_manifest::require_own_context(&access, &request.payload.context)?;
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
             .await?;
@@ -1082,7 +1083,7 @@ impl ProductAuthority for SigningHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         self.require_current_session(session)?;
-        let (key_handle, _caller) = self
+        let (key_handle, _access) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         let entropy = self
@@ -1924,6 +1925,96 @@ mod tests {
                 .len(),
             0,
             "and must not be asked to consent to its own account"
+        );
+    }
+
+    /// The context guard answers "is this the owner?" the way the gate does.
+    ///
+    /// The gate short-circuits on full normalized ids; comparing bare labels in
+    /// the guard made a caller `peopl.paseo` against a handle `peopl.dot` a
+    /// stranger to one and the owner to the other, so the grant was demanded and
+    /// the context then left unconstrained. Two functions answering one question
+    /// differently is what this change otherwise collapses.
+    #[test]
+    fn a_cross_network_namesake_is_not_treated_as_the_owner() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"peopl":["context"]}"#);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+
+        // `peopl.paseo` shares a label with the key's owner `peopl.dot` but is a
+        // different product, so the grant admits it and the context still binds.
+        let minted = futures::executor::block_on(authority.create_proof(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.paseo".to_string(),
+                payload: v01::HostAccountCreateProofRequest {
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: "bank.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location: ring.clone(),
+                    message: b"m".to_vec(),
+                },
+            },
+        ));
+        assert_eq!(
+            minted.err(),
+            Some(RingVrfError::NotAllowlisted),
+            "a namesake on another network is not the owner, so its context binds"
+        );
+    }
+
+    /// A grantee spelling its own context differently is still in its own context.
+    ///
+    /// `context.product_id` arrives straight off the request payload. Left raw it
+    /// was the one identity the gate had not normalized, so a grantee naming its
+    /// context `DIM2.DOT` was refused for the spelling rather than the scope.
+    #[test]
+    fn a_grantee_may_spell_its_own_context_differently() {
+        let platform = Arc::new(StubPlatform::default());
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+        let mint = |context: &str| {
+            futures::executor::block_on(authority.create_proof(
+                &CallContext::default(),
+                &session,
+                ProductRequest {
+                    calling_product_id: "dim2.dot".to_string(),
+                    payload: v01::HostAccountCreateProofRequest {
+                        key_handle: full_person_key_handle(),
+                        context: v01::ProductProofContext {
+                            product_id: context.to_string(),
+                            suffix: v01::DerivationIndex::Index(0),
+                        },
+                        ring_location: ring.clone(),
+                        message: b"m".to_vec(),
+                    },
+                },
+            ))
+        };
+        assert!(mint("dim2.dot").is_ok(), "control: the canonical spelling");
+        assert!(
+            mint("DIM2.DOT").is_ok(),
+            "the same context in another spelling is still the caller's own"
+        );
+        assert_eq!(
+            mint("bank.dot").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "and a third party's context is still refused"
         );
     }
 

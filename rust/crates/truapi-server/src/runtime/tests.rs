@@ -282,7 +282,6 @@ fn cache_manifest(platform: &StubPlatform, owner: &str, trusted: &str, age_secs:
     cache_manifest_entry(platform, owner, Some(test_manifest_json(trusted)), age_secs);
 }
 
-/// Seeds `owner`'s cached lookup, `None` standing for "publishes no manifest".
 /// Seed `owner`'s cached lookup with an explicit `fetched_at`, for tests about
 /// the freshness bound itself rather than about grants.
 fn cache_manifest_at(platform: &StubPlatform, owner: &str, trusted: &str, fetched_at_secs: u64) {
@@ -301,6 +300,7 @@ fn cache_manifest_at(platform: &StubPlatform, owner: &str, trusted: &str, fetche
     .expect("stub core storage accepts the entry");
 }
 
+/// Seeds `owner`'s cached lookup, `None` standing for "publishes no manifest".
 fn cache_manifest_entry(platform: &StubPlatform, owner: &str, json: Option<String>, age_secs: u64) {
     let entry = CachedManifest {
         fetched_at_secs: current_unix_secs().saturating_sub(age_secs),
@@ -500,8 +500,13 @@ fn a_proof_naming_the_caller_in_another_spelling_is_still_its_own() {
 
 #[test]
 fn an_unresolvable_product_cannot_reach_a_foreign_key() {
-    // An id that does not normalize is not the caller, so it takes the same
-    // refusal as a product that granted nothing.
+    // A key handle that does not normalize names no product, so it cannot be
+    // reached. Note what this asserts: the frontend answers `Unknown { reason }`
+    // here, naming the malformed handle, where the authority answers the uniform
+    // `NotAllowlisted` for the same input. That asymmetry is real and deliberate
+    // at this layer — the id came from this Host's own caller, not off the wire,
+    // so telling it that its handle is malformed discloses nothing it did not
+    // already send. The authority cannot say the same and does not.
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
     assert_eq!(
         proof_refusal(&host, "not a product"),

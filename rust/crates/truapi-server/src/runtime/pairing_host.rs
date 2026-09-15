@@ -1934,7 +1934,13 @@ impl PairingHost {
         &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
-    ) -> Result<(v01::ProductAccountId, String), RingVrfError> {
+    ) -> Result<
+        (
+            v01::ProductAccountId,
+            crate::runtime::product_manifest::AuthorizedAccess,
+        ),
+        RingVrfError,
+    > {
         let access = crate::runtime::product_manifest::ring_vrf_key_access_granted(
             &self.services,
             self.platform.as_ref(),
@@ -1944,10 +1950,10 @@ impl PairingHost {
         .await?;
         Ok((
             v01::ProductAccountId {
-                dot_ns_identifier: access.owner,
+                dot_ns_identifier: access.owner.clone(),
                 derivation_index: handle.derivation_index.clone(),
             },
-            access.caller,
+            access,
         ))
     }
 
@@ -2151,7 +2157,7 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountCreateProofRequest>,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
-        let (key_handle, caller) = self
+        let (key_handle, access) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         // A grant lets the caller act with the owner's key in the caller's own
@@ -2163,11 +2169,7 @@ impl PairingHost {
         //
         // The owner's own calls are unaffected; only a cross-product caller is
         // held to its own context.
-        crate::runtime::product_manifest::require_own_context(
-            &caller,
-            &key_handle,
-            &request.payload.context,
-        )?;
+        crate::runtime::product_manifest::require_own_context(&access, &request.payload.context)?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self
             .local_ring_vrf_entropy_for_ring(
@@ -2305,7 +2307,7 @@ impl PairingHost {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
-        let (key_handle, _caller) = self
+        let (key_handle, _access) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
         let private_session = self.current_private_session(session)?;

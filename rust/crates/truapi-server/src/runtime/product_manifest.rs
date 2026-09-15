@@ -226,14 +226,6 @@ pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> 
     .encode()
 }
 
-/// Scopes `target`'s published manifest grants `caller_id`.
-///
-/// A grant that cannot be established answers `false` whatever the reason — the
-/// product does not resolve, it published no manifest, the fetch failed, or the
-/// manifest names this caller with a narrower scope. Callers turn that into one
-/// refusal, so the outcome never reveals which of those it was. Failing closed
-/// also means an unreachable chain withdraws grants rather than assuming them.
-///
 /// Why a grant lookup did not admit the caller.
 ///
 /// The wire answers one refusal for every reason, deliberately. This is the
@@ -267,6 +259,13 @@ impl RefusedBecause {
     }
 }
 
+/// Scopes `target`'s published manifest grants `caller_id`.
+///
+/// A grant that cannot be established answers `false` whatever the reason — the
+/// product does not resolve, it published no manifest, the fetch failed, or the
+/// manifest names this caller with a narrower scope. Callers turn that into one
+/// refusal, so the outcome never reveals which of those it was. Failing closed
+/// also means an unreachable chain withdraws grants rather than assuming them.
 pub(crate) async fn grants_scope(
     services: &RuntimeServices,
     platform: &dyn Platform,
@@ -339,11 +338,6 @@ pub(crate) async fn scope_grant(
     Ok(())
 }
 
-/// Whether the user has already refused `caller_id` access to `target`'s account.
-///
-/// Reads the stored decision without raising a prompt: `NotDetermined` is not a
-/// refusal, and the prompt that would settle it belongs to the call the user
-/// actually made, not to a grant lookup.
 /// What the stored account-access decision says, keeping "unreadable" apart
 /// from "absent" so the caller can report which it was.
 enum StoredDecision {
@@ -355,6 +349,11 @@ enum StoredDecision {
     Unreadable,
 }
 
+/// Whether the user has already refused `caller_id` access to `target`'s account.
+///
+/// Reads the stored decision without raising a prompt: `NotDetermined` is not a
+/// refusal, and the prompt that would settle it belongs to the call the user
+/// actually made, not to a grant lookup.
 async fn stored_account_decision(
     platform: &dyn Platform,
     caller_id: &str,
@@ -399,25 +398,6 @@ async fn stored_account_decision(
     StoredDecision::Absent
 }
 
-/// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
-/// by the component that holds the key.
-///
-/// The caller owns the key, or the owner's published manifest grants the caller
-/// `context` and the user has not already refused, resolved against the chain
-/// here rather than accepted from the request. On a paired host the request
-/// arrives over the wire, and a verdict relayed by the caller would take the
-/// manifest out of this decision entirely: the peer would reach every handle on
-/// the device by setting one field, instead of only the handles a publisher
-/// really granted.
-///
-/// Returns the **normalized** owner it decided about. Callers must derive from
-/// that value rather than from the handle they were given: otherwise access is
-/// authorized about `peopl.dot` while the key is derived from whatever spelling
-/// arrived, and only a registry lookup miss separates the two.
-///
-/// The owner check runs first and costs nothing, so a product proving with its
-/// own key never touches the network. Everything after it is a cross-product
-/// access, and every reason it is refused answers the same way.
 /// Longest one grant lookup may spend resolving a manifest.
 ///
 /// A cold-cache resolution is several sequential Asset Hub operations, each
@@ -459,14 +439,28 @@ async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> 
 /// a proof: the alias and the proof come out of one VRF evaluation, so guarding
 /// the proof alone leaves the same bytes reachable through the read.
 pub(crate) fn require_own_context(
-    caller: &str,
-    key_handle: &v01::ProductAccountId,
+    access: &AuthorizedAccess,
     context: &v01::ProductProofContext,
 ) -> Result<(), RingVrfError> {
-    let caller_label = bare_product_label(caller);
-    if bare_product_label(&key_handle.dot_ns_identifier) != caller_label
-        && bare_product_label(&context.product_id) != caller_label
-    {
+    // The same ownership test the gate makes, on the same values. Comparing bare
+    // labels here instead would answer "is this the owner?" differently from the
+    // function two above: a caller `peopl.paseo` against a handle `peopl.dot`
+    // would be told to bring a grant by one and waved through as the owner by
+    // the other, leaving its context unconstrained.
+    if access.caller == access.owner {
+        return Ok(());
+    }
+    // Normalized like every other identity the gate decided about. This is the
+    // one that arrives straight off the request payload, so leaving it raw would
+    // refuse a grantee for spelling its own context `DIM2.paseo` — the hazard
+    // the gate exists to remove, one layer down. A context that names no product
+    // cannot be the caller's own, so it fails closed.
+    let Ok(context_id) = normalize_product_identifier(&context.product_id) else {
+        return Err(RingVrfError::NotAllowlisted);
+    };
+    // Compared by label, not by full id: the grant is to a product and a product
+    // is all its executables, so `dim2.dot` may act in `app.dim2.dot`'s context.
+    if bare_product_label(&context_id) != bare_product_label(&access.caller) {
         return Err(RingVrfError::NotAllowlisted);
     }
     Ok(())
@@ -486,6 +480,25 @@ pub(crate) struct AuthorizedAccess {
     pub(crate) owner: String,
 }
 
+/// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
+/// by the component that holds the key.
+///
+/// The caller owns the key, or the owner's published manifest grants the caller
+/// `context` and the user has not already refused, resolved against the chain
+/// here rather than accepted from the request. On a paired host the request
+/// arrives over the wire, and a verdict relayed by the caller would take the
+/// manifest out of this decision entirely: the peer would reach every handle on
+/// the device by setting one field, instead of only the handles a publisher
+/// really granted.
+///
+/// Returns the **normalized** owner it decided about. Callers must derive from
+/// that value rather than from the handle they were given: otherwise access is
+/// authorized about `peopl.dot` while the key is derived from whatever spelling
+/// arrived, and only a registry lookup miss separates the two.
+///
+/// The owner check runs first and costs nothing, so a product proving with its
+/// own key never touches the network. Everything after it is a cross-product
+/// access, and every reason it is refused answers the same way.
 pub(crate) async fn ring_vrf_key_access_granted(
     services: &RuntimeServices,
     platform: &dyn Platform,

@@ -187,12 +187,16 @@ impl Account for ProductRuntimeHost {
 
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
-        // The grant lookup runs *inside* `remote_authority_call`, not before it.
-        // It can reach dotNS on the Asset Hub, several sequential chain
-        // operations each bounded only by `OPERATION_TIMEOUT`; outside this
-        // scope that cost sits beyond the caller's deadline and ignores a
-        // cancel, so a product asking for a short timeout could wait far longer
-        // with no way to stop it. Inside, one deadline covers the whole call.
+        // The grant lookup runs *before* `remote_authority_call`, under a bound of
+        // its own. It can reach dotNS on the Asset Hub, several sequential chain
+        // operations each bounded only by `OPERATION_TIMEOUT`, so it needs a
+        // deadline either way. Running it inside would arm two timers on one
+        // budget, and whichever fired first would decide whether the caller sees
+        // the uniform refusal or a transport error naming a reason — making the
+        // refusal shape depend on scheduling. Decided here instead, a lookup that
+        // runs out of time answers `NotAllowlisted` like every other refusal on
+        // this path. The stages are bounded separately, so a caller asking for
+        // one second can wait up to two.
         //
         // The gate returns the normalized owner it decided about and the handle
         // is rebuilt from it, so authorization and key derivation agree by
@@ -337,9 +341,9 @@ impl Account for ProductRuntimeHost {
         };
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
-        // As in `create_account_proof`: inside the timeout and cancel scope, and
-        // the handle carried on is the normalized owner the gate decided about
-        // rather than the spelling the caller sent.
+        // As in `create_account_proof`: the lookup is bounded before the authority
+        // call rather than inside it, and the handle carried on is the normalized
+        // owner the gate decided about rather than the spelling the caller sent.
         let Some(owner) = self
             .bounded_cross_product_scope_target(
                 &request.key_handle.dot_ns_identifier,

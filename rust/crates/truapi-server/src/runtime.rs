@@ -440,16 +440,6 @@ impl ProductRuntimeHost {
             || dot_ns_identifier == product_id
     }
 
-    /// The normalized id to act on when the calling product may reach `target`
-    /// under `scope`, or `None` when it may not.
-    ///
-    /// The caller's own id is not a cross-product access and consults no grant.
-    /// Any other product must name this caller in its manifest's
-    /// `trustedProducts` with `scope` or `all`.
-    ///
-    /// Returning the id rather than a bare yes keeps one canonical spelling for
-    /// the callers that go on to address the target — the grant and whatever it
-    /// admits are then decided against the same string.
     /// Resolve the grant under the caller's deadline and cancellation, answering
     /// the uniform refusal if either fires.
     ///
@@ -491,6 +481,16 @@ impl ProductRuntimeHost {
         }
     }
 
+    /// The normalized id to act on when the calling product may reach `target`
+    /// under `scope`, or `None` when it may not.
+    ///
+    /// The caller's own id is not a cross-product access and consults no grant.
+    /// Any other product must name this caller in its manifest's
+    /// `trustedProducts` with `scope` or `all`.
+    ///
+    /// Returning the id rather than a bare yes keeps one canonical spelling for
+    /// the callers that go on to address the target — the grant and whatever it
+    /// admits are then decided against the same string.
     pub(crate) async fn cross_product_scope_target(
         &self,
         target: &str,
