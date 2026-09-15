@@ -698,11 +698,12 @@ Nothing published is on codec 2:
 
 A caret on a `0.x` version pins the minor, so `^0.13.1` cannot resolve 0.16.0.
 
-**product-sdk's suites pass here only because of a local override.** The
-`psdk-e2e` checkout's lock carries
-`'@parity/truapi': link:.../mock-report/js/packages/truapi`, which points at the
-0.16.0 worktree. Both halves are then codec 2. Nothing about that state is
-published, and a fresh clone of product-sdk would not reproduce it.
+**product-sdk main has since moved to `@parity/truapi` 0.16.0**, so it is on
+codec 2 and resolves the client from npm. Earlier runs in the `psdk-e2e`
+checkout leaned on a lock override pinning `@parity/truapi` at the 0.16.0
+worktree; that is no longer needed, and a run on pristine main without it is
+recorded below. What is still unpublished is `@parity/truapi-host` carrying
+`./testing`, which is the one substitution any local verification has to make.
 
 **What this means for the failed t3rminal trial.** t3rminal resolves
 `@parity/truapi` 0.7.0 through `product-sdk-host` 0.15.1 -- codec 1. Every host

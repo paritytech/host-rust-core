@@ -93,19 +93,24 @@ The patch applies cleanly to a fresh clone of product-sdk main, and product-sdk
 builds against the published `@parity/truapi` 0.16.0 once `createFakeHost` gains
 the two members the newer client requires.
 
-Adoption needs two releases, and the order matters. `@parity/truapi` 0.16.0 is
-the first release on **wire codec 2**, and the handshake refuses a mismatched
-codec, so a codec-1 product cannot talk to this host at all. Nothing published
-is on codec 2 yet: the latest `product-sdk-host` (0.19.1) pins
-`@parity/truapi` `^0.13.1`, and a caret on a `0.x` version pins the minor, so it
-cannot resolve 0.16.0. product-sdk's own suites pass here because this checkout
-links `@parity/truapi` at the 0.16.0 worktree — a local override, not a
-published state.
+**Wire codec 2 is why this matters now.** `@parity/truapi` 0.16.0 is the first
+release on codec 2, and the handshake refuses a mismatched codec. product-sdk
+main has moved to it; the published `product-sdk-host` (0.19.1) has not, pinning
+`^0.13.1`, which a caret on a `0.x` version cannot resolve past.
 
-So the sequence is: this branch merges; a `@parity/truapi-host` release carries
-the `./testing` subpath, which no published version has yet; product-sdk moves
-its catalog to `@parity/truapi` 0.16.0 and re-releases; and only then can a
-consumer adopt the fixture. Findings doc section 19 has the resolution table.
+`@parity/host-api-test-sdk` reimplements the protocol rather than running the
+core, and it reimplements codec 1. Against product-sdk main it fails the
+handshake: running main's nine suites on a clean checkout, unmigrated, gives
+**1 suite passing and 8 failing** — and the one is `cloud-storage-demo`, which
+is skipped upstream. The same tree on this test host gives **6 passing and 3
+failing**, the 3 being the chain-write suites above. Findings doc section 19 has
+the per-suite table and the same comparison run against an external consumer.
+
+So this is not a like-for-like swap of one test SDK for another. It is what lets
+product-sdk's suites run at all once it releases on 0.16.0. The remaining step
+is a `@parity/truapi-host` release carrying the `./testing` subpath, which no
+published version has yet; everything else is verified locally against pristine
+main with `@parity/truapi` resolved from npm.
 
 ## What it deliberately does not do
 
