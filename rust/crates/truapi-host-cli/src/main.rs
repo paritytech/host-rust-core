@@ -21,6 +21,7 @@ mod dotns_read;
 mod frame_server;
 mod network;
 mod platform;
+mod pocket;
 mod product_config;
 mod qr_scanner;
 mod register_name;
@@ -306,7 +307,8 @@ enum ExecutionKind {
     /// on any host that does not serve chat.
     #[default]
     App,
-    /// Headless executable served by the CLI's in-memory chat host.
+    /// Headless executable served by the CLI's in-memory chat host, plus its
+    /// in-memory Pocket host when `TRUAPI_POCKET_CARDS` names a card set.
     Worker,
 }
 
@@ -322,12 +324,21 @@ impl ExecutionKind {
     fn chat_host(self) -> Option<Arc<chat::CliChatHost>> {
         matches!(self, Self::Worker).then(chat::CliChatHost::from_env)
     }
+
+    /// The Pocket host to install, if this kind serves Pocket and a card set
+    /// was configured.
+    fn pocket_host(self) -> Option<Arc<pocket::CliPocketHost>> {
+        matches!(self, Self::Worker)
+            .then(pocket::CliPocketHost::from_env)
+            .flatten()
+    }
 }
 
 #[derive(Args)]
 struct PairingHostArgs {
     /// Execution kind the served product runs as. `worker` installs the CLI's
-    /// in-memory chat host; `app` leaves Chat unserved.
+    /// in-memory chat host; `app` leaves Chat unserved. `worker` also installs
+    /// the Pocket host when `TRUAPI_POCKET_CARDS` is set.
     #[arg(long = "execution-kind", value_enum, default_value = "app")]
     execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start the terminal UI.
@@ -396,7 +407,8 @@ struct DevArgs {
 #[derive(Args, Default)]
 struct SigningHostArgs {
     /// Execution kind the served product runs as. `worker` installs the CLI's
-    /// in-memory chat host; `app` leaves Chat unserved.
+    /// in-memory chat host; `app` leaves Chat unserved. `worker` also installs
+    /// the Pocket host when `TRUAPI_POCKET_CARDS` is set.
     #[arg(long = "execution-kind", value_enum, default_value = "app")]
     execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start an interactive shell.
@@ -1074,6 +1086,7 @@ async fn run_pairing_host(
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
     let chat_host = args.execution_kind.chat_host();
+    let pocket_host = args.execution_kind.pocket_host();
     let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
     let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
         platform,
@@ -1082,6 +1095,9 @@ async fn run_pairing_host(
         chat_host.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
     pairing_runtime.set_permission_status_host(status_host);
+    if let Some(pocket) = pocket_host {
+        pairing_runtime.set_pocket_platform(pocket);
+    }
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -1328,6 +1344,9 @@ struct SigningHostSession {
     /// Set when this host serves a chat product. Held across runtime rebuilds
     /// so switching session keeps the rooms and messages already posted.
     chat: Option<Arc<chat::CliChatHost>>,
+    /// Set when this host serves a Pocket product. Held across runtime rebuilds
+    /// so switching session keeps the card set it was seeded with.
+    pocket: Option<Arc<pocket::CliPocketHost>>,
 }
 
 #[derive(Default)]
@@ -1454,6 +1473,7 @@ async fn start_signing_host(
     }
     let approval = approval_policy(args.auto_accept);
     let chat = args.execution_kind.chat_host();
+    let pocket = args.execution_kind.pocket_host();
     let (runtime, platform) = build_signing_runtime(
         network,
         storage_profile.path,
@@ -1461,6 +1481,7 @@ async fn start_signing_host(
         approval,
         ui.clone(),
         chat.clone(),
+        pocket.clone(),
     )?;
     apply_local_product_grants(platform.as_ref(), &args.product_config).await?;
     let runtime_factory = frame_server::SwitchableSigningRuntime::new(runtime.clone());
@@ -1524,6 +1545,7 @@ async fn start_signing_host(
         reserved_username: normalized(args.reserved_username.clone()),
         ui,
         chat,
+        pocket,
     })
 }
 
@@ -1534,6 +1556,7 @@ fn build_signing_runtime(
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
     chat: Option<Arc<chat::CliChatHost>>,
+    pocket: Option<Arc<pocket::CliPocketHost>>,
 ) -> Result<(Arc<SigningHostRuntime>, Arc<CliPlatform>)> {
     let platform = CliPlatform::new(
         network,
@@ -1557,6 +1580,9 @@ fn build_signing_runtime(
         chat.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
     runtime.set_permission_status_host(status_host);
+    if let Some(pocket) = pocket {
+        runtime.set_pocket_platform(pocket);
+    }
     runtime.start_statement_allowance_renewal();
     Ok((runtime, platform))
 }
@@ -2087,6 +2113,7 @@ fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
         session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
+        session.pocket.clone(),
     )?;
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
@@ -2843,6 +2870,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
+        session.pocket.clone(),
     )?;
     let available_sessions = session.catalog.list()?;
 
@@ -2932,6 +2960,7 @@ async fn import_mnemonic_session(
         session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
+        session.pocket.clone(),
     )?;
     runtime
         .activate_local_session_with_identity(imported.entropy().to_vec(), username.clone())

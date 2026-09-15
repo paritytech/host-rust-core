@@ -73,6 +73,10 @@ use truapi::versioned::chat::{
     HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
     HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
+use truapi::versioned::pocket::{
+    HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
+    HostPocketRemoveCardResponse,
+};
 use truapi::versioned::preimage::RemotePreimageSubmitError;
 use truapi::versioned::renderer::HostRendererActionSubscribeItem;
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
@@ -252,6 +256,7 @@ pub struct ProductRuntimeHost {
     core_instance: u64,
     chat: Arc<ActionChannel<HostChatActionSubscribeItem>>,
     renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
+    pocket_platform: Option<Arc<dyn truapi_platform::PocketPlatform>>,
 }
 
 impl ProductRuntimeHost {
@@ -274,6 +279,7 @@ impl ProductRuntimeHost {
             core_instance,
             chat: adapters.chat,
             renderer: adapters.renderer,
+            pocket_platform: adapters.pocket_platform,
         }
     }
 
@@ -397,6 +403,7 @@ impl ProductRuntimeHost {
             core_instance,
             chat,
             renderer,
+            pocket_platform: None,
         };
         (host, pairing_host)
     }
@@ -997,6 +1004,20 @@ impl ProductRuntimeHost {
         self.renderer_access()?;
         self.renderer.publish(item)
     }
+
+    /// Pocket access policy for this connection: the collection is reachable
+    /// only from a Worker execution with an active session, and only where the
+    /// host installed an adapter. The kind and session checks come first, so a
+    /// connection that may never reach Pocket is told `Denied` even on a host
+    /// that serves nothing.
+    fn pocket_platform<E>(&self) -> Result<Arc<dyn truapi_platform::PocketPlatform>, CallError<E>> {
+        if self.product.execution_kind != truapi_platform::ProductExecutionKind::Worker
+            || self.authority.session_state().current().is_none()
+        {
+            return Err(CallError::Denied);
+        }
+        self.pocket_platform.clone().ok_or(CallError::Unsupported)
+    }
 }
 
 #[truapi_platform::async_trait]
@@ -1119,11 +1140,65 @@ impl Renderer for ProductRuntimeHost {
     }
 }
 
-// A host with no Pocket surface answers both methods `Unavailable`.
-// `list_subscribe` interrupts with it rather than reporting an empty
-// collection, so a product can tell the two apart.
 #[truapi::async_trait]
-impl Pocket for ProductRuntimeHost {}
+impl Pocket for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "pocket.list_subscribe"))]
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostPocketListSubscribeItem, CallError<GenericError>> {
+        let platform = match self.pocket_platform::<GenericError>() {
+            Ok(platform) => platform,
+            Err(error) => return Subscription::interrupted(error),
+        };
+        Subscription::new(
+            platform
+                .subscribe_pocket_cards(&self.product)
+                .map(|item| match item {
+                    Ok(item) => Ok(HostPocketListSubscribeItem::V1(item)),
+                    Err(error) => {
+                        warn!(
+                            reason = %error.reason,
+                            "pocket card list platform stream failed"
+                        );
+                        Err(CallError::HostFailure {
+                            reason: error.reason,
+                        })
+                    }
+                }),
+        )
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "pocket.remove_card"))]
+    async fn remove_card(
+        &self,
+        _cx: &CallContext,
+        request: HostPocketRemoveCardRequest,
+    ) -> Result<HostPocketRemoveCardResponse, CallError<HostPocketRemoveCardError>> {
+        let platform = self.pocket_platform()?;
+        let HostPocketRemoveCardRequest::V1(mut request) = request;
+        // A card id is a product-chosen label the host renders in its own
+        // chrome, so it is screened before the host ever sees it: trimmed,
+        // NFC-normalized, and rejected if it carries characters that let two
+        // distinct ids render identically.
+        request.card_id =
+            normalize_chat_identifier("cardId", &request.card_id).map_err(pocket_field_error)?;
+        platform
+            .remove_pocket_card(&self.product, request)
+            .await
+            .map(|()| HostPocketRemoveCardResponse::V1)
+            .map_err(|error| CallError::Domain(HostPocketRemoveCardError::V1(error)))
+    }
+}
+
+/// Report a rejected card id as a removal domain error.
+fn pocket_field_error(error: ChatFieldError) -> CallError<HostPocketRemoveCardError> {
+    CallError::Domain(HostPocketRemoveCardError::V1(
+        v01::HostPocketRemoveCardError::Unknown {
+            reason: error.to_string(),
+        },
+    ))
+}
 
 /// Report a rejected chat bot field as a bot-registration domain error.
 fn chat_register_bot_field_error(
