@@ -50,6 +50,7 @@ final class MockProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sen
 
     func notifyThemeChanged(theme _: HostThemeSubscribeItem) {}
     func notifyLocaleChanged(locale _: HostLocaleSubscribeItem) {}
+    func notifyStorageChanged(key _: String, value _: Data?) {}
     func notifyPreimageChanged(key _: Data, value _: Data?) {}
 
     func notifyChainResponse(connectionId: UInt32, json: String) {
