@@ -774,9 +774,9 @@ impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalT
 pub struct NativeTrackedStatementRenewalTarget {
     /// The account, or the recipe for one, that the host promised to renew.
     pub target: NativeStatementRenewalTarget,
-    /// Root public key that promised a raw account id, 32 bytes. A recipe
-    /// carries none and resolves under whichever identity is active.
-    pub owner: Option<Vec<u8>>,
+    /// Root public key that promised a raw account id. A recipe carries none
+    /// and resolves under whichever identity is active.
+    pub owner: Option<Bytes32>,
 }
 
 impl From<crate::runtime::StatementRenewalTarget> for NativeStatementRenewalTarget {
@@ -800,7 +800,7 @@ impl From<crate::runtime::TrackedStatementRenewalTarget> for NativeTrackedStatem
     fn from(entry: crate::runtime::TrackedStatementRenewalTarget) -> Self {
         Self {
             target: entry.target.into(),
-            owner: entry.owner.map(|owner| owner.to_vec()),
+            owner: entry.owner,
         }
     }
 }
@@ -881,6 +881,18 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<Vec<NativeTrackedStatementRenewalTarget>, NativeRenewalTargetError> {
         futures::executor::block_on(self.runtime.statement_renewal_targets())
             .map(|entries| entries.into_iter().map(Into::into).collect())
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Root public key the active identity records its fixed entries under.
+    ///
+    /// Needs an active session, and fails with `Disconnected` without one.
+    /// An entry from [`Self::statement_renewal_targets`] whose owner is this
+    /// key, or which has no owner at all, is one a pass will renew; any other
+    /// is one a pass will prune.
+    pub fn statement_renewal_owner_key(&self) -> Result<Bytes32, NativeRenewalTargetError> {
+        self.runtime
+            .statement_renewal_owner_key()
             .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
@@ -2022,7 +2034,7 @@ mod tests {
 
         let native = NativeTrackedStatementRenewalTarget::from(entry);
 
-        assert_eq!(native.owner, Some(vec![9; 32]));
+        assert_eq!(native.owner, Some([9; 32]));
         assert!(matches!(
             native.target,
             NativeStatementRenewalTarget::Account { account_id, label }

@@ -196,8 +196,10 @@ async fn track_targets(
     write_entries(storage, &entries).await
 }
 
-/// Read the ledger without resolving anything, holding the lock so a
-/// read-modify-write in flight cannot be observed half applied.
+/// Read the ledger without resolving anything.
+///
+/// Takes the ledger lock so a listing taken while a track or a prune is running
+/// reports the settled ledger rather than the state it is replacing.
 async fn list_entries(
     storage: &(impl CoreStorage + ?Sized),
     ledger_lock: &Mutex<()>,
@@ -333,6 +335,16 @@ pub(super) async fn list(
         signing_host.renewal.ledger_lock(),
     )
     .await
+}
+
+/// Root public key the active identity records its fixed entries under.
+///
+/// Pairs with [`list`], which reports each entry's owner as stored: comparing
+/// the two is how a host tells the entries it will actually renew from the ones
+/// a pass will prune.
+pub(super) fn active_owner_key(signing_host: &SigningHost) -> Result<[u8; 32], String> {
+    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
+    owner_key(&entropy)
 }
 
 /// Stop renewing one fixed statement account for the active identity.

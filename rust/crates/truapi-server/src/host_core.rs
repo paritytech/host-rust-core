@@ -844,6 +844,19 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Root public key the active identity records its fixed ledger entries
+    /// under.
+    ///
+    /// Needs an active session, and fails with `Disconnected` without one.
+    /// Compare it against each entry's owner to tell what a pass will renew
+    /// from what it will prune.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.statement_renewal_owner_key"))]
+    pub fn statement_renewal_owner_key(&self) -> Result<truapi::Bytes32, v01::GenericError> {
+        self.signing_host
+            .statement_renewal_owner_key()
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Stop renewing one fixed statement account.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.untrack_statement_renewal_account"))]
     pub async fn untrack_statement_renewal_account(

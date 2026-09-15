@@ -593,6 +593,11 @@ impl SigningHost {
         allowance_renewal::list(self).await
     }
 
+    /// Root public key the active identity records its fixed entries under.
+    pub(crate) fn statement_renewal_owner_key(&self) -> Result<[u8; 32], String> {
+        allowance_renewal::active_owner_key(self)
+    }
+
     /// Stop renewing one fixed statement account.
     pub(crate) async fn untrack_statement_renewal_account(
         &self,
