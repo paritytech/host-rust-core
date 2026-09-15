@@ -150,6 +150,50 @@ export interface TestHost {
   injectStatement(statement: unknown): Promise<never>;
   /** Drop the recorded statements. Always throws; see above. */
   clearStatements(): Promise<never>;
+
+  /**
+   * Release the host.
+   *
+   * A no-op. Playwright owns the page's lifetime and closes it when the test
+   * ends, so a suite has nothing to release. Present so a migrating suite does
+   * not have to strip a teardown call that is simply unnecessary here.
+   */
+  dispose(): Promise<void>;
+
+  /** Set the spendable balance. Always throws; payments are unimplemented. */
+  setPaymentBalance(amount: bigint): Promise<never>;
+  /** Payment operations the product performed. Always throws; see above. */
+  getPaymentLog(): Promise<never>;
+  /** Drop the payment log. Always throws; see above. */
+  clearPaymentLog(): Promise<never>;
+  /** How top-ups resolve. Always throws; see above. */
+  setPaymentTopUpBehavior(behavior: unknown): Promise<never>;
+  /** Force a payment's status. Always throws; see above. */
+  simulatePaymentStatus(
+    paymentId: string,
+    status: { tag: string; value?: string },
+  ): Promise<never>;
+
+  /**
+   * Deliver a peer's activation of a chat action to the product.
+   *
+   * Always throws. `ChatPlatform` is create/register/post/subscribe-rooms only,
+   * so a peer activating an action has no way into the core. `ChatAction`
+   * exists as message *content* a product posts, not as an inbound event.
+   */
+  injectChatAction(action: {
+    roomId: string;
+    peer: string;
+    payload: unknown;
+  }): Promise<never>;
+
+  /**
+   * Change the login behaviour after boot.
+   *
+   * Always throws, and says what to do instead: the host page reads it once at
+   * start, so it is a `loginBehavior` option on `createTestHostFixture`.
+   */
+  setLoginBehavior(behavior: "auto" | "manual"): Promise<never>;
 }
 
 /**
@@ -166,6 +210,33 @@ const NO_STATEMENT_SEAM =
   "Submission is rejected inside the core before any RPC is emitted (it needs " +
   "a statement allowance), so it cannot be observed on the chain transport " +
   "either. Subscription traffic IS visible via the proxied chain.";
+
+/**
+ * Why the payment controls cannot be served.
+ *
+ * Not a seam the mock declined to implement: every method in the core's
+ * `capabilities/payment.rs` returns an error and ignores its arguments, so
+ * there is no behaviour for a host to model or a test to observe.
+ */
+const NO_PAYMENT_SEAM =
+  "is not available in the TrUAPI test host: the protocol declares payments " +
+  "but no host implements them -- every method in the core's payment " +
+  "capability returns an error and ignores its arguments, so there is nothing " +
+  "to record or simulate. See docs/rfcs/0006-payments.md.";
+
+/** Why a chat action cannot be injected. */
+const NO_CHAT_ACTION_SEAM =
+  "is not available in the TrUAPI test host: `ChatPlatform` is create-room, " +
+  "register-bot, post-message and subscribe-rooms only, so a peer activating " +
+  "an action has no way into the core. Actions exist as message content a " +
+  "product posts, not as an inbound event. The calls the core makes ARE " +
+  "recorded -- see getChatRooms, getChatBots and getChatMessageLog.";
+
+/** Why login behaviour is fixed once the host page has booted. */
+const LOGIN_BEHAVIOR_IS_CONSTRUCTION_TIME =
+  "cannot be changed after boot in the TrUAPI test host: the host page reads " +
+  "it once at start. Pass `loginBehavior: \"auto\" | \"manual\"` to " +
+  "createTestHostFixture instead.";
 
 /**
  * Build the `testHost` fixture.
@@ -334,6 +405,34 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         },
         clearStatements: () => {
           throw new Error(`testHost.clearStatements ${NO_STATEMENT_SEAM}`);
+        },
+
+        // Playwright closes the page after the fixture yields, so there is
+        // genuinely nothing to do -- not a silent stub standing in for work.
+        dispose: () => Promise.resolve(),
+
+        setPaymentBalance: () => {
+          throw new Error(`testHost.setPaymentBalance ${NO_PAYMENT_SEAM}`);
+        },
+        getPaymentLog: () => {
+          throw new Error(`testHost.getPaymentLog ${NO_PAYMENT_SEAM}`);
+        },
+        clearPaymentLog: () => {
+          throw new Error(`testHost.clearPaymentLog ${NO_PAYMENT_SEAM}`);
+        },
+        setPaymentTopUpBehavior: () => {
+          throw new Error(`testHost.setPaymentTopUpBehavior ${NO_PAYMENT_SEAM}`);
+        },
+        simulatePaymentStatus: () => {
+          throw new Error(`testHost.simulatePaymentStatus ${NO_PAYMENT_SEAM}`);
+        },
+        injectChatAction: () => {
+          throw new Error(`testHost.injectChatAction ${NO_CHAT_ACTION_SEAM}`);
+        },
+        setLoginBehavior: () => {
+          throw new Error(
+            `testHost.setLoginBehavior ${LOGIN_BEHAVIOR_IS_CONSTRUCTION_TIME}`,
+          );
         },
       };
 
