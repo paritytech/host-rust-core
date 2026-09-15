@@ -69,9 +69,18 @@ Against the TrUAPI test host, on the production Web Worker topology:
 
 ## Open items, which is why this is not a finished PR
 
-- **The catalog entry is a placeholder.** `pnpm-workspace.yaml` gains
-  `"@parity/truapi-host": ^0.12.0`; confirm against what is actually published
-  before merging.
+- **Apply this only after the codec bump lands — it is a hard ordering
+  dependency, not a preference.** The catalog keeps `"@parity/truapi": ^0.13.1`,
+  which is wire codec 1, while the test host this patch switches to is codec 2.
+  Codec 1 and 2 cannot negotiate: the handshake is refused with
+  `UnsupportedProtocolVersion`. Applied on its own, this patch therefore produces
+  a handshake failure that reads like a broken test host. `@parity/truapi` must
+  reach 0.16.0 first (product-sdk #376).
+- **Catalog pin.** `pnpm-workspace.yaml` gains `"@parity/truapi-host": ^0.16.0`.
+  Note that `@parity/truapi-host` published 0.10.1 and then 0.16.0 with nothing
+  in between — 0.11 through 0.15 were cut in-repo but never reached npm — so a
+  pin anywhere in that range fails to install rather than resolving to something
+  older.
 - **product-sdk does not compile against `@parity/truapi` 0.15+ as-is.**
   `packages/host/src/testing.ts` (`createFakeHost`) is missing
   `signRawUnwatermarkedDeprecated` and its `LegacyAccount` twin, and
