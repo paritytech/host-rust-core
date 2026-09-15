@@ -5,6 +5,7 @@ use crate::v01;
 truapi_macros::versioned_type! {
     pub enum RemoteChainHeadFollowRequest { V1 => v01::RemoteChainHeadFollowRequest }
     pub enum RemoteChainHeadFollowItem { V1 => v01::RemoteChainHeadFollowItem }
+    pub enum RemoteChainHeadFollowError { V1 => v01::GenericError }
     pub enum RemoteChainHeadHeaderRequest { V1 => v01::RemoteChainHeadHeaderRequest }
     pub enum RemoteChainHeadHeaderResponse { V1 => v01::RemoteChainHeadHeaderResponse }
     pub enum RemoteChainHeadHeaderError { V1 => v01::GenericError }

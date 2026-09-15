@@ -2,7 +2,7 @@
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
-
+#![doc = include_str!("../README.md")]
 //! TrUAPI trait and type definitions for the host product SDK.
 //!
 //! Concrete wire types live in per-version modules. Versioned envelopes are in
@@ -222,7 +222,7 @@ pub use truapi_macros::{service, wire, wire_trait};
 /// `(trait, method)` byte pair. The handshake accepts only this version, and
 /// codegen stamps it into the generated clients, so every peer derives it
 /// from here.
-pub const WIRE_CODEC_VERSION: u8 = 2;
+pub const WIRE_CODEC_VERSION: u8 = 3;
 
 /// Per-message id carried from the transport frame.
 pub type RequestId = String;

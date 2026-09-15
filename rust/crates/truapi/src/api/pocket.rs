@@ -1,9 +1,8 @@
 //! Unified [`Pocket`] trait.
 
-use crate::latest::GenericError;
 use crate::versioned::pocket::{
-    HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
-    HostPocketRemoveCardResponse,
+    HostPocketListSubscribeError, HostPocketListSubscribeItem, HostPocketListSubscribeRequest,
+    HostPocketRemoveCardError, HostPocketRemoveCardRequest, HostPocketRemoveCardResponse,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -32,7 +31,8 @@ pub trait Pocket: Send + Sync {
     async fn list_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostPocketListSubscribeItem, CallError<GenericError>> {
+        _request: HostPocketListSubscribeRequest,
+    ) -> Subscription<HostPocketListSubscribeItem, CallError<HostPocketListSubscribeError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 

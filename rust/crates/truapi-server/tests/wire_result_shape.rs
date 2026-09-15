@@ -581,8 +581,8 @@ fn subscription_start_receive_stop_through_wire_boundary() {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
             message_type: MESSAGE_TYPE_START,
-            // No request wrapper for this method: an empty Start payload.
-            value: Vec::new(),
+            value: truapi::versioned::account::HostAccountConnectionStatusSubscribeRequest::V1
+                .encode(),
         },
     };
     futures::executor::block_on(core.dispatch(start, dyn_transport.clone()));

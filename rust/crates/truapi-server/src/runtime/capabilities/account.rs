@@ -6,9 +6,9 @@
 use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::Account;
-use truapi::latest::GenericError;
 use truapi::versioned::account::{
-    HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
+    HostAccountConnectionStatusSubscribeError, HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
     HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
     HostAccountGetRequest, HostAccountGetResponse, HostAccountListRingVrfKeysError,
@@ -421,7 +421,11 @@ impl Account for ProductRuntimeHost {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+        _request: HostAccountConnectionStatusSubscribeRequest,
+    ) -> Subscription<
+        HostAccountConnectionStatusSubscribeItem,
+        CallError<HostAccountConnectionStatusSubscribeError>,
+    > {
         Subscription::new(self.authority.session_state().subscribe().map(Ok))
     }
 

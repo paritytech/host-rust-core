@@ -29,8 +29,8 @@ use truapi::versioned::statement_store::{
     RemoteStatementStoreCreateProofAuthorizedResponse, RemoteStatementStoreCreateProofError,
     RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
     RemoteStatementStoreSubmitError, RemoteStatementStoreSubmitRequest,
-    RemoteStatementStoreSubscribeError, RemoteStatementStoreSubscribeItem,
-    RemoteStatementStoreSubscribeRequest,
+    RemoteStatementStoreSubmitResponse, RemoteStatementStoreSubscribeError,
+    RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest,
 };
 use truapi::{CallContext, CallError, Subscription};
 
@@ -105,7 +105,8 @@ impl StatementStore for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         request: RemoteStatementStoreSubmitRequest,
-    ) -> Result<(), CallError<RemoteStatementStoreSubmitError>> {
+    ) -> Result<RemoteStatementStoreSubmitResponse, CallError<RemoteStatementStoreSubmitError>>
+    {
         let RemoteStatementStoreSubmitRequest::V1(statement) = request;
         self.require_remote_permission(
             latest::RemotePermission::StatementSubmit,
@@ -128,7 +129,7 @@ impl StatementStore for ProductRuntimeHost {
                 }))
             })?;
         self.services.cache_statement(statement);
-        Ok(())
+        Ok(RemoteStatementStoreSubmitResponse::V1)
     }
 }
 
