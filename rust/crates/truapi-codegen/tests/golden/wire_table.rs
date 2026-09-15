@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "e883e2c0b9857933";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "220fc120f49c7dd1";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -494,6 +494,18 @@ pub const RENDERER_ACTION_SUBSCRIBE: MethodIds = MethodIds {
     method_id: 1,
 };
 
+/// Wire discriminants for `pocket_list_subscribe`.
+pub const POCKET_LIST_SUBSCRIBE: MethodIds = MethodIds {
+    trait_id: 18,
+    method_id: 0,
+};
+
+/// Wire discriminants for `pocket_remove_card`.
+pub const POCKET_REMOVE_CARD: MethodIds = MethodIds {
+    trait_id: 18,
+    method_id: 1,
+};
+
 /// The full wire table. Trait ids and per-trait method ordering are
 /// part of the wire protocol; only ever append within a trait.
 /// Removed methods leave their slot empty.
@@ -797,5 +809,13 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "renderer_action_subscribe",
         kind: WireKind::Subscription(RENDERER_ACTION_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "pocket_list_subscribe",
+        kind: WireKind::Subscription(POCKET_LIST_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "pocket_remove_card",
+        kind: WireKind::Request(POCKET_REMOVE_CARD),
     },
 ];

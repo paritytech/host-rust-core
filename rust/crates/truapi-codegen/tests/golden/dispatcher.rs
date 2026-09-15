@@ -23,6 +23,7 @@ use truapi::api::{
     Notifications,
     Payment,
     Permissions,
+    Pocket,
     Preimage,
     Renderer,
     ResourceAllocation,
@@ -57,6 +58,7 @@ where
     register_notifications(dispatcher, host.clone());
     register_payment(dispatcher, host.clone());
     register_permissions(dispatcher, host.clone());
+    register_pocket(dispatcher, host.clone());
     register_preimage(dispatcher, host.clone());
     register_renderer(dispatcher, host.clone());
     register_resource_allocation(dispatcher, host.clone());
@@ -1655,6 +1657,82 @@ where
                 let result: Result<versioned::permissions::RemotePermissionResponse, truapi::CallError<versioned::permissions::RemotePermissionError>> =
                     match host.request_remote_permission(&cx, request).await {
                         Ok(response) => Ok(<versioned::permissions::RemotePermissionResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+}
+
+fn register_pocket<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Pocket + Send + Sync + 'static,
+{
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host.clone();
+        dispatcher.on_subscription(wire_table::POCKET_LIST_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let _request: () = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<truapi::latest::GenericError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Err(subscription_interrupt(error));
+                    }
+                };
+                let target_version = <versioned::pocket::HostPocketListSubscribeItem as truapi::versioned::Versioned>::LATEST;
+                let cx = CallContext::with_request_id(request_id);
+                if !execution_allowed {
+                    let error: truapi::CallError<truapi::latest::GenericError> = truapi::CallError::Denied;
+                    return Err(subscription_interrupt(error));
+                }
+                let stream = host.list_subscribe(&cx).await;
+                let stream = futures::StreamExt::map(
+                    stream,
+                    move |item: Result<versioned::pocket::HostPocketListSubscribeItem, truapi::CallError<truapi::latest::GenericError>>| {
+                        item.map(|item| {
+                            <versioned::pocket::HostPocketListSubscribeItem as truapi::versioned::FromLatest>::from_latest(
+                                truapi::versioned::IntoLatest::into_latest(item),
+                                target_version,
+                            )
+                        })
+                    },
+                );
+                Ok(subscription_stream(stream))
+            })
+        });
+    }
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host;
+        dispatcher.on_request(wire_table::POCKET_REMOVE_CARD, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::pocket::HostPocketRemoveCardRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::pocket::HostPocketRemoveCardError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::pocket::HostPocketRemoveCardResponse, truapi::CallError<versioned::pocket::HostPocketRemoveCardError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::pocket::HostPocketRemoveCardError> = truapi::CallError::Denied;
+                    let result: Result<versioned::pocket::HostPocketRemoveCardResponse, truapi::CallError<versioned::pocket::HostPocketRemoveCardError>> = Err(error);
+                    return result.encode();
+                }
+                let result: Result<versioned::pocket::HostPocketRemoveCardResponse, truapi::CallError<versioned::pocket::HostPocketRemoveCardError>> =
+                    match host.remove_card(&cx, request).await {
+                        Ok(response) => Ok(<versioned::pocket::HostPocketRemoveCardResponse as truapi::versioned::FromLatest>::from_latest(
                             truapi::versioned::IntoLatest::into_latest(response),
                             target_version,
                         )),

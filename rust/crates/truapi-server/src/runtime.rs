@@ -64,7 +64,7 @@ pub(crate) use signing_host::{
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 use tracing::{instrument, warn};
-use truapi::api::{Chat, Renderer};
+use truapi::api::{Chat, Pocket, Renderer};
 use truapi::latest::GenericError;
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
@@ -1118,6 +1118,13 @@ impl Renderer for ProductRuntimeHost {
         self.renderer.subscribe()
     }
 }
+
+// A host with no Pocket surface answers both methods `Unavailable`.
+// `list_subscribe` interrupts with it rather than reporting an empty
+// collection, so a product can tell the two apart.
+#[truapi::async_trait]
+impl Pocket for ProductRuntimeHost {}
+
 /// Report a rejected chat bot field as a bot-registration domain error.
 fn chat_register_bot_field_error(
     error: truapi_platform::ChatFieldError,
