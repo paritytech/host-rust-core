@@ -2406,6 +2406,115 @@ fn worker_operations_reach_the_platform_scoped_to_the_calling_product() {
 }
 
 #[test]
+fn an_open_operation_holds_worker_demand_until_it_ends() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+    let ledger = &host.services().worker_ledger;
+
+    let HostWorkerBeginOperationResponse::V1(response) =
+        futures::executor::block_on(host.begin_operation(
+            &cx,
+            HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                label: Some("funding".to_string()),
+            }),
+        ))
+        .expect("begin operation");
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        1,
+        "an open operation is demand on the worker, so the host is told to run it"
+    );
+
+    futures::executor::block_on(host.end_operation(
+        &cx,
+        HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id: response.id }),
+    ))
+    .expect("end operation");
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        0,
+        "ending the last operation drops the demand it held"
+    );
+}
+
+#[test]
+fn ending_an_operation_twice_releases_only_the_demand_it_held() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+    let ledger = &host.services().worker_ledger;
+    let begin = || {
+        let HostWorkerBeginOperationResponse::V1(response) =
+            futures::executor::block_on(host.begin_operation(
+                &cx,
+                HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                    label: None,
+                }),
+            ))
+            .expect("begin operation");
+        response.id
+    };
+    let end = |id: u32| {
+        futures::executor::block_on(host.end_operation(
+            &cx,
+            HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }),
+        ))
+        .expect("end operation");
+    };
+
+    let first = begin();
+    begin();
+    assert_eq!(ledger.count("myapp.dot"), 2);
+
+    end(first);
+    end(first);
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        1,
+        "a repeated end is idempotent, so it cannot drop the demand the other operation holds"
+    );
+}
+
+#[test]
+fn dropping_a_connection_releases_the_demand_its_open_operations_held() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let services = host.services().clone();
+    let cx = CallContext::default();
+
+    futures::executor::block_on(host.begin_operation(
+        &cx,
+        HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label: None }),
+    ))
+    .expect("begin operation");
+    assert_eq!(services.worker_ledger.count("myapp.dot"), 1);
+
+    drop(host);
+
+    assert_eq!(
+        services.worker_ledger.count("myapp.dot"),
+        0,
+        "a product that goes away without ending its operations leaves no demand behind"
+    );
+}
+
+#[test]
 fn theme_subscribe_maps_platform_values() {
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
     let cx = CallContext::default();
