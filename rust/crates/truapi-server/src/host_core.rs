@@ -2972,9 +2972,9 @@ mod tests {
     }
 
     #[test]
-    fn a_signing_host_runtime_installs_its_asset_hub_for_manifest_resolution() {
+    fn a_signing_host_runtime_carries_its_asset_hub_for_manifest_resolution() {
         // Manifest grants are resolved from dotNS on Asset Hub. The pairing
-        // role installs its hash in `PairingHostRole::new`; the signing role
+        // role took its hash from config; the signing role
         // did not, so `root_manifest` returned before reaching the chain and
         // refused every `trustedProducts` grant the manifest cache could not
         // already answer, on iOS, Android, the `truapi-host` CLI and the wasm
@@ -2994,7 +2994,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pairing_host_runtime_installs_its_asset_hub_too() {
+    fn a_pairing_host_runtime_carries_its_asset_hub_too() {
         // The sibling half of the same invariant. Deleting the pairing role's
         // install left every test green before this, so #660 could recur one
         // line over in a role that has always been correct.

@@ -69,7 +69,12 @@ pub struct PairingHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
-    /// Asset Hub genesis hash used to resolve session usernames from dotNS.
+    /// Asset Hub genesis hash. Session usernames and product manifests are
+    /// both read from the dotNS contracts deployed there, so without a usable
+    /// value no manifest resolves and every cross-product `trustedProducts`
+    /// grant not already cached is refused, indistinguishably from the other
+    /// product having granted nothing. All-zero says this host has no Asset
+    /// Hub.
     pub asset_hub_chain_genesis_hash: [u8; 32],
     /// Deeplink URI scheme used in pairing QR payloads, without `://`.
     ///
