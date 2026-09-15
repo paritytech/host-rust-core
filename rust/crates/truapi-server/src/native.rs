@@ -4081,7 +4081,9 @@ mod tests {
         let round_trip = |request_id: &str| ProtocolMessage {
             request_id: request_id.into(),
             payload: Payload {
-                id: feature_ids.request_id,
+                trait_id: feature_ids.trait_id,
+                method_id: feature_ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
                 value: HostFeatureSupportedRequest::V1(v01::HostFeatureSupportedRequest::Chain {
                     genesis_hash: vec![0u8; 32],
                 })
