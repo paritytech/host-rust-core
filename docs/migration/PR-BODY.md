@@ -88,9 +88,18 @@ with a standing cost, not a code change.
 
 **The statement store.** The store connects over a proxied people chain and its
 subscription traffic is observable, but publishing is rejected inside the core
-before any RPC is emitted, because it needs a statement allowance — so it cannot
-be recorded on the transport either. `getSubmittedStatements`, `injectStatement`
-and `clearStatements` exist on the fixture and throw with that reason.
+before any RPC is emitted, because the submitting account needs a statement-store
+allowance — so it cannot be recorded on the transport either.
+`getSubmittedStatements`, `injectStatement` and `clearStatements` exist on the
+fixture and throw with that reason.
+
+Granting the allowance is `truapi-host alloc-check --target <hex-32> --submit`,
+which requires an onboarded person: the extrinsic proves LitePeople ring
+membership. The identity available here does not have it — `alloc-check` reports
+`onboarding pending` across all 26 rings and `identity-check` returns
+`IDENTITY_NONE`, so the grant cannot be made from this environment. Slots
+themselves are free (`People` and `LitePeople` both report `free seq=0` for the
+current period), so this is a personhood gap rather than a quota one.
 
 **Payments.** The protocol declares them and no host implements them: every
 method in `capabilities/payment.rs` returns an error and ignores its arguments.
@@ -102,8 +111,8 @@ against a fake.
 
 Funding the derived accounts would bring `tx-demo`, `contracts-demo` and
 `chain-client-demo` into reach, putting the ceiling at **8 of 9 suites**.
-`statement-store-demo` stays out regardless: its submission is rejected inside
-the core before any RPC is emitted, so no host-side work reaches it.
+`statement-store-demo` needs something different: a statement-store allowance for
+an onboarded person, which no amount of host-side work substitutes for.
 
 ## Notes for review
 
