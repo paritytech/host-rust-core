@@ -733,6 +733,7 @@ jobs:
       #
       # The flag matches on message text across the whole tree, so it also
       # silences any accidental constant condition added elsewhere.
+      #
       # Two shellcheck rules are excluded by code rather than by lowering the
       # severity bar: SC2012 prefers find over ls, SC2129 prefers grouped
       # redirects, and both are preference. Severity is left alone because
