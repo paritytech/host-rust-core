@@ -35,23 +35,28 @@
     },
     "./testing/playwright": {
       "types": "./dist/testing/playwright.d.ts",
-      "import": "./dist/testing/playwright.js"
+      "import": "./dist/testing/playwright.js",
+      "require": "./dist/testing/playwright.cjs"
     },
     "./testing/server": {
       "types": "./dist/testing/server.d.ts",
-      "import": "./dist/testing/server.js"
+      "import": "./dist/testing/server.js",
+      "require": "./dist/testing/server.cjs"
     },
     "./testing/dev-accounts": {
       "types": "./dist/testing/dev-accounts.d.ts",
-      "import": "./dist/testing/dev-accounts.js"
+      "import": "./dist/testing/dev-accounts.js",
+      "require": "./dist/testing/dev-accounts.cjs"
     },
     "./testing/client": {
       "types": "./dist/testing/create-mock-client.d.ts",
-      "import": "./dist/testing/create-mock-client.js"
+      "import": "./dist/testing/create-mock-client.js",
+      "require": "./dist/testing/create-mock-client.cjs"
     },
     "./testing/host-page": {
       "types": "./dist/testing/host-page.d.ts",
-      "import": "./dist/testing/host-page.js"
+      "import": "./dist/testing/host-page.js",
+      "require": "./dist/testing/host-page.cjs"
     },
     "./wasm/testing": {
       "types": "./dist/wasm/testing/truapi_server.d.ts",
@@ -72,7 +77,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/build-cjs.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
     "test": "bun test"
   },

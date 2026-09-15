@@ -24,6 +24,17 @@ import { PRODUCT_FRAME_ID } from "./host-page.js";
 import { createTestHostServer } from "./server.js";
 import type { TestHostServer } from "./server.js";
 
+// Re-exported so a migrating test file imports from one path, the way
+// `@parity/host-api-test-sdk/playwright` does.
+export {
+  DEFAULT_CHAIN,
+  DEV_ACCOUNTS,
+  LIVE_CHAINS,
+  PASEO_ASSET_HUB,
+  liveChain,
+} from "./dev-accounts.js";
+export type { DevAccount, DevAccountName } from "./dev-accounts.js";
+
 /** Selector for the product iframe the host page creates. */
 const PRODUCT_FRAME = `#${PRODUCT_FRAME_ID}`;
 
