@@ -8,7 +8,9 @@ enum IssueReportViewFactory {
         let viewModel = IssueReportViewModel(
             screenshot: data,
             makeLogsDraft: { LogsEmailDraftFactory(archiveURL: $0).makeLogsDraft() },
-            sender: MockIssueReportSender()
+            sender: IssueProxyReportSender(configuration: {
+                try FirebaseApplicationService.shared.syncedIssueProxyConfiguration()
+            })
         )
         let controller = UIHostingController(rootView: IssueReportViewLayout(
             viewModel: viewModel,

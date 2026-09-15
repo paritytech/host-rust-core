@@ -1554,6 +1554,8 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="debug_report_attachments">Your report includes app logs and this screenshot.</string>
     <string name="debug_report_screenshot">Screenshot included in the report</string>
     <string name="debug_report_thanks">Thank you for your feedback!</string>
-    <string name="debug_report_failed">Could not prepare your report. Please try again.</string>
+    <string name="debug_report_failed">Could not confirm that your report was sent.</string>
     <string name="debug_report_capture_failed">Could not capture the app screen. Please try another screenshot.</string>
+    <string name="debug_report_unavailable">Issue reporting is not configured for this build yet.</string>
+    <string name="debug_report_too_large">The screenshot or logs are too large to send.</string>
 </resources>

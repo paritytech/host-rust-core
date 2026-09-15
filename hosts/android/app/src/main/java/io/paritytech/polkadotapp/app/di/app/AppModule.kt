@@ -6,7 +6,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import io.paritytech.polkadotapp.app.root.RealActivityIntentProvider
 import io.paritytech.polkadotapp.app.root.RealAppLifecycleObserver
-import io.paritytech.polkadotapp.app.root.data.debug.FakeIssueReportApi
+import io.paritytech.polkadotapp.app.root.data.debug.RealIssueReportApi
 import io.paritytech.polkadotapp.app.root.domain.debug.IssueReportApi
 import io.paritytech.polkadotapp.app.root.network.RemoteConfigIdentityBackendUrlProvider
 import io.paritytech.polkadotapp.common.data.network.IdentityBackendUrlProvider
@@ -18,7 +18,7 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 interface AppModule {
     @Binds
-    fun bindIssueReportApi(impl: FakeIssueReportApi): IssueReportApi
+    fun bindIssueReportApi(impl: RealIssueReportApi): IssueReportApi
 
     @Binds
     fun bindActivityIntentProvider(impl: RealActivityIntentProvider): ActivityIntentProvider

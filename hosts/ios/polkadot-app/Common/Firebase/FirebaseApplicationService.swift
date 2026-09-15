@@ -114,6 +114,13 @@ final class FirebaseApplicationService: RemoteConfigManaging {
     func asyncWaitRemoteConfig() async throws -> RemoteAppConfig {
         syncedAppConfig()
     }
+
+    func syncedIssueProxyConfiguration() throws -> IssueProxyConfiguration {
+        try IssueProxyConfiguration(
+            endpoint: remoteConfig[.issueProxyUrl].stringValue,
+            apiKey: remoteConfig[.issueProxyApiKey].stringValue
+        )
+    }
 }
 
 private extension FirebaseApplicationService {
@@ -248,4 +255,6 @@ private extension String {
     static let dotNsResolver = "dot_ns_config"
     static let coinageInstanceId = "coinage_instance_id"
     static let fundingDomain = "funding_domain"
+    static let issueProxyUrl = "issue_proxy_url"
+    static let issueProxyApiKey = "issue_proxy_api_key"
 }

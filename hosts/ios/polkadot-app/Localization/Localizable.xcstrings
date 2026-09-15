@@ -3636,7 +3636,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Could not prepare the report. Please try again."
+            "value": "Could not confirm that your report was sent. It may have been received."
           }
         }
       }
@@ -3670,6 +3670,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Report app issue"
+          }
+        }
+      }
+    },
+    "report.issue.too.large": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The screenshot or app logs are too large to send."
+          }
+        }
+      }
+    },
+    "report.issue.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Issue reporting is currently unavailable."
           }
         }
       }

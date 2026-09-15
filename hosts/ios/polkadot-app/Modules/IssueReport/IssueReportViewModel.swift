@@ -56,6 +56,10 @@ final class IssueReportViewModel {
                 try Task.checkCancellation()
                 isPrepared = true
             } catch is CancellationError {
+            } catch IssueReportSubmissionError.unavailable {
+                errorMessage = String(localized: .reportIssueUnavailable)
+            } catch IssueReportSubmissionError.tooLarge {
+                errorMessage = String(localized: .reportIssueTooLarge)
             } catch {
                 if !Task.isCancelled {
                     errorMessage = String(localized: .reportIssueSendFailed)
