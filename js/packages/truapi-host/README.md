@@ -101,6 +101,7 @@ const callbacks: HostCallbacks = {
   // ...required groups...
   chat, // optional: leave it out and chat products get `Unsupported`
   permissionStatus, // optional: reports live OS permission state
+  pocket, // optional: serves the host's Pocket card collection
 };
 ```
 
@@ -108,6 +109,11 @@ const callbacks: HostCallbacks = {
 prompting. Supply it and the core revalidates a stored device grant against it
 before answering the product, so a capability the OS has since revoked or reset
 stops reading as usable. Omit it and a stored grant answers on its own.
+
+`pocket` serves the host's card collection. `subscribePocketCards` emits the
+calling product's cards and every later replacement, and `removePocketCard`
+takes one out. The host owns the collection: removing an absent card succeeds,
+and a card the host pins is refused with `Privileged`.
 
 Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
 reported to the worker in its `init` message, so the core sees the same

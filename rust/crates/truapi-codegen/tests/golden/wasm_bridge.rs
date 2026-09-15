@@ -44,6 +44,8 @@ pub(super) struct JsBridge {
     pub(super) device_permission_status: Function,
     pub(super) device_permission: Function,
     pub(super) remote_permission: Function,
+    pub(super) subscribe_pocket_cards: Function,
+    pub(super) remove_pocket_card: Function,
     pub(super) lookup_preimage: Function,
     pub(super) read: Function,
     pub(super) write: Function,
@@ -52,6 +54,7 @@ pub(super) struct JsBridge {
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
     pub(super) permission_status_present: bool,
+    pub(super) pocket_present: bool,
 }
 
 impl JsBridge {
@@ -80,6 +83,10 @@ impl JsBridge {
                 .unwrap_or_else(|| missing_callback("devicePermissionStatus")),
             device_permission: get_function(callbacks, "devicePermission")?,
             remote_permission: get_function(callbacks, "remotePermission")?,
+            subscribe_pocket_cards: get_optional_function(callbacks, "subscribePocketCards")?
+                .unwrap_or_else(|| missing_callback("subscribePocketCards")),
+            remove_pocket_card: get_optional_function(callbacks, "removePocketCard")?
+                .unwrap_or_else(|| missing_callback("removePocketCard")),
             lookup_preimage: get_function(callbacks, "lookupPreimage")?,
             read: get_function(callbacks, "read")?,
             write: get_function(callbacks, "write")?,
@@ -92,6 +99,8 @@ impl JsBridge {
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
             permission_status_present: get_optional_function(callbacks, "devicePermissionStatus")?
                 .is_some(),
+            pocket_present: get_optional_function(callbacks, "subscribePocketCards")?.is_some()
+                && get_optional_function(callbacks, "removePocketCard")?.is_some(),
         })
     }
 
@@ -103,6 +112,11 @@ impl JsBridge {
     /// Whether the host supplied every `permission_status` callback.
     pub(super) fn has_permission_status(&self) -> bool {
         self.permission_status_present
+    }
+
+    /// Whether the host supplied every `pocket` callback.
+    pub(super) fn has_pocket(&self) -> bool {
+        self.pocket_present
     }
 }
 
@@ -376,6 +390,36 @@ impl truapi_platform::Permissions for WasmPlatform {
     }
 }
 
+#[truapi_platform::async_trait]
+impl truapi_platform::PocketPlatform for WasmPlatform {
+    fn subscribe_pocket_cards(
+        &self,
+        product: &truapi_platform::ProductContext,
+    ) -> BoxStream<'static, Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
+        invoke_js_subscription(
+            &self.bridge.subscribe_pocket_cards,
+            Some(product.encode()),
+            parse_host_pocket_list_subscribe_item_item,
+        )
+    }
+
+    async fn remove_pocket_card(
+        &self,
+        product: &truapi_platform::ProductContext,
+        request: v01::HostPocketRemoveCardRequest,
+    ) -> Result<(), v01::HostPocketRemoveCardError> {
+        invoke_unit(
+            &self.bridge.remove_pocket_card,
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                Uint8Array::from(request.encode().as_slice()).into(),
+            ],
+        )
+        .await
+        .map_err(|reason| v01::HostPocketRemoveCardError::Unknown { reason })
+    }
+}
+
 impl truapi_platform::PreimageHost for WasmPlatform {
     fn lookup_preimage(
         &self,
@@ -461,6 +505,12 @@ fn parse_host_locale_subscribe_item_item(
     value: JsValue,
 ) -> Result<v01::HostLocaleSubscribeItem, String> {
     decode_js_item::<v01::HostLocaleSubscribeItem>(value, "HostLocaleSubscribeItem")
+}
+
+fn parse_host_pocket_list_subscribe_item_item(
+    value: JsValue,
+) -> Result<v01::HostPocketListSubscribeItem, String> {
+    decode_js_item::<v01::HostPocketListSubscribeItem>(value, "HostPocketListSubscribeItem")
 }
 
 fn parse_host_theme_subscribe_item_item(
