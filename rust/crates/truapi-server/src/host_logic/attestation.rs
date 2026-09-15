@@ -1,4 +1,4 @@
-//! Lite-person username registration parameters (signing host, native only).
+//! Lite-person username registration parameters for signing hosts.
 //!
 //! Builds the client-side proofs the identity backend needs to
 //! attest a lite username for an account: an sr25519 proof-of-ownership, a
@@ -22,6 +22,7 @@ use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derive_identity_keypair,
     derive_lite_person_ring_vrf_entropy, product_public_key_to_address,
 };
+use crate::host_logic::sso::pairing::{CHAT_ENCRYPTION_DOMAIN, derive_x25519_keypair_from_entropy};
 
 /// sr25519 proof-of-ownership message prefix (exact bytes; one space).
 ///
@@ -30,8 +31,8 @@ use crate::host_logic::product_account::{
 ///
 /// The pallet verifies `MSG_PREFIX || candidate || ring_vrf_key`.
 const REGISTER_PREFIX: &[u8] = b"pop:people-lite:register using";
-/// Domain label for the P-256 identifier key advertised to the backend.
-const IDENTIFIER_KEY_LABEL: &[u8] = b"chat-encryption";
+/// RFC-0004 type byte for an X25519 account ECDH key.
+const X25519_IDENTIFIER_KEY_TYPE: u8 = 0;
 
 /// SCALE payload signed for a lite consumer registration.
 ///
@@ -58,14 +59,65 @@ pub struct LiteRegistration {
     pub ring_vrf_key: [u8; 32],
     /// Plain bandersnatch VRF proof over the same proof message.
     pub proof_of_ownership: [u8; 64],
-    /// 65-byte uncompressed P-256 identifier key. It doubles as the dotNS chat
-    /// key.
+    /// RFC-0004 X25519 account ECDH key container: type byte, 32-byte public
+    /// key, then 32 bytes of zero padding.
     pub identifier_key: [u8; 65],
     /// sr25519 signature over the SCALE consumer-registration tuple.
     pub consumer_registration_signature: [u8; 64],
     /// sr25519 signature over the dotNS gateway reservation message. It
     /// authorizes `pallet_dotns_gateway::reserve_name` on Asset Hub.
     pub dotns_signature: [u8; 64],
+}
+
+impl LiteRegistration {
+    /// Encode the identity backend's registration body, sharing CLI and browser wire bytes.
+    pub fn request_body(
+        &self,
+        username_base: &str,
+        reserved_username: Option<&str>,
+        signed_at: u64,
+    ) -> serde_json::Value {
+        let hex0x = |bytes: &[u8]| format!("0x{}", hex::encode(bytes));
+        let mut dotns = serde_json::json!({
+            "signature": hex0x(&self.dotns_signature),
+            "signedAt": signed_at,
+        });
+        if let Some(reserved) = reserved_username {
+            dotns["reservedUsername"] = serde_json::json!(reserved);
+        }
+        serde_json::json!({
+            "username": username_base,
+            "candidateAccountId": self.candidate_account_id,
+            "candidateSignature": hex0x(&self.candidate_signature),
+            "ringVrfKey": hex0x(&self.ring_vrf_key),
+            "proofOfOwnership": hex0x(&self.proof_of_ownership),
+            "identifierKey": hex0x(&self.identifier_key),
+            "consumerRegistrationSignature": hex0x(&self.consumer_registration_signature),
+            "dotns": dotns,
+        })
+    }
+}
+
+/// Sign the backend auth challenge as the network's UID account, covering the exact body.
+pub fn sign_backend_challenge(
+    entropy: &[u8],
+    network_suffix: &str,
+    challenge: &[u8],
+    body: &[u8],
+) -> Result<([u8; 32], [u8; 64]), ProductAccountError> {
+    use sha2::{Digest as _, Sha256};
+    let keypair = derive_identity_keypair(entropy, network_suffix)?;
+    let client_id = keypair.public.to_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(challenge);
+    hasher.update(client_id);
+    hasher.update(Sha256::digest(body));
+    let message: [u8; 32] = hasher.finalize().into();
+    let proof = keypair
+        .secret
+        .sign_simple(SR25519_SIGNING_CONTEXT, &message, &keypair.public)
+        .to_bytes();
+    Ok((client_id, proof))
 }
 
 /// Error while building lite-person registration parameters.
@@ -77,9 +129,6 @@ pub enum LiteRegistrationError {
     /// Ring-VRF proof-of-ownership failed.
     #[error("ring-VRF proof-of-ownership failed: {0:?}")]
     ProofOfOwnership(VerifiableError),
-    /// P-256 identifier key derivation failed.
-    #[error("identifier key derivation failed")]
-    IdentifierKey,
 }
 
 /// Build the lite-person registration parameters for `username_base`
@@ -121,7 +170,7 @@ pub fn build_lite_registration(
     let proof_of_ownership = BandersnatchVrfVerifiable::sign(&vrf_secret, &proof_message)
         .map_err(LiteRegistrationError::ProofOfOwnership)?;
 
-    let identifier_key = derive_identifier_key(entropy)?;
+    let identifier_key = derive_identifier_key(entropy);
 
     let consumer_message = ConsumerRegistrationSigningPayload {
         account: candidate_public_key,
@@ -169,32 +218,12 @@ pub fn build_lite_registration(
     })
 }
 
-fn derive_identifier_key(entropy: &[u8]) -> Result<[u8; 65], LiteRegistrationError> {
-    use p256::SecretKey;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
-
-    for attempt in 0..64 {
-        let mut message = Vec::with_capacity(IDENTIFIER_KEY_LABEL.len() + 1);
-        message.extend_from_slice(IDENTIFIER_KEY_LABEL);
-        message.push(attempt);
-        let candidate: [u8; 32] = blake2b_simd::Params::new()
-            .hash_length(32)
-            .key(entropy)
-            .hash(&message)
-            .as_bytes()
-            .try_into()
-            .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed");
-        let Ok(secret) = SecretKey::from_slice(&candidate) else {
-            continue;
-        };
-        return Ok(secret
-            .public_key()
-            .to_encoded_point(false)
-            .as_bytes()
-            .try_into()
-            .expect("uncompressed P-256 public keys are exactly 65 bytes"));
-    }
-    Err(LiteRegistrationError::IdentifierKey)
+fn derive_identifier_key(entropy: &[u8]) -> [u8; 65] {
+    let (_, public_key) = derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN);
+    let mut identifier_key = [0u8; 65];
+    identifier_key[0] = X25519_IDENTIFIER_KEY_TYPE;
+    identifier_key[1..33].copy_from_slice(&public_key);
+    identifier_key
 }
 
 #[cfg(test)]
@@ -241,7 +270,15 @@ mod tests {
             "a person registered on paseo-next-v2 is not the seed's .dot person"
         );
 
-        assert_eq!(reg.identifier_key[0], 0x04, "P-256 uncompressed prefix");
+        assert_eq!(
+            reg.identifier_key[0], X25519_IDENTIFIER_KEY_TYPE,
+            "RFC-0004 X25519 type"
+        );
+        assert_eq!(
+            &reg.identifier_key[1..33],
+            &derive_x25519_keypair_from_entropy(&ENTROPY, CHAT_ENCRYPTION_DOMAIN).1
+        );
+        assert_eq!(&reg.identifier_key[33..], &[0u8; 32]);
         assert!(
             reg.candidate_account_id
                 .chars()

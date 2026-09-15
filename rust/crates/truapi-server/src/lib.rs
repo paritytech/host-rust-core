@@ -70,8 +70,10 @@ pub use native_debug::{DebugSinkError, WsDebugSink};
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;
 pub use runtime::product_manifest::encode_cached_root_manifest;
-#[cfg(not(target_arch = "wasm32"))]
+// These helpers use injected host RPC on both native and browser targets.
+// Only the direct-URL RPC constructor is native-only.
 pub use runtime::statement_allowance;
+pub use runtime::{LocalIdentity, LocalIdentityContext};
 pub use runtime::{PairedSsoPeer, ResponderExit};
 pub use truapi_platform::{
     CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,

@@ -58,6 +58,9 @@ jobs:
       - name: cargo build
         run: cargo build --workspace --all-targets --all-features
 
+      - name: cargo check no-std guest SDK
+        run: cargo check --locked -p truapi -p truapi-client --no-default-features
+
       - name: cargo check wasm32
         run: cargo check --target wasm32-unknown-unknown -p truapi-server
 

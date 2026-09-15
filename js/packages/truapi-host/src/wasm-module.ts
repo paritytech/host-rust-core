@@ -4,6 +4,7 @@
 // these interfaces so the worker can name it in a statically analysable import.
 
 import type { PermissionAuthorizationRuntime } from "./worker-permission-authorization.js";
+import type { LocalIdentity } from "./worker-protocol.js";
 
 /** Cancellable handle on one live render stream inside the core. */
 export interface WorkerRendererSubscription {
@@ -43,24 +44,20 @@ export interface WorkerProductRuntime {
 /** What the host does with a product's worker after demand on it changed. */
 export type WorkerTransition = "Start" | "Stop";
 
-/** The long-lived pairing-host runtime product cores are created from. */
-export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime {
+/** Runtime operations shared by paired and browser-local signing hosts. */
+export interface WorkerHostRuntime extends PermissionAuthorizationRuntime {
   productRuntime(
     product: unknown,
     coreCallbacks: unknown,
   ): WorkerProductRuntime;
   disconnectSession(): Promise<void>;
-  cancelPairing(): void;
-  notifySessionStoreChanged(): void;
   sessionChatIdentityKey(): Uint8Array | undefined;
   deviceEncryptionKey(): Promise<Uint8Array>;
   productSubtreePublicKey(
     productId: string,
     timeoutMs?: number,
   ): Promise<Uint8Array | undefined>;
-  activateStoredSession(): Promise<void>;
-  activateExternalSession(blob: Uint8Array): Promise<void>;
-  resetSessionState(): Promise<void>;
+  clearProductState(productId: string): Promise<void>;
   /**
    * Take one reference on the product's worker. The first one reports
    * `"Start"` through the runtime's `workerDemandChanged` callback.
@@ -73,6 +70,35 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   free(): void;
 }
 
+/** The long-lived pairing-host runtime product cores are created from. */
+export interface WorkerPairingHostRuntime extends WorkerHostRuntime {
+  cancelPairing(): void;
+  notifySessionStoreChanged(): void;
+  activateStoredSession(): Promise<void>;
+  activateExternalSession(blob: Uint8Array): Promise<void>;
+  resetSessionState(): Promise<void>;
+}
+
+/** A browser-local signing host activated from caller-owned entropy. */
+export interface WorkerSigningHostRuntime extends WorkerHostRuntime {
+  activateLocalSession(secret: Uint8Array): Promise<void>;
+  activateLocalSessionWithIdentity(
+    secret: Uint8Array,
+    liteUsername?: string,
+  ): Promise<void>;
+  localIdentityContext(): { activationId: string; identityAccountId: string };
+  localIdentityAuthProof(
+    activationId: string,
+    challenge: Uint8Array,
+  ): Uint8Array;
+  localLiteRegistrationBody(
+    activationId: string,
+    usernameBase: string,
+    verifier: Uint8Array,
+  ): Promise<string>;
+  refreshLocalIdentity(activationId: string): Promise<LocalIdentity>;
+}
+
 /** Module surface the wasm-pack glue exports. */
 export interface WasmModuleShape {
   default: (input?: unknown) => Promise<unknown>;
@@ -80,6 +106,10 @@ export interface WasmModuleShape {
     callbacks: unknown,
     hostConfig: unknown,
   ) => WorkerPairingHostRuntime;
+  WasmSigningHostRuntime: new (
+    callbacks: unknown,
+    hostConfig: unknown,
+  ) => WorkerSigningHostRuntime;
   WasmProductRuntime: new (
     callbacks: unknown,
     runtimeConfig: unknown,

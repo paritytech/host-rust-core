@@ -27,6 +27,7 @@ import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type {
   CallbackName,
+  LocalIdentity,
   MainToWorker,
   SubscriptionName,
   WorkerToMain,
@@ -39,6 +40,10 @@ export type WebWorkerHostConfig = Omit<
   ProductRuntimeConfig,
   "productId" | "executionKind"
 >;
+export type WebWorkerSigningHostConfig = WebWorkerHostConfig & {
+  /** Bare dotNS network suffix (`dot`, `paseo`, or `testnet`). */
+  networkSuffix: string;
+};
 
 export interface WorkerPairingHostRuntime {
   /**
@@ -119,6 +124,27 @@ export interface WorkerPairingHostRuntime {
   setLogLevel(level: LogLevel): void;
   dispose(): void;
 }
+export interface WorkerSigningHostRuntime extends Omit<
+  WorkerPairingHostRuntime,
+  | "cancelPairing"
+  | "notifySessionStoreChanged"
+  | "activateStoredSession"
+  | "activateExternalSession"
+  | "resetSessionState"
+> {
+  activateLocalSession(secret: Uint8Array): Promise<void>;
+  activateLocalSessionWithIdentity(
+    secret: Uint8Array,
+    liteUsername?: string,
+  ): Promise<void>;
+  /** Read dotNS ownership and install verified metadata into the native session. */
+  refreshLocalIdentity(): Promise<LocalIdentity>;
+  /** Complete native UID auth/proofs and wait for on-chain ownership confirmation. */
+  registerLocalLiteUsername(
+    baseUsername: string,
+    identityBackendBaseUrl: string,
+  ): Promise<LocalIdentity>;
+}
 
 interface CoreState {
   coreId: number;
@@ -162,6 +188,7 @@ interface RuntimeState {
     number,
     { resolve: () => void; reject: (error: Error) => void }
   >;
+  pendingLocalIdentities: Map<number, PendingEntry<LocalIdentity>>;
   pendingPermissionAuthorizationStatuses: Map<
     number,
     {
@@ -225,6 +252,7 @@ let nextSessionChatIdentityKeyRequestId = 0;
 let nextDeviceEncryptionKeyRequestId = 0;
 let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
+let nextLocalIdentityRequestId = 0;
 let nextActionRequestId = 0;
 let nextRenderId = 0;
 
@@ -685,6 +713,7 @@ function handleDeviceEncryptionKeyResponse(
 function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingDisconnects, error);
   rejectAll(state.pendingSessionActivations, error);
+  rejectAll(state.pendingLocalIdentities, error);
   rejectAll(state.pendingPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingPermissionAuthorizationStatusBatches, error);
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
@@ -744,6 +773,25 @@ function sendSessionActivationRequest(
   );
 }
 
+function sendLocalIdentityRequest(
+  state: RuntimeState,
+  buildMessage: (requestId: number) => MainToWorker,
+): Promise<LocalIdentity> {
+  if (state.disposed) {
+    return Promise.reject(state.closedError ?? new Error("runtime disposed"));
+  }
+  const { promise, resolve, reject } = Promise.withResolvers<LocalIdentity>();
+  const requestId = ++nextLocalIdentityRequestId;
+  state.pendingLocalIdentities.set(requestId, { resolve, reject });
+  try {
+    state.worker.postMessage(buildMessage(requestId));
+  } catch (error) {
+    state.pendingLocalIdentities.delete(requestId);
+    reject(error);
+  }
+  return promise;
+}
+
 function closeCoreState(core: CoreState, error: Error): void {
   if (core.disposed) return;
   core.disposed = true;
@@ -795,10 +843,21 @@ function teardown(state: RuntimeState, error: Error, fault: boolean): void {
   }
 }
 
-export interface CreateWebWorkerPairingHostRuntimeOptions {
+interface CreateWebWorkerHostRuntimeOptions {
   logLevel?: LogLevel;
-  hostConfig: WebWorkerHostConfig;
+  hostConfig: WebWorkerHostConfig | WebWorkerSigningHostConfig;
   initTimeoutMs?: number;
+  runtimeKind?: "pairing" | "signing";
+}
+
+export interface CreateWebWorkerPairingHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
+  hostConfig: WebWorkerHostConfig;
+  runtimeKind?: "pairing";
+}
+
+export interface CreateWebWorkerSigningHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
+  hostConfig: WebWorkerSigningHostConfig;
+  runtimeKind?: "signing";
 }
 
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
@@ -808,6 +867,28 @@ export function createWebWorkerPairingHostRuntime(
   host: WebWorkerHostCallbacks,
   options: CreateWebWorkerPairingHostRuntimeOptions,
 ): Promise<WorkerPairingHostRuntime> {
+  return createWebWorkerHostRuntime(worker, host, {
+    ...options,
+    runtimeKind: "pairing",
+  });
+}
+
+export function createWebWorkerSigningHostRuntime(
+  worker: Worker,
+  host: WebWorkerHostCallbacks,
+  options: CreateWebWorkerSigningHostRuntimeOptions,
+): Promise<WorkerSigningHostRuntime> {
+  return createWebWorkerHostRuntime(worker, host, {
+    ...options,
+    runtimeKind: "signing",
+  });
+}
+
+function createWebWorkerHostRuntime(
+  worker: Worker,
+  host: WebWorkerHostCallbacks,
+  options: CreateWebWorkerHostRuntimeOptions,
+): Promise<WorkerPairingHostRuntime & WorkerSigningHostRuntime> {
   const callbacks = createWasmRawCallbacks(host);
 
   return new Promise((resolve, reject) => {
@@ -820,6 +901,7 @@ export function createWebWorkerPairingHostRuntime(
       chainConnections: new Map(),
       pendingDisconnects: new Map(),
       pendingSessionActivations: new Map(),
+      pendingLocalIdentities: new Map(),
       pendingPermissionAuthorizationStatuses: new Map(),
       pendingPermissionAuthorizationStatusBatches: new Map(),
       pendingSetPermissionAuthorizationStatuses: new Map(),
@@ -837,7 +919,8 @@ export function createWebWorkerPairingHostRuntime(
       coreWireSchemaHash: undefined,
     };
 
-    let runtime: WorkerPairingHostRuntime | null = null;
+    let runtime: (WorkerPairingHostRuntime & WorkerSigningHostRuntime) | null =
+      null;
 
     const notifyFault = (error: Error): void => {
       teardown(state, error, true);
@@ -879,6 +962,15 @@ export function createWebWorkerPairingHostRuntime(
           break;
         case "sessionActivationResponse":
           handleSessionActivationResponse(state, msg);
+          break;
+        case "localIdentityResponse":
+          settlePending(
+            state.pendingLocalIdentities,
+            msg.requestId,
+            msg.ok
+              ? { ok: true, value: msg.identity }
+              : { ok: false, error: msg.error },
+          );
           break;
         case "permissionAuthorizationStatusResponse":
           handlePermissionAuthorizationStatusResponse(state, msg);
@@ -1009,6 +1101,7 @@ export function createWebWorkerPairingHostRuntime(
           kind: "init",
           logLevel: devLogLevelOverride ?? options.logLevel ?? "off",
           hostConfig: options.hostConfig,
+          runtimeKind: options.runtimeKind,
           capabilities: {
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
@@ -1107,8 +1200,10 @@ function handleFrameError(
   }
 }
 
-function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
-  const runtime: WorkerPairingHostRuntime = {
+function buildRuntime(
+  state: RuntimeState,
+): WorkerPairingHostRuntime & WorkerSigningHostRuntime {
+  const runtime: WorkerPairingHostRuntime & WorkerSigningHostRuntime = {
     coreWireSchemaHash: state.coreWireSchemaHash,
     createProvider(product): Promise<TrUApiProductProvider> {
       if (state.disposed) {
@@ -1232,6 +1327,41 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
       return sendSessionActivationRequest(state, (requestId) => ({
         kind: "resetSessionState",
         requestId,
+      }));
+    },
+    activateLocalSession(secret: Uint8Array): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "activateLocalSession",
+        requestId,
+        secret,
+      }));
+    },
+    activateLocalSessionWithIdentity(
+      secret: Uint8Array,
+      liteUsername?: string,
+    ): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "activateLocalSessionWithIdentity",
+        requestId,
+        secret,
+        liteUsername,
+      }));
+    },
+    refreshLocalIdentity(): Promise<LocalIdentity> {
+      return sendLocalIdentityRequest(state, (requestId) => ({
+        kind: "refreshLocalIdentity",
+        requestId,
+      }));
+    },
+    registerLocalLiteUsername(
+      baseUsername,
+      identityBackendBaseUrl,
+    ): Promise<LocalIdentity> {
+      return sendLocalIdentityRequest(state, (requestId) => ({
+        kind: "registerLocalLiteUsername",
+        requestId,
+        baseUsername,
+        identityBackendBaseUrl,
       }));
     },
     getPermissionAuthorizationStatus(productId, request) {

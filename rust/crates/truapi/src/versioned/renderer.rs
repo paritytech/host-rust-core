@@ -11,6 +11,7 @@ truapi_macros::versioned_type! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{vec, vec::Vec};
     use parity_scale_codec::{Decode, Encode};
 
     #[test]
