@@ -9,8 +9,12 @@
 
 use parity_scale_codec::Encode;
 use sp_crypto_hashing::blake2_256;
+use subxt::utils::{AccountId32, MultiSignature};
 use thiserror::Error;
-use truapi::latest::{HostSignPayloadData, TxPayloadExtension};
+use truapi::latest::{HostSignPayloadData, HostSignPayloadResponse, TxPayloadExtension};
+
+use crate::host_logic::extrinsic::build_signed_extrinsic_v4_with_signature;
+use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 
 /// Preimages longer than this are hashed before signing.
 const MAX_SIGNED_PREIMAGE_LEN: usize = 256;
@@ -39,6 +43,45 @@ pub enum ExtrinsicPayloadError {
         /// Supplied metadata hash length.
         len: usize,
     },
+    /// Only version 4 payloads carry every field this preimage needs.
+    #[error("unsupported extrinsic payload version {version}; only version 4 is supported")]
+    UnsupportedPayloadVersion {
+        /// Version the caller asked for.
+        version: u32,
+    },
+}
+
+/// Sign a V4 extrinsic payload with `keypair`, assembling the signed extrinsic
+/// too when the caller asked for one.
+pub fn sign_extrinsic_payload(
+    keypair: &schnorrkel::Keypair,
+    payload: HostSignPayloadData,
+) -> Result<HostSignPayloadResponse, ExtrinsicPayloadError> {
+    if payload.version != 4 {
+        return Err(ExtrinsicPayloadError::UnsupportedPayloadVersion {
+            version: payload.version,
+        });
+    }
+    let preimage = extrinsic_payload_preimage(&payload)?;
+    let raw_signature = keypair
+        .secret
+        .sign_simple(SR25519_SIGNING_CONTEXT, &preimage, &keypair.public)
+        .to_bytes();
+    let signature = MultiSignature::Sr25519(raw_signature);
+    let signed_transaction = payload.with_signed_transaction.0.unwrap_or(false).then(|| {
+        let extensions = extrinsic_payload_extensions(&payload)
+            .expect("preimage construction already validated signed extensions");
+        build_signed_extrinsic_v4_with_signature(
+            AccountId32(keypair.public.to_bytes()),
+            &signature,
+            &payload.method,
+            &extensions,
+        )
+    });
+    Ok(HostSignPayloadResponse {
+        signature: signature.encode(),
+        signed_transaction,
+    })
 }
 
 /// Encode the standard signed extensions in the order declared by the target

@@ -27,9 +27,6 @@ use truapi::latest::{
     HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
 };
 
-use parity_scale_codec::Encode;
-use subxt::utils::{AccountId32, MultiSignature};
-
 #[cfg(not(target_arch = "wasm32"))]
 pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
@@ -40,17 +37,14 @@ pub(crate) use sso_responder::{
 pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
-    AuthorityError, AuthoritySession, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
-    ProductAuthority, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    StatementStoreAllowanceKey, authority_session_validation_id,
+    AuthorityError, AuthoritySession, AutoSigningGrant, BulletinAllowanceKey,
+    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session_validation_id,
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::entropy::derive_product_entropy;
-use crate::host_logic::extrinsic::{
-    Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
-    build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
-};
+use crate::host_logic::extrinsic::build_local_transaction;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
@@ -60,9 +54,10 @@ use crate::host_logic::product_account::{
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
 };
+use crate::host_logic::raw_signing::raw_payload_bytes;
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
-use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
+use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
@@ -87,9 +82,6 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 use zeroize::Zeroizing;
-
-const BYTES_WRAP_PREFIX: &[u8] = b"<Bytes>";
-const BYTES_WRAP_SUFFIX: &[u8] = b"</Bytes>";
 
 #[derive(Default)]
 struct LocalGrantState {
@@ -680,6 +672,30 @@ impl ProductAuthority for SigningHost {
         false
     }
 
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        calling_product_id: &str,
+        account: &v01::ProductAccountId,
+    ) -> Result<AutoSigningGrant, AuthorityError> {
+        // A stale session is not a grant, and is answered here rather than
+        // raising a prompt against a session that no longer exists.
+        // `grant_auto_signing` refuses to record a grant whose owner is not
+        // the session's own key, so the session carries the owner a grant can
+        // be keyed on and no root derivation is needed to answer this.
+        let (current, activation_generation) = self.require_current_session(session)?;
+        if self.has_auto_signing_grant(
+            activation_generation,
+            current.public_key,
+            calling_product_id,
+            &account.dot_ns_identifier,
+        ) {
+            Ok(AutoSigningGrant::Active)
+        } else {
+            Ok(AutoSigningGrant::Absent)
+        }
+    }
+
     async fn sign_vrf(
         &self,
         _cx: &CallContext,
@@ -737,7 +753,7 @@ impl ProductAuthority for SigningHost {
                 request,
             } => (self.product_keypair(&product_account)?, request.payload),
         };
-        sign_extrinsic_payload(&keypair, payload)
+        Ok(sign_extrinsic_payload(&keypair, payload)?)
     }
 
     async fn sign_raw(
@@ -788,7 +804,7 @@ impl ProductAuthority for SigningHost {
                 // enforced upstream, so the derived key defines the signer.
                 let keypair = self.product_keypair(&payload.signer)?;
                 build_local_transaction(
-                    &self.services,
+                    &self.services.chain,
                     &keypair,
                     payload.genesis_hash,
                     &payload.call_data,
@@ -796,6 +812,7 @@ impl ProductAuthority for SigningHost {
                     payload.tx_ext_version,
                 )
                 .await
+                .map_err(AuthorityError::from)
             }
             CreateTransactionAuthorityRequest::LegacyAccount {
                 product_account,
@@ -813,7 +830,7 @@ impl ProductAuthority for SigningHost {
                     });
                 }
                 build_local_transaction(
-                    &self.services,
+                    &self.services.chain,
                     &keypair,
                     request.genesis_hash,
                     &request.call_data,
@@ -821,6 +838,7 @@ impl ProductAuthority for SigningHost {
                     request.tx_ext_version,
                 )
                 .await
+                .map_err(AuthorityError::from)
             }
             CreateTransactionAuthorityRequest::IdentityAccount(request) => {
                 let keypair = self.identity_keypair()?;
@@ -832,7 +850,7 @@ impl ProductAuthority for SigningHost {
                     });
                 }
                 build_local_transaction(
-                    &self.services,
+                    &self.services.chain,
                     &keypair,
                     request.genesis_hash,
                     &request.call_data,
@@ -840,6 +858,7 @@ impl ProductAuthority for SigningHost {
                     request.tx_ext_version,
                 )
                 .await
+                .map_err(AuthorityError::from)
             }
         }
     }
@@ -1163,152 +1182,15 @@ fn local_session_validation_id(session: &SessionInfo, activation_generation: u64
     id
 }
 
-fn sign_extrinsic_payload(
-    keypair: &schnorrkel::Keypair,
-    payload: v01::HostSignPayloadData,
-) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
-    if payload.version != 4 {
-        return Err(AuthorityError::NotSupported {
-            reason: format!(
-                "signing host: unsupported extrinsic payload version {}; only version 4 is supported",
-                payload.version
-            ),
-        });
-    }
-    let preimage = extrinsic_payload_preimage(&payload).map_err(|err| AuthorityError::Unknown {
-        reason: err.to_string(),
-    })?;
-    let raw_signature = keypair
-        .secret
-        .sign_simple(SR25519_SIGNING_CONTEXT, &preimage, &keypair.public)
-        .to_bytes();
-    let signature = MultiSignature::Sr25519(raw_signature);
-    let signed_transaction = payload.with_signed_transaction.0.unwrap_or(false).then(|| {
-        let extensions = extrinsic_payload_extensions(&payload)
-            .expect("preimage construction already validated signed extensions");
-        build_signed_extrinsic_v4_with_signature(
-            AccountId32(keypair.public.to_bytes()),
-            &signature,
-            &payload.method,
-            &extensions,
-        )
-    });
-    Ok(v01::HostSignPayloadResponse {
-        signature: signature.encode(),
-        signed_transaction,
-    })
-}
-
 fn product_authority_error(err: ProductAccountError) -> AuthorityError {
     AuthorityError::Unavailable {
         reason: err.to_string(),
     }
 }
 
-/// Assemble a transaction locally from caller-supplied, pre-encoded parts.
-///
-/// V4 needs no metadata. V5 resolves the runtime's call and transaction
-/// extension pipeline from the genesis-pinned Subxt client, keeping the caller's
-/// already-encoded call arguments and extension values opaque apart from
-/// `VerifyMultiSignature`, whose value is checked against the runtime's type.
-///
-/// V5 is signed with the local key only when `extensions` omits
-/// `VerifyMultiSignature`; callers that supply it are assembled unsigned.
-async fn build_local_transaction(
-    services: &RuntimeServices,
-    keypair: &schnorrkel::Keypair,
-    genesis_hash: [u8; 32],
-    call_data: &[u8],
-    extensions: &[v01::TxPayloadExtension],
-    tx_ext_version: u8,
-) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
-    let signer = Sr25519Signer::from_keypair(keypair);
-    if tx_ext_version == 0 {
-        let transaction = build_signed_extrinsic_v4(&signer, call_data, extensions);
-        return Ok(v01::HostCreateTransactionResponse { transaction });
-    }
-    if tx_ext_version != 5 {
-        return Err(AuthorityError::NotSupported {
-            reason: format!(
-                "signing host: unsupported tx_ext_version {tx_ext_version}; expected 0 for V4 or 5 for V5"
-            ),
-        });
-    }
-
-    let client = services
-        .chain
-        .online_client(&genesis_hash)
-        .await
-        .map_err(|error| AuthorityError::Unavailable {
-            reason: format!("signing host: cannot load V5 chain metadata: {error}"),
-        })?;
-    let at_block =
-        client
-            .at_current_block()
-            .await
-            .map_err(|error| AuthorityError::Unavailable {
-                reason: format!("signing host: cannot select a V5 metadata block: {error}"),
-            })?;
-    let transaction = build_signed_extrinsic_v5(
-        &signer,
-        genesis_hash,
-        call_data,
-        extensions,
-        at_block.metadata(),
-    )
-    .map_err(|error| match error {
-        V5BuildError::UnsupportedExtensions(reason) => AuthorityError::NotSupported {
-            reason: format!("signing host: {reason}"),
-        },
-        V5BuildError::Other(reason) => AuthorityError::Unknown {
-            reason: format!("signing host: {reason}"),
-        },
-    })?;
-    Ok(v01::HostCreateTransactionResponse { transaction })
-}
-
-/// Decode raw sign-message bytes, optionally adding the `<Bytes>…</Bytes>`
-/// envelope unless already wrapped, matching the polkadot-app raw-signing convention.
-///
-/// String payloads follow the polkadot-app `isHex` rule: a `0x`-prefixed,
-/// even-length string is decoded from hex, and a corrupt hex body is a hard
-/// error (never silently signed as UTF-8); any other string is signed as its
-/// UTF-8 bytes.
-fn raw_payload_bytes(
-    payload: v01::RawPayload,
-    watermarked: bool,
-) -> Result<Vec<u8>, AuthorityError> {
-    let raw = match payload {
-        v01::RawPayload::Bytes { bytes } => bytes,
-        v01::RawPayload::Payload { payload } => decode_payload_string(payload)?,
-    };
-    if !watermarked || (raw.starts_with(BYTES_WRAP_PREFIX) && raw.ends_with(BYTES_WRAP_SUFFIX)) {
-        return Ok(raw);
-    }
-    let mut wrapped =
-        Vec::with_capacity(BYTES_WRAP_PREFIX.len() + raw.len() + BYTES_WRAP_SUFFIX.len());
-    wrapped.extend_from_slice(BYTES_WRAP_PREFIX);
-    wrapped.extend_from_slice(&raw);
-    wrapped.extend_from_slice(BYTES_WRAP_SUFFIX);
-    Ok(wrapped)
-}
-
-fn decode_payload_string(payload: String) -> Result<Vec<u8>, AuthorityError> {
-    // `isHex`: `0x` prefix and even total length. Odd length is not hex and is
-    // signed as UTF-8, matching polkadot-app.
-    if let Some(body) = payload
-        .strip_prefix("0x")
-        .filter(|_| payload.len().is_multiple_of(2))
-    {
-        return hex::decode(body).map_err(|_| AuthorityError::Unknown {
-            reason: "raw sign payload is 0x-prefixed but not valid hex".to_string(),
-        });
-    }
-    Ok(payload.into_bytes())
-}
-
 #[cfg(test)]
 mod tests {
+    mod auto_signing;
     mod raw_signing;
 
     use std::sync::Arc;
@@ -1320,10 +1202,7 @@ mod tests {
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
     use super::TEST_NETWORK_SUFFIX;
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
-    use super::{
-        BYTES_WRAP_PREFIX, BYTES_WRAP_SUFFIX, LocalActivation, RingVrfError,
-        SR25519_SIGNING_CONTEXT, raw_payload_bytes,
-    };
+    use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
         derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
@@ -2539,62 +2418,6 @@ mod tests {
             CallError::Domain(HostAccountGetError::V1(
                 v01::HostAccountGetError::NotConnected
             ))
-        ));
-    }
-
-    #[test]
-    fn raw_payload_bytes_wraps_and_decodes() {
-        let ok = |p| raw_payload_bytes(p, true).expect("payload ok");
-        // Bytes are <Bytes>-wrapped.
-        assert_eq!(
-            ok(v01::RawPayload::Bytes {
-                bytes: b"hi".to_vec()
-            }),
-            b"<Bytes>hi</Bytes>".to_vec(),
-        );
-        // A 0x-hex string payload decodes to bytes before wrapping.
-        assert_eq!(
-            ok(v01::RawPayload::Payload {
-                payload: "0xdeadbeef".to_string(),
-            }),
-            [
-                BYTES_WRAP_PREFIX,
-                &[0xde, 0xad, 0xbe, 0xef],
-                BYTES_WRAP_SUFFIX
-            ]
-            .concat(),
-        );
-        // A non-hex string payload is signed as UTF-8.
-        assert_eq!(
-            ok(v01::RawPayload::Payload {
-                payload: "hello".to_string(),
-            }),
-            b"<Bytes>hello</Bytes>".to_vec(),
-        );
-        // An odd-length 0x string is not `isHex`, so it is signed as UTF-8.
-        assert_eq!(
-            ok(v01::RawPayload::Payload {
-                payload: "0xabc".to_string(),
-            }),
-            b"<Bytes>0xabc</Bytes>".to_vec(),
-        );
-        // Already-wrapped input is left untouched (no double wrapping).
-        assert_eq!(
-            ok(v01::RawPayload::Bytes {
-                bytes: b"<Bytes>hi</Bytes>".to_vec(),
-            }),
-            b"<Bytes>hi</Bytes>".to_vec(),
-        );
-        // An even-length 0x string that is not valid hex is a hard error,
-        // never silently signed as UTF-8 (matches polkadot-app abort).
-        assert!(matches!(
-            raw_payload_bytes(
-                v01::RawPayload::Payload {
-                    payload: "0xZZ".to_string(),
-                },
-                true
-            ),
-            Err(AuthorityError::Unknown { .. }),
         ));
     }
 

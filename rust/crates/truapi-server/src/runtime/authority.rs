@@ -24,9 +24,12 @@ use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
 
+use crate::host_logic::extrinsic::LocalTransactionError;
+use crate::host_logic::raw_signing::RawPayloadError;
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
+use crate::host_logic::transaction::ExtrinsicPayloadError;
 
 /// Secret key allocated for Bulletin preimage submission.
 ///
@@ -152,6 +155,48 @@ pub(crate) enum AuthorityError {
     Unknown { reason: String },
 }
 
+/// A preimage this host cannot assemble is a shape failure, not a transport one.
+impl From<ExtrinsicPayloadError> for AuthorityError {
+    fn from(err: ExtrinsicPayloadError) -> Self {
+        match err {
+            ExtrinsicPayloadError::UnsupportedPayloadVersion { .. }
+            | ExtrinsicPayloadError::UnsupportedSignedExtension { .. } => Self::NotSupported {
+                reason: err.to_string(),
+            },
+            other => Self::Unknown {
+                reason: other.to_string(),
+            },
+        }
+    }
+}
+
+/// A chain the host cannot reach is `Unavailable`; a request shape it cannot
+/// assemble is `NotSupported`.
+impl From<LocalTransactionError> for AuthorityError {
+    fn from(err: LocalTransactionError) -> Self {
+        match err {
+            LocalTransactionError::UnsupportedTxExtVersion { .. }
+            | LocalTransactionError::UnsupportedExtensions(_) => Self::NotSupported {
+                reason: err.to_string(),
+            },
+            LocalTransactionError::ChainUnavailable(_) => Self::Unavailable {
+                reason: err.to_string(),
+            },
+            LocalTransactionError::Other(_) => Self::Unknown {
+                reason: err.to_string(),
+            },
+        }
+    }
+}
+
+impl From<RawPayloadError> for AuthorityError {
+    fn from(err: RawPayloadError) -> Self {
+        Self::Unknown {
+            reason: err.to_string(),
+        }
+    }
+}
+
 impl From<AuthorityError> for RingVrfError {
     fn from(err: AuthorityError) -> Self {
         match err {
@@ -241,6 +286,16 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     },
     /// Create a transaction with the active wallet's identity account.
     IdentityAccount(LegacyAccountTxPayload),
+}
+
+/// Whether an active AutoSigning grant covers one product-account call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoSigningGrant {
+    /// Covered: the matching authority call serves this request from local key
+    /// material and raises no prompt anywhere.
+    Active,
+    /// Not covered: the caller must obtain user consent.
+    Absent,
 }
 
 /// Statement-store allowance signing material held by the authority layer.
@@ -333,6 +388,33 @@ pub(crate) trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         product_id: &str,
     ) -> bool;
+
+    /// Whether an active AutoSigning grant covers `account` for
+    /// `calling_product_id`.
+    ///
+    /// Only a product's own accounts are ever covered: the grant material is
+    /// one product subtree secret, so legacy and identity accounts cannot be
+    /// produced from it.
+    ///
+    /// [`AutoSigningGrant::Active`] is a promise, not a hint: the matching
+    /// `sign_*` call on this authority serves the request from local key
+    /// material, without reaching a paired host and without raising a prompt on
+    /// either side. The capability layer skips its consent gate on that
+    /// promise, so an authority that cannot keep it answers `Absent`.
+    ///
+    /// `Err` is a hard failure - a broken or foreign grant slot, a stale
+    /// session, unreadable core storage - and is propagated rather than
+    /// downgraded into a prompt. A grant slot the authority has just decided to
+    /// erase must not produce a modal asking the user to approve it.
+    ///
+    /// Required rather than defaulted, so a new authority can neither skip the
+    /// consent gate nor silently claim a grant by omission.
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        calling_product_id: &str,
+        account: &ProductAccountId,
+    ) -> Result<AutoSigningGrant, AuthorityError>;
 
     /// Sign an RFC-0023 Merlin transcript with a product account.
     async fn sign_vrf(

@@ -27,8 +27,9 @@ use subxt::ext::scale_encode::{
 use subxt::metadata::ArcMetadata;
 use subxt::tx::Signer;
 use subxt::utils::{AccountId32, H256, MultiAddress, MultiSignature};
-use truapi::latest::TxPayloadExtension;
+use truapi::latest::{HostCreateTransactionResponse, TxPayloadExtension};
 
+use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 
 /// The runtime name of the V5 authorization extension.
@@ -287,6 +288,78 @@ where
         out.extend_from_slice(&self.supplied(name)?.additional_signed);
         Ok(())
     }
+}
+
+/// Why a locally assembled transaction could not be produced.
+#[derive(Debug, derive_more::Display)]
+pub(crate) enum LocalTransactionError {
+    /// A version this host does not assemble.
+    #[display("unsupported tx_ext_version {version}; expected 0 for V4 or 5 for V5")]
+    UnsupportedTxExtVersion {
+        /// Version the caller asked for.
+        version: u8,
+    },
+    /// V5 needs the runtime's extension pipeline, which the chain did not yield.
+    #[display("{_0}")]
+    ChainUnavailable(String),
+    /// The caller's extension list does not fit the runtime's pipeline.
+    #[display("{_0}")]
+    UnsupportedExtensions(String),
+    /// Any other assembly failure.
+    #[display("{_0}")]
+    Other(String),
+}
+
+/// Assemble a transaction locally from caller-supplied, pre-encoded parts.
+///
+/// V4 needs no metadata. V5 resolves the runtime's call and transaction
+/// extension pipeline from the genesis-pinned Subxt client, keeping the caller's
+/// already-encoded call arguments and extension values opaque apart from
+/// `VerifyMultiSignature`, whose value is checked against the runtime's type.
+///
+/// V5 is signed with the local key only when `extensions` omits
+/// `VerifyMultiSignature`; callers that supply it are assembled unsigned.
+pub(crate) async fn build_local_transaction(
+    chain: &ChainRuntime,
+    keypair: &schnorrkel::Keypair,
+    genesis_hash: [u8; 32],
+    call_data: &[u8],
+    extensions: &[TxPayloadExtension],
+    tx_ext_version: u8,
+) -> Result<HostCreateTransactionResponse, LocalTransactionError> {
+    let signer = Sr25519Signer::from_keypair(keypair);
+    if tx_ext_version == 0 {
+        let transaction = build_signed_extrinsic_v4(&signer, call_data, extensions);
+        return Ok(HostCreateTransactionResponse { transaction });
+    }
+    if tx_ext_version != 5 {
+        return Err(LocalTransactionError::UnsupportedTxExtVersion {
+            version: tx_ext_version,
+        });
+    }
+
+    let client = chain.online_client(&genesis_hash).await.map_err(|error| {
+        LocalTransactionError::ChainUnavailable(format!("cannot load V5 chain metadata: {error}"))
+    })?;
+    let at_block = client.at_current_block().await.map_err(|error| {
+        LocalTransactionError::ChainUnavailable(format!(
+            "cannot select a V5 metadata block: {error}"
+        ))
+    })?;
+    let transaction = build_signed_extrinsic_v5(
+        &signer,
+        genesis_hash,
+        call_data,
+        extensions,
+        at_block.metadata(),
+    )
+    .map_err(|error| match error {
+        V5BuildError::UnsupportedExtensions(reason) => {
+            LocalTransactionError::UnsupportedExtensions(reason)
+        }
+        V5BuildError::Other(reason) => LocalTransactionError::Other(reason),
+    })?;
+    Ok(HostCreateTransactionResponse { transaction })
 }
 
 /// Why a V5 transaction could not be assembled.
