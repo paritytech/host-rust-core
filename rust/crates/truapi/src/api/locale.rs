@@ -1,7 +1,8 @@
 //! Unified [`Locale`] trait.
 
-use crate::latest::GenericError;
-use crate::versioned::locale::{HostLocaleSubscribeItem, HostLocaleSubscribeRequest};
+use crate::versioned::locale::{
+    HostLocaleSubscribeError, HostLocaleSubscribeItem, HostLocaleSubscribeRequest,
+};
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 
@@ -24,7 +25,7 @@ pub trait Locale: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostLocaleSubscribeRequest,
-    ) -> Subscription<HostLocaleSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<HostLocaleSubscribeItem, CallError<HostLocaleSubscribeError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 }

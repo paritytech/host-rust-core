@@ -6,20 +6,20 @@
 use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::Account;
-use truapi::latest::GenericError;
 use truapi::versioned::account::{
-    HostAccountConnectionStatusSubscribeItem, HostAccountConnectionStatusSubscribeRequest,
-    HostAccountCreateProofError, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
-    HostAccountGetAliasError, HostAccountGetAliasRequest, HostAccountGetAliasResponse,
-    HostAccountGetError, HostAccountGetRequest, HostAccountGetResponse,
-    HostAccountListRingVrfKeysError, HostAccountListRingVrfKeysRequest,
-    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyError,
-    HostAccountRegisterRingVrfKeyRequest, HostAccountRegisterRingVrfKeyResponse,
-    HostAccountRingVrfSignError, HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse,
-    HostAccountSignVrfError, HostAccountSignVrfRequest, HostAccountSignVrfResponse,
-    HostGetLegacyAccountsError, HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse,
-    HostGetUserIdError, HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError,
-    HostRequestLoginRequest, HostRequestLoginResponse,
+    HostAccountConnectionStatusSubscribeError, HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest, HostAccountCreateProofError,
+    HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
+    HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
+    HostAccountGetRequest, HostAccountGetResponse, HostAccountListRingVrfKeysError,
+    HostAccountListRingVrfKeysRequest, HostAccountListRingVrfKeysResponse,
+    HostAccountRegisterRingVrfKeyError, HostAccountRegisterRingVrfKeyRequest,
+    HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignError,
+    HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse, HostAccountSignVrfError,
+    HostAccountSignVrfRequest, HostAccountSignVrfResponse, HostGetLegacyAccountsError,
+    HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse, HostGetUserIdError,
+    HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
+    HostRequestLoginResponse,
 };
 use truapi::{CallContext, CallError, Subscription, latest, v01};
 use truapi_platform::{
@@ -422,7 +422,10 @@ impl Account for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostAccountConnectionStatusSubscribeRequest,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<
+        HostAccountConnectionStatusSubscribeItem,
+        CallError<HostAccountConnectionStatusSubscribeError>,
+    > {
         Subscription::new(self.authority.session_state().subscribe().map(Ok))
     }
 

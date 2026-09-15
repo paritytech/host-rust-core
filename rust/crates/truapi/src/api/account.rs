@@ -1,19 +1,19 @@
 //! Unified [`Account`] trait.
 
-use crate::latest::GenericError;
 use crate::versioned::account::{
-    HostAccountConnectionStatusSubscribeItem, HostAccountConnectionStatusSubscribeRequest,
-    HostAccountCreateProofError, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
-    HostAccountGetAliasError, HostAccountGetAliasRequest, HostAccountGetAliasResponse,
-    HostAccountGetError, HostAccountGetRequest, HostAccountGetResponse,
-    HostAccountListRingVrfKeysError, HostAccountListRingVrfKeysRequest,
-    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyError,
-    HostAccountRegisterRingVrfKeyRequest, HostAccountRegisterRingVrfKeyResponse,
-    HostAccountRingVrfSignError, HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse,
-    HostAccountSignVrfError, HostAccountSignVrfRequest, HostAccountSignVrfResponse,
-    HostGetLegacyAccountsError, HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse,
-    HostGetUserIdError, HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError,
-    HostRequestLoginRequest, HostRequestLoginResponse,
+    HostAccountConnectionStatusSubscribeError, HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest, HostAccountCreateProofError,
+    HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
+    HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
+    HostAccountGetRequest, HostAccountGetResponse, HostAccountListRingVrfKeysError,
+    HostAccountListRingVrfKeysRequest, HostAccountListRingVrfKeysResponse,
+    HostAccountRegisterRingVrfKeyError, HostAccountRegisterRingVrfKeyRequest,
+    HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignError,
+    HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse, HostAccountSignVrfError,
+    HostAccountSignVrfRequest, HostAccountSignVrfResponse, HostGetLegacyAccountsError,
+    HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse, HostGetUserIdError,
+    HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
+    HostRequestLoginResponse,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -37,7 +37,10 @@ pub trait Account: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostAccountConnectionStatusSubscribeRequest,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<
+        HostAccountConnectionStatusSubscribeItem,
+        CallError<HostAccountConnectionStatusSubscribeError>,
+    > {
         Subscription::interrupted(CallError::unavailable())
     }
 

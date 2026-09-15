@@ -1207,7 +1207,10 @@ impl ProductRuntimeControl {
                     Ok(truapi::versioned::renderer::ProductRendererRenderItem::V1(node)) => {
                         Some((Ok(node), (stream, reference)))
                     }
-                    Err(interrupt) => Some((Err(interrupt), (stream, None))),
+                    Err(interrupt) => Some((
+                        Err(crate::subscription::interrupt_into_latest(interrupt)),
+                        (stream, None),
+                    )),
                 }
             },
         );

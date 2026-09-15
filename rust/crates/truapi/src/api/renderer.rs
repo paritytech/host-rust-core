@@ -1,8 +1,8 @@
 //! Unified [`Renderer`] trait.
 
-use crate::latest::GenericError;
 use crate::versioned::renderer::{
-    HostRendererActionSubscribeItem, HostRendererActionSubscribeRequest, ProductRendererRenderItem,
+    HostRendererActionSubscribeError, HostRendererActionSubscribeItem,
+    HostRendererActionSubscribeRequest, ProductRendererRenderError, ProductRendererRenderItem,
     ProductRendererRenderRequest,
 };
 use crate::{CallContext, CallError, Subscription};
@@ -27,7 +27,7 @@ pub trait Renderer: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: ProductRendererRenderRequest,
-    ) -> Subscription<ProductRendererRenderItem, CallError<GenericError>> {
+    ) -> Subscription<ProductRendererRenderItem, CallError<ProductRendererRenderError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 
@@ -46,7 +46,8 @@ pub trait Renderer: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostRendererActionSubscribeRequest,
-    ) -> Subscription<HostRendererActionSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<HostRendererActionSubscribeItem, CallError<HostRendererActionSubscribeError>>
+    {
         Subscription::interrupted(CallError::unavailable())
     }
 }

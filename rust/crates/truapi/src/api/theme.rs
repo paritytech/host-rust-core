@@ -1,7 +1,8 @@
 //! Unified [`Theme`] trait.
 
-use crate::latest::GenericError;
-use crate::versioned::theme::{HostThemeSubscribeItem, HostThemeSubscribeRequest};
+use crate::versioned::theme::{
+    HostThemeSubscribeError, HostThemeSubscribeItem, HostThemeSubscribeRequest,
+};
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 
@@ -24,7 +25,7 @@ pub trait Theme: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: HostThemeSubscribeRequest,
-    ) -> Subscription<HostThemeSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<HostThemeSubscribeItem, CallError<HostThemeSubscribeError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 }

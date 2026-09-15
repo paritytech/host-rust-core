@@ -65,18 +65,18 @@ pub(crate) use signing_host::{
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 use tracing::{instrument, warn};
 use truapi::api::{Chat, Renderer};
-use truapi::latest::GenericError;
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
-    HostChatActionSubscribeItem, HostChatActionSubscribeRequest, HostChatCreateRoomError,
-    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
-    HostChatListSubscribeRequest, HostChatPostMessageError, HostChatPostMessageRequest,
-    HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
-    HostChatRegisterBotResponse,
+    HostChatActionSubscribeError, HostChatActionSubscribeItem, HostChatActionSubscribeRequest,
+    HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
+    HostChatListSubscribeError, HostChatListSubscribeItem, HostChatListSubscribeRequest,
+    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
 use truapi::versioned::preimage::RemotePreimageSubmitError;
 use truapi::versioned::renderer::{
-    HostRendererActionSubscribeItem, HostRendererActionSubscribeRequest,
+    HostRendererActionSubscribeError, HostRendererActionSubscribeItem,
+    HostRendererActionSubscribeRequest,
 };
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 use truapi_platform::{
@@ -1051,8 +1051,8 @@ impl Chat for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostChatListSubscribeRequest,
-    ) -> Subscription<HostChatListSubscribeItem, CallError<GenericError>> {
-        let platform = match self.chat_platform::<GenericError>() {
+    ) -> Subscription<HostChatListSubscribeItem, CallError<HostChatListSubscribeError>> {
+        let platform = match self.chat_platform::<HostChatListSubscribeError>() {
             Ok(platform) => platform,
             Err(error) => return Subscription::interrupted(error),
         };
@@ -1102,8 +1102,8 @@ impl Chat for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostChatActionSubscribeRequest,
-    ) -> Subscription<HostChatActionSubscribeItem, CallError<GenericError>> {
-        if let Err(error) = self.chat_platform::<GenericError>() {
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<HostChatActionSubscribeError>> {
+        if let Err(error) = self.chat_platform::<HostChatActionSubscribeError>() {
             return Subscription::interrupted(error);
         }
         self.chat.subscribe()
@@ -1117,7 +1117,8 @@ impl Renderer for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         _request: HostRendererActionSubscribeRequest,
-    ) -> Subscription<HostRendererActionSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<HostRendererActionSubscribeItem, CallError<HostRendererActionSubscribeError>>
+    {
         if self.renderer_access().is_err() {
             return Subscription::interrupted(CallError::Denied);
         }

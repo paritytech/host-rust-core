@@ -2713,7 +2713,7 @@ mod tests {
         ))
         .expect("an action set must reach the host");
 
-        let mut actions = connection.subscribe();
+        let mut actions = connection.subscribe::<truapi::latest::GenericError>();
         connection
             .publish(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
                 v01::HostChatActionSubscribeItem {
