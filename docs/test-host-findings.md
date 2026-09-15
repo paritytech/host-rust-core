@@ -530,6 +530,72 @@ fixture rather than a boundary.
 So the honest status is **"connects; submission needs an allowance"**, not
 "needs chain support" -- a smaller and differently-shaped gap than it looked.
 
+## 18. The tx-demo submit stall: two wrong leads, and what the evidence supports
+
+Two confident diagnoses died here. Recording them because both were built on
+evidence that looked stronger than it was.
+
+**Wrong lead 1: the chain proxy.** The mock pooled one WebSocket per `rpcUrl`
+while giving each lease its own reader, so three proxied chains numbered their
+JSON-RPC ids from 1 onto one socket. That is a real defect -- every lease read
+every other lease's frames, and `close()` leaked its listener -- and it is
+fixed. It was **not** this symptom. After the fix the submit still does not
+happen, and `getSentRpc` shows 0 transaction-related requests out of 24.
+
+**Wrong lead 2: transaction construction.** `create_transaction` on the V5 path
+needs chain metadata through `build_local_transaction`, so a park there looked
+plausible. It is impossible. `capabilities/signing.rs` runs in this order:
+
+1. normalize signer
+2. `is_product_account_valid_for_caller` -> `PermissionDenied`, returns
+3. `require_chain_submit` (:121)
+4. `let Some(session) = ... current_session() else { return Rejected }` (:126)
+5. `confirm_user_action(CreateTransaction)` (:131)
+6. `authority.create_transaction` -> `build_local_transaction`
+
+Step 5 precedes step 6, so construction cannot be entered without a
+confirmation being recorded first. Zero reviews were recorded, so construction
+was never reached.
+
+Nothing between 3 and 5 can park, either. `require_chain_submit`
+(`runtime.rs:622`) matches on the status and returns. `ChainSubmit` is not
+`RemotePermission::Remote { domains }` (`host_logic/permissions.rs:82`), so
+`check_or_prompt_remote` takes the no-domain branch: peek, prompt,
+`persist_decision`, return -- the only await after the host answers is a storage
+write the mock answers. And step 4 is **synchronous**: `current_session` at
+`signing_host.rs:622` is `fn`, not `async fn`. It returns `Rejected`; it cannot
+hang. The signing host's own `create_transaction` (`signing_host.rs:778`) raises
+no confirmation at all, so a review can only come from step 5.
+
+**The permission log cannot attribute a call.** `require_chain_submit` has seven
+call sites -- `capabilities/signing.rs` at :48, :121, :188, :278, :347, :407 and
+`capabilities/chain.rs:227` (transaction broadcast). A single
+`{"tag":"ChainSubmit","approved":true}` entry therefore says a chain-submitting
+method ran, not *which*. Both wrong leads rested on reading it as if it named
+`create_transaction`.
+
+**Zero reviews is trustworthy, though.** `confirmUserAction`
+(`create-mock-host.ts:718`) pushes the review on entry and returns the
+configured answer immediately, so a recorded review cannot be lost to a park.
+An empty log means the call never arrived.
+
+So the symptom is most likely not a hang at all: either the call returned
+`Rejected` at step 4 and the product writes no failure line, or
+`create_transaction` never ran and the `ChainSubmit` entry came from elsewhere.
+Settling it needs the product promise's rejection, not another log.
+
+**Unreconciled, and it matters.** Section 16 records `tx-demo` reaching the
+chain and failing with `Invalid.Payment`, which requires a transaction to have
+been constructed, confirmed and broadcast. That cannot coexist with a run
+recording zero confirmations. Either the runs differ in some way nobody has
+isolated, or one observation is wrong. Do not treat either as settled until
+that is resolved.
+
+**Method note.** `getSentRpc` killed both hypotheses within an hour of
+existing -- the first by showing no transaction traffic after the proxy fix, the
+second by making "which method ran" answerable at all. It was built because we
+hit something we could not see. Build the instrument before the theory.
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is
