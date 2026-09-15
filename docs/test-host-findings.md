@@ -679,6 +679,50 @@ The instruments also have to exist where they are used. `getHostCallCount` is on
 quoted from a fixture-level probe has no source behind it. Either expose it or
 stop citing it.
 
+## 19. Wire codec 2 is an adoption prerequisite, and nothing published meets it
+
+`@parity/truapi` 0.16.0 is the first release on wire codec 2; 0.13.1 before it
+is codec 1, and the published versions jump straight from one to the other
+(0.5.0 ... 0.13.0, 0.13.1, 0.16.0 -- there is no 0.14.x or 0.15.x). The
+handshake refuses a mismatched codec, so a codec-1 product cannot talk to this
+host at all.
+
+Nothing published is on codec 2:
+
+| | pins `@parity/truapi` | codec |
+| --- | --- | --- |
+| `product-sdk-host` 0.15.1 | `^0.7.0` | 1 |
+| `product-sdk-host` 0.19.1 (latest) | `^0.13.1` | 1 |
+| product-sdk monorepo catalog | `^0.13.1` | 1 |
+| this test host | 0.16.0 | **2** |
+
+A caret on a `0.x` version pins the minor, so `^0.13.1` cannot resolve 0.16.0.
+
+**product-sdk's suites pass here only because of a local override.** The
+`psdk-e2e` checkout's lock carries
+`'@parity/truapi': link:.../mock-report/js/packages/truapi`, which points at the
+0.16.0 worktree. Both halves are then codec 2. Nothing about that state is
+published, and a fresh clone of product-sdk would not reproduce it.
+
+**What this means for the failed t3rminal trial.** t3rminal resolves
+`@parity/truapi` 0.7.0 through `product-sdk-host` 0.15.1 -- codec 1. Every host
+call goes unanswered and expires on the product's own 5s timeout, so the app
+parks at "Connecting to host..." and every locator times out. That is not a
+defect in this test host: a real TrUAPI host refuses the same handshake. It
+also means the trial's 1-passed/15-failed was never a like-for-like comparison,
+because `@parity/host-api-test-sdk` has no `@parity/truapi` dependency and no
+codec constant at all -- being a reimplementation rather than the core, it
+answers whatever a product sends, at any wire version.
+
+By the same resolution, `host-playground` (`product-sdk-host` ^0.10.0) and
+`playground-app` (^0.15.1) are codec 1 too. All three external consumers are
+blocked on the same thing, and it is upstream of anything this branch does.
+
+**So the adoption order has a step before the one the PR body used to name:**
+product-sdk has to move its catalog to `@parity/truapi` 0.16.0 and re-release,
+and only then can a consumer adopt the fixture. A `@parity/truapi-host` release
+carrying `./testing` is necessary but not sufficient.
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is
