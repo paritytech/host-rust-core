@@ -1105,38 +1105,15 @@ index 9076646..c91b9a8 100644
 +        "@parity/truapi-host": "catalog:"
      }
  }
-diff --git a/product-sdk/packages/host/src/testing.ts b/product-sdk/packages/host/src/testing.ts
-index 37d71fe..2326c3a 100644
---- a/product-sdk/packages/host/src/testing.ts
-+++ b/product-sdk/packages/host/src/testing.ts
-@@ -241,6 +241,8 @@ export function createFakeTruApiClient(options?: CreateFakeTruApiClientOptions):
-             signRawWithLegacyAccount: () => okAsync({ signature }),
-             signPayload: () => okAsync({ signature }),
-             signPayloadWithLegacyAccount: () => okAsync({ signature }),
-+            signRawUnwatermarkedDeprecated: () => okAsync({ signature }),
-+            signRawUnwatermarkedDeprecatedWithLegacyAccount: () => okAsync({ signature }),
-         },
-         statementStore: {
-             subscribe: () => inertObservable(),
-@@ -286,6 +288,7 @@ export function createFakeTruApiClient(options?: CreateFakeTruApiClientOptions):
-         notifications: notModeled("notifications"),
-         payment: notModeled("payment"),
-         permissions: notModeled("permissions"),
-+        renderer: notModeled("renderer"),
-         resourceAllocation: notModeled("resourceAllocation"),
-         theme: notModeled("theme"),
-     };
 diff --git a/product-sdk/pnpm-workspace.yaml b/product-sdk/pnpm-workspace.yaml
-index 036d346..a441788 100644
+index 036d346..136017b 100644
 --- a/product-sdk/pnpm-workspace.yaml
 +++ b/product-sdk/pnpm-workspace.yaml
-@@ -5,7 +5,8 @@ packages:
+@@ -5,6 +5,7 @@ packages:
  
  catalog:
    "@parity/host-api-test-sdk": ^0.12.1
--  "@parity/truapi": ^0.13.1
 +  "@parity/truapi-host": ^0.16.0
-+  "@parity/truapi": ^0.16.0
+   "@parity/truapi": ^0.13.1
    "@playwright/test": ^1.60.0
    "@polkadot-api/json-rpc-provider": ^0.2.0
-   "@polkadot-api/metadata-builders": ^0.14.3
