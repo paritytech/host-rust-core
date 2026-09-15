@@ -4054,6 +4054,7 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
+                None,
                 native_execution_config("shared.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
@@ -4062,6 +4063,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host),
+                None,
                 native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
             .expect("Chat execution should open");
