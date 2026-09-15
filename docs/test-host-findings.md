@@ -446,6 +446,48 @@ passing against a fake:
   as an explicit limit is the difference between "the method does not exist" and
   "this needs a chain".
 
+## 16. Live chain: what host-api-test-sdk actually does, and what we now do
+
+`host-api-test-sdk` does two different things under the word "chain":
+
+- **statement store: it fakes it entirely in JS.** `handleStatementStoreSubmit`
+  pushes to an in-memory array and matches topics against subscribers. No chain
+  is involved, which is why those ten tests looked chain-free there.
+- **everything else: it proxies a live public testnet**, opening
+  `wss://paseo-asset-hub-next-rpc.polkadot.io` lazily on first connection. It
+  does not simulate a chain at all.
+
+The mock now supports the second, opt-in, through `chainProxies`. Default stays
+hermetic: nothing reaches the network unless a suite asks. Use `liveChain()`,
+which builds the proxy, the reported chain set and the runtime config's genesis
+from one value -- they have to agree, and the product checks the last two.
+
+**Proven:** `chain-client-demo` 2/2 against the real Asset Hub, and `tx-demo`'s
+boot test passes with `Chain client ready (assetHub, bulletin, individuality)`.
+
+### Two things this surfaced
+
+**Pinned genesis hashes rot, and every published one is already stale.** The
+chain reports `0x4349b00e…` today. `host-api-test-sdk` pins `0xbf0488db…` at
+0.11.0 and `0x23e730eb…` at 0.12.1 -- *neither* matches, so its own suites would
+fail the descriptor check against this endpoint now. Our proxy therefore routes
+without a hash: an unhashed proxy takes every request, so a reset cannot break
+routing. A hash is still needed in the *declared* config, because
+`@parity/product-sdk-descriptors` refuses a host whose genesis disagrees with
+the bundle it was built against; that one has to be re-pinned after a reset, and
+`chain_getBlockHash(0)` reads the current value.
+
+**Writes need funded accounts, and ours are not funded.** `tx-demo` now reaches
+the chain and signs, then fails with `Invalid.Payment` -- no balance for the
+fee. TrUAPI derives a product account per (session entropy, product id), so the
+addresses differ from polkadot-js `//Bob` and are unfunded. `tx-demo.dot/0`
+under the `alice` dev entropy is
+`13B6hYAQJjAG37JuCYeszFhvD8rpVg49NQpHvmG2y4NcB6qP`. Funding is deterministic and
+one-off per (account, product), but it is an operational step, not a code one.
+
+So the boundary is: **live-chain reads work today; live-chain writes need those
+addresses funded.**
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is
