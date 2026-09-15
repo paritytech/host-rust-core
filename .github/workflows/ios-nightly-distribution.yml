@@ -39,7 +39,6 @@ jobs:
       build_configuration: "Safetynet"
       distribute_to_external_group: true
       external_group_name: "Daily test builds"
-      # Both legs build the same commit against the same test plan, so the Nightly leg
     secrets: inherit
 
   auto_merge:

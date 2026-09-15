@@ -23,10 +23,6 @@ jobs:
     runs-on: macos-26
     if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
     name: Distribute TestFlight Build
-    outputs:
-      build_number: ${{ steps.read_marketing_version.outputs.build_number }}
-      marketing_version: ${{ steps.read_marketing_version.outputs.marketing_version }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -73,4 +69,3 @@ jobs:
           name: polkadot-app-release-ipa
           path: "hosts/ios/*.ipa"
           retention-days: 7
-

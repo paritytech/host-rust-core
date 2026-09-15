@@ -50,11 +50,11 @@ jobs:
         variant:
           - name: "default"
             extra_swift_flags: ""
-            s3_suffix: ""
+            artifact_suffix: ""
             upload_to_firebase: true
           - name: "no-auth"
             extra_swift_flags: "-DDISABLE_AUTH"
-            s3_suffix: "-no-auth"
+            artifact_suffix: "-no-auth"
             upload_to_firebase: false
 
     steps:
@@ -91,21 +91,6 @@ jobs:
           python3 .github/scripts/update_build_number.py "${PBXPROJ_PATH}" \
             --config-name "DevCI" \
             --build-number ${{ env.BUILD_NUMBER }}
-
-      - name: Read marketing version
-        id: read_version
-        env:
-          PBXPROJ_PATH: polkadot-app.xcodeproj/project.pbxproj
-        working-directory: hosts/ios
-        run: |
-          set -euo pipefail
-
-          echo "Reading marketing version from DevCI configuration..."
-          MARKETING_VERSION=$(python3 .github/scripts/read_versions.py "${PBXPROJ_PATH}" \
-            --config-name "DevCI" \
-            --output-format env | grep "marketing_version=" | cut -d'=' -f2)
-          echo "marketing_version=${MARKETING_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "MARKETING_VERSION=${MARKETING_VERSION}" >> "$GITHUB_ENV"
 
       - name: Add extra Swift flags to xcconfig
         if: matrix.variant.extra_swift_flags != ''
@@ -152,7 +137,6 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: polkadot-app-debug-ipa${{ matrix.variant.s3_suffix }}
+          name: polkadot-app-debug-ipa${{ matrix.variant.artifact_suffix }}
           path: "hosts/ios/*.ipa"
           retention-days: 7
-

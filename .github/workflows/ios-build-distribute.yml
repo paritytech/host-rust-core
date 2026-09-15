@@ -179,40 +179,15 @@ jobs:
     # twice in one run (nightly_distribution builds Nightly and Release together)
     # produces distinct job names — check-job-conclusion matches by name suffix and
     # would otherwise resolve both lookups to the same leg.
-    name: Check and Build TestFlight (${{ inputs.build_configuration }} / ${{ matrix.variant.name }})
+    name: Check and Build TestFlight (${{ inputs.build_configuration }})
     runs-on: macos-26
     needs: prepare_build_metadata
-    strategy:
-      fail-fast: false
-      matrix:
-        # WARNING: only ONE variant may have upload_to_testflight: true —
-        # multiple TestFlight uploads cause version conflicts.
-        variant:
-          - name: "default"
-            extra_swift_flags: ""
-            upload_to_testflight: true
-          - name: "no-auth"
-            extra_swift_flags: "-DDISABLE_AUTH"
-            upload_to_testflight: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.release_branch }}
           fetch-depth: 0
-
-      - name: Add extra Swift flags to xcconfig
-        if: matrix.variant.extra_swift_flags != ''
-        env:
-          # The leaf xcconfig is named after the configuration being built.
-          BUILD_CONFIGURATION: ${{ inputs.build_configuration }}
-        working-directory: hosts/ios
-        run: |
-          set -euo pipefail
-          config_name=$(echo "${BUILD_CONFIGURATION}" | tr '[:upper:]' '[:lower:]')
-          python3 .github/scripts/add_swift_flags.py \
-            "polkadot-app/Configs/polkadot-app.${config_name}.xcconfig" \
-            "${{ matrix.variant.extra_swift_flags }}"
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
@@ -221,7 +196,6 @@ jobs:
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
       - name: Distribute TestFlight build
-        if: matrix.variant.upload_to_testflight
         uses: ./hosts/ios/.github/actions/distribute-testflight
         with:
           ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
@@ -247,21 +221,18 @@ jobs:
           meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
 
       - name: Configure Google services for non-TestFlight build
-        if: ${{ !matrix.variant.upload_to_testflight }}
         uses: ./hosts/ios/.github/actions/configure-google-services
         with:
           google_service_info_base64: ${{ inputs.build_configuration == 'Safetynet' && secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 || secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
           expected_bundle_id: ${{ env.IOS_BUNDLE_ID }}
 
       - name: Configure secrets for non-TestFlight build
-        if: ${{ !matrix.variant.upload_to_testflight }}
         uses: ./hosts/ios/.github/actions/configure-secrets
         with:
           sentry_dsn: ${{ secrets.SENTRY_DSN }}
           meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
 
       - name: Build without TestFlight distribution
-        if: ${{ !matrix.variant.upload_to_testflight }}
         env:
           FASTLANE_CONFIGURATION: ${{ inputs.build_configuration }}
           BUILD_NUMBER: ${{ needs.prepare_build_metadata.outputs.build_number }}
@@ -272,7 +243,7 @@ jobs:
           bundle exec fastlane build_app_ci
 
       - name: Comment on PR with build info
-        if: matrix.variant.upload_to_testflight && inputs.release_pr_number != ''
+        if: inputs.release_pr_number != ''
         uses: actions/github-script@v8
         env:
           BUILD_NUMBER: ${{ needs.prepare_build_metadata.outputs.build_number }}
@@ -303,7 +274,6 @@ jobs:
 
       - name: Setting commit status for PR
         if: >-
-          matrix.variant.upload_to_testflight &&
           github.event_name == 'workflow_dispatch' &&
           inputs.release_pr_number != ''
         uses: actions/github-script@v8
@@ -340,7 +310,7 @@ jobs:
             }
 
   check_default_build:
-    name: Check default variant build result
+    name: Check build result
     runs-on: ubuntu-latest
     needs: [prepare_build_metadata, check_and_build]
     permissions:
@@ -352,11 +322,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-      - name: Check default matrix leg conclusion
+      - name: Check the build result
         id: check
         uses: ./hosts/ios/.github/actions/check-job-conclusion
         with:
-          job_name: "Check and Build TestFlight (${{ inputs.build_configuration }} / default)"
+          job_name: "Check and Build TestFlight (${{ inputs.build_configuration }})"
           github_token: ${{ github.token }}
 
   send_failure_notification:
