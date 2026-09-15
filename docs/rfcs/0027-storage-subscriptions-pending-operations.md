@@ -45,7 +45,7 @@ pub struct HostLocalStorageChangeItem {
 }
 ```
 
-The host owns the store both runtimes write to, so the host emits the changes and the core forwards its stream to the subscriber. This adds one method to the required host `ProductStorage` trait:
+The host owns the store both runtimes write to, so the host emits the changes and the core forwards its stream to the subscriber. A write a product made through TrUAPI is emitted by the core that performed it, so a host reports only the changes it makes itself. Subscriptions are scoped to the product's namespace rather than to one execution, which is what lets a worker's write reach the screen. This adds one method to the required host `ProductStorage` trait:
 
 ```rust
 fn subscribe_storage(

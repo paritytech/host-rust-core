@@ -1023,8 +1023,12 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         inner.notifyLocaleChanged(locale: locale)
     }
 
-    /// Push a host storage change to active TrUAPI storage subscriptions. Call
-    /// this for changes the host makes itself; `nil` means cleared.
+    /// Push a host storage change to active TrUAPI storage subscriptions,
+    /// across every execution of the product; `nil` means cleared.
+    ///
+    /// Only for changes the host makes itself. A write a product made through
+    /// TrUAPI already reaches its subscribers, so reporting one here delivers
+    /// it twice.
     public func notifyStorageChanged(key: String, value: Data?) {
         inner.notifyStorageChanged(key: key, value: value)
     }

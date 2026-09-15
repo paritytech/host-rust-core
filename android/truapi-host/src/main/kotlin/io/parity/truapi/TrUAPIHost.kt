@@ -1075,8 +1075,12 @@ class TrUAPIProductExecution internal constructor(
     }
 
     /**
-     * Push a host storage change to active TrUAPI storage subscriptions. Call
-     * this for changes the host makes itself; a null [value] means cleared.
+     * Push a host storage change to active TrUAPI storage subscriptions, across
+     * every execution of the product; a null [value] means cleared.
+     *
+     * Only for changes the host makes itself. A write a product made through
+     * TrUAPI already reaches its subscribers, so reporting one here delivers it
+     * twice.
      */
     fun notifyStorageChanged(key: String, value: ByteArray?) {
         inner.notifyStorageChanged(key, value)
