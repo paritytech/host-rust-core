@@ -297,8 +297,7 @@ impl Worker for ProductRuntimeHost {
         let HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label }) =
             request;
         let response = self
-            .platform
-            .begin_operation(&self.product, label.unwrap_or_default())
+            .begin_operation_with_host(label.unwrap_or_default())
             .await
             .map_err(|error| CallError::Domain(HostWorkerBeginOperationError::V1(error)))?;
         self.hold_worker_for_operation(response.id);
