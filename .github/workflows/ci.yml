@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-D warnings"
+      # The wire-table parity test soft-skips when the generated TypeScript is
+      # absent. The codegen artifact carries it, so this is the run that holds
+      # the Rust dispatcher and the TypeScript client to the same table.
+      TRUAPI_REQUIRE_GENERATED_TS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,7 +42,13 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
+      # A cache written on a pull request is visible only to that pull request,
+      # so every branch would store its own copy of the same key and the copies
+      # would evict each other from the repository's cache budget. Saving on the
+      # push events alone leaves one entry per key that every branch restores.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Download codegen output
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -83,6 +93,8 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
@@ -123,6 +135,8 @@ jobs:
           components: rustfmt
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -142,9 +156,6 @@ jobs:
 
       - name: Run codegen
         run: ./scripts/codegen.sh
-
-      - name: Check Rust/TS wire table parity
-        run: TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity
 
       - name: Upload codegen output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -177,6 +188,8 @@ jobs:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
 
       # truapi-server declares its generated modules unconditionally, so the
       # cdylib bindgen builds from does not compile without the codegen output.
@@ -294,6 +307,7 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: ios-swift-gate
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Download codegen output
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -395,6 +409,7 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
         with:
           shared-key: android-bindings-gate
+          save-if: ${{ github.event_name == 'push' }}
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
