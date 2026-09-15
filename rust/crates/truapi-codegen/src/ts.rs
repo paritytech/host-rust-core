@@ -3458,34 +3458,56 @@ mod tests {
         }
     }
 
-    /// Two wrappers can select different versions of one base type.
+    /// Several wrappers can select different versions of one base type, the
+    /// shape of `HostLocalStorage{Clear,Write}Error` sitting on V1 while
+    /// `HostLocalStorageReadError` has reached V2. The newest selected version
+    /// owns the unprefixed name whatever position it takes in the walk, so the
+    /// rule is asserted with that wrapper sorting first and sorting last:
+    /// selecting by last write or by first write passes one and fails the other.
     #[test]
     fn public_alias_for_a_shared_base_follows_the_newest_selected_version() {
-        fn wrapper(version: u32, inner: &str) -> VersionedWrapper {
-            let ty = versioned_tuple_wrapper_variants("Wrapper", &[(version, inner)]);
-            detect_versioned_wrapper(&ty).expect("versioned wrapper")
+        fn aliases_for(wrappers: &[(&str, u32, &str)]) -> BTreeMap<String, String> {
+            let versioned = wrappers
+                .iter()
+                .map(|(name, version, inner)| {
+                    let ty = versioned_tuple_wrapper_variants(name, &[(*version, inner)]);
+                    let wrapper = detect_versioned_wrapper(&ty).expect("versioned wrapper");
+                    ((*name).to_string(), wrapper)
+                })
+                .collect::<BTreeMap<_, _>>();
+            let emit_versions = wrappers
+                .iter()
+                .map(|(name, version, _)| ((*name).to_string(), BTreeSet::from([*version])))
+                .collect::<BTreeMap<_, _>>();
+
+            selected_public_aliases(&api(Vec::new()), &versioned, &emit_versions, 2)
         }
 
-        let wrappers = BTreeMap::from([
-            ("ClearError".to_string(), wrapper(1, "V01Thing")),
-            ("ReadError".to_string(), wrapper(2, "V02Thing")),
-        ]);
-        let emit_versions = BTreeMap::from([
-            ("ClearError".to_string(), BTreeSet::from([1])),
-            ("ReadError".to_string(), BTreeSet::from([2])),
-        ]);
+        // The wrapper on the newest version sorts first, then last.
+        for wrappers in [
+            [
+                ("AReadError", 2, "V02Thing"),
+                ("BClearError", 1, "V01Thing"),
+                ("CWriteError", 1, "V01Thing"),
+            ],
+            [
+                ("AClearError", 1, "V01Thing"),
+                ("BWriteError", 1, "V01Thing"),
+                ("CReadError", 2, "V02Thing"),
+            ],
+        ] {
+            let aliases = aliases_for(&wrappers);
 
-        let aliases = selected_public_aliases(&api(Vec::new()), &wrappers, &emit_versions, 2);
-
-        assert_eq!(
-            aliases.get("V02Thing").map(String::as_str),
-            Some("Thing"),
-            "the newest selected version owns the unprefixed name: {aliases:?}"
-        );
-        assert!(
-            !aliases.contains_key("V01Thing"),
-            "the older version keeps its prefix: {aliases:?}"
-        );
+            assert_eq!(
+                aliases.get("V02Thing").map(String::as_str),
+                Some("Thing"),
+                "the newest selected version owns the unprefixed name for {wrappers:?}: {aliases:?}"
+            );
+            assert!(
+                !aliases.contains_key("V01Thing"),
+                "the older version keeps its prefix for {wrappers:?}: {aliases:?}"
+            );
+        }
     }
 
     #[test]
