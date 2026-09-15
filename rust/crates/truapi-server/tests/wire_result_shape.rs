@@ -545,3 +545,27 @@ fn coin_payment_request_reports_unsupported_on_the_wire() {
     // [V1 disc=0x00][Err disc=0x01][CallError::Unsupported=0x02], and nothing more.
     assert_eq!(response.payload.value, vec![0x00u8, 0x01u8, 0x02u8]);
 }
+
+/// A response modelled as a payload-less versioned wrapper occupies exactly the
+/// two bytes a bare `Result<(), _>` used to: the version index and the `Ok`
+/// discriminant. Statement-store submit is the method that carries no success
+/// data, so it pins the claim that giving every empty payload an explicit
+/// versioned model costs nothing on the wire.
+#[test]
+fn payloadless_versioned_response_encodes_to_the_bare_ok_envelope() {
+    let response = statement_store::RemoteStatementStoreSubmitResponse::V1;
+    assert_eq!(
+        truapi_server::frame::encode_versioned_ok_payload(response),
+        vec![0x00u8, 0x00u8]
+    );
+
+    let mut bytes = &[0x00u8, 0x00u8][..];
+    let version = u8::decode(&mut bytes).expect("version index");
+    let result = Result::<(), CallError<statement_store::RemoteStatementStoreSubmitError>>::decode(
+        &mut bytes,
+    )
+    .expect("result discriminant");
+    assert_eq!(version, 0);
+    assert_eq!(result, Ok(()));
+    assert!(bytes.is_empty(), "envelope carries no payload bytes");
+}

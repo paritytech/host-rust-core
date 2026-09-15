@@ -46,22 +46,15 @@ pub fn generate_dispatcher(api: &ApiDefinition) -> Result<String> {
 
     let mut modules = Vec::with_capacity(traits.len());
     let mut uses_raw_err_payload = false;
-    let mut uses_raw_unit_ok_payload = false;
     for trait_def in &traits {
         let module = build_module(api, trait_def)?;
         uses_raw_err_payload |= module.uses_raw_err_payload;
-        uses_raw_unit_ok_payload |= module.uses_raw_unit_ok_payload;
         modules.push(module.code);
     }
 
     let mut out = String::new();
     write_header(&mut out);
-    write_imports(
-        &mut out,
-        &traits,
-        uses_raw_err_payload,
-        uses_raw_unit_ok_payload,
-    );
+    write_imports(&mut out, &traits, uses_raw_err_payload);
     writeln!(out).unwrap();
     write_top_register(&mut out, &traits);
     write_host_initiated_callers(&mut out, api, &traits)?;
@@ -98,7 +91,6 @@ fn order_traits(api: &ApiDefinition) -> Result<Vec<&TraitDef>> {
 struct ModuleEmission {
     code: String,
     uses_raw_err_payload: bool,
-    uses_raw_unit_ok_payload: bool,
 }
 
 /// Emit the `register_{module}` function for a single trait.
@@ -121,7 +113,6 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<ModuleEmiss
         )?);
     }
     let uses_raw_err_payload = methods.iter().any(MethodEmission::uses_raw_err_payload);
-    let uses_raw_unit_ok_payload = methods.iter().any(MethodEmission::uses_raw_unit_ok_payload);
 
     let fn_name = format!("register_{module}");
     let trait_name = &trait_def.name;
@@ -146,7 +137,6 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<ModuleEmiss
     Ok(ModuleEmission {
         code,
         uses_raw_err_payload,
-        uses_raw_unit_ok_payload,
     })
 }
 
@@ -265,12 +255,6 @@ impl MethodEmission {
         };
 
         let (response_wrapper, item_wrapper) = match &method.return_type {
-            // `Result<(), _>` returns produce an empty wire payload.
-            // The trait method is called for its side effects and the
-            // dispatcher encodes `()` (zero bytes) on success.
-            ReturnType::Result {
-                ok: TypeRef::Unit, ..
-            } => (None, None),
             ReturnType::Result { ok, .. } => (
                 Some(
                     versioned_wrapper_root(&method.name, "response", ok, &versioned_wrappers)?
@@ -327,13 +311,7 @@ impl MethodEmission {
     }
 
     fn uses_raw_err_payload(&self) -> bool {
-        matches!(self.request_payload, Some(WirePayload::Raw(_))) || self.uses_raw_unit_ok_payload()
-    }
-
-    fn uses_raw_unit_ok_payload(&self) -> bool {
-        matches!(self.kind, MethodKind::Request)
-            && self.response_wrapper.is_none()
-            && matches!(self.error_payload, WirePayload::Raw(_))
+        matches!(self.request_payload, Some(WirePayload::Raw(_)))
     }
 
     fn write_request(&self, out: &mut String, host_expr: &str) -> Result<()> {
@@ -460,41 +438,7 @@ impl MethodEmission {
                     },
                 );
             }
-            None => match (&self.error_payload, target_version_expr.as_deref()) {
-                (WirePayload::Versioned(_), Some(target_version_expr)) => {
-                    write_indented(
-                        out,
-                        16,
-                        &formatdoc! {
-                            r#"
-                            match host.{method}({call_args}).await {{
-                                Ok(()) => Ok(encode_versioned_unit_ok_payload({target_version_expr})),
-                                Err(err) => {{
-                                    Ok(encode_versioned_err_payload(err, {target_version_expr}))
-                                }}
-                            }}
-                            "#
-                        },
-                    );
-                }
-                (WirePayload::Raw(_), _) => {
-                    write_indented(
-                        out,
-                        16,
-                        &formatdoc! {
-                            r#"
-                            match host.{method}({call_args}).await {{
-                                Ok(()) => Ok(encode_raw_unit_ok_payload()),
-                                Err(err) => Ok(encode_raw_err_payload(err)),
-                            }}
-                            "#
-                        },
-                    );
-                }
-                (WirePayload::Versioned(_), None) => {
-                    bail!("Method `{method}`: versioned unit responses require a target version")
-                }
-            },
+            None => bail!("Method `{method}`: response is not a versioned wrapper"),
         }
         write_indented(
             out,
@@ -878,12 +822,7 @@ fn write_header(out: &mut String) {
     .unwrap();
 }
 
-fn write_imports(
-    out: &mut String,
-    traits: &[&TraitDef],
-    uses_raw_err_payload: bool,
-    uses_raw_unit_ok_payload: bool,
-) {
+fn write_imports(out: &mut String, traits: &[&TraitDef], uses_raw_err_payload: bool) {
     writedoc!(
         out,
         r#"
@@ -911,7 +850,6 @@ fn write_imports(
         use crate::frame::encode_versioned_interrupt_payload;
         use crate::frame::downgrade_call_error;
         use crate::frame::encode_versioned_ok_payload;
-        use crate::frame::encode_versioned_unit_ok_payload;
         use crate::generated::wire_table;
         use crate::subscription::{{HostInitiatedSubscriptionManager, subscription_stream}};
         use crate::transport::Transport;
@@ -920,9 +858,6 @@ fn write_imports(
     .unwrap();
     if uses_raw_err_payload {
         writeln!(out, "use crate::frame::encode_raw_err_payload;").unwrap();
-    }
-    if uses_raw_unit_ok_payload {
-        writeln!(out, "use crate::frame::encode_raw_unit_ok_payload;").unwrap();
     }
 }
 

@@ -38,7 +38,6 @@ use crate::frame::encode_versioned_err_payload;
 use crate::frame::encode_versioned_interrupt_payload;
 use crate::frame::downgrade_call_error;
 use crate::frame::encode_versioned_ok_payload;
-use crate::frame::encode_versioned_unit_ok_payload;
 use crate::generated::wire_table;
 use crate::subscription::{HostInitiatedSubscriptionManager, subscription_stream};
 use crate::transport::Transport;
@@ -2471,12 +2470,24 @@ where
                 };
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id.clone());
-                match host.submit(&cx, request).await {
-                    Ok(()) => Ok(encode_versioned_unit_ok_payload(target_version)),
+                let response: versioned::statement_store::RemoteStatementStoreSubmitResponse = match host.submit(&cx, request).await {
+                    Ok(value) => value,
                     Err(err) => {
-                        Ok(encode_versioned_err_payload(err, target_version))
+                        return Ok(encode_versioned_err_payload(
+                            downgrade_call_error(err, target_version),
+                            target_version,
+                        ));
                     }
-                }
+                };
+                // Downgraded to the caller's version: a handler answers in
+                // latest terms, and a peer that asked in an older version
+                // cannot decode a newer variant.
+                Ok(encode_versioned_ok_payload(
+                    <versioned::statement_store::RemoteStatementStoreSubmitResponse as truapi::versioned::FromLatest>::from_latest(
+                        truapi::versioned::IntoLatest::into_latest(response),
+                        target_version,
+                    ),
+                ))
             })
         });
     }

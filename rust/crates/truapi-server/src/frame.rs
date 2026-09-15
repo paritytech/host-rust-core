@@ -72,11 +72,6 @@ pub fn encode_versioned_ok_payload<T: Encode>(value: T) -> Vec<u8> {
     encode_versioned_result_payload(value, 0)
 }
 
-/// Encode `Versioned<Result<(), _>>` for methods whose success type is unit.
-pub fn encode_versioned_unit_ok_payload(version: u8) -> Vec<u8> {
-    vec![version_index(version), 0]
-}
-
 /// Downgrade a call error's domain payload to the version its caller speaks.
 ///
 /// A handler answers in latest terms. The frame's version byte alone is not
@@ -106,11 +101,6 @@ pub fn encode_versioned_err_payload<T: Encode>(value: T, version: u8) -> Vec<u8>
     out.push(1);
     out.extend_from_slice(&encoded);
     out
-}
-
-/// Encode `Result<(), _>` for unversioned methods whose success type is unit.
-pub fn encode_raw_unit_ok_payload() -> Vec<u8> {
-    Ok::<(), ()>(()).encode()
 }
 
 /// Encode `Result<(), Err>` for unversioned methods from an ordinary error value.
@@ -246,6 +236,11 @@ mod tests {
     #[derive(Encode)]
     enum TestVersioned<T> {
         V1(T),
+    }
+
+    #[derive(Encode)]
+    enum PayloadlessVersioned {
+        V1,
     }
 
     fn build(id: u8, value: Vec<u8>) -> ProtocolMessage {
@@ -465,10 +460,15 @@ mod tests {
         assert_eq!(decoded, msg);
     }
 
+    /// A versioned wrapper with no payload occupies the same two bytes a bare
+    /// unit success used to: the version index and the `Ok` discriminant. An
+    /// empty response modelled explicitly therefore costs nothing on the wire.
     #[test]
-    fn encode_versioned_unit_ok_payload_wraps_unit_success() {
-        assert_eq!(encode_versioned_unit_ok_payload(1), vec![0u8, 0u8]);
-        assert_eq!(encode_versioned_unit_ok_payload(0), vec![0u8, 0u8]);
+    fn encode_versioned_ok_payload_wraps_payloadless_success() {
+        assert_eq!(
+            encode_versioned_ok_payload(PayloadlessVersioned::V1),
+            vec![0u8, 0u8]
+        );
     }
 
     #[test]
