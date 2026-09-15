@@ -3581,7 +3581,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Done"
+            "value": "OK"
           }
         }
       }
@@ -3593,17 +3593,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tell us about the issue you encountered"
-          }
-        }
-      }
-    },
-    "report.issue.prepared": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Report prepared"
           }
         }
       }
@@ -3663,13 +3652,13 @@
         }
       }
     },
-    "report.issue.simulated": {
+    "report.issue.thanks": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sending is simulated in this build. No report was uploaded."
+            "value": "Thank you for your feedback!"
           }
         }
       }

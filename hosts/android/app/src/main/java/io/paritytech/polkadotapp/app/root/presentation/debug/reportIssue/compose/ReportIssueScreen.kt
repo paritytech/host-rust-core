@@ -59,9 +59,8 @@ fun ReportIssueScreen(contract: ReportIssueContract) {
 
     if (state.isComplete) {
         NovaAlertDialog(
-            title = stringResource(RCommon.string.debug_report_prepared),
-            text = stringResource(RCommon.string.debug_report_simulated),
-            positiveButtonTitle = stringResource(RCommon.string.common_close),
+            text = stringResource(RCommon.string.debug_report_thanks),
+            positiveButtonTitle = stringResource(RCommon.string.common_ok),
             onPositiveButtonClick = contract::onCloseClick,
             onDismissRequest = contract::onCloseClick,
         )

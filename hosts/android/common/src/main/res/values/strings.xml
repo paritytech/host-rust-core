@@ -1553,8 +1553,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="debug_report_character_count">%1$d / %2$d</string>
     <string name="debug_report_attachments">Your report includes app logs and this screenshot.</string>
     <string name="debug_report_screenshot">Screenshot included in the report</string>
-    <string name="debug_report_prepared">Report prepared</string>
-    <string name="debug_report_simulated">Sending is simulated in this build. No report was uploaded.</string>
+    <string name="debug_report_thanks">Thank you for your feedback!</string>
     <string name="debug_report_failed">Could not prepare your report. Please try again.</string>
     <string name="debug_report_capture_failed">Could not capture the app screen. Please try another screenshot.</string>
 </resources>
