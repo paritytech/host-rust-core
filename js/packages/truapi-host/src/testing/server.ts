@@ -24,6 +24,13 @@ const distRoot = resolve(__dirname, "../..", "dist");
 export interface TestHostServerOptions {
   /** Port to listen on. `0` (the default) picks a free one. */
   port?: number;
+  /**
+   * Do not keep the process alive for this server.
+   *
+   * Set when the fixture starts the server itself: nothing then calls `close`,
+   * and a referenced listener would stall worker exit at the end of a run.
+   */
+  unref?: boolean;
 }
 
 /** A running test host server. */
@@ -157,6 +164,7 @@ export async function createTestHostServer(
 
   const url = await new Promise<string>((resolveUrl, reject) => {
     server.once("error", reject);
+    if (options.unref) server.unref();
     server.listen(options.port ?? 0, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") {

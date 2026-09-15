@@ -21,6 +21,8 @@ import type {
 } from "../web/create-mock-host.js";
 
 import { PRODUCT_FRAME_ID } from "./host-page.js";
+import { createTestHostServer } from "./server.js";
+import type { TestHostServer } from "./server.js";
 
 /** Selector for the product iframe the host page creates. */
 const PRODUCT_FRAME = `#${PRODUCT_FRAME_ID}`;
@@ -32,10 +34,28 @@ export interface TestHostFixtureOptions {
   /**
    * Base URL of a running host page server.
    *
-   * The server is supplied rather than started here so a suite can share one
-   * across tests instead of paying page-load and WASM-init per case.
+   * Optional. Omit it and the fixture starts one itself, lazily, and shares it
+   * across every test in the file -- bundling is not cached, so one server per
+   * test would pay esbuild each time. Supply it to control the lifetime.
    */
-  hostUrl: string;
+  hostUrl?: string;
+  /**
+   * Chains to serve, in `@parity/host-api-test-sdk`'s `NetworkConfig` shape.
+   *
+   * A convenience over spelling out `mock.chainProxies`, `mock.supportedChains`
+   * and `runtimeConfig` separately, which have to agree. The chain's role is
+   * read from the `id` suffix (`-asset-hub`, `-people`, `-bulletin`, else the
+   * relay) and the rest of the id is the network name.
+   *
+   * Explicit `mock` or `runtimeConfig` values win, so a suite can start here
+   * and override one piece.
+   */
+  networks?: NetworkConfig[];
+  /**
+   * Accepted only to fail with an explanation. See the error text: TrUAPI
+   * derives a product account from the session root, so it cannot be pinned.
+   */
+  productAccounts?: Record<string, string>;
   /**
    * dotNS identifier the host runs the product under.
    *
@@ -54,8 +74,14 @@ export interface TestHostFixtureOptions {
    * a {@link MOCK_GENESIS} placeholder.
    */
   runtimeConfig?: Record<string, unknown>;
-  /** Accounts the host can sign as. Defaults to `["alice"]`. */
-  accounts?: string[];
+  /**
+   * Accounts the host can sign as. Defaults to `["alice"]`.
+   *
+   * Objects are accepted for `@parity/host-api-test-sdk` compatibility, but a
+   * `uri` is rejected: a TrUAPI session activates from 32 bytes of entropy,
+   * not a `//Alice`-style derivation path.
+   */
+  accounts?: (string | { name: string; uri?: string })[];
   /** Whether the host starts signed in. Defaults to `"auto"`. */
   loginBehavior?: "auto" | "manual";
   /** How long to wait for the host page to publish its control surface. */
@@ -238,6 +264,103 @@ const LOGIN_BEHAVIOR_IS_CONSTRUCTION_TIME =
   "it once at start. Pass `loginBehavior: \"auto\" | \"manual\"` to " +
   "createTestHostFixture instead.";
 
+/** One chain, in `@parity/host-api-test-sdk`'s shape. */
+export interface NetworkConfig {
+  /** e.g. `paseo-asset-hub`; the suffix names the chain's role. */
+  id: string;
+  name?: string;
+  genesisHash: string;
+  rpcUrl: string;
+  tokenSymbol?: string;
+  tokenDecimals?: number;
+}
+
+/** Why a product account cannot be pinned to a chosen key. */
+const NO_PINNED_PRODUCT_ACCOUNT =
+  "is not supported by the TrUAPI test host: a product account is DERIVED " +
+  "from (session root, product id), so it cannot be mapped to a chosen dev " +
+  "account. `@parity/host-api-test-sdk` could pin one because it reimplements " +
+  "the protocol with no core behind it. Read the address back from the host " +
+  "instead of pinning it, and expect switching the host account to change the " +
+  "product account -- that is the real behaviour, not a test-host limitation.";
+
+/** Why a derivation URI cannot name an account. */
+const NO_DERIVATION_URI =
+  "is not supported by the TrUAPI test host: a session activates from 32 " +
+  "bytes of BIP-39 entropy, not a `//Alice`-style derivation path, so the " +
+  "addresses differ from polkadot-js's by construction. Use a built-in name " +
+  "(alice, bob, charlie, dave) or pass explicit entropy.";
+
+/** Role and network implied by a `NetworkConfig.id`. */
+function splitChainId(id: string): {
+  network: string;
+  identifier: "AssetHub" | "People" | "Bulletin" | "Relay";
+  configKey?: "assetHub" | "people" | "bulletin";
+} {
+  const suffixes = [
+    ["-asset-hub", "AssetHub", "assetHub"],
+    ["-people", "People", "people"],
+    ["-bulletin", "Bulletin", "bulletin"],
+  ] as const;
+  for (const [suffix, identifier, configKey] of suffixes) {
+    if (id.endsWith(suffix)) {
+      return { network: id.slice(0, -suffix.length), identifier, configKey };
+    }
+  }
+  // No suffix: the id names the network and the chain is its relay. The
+  // runtime config has no relay slot, so there is no key to declare it under.
+  return { network: id, identifier: "Relay" };
+}
+
+/**
+ * Expand `networks` into the three settings that have to agree.
+ *
+ * The proxy entries carry no genesis hash: an unhashed proxy takes every
+ * request, so routing survives a chain reset while only the DECLARED hash --
+ * which the product checks against its descriptor bundle -- needs re-pinning.
+ */
+export function fromNetworks(networks: NetworkConfig[]): {
+  mock: Pick<MockHostConfig, "chainProxies" | "supportedChains">;
+  runtimeConfig: Record<string, unknown>;
+} {
+  const runtimeConfig: Record<string, unknown> = {};
+  const chains: { identifier: string; genesisHash: string }[] = [];
+  let network = "paseo";
+  for (const entry of networks) {
+    const split = splitChainId(entry.id);
+    network = split.network || network;
+    chains.push({
+      identifier: split.identifier,
+      genesisHash: entry.genesisHash,
+    });
+    if (split.configKey) {
+      runtimeConfig[split.configKey] = { genesisHash: entry.genesisHash };
+    }
+  }
+  return {
+    mock: {
+      chainProxies: networks.map((entry) => ({ rpcUrl: entry.rpcUrl })),
+      supportedChains: { network, chains },
+    } as Pick<MockHostConfig, "chainProxies" | "supportedChains">,
+    runtimeConfig,
+  };
+}
+
+/** Account names for the page URL, rejecting anything the host cannot honour. */
+function accountNames(
+  accounts: (string | { name: string; uri?: string })[],
+): string[] {
+  return accounts.map((account) => {
+    if (typeof account === "string") return account;
+    if (account.uri !== undefined) {
+      throw new Error(
+        `testHost account "${account.name}": \`uri\` ${NO_DERIVATION_URI}`,
+      );
+    }
+    return account.name;
+  });
+}
+
 /**
  * Build the `testHost` fixture.
  *
@@ -249,27 +372,49 @@ const LOGIN_BEHAVIOR_IS_CONSTRUCTION_TIME =
  * ```
  */
 export function createTestHostFixture(defaults: TestHostFixtureOptions) {
+  if (defaults.productAccounts) {
+    throw new Error(`testHost \`productAccounts\` ${NO_PINNED_PRODUCT_ACCOUNT}`);
+  }
+  // Started at most once and shared by every test in the file. Held as the
+  // promise, not the server, so concurrent first tests await one start rather
+  // than racing two.
+  // Validated here rather than in the fixture body: a bad option should fail
+  // when the suite is constructed, not inside the first test that runs.
+  const accounts = defaults.accounts
+    ? accountNames(defaults.accounts)
+    : undefined;
+  let ownServer: Promise<TestHostServer> | undefined;
+  const hostBase = async (): Promise<string> => {
+    if (defaults.hostUrl) return defaults.hostUrl;
+    ownServer ??= createTestHostServer({ unref: true });
+    return (await ownServer).url;
+  };
+
+  const expanded = defaults.networks ? fromNetworks(defaults.networks) : undefined;
+  // Explicit settings win over anything derived from `networks`.
+  const mock = expanded ? { ...expanded.mock, ...defaults.mock } : defaults.mock;
+  const runtimeConfig = expanded
+    ? { ...expanded.runtimeConfig, ...defaults.runtimeConfig }
+    : defaults.runtimeConfig;
+
   return {
     testHost: async (
       { page }: { page: Page },
       use: (fixture: TestHost) => Promise<void>,
     ) => {
-      const url = new URL(defaults.hostUrl);
+      const url = new URL(await hostBase());
       url.searchParams.set("product", defaults.productUrl);
-      if (defaults.mock) {
-        url.searchParams.set("mock", JSON.stringify(defaults.mock));
+      if (mock) {
+        url.searchParams.set("mock", JSON.stringify(mock));
       }
       if (defaults.productId) {
         url.searchParams.set("productId", defaults.productId);
       }
-      if (defaults.runtimeConfig) {
-        url.searchParams.set(
-          "runtimeConfig",
-          JSON.stringify(defaults.runtimeConfig),
-        );
+      if (runtimeConfig) {
+        url.searchParams.set("runtimeConfig", JSON.stringify(runtimeConfig));
       }
-      if (defaults.accounts) {
-        url.searchParams.set("accounts", defaults.accounts.join(","));
+      if (accounts) {
+        url.searchParams.set("accounts", accounts.join(","));
       }
       if (defaults.loginBehavior) {
         url.searchParams.set("login", defaults.loginBehavior);
