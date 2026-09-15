@@ -1367,10 +1367,23 @@ impl ProductRuntime {
         // would poison this mutex and every later `receive_frame` would then panic
         // here, which is exactly the production-host-killing shape the debug tap
         // above was fixed for.
-        self.in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(dispatch_id, abort_handle);
+        //
+        // The disposed check above is only a fast path: `dispose` can swap it true
+        // and drain `in_flight` at any point after that check returns and before
+        // this insert runs. Re-checking here, under the same lock `dispose` holds
+        // for its own swap-and-drain, closes that window - whichever runs first is
+        // what the other observes, so a dispatch that loses the race is turned away
+        // instead of running past a disposal that already happened.
+        {
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.disposed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            in_flight.insert(dispatch_id, abort_handle);
+        }
 
         let transport: Arc<dyn Transport> = self.transport.clone();
         let _ = Abortable::new(self.core.dispatch(message, transport), abort_registration).await;
@@ -1461,16 +1474,28 @@ impl ProductRuntime {
     /// futures, and cancels active subscriptions.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.dispose"))]
     pub fn dispose(&self) {
-        if self.disposed.swap(true, Ordering::AcqRel) {
+        // Already-disposed callers answer without taking the lock, which the
+        // authoritative swap below holds across an abort loop that can run
+        // arbitrary waker code.
+        if self.disposed.load(Ordering::Acquire) {
             return;
         }
-        for (_, handle) in self
-            .in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain()
+        // The swap and the drain share `in_flight`'s lock with `receive_frame`'s own
+        // disposed-check-then-insert, so whichever of the two critical sections runs
+        // first is what the other observes: a dispatch that inserted before this
+        // drain is caught by it, and one that hasn't inserted yet sees `disposed`
+        // already true and turns itself away instead of dispatching past disposal.
         {
-            handle.abort();
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.disposed.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            for (_, handle) in in_flight.drain() {
+                handle.abort();
+            }
         }
         self.admin.product_runtime.detach_chat();
         self.admin.product_runtime.detach_renderer();
@@ -1587,7 +1612,7 @@ impl Transport for SinkTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{Payload, ProtocolMessage, subscription_ids};
+    use crate::frame::{Payload, ProtocolMessage, request_ids, subscription_ids};
     use crate::host_logic::product_account::derive_identity_keypair;
     use crate::host_logic::sso::messages::{
         RemoteMessage, RemoteMessageData, decode_incoming_sso_request, v1,
@@ -2720,6 +2745,98 @@ mod tests {
         );
         let expected = Some(truapi::CallError::<truapi::latest::GenericError>::Denied).encode();
         assert_eq!(response.payload.value, expected);
+    }
+
+    /// A dispatch that passes `receive_frame`'s opening disposed check must not
+    /// run if `dispose` commits before it registers itself. The debug tap is the
+    /// only seam that can park a frame between those two points; the sink here
+    /// blocks on purpose, which its own contract forbids, so that the window is
+    /// reachable deterministically instead of by chance.
+    #[test]
+    fn a_dispatch_racing_dispose_does_not_reach_the_platform() {
+        struct ParkingDebugSink {
+            entered: std::sync::mpsc::SyncSender<()>,
+            release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        }
+
+        impl DebugSink for ParkingDebugSink {
+            fn emit(&self, _event: DebugEvent) {
+                let _ = self.entered.try_send(());
+                if let Some(release) = self
+                    .release
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    let _ = release.recv();
+                }
+            }
+        }
+
+        let navigations = Arc::new(Mutex::new(Vec::new()));
+        let platform = Arc::new(StubPlatform {
+            navigations: navigations.clone(),
+            ..Default::default()
+        });
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = Arc::new(ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        ));
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        runtime.set_debug_sink(
+            ChannelId("race".to_string()),
+            Arc::new(ParkingDebugSink {
+                entered: entered_tx,
+                release: Mutex::new(Some(release_rx)),
+            }),
+        );
+
+        let ids = request_ids("system_navigate_to").expect("known request method");
+        let frame = ProtocolMessage {
+            request_id: "nav:1".to_string(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::system::HostNavigateToRequest::V1(
+                    v01::HostNavigateToRequest {
+                        url: "https://example.invalid/".to_string(),
+                    },
+                )
+                .encode(),
+            },
+        }
+        .encode();
+
+        let dispatching = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || {
+                futures::executor::block_on(runtime.receive_frame(frame)).expect("receive frame");
+            })
+        };
+
+        // The frame is now parked inside the tap, past the opening disposed
+        // check and before it has registered itself.
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("frame never reached the debug tap");
+        runtime.dispose();
+        let _ = release_tx.send(());
+        dispatching.join().expect("dispatch thread panicked");
+
+        assert!(
+            navigations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "a dispatch that lost the race with dispose still reached the platform"
+        );
     }
 
     #[test]
