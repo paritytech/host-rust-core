@@ -387,27 +387,30 @@ function normalizeHash(hash: string | Uint8Array): string {
  *
  * Requests are still recorded in `sentRpc`, so a test can assert what the core
  * asked for even when a real node answers it.
+ *
+ * One socket per lease, never shared. Production opens a fresh connection for
+ * every chain connect -- `truapi-provider`'s `connect` and the CLI's
+ * `WsJsonRpcConnection::connect` both do -- and JSON-RPC ids are numbered per
+ * connection from 1. Two leases on one socket therefore put two id spaces on
+ * the same wire, and every inbound frame reaches every reader, so a lease sees
+ * traffic it never asked for. That is transport behaviour no real host has and
+ * the core can observe it, which makes sharing a fidelity bug rather than an
+ * optimisation. Do not reintroduce it to save connections.
+ *
+ * This is not a multi-chain concern. Two leases on one chain are enough: they
+ * would cross-talk, and releasing one would leave its listeners on a socket the
+ * other still holds. A single-chain suite is not safe from it.
  */
 function connectToChain(
   proxy: ChainProxy,
   sentRpc: string[],
-  pool: Map<string, WebSocket>,
 ): JsonRpcConnection {
-  const pooled = pool.get(proxy.rpcUrl);
-  const socket =
-    pooled && pooled.readyState <= WebSocket.OPEN
-      ? pooled
-      : new WebSocket(proxy.rpcUrl);
-  pool.set(proxy.rpcUrl, socket);
+  const socket = new WebSocket(proxy.rpcUrl);
   const queued: string[] = [];
   const waiting: ((value: IteratorResult<string>) => void)[] = [];
   let closed = false;
 
   const open = new Promise<void>((resolve, reject) => {
-    if (socket.readyState === WebSocket.OPEN) {
-      resolve();
-      return;
-    }
     socket.addEventListener("open", () => resolve(), { once: true });
     socket.addEventListener(
       "error",
@@ -455,9 +458,10 @@ function connectToChain(
       };
     },
     close() {
-      // Only this lease ends. The socket stays pooled for the next connection,
-      // which is what makes pooling worth having.
+      // The socket belongs to this lease alone, so ending the lease ends it.
+      // Leaving it open would leak the connection and this lease's listeners.
       finish();
+      socket.close();
     },
   };
 }
@@ -535,7 +539,6 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
    * A chainHead handshake is expensive, and the core opens a connection per
    * product. Pooling by URL means the second one costs nothing.
    */
-  const chainSockets = new Map<string, WebSocket>();
 
   /**
    * Answer one permission prompt and record it.
@@ -682,7 +685,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
               candidate.genesisHash !== undefined &&
               normalizeHash(candidate.genesisHash) === normalizeHash(genesisHash),
           ) ?? chainProxies.find((candidate) => candidate.genesisHash === undefined);
-        if (proxy) return connectToChain(proxy, sentRpc, chainSockets);
+        if (proxy) return connectToChain(proxy, sentRpc);
         return {
           send(request) {
             sentRpc.push(request);
