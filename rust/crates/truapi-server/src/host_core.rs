@@ -1743,7 +1743,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         let raw = frame.encode();
@@ -1897,7 +1897,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
@@ -2016,7 +2016,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         let encoded = frame.encode();
@@ -2073,7 +2073,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
@@ -2677,8 +2677,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                // No request wrapper for this method: an empty Start payload.
-                value: Vec::new(),
+                value: truapi::versioned::chat::HostChatActionSubscribeRequest::V1.encode(),
             },
         };
 
@@ -2723,7 +2722,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
