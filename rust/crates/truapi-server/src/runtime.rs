@@ -259,7 +259,12 @@ pub struct ProductRuntimeHost {
     renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
     pocket_platform: Option<Arc<dyn truapi_platform::PocketPlatform>>,
     /// Host-assigned ids of this connection's open pending operations, each
-    /// holding one worker reference until it ends or the connection drops.
+    /// holding one worker reference until it ends or the connection is torn
+    /// down.
+    ///
+    /// Scoped to the connection rather than the product, which holds because
+    /// only a Worker execution reaches `begin_operation`/`end_operation` and a
+    /// product has one of those at a time.
     open_operations: Mutex<HashSet<u32>>,
 }
 
@@ -268,15 +273,7 @@ pub struct ProductRuntimeHost {
 /// worker alive for a product that is gone.
 impl Drop for ProductRuntimeHost {
     fn drop(&mut self) {
-        let open = core::mem::take(
-            &mut *self
-                .open_operations
-                .lock()
-                .expect("open operations mutex poisoned"),
-        );
-        for _ in open {
-            self.release_worker_reference();
-        }
+        self.release_open_operations();
     }
 }
 
@@ -1024,6 +1021,24 @@ impl ProductRuntimeHost {
             .insert(id)
         {
             self.acquire_worker_reference();
+        }
+    }
+
+    /// Drop every worker reference this connection's open operations hold.
+    ///
+    /// Teardown calls this rather than leaving it to `Drop`: a disposed
+    /// connection can outlive its last `Arc` holder, and a reference kept past
+    /// dispose would leave the host running a worker for a connection that is
+    /// gone.
+    pub(crate) fn release_open_operations(&self) {
+        let open = core::mem::take(
+            &mut *self
+                .open_operations
+                .lock()
+                .expect("open operations mutex poisoned"),
+        );
+        for _ in open {
+            self.release_worker_reference();
         }
     }
 

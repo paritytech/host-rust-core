@@ -1474,6 +1474,7 @@ impl ProductRuntime {
         }
         self.admin.product_runtime.detach_chat();
         self.admin.product_runtime.detach_renderer();
+        self.admin.product_runtime.release_open_operations();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -2720,6 +2721,41 @@ mod tests {
         );
         let expected = Some(truapi::CallError::<truapi::latest::GenericError>::Denied).encode();
         assert_eq!(response.payload.value, expected);
+    }
+
+    #[test]
+    fn dispose_releases_the_demand_open_operations_hold() {
+        let platform = Arc::new(StubPlatform::default());
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            sink,
+        );
+        let host = runtime.admin.product_runtime().clone();
+
+        futures::executor::block_on(truapi::api::Worker::begin_operation(
+            host.as_ref(),
+            &truapi::CallContext::default(),
+            truapi::versioned::worker::HostWorkerBeginOperationRequest::V1(
+                truapi::v01::HostWorkerBeginOperationRequest { label: None },
+            ),
+        ))
+        .expect("begin operation");
+        assert_eq!(host.services().worker_ledger.count("myapp.dot"), 1);
+
+        runtime.dispose();
+
+        // A disposed connection can outlive its last `Arc` holder, so the
+        // release cannot wait for `Drop`.
+        assert_eq!(
+            host.services().worker_ledger.count("myapp.dot"),
+            0,
+            "disposing a connection drops the demand its open operations held"
+        );
     }
 
     #[test]
