@@ -174,6 +174,10 @@ pub(crate) struct StubPlatform {
     pub(crate) begun_operations: Arc<Mutex<Vec<(String, String)>>>,
     /// Every `end_operation` as `(product_id, id)`, in order.
     pub(crate) ended_operations: Arc<Mutex<Vec<(String, u32)>>>,
+    /// When set, `end_operation` records the call and then fails with this
+    /// reason, standing in for a host that drops the operation and still
+    /// reports an error.
+    pub(crate) end_operation_error: Option<&'static str>,
     /// When set, product/core storage reads fail with this reason.
     pub(crate) local_storage_error: Option<&'static str>,
 }
@@ -954,7 +958,12 @@ impl PlatformProductOperations for StubPlatform {
             .lock()
             .expect("ended operations mutex poisoned")
             .push((product.product_id.clone(), id));
-        Ok(())
+        match self.end_operation_error {
+            Some(reason) => Err(v01::HostWorkerOperationError::Unknown {
+                reason: reason.to_string(),
+            }),
+            None => Ok(()),
+        }
     }
 }
 
