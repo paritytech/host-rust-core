@@ -56,13 +56,13 @@ use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use renderer::renderer_access_for;
 pub(crate) use services::RuntimeServices;
-#[cfg(not(target_arch = "wasm32"))]
-pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, disconnect_paired_host,
     establish_pairing, respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
+#[cfg(not(target_arch = "wasm32"))]
+pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 use tracing::{instrument, warn};
 use truapi::api::{Chat, Pocket, Renderer};
 use truapi::latest::GenericError;

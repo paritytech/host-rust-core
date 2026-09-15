@@ -73,6 +73,7 @@ import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeStatementRenewalTarget
+import uniffi.truapi_server.NativeTrackedStatementRenewalTarget
 import uniffi.truapi_server.StatementRenewalReport
 import uniffi.truapi_server.WorkerTransition
 import uniffi.truapi_server.WsBridgeEndpoint
@@ -890,6 +891,32 @@ class TrUAPIHostRuntime private constructor(
     fun trackStatementRenewalTargets(targets: List<NativeStatementRenewalTarget>) {
         inner.trackStatementRenewalTargets(targets)
     }
+
+    /**
+     * The accounts the ledger tracks, in the order they were tracked. Needs no
+     * active session, so a worker can read it on a cold start before deciding
+     * whether a pass is worth running.
+     */
+    @Throws(NativeRenewalTargetException::class)
+    fun statementRenewalTargets(): List<NativeTrackedStatementRenewalTarget> =
+        inner.statementRenewalTargets()
+
+    /**
+     * The root public key the active identity records its fixed entries under.
+     * An entry from [statementRenewalTargets] whose owner is this key, or which
+     * has no owner, is one a pass will renew; any other is one it will prune.
+     */
+    @Throws(NativeRenewalTargetException::class)
+    fun statementRenewalOwnerKey(): ByteArray = inner.statementRenewalOwnerKey()
+
+    /**
+     * Stop renewing one fixed statement account, reporting whether the ledger
+     * held it. Scoped to the active identity, so it never removes an entry
+     * another identity promised.
+     */
+    @Throws(NativeRenewalTargetException::class)
+    fun untrackStatementRenewalAccount(accountId: ByteArray): Boolean =
+        inner.untrackStatementRenewalAccount(accountId)
 
     /**
      * Run one renewal pass now, reporting what each tracked target got. Submits

@@ -758,7 +758,7 @@ pub enum NativeStatementRenewalTarget {
     },
 }
 
-/// Rejected renewal-target registration.
+/// A refused renewal-ledger call: tracking, untracking or reading it back.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum NativeRenewalTargetError {
     /// `account_id` was not exactly 32 bytes.
@@ -806,6 +806,42 @@ impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalT
                 Self::Account { account_id, label }
             }
         })
+    }
+}
+
+/// One entry the renewal ledger holds, as a host reads it back.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NativeTrackedStatementRenewalTarget {
+    /// The account, or the recipe for one, that the host promised to renew.
+    pub target: NativeStatementRenewalTarget,
+    /// Root public key that promised a raw account id. A recipe carries none
+    /// and resolves under whichever identity is active.
+    pub owner: Option<Bytes32>,
+}
+
+impl From<crate::runtime::StatementRenewalTarget> for NativeStatementRenewalTarget {
+    fn from(target: crate::runtime::StatementRenewalTarget) -> Self {
+        match target {
+            crate::runtime::StatementRenewalTarget::ProductStatementAllowance { product_id } => {
+                Self::ProductStatementAllowance { product_id }
+            }
+            crate::runtime::StatementRenewalTarget::WalletSso => Self::WalletSso,
+            crate::runtime::StatementRenewalTarget::Account { account_id, label } => {
+                Self::Account {
+                    account_id: account_id.to_vec(),
+                    label,
+                }
+            }
+        }
+    }
+}
+
+impl From<crate::runtime::TrackedStatementRenewalTarget> for NativeTrackedStatementRenewalTarget {
+    fn from(entry: crate::runtime::TrackedStatementRenewalTarget) -> Self {
+        Self {
+            target: entry.target.into(),
+            owner: entry.owner,
+        }
     }
 }
 
@@ -879,6 +915,49 @@ impl NativeTrUApiHostRuntime {
             .map(TryInto::try_into)
             .collect::<Result<Vec<_>, _>>()?;
         futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Every account the ledger tracks, in the order it was tracked.
+    ///
+    /// Needs no active session. Slots per period are finite, so a host that
+    /// tracked a wrong or stale account can see it here and drop it with
+    /// [`Self::untrack_statement_renewal_account`].
+    pub fn statement_renewal_targets(
+        &self,
+    ) -> Result<Vec<NativeTrackedStatementRenewalTarget>, NativeRenewalTargetError> {
+        futures::executor::block_on(self.runtime.statement_renewal_targets())
+            .map(|entries| entries.into_iter().map(Into::into).collect())
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Root public key the active identity records its fixed entries under.
+    ///
+    /// Needs an active session, and fails with `Disconnected` without one.
+    /// An entry from [`Self::statement_renewal_targets`] whose owner is this
+    /// key, or which has no owner at all, is one a pass will renew; any other
+    /// is one a pass will prune.
+    pub fn statement_renewal_owner_key(&self) -> Result<Bytes32, NativeRenewalTargetError> {
+        self.runtime
+            .statement_renewal_owner_key()
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Stop renewing one fixed statement account, returning whether the ledger
+    /// held it.
+    ///
+    /// Scoped to the active identity, so it never removes an entry another
+    /// identity promised. Needs an active session to resolve that identity.
+    pub fn untrack_statement_renewal_account(
+        &self,
+        account_id: Vec<u8>,
+    ) -> Result<bool, NativeRenewalTargetError> {
+        let account_id: [u8; 32] = account_id.as_slice().try_into().map_err(|_| {
+            NativeRenewalTargetError::InvalidAccountId {
+                actual: account_id.len() as u64,
+            }
+        })?;
+        futures::executor::block_on(self.runtime.untrack_statement_renewal_account(&account_id))
             .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
@@ -2200,6 +2279,45 @@ mod tests {
                 }
             ),
             Err(NativeRenewalTargetError::InvalidProductId { .. })
+        ));
+    }
+
+    // The read direction is the one a host audits its slots through, so a
+    // dropped account id or owner there is a silent wrong answer rather than a
+    // compile error.
+    #[test]
+    fn a_tracked_entry_survives_the_trip_out_to_the_native_boundary() {
+        let entry = crate::runtime::TrackedStatementRenewalTarget {
+            target: crate::runtime::StatementRenewalTarget::Account {
+                account_id: [7; 32],
+                label: "device".to_string(),
+            },
+            owner: Some([9; 32]),
+        };
+
+        let native = NativeTrackedStatementRenewalTarget::from(entry);
+
+        assert_eq!(native.owner, Some([9; 32]));
+        assert!(matches!(
+            native.target,
+            NativeStatementRenewalTarget::Account { account_id, label }
+                if account_id == vec![7; 32] && label == "device"
+        ));
+    }
+
+    #[test]
+    fn a_recipe_entry_reports_no_owner_across_the_boundary() {
+        let entry = crate::runtime::TrackedStatementRenewalTarget {
+            target: crate::runtime::StatementRenewalTarget::WalletSso,
+            owner: None,
+        };
+
+        let native = NativeTrackedStatementRenewalTarget::from(entry);
+
+        assert!(native.owner.is_none());
+        assert!(matches!(
+            native.target,
+            NativeStatementRenewalTarget::WalletSso
         ));
     }
 
