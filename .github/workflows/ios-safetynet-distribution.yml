@@ -10,7 +10,7 @@ name: Safetynet Distribution
 # this workflow exists for ad-hoc builds outside that pipeline. It deliberately does not
 # reuse _build_distribute.yml: that workflow's security gate fails any workflow_dispatch
 # not triggered by github-actions[bot], which is exactly the human-triggered case here.
-# The scope is correspondingly narrower — one variant, no release PR, no Allure launch,
+# The scope is correspondingly narrower — one variant, no release PR,
 # no release notification.
 
 concurrency:
@@ -41,8 +41,6 @@ env:
   CODE_SIGN_IDENTITY: "Apple Distribution"
   EXPORT_METHOD: "app-store"
   RUN_IN_CI: true
-  S3_BUCKET: s3://polkadot-app-artefacts
-  S3_REGION: fr-par
   SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
 jobs:
@@ -98,23 +96,3 @@ jobs:
           google_service_info_release_base64: ${{ secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 }}
           sentry_dsn: ${{ secrets.SENTRY_DSN }}
           meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
-
-      - name: Upload to S3
-        uses: novasamatech/github-actions/s3-upload@v5
-        with:
-          s3_region: ${{ env.S3_REGION }}
-          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
-          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          s3_bucket: ${{ env.S3_BUCKET }}
-          destination_path: /ios/safetynet/polkadot-app-${{ steps.build_version.outputs.marketing_version }}-${{ steps.build_version.outputs.build_number }}.ipa
-          source_path: hosts/ios/polkadot-app.ipa
-
-      - name: Upload to S3 (static path)
-        uses: novasamatech/github-actions/s3-upload@v5
-        with:
-          s3_region: ${{ env.S3_REGION }}
-          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
-          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          s3_bucket: ${{ env.S3_BUCKET }}
-          destination_path: /ios/safetynet/polkadot-app.ipa
-          source_path: hosts/ios/polkadot-app.ipa
