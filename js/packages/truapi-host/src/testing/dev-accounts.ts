@@ -83,11 +83,64 @@ export function resolveAccount(spec: DevAccountName | DevAccount): DevAccount {
  * endpoint outages -- which is the cost of testing against real inclusion.
  */
 export const LIVE_CHAINS = {
-  /**
-   * Paseo Asset Hub. No genesis hash on purpose: this chain has been reset
-   * more than once, every pinned copy of its hash has gone stale, and an
-   * unhashed proxy takes every request instead of routing on a value that
-   * rots.
-   */
-  paseoAssetHub: { rpcUrl: "wss://paseo-asset-hub-next-rpc.polkadot.io" },
+  /** Paseo Asset Hub. */
+  paseoAssetHub: {
+    rpcUrl: "wss://paseo-asset-hub-next-rpc.polkadot.io",
+    /**
+     * Declare this in the host's runtime config when proxying to this chain.
+     *
+     * Not used for proxy routing -- an unhashed proxy takes every request, so
+     * routing survives a reset. This value is needed because the *product*
+     * checks it: `@parity/product-sdk-descriptors` refuses a host whose
+     * declared genesis disagrees with the descriptor it was built against.
+     *
+     * It goes stale when the chain is reset, and it has more than once. When a
+     * product reports a genesis mismatch, read the chain's current hash with
+     * `chain_getBlockHash(0)` and re-pin it here.
+     */
+    genesisHash:
+      "0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
+  },
 } as const;
+
+/**
+ * Fixture settings for proxying one real chain.
+ *
+ * A live chain has to agree in three places -- what the host proxies to, what
+ * it reports serving, and what its runtime config declares -- and the product
+ * checks the last two against its own descriptor bundle. Getting one of them
+ * wrong fails as a genesis mismatch that names neither the setting nor the
+ * file, so this builds all three from one value.
+ *
+ * ```ts
+ * createTestHostFixture({
+ *   productUrl,
+ *   hostUrl: server.url,
+ *   ...liveChain(LIVE_CHAINS.paseoAssetHub),
+ * });
+ * ```
+ */
+export function liveChain(chain: { rpcUrl: string; genesisHash: string }): {
+  mock: {
+    chainProxies: { rpcUrl: string }[];
+    supportedChains: {
+      network: string;
+      chains: { identifier: "AssetHub"; genesisHash: `0x${string}` }[];
+    };
+  };
+  runtimeConfig: Record<string, unknown>;
+} {
+  const genesisHash = chain.genesisHash as `0x${string}`;
+  return {
+    mock: {
+      // No hash on the proxy: it takes every request, so routing survives a
+      // reset even while the declared hash below has to be re-pinned.
+      chainProxies: [{ rpcUrl: chain.rpcUrl }],
+      supportedChains: {
+        network: "paseo",
+        chains: [{ identifier: "AssetHub", genesisHash }],
+      },
+    },
+    runtimeConfig: { assetHub: { genesisHash } },
+  };
+}
