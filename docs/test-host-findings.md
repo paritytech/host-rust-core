@@ -723,6 +723,41 @@ product-sdk has to move its catalog to `@parity/truapi` 0.16.0 and re-release,
 and only then can a consumer adopt the fixture. A `@parity/truapi-host` release
 carrying `./testing` is necessary but not sufficient.
 
+### The block is symmetric, and only one host works past it
+
+The codec boundary was assembled locally to test this, with no release: copy
+`@parity/truapi` 0.16.0 and the monorepo's built `product-sdk` packages into
+`t3rminal/node_modules`. Running its suite twice, changing nothing but the
+fixture:
+
+| t3rminal, codec-2 stack | result | wall clock |
+| --- | --- | --- |
+| `@parity/truapi-host/testing` | **9 passed / 7 failed** | 3.8m |
+| `@parity/host-api-test-sdk` | **1 passed / 15 failed** | 21.1m |
+
+On the codec-1 stack the same suite gives 7/16 on `host-api-test-sdk` and 1/16
+here. So neither host crosses the boundary, and the earlier reading -- that this
+test host regressed six of t3rminal's tests -- was comparing two different
+stacks. Hold the stack fixed and the result inverts.
+
+That makes this more than a replacement. `host-api-test-sdk` reimplements the
+protocol rather than running the core, and it reimplemented codec 1; it cannot
+serve a product built against 0.16.0, and its 21 minutes are 30-second locator
+timeouts. Once product-sdk moves, this is the only one of the two that
+functions, so the fixture is what unblocks that upgrade rather than something
+to adopt after it.
+
+Seven t3rminal specs still fail here and are not diagnosed. They may be its own
+-- its suite already failed nine on its original stack -- but there is no clean
+baseline for them, because the only host to compare against cannot run this
+stack at all.
+
+**Reproducing it.** Copy, do not symlink: Next will not resolve a linked
+package outside the project root, which fails as `Module not found` against the
+package that is plainly present. The umbrella `@parity/product-sdk` also ships
+no `dist` in the monorepo and has to be built first; `tsup`'s declaration step
+fails, but the JavaScript emits and that is enough to run.
+
 ## Working notes
 
 - **A fresh checkout does not compile.** `rust/crates/truapi-server/src/generated/` is
