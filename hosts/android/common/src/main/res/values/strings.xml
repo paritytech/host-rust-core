@@ -1547,4 +1547,15 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="chat_bot_weekly_game_welcome_message_4">🏃 Play 6 games in a row to achieve your Polkadot Peer status.</string>
     <string name="chat_bot_weekly_game_welcome_message_5">❣️️ Attendance. Attendance is important, missing the game pauses Peer status. Game has to be played constantly.</string>
     <string name="chat_bot_weekly_game_welcome_message_6">🕰️ Game Time! The game is played every Thursday at 6 PM CET.</string>
+    <string name="debug_report_title">Report app issue</string>
+    <string name="debug_report_what_happened">What happened?</string>
+    <string name="debug_report_placeholder">Tell us about the issue you encountered</string>
+    <string name="debug_report_character_count">%1$d / %2$d</string>
+    <string name="debug_report_attachments">Your report includes app logs and this screenshot.</string>
+    <string name="debug_report_screenshot">Screenshot included in the report</string>
+    <string name="debug_report_thanks">Thank you for your feedback!</string>
+    <string name="debug_report_failed">Could not confirm that your report was sent.</string>
+    <string name="debug_report_capture_failed">Could not capture the app screen. Please try another screenshot.</string>
+    <string name="debug_report_unavailable">Issue reporting is not configured for this build yet.</string>
+    <string name="debug_report_too_large">The screenshot or logs are too large to send.</string>
 </resources>

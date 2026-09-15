@@ -2,6 +2,7 @@ package io.paritytech.polkadotapp.app.root.presentation.root
 
 import android.content.Intent
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -24,6 +25,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import io.paritytech.polkadotapp.app.BuildConfig
 import io.paritytech.polkadotapp.app.R
 import io.paritytech.polkadotapp.app.root.navigation.NavigationHolder
+import io.paritytech.polkadotapp.app.root.presentation.debug.reportIssue.DebugScreenshotObserver
 import io.paritytech.polkadotapp.app.root.presentation.root.compose.DevResetOverlay
 import io.paritytech.polkadotapp.app.root.presentation.root.compose.RootNavBarHost
 import io.paritytech.polkadotapp.app.root.presentation.root.compose.chatoverlay.ChatExtensionOverlayHost
@@ -56,6 +58,9 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
     @Inject
     lateinit var appNotifier: AppNotifier
 
+    @Inject
+    lateinit var router: RootRouter
+
     private val viewModel by viewModels<RootViewModel>()
 
     private val navHostFragment: NavHostFragment by lazy(LazyThreadSafetyMode.NONE) {
@@ -82,6 +87,9 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
         handleDeeplinkOutcome()
         if (BuildConfig.DEBUG) {
             setupDevResetOverlay()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                lifecycle.addObserver(DebugScreenshotObserver(this, navController, router, appNotifier))
+            }
         }
         setupRootNavBar()
         setupAppNotificationOverlay()

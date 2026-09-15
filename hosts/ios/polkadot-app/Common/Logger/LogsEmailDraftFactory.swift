@@ -6,22 +6,27 @@ protocol LogsEmailDraftMaking {
 }
 
 final class LogsEmailDraftFactory: LogsEmailDraftMaking {
+    private let archiveURL: URL?
+
     private lazy var subjectDateFormatter: DateFormatter = {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "dd/MM/yyyy"
         return dateFormatter
     }()
 
+    init(archiveURL: URL? = nil) {
+        self.archiveURL = archiveURL
+    }
+
     func makeLogsDraft() -> EmailDraft? {
         guard
             let logsURL = fileManager.logsDirectoryURL(),
-            let docsURL = documentDirectoryURL()
+            let zipURL = archiveURL ?? documentDirectoryURL()?.appendingPathComponent("Logs.zip")
         else {
             return nil
         }
 
-        let zipName = "Logs.zip"
-        let zipURL = docsURL.appendingPathComponent(zipName)
+        let zipName = zipURL.lastPathComponent
 
         if fileManager.fileExists(atPath: zipURL.path) {
             try? fileManager.removeItem(at: zipURL)

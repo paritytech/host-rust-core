@@ -99,6 +99,25 @@ scripts/battery.sh         Run the generated battery against both headless CLI h
                            plus the Pocket phase a Worker execution serves
 ```
 
+Taking a screenshot opens **Report app issue** in mobile builds that enable
+the shake-opened Debug menu (`BuildConfig.DEBUG` on Android,
+`TESTNET_FEATURE` on iOS). Android screenshot detection requires Android 14+.
+The modal includes a snapshot of the app screen, a description, and ZIP logs.
+Send uploads the report through [issue-proxy](https://github.com/paritytech/issue-proxy).
+Configure these Firebase Remote Config string parameters for each mobile environment:
+
+| Parameter | Value |
+| --- | --- |
+| `issue_proxy_url` | Full HTTPS endpoint, including `/v1/issues` |
+| `issue_proxy_api_key` | The proxy's `ISSUE_PROXY_API_KEY`, sent as a bearer token |
+
+Both hosts read the currently activated values when sending. There are no bundled
+URL or key defaults; missing configuration shows an error. Remote Config values
+are readable by clients, so the GitHub credential stays on the proxy and must
+never be placed here. The thank-you popup appears only after HTTP 201. Uploads
+include PNG screenshots up to 10 MiB and ZIP logs, with a 25 MiB limit for the
+whole multipart request. The Debug menu and **Share logs** remain available.
+
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
