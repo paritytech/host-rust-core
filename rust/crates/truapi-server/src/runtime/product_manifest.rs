@@ -234,6 +234,39 @@ pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> 
 /// refusal, so the outcome never reveals which of those it was. Failing closed
 /// also means an unreachable chain withdraws grants rather than assuming them.
 ///
+/// Why a grant lookup did not admit the caller.
+///
+/// The wire answers one refusal for every reason, deliberately. This is the
+/// operator's copy: without it "the publisher granted nothing" is reported for
+/// a user's explicit denial, an unreadable keychain and a manifest that failed
+/// to parse alike, and whoever debugs it goes to fix a manifest that is already
+/// correct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusedBecause {
+    /// The published manifest does not name this caller for this scope.
+    NotGranted,
+    /// The user has already refused this pair.
+    UserDenied,
+    /// The stored decision could not be read, so the lookup failed closed.
+    DecisionUnreadable,
+    /// A manifest was fetched but did not parse.
+    ManifestMalformed,
+    /// No manifest could be resolved at all.
+    ManifestUnavailable,
+}
+
+impl RefusedBecause {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotGranted => "not granted",
+            Self::UserDenied => "user denied",
+            Self::DecisionUnreadable => "stored decision unreadable",
+            Self::ManifestMalformed => "manifest malformed",
+            Self::ManifestUnavailable => "manifest unavailable",
+        }
+    }
+}
+
 pub(crate) async fn grants_scope(
     services: &RuntimeServices,
     platform: &dyn Platform,
@@ -241,6 +274,19 @@ pub(crate) async fn grants_scope(
     target: &str,
     scope: Granted,
 ) -> bool {
+    scope_grant(services, platform, caller_id, target, scope)
+        .await
+        .is_ok()
+}
+
+/// `grants_scope`, keeping the reason for an operator.
+pub(crate) async fn scope_grant(
+    services: &RuntimeServices,
+    platform: &dyn Platform,
+    caller_id: &str,
+    target: &str,
+    scope: Granted,
+) -> Result<(), RefusedBecause> {
     // Bounded here, not by the caller.
     //
     // The product-facing door runs this inside `remote_authority_call` and so
@@ -258,13 +304,13 @@ pub(crate) async fn grants_scope(
     )
     .await
     .flatten() else {
-        return false;
+        return Err(RefusedBecause::ManifestUnavailable);
     };
     let Ok(manifest) = RootManifest::parse(&json) else {
-        return false;
+        return Err(RefusedBecause::ManifestMalformed);
     };
     if !manifest.grants(bare_product_label(caller_id), scope) {
-        return false;
+        return Err(RefusedBecause::NotGranted);
     }
     // A publisher's grant waives the publisher's own prompt. It does not reach a
     // refusal the user already gave, so a stored decision still overrides it,
@@ -283,7 +329,14 @@ pub(crate) async fn grants_scope(
     // its storage, and keeping it here means the frontend and the authority
     // inherit one implementation. A later scope that also implies account access
     // has to name itself here; it does not inherit this.
-    !(scope == Granted::Context && user_denied_account_access(platform, caller_id, target).await)
+    if scope == Granted::Context {
+        match stored_account_decision(platform, caller_id, target).await {
+            StoredDecision::Denied => return Err(RefusedBecause::UserDenied),
+            StoredDecision::Unreadable => return Err(RefusedBecause::DecisionUnreadable),
+            StoredDecision::Absent => {}
+        }
+    }
+    Ok(())
 }
 
 /// Whether the user has already refused `caller_id` access to `target`'s account.
@@ -291,11 +344,22 @@ pub(crate) async fn grants_scope(
 /// Reads the stored decision without raising a prompt: `NotDetermined` is not a
 /// refusal, and the prompt that would settle it belongs to the call the user
 /// actually made, not to a grant lookup.
-async fn user_denied_account_access(
+/// What the stored account-access decision says, keeping "unreadable" apart
+/// from "absent" so the caller can report which it was.
+enum StoredDecision {
+    /// The user refused this pair.
+    Denied,
+    /// No decision recorded.
+    Absent,
+    /// The store could not be read, so the lookup fails closed.
+    Unreadable,
+}
+
+async fn stored_account_decision(
     platform: &dyn Platform,
     caller_id: &str,
     target: &str,
-) -> bool {
+) -> StoredDecision {
     // Checked under both the product-scoped key this release writes and the
     // full-id key earlier releases wrote.
     //
@@ -321,19 +385,18 @@ async fn user_denied_account_access(
             target_product_id: target,
         };
         let service = PermissionsService::new(platform, platform, &caller);
-        // Fails closed. `Ok(Denied)` is an explicit refusal; an `Err` is a
-        // storage fault, and reading that as "not refused" would let a locked
-        // keychain turn the user's "no" into a "yes" on the strength of a
-        // publisher's manifest.
-        if !matches!(
-            service.authorization_status(&request).await,
-            Ok(PermissionAuthorizationStatus::NotDetermined
-                | PermissionAuthorizationStatus::Authorized)
-        ) {
-            return true;
+        match service.authorization_status(&request).await {
+            Ok(PermissionAuthorizationStatus::Denied) => return StoredDecision::Denied,
+            Ok(
+                PermissionAuthorizationStatus::NotDetermined
+                | PermissionAuthorizationStatus::Authorized,
+            ) => {}
+            // Fails closed: a storage fault must not let a publisher's manifest
+            // turn the user's "no" into a "yes".
+            Err(_) => return StoredDecision::Unreadable,
         }
     }
-    false
+    StoredDecision::Absent
 }
 
 /// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
@@ -452,7 +515,8 @@ pub(crate) async fn ring_vrf_key_access_granted(
     if caller == owner {
         return Ok(AuthorizedAccess { caller, owner });
     }
-    if grants_scope(services, platform, &caller, &owner, Granted::Context).await {
+    let decision = scope_grant(services, platform, &caller, &owner, Granted::Context).await;
+    if decision.is_ok() {
         // Recorded, because nothing else records it. A granted cross-product
         // access raises no prompt and writes no stored decision, so without this
         // line the only audible half of the decision is the refusal below: a
@@ -488,7 +552,8 @@ pub(crate) async fn ring_vrf_key_access_granted(
     info!(
         caller = %caller,
         owner = %owner,
-        "ring-VRF key access refused: no context grant"
+        because = decision.err().map_or("granted", RefusedBecause::as_str),
+        "ring-VRF key access refused"
     );
     Err(RingVrfError::NotAllowlisted)
 }

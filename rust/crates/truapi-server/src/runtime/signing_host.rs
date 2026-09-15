@@ -1035,10 +1035,17 @@ impl ProductAuthority for SigningHost {
                 reason: err.to_string(),
             }
         })?;
-        if request.calling_product_id != owner {
+        // Normalized before comparing, and before the prompt. `sso_responder`
+        // hands `calling_product_id` through untouched, so comparing it raw
+        // asks an owner to consent to its own account for spelling itself
+        // differently, and files that decision under the spelling the peer
+        // chose rather than the one the grant path reads back.
+        let caller = normalize_product_identifier(&request.calling_product_id)
+            .map_err(|_| RingVrfError::NotAllowlisted)?;
+        if caller != owner {
             match super::account_access_authorization(
                 self.services.platform.as_ref(),
-                &request.calling_product_id,
+                &caller,
                 &owner,
             )
             .await
@@ -1872,6 +1879,51 @@ mod tests {
         assert!(
             mint("peopl.dot", "bank.dot").is_ok(),
             "the owner may still mint its own alias in any context"
+        );
+    }
+
+    /// An owner listing its own keys is not asked to consent to its own account.
+    ///
+    /// `sso_responder` hands `calling_product_id` through untouched, so
+    /// comparing it raw against the normalized owner makes an owner that spells
+    /// itself differently look like a stranger: it is prompted, and the decision
+    /// is filed under the spelling the peer chose rather than the one the grant
+    /// path reads back.
+    #[test]
+    fn an_owner_listing_its_own_keys_is_not_prompted_for_its_own_account() {
+        let platform = Arc::new(StubPlatform::default());
+        let (_services, authority) =
+            signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+
+        let listed = futures::executor::block_on(authority.list_ring_vrf_keys(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "PEOPL.DOT".to_string(),
+                payload: v01::HostAccountListRingVrfKeysRequest {
+                    owner: "peopl.dot".to_string(),
+                    disclosure: v01::RingVrfKeyDisclosure::PublicKey,
+                },
+            },
+        ));
+        assert!(
+            listed.is_ok(),
+            "an owner must reach its own keys however it spells itself; got {:?}",
+            listed.err()
+        );
+        assert_eq!(
+            platform
+                .account_access_reviews
+                .lock()
+                .expect("review list mutex poisoned")
+                .len(),
+            0,
+            "and must not be asked to consent to its own account"
         );
     }
 

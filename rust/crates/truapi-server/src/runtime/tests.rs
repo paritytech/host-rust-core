@@ -4184,7 +4184,22 @@ fn a_grant_lookup_obeys_the_callers_deadline() {
     );
     let elapsed = started.elapsed();
 
-    assert!(result.is_err(), "a deadline that short cannot succeed");
+    // The uniform refusal, not a transport error carrying a reason. Left to
+    // `remote_authority_call`, a deadline that expires during the lookup answers
+    // `Unknown { reason }` while an already-cached target that grants nothing
+    // answers `NotAllowlisted` at once — so the error tag alone would tell a
+    // caller which targets this device has resolved before, which is the
+    // enumeration the denial read was moved after the manifest to prevent.
+    assert!(
+        matches!(
+            result.as_ref().err(),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::NotAllowlisted
+            )))
+        ),
+        "a lookup that runs out of time must answer the uniform refusal, got {:?}",
+        result.as_ref().err()
+    );
     assert!(
         elapsed < Duration::from_secs(5),
         "the grant lookup must be bounded by the caller's deadline, not by the \

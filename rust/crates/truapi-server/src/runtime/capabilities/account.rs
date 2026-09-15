@@ -28,7 +28,7 @@ use truapi_platform::{
 };
 
 use crate::host_logic::product_manifest::Granted;
-use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
+use crate::host_logic::sso::messages::ProductRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
@@ -197,25 +197,40 @@ impl Account for ProductRuntimeHost {
         // The gate returns the normalized owner it decided about and the handle
         // is rebuilt from it, so authorization and key derivation agree by
         // construction rather than by a registry lookup happening to miss.
-        remote_authority_call(&cx, async {
-            let Some(owner) = self
-                .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
-                .await
-            else {
-                return Err(RingVrfError::NotAllowlisted);
-            };
-            request.key_handle.dot_ns_identifier = owner;
-            self.authority
-                .create_proof(
-                    &cx,
-                    &session,
-                    ProductRequest {
-                        calling_product_id,
-                        payload: request,
-                    },
-                )
-                .await
-        })
+        let Some(owner) = self
+            .bounded_cross_product_scope_target(
+                &request.key_handle.dot_ns_identifier,
+                Granted::Context,
+                &cx,
+            )
+            .await
+        else {
+            // Recorded here, because this door answers without reaching the
+            // authority — so without this line a product probing which
+            // handles exist on the device leaves no trace, while every
+            // success is logged. The wire answers one refusal for every
+            // reason; this is the operator's copy.
+            tracing::info!(
+                caller = %calling_product_id,
+                owner = %request.key_handle.dot_ns_identifier,
+                "cross-product ring-VRF access refused at the runtime frontend"
+            );
+            return Err(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::NotAllowlisted,
+            )));
+        };
+        request.key_handle.dot_ns_identifier = owner;
+        remote_authority_call(
+            &cx,
+            self.authority.create_proof(
+                &cx,
+                &session,
+                ProductRequest {
+                    calling_product_id,
+                    payload: request,
+                },
+            ),
+        )
         .await
         .map(HostAccountCreateProofResponse::V1)
         .map_err(|err| {
@@ -325,25 +340,40 @@ impl Account for ProductRuntimeHost {
         // As in `create_account_proof`: inside the timeout and cancel scope, and
         // the handle carried on is the normalized owner the gate decided about
         // rather than the spelling the caller sent.
-        remote_authority_call(&cx, async {
-            let Some(owner) = self
-                .cross_product_scope_target(&request.key_handle.dot_ns_identifier, Granted::Context)
-                .await
-            else {
-                return Err(RingVrfError::NotAllowlisted);
-            };
-            request.key_handle.dot_ns_identifier = owner;
-            self.authority
-                .ring_vrf_sign(
-                    &cx,
-                    &session,
-                    ProductRequest {
-                        calling_product_id,
-                        payload: request,
-                    },
-                )
-                .await
-        })
+        let Some(owner) = self
+            .bounded_cross_product_scope_target(
+                &request.key_handle.dot_ns_identifier,
+                Granted::Context,
+                &cx,
+            )
+            .await
+        else {
+            // Recorded here, because this door answers without reaching the
+            // authority — so without this line a product probing which
+            // handles exist on the device leaves no trace, while every
+            // success is logged. The wire answers one refusal for every
+            // reason; this is the operator's copy.
+            tracing::info!(
+                caller = %calling_product_id,
+                owner = %request.key_handle.dot_ns_identifier,
+                "cross-product ring-VRF access refused at the runtime frontend"
+            );
+            return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
+                v01::HostAccountRingVrfSignError::NotAllowlisted,
+            )));
+        };
+        request.key_handle.dot_ns_identifier = owner;
+        remote_authority_call(
+            &cx,
+            self.authority.ring_vrf_sign(
+                &cx,
+                &session,
+                ProductRequest {
+                    calling_product_id,
+                    payload: request,
+                },
+            ),
+        )
         .await
         .map(HostAccountRingVrfSignResponse::V1)
         .map_err(|err| CallError::Domain(HostAccountRingVrfSignError::V1(ring_vrf_sign_error(err))))

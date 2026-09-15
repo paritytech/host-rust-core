@@ -450,6 +450,47 @@ impl ProductRuntimeHost {
     /// Returning the id rather than a bare yes keeps one canonical spelling for
     /// the callers that go on to address the target — the grant and whatever it
     /// admits are then decided against the same string.
+    /// Resolve the grant under the caller's deadline and cancellation, answering
+    /// the uniform refusal if either fires.
+    ///
+    /// Called before `remote_authority_call`, not inside it. Inside, two timers
+    /// armed on the same budget race, and whichever fires first decides the
+    /// error the caller sees — this one answers the uniform refusal, that one
+    /// answers `Unknown` with a reason — so the refusal shape would depend on
+    /// scheduling. Bounded here instead, the gate is decided before the
+    /// authority call is made at all.
+    ///
+    /// Left to `remote_authority_call`, a deadline that expires during the
+    /// lookup surfaces as `Unknown { reason }`, while an already-cached target
+    /// that grants nothing answers immediately — so the error tag alone tells a
+    /// caller which targets this device has resolved before. That is the
+    /// enumeration the denial read was moved after the manifest to avoid,
+    /// arriving by another route. Expiry here is indistinguishable from
+    /// "granted nothing", like every other refusal on this path.
+    pub(crate) async fn bounded_cross_product_scope_target(
+        &self,
+        target: &str,
+        scope: Granted,
+        cx: &CallContext,
+    ) -> Option<String> {
+        let lookup = self.cross_product_scope_target(target, scope).fuse();
+        let cancelled = cx.cancel().cancelled().fuse();
+        pin_mut!(lookup, cancelled);
+        let Some(budget) = cx.timeout() else {
+            return futures::select! {
+                resolved = lookup => resolved,
+                _ = cancelled => None,
+            };
+        };
+        let deadline = futures_timer::Delay::new(budget).fuse();
+        pin_mut!(deadline);
+        futures::select! {
+            resolved = lookup => resolved,
+            _ = cancelled => None,
+            () = deadline => None,
+        }
+    }
+
     pub(crate) async fn cross_product_scope_target(
         &self,
         target: &str,
