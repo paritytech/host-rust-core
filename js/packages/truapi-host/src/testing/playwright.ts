@@ -104,6 +104,17 @@ export interface TestHost {
   getIsAuthenticated(): Promise<boolean>;
   getChainStatus(): Promise<ChainStatus>;
   getConnectionStatus(): Promise<ChainStatus>;
+  /**
+   * Raw JSON-RPC the core sent over the chain connection, in order.
+   *
+   * A chain-path failure is otherwise invisible from a suite: the product
+   * shows a stalled UI and the fixture reports nothing about what the host
+   * asked the chain. This is what tells you whether a request was made at
+   * all, and what came back after it.
+   */
+  getSentRpc(): Promise<string[]>;
+  /** Drop the recorded RPC, so one case does not read another's traffic. */
+  clearSentRpc(): Promise<void>;
   simulateDisconnect(): Promise<void>;
   simulateReconnect(): Promise<void>;
   /**
@@ -282,6 +293,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         getIsAuthenticated: () => call("getIsAuthenticated"),
         getChainStatus: () => call("getChainStatus"),
         getConnectionStatus: () => call("getConnectionStatus"),
+        getSentRpc: () => call("sentRpc"),
+        clearSentRpc: () => call("clearSentRpc"),
         simulateDisconnect: () => call("simulateDisconnect"),
         simulateReconnect: () => call("simulateReconnect"),
         async waitForConnection(timeoutMs = 30_000) {
