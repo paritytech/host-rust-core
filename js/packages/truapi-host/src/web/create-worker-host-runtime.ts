@@ -394,6 +394,20 @@ interface TrUApiDevConsole {
  * part of the key. Returns null if the encoded product will not decode, which
  * drops the hold rather than letting it pin the worker forever.
  */
+/**
+ * Read the host-assigned id out of a `beginOperation` response. Returns null if
+ * the response will not decode, so a hold that cannot be keyed is dropped
+ * rather than escaping and leaving the worker's call unanswered.
+ */
+function operationIdFrom(value: unknown): number | null {
+  if (!(value instanceof Uint8Array)) return null;
+  try {
+    return HostWorkerBeginOperationResponseCodec.dec(value).id;
+  } catch {
+    return null;
+  }
+}
+
 function operationHold(encodedProduct: unknown, id: number): string | null {
   if (!(encodedProduct instanceof Uint8Array)) return null;
   try {
@@ -435,10 +449,8 @@ function handleCallbackRequest(
         // Tracked in the success arm only: a rejected begin must not leave a
         // hold that nothing will ever release.
         if (msg.name === "beginOperation") {
-          const hold = operationHold(
-            msg.args[0],
-            HostWorkerBeginOperationResponseCodec.dec(value as Uint8Array).id,
-          );
+          const id = operationIdFrom(value);
+          const hold = id === null ? null : operationHold(msg.args[0], id);
           if (hold !== null) state.openOperations.add(hold);
         } else if (msg.name === "endOperation") {
           const id = msg.args[1];
