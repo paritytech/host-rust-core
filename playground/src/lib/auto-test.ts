@@ -40,6 +40,8 @@ const LONG_TIMEOUT_METHODS = new Set([
   "Signing/sign_payload",
   "Signing/sign_raw",
   "Signing/sign_raw_with_legacy_account",
+  "Signing/sign_raw_unwatermarked_deprecated",
+  "Signing/sign_raw_unwatermarked_deprecated_with_legacy_account",
   "Signing/sign_payload_with_legacy_account",
   "Signing/create_transaction",
   "Signing/create_transaction_with_legacy_account",

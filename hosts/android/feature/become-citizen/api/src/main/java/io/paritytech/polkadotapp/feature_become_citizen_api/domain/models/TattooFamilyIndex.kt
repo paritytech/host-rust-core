@@ -1,0 +1,5 @@
+package io.paritytech.polkadotapp.feature_become_citizen_api.domain.models
+
+import io.novasama.substrate_sdk_android.koltinx_serialization_scale.serializers.BigIntegerSerializable
+
+typealias TattooFamilyIndex = BigIntegerSerializable

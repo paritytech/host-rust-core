@@ -1,0 +1,54 @@
+# CODEOWNERS file
+# Lines starting with '#' are comments.
+# Each line is a file pattern followed by one or more owners.
+
+# Workflows and GitHub Actions configuration
+/.github/ @kogeler
+
+/design @foxwoosh
+/chains @valentunn @mikhail98
+/database @valentunn @foxwoosh @mikhail98
+
+/scripts @Alexander-Kaish
+/config/detekt @Alexander-Kaish
+/bindings @valentunn
+/tools/car-parser @valentunn
+/tools/ipfs @valentunn
+/tools/auth @mikhail98
+/tools/backup @mikhail98 @valentunn
+/tools/integrity @mikhail98
+/tools/remoteconfig @mikhail98 @valentunn
+/tools/jwt-auth @mikhail98 @valentunn @Alexander-Kaish
+/tools/media-connection @antonijzelinskij @foxwoosh @valentunn
+
+/feature/chats @valentunn @foxwoosh
+/feature/people @valentunn @foxwoosh
+/feature/fund @valentunn @mikhail98
+/feature/statement-store @foxwoosh @valentunn @antonijzelinskij
+/feature/videogame @valentunn @foxwoosh
+/feature/balances @valentunn @mikhail98
+/feature/cross-chain-transfers @valentunn
+/feature/become-citizen @valentunn @foxwoosh
+/feature/backup @valentunn @mikhail98 @foxwoosh
+/feature/sso @valentunn
+/feature/tokens @valentunn @mikhail98
+/feature/transactions @valentunn @foxwoosh @mikhail98
+/feature/usernames @mikhail98 @valentunn
+/feature/upgrade-username @mikhail98
+/feature/vouchers @valentunn @foxwoosh
+/feature/wallet @mikhail98 @valentunn
+/feature/xcm @valentunn
+/feature/swap @valentunn
+/feature/account @valentunn @mikhail98 @foxwoosh
+/feature/transfers @valentunn
+/feature/dotns @valentunn
+/feature/revive @valentunn
+/feature/web3summit @valentunn @antonijzelinskij
+/feature/products @valentunn @antonijzelinskij
+/feature/calls @foxwoosh @valentunn
+/feature/coinage @mikhail98 @valentunn @antonijzelinskij
+/feature/members @Alexander-Kaish @valentunn @mikhail98
+/feature/pgas @valentunn
+/feature/transaction-storage @valentunn
+/feature/connection-status @valentunn
+/feature/device-sync @antonijzelinskij @valentunn

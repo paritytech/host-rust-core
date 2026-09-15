@@ -36,6 +36,7 @@ use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "wasm-signing-host")]
 use crate::SigningHostRuntime;
+use crate::host_logic::worker::WorkerTransition;
 use crate::subscription::Spawner;
 use crate::{
     ChannelId, DebugEvent, DebugSink, FrameSink, PairingHostRuntime,
@@ -847,6 +848,42 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     }
 }
 
+/// Reports every worker demand transition to the host's
+/// `workerDemandChanged(productId, transition)` callback.
+struct WasmWorkerDemand {
+    changed: SendWrapper<Function>,
+}
+
+impl crate::host_logic::worker::WorkerDemandObserver for WasmWorkerDemand {
+    fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
+        let name = match transition {
+            WorkerTransition::Start => "Start",
+            WorkerTransition::Stop => "Stop",
+        };
+        let _ = self.changed.call2(
+            &JsValue::NULL,
+            &JsValue::from_str(product_id),
+            &JsValue::from_str(name),
+        );
+    }
+}
+
+/// Install the host's `workerDemandChanged` callback as `ledger`'s observer.
+/// Required: a host that omits it would never learn that a worker is wanted.
+fn install_worker_demand_observer(
+    ledger: &crate::host_logic::worker::WorkerLedger,
+    callbacks: &JsValue,
+) -> Result<(), JsValue> {
+    let changed = get_function(callbacks, "workerDemandChanged")?;
+    assert!(
+        ledger.install_demand_observer(Arc::new(WasmWorkerDemand {
+            changed: SendWrapper::new(changed),
+        })),
+        "a freshly built runtime installs its worker demand observer once"
+    );
+    Ok(())
+}
+
 /// JS-callable handle to a long-lived pairing-host runtime shared by product
 /// cores.
 #[wasm_bindgen]
@@ -879,6 +916,7 @@ impl WasmPairingHostRuntime {
         if let Some(status_host) = status_host {
             runtime.set_permission_status_host(status_host);
         }
+        install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
             runtime: Rc::new(runtime),
         })
@@ -1057,6 +1095,21 @@ impl WasmPairingHostRuntime {
     pub async fn reset_session_state(&self) {
         self.runtime.reset_session_state().await;
     }
+
+    /// Take one reference on the product's worker for a modality holder. The
+    /// first one reports `"Start"` to the host's `workerDemandChanged`
+    /// callback. Pair every call with one `releaseWorker`.
+    #[wasm_bindgen(js_name = acquireWorker)]
+    pub fn acquire_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().acquire(&product_id);
+    }
+
+    /// Release one reference. The last one reports `"Stop"`, after which the
+    /// host may stop the worker; releasing with none held is a no-op.
+    #[wasm_bindgen(js_name = releaseWorker)]
+    pub fn release_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().release(&product_id);
+    }
 }
 
 /// Strictly decode a SCALE-encoded core-storage key for host storage policy.
@@ -1104,8 +1157,10 @@ impl WasmSigningHostRuntime {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = signing_host_config_from_js(&host_config)?;
+        let runtime = SigningHostRuntime::new(platform, host_config, spawner);
+        install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
-            runtime: Rc::new(SigningHostRuntime::new(platform, host_config, spawner)),
+            runtime: Rc::new(runtime),
         })
     }
 
@@ -1160,6 +1215,21 @@ impl WasmSigningHostRuntime {
             .clear_product_state(&product_id)
             .await
             .map_err(generic_error_to_js)
+    }
+
+    /// Take one reference on the product's worker for a modality holder. The
+    /// first one reports `"Start"` to the host's `workerDemandChanged`
+    /// callback. Pair every call with one `releaseWorker`.
+    #[wasm_bindgen(js_name = acquireWorker)]
+    pub fn acquire_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().acquire(&product_id);
+    }
+
+    /// Release one reference. The last one reports `"Stop"`, after which the
+    /// host may stop the worker; releasing with none held is a no-op.
+    #[wasm_bindgen(js_name = releaseWorker)]
+    pub fn release_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().release(&product_id);
     }
 }
 
@@ -1257,6 +1327,7 @@ impl WasmProductRuntime {
         if let Some(status_host) = status_host {
             pairing.set_permission_status_host(status_host);
         }
+        install_worker_demand_observer(pairing.worker_ledger(), &callbacks)?;
         let core = pairing.product_runtime(product, frame_sink);
         Ok(Self::from_parts(core, channel.dispose))
     }
@@ -1368,27 +1439,27 @@ impl WasmProductRuntime {
         Ok(())
     }
 
-    /// Start the host-initiated render subscription for one stored custom Chat
-    /// message. `onUpdate` receives each replacement tree as a SCALE-encoded
-    /// `CustomRendererNode`. Exactly one terminal follows: `onComplete` when the
-    /// stream ended with the last tree standing, or `onError` when the product
-    /// could not serve the render and the last tree is partial. Rejects when
-    /// this connection may not reach Chat.
-    #[wasm_bindgen(js_name = renderCustomMessage)]
-    pub fn render_custom_message(
+    /// Start the host-initiated render subscription for one body. `request` is
+    /// a SCALE-encoded `ProductRendererRenderRequest`. `onUpdate` receives each
+    /// replacement tree as a SCALE-encoded `RendererNode`. Exactly one terminal
+    /// follows: `onComplete` when the stream ended with the last tree standing,
+    /// or `onError` when the product could not serve the render and the last
+    /// tree is partial. Rejects when this connection may not render.
+    #[wasm_bindgen(js_name = render)]
+    pub fn render(
         &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
+        request: Vec<u8>,
         on_update: Function,
         on_complete: Function,
         on_error: Function,
-    ) -> Result<WasmCustomRendererSubscription, JsValue> {
+    ) -> Result<WasmRendererSubscription, JsValue> {
+        let request = v01::ProductRendererRenderRequest::decode(&mut request.as_slice())
+            .map_err(|err| JsValue::from_str(&format!("render request did not decode: {err}")))?;
         let mut stream = self
             .inner
             .core
             .control()
-            .render_custom_message(message_id, message_type, payload)
+            .render(request)
             .map_err(|err| JsValue::from_str(&err.to_string()))?;
         let on_update = SendWrapper::new(on_update);
         let on_complete = SendWrapper::new(on_complete);
@@ -1404,8 +1475,8 @@ impl WasmProductRuntime {
                                 let _ = on_update.call1(&JsValue::NULL, &bytes);
                             }
                             Err(error) => {
-                                let _ = on_error
-                                    .call1(&JsValue::NULL, &JsValue::from_str(&error.reason));
+                                let reason = crate::subscription::interrupt_reason(error);
+                                let _ = on_error.call1(&JsValue::NULL, &JsValue::from_str(&reason));
                                 return;
                             }
                         }
@@ -1416,7 +1487,7 @@ impl WasmProductRuntime {
             )
             .await;
         });
-        Ok(WasmCustomRendererSubscription { abort: Some(abort) })
+        Ok(WasmRendererSubscription { abort: Some(abort) })
     }
 
     /// Publish one host-authored Chat action into this connection's action
@@ -1432,17 +1503,31 @@ impl WasmProductRuntime {
             .publish_chat_action(action)
             .map_err(|err| JsValue::from_str(&err.to_string()))
     }
+
+    /// Publish one action triggered inside a product-rendered body, buffered
+    /// until the product subscribes. Takes a SCALE-encoded
+    /// `HostRendererActionSubscribeItem`.
+    #[wasm_bindgen(js_name = publishRendererAction)]
+    pub fn publish_renderer_action(&self, item: Vec<u8>) -> Result<(), JsValue> {
+        let item = v01::HostRendererActionSubscribeItem::decode(&mut item.as_slice())
+            .map_err(|err| JsValue::from_str(&format!("renderer action did not decode: {err}")))?;
+        self.inner
+            .core
+            .control()
+            .publish_renderer_action(item)
+            .map_err(|err| JsValue::from_str(&err.to_string()))
+    }
 }
 
-/// Cancellable observation of one custom-message render instance. Dropping the
-/// handle on the JS side does not stop the stream; call `cancel`.
+/// Cancellable observation of one render instance. Dropping the handle on the
+/// JS side does not stop the stream; call `cancel`.
 #[wasm_bindgen]
-pub struct WasmCustomRendererSubscription {
+pub struct WasmRendererSubscription {
     abort: Option<AbortHandle>,
 }
 
 #[wasm_bindgen]
-impl WasmCustomRendererSubscription {
+impl WasmRendererSubscription {
     /// Stop delivering renderer updates. Idempotent.
     pub fn cancel(&mut self) {
         if let Some(abort) = self.abort.take() {

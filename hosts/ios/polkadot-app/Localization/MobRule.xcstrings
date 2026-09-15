@@ -1,0 +1,40 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "chatName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mob Rule"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mob Rule"
+          }
+        }
+      }
+    },
+    "message.welcome.1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Provide Judgments, Earn Rewards**\n· The app will send you documentation  tattoo videos and photos\n· Provide ✅ True or ❌ False  judgement for each case, earn  rewards for each statement"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Da veredictos, gana recompensas**\n· La app te enviará documentación  videos y fotos de tatuajes\n· Da un veredicto ✅ Verdadero o ❌ Falso  para cada caso y gana  recompensas por cada declaración"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.1"
+}

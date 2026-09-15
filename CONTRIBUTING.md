@@ -27,8 +27,10 @@ For larger changes that need cross-team discussion, use the RFC process:
 
 A CI check (`check-rfc.yml`) reads the RFC documents a PR touches. A new RFC
 needs frontmatter with a `title` and an `owner`, a `## Summary`, a
-`## Motivation`, and a section describing the approach. Any RFC the PR touches
-must also be free of unedited template text and of `TODO`, `TBD` or `FIXME`.
+`## Motivation`, and a section describing the approach, and must carry no
+unedited template text and no `TODO`, `TBD` or `FIXME`. Editing an existing RFC
+is judged only on the lines the change adds, so an RFC written before the
+template is not held to defects its author never introduced.
 Implementation is not required in the same PR: it is tracked on the RFC's issue,
 which carries a task per host alongside the Rust one.
 
@@ -56,7 +58,7 @@ Canonical design documentation lives in `docs/design/`. To propose updates or ad
 rust/crates/
   truapi/              Rust trait + type definitions (source of truth)
   truapi-codegen/      rustdoc JSON → TypeScript client generator
-  truapi-macros/       #[wire(id = N)] proc-macro
+  truapi-macros/       #[wire_trait(id = N)] + #[wire(...)] proc-macros
 js/packages/
   truapi/              @parity/truapi TypeScript package (generated TS is auto-generated and git-ignored)
 playground/            Next.js interactive playground

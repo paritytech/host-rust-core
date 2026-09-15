@@ -138,21 +138,137 @@ pub fn encode_external_paired_session(info: ExternalPairedSession) -> Vec<u8> {
     })
 }
 
+/// Leading byte on every session blob this core writes.
+///
+/// The blob is a bare SCALE struct, so its layout is positional: inserting a
+/// field changes where every later field starts and silently invalidates
+/// everything already on disk. The tag makes the layout explicit, so a future
+/// field can be added by minting a new version rather than by breaking readers.
+const PERSISTED_SESSION_V1: u8 = 1;
+
+/// An untagged blob's eight fields, in the order an untagged blob carries them.
+///
+/// Read only, and frozen: it is a snapshot of a byte layout that exists on disk,
+/// not a view of [`SessionInfo`]. Probing the live struct instead would follow
+/// every future field change and stop decoding the blobs this exists to read.
+#[derive(Decode)]
+struct EightFieldSessionLayout {
+    public_key: [u8; 32],
+    sso: Option<SsoSessionInfo>,
+    root_entropy_source: Option<[u8; 32]>,
+    identity_account_id: Option<[u8; 32]>,
+    identity_chat_private_key: Option<[u8; 32]>,
+    device_enc_public_key: Option<[u8; 32]>,
+    lite_username: Option<String>,
+    full_username: Option<String>,
+}
+
+/// An untagged blob's six fields, carrying no identity material.
+///
+/// Read only, and frozen for the same reason as
+/// [`EightFieldSessionLayout`].
+#[derive(Decode)]
+struct SixFieldSessionLayout {
+    public_key: [u8; 32],
+    sso: Option<SsoSessionInfo>,
+    root_entropy_source: Option<[u8; 32]>,
+    identity_account_id: Option<[u8; 32]>,
+    lite_username: Option<String>,
+    full_username: Option<String>,
+}
+
+impl From<EightFieldSessionLayout> for SessionInfo {
+    fn from(blob: EightFieldSessionLayout) -> Self {
+        Self {
+            public_key: blob.public_key,
+            sso: blob.sso,
+            root_entropy_source: blob.root_entropy_source,
+            identity_account_id: blob.identity_account_id,
+            identity_chat_private_key: blob.identity_chat_private_key,
+            device_enc_public_key: blob.device_enc_public_key,
+            lite_username: blob.lite_username,
+            full_username: blob.full_username,
+        }
+    }
+}
+
+impl From<SixFieldSessionLayout> for SessionInfo {
+    fn from(blob: SixFieldSessionLayout) -> Self {
+        Self {
+            public_key: blob.public_key,
+            sso: blob.sso,
+            root_entropy_source: blob.root_entropy_source,
+            identity_account_id: blob.identity_account_id,
+            // This layout carries no identity material, and a pairing host cannot
+            // recompute either value, so chat and device-addressed features are
+            // unavailable for the session until it pairs again.
+            identity_chat_private_key: None,
+            device_enc_public_key: None,
+            lite_username: blob.lite_username,
+            full_username: blob.full_username,
+        }
+    }
+}
+
+/// Decode `T` from `blob`. `Ok(None)` reports that `T` parsed a prefix and left
+/// bytes over, which is what distinguishes a corrupt blob from a shorter layout.
+fn decode_exact<T: Decode>(blob: &[u8]) -> Result<Option<T>, String> {
+    let mut input = blob;
+    let decoded = T::decode(&mut input).map_err(|err| err.to_string())?;
+    Ok(input.is_empty().then_some(decoded))
+}
+
 /// Encode the active-session fields the core currently understands into an
 /// opaque host-global session blob.
 pub fn encode_persisted_session(info: &SessionInfo) -> Vec<u8> {
-    info.encode()
+    let mut blob = Vec::new();
+    blob.push(PERSISTED_SESSION_V1);
+    info.encode_to(&mut blob);
+    blob
 }
 
 /// Decode a core-owned persisted session blob.
+///
+/// Takes the first layout that consumes the blob exactly: the tagged one, then
+/// each untagged one. The tag is checked first but is not decisive, because
+/// `public_key` leads an untagged blob and may legitimately begin with the tag
+/// byte, so a failed tagged read still reaches the untagged layouts.
+///
+/// A failure here deletes the stored blob (see the caller in `pairing_host`), so
+/// every layout is tried before any is reported, and no single arm can end the
+/// search early.
 pub fn decode_persisted_session(blob: &[u8]) -> Result<SessionInfo, String> {
-    let mut input = blob;
-    let decoded =
-        SessionInfo::decode(&mut input).map_err(|err| format!("invalid session blob: {err}"))?;
-    if !input.is_empty() {
+    let mut failures = Vec::new();
+    // A tagged blob names its own layout, so bytes left over after it are
+    // corruption of a known shape rather than a hint to try another. That
+    // verdict is reported on its own, and only once every layout has been tried.
+    let mut tagged_trailing = false;
+
+    if let Some((&PERSISTED_SESSION_V1, body)) = blob.split_first() {
+        match decode_exact::<EightFieldSessionLayout>(body) {
+            Ok(Some(layout)) => return Ok(layout.into()),
+            Ok(None) => tagged_trailing = true,
+            Err(err) => failures.push(format!("tagged v{PERSISTED_SESSION_V1}: {err}")),
+        }
+    }
+    match decode_exact::<EightFieldSessionLayout>(blob) {
+        Ok(Some(layout)) => return Ok(layout.into()),
+        Ok(None) => failures.push("untagged, eight fields: trailing bytes".to_string()),
+        Err(err) => failures.push(format!("untagged, eight fields: {err}")),
+    }
+    match decode_exact::<SixFieldSessionLayout>(blob) {
+        Ok(Some(layout)) => return Ok(layout.into()),
+        Ok(None) => failures.push("untagged, six fields: trailing bytes".to_string()),
+        Err(err) => failures.push(format!("untagged, six fields: {err}")),
+    }
+
+    if tagged_trailing {
         return Err("invalid session blob: trailing bytes".to_string());
     }
-    Ok(decoded)
+    Err(format!(
+        "invalid session blob: no known layout decodes it ({})",
+        failures.join("; ")
+    ))
 }
 
 /// Holds the currently-active session and broadcasts connection-status
@@ -274,6 +390,210 @@ mod tests {
             lite_username: Some("alice".to_string()),
             full_username: None,
         }
+    }
+
+    /// The leading four fields every untagged layout shares.
+    ///
+    /// Both helpers lay bytes down field by field rather than encoding a struct.
+    /// Encoding `SessionInfo` would make the fixtures follow it, so a field added
+    /// mid-struct would move the fixture and the assertion in step and the test
+    /// would keep passing while real blobs stopped decoding.
+    fn untagged_prefix(public_key: u8) -> Vec<u8> {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&[public_key; 32]);
+        None::<SsoSessionInfo>.encode_to(&mut blob);
+        None::<[u8; 32]>.encode_to(&mut blob);
+        Some([0x22u8; 32]).encode_to(&mut blob);
+        blob
+    }
+
+    /// An untagged blob carrying six fields and no identity material.
+    fn blob_before_identity_material(
+        public_key: u8,
+        lite_username: Option<&str>,
+        full_username: Option<&str>,
+    ) -> Vec<u8> {
+        let mut blob = untagged_prefix(public_key);
+        lite_username.map(str::to_owned).encode_to(&mut blob);
+        full_username.map(str::to_owned).encode_to(&mut blob);
+        blob
+    }
+
+    /// An untagged blob carrying all eight fields.
+    fn blob_with_identity_material(
+        public_key: u8,
+        chat_private_key: Option<[u8; 32]>,
+        device_enc_public_key: Option<[u8; 32]>,
+        lite_username: Option<&str>,
+        full_username: Option<&str>,
+    ) -> Vec<u8> {
+        let mut blob = untagged_prefix(public_key);
+        chat_private_key.encode_to(&mut blob);
+        device_enc_public_key.encode_to(&mut blob);
+        lite_username.map(str::to_owned).encode_to(&mut blob);
+        full_username.map(str::to_owned).encode_to(&mut blob);
+        blob
+    }
+
+    /// A six-field blob decodes, in every username shape. The pairing host
+    /// deletes a session it cannot decode, so failing here costs the pairing.
+    #[test]
+    fn a_six_field_session_decodes_in_every_username_shape() {
+        for (label, lite, full) in [
+            ("both absent", None, None),
+            ("lite only", Some("alice.dot"), None),
+            ("both present", Some("alice.dot"), Some("Alice Smith")),
+        ] {
+            let decoded =
+                decode_persisted_session(&blob_before_identity_material(0x11, lite, full))
+                    .unwrap_or_else(|err| panic!("{label}: {err}"));
+            assert_eq!(
+                (
+                    decoded.public_key,
+                    decoded.lite_username.as_deref(),
+                    decoded.full_username.as_deref(),
+                    decoded.identity_account_id,
+                    decoded.identity_chat_private_key,
+                    decoded.device_enc_public_key,
+                ),
+                ([0x11; 32], lite, full, Some([0x22; 32]), None, None),
+                "{label}: fields did not survive the older layout"
+            );
+        }
+    }
+
+    /// What a written blob encodes to is what the eight-field decoder reads.
+    ///
+    /// The decoders are frozen descriptions of bytes on disk, so a field added
+    /// to [`SessionInfo`] must arrive as a new tagged version and must not be
+    /// added to them. Nothing else fails when the two drift: the decoders would
+    /// keep decoding and quietly drop whatever the new field carries.
+    #[test]
+    fn a_written_session_matches_the_eight_field_layout() {
+        let mut live = info(0xa1);
+        live.identity_chat_private_key = Some([0xa2; 32]);
+        live.device_enc_public_key = Some([0xa3; 32]);
+
+        const GUIDANCE: &str = "SessionInfo no longer matches the eight-field layout. Mint a \
+             new PERSISTED_SESSION version and give it its own frozen layout; do not change \
+             the existing ones, which describe bytes already on disk.";
+
+        match decode_exact::<EightFieldSessionLayout>(&live.encode()) {
+            Ok(Some(layout)) => assert_eq!(SessionInfo::from(layout), live, "{GUIDANCE}"),
+            Ok(None) => panic!("{GUIDANCE} (it encodes to more bytes than the layout reads)"),
+            Err(err) => panic!("{GUIDANCE} (the layout no longer decodes it: {err})"),
+        }
+    }
+
+    /// A written blob carries every field of the live struct through the SSO
+    /// block, which the layouts embed by type rather than freezing field by
+    /// field. Pinning its encoded length catches a field added to it, which
+    /// would move every later field of both layouts.
+    #[test]
+    fn the_sso_block_is_the_length_both_layouts_expect() {
+        const SSO_ENCODED_LEN: usize = 352;
+
+        let sso = SsoSessionInfo {
+            ss_secret: [0xb1; 64],
+            ss_public_key: [0xb2; 32],
+            enc_secret: [0xb3; 32],
+            peer_enc_pubkey: [0xb4; 32],
+            identity_account_id: [0xb5; 32],
+            session_id_own: [0xb6; 32],
+            session_id_peer: [0xb7; 32],
+            request_channel: [0xb8; 32],
+            response_channel: [0xb9; 32],
+            peer_request_channel: [0xba; 32],
+        };
+        assert_eq!(
+            sso.encode().len(),
+            SSO_ENCODED_LEN,
+            "the SSO block changed size, so both session layouts read different bytes; \
+             mint a new PERSISTED_SESSION version rather than letting the layouts follow it"
+        );
+
+        let mut live = info(0xbb);
+        live.sso = Some(sso);
+        let restored = decode_persisted_session(&encode_persisted_session(&live))
+            .expect("a session carrying SSO material round-trips");
+        assert_eq!(restored, live);
+    }
+
+    /// An untagged blob carrying all eight fields keeps its identity material
+    /// rather than being read as the six-field layout and losing it.
+    #[test]
+    fn an_untagged_eight_field_session_keeps_its_identity_material() {
+        let blob = blob_with_identity_material(
+            0x77,
+            Some([0x88; 32]),
+            Some([0x99; 32]),
+            Some("alice.dot"),
+            None,
+        );
+        assert_ne!(
+            blob.first(),
+            Some(&PERSISTED_SESSION_V1),
+            "the fixture must not accidentally look tagged"
+        );
+
+        let decoded = decode_persisted_session(&blob).expect("eight-field untagged blob decodes");
+
+        assert_eq!(
+            (
+                decoded.public_key,
+                decoded.identity_chat_private_key,
+                decoded.device_enc_public_key,
+                decoded.lite_username.as_deref(),
+            ),
+            (
+                [0x77; 32],
+                Some([0x88; 32]),
+                Some([0x99; 32]),
+                Some("alice.dot")
+            ),
+            "identity material was dropped, so the blob was read as the six-field layout"
+        );
+    }
+
+    /// The tag byte is not decisive on its own: `public_key` leads the untagged
+    /// layout and may legitimately begin with the same byte, so such a blob has
+    /// to reach the untagged arms rather than fail as a corrupt tagged one.
+    #[test]
+    fn an_untagged_session_whose_key_starts_with_the_tag_byte_still_decodes() {
+        let blob = blob_before_identity_material(PERSISTED_SESSION_V1, Some("alice.dot"), None);
+        assert_eq!(blob[0], PERSISTED_SESSION_V1);
+        let decoded = decode_persisted_session(&blob).expect("decodes despite the leading byte");
+        assert_eq!(decoded.public_key, [PERSISTED_SESSION_V1; 32]);
+    }
+
+    /// A blob this core writes carries the tag and round-trips unchanged.
+    #[test]
+    fn a_persisted_session_round_trips_through_the_tagged_layout() {
+        let mut original = info(0x33);
+        original.identity_chat_private_key = Some([0x44; 32]);
+        original.device_enc_public_key = Some([0x55; 32]);
+
+        let blob = encode_persisted_session(&original);
+
+        assert_eq!(
+            blob.first(),
+            Some(&PERSISTED_SESSION_V1),
+            "a written blob must carry the version tag"
+        );
+        assert_eq!(
+            decode_persisted_session(&blob).expect("round trip"),
+            original
+        );
+    }
+
+    #[test]
+    fn a_blob_matching_no_known_layout_is_rejected() {
+        assert!(decode_persisted_session(&[]).is_err());
+        assert!(decode_persisted_session(&[PERSISTED_SESSION_V1, 0x00]).is_err());
+        // A tagged blob with one byte too many is not silently truncated.
+        let mut trailing = encode_persisted_session(&info(0x66));
+        trailing.push(0x00);
+        assert!(decode_persisted_session(&trailing).is_err());
     }
 
     #[test]

@@ -131,7 +131,7 @@ jobs:
           echo "Computed @parity/truapi-provider@${version} -> dist-tag ${tag}"
 
       - name: Build wasm
-        run: npm run build:wasm --prefix js/packages/truapi-provider
+        run: npm run build --prefix js/packages/truapi-provider
 
       - name: Pack
         run: |

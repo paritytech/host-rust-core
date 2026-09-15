@@ -6,102 +6,82 @@
 //! <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/divergences.md?plain=1#L26-L35>
 
 use parity_scale_codec::{Decode, Encode};
+use truapi::latest::{
+    HostAccountCreateProofRequest, HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
+    HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest, HostAccountSignVrfRequest,
+};
 
 use super::{
-    CreateTransactionLegacyRequest, CreateTransactionRequest, CreateTransactionResponse,
-    ListRingVrfKeysRequest, ListRingVrfKeysResponse, ProductSubtreeRequest, ProductSubtreeResponse,
-    RegisterRingVrfKeyRequest, RegisterRingVrfKeyResponse, ResourceAllocationRequest,
-    ResourceAllocationResponse, RingVrfAliasRequest, RingVrfAliasResponse, RingVrfProofRequest,
-    RingVrfProofResponse, RingVrfSignRequest, RingVrfSignResponse, SignRawLegacyRequest,
-    SignRawLegacyResponse, SignVrfRequest, SignVrfResponse, SigningRequest, SigningResponse,
+    CreateAccountProofResponse, CreateTransactionRequest, CreateTransactionResponse,
+    CreateTransactionWithLegacyAccountRequest, GetAccountAliasResponse, ListRingVrfKeysResponse,
+    ProductRequest, ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
+    ResourceAllocationRequest, ResourceAllocationResponse, Response, RingVrfSignResponse,
+    SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
+    SignVrfResponse,
 };
 
 /// v1 messages exchanged with the paired signing host over the encrypted SSO channel.
 ///
 /// The variant order is part of the SCALE wire protocol used inside
 /// statement-store session statements.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum RemoteMessage {
     /// The peer is ending the SSO session.
-    #[display("disconnected")]
     Disconnected,
     /// Ask the signing host to sign a payload or raw data with a product account.
-    #[display("sign_request")]
-    SignRequest(Box<SigningRequest>),
+    SignRequest(SignRequest),
     /// Signing host's answer to [`RemoteMessage::SignRequest`].
-    #[display("sign_response")]
-    SignResponse(SigningResponse),
+    SignResponse(Response<SignResponse>),
     /// Ask the Account Holder for a contextual alias.
-    #[display("get_account_alias")]
-    RingVrfAliasRequest(RingVrfAliasRequest),
-    /// Account Holder's answer to [`RemoteMessage::RingVrfAliasRequest`].
-    #[display("get_account_alias_response")]
-    RingVrfAliasResponse(RingVrfAliasResponse),
+    GetAccountAliasRequest(ProductRequest<HostAccountGetAliasRequest>),
+    /// Account Holder's answer to [`RemoteMessage::GetAccountAliasRequest`].
+    GetAccountAliasResponse(Response<GetAccountAliasResponse>),
     /// Ask the signing host to allocate SSO-backed resources.
-    #[display("resource_allocation")]
     ResourceAllocationRequest(ResourceAllocationRequest),
     /// Signing host's answer to [`RemoteMessage::ResourceAllocationRequest`].
-    #[display("resource_allocation_response")]
-    ResourceAllocationResponse(ResourceAllocationResponse),
+    ResourceAllocationResponse(Response<ResourceAllocationResponse>),
     /// Ask the signing host to create a signed product-account transaction.
-    #[display("create_transaction")]
     CreateTransactionRequest(CreateTransactionRequest),
     /// Signing host's answer to either transaction-creation request.
-    #[display("create_transaction_response")]
-    CreateTransactionResponse(CreateTransactionResponse),
+    CreateTransactionResponse(Response<CreateTransactionResponse>),
     /// Ask the signing host to create a signed legacy-account transaction.
-    #[display("create_transaction_legacy")]
-    CreateTransactionLegacyRequest(CreateTransactionLegacyRequest),
+    CreateTransactionWithLegacyAccountRequest(CreateTransactionWithLegacyAccountRequest),
     /// Ask the signing host to sign raw data with a legacy account.
-    #[display("sign_raw_legacy")]
-    SignRawLegacyRequest(SignRawLegacyRequest),
-    /// Signing host's answer to [`RemoteMessage::SignRawLegacyRequest`].
-    #[display("sign_raw_legacy_response")]
-    SignRawLegacyResponse(SignRawLegacyResponse),
+    SignRawWithLegacyAccountRequest(SignRawWithLegacyAccountRequest),
+    /// Signing host's answer to [`RemoteMessage::SignRawWithLegacyAccountRequest`].
+    SignRawWithLegacyAccountResponse(Response<SignRawWithLegacyAccountResponse>),
     /// Ask the Account Holder for a ring-VRF proof.
-    #[display("create_account_proof")]
-    RingVrfProofRequest(RingVrfProofRequest),
-    /// Account Holder's answer to [`RemoteMessage::RingVrfProofRequest`].
-    #[display("create_account_proof_response")]
-    RingVrfProofResponse(RingVrfProofResponse),
+    CreateAccountProofRequest(ProductRequest<HostAccountCreateProofRequest>),
+    /// Account Holder's answer to [`RemoteMessage::CreateAccountProofRequest`].
+    CreateAccountProofResponse(Response<CreateAccountProofResponse>),
     /// Ask the Account Holder to sign an RFC-0023 sr25519 VRF transcript.
     #[codec(index = 14)]
-    #[display("sign_vrf")]
-    SignVrfRequest(SignVrfRequest),
+    SignVrfRequest(ProductRequest<HostAccountSignVrfRequest>),
     /// Account Holder's answer to [`RemoteMessage::SignVrfRequest`].
     #[codec(index = 15)]
-    #[display("sign_vrf_response")]
-    SignVrfResponse(SignVrfResponse),
+    SignVrfResponse(Response<SignVrfResponse>),
     /// Consent-free request for a product's hard-subtree public key.
     #[codec(index = 16)]
-    #[display("product_subtree")]
     ProductSubtreeRequest(ProductSubtreeRequest),
     /// Account Holder's answer to [`RemoteMessage::ProductSubtreeRequest`].
     #[codec(index = 17)]
-    #[display("product_subtree_response")]
-    ProductSubtreeResponse(ProductSubtreeResponse),
+    ProductSubtreeResponse(Response<ProductSubtreeResponse>),
     /// Register a ring-VRF key with the Account Holder.
     #[codec(index = 18)]
-    #[display("register_ring_vrf_key")]
-    RegisterRingVrfKeyRequest(RegisterRingVrfKeyRequest),
+    RegisterRingVrfKeyRequest(ProductRequest<HostAccountRegisterRingVrfKeyRequest>),
     /// Account Holder's answer to [`RemoteMessage::RegisterRingVrfKeyRequest`].
     #[codec(index = 19)]
-    #[display("register_ring_vrf_key_response")]
-    RegisterRingVrfKeyResponse(RegisterRingVrfKeyResponse),
+    RegisterRingVrfKeyResponse(Response<RegisterRingVrfKeyResponse>),
     /// List registered ring-VRF keys.
     #[codec(index = 20)]
-    #[display("list_ring_vrf_keys")]
-    ListRingVrfKeysRequest(ListRingVrfKeysRequest),
+    ListRingVrfKeysRequest(ProductRequest<HostAccountListRingVrfKeysRequest>),
     /// Account Holder's answer to [`RemoteMessage::ListRingVrfKeysRequest`].
     #[codec(index = 21)]
-    #[display("list_ring_vrf_keys_response")]
-    ListRingVrfKeysResponse(ListRingVrfKeysResponse),
+    ListRingVrfKeysResponse(Response<ListRingVrfKeysResponse>),
     /// Sign bytes with a registered ring-VRF key.
     #[codec(index = 22)]
-    #[display("ring_vrf_sign")]
-    RingVrfSignRequest(RingVrfSignRequest),
+    RingVrfSignRequest(ProductRequest<HostAccountRingVrfSignRequest>),
     /// Account Holder's answer to [`RemoteMessage::RingVrfSignRequest`].
     #[codec(index = 23)]
-    #[display("ring_vrf_sign_response")]
-    RingVrfSignResponse(RingVrfSignResponse),
+    RingVrfSignResponse(Response<RingVrfSignResponse>),
 }

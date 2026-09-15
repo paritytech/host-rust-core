@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+#[allow(deprecated)] // Exercise the temporary API's paired-host wire routing.
+fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading() {
+    use crate::host_logic::sso::messages::SignRequest;
+
+    for legacy in [false, true] {
+        let session = sso_session_info();
+        let identity = session.identity_account_id.unwrap();
+        let platform = Arc::new(StubPlatform {
+            sign_raw_confirmed: true,
+            sso_response_script: Some(sso_success_response_script(
+                &session,
+                sign_response_message("unwatermarked", vec![7, 7], None),
+            )),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, session.clone());
+        let cx = CallContext::with_request_id("unwatermarked".to_string());
+        let payload = v01::RawPayload::Bytes {
+            bytes: vec![0x11; 32],
+        };
+        let signature = futures::executor::block_on(async {
+            if !legacy {
+                let HostSignRawResponse::V1(response) = host
+                    .sign_raw_unwatermarked_deprecated(
+                        &cx,
+                        HostSignRawRequest::V1(v01::HostSignRawRequest {
+                            account: account_id("myapp.dot", 0),
+                            payload: payload.clone(),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                response.signature
+            } else {
+                let signer = subxt::utils::AccountId32(identity).to_string();
+                let HostSignRawWithLegacyAccountResponse::V1(response) = host
+                    .sign_raw_unwatermarked_deprecated_with_legacy_account(
+                        &cx,
+                        HostSignRawWithLegacyAccountRequest::V1(
+                            v01::HostSignRawWithLegacyAccountRequest {
+                                signer,
+                                payload: payload.clone(),
+                            },
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                response.signature
+            }
+        });
+        assert_eq!(signature, vec![7, 7]);
+        let RemoteMessageData::V1(v1::RemoteMessage::SignRequest(request)) =
+            submitted_remote_message(&platform, &session).data
+        else {
+            panic!("expected an explicit unwatermarked SignRequest");
+        };
+        match request {
+            SignRequest::RawUnwatermarkedDeprecated(request) => {
+                assert!(!legacy);
+                assert_eq!(request.account, account_id("myapp.dot", 0));
+                assert_eq!(request.payload, payload);
+            }
+            SignRequest::RawWithLegacyAccountUnwatermarkedDeprecated(request) => {
+                assert!(legacy);
+                assert_eq!(request.account, identity);
+                assert_eq!(request.data, payload);
+            }
+            request => panic!("unwatermarked signing was downgraded: {request:?}"),
+        }
+    }
+}
+
+#[test]
 fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
     let session = sso_session_info();
     let signature = v01::VrfSignature {
@@ -14,7 +92,7 @@ fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
             RemoteMessage {
                 message_id: "wallet-vrf-1".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(
-                    crate::host_logic::sso::messages::SignVrfResponse {
+                    crate::host_logic::sso::messages::Response {
                         responding_to: "vrf-1".to_string(),
                         payload: Ok(signature.clone()),
                     },
@@ -73,7 +151,7 @@ fn sign_vrf_rejects_declined_pairing_host_confirmation_before_mobile_sso() {
             RemoteMessage {
                 message_id: "wallet-vrf-declined".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(
-                    crate::host_logic::sso::messages::SignVrfResponse {
+                    crate::host_logic::sso::messages::Response {
                         responding_to: "vrf-declined".to_string(),
                         payload: Ok(v01::VrfSignature {
                             pre_output: [0x11; 32],
@@ -269,10 +347,9 @@ fn sign_raw_accepts_confirmation_then_returns_sso_response() {
     assert!(matches!(
         &message.data,
         crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request)
-        ) if matches!(
-            request.as_ref(),
-            crate::host_logic::sso::messages::SigningRequest::Raw(_)
+            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(
+                crate::host_logic::sso::messages::SignRequest::Raw(_)
+            )
         )
     ));
     let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
@@ -532,10 +609,9 @@ fn sign_payload_accepts_confirmation_then_returns_sso_response() {
     assert!(matches!(
         &message.data,
         crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request)
-        ) if matches!(
-            request.as_ref(),
-            crate::host_logic::sso::messages::SigningRequest::Payload(_)
+            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(
+                crate::host_logic::sso::messages::SignRequest::Payload(_)
+            )
         )
     ));
 }
@@ -551,9 +627,9 @@ fn create_transaction_accepts_confirmation_then_returns_sso_response() {
                 message_id: "wallet-create-tx-1".to_string(),
                 data: crate::host_logic::sso::messages::RemoteMessageData::V1(
                     crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
-                        crate::host_logic::sso::messages::CreateTransactionResponse {
+                        crate::host_logic::sso::messages::Response {
                             responding_to: "create-tx-1".to_string(),
-                            signed_transaction: Ok(vec![0xca, 0xfe]),
+                            payload: Ok(vec![0xca, 0xfe]),
                         },
                     ),
                 ),
@@ -691,19 +767,19 @@ fn legacy_sign_raw_accepts_derived_ss58_then_returns_sso_response() {
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SigningRequest::Raw(request) = *request else {
+    let crate::host_logic::sso::messages::SignRequest::Raw(request) = request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(
-        request.product_account_id,
+        request.account,
         v01::ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
             derivation_index: v01::DerivationIndex::Index(0),
         }
     );
     assert!(matches!(
-        &request.data,
-        crate::host_logic::sso::messages::SigningRawPayload::Bytes(bytes)
+        &request.payload,
+        truapi::latest::RawPayload::Bytes { bytes }
             if bytes == b"hello"
     ));
 }
@@ -744,11 +820,11 @@ fn legacy_sign_raw_accepts_derived_hex_then_returns_sso_response() {
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SigningRequest::Raw(request) = *request else {
+    let crate::host_logic::sso::messages::SignRequest::Raw(request) = request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(
-        request.product_account_id,
+        request.account,
         v01::ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
             derivation_index: v01::DerivationIndex::Index(0),
@@ -787,7 +863,8 @@ fn legacy_sign_raw_accepts_identity_ss58_then_routes_legacy_request() {
     let HostSignRawWithLegacyAccountResponse::V1(response) = response;
     assert_eq!(response.signature, vec![7, 7]);
     let message = submitted_remote_message(&platform, &session);
-    let RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyRequest(request)) = message.data
+    let RemoteMessageData::V1(v1::RemoteMessage::SignRawWithLegacyAccountRequest(request)) =
+        message.data
     else {
         panic!("expected legacy raw signing request");
     };

@@ -71,10 +71,11 @@ every UniFFI-exposed type still has a binding representation; nothing is
 committed to diff against. The `ios-swift` job generates the package's
 Swift sources and container resource, then compiles the package and its
 test target on macOS, which is what catches a hand-written conformer
-that misses a new protocol requirement. It is path-filtered to pull
-requests touching `ios/`, `Package.swift`, the `Makefile`,
-`js/container/` or any crate the bindings are generated from, so it
-shows as skipped elsewhere.
+that misses a new protocol requirement. Both compile gates are
+path-filtered from one place: the `changes` job in `ci.yml` publishes
+`sdk_swift` and `sdk_kotlin`, and each gated job reads its output, so a
+job shows as skipped where it does not apply.
 
-Still uncovered: nothing compiles Kotlin, so `TrUAPIHost.kt` fails at
-release time, and the embedding apps are not built here at all.
+The Kotlin side is covered too: `android-bindings` compiles
+`TrUAPIHost.kt` against freshly generated bindings. Still uncovered:
+the embedding apps are not built here at all.

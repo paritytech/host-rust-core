@@ -1,0 +1,176 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "error.camera.restricted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unfortunately, access to the camera is restricted."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lamentablemente, el acceso a la cámara está restringido."
+          }
+        }
+      }
+    },
+    "error.camera.restricted_previously": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unfortunately, you denied access to camera previously. Would you like to allow access now?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lamentablemente, negaste el acceso a la cámara anteriormente. ¿Quieres permitir el acceso ahora?"
+          }
+        }
+      }
+    },
+    "error.camera.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Camera Access"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Acceso a la cámara"
+          }
+        }
+      }
+    },
+    "error.gallery.restricted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unfortunately, access to the photos is restricted."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lamentablemente, el acceso a las fotos está restringido."
+          }
+        }
+      }
+    },
+    "error.gallery.restricted.previously": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unfortunately, you denied access to photos previously. Would you like to allow access now?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lamentablemente, negaste el acceso a las fotos anteriormente. ¿Quieres permitir el acceso ahora?"
+          }
+        }
+      }
+    },
+    "error.gallery.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photos Access"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Acceso a Fotos"
+          }
+        }
+      }
+    },
+    "error.invalid.image": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't process the selected image"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se puede procesar la imagen seleccionada"
+          }
+        }
+      }
+    },
+    "error.no.info": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The QR can't be decoded"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se puede decodificar el QR"
+          }
+        }
+      }
+    },
+    "unsupported": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The QR code has is invalid"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El código QR es inválido"
+          }
+        }
+      }
+    },
+    "upload.gallery": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Upload from gallery"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subir desde la galería"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.1"
+}

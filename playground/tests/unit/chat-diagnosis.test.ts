@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { services as generatedServices } from "@parity/truapi/playground/services";
 import { servicesForExecution } from "@parity/truapi/playground/services-types";
-import { CHAT_DIAGNOSIS_METHODS, ChatDiagnosis } from "../../worker/diagnosis";
+import { WORKER_DIAGNOSIS_METHODS, ChatDiagnosis } from "../../worker/diagnosis";
 
 describe("ChatDiagnosis", () => {
   // Expectation comes from codegen, so a missing method fails here.
-  test("covers every generated Chat method", () => {
+  test("covers every generated Worker method", () => {
     const generated = servicesForExecution(generatedServices, "Worker")
       .filter((service) => service.requiredExecution === "Worker")
       .flatMap((service) =>
@@ -13,19 +13,19 @@ describe("ChatDiagnosis", () => {
       );
 
     expect(generated.length).toBeGreaterThan(0);
-    expect([...CHAT_DIAGNOSIS_METHODS].sort()).toEqual(generated.sort());
+    expect([...WORKER_DIAGNOSIS_METHODS].sort()).toEqual(generated.sort());
   });
 
   test("renders a Chat-only report over every tracked method", () => {
     const diagnosis = new ChatDiagnosis();
-    for (const id of CHAT_DIAGNOSIS_METHODS) {
+    for (const id of WORKER_DIAGNOSIS_METHODS) {
       diagnosis.pass(id, "worked");
     }
 
     expect(diagnosis.isComplete()).toBe(true);
     expect(diagnosis.markdown()).toContain("## Truapi Chat Diagnosis");
     expect(diagnosis.markdown()).toContain(
-      `**${CHAT_DIAGNOSIS_METHODS.length} success · 0 failed**`,
+      `**${WORKER_DIAGNOSIS_METHODS.length} success · 0 failed**`,
     );
     expect(diagnosis.markdown()).not.toContain("Storage/");
   });

@@ -1,0 +1,186 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "backup.updated.message": {
+      "comment": "Toast message shown after confirming balance sync completion",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balance updated. You're all set."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saldo actualizado. Todo listo."
+          }
+        }
+      }
+    },
+    "cancel.confirm": {
+      "comment": "Confirm button in the cancel balance sync confirmation sheet",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yes, I'm done"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sí, ya terminé"
+          }
+        }
+      }
+    },
+    "cancel.description": {
+      "comment": "Description in the cancel balance sync confirmation sheet",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Once you close this, manual update\nwon't be available again"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una vez que cierres esto, la actualización\nmanual ya no estará disponible"
+          }
+        }
+      }
+    },
+    "cancel.keep": {
+      "comment": "Keep button in the cancel balance sync confirmation sheet",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar"
+          }
+        }
+      }
+    },
+    "cancel.title": {
+      "comment": "Title of the cancel balance sync confirmation sheet",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done updating your\nbalance?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Terminaste de actualizar\ntu saldo?"
+          }
+        }
+      }
+    },
+    "notification.description": {
+      "comment": "Description on the backup notification card",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If it differs from the previous value, press Update until correct"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si difiere del valor anterior, presiona Actualizar hasta que sea correcto"
+          }
+        }
+      }
+    },
+    "notification.title": {
+      "comment": "Title label on the backup notification card",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balance restored"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saldo restaurado"
+          }
+        }
+      }
+    },
+    "notification.why": {
+      "comment": "Why update link on the backup notification card",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why update?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Por qué actualizar?"
+          }
+        }
+      }
+    },
+    "why.description": {
+      "comment": "Description in the why update balance bottom sheet",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Private accounts don’t support automatic syncing. Manually updating your balance helps keep it accurate."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las cuentas privadas no admiten sincronización automática. Actualizar tu saldo manualmente ayuda a mantenerlo exacto."
+          }
+        }
+      }
+    },
+    "why.title": {
+      "comment": "Title of the why update balance bottom sheet",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why is this required?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Por qué se requiere esto?"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

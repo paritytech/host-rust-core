@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--  temporary solution for video game to work since it uses ws and not wss  -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">163.172.160.22</domain>
+        <domain includeSubdomains="false">192.168.100.3</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false"/>
+</network-security-config>

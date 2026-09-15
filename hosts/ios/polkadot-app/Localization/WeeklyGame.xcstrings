@@ -1,0 +1,261 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "chatName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weekly Game"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Juego semanal"
+          }
+        }
+      }
+    },
+    "polkadotPrizesChatName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Polkadot Prizes"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Premios Polkadot"
+          }
+        }
+      }
+    },
+    "w3sWelcome1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Win cash prizes by playing a free, fun and quick game."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gana premios en efectivo jugando un juego gratis, divertido y rápido."
+          }
+        }
+      }
+    },
+    "w3sWelcome2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "During the Web3 Summit, you jump into a two minute game with five other people. The game is easy, copy gestures from other players and make your own."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Durante el Web3 Summit entras a un juego de dos minutos con otras cinco personas. Es muy fácil: copia los gestos de los demás jugadores y haz los tuyos."
+          }
+        }
+      }
+    },
+    "w3sWelcome3": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why gestures? Bots can’t copy them live. Playing proves you’re a real person."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Por qué gestos? Los bots no pueden copiarlos en vivo. Jugar demuestra que eres una persona real."
+          }
+        }
+      }
+    },
+    "w3sWelcome4": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to play in two simple steps:\n1. Copy the gesture"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cómo jugar en dos pasos simples:\n1. Copia el gesto"
+          }
+        }
+      }
+    },
+    "w3sWelcome5": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2. Tap other players who also copy the gesture"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2. Toca a los otros jugadores que también copian el gesto"
+          }
+        }
+      }
+    },
+    "w3sWelcome6": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play once to get your Membership and your chance to win a cash prize! Just by playing you also get rewarded with exciting collectibles."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¡Juega una vez para obtener tu Membresía y tu oportunidad de ganar un premio en efectivo! Con solo jugar también recibes coleccionables increíbles."
+          }
+        }
+      }
+    },
+    "welcome1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Win up to $2,600 a month by playing a free, fun and quick weekly game."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gana hasta $2,600 al mes jugando un juego semanal gratis, divertido y rápido."
+          }
+        }
+      }
+    },
+    "welcome2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Once a week, you jump into a two minute game with five other people. Same time, everywhere in the world. The game is easy, copy gestures from other players and make your own."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una vez a la semana entras a un juego de dos minutos con otras cinco personas. A la misma hora, en todo el mundo. Es muy fácil: copia los gestos de los demás jugadores y haz los tuyos."
+          }
+        }
+      }
+    },
+    "welcome3": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why gestures? Bots can’t copy them live. Playing proves you’re a real person."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Por qué gestos? Los bots no pueden copiarlos en vivo. Jugar demuestra que eres una persona real."
+          }
+        }
+      }
+    },
+    "welcome4": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to play in two simple steps:\n1. Copy the gesture"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cómo jugar en dos pasos simples:\n1. Copia el gesto"
+          }
+        }
+      }
+    },
+    "welcome5": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2. Tap other players who also copy the gesture"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2. Toca a los otros jugadores que también copian el gesto"
+          }
+        }
+      }
+    },
+    "welcome6": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play weekly to become a Polkadot Member and get your chance to win two hundred dollars in cash or physical prizes like a fridge or TV, your choice! Once a month the weekly prize jumps to two thousand! There are small daily wins just for opening the app."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Juega cada semana para volverte Miembro de Polkadot y tener la oportunidad de ganar doscientos dólares en efectivo o premios físicos como un refrigerador o una tele, ¡tú eliges! Una vez al mes el premio semanal sube a dos mil. También hay premios pequeños diarios solo por abrir la app."
+          }
+        }
+      }
+    },
+    "welcome7": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By joining each week you also get rewarded with exciting collectibles. Play every week to retain your Polkadot Membership and for your chance to win these amazing prizes."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Al participar cada semana también recibes coleccionables increíbles. Juega todas las semanas para conservar tu Membresía de Polkadot y tener la oportunidad de ganar estos premios."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.1"
+}

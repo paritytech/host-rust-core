@@ -329,7 +329,7 @@ struct ListRingVrfKeysResponse {
 }
 ```
 
-A Host holding a current registry snapshot answers `list` locally. `RingVrfProofRequest` and `RingVrfAliasRequest` gain `key_handle: ProductAccountId` alongside the `calling_product_id` they already carry, and a `RingVrfSignRequest` / `Response` pair mirrors `account_ring_vrf_sign` with the same two fields plus `message`. `RingVrfError` gains `KeyNotRegistered`, `KeyNotInRing`, and `NotAllowlisted`.
+A Host holding a current registry snapshot answers `list` locally. `CreateAccountProofRequest` and `GetAccountAliasRequest` carry `key_handle: ProductAccountId` and `calling_product_id`. The `RingVrfSignRequest` / `RingVrfSignResponse` pair mirrors `account_ring_vrf_sign` with the same two request fields plus `message`. `RingVrfError` includes `KeyNotRegistered`, `KeyNotInRing`, and `NotAllowlisted`.
 
 **Registration always reaches the Account Holder, but never blocks on it.** The phone is the authoritative registry — it needs the complete set to serve slot assignment and PGAS claims, and to show the user what their keys are used for. A Host holding the product's domain entropy answers immediately and mirrors the registration fire-and-forget; registration is idempotent, so re-notifying the phone about an entry it already has costs nothing. Without the entropy the Host issues the request and waits.
 

@@ -1,0 +1,40 @@
+name: Prepare Nightly
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Source ref to create release branch from (existing branch name or commit SHA)"
+        type: string
+        required: false
+        default: develop
+      increment_step:
+        description: "Build number increment step (1 if empty)"
+        type: string
+        required: false
+        default: ""
+  # Held on workflow_dispatch until the build credentials tracked in #672
+  # land. The trigger below is the one this workflow runs on; restoring it
+  # is the change that puts this workflow live.
+#   schedule:
+#     - cron: "0 16 * * 1-5" # 16:00 UTC Monday-Friday
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/ios-prepare-pipeline.yml
+    with:
+      is_nightly: true
+      bump_level: "no-bump"
+      source_ref: ${{ inputs.source_ref || 'develop' }}
+      increment_step: ${{ inputs.increment_step || '' }}
+      distribution_workflow: nightly_distribution.yml
+    secrets: inherit

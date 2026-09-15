@@ -5,7 +5,8 @@
 
 import type { PermissionAuthorizationRuntime } from "./worker-permission-authorization.js";
 
-export interface WorkerCustomRendererSubscription {
+/** Cancellable handle on one live render stream inside the core. */
+export interface WorkerRendererSubscription {
   cancel(): void;
   free(): void;
 }
@@ -18,20 +19,29 @@ export interface WorkerProductRuntime {
   /** Throws when the connection may not reach Chat. */
   publishChatAction(action: Uint8Array): void;
   /**
-   * Start the host-initiated render subscription for one stored custom Chat
-   * message. `onUpdate` receives each SCALE-encoded `CustomRendererNode`, then
-   * exactly one of `onComplete` (last tree stands) or `onError` (the product
-   * could not serve the render; the last tree is partial).
+   * Publish one action triggered inside a product-rendered body, as a
+   * SCALE-encoded `HostRendererActionSubscribeItem`. Throws when the
+   * connection may not reach the product's renderer.
    */
-  renderCustomMessage(
-    messageId: string,
-    messageType: string,
-    payload: Uint8Array,
+  publishRendererAction(item: Uint8Array): void;
+  /**
+   * Start the host-initiated render subscription for one body. `request` is a
+   * SCALE-encoded `ProductRendererRenderRequest`. `onUpdate` receives each
+   * SCALE-encoded `RendererNode`, then exactly one of `onComplete` (last tree
+   * stands) or `onError` (the product could not serve the render; the last
+   * tree is partial). Terminals never arrive during the call itself; a request
+   * the core refuses outright throws instead.
+   */
+  render(
+    request: Uint8Array,
     onUpdate: (node: Uint8Array) => void,
     onComplete: () => void,
     onError: (reason: string) => void,
-  ): WorkerCustomRendererSubscription;
+  ): WorkerRendererSubscription;
 }
+
+/** What the host does with a product's worker after demand on it changed. */
+export type WorkerTransition = "Start" | "Stop";
 
 /** The long-lived pairing-host runtime product cores are created from. */
 export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime {
@@ -51,6 +61,15 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   activateStoredSession(): Promise<void>;
   activateExternalSession(blob: Uint8Array): Promise<void>;
   resetSessionState(): Promise<void>;
+  /**
+   * Take one reference on the product's worker. The first one reports
+   * `"Start"` through the runtime's `workerDemandChanged` callback.
+   */
+  acquireWorker(productId: string): void;
+  /**
+   * Release one reference. The last one reports `"Stop"` the same way.
+   */
+  releaseWorker(productId: string): void;
   free(): void;
 }
 

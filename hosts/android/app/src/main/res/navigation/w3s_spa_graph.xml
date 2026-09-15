@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/w3s_spa_graph"
+    app:startDestination="@id/web3SummitSpaFragment">
+
+    <fragment
+        android:id="@+id/web3SummitSpaFragment"
+        android:name="io.paritytech.polkadotapp.feature_web3summit_impl.presentation.web3SummitSpa.Web3SummitSpaFragment"
+        android:label="Web3SummitSpaFragment" />
+</navigation>

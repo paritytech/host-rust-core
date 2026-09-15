@@ -46,13 +46,19 @@ mod ffi;
 pub mod js;
 #[cfg(feature = "smoldot")]
 mod light;
+#[cfg(all(test, feature = "smoldot", not(target_arch = "wasm32")))]
+mod light_platform_test;
 #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
 mod light_platform_web;
 #[cfg(all(feature = "js", target_arch = "wasm32"))]
 mod logging;
+#[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
+mod logging_native;
 #[cfg(feature = "networks")]
 mod networks;
 mod provider;
+#[cfg(feature = "smoldot")]
+pub mod storage;
 #[cfg(all(feature = "ws", not(target_arch = "wasm32")))]
 mod ws;
 #[cfg(all(feature = "ws", target_arch = "wasm32"))]
@@ -67,6 +73,8 @@ pub use config::LightClientBuilder;
 #[cfg(feature = "networks")]
 pub use networks::{NetworkChains, known_networks};
 pub use provider::{EmbeddedChainProvider, EmbeddedChainProviderBuilder};
+#[cfg(feature = "smoldot")]
+pub use storage::{StorageClient, StorageClientError};
 
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();

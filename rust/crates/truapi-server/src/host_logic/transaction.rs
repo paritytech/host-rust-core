@@ -155,7 +155,7 @@ mod tests {
             asset_id: None,
             metadata_hash: None,
             mode: None,
-            with_signed_transaction: None,
+            with_signed_transaction: parity_scale_codec::OptionBool(None),
         }
     }
 

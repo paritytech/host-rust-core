@@ -21,11 +21,12 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
+use truapi::v01;
 use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionStatusHost, Permissions,
-    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, SignRawReview, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -437,9 +438,9 @@ async fn prompt_yes_no(action: &str, detail: &str) -> bool {
 
 #[async_trait]
 impl ProductStorage for CliPlatform {
-    async fn read(&self, key: String) -> Result<Option<Vec<u8>>, api::HostLocalStorageReadError> {
+    async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         Ok(self
             .product_storage
             .lock()
@@ -453,9 +454,9 @@ impl ProductStorage for CliPlatform {
         &self,
         key: String,
         value: Vec<u8>,
-    ) -> Result<(), api::HostLocalStorageReadError> {
+    ) -> Result<(), v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         let mut storage = self
             .product_storage
             .lock()
@@ -463,12 +464,12 @@ impl ProductStorage for CliPlatform {
         let values = storage.entry(scoped.product_id().to_string()).or_default();
         values.insert(scoped.key().to_string(), value);
         self.persist_product_storage(scoped.product_id(), values)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
     }
 
-    async fn clear(&self, key: String) -> Result<(), api::HostLocalStorageReadError> {
+    async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         let mut storage = self
             .product_storage
             .lock()
@@ -476,7 +477,7 @@ impl ProductStorage for CliPlatform {
         let values = storage.entry(scoped.product_id().to_string()).or_default();
         values.remove(scoped.key());
         self.persist_product_storage(scoped.product_id(), values)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
     }
 }
 
@@ -794,6 +795,13 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
         UserConfirmationReview::SignPayload(_) => (
             "sign payload",
             "A product requested a SCALE payload signature.".to_string(),
+        ),
+        UserConfirmationReview::SignRaw(
+            SignRawReview::Product { watermarked: false, .. }
+            | SignRawReview::LegacyAccount { watermarked: false, .. },
+        ) => (
+            "sign unprotected data",
+            "Warning: this signature has no transaction-payload protection and may authorize transactions. The payload is hidden here.".to_string(),
         ),
         UserConfirmationReview::SignRaw(_) => (
             "sign raw data",
@@ -1227,14 +1235,12 @@ mod tests {
     }
 
     /// Battery examples that preflight `getChainInfo` resolve the genesis they
-    /// ask for through this set, so an error here fails every one of them. The
-    /// ring-VRF examples are chain-dependent but not among them: they use the
-    /// hardcoded `PASEO_NEXT_V2_INDIVIDUALITY.genesis` and passed even while
-    /// this returned an error.
+    /// ask for through this set, so an error here fails every one of them.
     ///
     /// Serving the preset's three roles unblocks the preflight in every example
-    /// that asks for one: `People` for account-alias, account-proof and both
-    /// create-transaction variants, and `AssetHub` for the other seventeen.
+    /// that asks for one: `People` for account-alias, account-proof, ring-VRF
+    /// registration and both create-transaction variants, and `AssetHub` for the
+    /// other seventeen.
     ///
     /// `feature_supported` answers from the same set `supported_chains` serves, so
     /// the two cannot disagree. The negatives are the malformed inputs, a well-formed

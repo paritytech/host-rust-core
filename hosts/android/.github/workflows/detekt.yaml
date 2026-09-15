@@ -1,0 +1,42 @@
+name: Detekt Code Quality
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  APPLICATION_ID: ${{ vars.APPLICATION_ID }}
+  APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+  CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
+  GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
+  LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
+  PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
+  REFERRAL_WEB_HOST: ${{ vars.REFERRAL_WEB_HOST }}
+  SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+  SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+  SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+  TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}
+
+on:
+  pull_request:
+  merge_group:
+
+jobs:
+  detekt:
+    name: Run Detekt Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install dependencies
+        uses: ./.github/actions/install/
+
+      - name: Run Detekt
+        env:
+          FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+          GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
+          GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
+          NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
+          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
+        run: ./gradlew detekt --no-daemon --stacktrace

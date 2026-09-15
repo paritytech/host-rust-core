@@ -1,13 +1,15 @@
 //! Unified [`Preimage`] trait.
 
+use crate::latest::GenericError;
 use crate::versioned::preimage::{
     RemotePreimageLookupSubscribeItem, RemotePreimageLookupSubscribeRequest,
     RemotePreimageSubmitError, RemotePreimageSubmitRequest, RemotePreimageSubmitResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Preimage lookup and submission methods.
+#[wire_trait(id = 11)]
 #[crate::async_trait]
 pub trait Preimage: Send + Sync {
     /// Subscribe to preimage lookups for a given key.
@@ -26,13 +28,13 @@ pub trait Preimage: Send + Sync {
     /// assert(item.value === value, "preimage lookup returned the wrong value:", item);
     /// console.log("preimage lookup received:", item);
     /// ```
-    #[wire(start_id = 64)]
+    #[wire(id = 0)]
     async fn lookup_subscribe(
         &self,
         _cx: &CallContext,
         _request: RemotePreimageLookupSubscribeRequest,
-    ) -> Subscription<RemotePreimageLookupSubscribeItem> {
-        Subscription::empty()
+    ) -> Subscription<RemotePreimageLookupSubscribeItem, CallError<GenericError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Submit a preimage. Returns the preimage key (hash) on success.
@@ -43,7 +45,7 @@ pub trait Preimage: Send + Sync {
     /// assert(result.isOk(), "submit failed:", result);
     /// console.log("preimage submitted:", result.value);
     /// ```
-    #[wire(request_id = 68)]
+    #[wire(id = 1)]
     async fn submit(
         &self,
         _cx: &CallContext,

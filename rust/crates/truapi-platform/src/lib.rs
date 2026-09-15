@@ -36,13 +36,12 @@ use truapi::latest::{
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
-    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostLocaleSubscribeItem, HostNavigateToError, HostPlatform, HostPushNotificationRequest,
-    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
-    LegacyAccountTxPayload, NotificationId, ProductAccountId, ProductAccountTxPayload,
-    ProductProofContext, RemotePermission, RemotePermissionRequest, RemotePermissionResponse,
-    RingLocation,
+    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocaleSubscribeItem,
+    HostNavigateToError, HostPlatform, HostPushNotificationRequest, HostPushNotificationResponse,
+    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
+    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
+    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -135,7 +134,8 @@ pub enum ProductExecutionKind {
     App,
     /// Visible embedded surface such as a dashboard card.
     Widget,
-    /// Headless executable that serves the Chat modality.
+    /// Headless executable the host runs while a modality holds a reference
+    /// to it; the only kind that may serve the Chat modality.
     Worker,
 }
 
@@ -961,16 +961,32 @@ impl ProductStorageKey {
 /// The core namespaces product keys before calling this trait. Host
 /// implementations may treat `key` as opaque or decode it with
 /// [`ProductStorageKey`] when their physical storage is separated by product.
+/// Storage errors are pinned to `v01` rather than taken from `truapi::latest`.
+/// The read error gained a cross-product refusal in v0.2 that the core decides
+/// before it ever calls a host, so a host has no way to produce it and should
+/// not have to match on it.
 #[async_trait]
 pub trait ProductStorage: Send + Sync {
     /// Read a value by key.
-    async fn read(&self, key: String) -> Result<Option<Vec<u8>>, HostLocalStorageReadError>;
+    ///
+    /// Always the calling product's own storage. A read addressed at another
+    /// product is adjudicated in the core against that product's manifest and
+    /// refused there, so a host is never asked to enforce a grant and has no
+    /// variant for one.
+    async fn read(
+        &self,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, truapi::v01::HostLocalStorageReadError>;
 
     /// Write a value to a key.
-    async fn write(&self, key: String, value: Vec<u8>) -> Result<(), HostLocalStorageReadError>;
+    async fn write(
+        &self,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), truapi::v01::HostLocalStorageReadError>;
 
     /// Clear a value at a key.
-    async fn clear(&self, key: String) -> Result<(), HostLocalStorageReadError>;
+    async fn clear(&self, key: String) -> Result<(), truapi::v01::HostLocalStorageReadError>;
 }
 
 /// Open URLs in the system browser. Input is already trimmed, categorized,
@@ -1296,6 +1312,16 @@ pub enum CoreStorageKey {
         /// Pairing peer's X25519 public key.
         peer_encryption_public_key: [u8; 32],
     },
+    /// Cached root manifest of one product, as published to dotNS.
+    ///
+    /// The value carries the manifest JSON alongside the time it was read. The
+    /// core honours it for a bounded lifetime, which is what makes a revoked
+    /// trust grant eventually take effect.
+    #[codec(index = 12)]
+    ProductManifest {
+        /// Product whose manifest was cached, normalized.
+        product_id: String,
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1348,6 +1374,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
         CoreStorageKey::DeviceEncryptionKey => ("DeviceEncryptionKey", None),
         CoreStorageKey::SsoResponderRequestLedger { .. } => ("SsoResponderRequestLedger", None),
+        CoreStorageKey::ProductManifest { product_id } => ("ProductManifest", Some(product_id)),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }
@@ -2636,13 +2663,25 @@ pub enum SignPayloadReview {
 }
 
 /// Review shown before a sign-raw request is sent to the paired wallet.
+/// Hosts must display the payload according to `watermarked` and warn that
+/// unwatermarked signatures can authorize transactions.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum SignRawReview {
     /// Product-account raw signing request.
-    Product(HostSignRawRequest),
+    Product {
+        /// Raw signing request.
+        request: HostSignRawRequest,
+        /// Whether the signer applies the `<Bytes>` transaction-payload protection.
+        watermarked: bool,
+    },
     /// Legacy-account raw signing request.
-    LegacyAccount(HostSignRawWithLegacyAccountRequest),
+    LegacyAccount {
+        /// Raw signing request.
+        request: HostSignRawWithLegacyAccountRequest,
+        /// Whether the signer applies the `<Bytes>` transaction-payload protection.
+        watermarked: bool,
+    },
 }
 
 /// Review shown before a product account signs a Statement Store proof

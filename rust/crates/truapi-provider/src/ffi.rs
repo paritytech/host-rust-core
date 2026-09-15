@@ -27,6 +27,7 @@ use futures::stream::StreamExt;
 use truapi_platform::{ChainProvider as _, JsonRpcConnection};
 
 use crate::EmbeddedChainProvider;
+use crate::storage::{StorageClient, StorageClientError};
 
 /// Errors surfaced to the foreign caller.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -43,6 +44,12 @@ pub enum ChainProviderError {
     /// The host's listener failed in a way it did not declare.
     #[error("{reason}")]
     Listener {
+        /// Human-readable failure reason.
+        reason: String,
+    },
+    /// Storage the host owns, or the snapshot taken to feed it, failed.
+    #[error("{reason}")]
+    Storage {
         /// Human-readable failure reason.
         reason: String,
     },
@@ -185,6 +192,14 @@ fn bounded_reason(reason: String) -> String {
     }
 }
 
+/// Read a foreign-supplied genesis hash. UniFFI has no fixed-size array type,
+/// so every method taking one takes a `Vec<u8>` and checks its length here.
+fn genesis_from(genesis_hash: Vec<u8>) -> Result<[u8; 32], ChainProviderError> {
+    genesis_hash
+        .try_into()
+        .map_err(|_| ChainProviderError::BadGenesis)
+}
+
 /// Sink for a connection's inbound JSON-RPC responses and notifications,
 /// implemented on the foreign (Swift) side.
 #[uniffi::export(with_foreign)]
@@ -193,6 +208,21 @@ pub trait ChainMessageListener: Send + Sync {
     fn on_message(&self, message: String) -> Result<(), ChainProviderError>;
     /// Called once the connection has closed, whichever way it ended.
     fn on_closed(&self, reason: ChainCloseReason) -> Result<(), ChainProviderError>;
+}
+
+/// Without this the generic converter panics, so a store that throws anything
+/// it did not declare would kill the process rather than fail the one call.
+///
+/// It lives here rather than beside the type because the reason is
+/// foreign-authored, and this is where the crate bounds foreign text.
+impl From<uniffi::UnexpectedUniFFICallbackError> for StorageClientError {
+    fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %error.reason,
+            "storage threw an undeclared error, reported as a storage failure"
+        );
+        StorageClientError::new(bounded_reason(error.reason))
+    }
 }
 
 /// Embedded-smoldot chain provider. Construct one per process and share it;
@@ -204,12 +234,80 @@ pub struct ChainProvider {
 
 #[uniffi::export]
 impl ChainProvider {
-    /// Create a provider backed by the bundled network catalog.
+    /// Create a provider backed by the bundled network catalog, with nowhere
+    /// to keep finalized state: every chain syncs from the chain-spec
+    /// checkpoint on every run, and [`load_database`](Self::load_database) and
+    /// [`save_database`](Self::save_database) fail rather than quietly doing nothing.
+    ///
+    /// Use [`with_storage`](Self::with_storage) to resume from state the host
+    /// keeps for it.
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: EmbeddedChainProvider::builder().build(),
         })
+    }
+
+    /// Create a provider that reads and writes database blobs through `client`.
+    ///
+    /// The crate stores nothing itself, so a provider built with
+    /// [`new`](Self::new) syncs every chain from the chain-spec checkpoint on
+    /// every run. The host owns where the bytes live and therefore whether they
+    /// are backed up, encrypted, or excluded from cloud sync.
+    #[uniffi::constructor(name = "with_storage")]
+    pub fn with_storage(client: Arc<dyn StorageClient>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: EmbeddedChainProvider::builder().storage(client).build(),
+        })
+    }
+
+    /// Read the stored blob for `genesis_hash` into this provider, so the next
+    /// [`connect`](Self::connect) to that chain resumes from finalized state
+    /// instead of syncing from the chain-spec checkpoint. Answers whether a
+    /// blob is now in hand.
+    ///
+    /// Fails when the provider was built through [`new`](Self::new), which has
+    /// nowhere to keep blobs. A chain that never warms up looks exactly like
+    /// one with nothing stored yet, so the missing store is reported rather
+    /// than swallowed: build with [`with_storage`](Self::with_storage).
+    ///
+    /// Call it before `connect`, and never from a listener callback. `connect`
+    /// blocks its calling thread, so a store awaited underneath it would
+    /// deadlock. The store is read at most once per chain: smoldot keys a chain
+    /// by its genesis hash, so only the first connect to a chain can consume a
+    /// blob.
+    pub async fn load_database(&self, genesis_hash: Vec<u8>) -> Result<bool, ChainProviderError> {
+        self.inner
+            .load_database(genesis_from(genesis_hash)?)
+            .await
+            // Bounded here rather than in an adapter: a foreign store authors
+            // this reason, so it is unbounded at the source and crosses the
+            // boundary twice.
+            .map_err(|error| ChainProviderError::Storage {
+                reason: bounded_reason(error.reason),
+            })
+    }
+
+    /// Snapshot the finalized state for `genesis_hash` and hand it to storage.
+    /// Answers whether a blob was stored, and fails when the provider was built
+    /// without one, for the same reason [`load_database`](Self::load_database) does.
+    ///
+    /// This is a full round trip against the light client rather than a write,
+    /// so call it while the app is alive. From a backgrounding callback treat
+    /// it as best effort: nothing keeps a backgrounded app scheduled long
+    /// enough to guarantee it finishes. A chain that has finalized nothing yet
+    /// stores nothing and answers `false`, rather than replacing a good blob
+    /// with one smoldot would discard.
+    pub async fn save_database(&self, genesis_hash: Vec<u8>) -> Result<bool, ChainProviderError> {
+        self.inner
+            .save_database(genesis_from(genesis_hash)?)
+            .await
+            // Bounded here rather than in an adapter: a foreign store authors
+            // this reason, so it is unbounded at the source and crosses the
+            // boundary twice.
+            .map_err(|error| ChainProviderError::Storage {
+                reason: bounded_reason(error.reason),
+            })
     }
 
     /// Open a connection to the chain identified by `genesis_hash` (32 bytes).
@@ -232,9 +330,7 @@ impl ChainProvider {
                     .to_string(),
             });
         }
-        let genesis: [u8; 32] = genesis_hash
-            .try_into()
-            .map_err(|_| ChainProviderError::BadGenesis)?;
+        let genesis = genesis_from(genesis_hash)?;
         let connection =
             block_on(self.inner.connect(genesis)).map_err(|error| ChainProviderError::Connect {
                 reason: error.reason,
@@ -813,6 +909,83 @@ mod tests {
             .err()
             .expect("a 31-byte genesis must be rejected");
         assert!(matches!(error, ChainProviderError::BadGenesis));
+    }
+
+    /// Foreign storage stand-in. The real one lives in Swift or Kotlin, so
+    /// this exercises the same `with_foreign` trait the bindings implement.
+    /// Each call records its genesis hash, and the blob when it was a save.
+    struct RecordingStore {
+        calls: Mutex<Vec<(Vec<u8>, Option<String>)>>,
+        failure: Option<String>,
+    }
+
+    impl RecordingStore {
+        fn new(failure: Option<String>) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                failure,
+            })
+        }
+
+        fn answer(&self) -> Result<(), StorageClientError> {
+            match &self.failure {
+                Some(reason) => Err(StorageClientError::new(reason)),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[truapi_platform::async_trait]
+    impl StorageClient for RecordingStore {
+        async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError> {
+            self.calls
+                .lock()
+                .expect("not poisoned")
+                .push((genesis_hash.to_vec(), None));
+            self.answer().map(|()| Some("blob".to_owned()))
+        }
+
+        async fn save(
+            &self,
+            genesis_hash: [u8; 32],
+            blob: String,
+        ) -> Result<(), StorageClientError> {
+            self.calls
+                .lock()
+                .expect("not poisoned")
+                .push((genesis_hash.to_vec(), Some(blob)));
+            self.answer()
+        }
+    }
+
+    #[test]
+    fn a_wrong_length_genesis_is_rejected_before_storage_is_asked() {
+        // The check has to happen on this side: a host that got handed 31 bytes
+        // would key its storage by them and answer a blob for a chain that has
+        // no such hash.
+        let store = RecordingStore::new(None);
+        let provider = ChainProvider::with_storage(store.clone());
+
+        for outcome in [
+            block_on(provider.load_database(vec![0u8; 31])),
+            block_on(provider.save_database(vec![0u8; 33])),
+        ] {
+            assert!(
+                matches!(outcome, Err(ChainProviderError::BadGenesis)),
+                "got {outcome:?}"
+            );
+        }
+        assert!(store.calls.lock().expect("not poisoned").is_empty());
+    }
+
+    #[test]
+    fn an_undeclared_storage_error_converts_and_is_bounded() {
+        let thrown = format!("HEAD{}", "\u{1f600}".repeat(CLOSE_REASON_MAX_CHARS * 2));
+        let StorageClientError::Failed { reason } =
+            StorageClientError::from(uniffi::UnexpectedUniFFICallbackError::new(thrown));
+
+        assert_eq!(reason.chars().count(), CLOSE_REASON_MAX_CHARS);
+        assert!(reason.starts_with("HEAD"), "the bound keeps the head");
     }
 
     #[test]

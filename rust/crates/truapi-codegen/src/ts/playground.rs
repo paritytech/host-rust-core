@@ -28,7 +28,6 @@ fn generate_playground_services_code(
     let wrappers = collect_versioned_wrappers(api);
     let emit_versions = versioned_wrapper_emit_versions(api, &wrappers, target_version)?;
     let aliases = selected_public_aliases(api, &wrappers, &emit_versions, target_version);
-    let ctx = codec_context(&[]);
     let services = public_services(api)?;
     let explorer_type_ids = explorer_type_id_set(api, &aliases);
 
@@ -73,14 +72,13 @@ fn generate_playground_services_code(
 
         for method in methods {
             let wire_version = method_wire_version(method, &wrappers, target_version)?;
-            let payload = emit_payload(&method.params, &wrappers, &ctx, wire_version)?;
+            let payload = emit_payload(&method.params, &wrappers, wire_version)?;
             let docs = split_playground_docs(method.docs.as_deref())?;
             let method_type = match method.kind {
                 MethodKind::Request => "unary",
-                MethodKind::Subscription | MethodKind::ResultSubscription => "subscription",
+                MethodKind::Subscription => "subscription",
             };
-            let signature =
-                build_method_signature(method, &payload, &wrappers, &ctx, wire_version)?;
+            let signature = build_method_signature(method, &payload, &wrappers, wire_version)?;
             let doc_url = build_doc_url(trait_def, method);
 
             writedoc!(
@@ -136,7 +134,7 @@ fn generate_playground_services_code(
                 writeln!(out, "        requestType: {},", ts_string_literal(&id)).unwrap();
             }
             let (response_inner, error_inner) =
-                method_response_inner_ts(method, &wrappers, &ctx, wire_version)?;
+                method_response_inner_ts(method, &wrappers, wire_version)?;
             if let Some(id) = response_inner.as_deref().and_then(data_type_id_from_ts)
                 && explorer_type_ids.contains(&id)
             {
@@ -218,7 +216,7 @@ pub(super) fn split_playground_docs(docs: Option<&str>) -> Result<PlaygroundDocs
 /// silently leave that tab empty and dump the snippet into the description.
 pub(super) fn validate_method_examples(
     api: &ApiDefinition,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
     for service in public_services(api)? {
@@ -318,23 +316,18 @@ pub fn explorer_type_id_set(
 /// error arm).
 pub(super) fn method_response_inner_ts(
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
-    ctx: &CodecContext,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<(Option<String>, Option<String>)> {
     match &method.return_type {
         ReturnType::Result { ok, err } => {
-            let ok_resp = emit_response(ok, wrappers, ctx, wire_version)?;
-            let err_resp = emit_error_response(err, wrappers, ctx, wire_version)?;
+            let ok_resp = emit_response(ok, wrappers, wire_version)?;
+            let err_resp = emit_error_response(err, wrappers, wire_version)?;
             Ok((Some(ok_resp.inner_type_ts), Some(err_resp.inner_type_ts)))
         }
-        ReturnType::Subscription(item) => {
-            let resp = emit_response(item, wrappers, ctx, wire_version)?;
-            Ok((Some(resp.inner_type_ts), None))
-        }
-        ReturnType::ResultSubscription { item, err } => {
-            let resp = emit_response(item, wrappers, ctx, wire_version)?;
-            let err_resp = emit_error_response(err, wrappers, ctx, wire_version)?;
+        ReturnType::Subscription { item, interrupt } => {
+            let resp = emit_response(item, wrappers, wire_version)?;
+            let err_resp = emit_error_response(interrupt, wrappers, wire_version)?;
             Ok((Some(resp.inner_type_ts), Some(err_resp.inner_type_ts)))
         }
     }
@@ -363,8 +356,7 @@ fn build_doc_url(trait_def: &TraitDef, method: &MethodDef) -> String {
 fn build_method_signature(
     method: &MethodDef,
     payload: &PayloadEmission,
-    wrappers: &HashMap<String, VersionedWrapper>,
-    ctx: &CodecContext,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<String> {
     let ts_method_name = to_camel_case(&strip_prefix(&method.name));
@@ -375,24 +367,17 @@ fn build_method_signature(
     };
     let return_ts = match &method.return_type {
         ReturnType::Result { ok, err } => {
-            let ok_resp = emit_response(ok, wrappers, ctx, wire_version)?;
-            let err_resp = emit_error_response(err, wrappers, ctx, wire_version)?;
+            let ok_resp = emit_response(ok, wrappers, wire_version)?;
+            let err_resp = emit_error_response(err, wrappers, wire_version)?;
             format!(
                 "Promise<Result<{}, {}>>",
                 playground_type_name(&ok_resp.inner_type_ts),
                 playground_type_name(&err_resp.inner_type_ts),
             )
         }
-        ReturnType::Subscription(item) => {
-            let response = emit_response(item, wrappers, ctx, wire_version)?;
-            format!(
-                "ObservableLike<{}>",
-                playground_type_name(&response.inner_type_ts),
-            )
-        }
-        ReturnType::ResultSubscription { item, err } => {
-            let response = emit_response(item, wrappers, ctx, wire_version)?;
-            let err_resp = emit_error_response(err, wrappers, ctx, wire_version)?;
+        ReturnType::Subscription { item, interrupt } => {
+            let response = emit_response(item, wrappers, wire_version)?;
+            let err_resp = emit_error_response(interrupt, wrappers, wire_version)?;
             format!(
                 "ObservableLike<{}, {}>",
                 playground_type_name(&response.inner_type_ts),

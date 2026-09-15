@@ -1,0 +1,769 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "action.open.mobRules.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Earn by reviewing tattoo documentation videos"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gana revisando videos de documentación de tatuajes"
+          }
+        }
+      }
+    },
+    "action.open.weeklyGame.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect with new Members"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecta con nuevos Miembros"
+          }
+        }
+      }
+    },
+    "chat.title.dim1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unique Membership Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tatuaje de Membresía Único"
+          }
+        }
+      }
+    },
+    "chat.title.polkadotPeer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Polkadot Prizes"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Premios Polkadot"
+          }
+        }
+      }
+    },
+    "dim.switch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambiar"
+          }
+        }
+      }
+    },
+    "dim.switch.error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to switch"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se puede cambiar"
+          }
+        }
+      }
+    },
+    "dim1.faq.answer.how": {
+      "extractionState": "manual"
+    },
+    "dim1.faq.answer.location": {
+      "extractionState": "manual"
+    },
+    "dim1.faq.answer.what": {
+      "extractionState": "manual"
+    },
+    "dim1.faq.question.how": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How Should I Film the Evidence?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Cómo debo grabar la evidencia?"
+          }
+        }
+      }
+    },
+    "dim1.faq.question.location": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can I alter the location?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Puedo cambiar la ubicación?"
+          }
+        }
+      }
+    },
+    "dim1.faq.question.what": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What happens after I submit the evidence?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué pasa después de enviar la evidencia?"
+          }
+        }
+      }
+    },
+    "dim1.switch.confirmation.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel your game progress and apply using a Unique Membership Tattoo instead?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Cancelar tu progreso en el juego y postularte con un Tatuaje de Membresía Único?"
+          }
+        }
+      }
+    },
+    "dim1.switch.confirmation.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch to the Unique Membership Tattoo Option?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Cambiar a la opción de Tatuaje de Membresía Único?"
+          }
+        }
+      }
+    },
+    "dim1.switch.error.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit will be available after the active game you are participating in is finished"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Podrás editar cuando termine el juego activo en el que participas"
+          }
+        }
+      }
+    },
+    "dim1.welcome1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Become a Member by Getting a Unique Free Tattoo**\n\n✍️ Get Inked with Any Artist You Like and Provide a 3 Minute Video Documenting the Tattoo Process"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Vuélvete Miembro con un tatuaje único y gratis**\n\n✍️ Tatúate con el artista que quieras y entrega un video de 3 minutos que documente el proceso"
+          }
+        }
+      }
+    },
+    "dim1.welcome2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "📐 **Size.** This tattoo is available in several sizes ranging from 25 to 50 millimeters. You will see stencil with all sizes after booking.\n\n💪 **Tattoo Location.** The tattoo has to be made on inner part of the upper left arm. Centred between armpit and elbow."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "📐 **Tamaño.** Este tatuaje está disponible en varios tamaños, de 25 a 50 milímetros. Verás la plantilla con todos los tamaños después de reservar.\n\n💪 **Ubicación del tatuaje.** El tatuaje debe hacerse en la parte interna del brazo izquierdo, arriba. Centrado entre la axila y el codo."
+          }
+        }
+      }
+    },
+    "dim1.welcome3": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🎨 **Design.** Add a small $10 deposit to select your unique design from over 2,000 options available."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🎨 **Diseño.** Agrega un depósito de $10 para elegir tu diseño único entre más de 2,000 opciones disponibles."
+          }
+        }
+      }
+    },
+    "dim1.welcome4": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "📆 **Execution.** Find any tattooer you like. You will also see a few suggested tattoo studios after booking."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "📆 **Ejecución.** Busca al tatuador que quieras. También verás algunos estudios de tatuaje sugeridos después de reservar."
+          }
+        }
+      }
+    },
+    "dim1.welcome5": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🤳 **Evidence.** Provide 3-minute proof of documentation video and a picture of the final tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🤳 **Evidencia.** Entrega un video de documentación de 3 minutos y una foto del tatuaje final"
+          }
+        }
+      }
+    },
+    "dim1.welcome6": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🗳️ **Review.** Tattoo Evidence is reviewed by other Polkadot peers, who will vote individually based on your documentation video evidence.\n\n💸 **Reimbursement.** Get Your Tattoo Expenses Refund"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🗳️ **Revisión.** Otros peers de Polkadot revisan la evidencia del tatuaje y votan de forma individual con base en tu video de documentación.\n\n💸 **Reembolso.** Recupera lo que gastaste en tu tatuaje"
+          }
+        }
+      }
+    },
+    "dim2.switch.confirmation.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel your reserved tattoo and register to start playing weekly games instead?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Cancelar tu tatuaje reservado y registrarte para empezar a jugar los juegos semanales?"
+          }
+        }
+      }
+    },
+    "dim2.switch.confirmation.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switch to the Weekly Game option?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Cambiar a la opción de Juego semanal?"
+          }
+        }
+      }
+    },
+    "dim2.switch.error.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switching is not available after committing to a tattoo design"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No puedes cambiar después de comprometerte con un diseño de tatuaje"
+          }
+        }
+      }
+    },
+    "full.username.claimed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You upgraded your username  from %@ to %@"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejoraste tu nombre de usuario  de %@ a %@"
+          }
+        }
+      }
+    },
+    "message.preview.image": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sent you an image"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Te envió una imagen"
+          }
+        }
+      }
+    },
+    "mob.rule.contempt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🚩 Report Evidence"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "🚩 Reportar evidencia"
+          }
+        }
+      }
+    },
+    "mob.rule.false": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "❌ False"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "❌ Falso"
+          }
+        }
+      }
+    },
+    "mob.rule.no.available.cases": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thank you for contributing your judgments. You’ve completed all available cases. The app will notify you when new cases appear."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gracias por aportar tus veredictos. Ya completaste todos los casos disponibles. La app te avisará cuando aparezcan casos nuevos."
+          }
+        }
+      }
+    },
+    "mob.rule.photo.case": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tattoo Photo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Foto del tatuaje"
+          }
+        }
+      }
+    },
+    "mob.rule.proof.of.ink.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "· Is the Tattoo Design matches the submitted image in terms of design? \n· Are marks of skin reaction to the tattoo visible in the video to ensure that the process is real?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "· ¿El diseño del tatuaje coincide con la imagen enviada? \n· ¿Se ven en el video las marcas de reacción de la piel al tatuaje para confirmar que el proceso es real?"
+          }
+        }
+      }
+    },
+    "mob.rule.true": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "✅ True"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "✅ Verdadero"
+          }
+        }
+      }
+    },
+    "mob.rule.video.case": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Documentation Video"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video de documentación"
+          }
+        }
+      }
+    },
+    "personhood.registered.preview": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You’re a Polkadot Member!"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¡Ya eres Miembro de Polkadot!"
+          }
+        }
+      }
+    },
+    "polkadotPeer.action.dim1.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get Inked and Provide a 3 Minute Video"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tatúate y entrega un video de 3 minutos"
+          }
+        }
+      }
+    },
+    "polkadotPeer.action.dim1.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unique Peer Tattoo"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tatuaje de Peer Único"
+          }
+        }
+      }
+    },
+    "polkadotPeer.action.dim2.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attest humans, remove AI in a 5 minute game"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifica humanos y elimina IA en un juego de 5 minutos"
+          }
+        }
+      }
+    },
+    "polkadotPeer.action.dim2.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weekly Game"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Juego semanal"
+          }
+        }
+      }
+    },
+    "polkadotPeer.action.open": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir"
+          }
+        }
+      }
+    },
+    "polkadotPeer.faq.answer.other": {
+      "extractionState": "manual"
+    },
+    "polkadotPeer.faq.answer.who": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Polkadot Members have premium access to Polkadot services"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los Miembros de Polkadot tienen acceso premium a los servicios de Polkadot"
+          }
+        }
+      }
+    },
+    "polkadotPeer.faq.answer.why": {
+      "extractionState": "manual"
+    },
+    "polkadotPeer.faq.question.other": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I have other Questions"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tengo otras preguntas"
+          }
+        }
+      }
+    },
+    "polkadotPeer.faq.question.who": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Who is Polkadot Peer?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Quién es un Polkadot Peer?"
+          }
+        }
+      }
+    },
+    "polkadotPeer.faq.question.why": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why become a Peer?"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Por qué volverse Peer?"
+          }
+        }
+      }
+    },
+    "polkadotPeer.footer.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the chat for each option to explore"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el chat de cada opción para explorarla"
+          }
+        }
+      }
+    },
+    "polkadotPeer.welcome1": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Join as a Polkadot Peer!**\n\n🎰 Participate in **Weekly** Prize Draw\n👤 Choose a Short Username\n🔒 Enjoy Free, Private Transfers\n💎 Experience Premium Service Level across all Polkadot products\n💵 **Seize** the opportunity for daily paid contributions."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**¡Únete como Polkadot Peer!**\n\n🎰 Participa en el sorteo **semanal** de premios\n👤 Elige un nombre de usuario corto\n🔒 Disfruta transferencias privadas y gratuitas\n💎 Vive un servicio premium en todos los productos de Polkadot\n💵 **Aprovecha** la oportunidad de colaborar y ganar todos los días."
+          }
+        }
+      }
+    },
+    "polkadotPeer.welcome2": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Option 1. Play a Weekly Game. Requires Constant Participation.**\n\n🤖 Attest humans, remove AI in a 5 minute game"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Opción 1. Juega un juego semanal. Requiere participación constante.**\n\n🤖 Verifica humanos y elimina IA en un juego de 5 minutos"
+          }
+        }
+      }
+    },
+    "polkadotPeer.welcome3": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Option 2. Get a Unique Free Tattoo. One and Done Option.**\n\n✍️ Get Inked with Any Artist You Like and Provide a 3 Minute Video Documenting the Tattoo Process"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "**Opción 2. Hazte un tatuaje único y gratis. Una sola vez y listo.**\n\n✍️ Tatúate con el artista que quieras y entrega un video de 3 minutos que documente el proceso"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.1"
+}

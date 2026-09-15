@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/w3s_ended_graph"
+    app:startDestination="@id/web3SummitEndedFragment">
+
+    <fragment
+        android:id="@+id/web3SummitEndedFragment"
+        android:name="io.paritytech.polkadotapp.feature_web3summit_impl.presentation.web3SummitEnded.Web3SummitEndedFragment"
+        android:label="Web3SummitEndedFragment" />
+</navigation>
