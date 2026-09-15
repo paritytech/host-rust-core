@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 // Rebuild the browser truapi-server WASM artefacts generated under
-// `dist/wasm/web/`. wasm-pack is required.
+// `dist/wasm/`. wasm-pack is required.
+//
+// Two bundles are built, and the difference is deliberate:
+//
+//   web/      the production browser host. Built `--no-default-features`, so it
+//             carries no signing host: a browser host pairs with a wallet that
+//             holds the keys, and never holds key material itself.
+//   testing/  the mock host used by tests. Adds `wasm-signing-host`, because a
+//             test host owns dev accounts and signs locally instead of waiting
+//             on a wallet that is not there. Shipped under the `./testing`
+//             subpath so a product bundling `./web` never pulls it in.
 
 import { execFile } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
@@ -27,7 +37,7 @@ const rustCrate = resolve(repoRoot, "rust/crates/truapi-server");
 const wasmProfile = process.env.TRUAPI_WASM_PROFILE ?? "release";
 const wasmFileName = "truapi_server_bg.wasm";
 
-function args(target, outDir) {
+function args(target, outDir, features = []) {
   const command = [
     "build",
     "--target",
@@ -47,6 +57,9 @@ function args(target, outDir) {
     );
   }
   command.push(rustCrate, "--no-default-features");
+  if (features.length > 0) {
+    command.push("--features", features.join(","));
+  }
   return command;
 }
 
@@ -156,13 +169,17 @@ async function writeCompressedSidecars(wasmPath) {
   );
 }
 
-async function build(target, subdir) {
+async function build(target, subdir, features = []) {
   const outDir = resolve(pkgRoot, "dist/wasm", subdir);
   process.stdout.write(
-    `wasm-pack build --target ${target} --${wasmProfile} → ${outDir}\n`,
+    `wasm-pack build --target ${target} --${wasmProfile}${
+      features.length > 0 ? ` --features ${features.join(",")}` : ""
+    } → ${outDir}\n`,
   );
   try {
-    await execFileAsync("wasm-pack", args(target, outDir), { cwd: repoRoot });
+    await execFileAsync("wasm-pack", args(target, outDir, features), {
+      cwd: repoRoot,
+    });
   } catch (err) {
     if (err?.code === "ENOENT") {
       console.error(
@@ -186,3 +203,4 @@ async function build(target, subdir) {
 }
 
 await build("web", "web");
+await build("web", "testing", ["wasm-signing-host"]);

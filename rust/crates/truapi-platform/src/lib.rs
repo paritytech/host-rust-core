@@ -29,6 +29,11 @@ uniffi::setup_scaffolding!();
 uniffi::use_remote_type!(truapi::Bytes32);
 
 use truapi::Bytes32;
+
+/// In-memory mock platform for tests and host simulators (enable the `mock` feature).
+#[cfg(feature = "mock")]
+pub mod mock;
+
 use truapi::latest::{
     AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
     ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,

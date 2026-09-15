@@ -24,6 +24,7 @@ import {
 import type {
   WasmModuleShape,
   WorkerPairingHostRuntime,
+  WorkerSigningHostRuntime,
   WorkerProductRuntime,
   WorkerTransition,
 } from "./wasm-module.js";
@@ -681,10 +682,30 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         });
       }
       try {
-        runtime = new wasm.WasmPairingHostRuntime(
-          buildRawCallbacks(msg.capabilities),
-          msg.hostConfig,
-        );
+        if (msg.role === "signing") {
+          // Only the `testing` bundle carries a signing host; the production
+          // `web` one is built without it, so say that rather than let an
+          // undefined constructor surface as a generic type error.
+          const SigningRuntime = wasm.WasmSigningHostRuntime;
+          if (!SigningRuntime) {
+            postToMain({
+              kind: "fatalError",
+              error:
+                "init: this WASM bundle has no signing host. Use the " +
+                "`testing` bundle, which is built with `wasm-signing-host`.",
+            });
+            break;
+          }
+          runtime = new SigningRuntime(
+            buildRawCallbacks(msg.capabilities),
+            msg.hostConfig,
+          );
+        } else {
+          runtime = new wasm.WasmPairingHostRuntime(
+            buildRawCallbacks(msg.capabilities),
+            msg.hostConfig,
+          );
+        }
         postToMain({ kind: "ready", schema: coreWireSchemaHash(wasm) });
       } catch (err) {
         postToMain({ kind: "fatalError", error: `init: ${errorMessage(err)}` });
@@ -761,6 +782,28 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         msg.requestId,
         "activateExternalSession",
         (rt) => rt.activateExternalSession(blob),
+      );
+      break;
+    }
+    case "activateLocalSession": {
+      const { secret } = msg;
+      void handleSessionActivation(
+        msg.requestId,
+        "activateLocalSession",
+        (rt) => {
+          const signing = rt as Partial<WorkerSigningHostRuntime>;
+          if (typeof signing.activateLocalSession !== "function") {
+            // A pairing host has no local secret to activate; saying so beats
+            // a TypeError about an undefined function.
+            return Promise.reject(
+              new Error(
+                "activateLocalSession needs a signing host; this runtime is " +
+                  'a pairing host (pass role: "signing" to init)',
+              ),
+            );
+          }
+          return signing.activateLocalSession(secret);
+        },
       );
       break;
     }

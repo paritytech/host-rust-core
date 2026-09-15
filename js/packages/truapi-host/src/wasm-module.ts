@@ -73,6 +73,17 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   free(): void;
 }
 
+/**
+ * The signing-host runtime, present only in the `testing` WASM bundle.
+ *
+ * A signing host owns the user's keys and establishes sessions from local
+ * entropy rather than by pairing with a wallet. The production `web` bundle is
+ * built without it on purpose, so this is optional on the module surface.
+ */
+export interface WorkerSigningHostRuntime extends WorkerPairingHostRuntime {
+  activateLocalSession(secret: Uint8Array): Promise<void>;
+}
+
 /** Module surface the wasm-pack glue exports. */
 export interface WasmModuleShape {
   default: (input?: unknown) => Promise<unknown>;
@@ -80,6 +91,11 @@ export interface WasmModuleShape {
     callbacks: unknown,
     hostConfig: unknown,
   ) => WorkerPairingHostRuntime;
+  /** Only in the `testing` bundle; see {@link WorkerSigningHostRuntime}. */
+  WasmSigningHostRuntime?: new (
+    callbacks: unknown,
+    hostConfig: unknown,
+  ) => WorkerSigningHostRuntime;
   WasmProductRuntime: new (
     callbacks: unknown,
     runtimeConfig: unknown,
