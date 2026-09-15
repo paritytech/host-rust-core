@@ -747,10 +747,66 @@ timeouts. Once product-sdk moves, this is the only one of the two that
 functions, so the fixture is what unblocks that upgrade rather than something
 to adopt after it.
 
-Seven t3rminal specs still fail here and are not diagnosed. They may be its own
--- its suite already failed nine on its original stack -- but there is no clean
-baseline for them, because the only host to compare against cannot run this
-stack at all.
+Seven t3rminal specs still fail here. Comparing failure sets by test id: six of
+the seven fail on `host-api-test-sdk` too, and three specs that fail there pass
+here (`home` twice, `history`) -- so the net is +3/-1. The one that fails only
+here (`enters decimal amount`) times out on `terminal-header` exactly like the
+other six, so it is the same root cause rather than a distinct defect.
+
+That root cause is not the host. The terminal page gates on a resource
+allocation the host cannot grant: the console shows `requestResourceAllocation
+failed` and `PreimageSubmit ... Polkadot host is not ready`, on both hosts.
+`ResourceAllocation` is a `UserConfirmationReview` variant, so the mock does
+answer it; what is missing is a real allowance, which is core-owned. Same
+boundary as the statement store, and not closable by adding a control method.
+
+### Like-for-like across products
+
+Every row holds the tree and the stack fixed and changes only the fixture.
+
+**product-sdk, nine suites, main at `@parity/truapi` 0.16.0 from npm** -- the
+baseline reverts every `e2e/` source so it is main as it ships, not a half-
+migrated tree (reverting only the fixtures would leave the rewritten specs
+calling `findProductStorage`, which the old package does not have, and would
+fail for the wrong reason). Failures per suite:
+
+| suite | `host-api-test-sdk` | this test host |
+| --- | --- | --- |
+| storage-demo | 8 | **0** |
+| keys-demo | 8 | **0** |
+| host-demo | 6 | **0** |
+| signer-demo | 9 | **0** |
+| chain-client-demo | 2 | **0** |
+| cloud-storage-demo | 0 | 0 |
+| contracts-demo | 2 | 2 |
+| statement-store-demo | 10 | 9 |
+| tx-demo | 6 | 3 |
+| **suites** | **1 pass / 8 fail** | **6 pass / 3 fail** |
+
+The single suite passing on `host-api-test-sdk` is `cloud-storage-demo`, which
+is skipped upstream, so it has no real passes against current main. The cause is
+the handshake, not anything product-specific: `storage-demo`, the simplest
+chain-free suite, dies on `page.waitForFunction: Test timeout` -- the host page
+never becomes ready.
+
+**Across the consumers:**
+
+| product | `host-api-test-sdk` | this test host |
+| --- | --- | --- |
+| product-sdk, 9 suites @ truapi 0.16.0 | 1 / 8 | **6 / 3** |
+| t3rminal, 16 tests, codec-2 stack | 1 / 15 (21m) | **9 / 7** (3.9m) |
+| t3rminal, codec-1 stack (its own) | 7 / 9 | 1 / 15 |
+| host-playground | -- | cannot run: `productAccounts`, `chain:` |
+| playground-app | -- | cannot run: `productAccounts`, `accounts: [{uri}]` |
+
+The third row is what keeps this honest: on t3rminal's own old stack the old
+package wins 7 to 1. Neither host crosses the codec boundary. But product-sdk
+main is now past it, and on that side `host-api-test-sdk` cannot serve the SDK
+its own consumers are about to install.
+
+The last two rows are a blocker rather than a result. Both fixtures fail at
+construction on options this host rejects by design, so neither has ever been
+measured; that is suite-side rework, not a host gap.
 
 **Reproducing it.** Copy, do not symlink: Next will not resolve a linked
 package outside the project root, which fails as `Module not found` against the
