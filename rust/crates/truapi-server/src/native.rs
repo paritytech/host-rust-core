@@ -24,7 +24,7 @@ use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
     HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
-    PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
+    PreimageHost, ProductContext, ProductExecutionKind, ProductOperations, ProductStorage,
     RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
@@ -543,6 +543,17 @@ pub trait HostCallbacks: Send + Sync {
     fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), HostStorageError>;
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
+
+    /// Record a pending operation, whose id keeps the product's worker alive
+    /// until it ends.
+    async fn begin_operation(
+        &self,
+        product_id: String,
+        label: String,
+    ) -> Result<u32, HostRejection>;
+    /// End a pending operation. Idempotent: an unknown or already-ended id
+    /// succeeds, so a retry after an ambiguous failure is safe.
+    async fn end_operation(&self, product_id: String, id: u32) -> Result<(), HostRejection>;
 }
 
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
@@ -640,6 +651,7 @@ impl NativeTrUApiHostRuntime {
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         });
         let spawner = native_thread_pool_spawner(&callbacks);
         let runtime = Arc::new(SigningHostRuntime::new(
@@ -680,6 +692,7 @@ impl NativeTrUApiHostRuntime {
         let callback_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: self.events.clone(),
         });
         let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
             callback_platform.clone();
@@ -1163,6 +1176,14 @@ impl NativeProductExecution {
         self.events.notify_preimage_changed(&key, value);
     }
 
+    /// Push a host storage change to the product's subscriptions for `key`.
+    ///
+    /// Storage is one namespace per product rather than per execution, so this
+    /// reaches every execution of the product, not only this one.
+    pub fn notify_storage_changed(&self, key: String, value: Option<Vec<u8>>) {
+        self.shared_events.notify_storage_changed(&key, value);
+    }
+
     /// Notify this execution's chain adapter of one JSON-RPC response.
     pub fn notify_chain_response(&self, connection_id: u32, json: String) {
         self.shared_events
@@ -1344,6 +1365,10 @@ fn native_thread_pool_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
 struct CallbackPlatform {
     callbacks: Arc<dyn HostCallbacks>,
     events: Arc<NativeEventBus>,
+    /// Storage changes are product-wide rather than per-execution: a worker
+    /// and the screen share one namespace, so they subscribe and publish on
+    /// the runtime-wide bus instead of this execution's own.
+    storage_events: Arc<NativeEventBus>,
 }
 
 impl crate::host_logic::worker::WorkerDemandObserver for CallbackPlatform {
@@ -1360,6 +1385,7 @@ struct NativeEventBus {
     locale_changes:
         Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostLocaleSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
+    storage_changes: Mutex<Vec<StorageSubscription>>,
     chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
     pocket_card_changes: Mutex<
@@ -1370,6 +1396,11 @@ struct NativeEventBus {
 struct PreimageSubscription {
     key: Vec<u8>,
     tx: mpsc::UnboundedSender<Result<Option<Vec<u8>>, v01::GenericError>>,
+}
+
+struct StorageSubscription {
+    key: String,
+    tx: mpsc::UnboundedSender<Result<v01::HostLocalStorageChangeItem, v01::GenericError>>,
 }
 
 impl NativeEventBus {
@@ -1432,6 +1463,31 @@ impl NativeEventBus {
                     return true;
                 }
                 sub.tx.unbounded_send(Ok(value.clone())).is_ok()
+            });
+    }
+
+    fn subscribe_storage_changes(
+        &self,
+        key: String,
+    ) -> mpsc::UnboundedReceiver<Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        let (tx, rx) = mpsc::unbounded();
+        self.storage_changes
+            .lock()
+            .expect("native storage subscribers mutex poisoned")
+            .push(StorageSubscription { key, tx });
+        rx
+    }
+
+    fn notify_storage_changed(&self, key: &str, value: Option<Vec<u8>>) {
+        let item = v01::HostLocalStorageChangeItem { value };
+        self.storage_changes
+            .lock()
+            .expect("native storage subscribers mutex poisoned")
+            .retain(|sub| {
+                if sub.key != key {
+                    return true;
+                }
+                sub.tx.unbounded_send(Ok(item.clone())).is_ok()
             });
     }
 
@@ -1666,12 +1722,72 @@ impl ProductStorage for CallbackPlatform {
         value: Vec<u8>,
     ) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
-            .local_storage_write(key, value)
-            .map_err(Into::into)
+            .local_storage_write(key.clone(), value.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events
+            .notify_storage_changed(&key, Some(value));
+        Ok(())
     }
 
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_clear(key).map_err(Into::into)
+        self.callbacks
+            .local_storage_clear(key.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events.notify_storage_changed(&key, None);
+        Ok(())
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        // Subscribe before reading, so a change landing between the two repeats
+        // rather than being lost. The host pushes later changes via
+        // `notify_storage_changed`.
+        let rx = self.storage_events.subscribe_storage_changes(key.clone());
+        let callbacks = self.callbacks.clone();
+        let current = async move {
+            callbacks
+                .local_storage_read(key)
+                .map(|value| v01::HostLocalStorageChangeItem { value })
+                .map_err(|error| {
+                    let error: v01::HostLocalStorageReadError = error.into();
+                    v01::GenericError {
+                        reason: error.to_string(),
+                    }
+                })
+        };
+        stream::once(current).chain(rx).boxed()
+    }
+}
+
+#[async_trait]
+impl ProductOperations for CallbackPlatform {
+    async fn begin_operation(
+        &self,
+        product: &ProductContext,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        self.callbacks
+            .begin_operation(product.product_id.clone(), label)
+            .await
+            .map(|id| v01::HostWorkerBeginOperationResponse { id })
+            .map_err(|error| v01::HostWorkerOperationError::Unknown {
+                reason: error.to_string(),
+            })
+    }
+
+    async fn end_operation(
+        &self,
+        product: &ProductContext,
+        id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
+        self.callbacks
+            .end_operation(product.product_id.clone(), id)
+            .await
+            .map_err(|error| v01::HostWorkerOperationError::Unknown {
+                reason: error.to_string(),
+            })
     }
 }
 
@@ -2422,6 +2538,16 @@ mod tests {
         fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
             Ok(())
         }
+        async fn begin_operation(
+            &self,
+            _product_id: String,
+            _label: String,
+        ) -> Result<u32, HostRejection> {
+            Ok(1)
+        }
+        async fn end_operation(&self, _product_id: String, _id: u32) -> Result<(), HostRejection> {
+            Ok(())
+        }
     }
 
     impl NativePocketCallbacks for EventCallbacks {
@@ -2545,8 +2671,114 @@ mod tests {
         let platform = CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         };
         (callbacks, events, platform)
+    }
+
+    #[test]
+    fn a_product_write_reaches_a_storage_subscription_on_the_same_key() {
+        let (_callbacks, _events, platform) = event_platform();
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = platform.subscribe_storage(key.clone());
+
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(ProductStorage::write(&platform, key, vec![1, 2, 3]))
+            .expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![1, 2, 3]),
+            }))),
+            "a write the product made is a change its own subscribers must see"
+        );
+    }
+
+    #[test]
+    fn a_worker_write_reaches_a_storage_subscription_in_the_products_other_execution() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+            .expect("host runtime config should be valid");
+        let screen = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+        let worker = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::Worker),
+            )
+            .expect("open worker execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = screen.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(worker.platform.write(key, vec![9])).expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![9]),
+            }))),
+            "the screen and the worker share one storage namespace, so a write in one \
+             reaches a subscription in the other"
+        );
+    }
+
+    #[test]
+    fn a_host_pushed_storage_change_reaches_the_products_subscription() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+            .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = execution.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        execution.notify_storage_changed(key, Some(vec![7]));
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![7]),
+            }))),
+            "a change the host made itself still reaches the product"
+        );
     }
 
     fn native_host_runtime_config() -> NativeHostRuntimeConfig {
@@ -3706,6 +3938,20 @@ mod tests {
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
                 Ok(())
             }
+            async fn begin_operation(
+                &self,
+                _product_id: String,
+                _label: String,
+            ) -> Result<u32, HostRejection> {
+                Ok(1)
+            }
+            async fn end_operation(
+                &self,
+                _product_id: String,
+                _id: u32,
+            ) -> Result<(), HostRejection> {
+                Ok(())
+            }
         }
 
         let execution = native_product_execution(Arc::new(Noop), "dotli.dot");
@@ -3857,6 +4103,20 @@ mod tests {
                 Ok(())
             }
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+                Ok(())
+            }
+            async fn begin_operation(
+                &self,
+                _product_id: String,
+                _label: String,
+            ) -> Result<u32, HostRejection> {
+                Ok(1)
+            }
+            async fn end_operation(
+                &self,
+                _product_id: String,
+                _id: u32,
+            ) -> Result<(), HostRejection> {
                 Ok(())
             }
         }

@@ -3,11 +3,11 @@ title: "Wire message type: an explicit byte for trait, method, and leg"
 owner: "@decrypto21"
 ---
 
-# RFC 0028: Wire Message Type: An Explicit Byte for Trait, Method, and Leg
+# RFC 0027: Wire Message Type: An Explicit Byte for Trait, Method, and Leg
 
 |                 |                                                                                                                  |
 | --------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **RFC Number**  | 28                                                                                                                 |
+| **RFC Number**  | 27                                                                                                                 |
 | **Start Date**  | 2026-08-31                                                                                                         |
 | **Description** | Replace the flat `(trait, method)` wire discriminant with `(trait, method, message_type)`, so method ids run as a dense per-trait sequence instead of a request/response pair or subscription quartet spread. |
 | **Authors**     | Nidish                                                                                                             |

@@ -431,7 +431,7 @@ fn emit_worker_callbacks(
     );
     out.push_str("  startSubscription<T>(\n");
     out.push_str("    name: SubscriptionName,\n");
-    out.push_str("    payload: Uint8Array | null,\n");
+    out.push_str("    payload: Uint8Array | string | null,\n");
     out.push_str("    sendItem: (value: T) => void,\n");
     out.push_str("    sendError: (error: GenericError) => void,\n");
     out.push_str("  ): () => void;\n");
@@ -544,7 +544,7 @@ fn emit_worker_callbacks(
         export function startRawSubscription(
           callbacks: RawCallbacks,
           name: SubscriptionName,
-          payload: Uint8Array | null,
+          payload: Uint8Array | string | null,
           sendItem: (value?: unknown) => void,
           sendError: (error: GenericError) => void,
         ): (() => void) | void {{
@@ -717,8 +717,12 @@ fn emit_start_raw_subscription_switch(
             format!("callbacks.{raw}")
         };
         if worker_subscription_payload_param(method)?.is_some() {
+            let guard = match method.params.as_slice() {
+                [param] if is_string_payload(&param.type_ref) => "typeof payload !== \"string\"",
+                _ => "!(payload instanceof Uint8Array)",
+            };
             out.push_str(&format!(
-                "    case \"{raw}\":\n      if (payload === null) {{\n        console.warn(`[truapi worker] ${{name}} requires payload`);\n        return undefined;\n      }}\n      return {call}(payload, sendItem, sendError);\n"
+                "    case \"{raw}\":\n      if ({guard}) {{\n        console.warn(`[truapi worker] ${{name}} requires payload`);\n        return undefined;\n      }}\n      return {call}(payload, sendItem, sendError);\n"
             ));
         } else {
             out.push_str(&format!(
@@ -728,6 +732,11 @@ fn emit_start_raw_subscription_switch(
     }
     out.push_str("  }\n");
     Ok(out)
+}
+
+fn is_string_payload(ty: &TypeRef) -> bool {
+    matches!(ty, TypeRef::Primitive(name) if name == "String" || name == "str")
+        || matches!(ty, TypeRef::Named { name, args } if name == "String" && args.is_empty())
 }
 
 fn worker_subscription_payload_param(method: &PlatformMethod) -> Result<Option<String>> {
