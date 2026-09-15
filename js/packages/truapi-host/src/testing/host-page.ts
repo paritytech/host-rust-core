@@ -24,6 +24,7 @@
 // debug when a suite fails.
 
 import { createIframeHost } from "../web/create-iframe-host.js";
+import { createWebWorkerPairingHostRuntime } from "../web/create-worker-host-runtime.js";
 import {
   createMockHost,
   mockRuntimeConfig,
@@ -71,6 +72,16 @@ export interface TestHostPageOptions {
    * call `switchAccount` to sign in.
    */
   loginBehavior?: LoginBehavior;
+  /**
+   * Where the core runs.
+   *
+   * `"worker"` (the default) matches production: web hosts run the core in a
+   * Web Worker. `"main-thread"` keeps it on the page, which is simpler to
+   * debug but is not a topology any real host uses.
+   */
+  topology?: "worker" | "main-thread";
+  /** URL of the worker script. Defaults to what the test host server serves. */
+  workerUrl?: string;
 }
 
 /** How the test host answers login at boot. */
@@ -126,39 +137,57 @@ declare global {
 export async function startTestHost(
   options: TestHostPageOptions,
 ): Promise<TestHostPage> {
-  const wasmUrl = options.wasmUrl ?? "./wasm/testing/truapi_server.js";
-  const glue = (await import(/* @vite-ignore */ wasmUrl)) as {
-    default: () => Promise<unknown>;
-    WasmSigningHostRuntime: new (
-      callbacks: unknown,
-      config: unknown,
-    ) => WasmSigningRuntime;
-  };
-  await glue.default();
-
-  const { createWasmRawCallbacks } = await import(
-    "../generated/host-callbacks-adapter.js"
-  );
-
   const host = createMockHost(options.mock);
   const { productId, ...hostConfig } = mockRuntimeConfig(
     options.runtimeConfig ?? {},
   );
+
   // A signing host, not a pairing host: a test host owns its keys. Note the
   // behavioural consequence -- a signing host answers `request_login` with
   // AlreadyConnected instead of starting a pairing flow, so a suite asserting
   // on pairing UI is asserting on a host role this is not.
-  const runtime = new glue.WasmSigningHostRuntime(
-    {
-      // `workerDemandChanged` is a raw bridge callback rather than a generated
-      // host callback, so it is supplied here the way the worker runtime does.
-      // The test host runs one product and starts no workers, so observing the
-      // transition has nothing to act on.
-      ...createWasmRawCallbacks(host.callbacks),
-      workerDemandChanged: () => {},
-    },
-    hostConfig,
-  );
+  let worker: Worker | undefined;
+  // Exactly one of these is set; which one is the topology.
+  let workerRuntime: WorkerSigningRuntime | undefined;
+  let directRuntime: DirectSigningRuntime | undefined;
+  let runtime: { activateLocalSession(secret: Uint8Array): Promise<void>; disconnectSession(): Promise<void> };
+  if ((options.topology ?? "worker") === "worker") {
+    // Production topology: the core runs in a Web Worker, reached over the
+    // same protocol a real web host uses.
+    worker = new Worker(options.workerUrl ?? "/test-host-worker.js", {
+      type: "module",
+    });
+    workerRuntime = (await createWebWorkerPairingHostRuntime(
+      worker,
+      host.callbacks,
+      { hostConfig: hostConfig as never, role: "signing" },
+    )) as unknown as WorkerSigningRuntime;
+    runtime = workerRuntime;
+  } else {
+    const wasmUrl = options.wasmUrl ?? "./wasm/testing/truapi_server.js";
+    const glue = (await import(/* @vite-ignore */ wasmUrl)) as {
+      default: () => Promise<unknown>;
+      WasmSigningHostRuntime: new (
+        callbacks: unknown,
+        config: unknown,
+      ) => DirectSigningRuntime;
+    };
+    await glue.default();
+    const { createWasmRawCallbacks } = await import(
+      "../generated/host-callbacks-adapter.js"
+    );
+    directRuntime = new glue.WasmSigningHostRuntime(
+      {
+        // A raw bridge callback rather than a generated host callback, so it
+        // is supplied here the way the worker runtime does. The test host runs
+        // one product and starts no workers.
+        ...createWasmRawCallbacks(host.callbacks),
+        workerDemandChanged: () => {},
+      },
+      hostConfig,
+    );
+    runtime = directRuntime;
+  }
 
   let roster: DevAccount[] = (options.accounts ?? ["alice"]).map(resolveAccount);
   let active: DevAccount | undefined;
@@ -175,26 +204,48 @@ export async function startTestHost(
     await activate(first);
   }
 
-  // The core and the product each hold one end of a MessageChannel. Frames
-  // are raw SCALE bytes in both directions; nothing interprets them here.
-  let core: ProductCore | undefined;
+  // The core and the product each hold one end of a MessageChannel. Frames are
+  // raw SCALE bytes in both directions; nothing interprets them here.
+  //
+  // The two topologies expose the core differently -- a worker hands back a
+  // wire provider, the main thread hands back a product core -- so each is
+  // normalised to the same "pipe this port" step.
+  let detach: (() => void) | undefined;
   const iframeHost = createIframeHost({
     iframeUrl: options.productUrl,
     container: options.container,
     onPort(port) {
-      core = runtime.productRuntime(
-        { productId },
-        {
-          emitFrame(frame: Uint8Array) {
+      void (async () => {
+        if (workerRuntime) {
+          const provider = await workerRuntime.createProvider({ productId });
+          const unsubscribe = provider.subscribe((frame) => {
             port.postMessage(frame);
-          },
-        },
-      );
-      port.onmessage = (event: MessageEvent) => {
-        const frame = event.data;
-        if (frame instanceof Uint8Array) void core?.receiveFrame(frame);
-      };
-      port.start();
+          });
+          port.onmessage = (event: MessageEvent) => {
+            const frame = event.data;
+            if (frame instanceof Uint8Array) provider.postMessage(frame);
+          };
+          detach = () => {
+            unsubscribe();
+            provider.dispose();
+          };
+        } else {
+          const core = directRuntime!.productRuntime(
+            { productId },
+            {
+              emitFrame(frame: Uint8Array) {
+                port.postMessage(frame);
+              },
+            },
+          );
+          port.onmessage = (event: MessageEvent) => {
+            const frame = event.data;
+            if (frame instanceof Uint8Array) void core.receiveFrame(frame);
+          };
+          detach = () => core.dispose();
+        }
+        port.start();
+      })();
     },
   });
 
@@ -236,21 +287,33 @@ export async function startTestHost(
     iframe: iframeHost.iframe,
     dispose() {
       delete window.__TRUAPI_TEST_HOST__;
-      core?.dispose();
+      detach?.();
       iframeHost.dispose();
+      worker?.terminate();
       host.dispose();
     },
   };
 }
 
-/** The subset of the generated signing runtime this page drives. */
-interface WasmSigningRuntime {
+/** The main-thread signing runtime: hands back a product core directly. */
+interface DirectSigningRuntime {
   activateLocalSession(secret: Uint8Array): Promise<void>;
   disconnectSession(): Promise<void>;
   productRuntime(
     product: { productId: string },
     sink: { emitFrame(frame: Uint8Array): void },
   ): ProductCore;
+}
+
+/** The worker-backed signing runtime: hands back a wire provider. */
+interface WorkerSigningRuntime {
+  activateLocalSession(secret: Uint8Array): Promise<void>;
+  disconnectSession(): Promise<void>;
+  createProvider(product: { productId: string }): Promise<{
+    postMessage(frame: Uint8Array): void;
+    subscribe(listener: (frame: Uint8Array) => void): () => void;
+    dispose(): void;
+  }>;
 }
 
 /** The subset of a per-product core this page drives. */

@@ -59,21 +59,45 @@ const CONTENT_TYPES: Record<string, string> = {
   ".ts": "text/plain; charset=utf-8",
 };
 
-/** Bundle the browser entry, resolving its bare imports. */
-async function bundleEntry(): Promise<string> {
+/**
+ * Bundle one browser entry, resolving its bare imports.
+ *
+ * `wasmBundle` picks which WASM the output loads. The production worker
+ * imports `./wasm/web/truapi_server.js` as a literal so bundlers can emit the
+ * glue statically -- correct for production, but the test host needs the
+ * `testing` bundle, the only one with a signing host. Rewriting the specifier
+ * here keeps that production property untouched instead of making the worker's
+ * import dynamic, which would change how every web host loads its core.
+ */
+async function bundle(
+  entry: string,
+  wasmBundle: "web" | "testing" = "testing",
+): Promise<string> {
   const { build } = await import("esbuild");
   const result = await build({
-    entryPoints: [join(distRoot, "testing/browser-entry.js")],
+    entryPoints: [join(distRoot, entry)],
     bundle: true,
     format: "esm",
     platform: "browser",
     write: false,
-    // The WASM glue is fetched at runtime from `/wasm/testing/`, not bundled:
-    // it loads a sibling `.wasm` by relative URL and esbuild would break that.
-    external: ["./wasm/*", "*.wasm"],
+    plugins: [
+      {
+        name: "truapi-wasm-path",
+        setup(build) {
+          // Left external: the glue fetches a sibling `.wasm` by relative URL,
+          // and bundling it would break that. Only the path is redirected, to
+          // an absolute one the server serves.
+          build.onResolve({ filter: /wasm\/(web|testing)\/truapi_server\.js$/ }, () => ({
+            path: `/wasm/${wasmBundle}/truapi_server.js`,
+            external: true,
+          }));
+        },
+      },
+    ],
+    external: ["*.wasm"],
   });
   const [output] = result.outputFiles;
-  if (!output) throw new Error("esbuild produced no output for the test host");
+  if (!output) throw new Error(`esbuild produced no output for ${entry}`);
   return output.text;
 }
 
@@ -91,14 +115,27 @@ async function bundleEntry(): Promise<string> {
 export async function createTestHostServer(
   options: TestHostServerOptions = {},
 ): Promise<TestHostServer> {
-  const bundle = await bundleEntry();
+  // Two bundles: the page entry, and the worker the production topology runs
+  // the core in. The worker is a separate script because that is what `new
+  // Worker(url)` needs.
+  const [pageBundle, workerBundle] = await Promise.all([
+    bundle("testing/browser-entry.js"),
+    bundle("worker-runtime.js"),
+  ]);
+
 
   const server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
 
     if (path === "/test-host.js") {
       res.writeHead(200, { "Content-Type": CONTENT_TYPES[".js"] });
-      res.end(bundle);
+      res.end(pageBundle);
+      return;
+    }
+
+    if (path === "/test-host-worker.js") {
+      res.writeHead(200, { "Content-Type": CONTENT_TYPES[".js"] });
+      res.end(workerBundle);
       return;
     }
 

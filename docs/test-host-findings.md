@@ -314,7 +314,43 @@ The same mechanism appears elsewhere with a coarser key: `IdentityDisclosure`'s
 durable grant is keyed by `product_id` alone with no capability discriminator,
 so one cached decision answers a finer-grained question.
 
-## 13. The test host runs a different topology from production
+## 13. The test host now runs the production topology
+
+**Resolved.** The test host runs the core in a Web Worker by default, the same
+way a production web host does. What follows is what it took, kept because the
+constraint explains the shape of the fix.
+
+The worker runtime supported pairing hosts only: `worker-runtime.ts` hardcoded
+`new wasm.WasmPairingHostRuntime(...)` in its `init` handler and had no signing
+references, while a test host needs a signing host to own dev accounts. The
+change is additive, so a host written before it behaves exactly as it did:
+
+- `init` gained an optional `role?: "pairing" | "signing"`; omitted means
+  pairing;
+- one new `MainToWorker` kind, `activateLocalSession { requestId, secret }`,
+  shaped like the existing `activateExternalSession`, reusing the
+  `handleSessionActivation` helper and its response;
+- `createWebWorkerPairingHostRuntime` gained a `role` option and an
+  `activateLocalSession` method;
+- the init handler branches on role, and says so plainly when a bundle has no
+  signing host rather than failing on an undefined constructor.
+
+One thing deliberately **not** changed: the worker imports its WASM glue as a
+literal specifier so bundlers resolve it statically, which is why the production
+`web` bundle works at all. Making that dynamic would change how every web host
+loads its core. The test host's server instead redirects the specifier at bundle
+time, so only the test host loads the `testing` bundle.
+
+The two topologies expose the core differently -- a worker hands back a wire
+provider, the main thread a product core -- so the host page normalises both to
+one "pipe this port" step. `topology: "main-thread"` remains available for
+debugging.
+
+**Both topologies produce identical suite results**: 22 of 22 across the
+chain-free suites, and signer-demo's same 3 failures, which confirms those are
+not topology-related.
+
+## 13a. Superseded: how the gap looked before it was closed
 
 Production web hosts run the core in a Web Worker
 (`createWebWorkerPairingHostRuntime`). The test host runs it on the page's main
