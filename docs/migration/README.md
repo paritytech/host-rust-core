@@ -20,6 +20,21 @@ git apply docs/migration/product-sdk-truapi-migration.patch
 the method names on the new fixture deliberately match `TestHostAPI`'s so a
 migrating suite changes its import, not its assertions.
 
+No server plumbing: `productUrl` is the only required option, and the fixture
+starts and shares its own host server when none is given. So a suite's whole
+diff is typically the import line:
+
+```diff
+-import { createTestHostFixture, type TestHost } from "@parity/host-api-test-sdk/playwright";
++import { createTestHostFixture, type TestHost } from "@parity/truapi-host/testing/playwright";
+```
+
+`networks` is accepted in the old `NetworkConfig` shape and expanded into the
+proxy, chain set and runtime genesis that have to agree, so a suite passing
+`PASEO_ASSET_HUB` keeps working. `productAccounts` and an account given by a
+derivation `uri` are rejected at construction, each naming what to do instead —
+see the two rewrites below for why neither can be served.
+
 **Five assertion rewrites, all one cause.** Four suites read
 `@parity/host-api-test-sdk`'s *internal* storage keys out of the host page —
 `localStorage.getItem("test-host:demo:mykey")` and friends. That is a test

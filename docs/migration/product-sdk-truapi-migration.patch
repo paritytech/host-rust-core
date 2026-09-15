@@ -1,8 +1,8 @@
 diff --git a/product-sdk/examples/chain-client-demo/e2e/fixtures.ts b/product-sdk/examples/chain-client-demo/e2e/fixtures.ts
-index a1d3a18..784aded 100644
+index a1d3a18..f2b6aac 100644
 --- a/product-sdk/examples/chain-client-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/chain-client-demo/e2e/fixtures.ts
-@@ -1,47 +1,33 @@
+@@ -1,47 +1,27 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -18,7 +18,6 @@ index a1d3a18..784aded 100644
 -} from "@parity/host-api-test-sdk/playwright";
 -import { paseo_asset_hub } from "@parity/product-sdk-descriptors/paseo-asset-hub";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
 +import { LIVE_CHAINS } from "@parity/truapi-host/testing/dev-accounts";
  
 -// Paseo Asset Hub uses SS58 prefix 0 -> addresses start with "1".
@@ -40,8 +39,7 @@ index a1d3a18..784aded 100644
 -    genesisHash: paseo_asset_hub.genesis as HexString,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -/**
 - * Default fixture: Bob on Paseo Asset Hub.
 - *
@@ -59,11 +57,8 @@ index a1d3a18..784aded 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "chain-client-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
-+        // This suite reads real chain state, so the host proxies to the real
-+        // Asset Hub and the runtime config must carry its real genesis hash.
 +        // This suite reads real chain state, so the host proxies to the real
 +        // Asset Hub. The proxy carries no genesis hash, so it takes whatever
 +        // chain the core asks for and a chain reset cannot break routing.
@@ -106,10 +101,10 @@ index 9d0342d..2db22d3 100644
      }
  }
 diff --git a/product-sdk/examples/cloud-storage-demo/e2e/fixtures.ts b/product-sdk/examples/cloud-storage-demo/e2e/fixtures.ts
-index 8bffc77..8d1ebfb 100644
+index 8bffc77..ce75c47 100644
 --- a/product-sdk/examples/cloud-storage-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/cloud-storage-demo/e2e/fixtures.ts
-@@ -1,38 +1,26 @@
+@@ -1,38 +1,22 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -125,7 +120,6 @@ index 8bffc77..8d1ebfb 100644
 -} from "@parity/host-api-test-sdk/playwright";
 -import { paseo_asset_hub } from "@parity/product-sdk-descriptors/paseo-asset-hub";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
  
  export const SS58_PREFIX = 0;
  const PRODUCT_URL = "http://localhost:5230";
@@ -143,8 +137,7 @@ index 8bffc77..8d1ebfb 100644
 -    genesisHash: paseo_asset_hub.genesis as HexString,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -const bobFixture = createTestHostFixture({
 -    productUrl: PRODUCT_URL,
 -    accounts: ["bob"],
@@ -156,7 +149,6 @@ index 8bffc77..8d1ebfb 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "cloud-storage-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +    }),
@@ -197,10 +189,10 @@ index 27cfc79..fbd9205 100644
      }
  }
 diff --git a/product-sdk/examples/contracts-demo/e2e/fixtures.ts b/product-sdk/examples/contracts-demo/e2e/fixtures.ts
-index 2953692..c14b1aa 100644
+index 2953692..227f6d5 100644
 --- a/product-sdk/examples/contracts-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/contracts-demo/e2e/fixtures.ts
-@@ -1,40 +1,29 @@
+@@ -1,40 +1,25 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -216,7 +208,6 @@ index 2953692..c14b1aa 100644
 -} from "@parity/host-api-test-sdk/playwright";
 -import { paseo_asset_hub } from "@parity/product-sdk-descriptors/paseo-asset-hub";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
 +import { LIVE_CHAINS, liveChain } from "@parity/truapi-host/testing/dev-accounts";
  
  export const SS58_PREFIX = 0; // Paseo Asset Hub — addresses start with "1"
@@ -237,8 +228,7 @@ index 2953692..c14b1aa 100644
 -    genesisHash: paseo_asset_hub.genesis as HexString,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -const bobFixture = createTestHostFixture({
 -    productUrl: PRODUCT_URL,
 -    accounts: ["bob"],
@@ -250,7 +240,6 @@ index 2953692..c14b1aa 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "contracts-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +        // Reads real contract state, so proxy to the real Asset Hub.
@@ -293,10 +282,10 @@ index ce36e8e..69bb197 100644
      }
  }
 diff --git a/product-sdk/examples/host-demo/e2e/fixtures.ts b/product-sdk/examples/host-demo/e2e/fixtures.ts
-index 0dd90b5..5cbe9be 100644
+index 0dd90b5..da84c89 100644
 --- a/product-sdk/examples/host-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/host-demo/e2e/fixtures.ts
-@@ -1,41 +1,26 @@
+@@ -1,41 +1,22 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -310,7 +299,6 @@ index 0dd90b5..5cbe9be 100644
      type TestHost,
 -} from "@parity/host-api-test-sdk/playwright";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
  
 -// Paseo Asset Hub uses SS58 prefix 0 -> addresses start with "1".
  export const SS58_PREFIX = 0;
@@ -327,8 +315,7 @@ index 0dd90b5..5cbe9be 100644
 -    ...PASEO_ASSET_HUB,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -/**
 - * Default fixture: Bob on Paseo Asset Hub.
 - *
@@ -346,7 +333,6 @@ index 0dd90b5..5cbe9be 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "host-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +    }),
@@ -408,10 +394,10 @@ index e3633c1..7892054 100644
      }
  }
 diff --git a/product-sdk/examples/keys-demo/e2e/fixtures.ts b/product-sdk/examples/keys-demo/e2e/fixtures.ts
-index 9bcd60d..f0c6893 100644
+index 9bcd60d..114cb7f 100644
 --- a/product-sdk/examples/keys-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/keys-demo/e2e/fixtures.ts
-@@ -1,41 +1,26 @@
+@@ -1,41 +1,22 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -425,7 +411,6 @@ index 9bcd60d..f0c6893 100644
      type TestHost,
 -} from "@parity/host-api-test-sdk/playwright";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
  
 -// Paseo Asset Hub uses SS58 prefix 0 -> addresses start with "1".
  export const SS58_PREFIX = 0;
@@ -442,8 +427,7 @@ index 9bcd60d..f0c6893 100644
 -    ...PASEO_ASSET_HUB,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -/**
 - * Default fixture: Bob on Paseo Asset Hub.
 - *
@@ -461,7 +445,6 @@ index 9bcd60d..f0c6893 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "keys-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +    }),
@@ -524,10 +507,10 @@ index 76234ae..dcfeb96 100644
      }
  }
 diff --git a/product-sdk/examples/signer-demo/e2e/fixtures.ts b/product-sdk/examples/signer-demo/e2e/fixtures.ts
-index 1897433..9f49978 100644
+index 1897433..cc5ddb6 100644
 --- a/product-sdk/examples/signer-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/signer-demo/e2e/fixtures.ts
-@@ -1,40 +1,26 @@
+@@ -1,40 +1,22 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -541,7 +524,6 @@ index 1897433..9f49978 100644
      type TestHost,
 -} from "@parity/host-api-test-sdk/playwright";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
  
 -// Paseo Asset Hub uses SS58 prefix 0 → addresses start with "1".
  export const SS58_PREFIX = 0;
@@ -558,8 +540,7 @@ index 1897433..9f49978 100644
 -    ...PASEO_ASSET_HUB,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -/**
 - * Default fixture: Bob + Charlie both available as non-product accounts.
 - * Tests start with Bob selected (first in the list), and can switch to
@@ -576,7 +557,6 @@ index 1897433..9f49978 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "signer-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +    }),
@@ -748,10 +728,10 @@ index abf09ce..2addf53 100644
      }
  }
 diff --git a/product-sdk/examples/statement-store-demo/e2e/fixtures.ts b/product-sdk/examples/statement-store-demo/e2e/fixtures.ts
-index badb8b0..ee1a399 100644
+index badb8b0..55184db 100644
 --- a/product-sdk/examples/statement-store-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/statement-store-demo/e2e/fixtures.ts
-@@ -1,44 +1,39 @@
+@@ -1,44 +1,35 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -765,7 +745,6 @@ index badb8b0..ee1a399 100644
      type TestHost,
 -} from "@parity/host-api-test-sdk/playwright";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
  
 -// Paseo Asset Hub uses SS58 prefix 0 → addresses start with "1".
  export const SS58_PREFIX = 0;
@@ -782,8 +761,7 @@ index badb8b0..ee1a399 100644
 -    ...PASEO_ASSET_HUB,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -/**
 - * Default fixture: Bob on Paseo Asset Hub.
 - *
@@ -804,7 +782,6 @@ index badb8b0..ee1a399 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "statement-store-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +        // The statement store flows over the people chain, so proxy to the
@@ -858,10 +835,10 @@ index 080eacc..365271d 100644
      }
  }
 diff --git a/product-sdk/examples/storage-demo/e2e/fixtures.ts b/product-sdk/examples/storage-demo/e2e/fixtures.ts
-index 2bbb285..6bbb3e2 100644
+index 2bbb285..f7d521c 100644
 --- a/product-sdk/examples/storage-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/storage-demo/e2e/fixtures.ts
-@@ -1,44 +1,29 @@
+@@ -1,44 +1,23 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -875,7 +852,6 @@ index 2bbb285..6bbb3e2 100644
      type TestHost,
 -} from "@parity/host-api-test-sdk/playwright";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
  
  // Paseo Asset Hub uses SS58 prefix 0 → addresses start with "1".
  export const SS58_PREFIX = 0;
@@ -892,10 +868,7 @@ index 2bbb285..6bbb3e2 100644
 -    ...PASEO_ASSET_HUB,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+// One host server for the whole run: page load and WASM init are the expensive
-+// part, and the mock is reset between cases rather than rebuilt.
-+const server = await createTestHostServer();
- 
+-
 -/**
 - * Default fixture: Bob on Paseo Asset Hub.
 - *
@@ -916,7 +889,6 @@ index 2bbb285..6bbb3e2 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "storage-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +    }),
@@ -1001,10 +973,10 @@ index 315a3ee..1a53ce0 100644
      }
  }
 diff --git a/product-sdk/examples/tx-demo/e2e/fixtures.ts b/product-sdk/examples/tx-demo/e2e/fixtures.ts
-index 0d51395..b841601 100644
+index 0d51395..105cf81 100644
 --- a/product-sdk/examples/tx-demo/e2e/fixtures.ts
 +++ b/product-sdk/examples/tx-demo/e2e/fixtures.ts
-@@ -1,47 +1,31 @@
+@@ -1,47 +1,27 @@
  // Copyright 2026 Parity Technologies (UK) Ltd.
  // SPDX-License-Identifier: Apache-2.0
 +//
@@ -1020,7 +992,6 @@ index 0d51395..b841601 100644
 -} from "@parity/host-api-test-sdk/playwright";
 -import { paseo_asset_hub } from "@parity/product-sdk-descriptors/paseo-asset-hub";
 +} from "@parity/truapi-host/testing/playwright";
-+import { createTestHostServer } from "@parity/truapi-host/testing/server";
 +import { LIVE_CHAINS, liveChain } from "@parity/truapi-host/testing/dev-accounts";
  
 -// Paseo Asset Hub uses SS58 prefix 0 → addresses start with "1".
@@ -1042,8 +1013,7 @@ index 0d51395..b841601 100644
 -    genesisHash: paseo_asset_hub.genesis as HexString,
 -    rpcUrl: process.env.PASEO_AH_RPC ?? "wss://paseo-asset-hub-next-rpc.polkadot.io",
 -};
-+const server = await createTestHostServer();
- 
+-
 -/**
 - * Default fixture: Bob on Paseo Asset Hub.
 - *
@@ -1061,7 +1031,6 @@ index 0d51395..b841601 100644
 +export const test = base.extend<{ testHost: TestHost }>(
 +    createTestHostFixture({
 +        productUrl: PRODUCT_URL,
-+        hostUrl: server.url,
 +        productId: "tx-demo.dot",
 +        accounts: ["alice", "bob", "charlie", "dave"],
 +        // Submits real extrinsics, so the host proxies to the real Asset Hub.

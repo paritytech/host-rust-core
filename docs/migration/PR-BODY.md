@@ -33,6 +33,15 @@ rather than a new one, on subpaths this branch adds:
 and `./testing/dev-accounts` for the named accounts. No published version
 carries them yet.
 
+`productUrl` is the only required option: the fixture starts its own host
+server when none is supplied, shares it across a file, and unrefs it so it
+cannot hold a worker open. It also accepts `@parity/host-api-test-sdk`'s
+`networks` shape and expands it into the proxy, chain set and runtime genesis
+that have to agree. The two options TrUAPI cannot honour --
+`productAccounts` and an account given by derivation `uri` -- are accepted and
+rejected at construction with what to do instead, rather than being absent and
+failing as a type error.
+
 **Dev accounts that sign.** The host runs a signing host and establishes sessions
 from fixed BIP-39 entropy, so a product exercises real sr25519 signatures.
 Addresses are derived root-from-entropy then per-product, so they differ from
@@ -66,10 +75,18 @@ Nine of product-sdk's example suites, real browser, real core, real wire:
 | statement-store-demo | connects over the real people chain; cannot submit |
 | cloud-storage-demo | already skipped upstream |
 
-**22 of 22 across the chain-free suites.** Adopting the fixture took 5 assertion
-rewrites out of 31 tests, and every one had the same cause: the test read a host
-implementation detail — internal storage keys — rather than product behaviour.
-None was a behavioural difference.
+**22 of 22 across the chain-free suites.** Adopting the fixture is an import
+change: the whole diff for eight of the nine suites is the import line in
+`e2e/fixtures.ts` plus a type import in `e2e/helpers.ts`.
+
+Seven tests out of 31 needed more. Five read the old host's *internal* storage
+keys rather than product behaviour, and now read through the control surface.
+One asserted that switching the host account leaves the product account
+unchanged -- it does not, because TrUAPI derives the product account from the
+session root, so that is a real behavioural difference rather than churn. One is
+proposed as skipped: the core answers a decided permission from its own storage,
+so a revoked permission never re-reaches the host and no test host can make it
+pass.
 
 Those rewrites are staged as a patch in `docs/migration/`, with a cover note.
 The patch applies cleanly to a fresh clone of product-sdk main, and product-sdk
