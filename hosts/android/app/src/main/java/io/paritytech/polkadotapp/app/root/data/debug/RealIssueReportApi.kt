@@ -91,6 +91,7 @@ class RealIssueReportApi @Inject constructor(
         val call = client.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
+            @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
             override fun onFailure(call: Call, exception: IOException) {
                 if (continuation.isActive) continuation.resumeWithException(exception)
             }
