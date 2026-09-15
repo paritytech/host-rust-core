@@ -172,7 +172,11 @@ runtime.trackStatementRenewalTargets(
 )
 ```
 
-The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. There is still no reader and no untrack on this surface, so a host cannot list what is tracked or remove a wrong entry. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+The ledger persists across launches, and an entry is dropped when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+
+`statementRenewalTargets()` lists what the ledger holds, in the order it was tracked. It needs no active session, so a `WorkManager` worker can read it on a cold start before deciding whether the pass is worth running. Each entry carries an `owner`: a recipe has none and resolves under whichever identity is active, while a fixed account records the root key that promised it and is ignored under any other identity.
+
+`untrackStatementRenewalAccount(accountId)` drops one fixed account and reports whether the ledger held it. Slots per period are finite, 10 on `paseo-next-v2`, so a wrong or stale entry is worth removing rather than leaving to consume one. It is scoped to the active identity and so needs a session, and it never removes an entry another identity promised.
 
 Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread. It needs an active session too, which is the whole difficulty here: a worker on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
