@@ -8,7 +8,7 @@
 //! test panics rather than silently passing (set up rustup with
 //! `rustup toolchain install nightly`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -270,7 +270,10 @@ fn binary_emission_is_idempotent() {
     let workspace = workspace_root();
     let rustdoc_json = produce_rustdoc_json(&workspace);
 
-    let run_once = || -> (String, String) {
+    // Every emitted file, not a hand-picked list: the nondeterminism this
+    // guards against has landed in the TypeScript output as readily as in the
+    // Rust output, and a list only covers what someone remembered to add.
+    let run_once = || -> BTreeMap<PathBuf, String> {
         let tmp = workspace_tempdir(&workspace);
         let status = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
             .args([
@@ -284,17 +287,49 @@ fn binary_emission_is_idempotent() {
             .status()
             .expect("run truapi-codegen");
         assert!(status.success(), "codegen run failed");
-        let dispatcher =
-            fs::read_to_string(tmp.path().join("rust/dispatcher.rs")).expect("read dispatcher");
-        let wire_table =
-            fs::read_to_string(tmp.path().join("rust/wire_table.rs")).expect("read wire_table");
-        (dispatcher, wire_table)
+        read_tree(tmp.path())
     };
 
-    let (a_disp, a_wire) = run_once();
-    let (b_disp, b_wire) = run_once();
-    assert_eq!(a_disp, b_disp, "dispatcher.rs differs between runs");
-    assert_eq!(a_wire, b_wire, "wire_table.rs differs between runs");
+    let first = run_once();
+    let second = run_once();
+    assert!(!first.is_empty(), "codegen emitted nothing");
+    assert_eq!(
+        first.keys().collect::<Vec<_>>(),
+        second.keys().collect::<Vec<_>>(),
+        "the two runs emitted different files"
+    );
+    for (path, contents) in &first {
+        assert_eq!(
+            contents,
+            &second[path],
+            "{} differs between runs",
+            path.display()
+        );
+    }
+}
+
+/// Every file under `root`, keyed by its path relative to `root`.
+fn read_tree(root: &Path) -> BTreeMap<PathBuf, String> {
+    let mut files = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).expect("read generated directory") {
+            let path = entry.expect("read generated entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("path under root")
+                    .to_path_buf();
+                files.insert(
+                    relative,
+                    fs::read_to_string(&path).expect("read generated file"),
+                );
+            }
+        }
+    }
+    files
 }
 
 #[test]

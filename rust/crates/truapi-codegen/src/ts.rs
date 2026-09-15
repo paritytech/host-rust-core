@@ -111,11 +111,14 @@ fn public_versioned_type_name(name: &str) -> String {
 
 fn selected_public_aliases(
     api: &ApiDefinition,
-    wrappers: &HashMap<String, VersionedWrapper>,
-    emit_versions: &HashMap<String, BTreeSet<u32>>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
     target_version: u32,
 ) -> BTreeMap<String, String> {
     let mut selected_by_base: BTreeMap<String, (u32, String)> = BTreeMap::new();
+    // Several wrappers can name one base type at different versions: two still
+    // on V1 while a third has reached V2. The unprefixed alias belongs to the
+    // newest version any of them selected.
     for (wrapper_name, versions) in emit_versions {
         let Some(wrapper) = wrappers.get(wrapper_name) else {
             continue;
@@ -133,7 +136,15 @@ fn selected_public_aliases(
             let Some((inner_version, base)) = version_prefixed_type(name) else {
                 continue;
             };
-            selected_by_base.insert(base.to_string(), (inner_version, name.clone()));
+            match selected_by_base.get_mut(base) {
+                Some(selected) if inner_version > selected.0 => {
+                    *selected = (inner_version, name.clone());
+                }
+                Some(_) => {}
+                None => {
+                    selected_by_base.insert(base.to_string(), (inner_version, name.clone()));
+                }
+            }
         }
     }
 
@@ -162,8 +173,8 @@ fn selected_public_aliases(
 }
 
 fn emitted_version_prefixed_types(
-    wrappers: &HashMap<String, VersionedWrapper>,
-    emit_versions: &HashMap<String, BTreeSet<u32>>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
     aliases: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
@@ -331,7 +342,7 @@ fn version_number(name: &str) -> Option<u32> {
     rest.parse().ok()
 }
 
-fn collect_versioned_wrappers(api: &ApiDefinition) -> HashMap<String, VersionedWrapper> {
+fn collect_versioned_wrappers(api: &ApiDefinition) -> BTreeMap<String, VersionedWrapper> {
     api.types
         .iter()
         .filter_map(|ty| detect_versioned_wrapper(ty).map(|w| (ty.name.clone(), w)))
@@ -375,7 +386,7 @@ fn validate_versioned_wrapper_shapes(api: &ApiDefinition) -> Result<()> {
 
 fn versioned_wrapper_for<'a>(
     ty: &'a TypeRef,
-    wrappers: &'a HashMap<String, VersionedWrapper>,
+    wrappers: &'a BTreeMap<String, VersionedWrapper>,
 ) -> Option<(&'a str, &'a VersionedWrapper)> {
     if let TypeRef::Named { name, args } = ty
         && args.is_empty()
@@ -936,7 +947,7 @@ pub(crate) fn wire_schema_hash(
 fn method_is_included(
     trait_def: &TraitDef,
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<bool> {
     wire_id_for_method(trait_def, method)?;
@@ -970,7 +981,7 @@ fn wire_id_for_method(trait_def: &TraitDef, method: &MethodDef) -> Result<u8> {
 /// wrapper keeps each `Vn` variant at `#[codec(index = n - 1)]`.
 fn method_wire_version(
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<Option<u32>> {
     let wrapper_names = method_versioned_wrappers(method, wrappers);
@@ -1008,10 +1019,10 @@ fn method_wire_version(
 /// from the emitted types altogether.
 fn versioned_wrapper_emit_versions(
     api: &ApiDefinition,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
-) -> Result<HashMap<String, BTreeSet<u32>>> {
-    let mut emit: HashMap<String, BTreeSet<u32>> = HashMap::new();
+) -> Result<BTreeMap<String, BTreeSet<u32>>> {
+    let mut emit: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
     for trait_def in &api.traits {
         for method in &trait_def.methods {
             if !method_is_included(trait_def, method, wrappers, target_version)? {
@@ -1030,7 +1041,7 @@ fn versioned_wrapper_emit_versions(
 
 fn method_versioned_wrappers(
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
 ) -> Vec<String> {
     let mut names = Vec::new();
     for param in &method.params {
@@ -1068,7 +1079,7 @@ fn call_error_inner(ty: &TypeRef) -> Option<&TypeRef> {
 
 fn collect_type_versioned_wrappers(
     ty: &TypeRef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     names: &mut Vec<String>,
 ) {
     match ty {
@@ -1537,7 +1548,7 @@ fn write_observable_helper(out: &mut String) {
 
 fn included_methods<'a>(
     trait_def: &'a TraitDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<Vec<&'a MethodDef>> {
     trait_def
@@ -1570,7 +1581,7 @@ struct PayloadEmission {
 
 fn emit_payload(
     params: &[ParamDef],
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<PayloadEmission> {
     // The unified contract always takes a single versioned-wrapper arg. On the
@@ -1634,7 +1645,7 @@ struct ResponseEmission {
 
 fn emit_response(
     ty: &TypeRef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<ResponseEmission> {
     if let Some((wrapper_name, wrapper)) = versioned_wrapper_for(ty, wrappers) {
@@ -1661,7 +1672,7 @@ fn emit_response(
 
 fn emit_error_response(
     ty: &TypeRef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<ResponseEmission> {
     let Some(error_wrapper_ty) = call_error_inner(ty) else {
@@ -1686,7 +1697,7 @@ fn emit_error_response(
 /// wire's only version signal), or `S._void` for a bare unit payload with no
 /// wrapper at all. Every real method's request/response/item is one of these
 /// two shapes; anything else is a codegen-internal mismatch.
-fn leg_codec_expr(ty: &TypeRef, wrappers: &HashMap<String, VersionedWrapper>) -> Result<String> {
+fn leg_codec_expr(ty: &TypeRef, wrappers: &BTreeMap<String, VersionedWrapper>) -> Result<String> {
     match versioned_wrapper_for(ty, wrappers) {
         Some((wrapper_name, _)) => Ok(format!("T.{}", versioned_wrapper_ts_name(wrapper_name))),
         None if matches!(ty, TypeRef::Unit) => Ok("S._void".to_string()),
@@ -1705,7 +1716,7 @@ fn leg_codec_expr(ty: &TypeRef, wrappers: &HashMap<String, VersionedWrapper>) ->
 /// payload at all, so this path is never reached for those).
 fn leg_error_codec_expr(
     ty: &TypeRef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     ctx: &CodecContext,
 ) -> Result<String> {
     // Every real method's error type is `CallError<X>`; a bare (non-CallError)
@@ -1770,7 +1781,7 @@ fn indexed_versioned_codec_expr(
 /// methods have no such wrapper to name).
 fn request_wrapper_name<'a>(
     method: &'a MethodDef,
-    wrappers: &'a HashMap<String, VersionedWrapper>,
+    wrappers: &'a BTreeMap<String, VersionedWrapper>,
 ) -> Option<&'a str> {
     if method.params.len() != 1 {
         return None;
@@ -1783,7 +1794,7 @@ fn emit_method(
     _api: &ApiDefinition,
     trait_def: &TraitDef,
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
     let ctx = CodecContext::default();
@@ -1919,7 +1930,7 @@ fn host_registration_field(method: &MethodDef) -> String {
 
 fn emit_host_initiated_types(
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<(PayloadEmission, ResponseEmission, ResponseEmission, u32)> {
     let wire_version = method_wire_version(method, wrappers, target_version)?.ok_or_else(|| {
@@ -1940,7 +1951,7 @@ fn emit_host_initiated_types(
 fn emit_host_initiated_field(
     out: &mut String,
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
     let (payload, response, error, _) =
@@ -1962,7 +1973,7 @@ fn emit_host_initiated_registration(
     _api: &ApiDefinition,
     trait_def: &TraitDef,
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
     let (_, _, _, version) = emit_host_initiated_types(method, wrappers, target_version)?;
@@ -2015,7 +2026,7 @@ fn emit_host_initiated_method(
     out: &mut String,
     method: &MethodDef,
     payload: &PayloadEmission,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<()> {
     let ReturnType::Subscription { item, interrupt } = &method.return_type else {
@@ -2130,7 +2141,7 @@ fn emit_subscribe_method(
 fn write_type_definition(
     out: &mut String,
     ty: &TypeDef,
-    emit_versions: &HashMap<String, BTreeSet<u32>>,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
     aliases: &BTreeMap<String, String>,
 ) -> Result<()> {
     let generated_names = NameMode::Generated { aliases };
@@ -2226,7 +2237,7 @@ fn write_type_definition(
 fn write_codec_definition(
     out: &mut String,
     ty: &TypeDef,
-    emit_versions: &HashMap<String, BTreeSet<u32>>,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
     aliases: &BTreeMap<String, String>,
 ) -> Result<()> {
     let generated_names = NameMode::Generated { aliases };
@@ -2330,7 +2341,7 @@ fn write_codec_definition(
 
 fn should_rename_wire_wrapper(
     ty: &TypeDef,
-    emit_versions: &HashMap<String, BTreeSet<u32>>,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
     aliases: &BTreeMap<String, String>,
 ) -> bool {
     detect_versioned_wrapper(ty).is_some()
@@ -3444,6 +3455,58 @@ mod tests {
                 },
             ]),
             docs: None,
+        }
+    }
+
+    /// Several wrappers can select different versions of one base type, the
+    /// shape of `HostLocalStorage{Clear,Write}Error` sitting on V1 while
+    /// `HostLocalStorageReadError` has reached V2. The newest selected version
+    /// owns the unprefixed name whatever position it takes in the walk, so the
+    /// rule is asserted with that wrapper sorting first and sorting last:
+    /// selecting by last write or by first write passes one and fails the other.
+    #[test]
+    fn public_alias_for_a_shared_base_follows_the_newest_selected_version() {
+        fn aliases_for(wrappers: &[(&str, u32, &str)]) -> BTreeMap<String, String> {
+            let versioned = wrappers
+                .iter()
+                .map(|(name, version, inner)| {
+                    let ty = versioned_tuple_wrapper_variants(name, &[(*version, inner)]);
+                    let wrapper = detect_versioned_wrapper(&ty).expect("versioned wrapper");
+                    ((*name).to_string(), wrapper)
+                })
+                .collect::<BTreeMap<_, _>>();
+            let emit_versions = wrappers
+                .iter()
+                .map(|(name, version, _)| ((*name).to_string(), BTreeSet::from([*version])))
+                .collect::<BTreeMap<_, _>>();
+
+            selected_public_aliases(&api(Vec::new()), &versioned, &emit_versions, 2)
+        }
+
+        // The wrapper on the newest version sorts first, then last.
+        for wrappers in [
+            [
+                ("AReadError", 2, "V02Thing"),
+                ("BClearError", 1, "V01Thing"),
+                ("CWriteError", 1, "V01Thing"),
+            ],
+            [
+                ("AClearError", 1, "V01Thing"),
+                ("BWriteError", 1, "V01Thing"),
+                ("CReadError", 2, "V02Thing"),
+            ],
+        ] {
+            let aliases = aliases_for(&wrappers);
+
+            assert_eq!(
+                aliases.get("V02Thing").map(String::as_str),
+                Some("Thing"),
+                "the newest selected version owns the unprefixed name for {wrappers:?}: {aliases:?}"
+            );
+            assert!(
+                !aliases.contains_key("V01Thing"),
+                "the older version keeps its prefix for {wrappers:?}: {aliases:?}"
+            );
         }
     }
 
