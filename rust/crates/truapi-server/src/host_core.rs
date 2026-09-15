@@ -2957,6 +2957,51 @@ mod tests {
     }
 
     #[test]
+    fn dispose_ends_the_operations_the_host_is_still_holding() {
+        let platform = Arc::new(StubPlatform::default());
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+            sink,
+        );
+        let host = runtime.admin.product_runtime().clone();
+
+        futures::executor::block_on(truapi::api::Worker::begin_operation(
+            host.as_ref(),
+            &truapi::CallContext::default(),
+            truapi::versioned::worker::HostWorkerBeginOperationRequest::V1(
+                truapi::v01::HostWorkerBeginOperationRequest { label: None },
+            ),
+        ))
+        .expect("begin operation");
+
+        runtime.dispose();
+
+        // Teardown ends the operation off the disposing thread.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let ended = platform
+                .ended_operations
+                .lock()
+                .expect("ended operations mutex poisoned")
+                .clone();
+            if ended == vec![("myapp.dot".to_string(), 1)] {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the host's own record of the operation is closed, not left to \
+                 accumulate; saw {ended:?}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
     fn dispose_cancels_active_subscriptions() {
         let theme_stream_dropped = Arc::new(AtomicBool::new(false));
         let platform = Arc::new(StubPlatform {
