@@ -70,7 +70,7 @@ Nine of product-sdk's example suites, real browser, real core, real wire:
 | host-demo | **6/6** |
 | signer-demo | **8/9**, 1 skipped with its reason |
 | chain-client-demo | **2/2** against the real Asset Hub |
-| tx-demo | boots; submit stalls before signing, times out at 300s |
+| tx-demo | signs and submits; rejected for fees on unfunded accounts |
 | contracts-demo | boots to `pallet-revive` account mapping, a write |
 | statement-store-demo | connects over the real people chain; cannot submit |
 | cloud-storage-demo | already skipped upstream |
@@ -98,11 +98,17 @@ cut, then product-sdk adopts.
 
 ## What it deliberately does not do
 
-**Chain writes.** `tx-demo` boots against the real Asset Hub and issues its
-pre-signing reads -- mortality header, account nonce, runtime metadata -- then
-stalls with them outstanding and ends on `submitAndWatch`'s own 300s timeout.
-The signer is never invoked, so the failure is upstream of the host seam
-entirely. Findings doc section 18 has the transport trace.
+**Chain writes.** `tx-demo` boots against the real Asset Hub, signs through the
+host and submits, and the chain rejects the transaction with `Invalid.Payment`:
+a product account derives per (session entropy, product id), so the addresses
+hold no balance for fees. Funding them is an operational decision with a
+standing cost, not a code change.
+
+One run instead stalled before reaching the signer and ended on
+`submitAndWatch`'s own 300s timeout. That has not reproduced, and every run
+since reaches signing. Findings doc section 18 records what was measured, since
+an intermittent failure against a public testnet is worth knowing about before
+someone reads a red CI job as a regression here.
 
 **The statement store.** The store connects over a proxied people chain and its
 subscription traffic is observable, but publishing is rejected inside the core
@@ -127,11 +133,10 @@ In each case the mock refuses and explains rather than returning something
 plausible, so a test reaching for an unserved path learns why instead of passing
 against a fake.
 
-What the chain-writing suites need is not settled. The accounts are funded and
-`tx-demo` still does not reach signing, so funding alone is not the remaining
-step it was thought to be. `statement-store-demo` needs something different
-again: a statement-store allowance for an onboarded person, which no amount of
-host-side work substitutes for.
+Funding the derived accounts is what `tx-demo` and `contracts-demo` are waiting
+on. `statement-store-demo` needs something different: a statement-store
+allowance for an onboarded person, which no amount of host-side work
+substitutes for.
 
 ## Notes for review
 

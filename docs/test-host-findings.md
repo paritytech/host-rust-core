@@ -586,7 +586,7 @@ method ran, not *which*. Both wrong leads rested on reading it as if it named
 configured answer immediately, so a recorded review cannot be lost to a park.
 An empty log means the call never arrived.
 
-**It is not a hang, and it is not silent.** `submitAndWatch` carries a
+**In the stalled run: not a hang, and not silent.** `submitAndWatch` carries a
 `DEFAULT_TIMEOUT_MS` of 300_000 (`packages/tx/src/submit.ts:19`), armed at :108
 *before* `signSubmitAndWatch` is called, so signing and submission both sit
 inside the timed region; the only await outside it, `resolveTransaction`
@@ -602,7 +602,7 @@ Run past it and the flow ends on its own, at 300s to the second:
 [2:58:29] remark failed: Transaction timed out after 300s.
 ```
 
-**What the transport actually does.** Sampling `getSentRpc` against a baseline
+**What the transport did that time.** Sampling `getSentRpc` against a baseline
 taken before the click, rather than only after it:
 
 | | rpc | new methods |
@@ -620,7 +620,7 @@ chainHead subscription is torn down and rebuilt (`unfollow`, 21 `unpin`, a fresh
 `follow`), and the submit never resumes across that rebuild. It just runs out
 the clock.
 
-**The signer is never invoked.** Reviews stay at 0 for the whole run, so
+**In that run the signer is never invoked.** Reviews stay at 0 throughout, so
 `confirm_user_action` never fires and `create_transaction` never runs. The fault
 is upstream of signing, in the chain reads. Permissions stay at 1 for the whole
 run too -- and that 1 is present in the BASELINE, before the click. The
@@ -633,19 +633,31 @@ click. "A genuine hang" was wrong: the SDK's own timeout fires and the product
 reports it. And a probe that sampled only after the click reported `18 total`,
 which is exactly the t+30s plateau -- a pause read as a terminus.
 
-**Pre-funding and post-funding are different experiments.** Section 16 records
-`tx-demo` constructing, confirming and broadcasting a transaction the chain then
-rejected for fees. That run predates the accounts being funded. Neither
-observation is wrong and they should not be reconciled as if one must be, but
-the earlier one did reach signing and this one does not get near it. What
-changed between them is not established.
+**The stall is intermittent, and the later evidence contradicts the earlier.**
+A full `pnpm test:e2e` run afterwards -- the same command CI runs -- shows
+`tx-demo` reaching the signer and failing on fees:
 
-**Where this leaves it.** A named, reproducible symptom rather than a mystery:
-pre-signing chain reads go out over the proxied live chain and are never
-satisfied, and the chainHead follow is rebuilt mid-flight. Whether that is the
-proxy, the endpoint, or subxt's recovery is not determined here. It is not the
-socket pooling -- that is fixed and its isolation is mutation-proved -- and not
-the test host's platform seam, which is never reached.
+```
+Submitting System.remark("Hello from tx-demo")…
+remark: signing
+remark failed: Transaction failed before inclusion: Invalid.Payment
+```
+
+`remark: signing` means `create_transaction` ran, which means a confirmation was
+raised and the host WAS reached. Not one 300s timeout appears anywhere in that
+run. So the measured stall -- no host contact, no signer, a 300s expiry -- has
+not reproduced, and it cannot be treated as this suite's behaviour.
+
+That also settles section 16's `Invalid.Payment` as the normal outcome rather
+than a stale pre-funding artefact, and it disposes of the idea that funding had
+already happened: `Invalid.Payment` is the chain saying the account cannot pay,
+so the derived addresses still hold no balance.
+
+What remains unexplained is why one run never reached the host at all. Against a
+public testnet that is most cheaply read as a transport or endpoint condition,
+not a defect in this branch -- but it is unexplained, not explained away, and it
+is worth recognising if a CI job goes red with a 300s timeout rather than
+`Invalid.Payment`.
 
 **Method note.** Every one of these leads died to an instrument, not to an
 argument. `getSentRpc` killed the first by showing no transaction traffic after
@@ -656,7 +668,9 @@ see, and both paid for themselves within a day.
 The recurring error is worth naming, because it happened four times.
 `ChainSubmit` names a permission, not a caller. `getSigningLog` is a view of
 `reviews`, not a second source. A boot-time entry is not a click-time event. A
-plateau is not a terminus. Each time a measurement was read as answering a
+plateau is not a terminus. One run against a public testnet is not a
+behaviour -- the stall documented above did not survive contact with the next
+full run. Each time a measurement was read as answering a
 question it could not answer. Before a log localises a fault, check what it can
 physically distinguish -- and sample it against a baseline, not once at the end.
 
