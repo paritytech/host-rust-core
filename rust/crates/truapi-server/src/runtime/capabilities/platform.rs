@@ -296,11 +296,13 @@ impl Worker for ProductRuntimeHost {
     ) -> Result<HostWorkerBeginOperationResponse, CallError<HostWorkerBeginOperationError>> {
         let HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label }) =
             request;
-        self.platform
+        let response = self
+            .platform
             .begin_operation(&self.product, label.unwrap_or_default())
             .await
-            .map(HostWorkerBeginOperationResponse::V1)
-            .map_err(|error| CallError::Domain(HostWorkerBeginOperationError::V1(error)))
+            .map_err(|error| CallError::Domain(HostWorkerBeginOperationError::V1(error)))?;
+        self.hold_worker_for_operation(response.id);
+        Ok(HostWorkerBeginOperationResponse::V1(response))
     }
 
     #[instrument(skip_all, fields(runtime.method = "worker.end_operation"))]
@@ -313,7 +315,10 @@ impl Worker for ProductRuntimeHost {
         self.platform
             .end_operation(&self.product, id)
             .await
-            .map(|()| HostWorkerEndOperationResponse::V1)
+            .map(|()| {
+                self.release_worker_for_operation(id);
+                HostWorkerEndOperationResponse::V1
+            })
             .map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))
     }
 }

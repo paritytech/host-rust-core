@@ -42,7 +42,8 @@ mod statement_store_rpc;
 
 use core::future::Future;
 use core::time::Duration;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
@@ -261,6 +262,26 @@ pub struct ProductRuntimeHost {
     chat: Arc<ActionChannel<HostChatActionSubscribeItem>>,
     renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
     pocket_platform: Option<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Host-assigned ids of this connection's open pending operations, each
+    /// holding one worker reference until it ends or the connection drops.
+    open_operations: Mutex<HashSet<u32>>,
+}
+
+/// A connection that goes away without ending its operations still owes the
+/// ledger their references, so the host is told to stop rather than keeping a
+/// worker alive for a product that is gone.
+impl Drop for ProductRuntimeHost {
+    fn drop(&mut self) {
+        let open = core::mem::take(
+            &mut *self
+                .open_operations
+                .lock()
+                .expect("open operations mutex poisoned"),
+        );
+        for _ in open {
+            self.release_worker_reference();
+        }
+    }
 }
 
 impl ProductRuntimeHost {
@@ -284,6 +305,7 @@ impl ProductRuntimeHost {
             chat: adapters.chat,
             renderer: adapters.renderer,
             pocket_platform: adapters.pocket_platform,
+            open_operations: Mutex::new(HashSet::new()),
         }
     }
 
@@ -409,6 +431,7 @@ impl ProductRuntimeHost {
             chat,
             renderer,
             pocket_platform: None,
+            open_operations: Mutex::new(HashSet::new()),
         };
         (host, pairing_host)
     }
@@ -1054,6 +1077,32 @@ impl ProductRuntimeHost {
         self.services
             .worker_ledger
             .release(&self.product.product_id);
+    }
+
+    /// Record a pending operation and take the worker reference it holds, so
+    /// an operation outliving the product's surface still reads as demand.
+    pub(crate) fn hold_worker_for_operation(&self, id: u32) {
+        if self
+            .open_operations
+            .lock()
+            .expect("open operations mutex poisoned")
+            .insert(id)
+        {
+            self.acquire_worker_reference();
+        }
+    }
+
+    /// Drop the worker reference a pending operation held. An id that is not
+    /// open releases nothing, which is what keeps `end_operation` idempotent.
+    pub(crate) fn release_worker_for_operation(&self, id: u32) {
+        if self
+            .open_operations
+            .lock()
+            .expect("open operations mutex poisoned")
+            .remove(&id)
+        {
+            self.release_worker_reference();
+        }
     }
 
     /// End the renderer action stream this connection's product is reading.
