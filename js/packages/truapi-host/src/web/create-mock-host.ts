@@ -48,6 +48,28 @@ import type { ProductRuntimeConfig } from "../runtime.js";
 /** How the mock answers a permission prompt for one capability. */
 export type PermissionPolicy = "allow-all" | "deny-all";
 
+/**
+ * A chain the host will proxy to, rather than answer from memory.
+ *
+ * Matched on `genesisHash`: the core asks for a chain by hash, so the hash here
+ * must be the *real* one of the endpoint, not a {@link MOCK_GENESIS}
+ * placeholder, and the runtime config must carry the same value.
+ */
+export interface ChainProxy {
+  /**
+   * Genesis hash to route on. Omit to take every request no hashed entry
+   * claims.
+   *
+   * Omitting it is usually right for a single-chain suite, and is immune to a
+   * reset: a public testnet's genesis changes when it is reset, which silently
+   * breaks hash routing and is exactly how a pinned hash goes stale. Give a
+   * hash only when routing between several chains, and expect to re-pin it.
+   */
+  genesisHash?: string;
+  /** WebSocket endpoint, e.g. `wss://paseo-asset-hub-next-rpc.polkadot.io`. */
+  rpcUrl: string;
+}
+
 /** Optional error injection, mirroring the Rust `MockFaults`. */
 export interface MockFaults {
   /** Product and core storage reads/writes/clears fail with this reason. */
@@ -181,6 +203,19 @@ export interface MockHostConfig {
    * that reason instead of succeeding.
    */
   faults?: MockFaults;
+  /**
+   * Chains to proxy to a real node instead of answering from memory.
+   *
+   * Empty by default, which keeps the host hermetic: nothing reaches the
+   * network. Supplying an entry trades that away for real chain behaviour --
+   * inclusion, finalization, live state -- and inherits the flakiness that
+   * comes with it, including state other runs left behind and contracts that
+   * were reaped. Proxy only the chains a suite genuinely needs.
+   *
+   * Connections open lazily, on the first request for a matching hash, so a
+   * declared proxy that is never used opens no socket.
+   */
+  chainProxies?: ChainProxy[];
   /**
    * Chains the host reports serving (RFC 0026). Defaults to the three
    * {@link MOCK_GENESIS} chains, which are what {@link mockRuntimeConfig}
@@ -339,6 +374,94 @@ export interface MockHost {
   seedPreimage(value: Uint8Array): Uint8Array;
 }
 
+/** Lowercase hex without `0x`, so a hash compares equal however it was written. */
+function normalizeHash(hash: string | Uint8Array): string {
+  if (typeof hash !== "string") {
+    return Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return hash.replace(/^0x/i, "").toLowerCase();
+}
+
+/**
+ * Open a real WebSocket to a chain and adapt it to `JsonRpcConnection`.
+ *
+ * Requests are still recorded in `sentRpc`, so a test can assert what the core
+ * asked for even when a real node answers it.
+ */
+function connectToChain(
+  proxy: ChainProxy,
+  sentRpc: string[],
+  pool: Map<string, WebSocket>,
+): JsonRpcConnection {
+  const pooled = pool.get(proxy.rpcUrl);
+  const socket =
+    pooled && pooled.readyState <= WebSocket.OPEN
+      ? pooled
+      : new WebSocket(proxy.rpcUrl);
+  pool.set(proxy.rpcUrl, socket);
+  const queued: string[] = [];
+  const waiting: ((value: IteratorResult<string>) => void)[] = [];
+  let closed = false;
+
+  const open = new Promise<void>((resolve, reject) => {
+    if (socket.readyState === WebSocket.OPEN) {
+      resolve();
+      return;
+    }
+    socket.addEventListener("open", () => resolve(), { once: true });
+    socket.addEventListener(
+      "error",
+      () => reject(new Error(`chain proxy failed to connect to ${proxy.rpcUrl}`)),
+      { once: true },
+    );
+  });
+
+  socket.addEventListener("message", (event: MessageEvent) => {
+    const text = typeof event.data === "string" ? event.data : "";
+    if (!text) return;
+    const next = waiting.shift();
+    if (next) next({ value: text, done: false });
+    else queued.push(text);
+  });
+  const finish = () => {
+    closed = true;
+    // Release every reader, so a stream ends instead of hanging on a drop.
+    while (waiting.length > 0) waiting.shift()?.({ value: undefined, done: true });
+  };
+  socket.addEventListener("close", finish, { once: true });
+
+  return {
+    send(request) {
+      sentRpc.push(request);
+      // Sends before the socket is up are queued by the promise, not dropped.
+      void open.then(() => {
+        if (!closed) socket.send(request);
+      });
+    },
+    responses(): AsyncIterable<string> {
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            next(): Promise<IteratorResult<string>> {
+              const buffered = queued.shift();
+              if (buffered !== undefined) {
+                return Promise.resolve({ value: buffered, done: false });
+              }
+              if (closed) return Promise.resolve({ value: undefined, done: true });
+              return new Promise((resolve) => waiting.push(resolve));
+            },
+          };
+        },
+      };
+    },
+    close() {
+      // Only this lease ends. The socket stays pooled for the next connection,
+      // which is what makes pooling worth having.
+      finish();
+    },
+  };
+}
+
 /** Deterministic 8-byte key for a preimage value (FNV-1a), so `insertPreimage`
  *  then `lookupPreimage` round-trips without using the full value as its key. */
 function preimageKey(value: Uint8Array): Uint8Array {
@@ -373,6 +496,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     confirmUserActions = true,
     chainResponses = [],
     chainClosed = false,
+    chainProxies = [],
     languageTag = "en",
     faults = {},
     supportedChains = {
@@ -405,6 +529,13 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
   let enforcePermissions = false;
   let currentTheme = theme;
   let chainStatus: ChainStatus = "Idle";
+  /**
+   * One socket per proxied endpoint.
+   *
+   * A chainHead handshake is expensive, and the core opens a connection per
+   * product. Pooling by URL means the second one costs nothing.
+   */
+  const chainSockets = new Map<string, WebSocket>();
 
   /**
    * Answer one permission prompt and record it.
@@ -543,7 +674,15 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     },
 
     chain: {
-      async connect(): Promise<JsonRpcConnection> {
+      async connect(genesisHash): Promise<JsonRpcConnection> {
+        // A hashed entry wins; an unhashed one takes whatever is left.
+        const proxy =
+          chainProxies.find(
+            (candidate) =>
+              candidate.genesisHash !== undefined &&
+              normalizeHash(candidate.genesisHash) === normalizeHash(genesisHash),
+          ) ?? chainProxies.find((candidate) => candidate.genesisHash === undefined);
+        if (proxy) return connectToChain(proxy, sentRpc, chainSockets);
         return {
           send(request) {
             sentRpc.push(request);

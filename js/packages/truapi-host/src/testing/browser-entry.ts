@@ -26,12 +26,18 @@ if (!container) {
 const accounts = params.get("accounts")?.split(",").filter(Boolean);
 const login = params.get("login");
 const productId = params.get("productId") ?? undefined;
+const rawRuntimeConfig = params.get("runtimeConfig");
 
 void startTestHost({
   productUrl,
   container,
   mock: rawMock ? (JSON.parse(rawMock) as MockHostConfig) : undefined,
-  runtimeConfig: productId ? { productId } : undefined,
+  runtimeConfig: {
+    ...(rawRuntimeConfig
+      ? (JSON.parse(rawRuntimeConfig) as Record<string, unknown>)
+      : {}),
+    ...(productId ? { productId } : {}),
+  },
   accounts: accounts as DevAccountName[] | undefined,
   loginBehavior: login === "manual" ? "manual" : "auto",
 }).catch((error: unknown) => {

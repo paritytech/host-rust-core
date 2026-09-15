@@ -44,8 +44,16 @@ export interface TestHostFixtureOptions {
    * mismatch surfaces as `PermissionDenied` rather than as a config error.
    */
   productId?: string;
-  /** Behaviour knobs forwarded to the mock host. */
+  /** Behaviour knobs forwarded to the mock host, including `chainProxies`. */
   mock?: MockHostConfig;
+  /**
+   * Overrides merged into the host's runtime config.
+   *
+   * Proxying a real chain needs this: the core asks for a chain by the genesis
+   * hash the config declares, so that hash has to be the real one rather than
+   * a {@link MOCK_GENESIS} placeholder.
+   */
+  runtimeConfig?: Record<string, unknown>;
   /** Accounts the host can sign as. Defaults to `["alice"]`. */
   accounts?: string[];
   /** Whether the host starts signed in. Defaults to `"auto"`. */
@@ -143,6 +151,12 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
       }
       if (defaults.productId) {
         url.searchParams.set("productId", defaults.productId);
+      }
+      if (defaults.runtimeConfig) {
+        url.searchParams.set(
+          "runtimeConfig",
+          JSON.stringify(defaults.runtimeConfig),
+        );
       }
       if (defaults.accounts) {
         url.searchParams.set("accounts", defaults.accounts.join(","));

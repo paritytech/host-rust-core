@@ -70,3 +70,24 @@ export function resolveAccount(spec: DevAccountName | DevAccount): DevAccount {
   }
   return { name: spec, entropy };
 }
+
+/**
+ * Real public networks a suite can proxy to.
+ *
+ * Genesis hashes are the chains' own, not {@link MOCK_GENESIS} placeholders:
+ * the core asks for a chain by hash, so proxying only works when the hash the
+ * runtime config carries is the real one.
+ *
+ * Using these makes a run non-hermetic. It inherits whatever the public chain
+ * is doing -- accumulated state from other runs, contracts that were reaped,
+ * endpoint outages -- which is the cost of testing against real inclusion.
+ */
+export const LIVE_CHAINS = {
+  /**
+   * Paseo Asset Hub. No genesis hash on purpose: this chain has been reset
+   * more than once, every pinned copy of its hash has gone stale, and an
+   * unhashed proxy takes every request instead of routing on a value that
+   * rots.
+   */
+  paseoAssetHub: { rpcUrl: "wss://paseo-asset-hub-next-rpc.polkadot.io" },
+} as const;
