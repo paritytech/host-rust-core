@@ -1,5 +1,52 @@
 # @parity/truapi-host
 
+## 0.16.0
+
+### Minor Changes
+
+- 4c20296: Subscriptions can fail at any point, not only at start. A stream that breaks ends with a typed reason that
+  reaches the product's `error` handler, so a platform failure surfaces instead of freezing the last value or passing
+  for a clean finish; a method the host has not implemented, and a chain follow that cannot be opened, say so rather
+  than completing quietly. A product that serves a host-initiated subscription, today only the chat custom renderer, now
+  takes a handler of the request plus `send` and `interrupt` callbacks instead of returning an observable, which retires
+  `ObservableSource`. Subscription consumers keep the shapes they had, and the wire bytes are unchanged.
+- 4a93ac4: Add temporary deprecated unwatermarked signing for product and legacy accounts to unblock runtime ownership
+  proofs while runtimes adopt watermarked verification (#612). Existing signing APIs retain their names and wrapping
+  behavior. The temporary implementations log a deprecation warning when called. Raw signing reviews now include a
+  `watermarked` flag; host confirmation UIs must display the matching bytes and warn that unwatermarked signatures may
+  authorize transactions.
+- 9252985: `Renderer` is the one service through which a product draws a body inside a host surface. The host starts
+  `renderer.onRender` with a `RenderContext` (`ChatMessage`, `InputWidget`, `PocketCard`) and an opaque payload; the
+  product streams `RendererNode` trees, and a press inside a tree reaches `renderer.actionSubscribe` as
+  `{ context, actionId, payload }`. `Chat` has no `custom_message_render`; a `Custom` chat message renders through
+  `Renderer` with a `ChatMessage` context, and `ChatActionPayload.ActionTriggered` carries only host-drawn `Actions`
+  button presses.
+
+  `RendererNode` replaces `CustomRendererNode` with `Image` (`ImageSource`, `ImageFit`), `Effect`, `Shape.Square`,
+  `Modifier.Opacity` and `Modifier.BlendingMode`; `Spacer`, `TextField` and `Image` carry no `children`, and the
+  single-field `Modifier` and `Shape` variants are tuple variants.
+
+  Hosts call `provider.render(request, sink)` and `provider.publishRendererAction(item)`; `publishChatAction` is the
+  path for posted messages, commands and host-drawn `Actions` buttons.
+
+- fa67882: The core counts references on each product's worker and tells the host when that count crosses zero, so a
+  worker runs only while something needs it.
+
+  `acquireWorker(productId)` takes one reference for a modality holder that is on screen or in flight, and
+  `releaseWorker(productId)` gives it back; releasing with none held is a no-op. The first reference and the last
+  release are the only ones that report anything. `subscribeWorkerDemand(listener)` is where that report arrives: the
+  listener receives every product wanted right now, then each change as it happens, and `wanted: false` for everything
+  still wanted when the runtime is disposed. Starting and stopping the worker executable stays with the host, and a
+  `wanted: false` is permission to stop rather than an order, so a host may keep one warm. The core keeps no clock and
+  runs no timers.
+
+### Patch Changes
+
+- Updated dependencies [4c20296]
+- Updated dependencies [4a93ac4]
+- Updated dependencies [9252985]
+  - @parity/truapi@0.16.0
+
 ## 0.12.0
 
 ### Minor Changes
