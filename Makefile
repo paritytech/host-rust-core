@@ -136,9 +136,11 @@ wasm-crypto-test: ## Run crypto/vector tests on wasm32 via wasm-pack/node.
 dotli-link: ## Link dotli to this checkout's local @parity/truapi packages.
 	cd $(DOTLI) && TRUAPI_REPO="$(CURDIR)" bun run link:truapi
 
-# uniffi-bindgen scans the cdylib's metadata symbols, which `release` strips, so
-# codegen builds use the unstripped `codegen` profile (see [profile.codegen]).
-UNIFFI_CDYLIB_DIR := target/codegen
+# uniffi-bindgen scans the cdylib's metadata symbols, which `release` strips.
+# The dev profile keeps them, and is the graph `cargo build` and `cargo test`
+# already populate, so binding generation reuses that build instead of
+# maintaining a second copy of every dependency.
+UNIFFI_CDYLIB_DIR := target/debug
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.dylib
@@ -152,7 +154,7 @@ UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-out
 
 uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
-	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
+	$(CARGO) build -p truapi-server --features ws-bridge
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -250,7 +252,7 @@ ios-chat-all: ios-chat-run ios-chat-host-playground-run ## Run both local iOS Ch
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 
 uniffi-kotlin: check-generated ## Regenerate Kotlin UniFFI bindings from the truapi-server cdylib.
-	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
+	$(CARGO) build -p truapi-server --features ws-bridge
 	rm -rf $(UNIFFI_KOTLIN_OUT)
 	mkdir -p $(UNIFFI_KOTLIN_OUT)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -286,7 +288,7 @@ PROVIDER_KOTLIN_OUT := android/truapi-provider/src/main/kotlin/generated
 PROVIDER_JNILIBS := android/truapi-provider/src/main/jniLibs
 
 provider-swift: ## Generate the TrUAPIProvider Swift bindings into target/uniffi-provider-swift-out (no Xcode, no iOS targets).
-	$(CARGO) build -p truapi-provider --profile codegen --no-default-features --features uniffi
+	$(CARGO) build -p truapi-provider --no-default-features --features uniffi
 	rm -rf $(PROVIDER_SWIFT_TMP)
 	mkdir -p $(PROVIDER_SWIFT_TMP)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -298,7 +300,7 @@ provider-ios: ## Build the TrUAPIProvider Swift bindings + xcframework (adds --s
 	bash ios/truapi-provider/scripts/rebuild.sh $(if $(SIM_ONLY_ON),--sim-only,)
 
 provider-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-provider cdylib.
-	$(CARGO) build -p truapi-provider --profile codegen --no-default-features --features uniffi
+	$(CARGO) build -p truapi-provider --no-default-features --features uniffi
 	rm -rf $(PROVIDER_KOTLIN_OUT)
 	mkdir -p $(PROVIDER_KOTLIN_OUT)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \

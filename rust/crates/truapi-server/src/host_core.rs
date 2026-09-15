@@ -2137,9 +2137,26 @@ mod tests {
             release.contains("panic = \"abort\""),
             "release no longer aborts on panic: revisit DebugSink::emit's contract docs"
         );
+
+        // The artifacts that ship are the Android cdylib and the iOS
+        // xcframework, so each has to name the aborting profile itself. Binding
+        // generation builds an unstripped cdylib that uniffi-bindgen scans and
+        // discards, and is deliberately absent here.
+        let makefile = workspace_manifest
+            .parent()
+            .expect("workspace manifest has a directory")
+            .join("Makefile");
+        let makefile = std::fs::read_to_string(&makefile)
+            .expect("workspace Makefile is readable from the crate directory");
         assert!(
-            manifest.contains("[profile.codegen]") && manifest.contains("inherits = \"release\""),
-            "codegen no longer inherits release: recheck what the ws-bridge artifacts build with"
+            makefile.contains("build --release -p truapi-server --features ws-bridge"),
+            "android-jni no longer builds the shipped cdylib with --release: \
+             revisit DebugSink::emit's contract docs"
+        );
+        assert!(
+            makefile.contains("XCFRAMEWORK_PROFILE ?= release"),
+            "the xcframework no longer defaults to release: \
+             revisit DebugSink::emit's contract docs"
         );
     }
 
