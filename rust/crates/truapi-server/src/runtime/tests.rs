@@ -2563,6 +2563,59 @@ fn tearing_down_a_connection_reports_the_stop_before_its_last_reference_goes() {
 }
 
 #[test]
+fn a_cancelled_begin_ends_the_operation_the_host_started() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        begin_operation_gate: Mutex::new(Some(gate)),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+
+    // Poll once so the call reaches the host, then drop it the way an aborted
+    // dispatch does while the host is still deciding.
+    let mut begun = Box::pin(host.begin_operation(
+        &cx,
+        HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label: None }),
+    ));
+    assert!(
+        futures::executor::block_on(futures::future::poll_fn(|cx| {
+            std::task::Poll::Ready(futures::FutureExt::poll_unpin(&mut begun, cx).is_pending())
+        })),
+        "the host has not answered yet"
+    );
+    drop(begun);
+
+    // Without the fix the host's call went with the cancelled dispatch, so the
+    // gate may already be gone.
+    let _ = release.send(());
+
+    // Nobody is left to receive the id, so the operation the host started is
+    // ended rather than stranded in its store.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let ended = platform
+            .ended_operations
+            .lock()
+            .expect("ended operations mutex poisoned")
+            .clone();
+        if ended == vec![("myapp.dot".to_string(), 1)] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a cancelled begin leaves the host holding nothing; saw {ended:?}"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(host.services().worker_ledger.count("myapp.dot"), 0);
+}
+
+#[test]
 fn a_failed_end_still_drops_the_demand_the_operation_held() {
     let platform = Arc::new(StubPlatform {
         end_operation_error: Some("store unavailable"),

@@ -1011,6 +1011,34 @@ impl ProductRuntimeHost {
             .release(&self.product.product_id);
     }
 
+    /// Begin a pending operation with the host, on a task this dispatch's
+    /// cancellation cannot reach.
+    ///
+    /// A cancelled dispatch drops whatever it is awaiting, and dropping the
+    /// host's call mid-answer would leave the host holding an operation the
+    /// core never counted and the product never learned the id of, which
+    /// nothing could then end. The call runs to completion either way, and
+    /// ends the operation itself when nobody is left to receive it.
+    pub(crate) async fn begin_operation_with_host(
+        &self,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let platform = self.platform.clone();
+        let product = self.product.clone();
+        (self.services.spawner)(Box::pin(async move {
+            let begun = platform.begin_operation(&product, label).await;
+            if let Err(Ok(response)) = tx.send(begun) {
+                let _ = platform.end_operation(&product, response.id).await;
+            }
+        }));
+        rx.await.unwrap_or_else(|_| {
+            Err(v01::HostWorkerOperationError::Unknown {
+                reason: "the host did not answer".to_string(),
+            })
+        })
+    }
+
     /// Record a pending operation and take the worker reference it holds, so
     /// an operation outliving the product's surface still reads as demand.
     pub(crate) fn hold_worker_for_operation(&self, id: u32) {

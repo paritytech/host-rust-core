@@ -174,6 +174,9 @@ pub(crate) struct StubPlatform {
     pub(crate) begun_operations: Arc<Mutex<Vec<(String, String)>>>,
     /// Every `end_operation` as `(product_id, id)`, in order.
     pub(crate) ended_operations: Arc<Mutex<Vec<(String, u32)>>>,
+    /// Held open by a test so `begin_operation` is still in flight while the
+    /// dispatch awaiting it goes away.
+    pub(crate) begin_operation_gate: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     /// When set, `end_operation` records the call and then fails with this
     /// reason, standing in for a host that drops the operation and still
     /// reports an error.
@@ -937,16 +940,35 @@ impl PlatformProductOperations for StubPlatform {
         product: &ProductContext,
         label: String,
     ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        let gate = self
+            .begin_operation_gate
+            .lock()
+            .expect("begin operation gate mutex poisoned")
+            .take();
+        if let Some(gate) = gate {
+            let _ = gate.await;
+        }
         // The stub has no worker lifecycle to keep alive; it only records the
         // call and hands back its position as the id.
-        let mut begun = self
-            .begun_operations
+        let id = {
+            let mut begun = self
+                .begun_operations
+                .lock()
+                .expect("begun operations mutex poisoned");
+            begun.push((product.product_id.clone(), label));
+            begun.len() as u32
+        };
+        // The operation exists host-side from here on, so a test holding the
+        // gate keeps only the answer in flight.
+        let gate = self
+            .begin_operation_gate
             .lock()
-            .expect("begun operations mutex poisoned");
-        begun.push((product.product_id.clone(), label));
-        Ok(v01::HostWorkerBeginOperationResponse {
-            id: begun.len() as u32,
-        })
+            .expect("begin operation gate mutex poisoned")
+            .take();
+        if let Some(gate) = gate {
+            let _ = gate.await;
+        }
+        Ok(v01::HostWorkerBeginOperationResponse { id })
     }
 
     async fn end_operation(
