@@ -4,11 +4,10 @@ owner: "Sergey Zhuravlev"
 status: draft
 ---
 
-# RFC 0027: Product storage subscriptions and worker pending operations
+# RFC — Product storage subscriptions and worker pending operations
 
 |                 |                                          |
 | --------------- | ---------------------------------------- |
-| **RFC Number**  | 27                                       |
 | **Start Date**  | 2026-08-25                               |
 | **Description** | Two TrUAPI additions so a background worker can finish a multi-step task and coordinate with the app through storage. |
 | **Authors**     | Sergey Zhuravlev                         |
