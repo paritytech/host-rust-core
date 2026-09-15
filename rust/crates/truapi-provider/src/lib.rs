@@ -46,6 +46,8 @@ mod ffi;
 pub mod js;
 #[cfg(feature = "smoldot")]
 mod light;
+#[cfg(all(test, feature = "smoldot", not(target_arch = "wasm32")))]
+mod light_platform_test;
 #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
 mod light_platform_web;
 #[cfg(all(feature = "js", target_arch = "wasm32"))]

@@ -216,7 +216,7 @@ pub(super) fn split_playground_docs(docs: Option<&str>) -> Result<PlaygroundDocs
 /// silently leave that tab empty and dump the snippet into the description.
 pub(super) fn validate_method_examples(
     api: &ApiDefinition,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
 ) -> Result<()> {
     for service in public_services(api)? {
@@ -316,7 +316,7 @@ pub fn explorer_type_id_set(
 /// error arm).
 pub(super) fn method_response_inner_ts(
     method: &MethodDef,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<(Option<String>, Option<String>)> {
     match &method.return_type {
@@ -356,7 +356,7 @@ fn build_doc_url(trait_def: &TraitDef, method: &MethodDef) -> String {
 fn build_method_signature(
     method: &MethodDef,
     payload: &PayloadEmission,
-    wrappers: &HashMap<String, VersionedWrapper>,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,
 ) -> Result<String> {
     let ts_method_name = to_camel_case(&strip_prefix(&method.name));
