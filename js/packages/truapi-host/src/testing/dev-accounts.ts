@@ -104,6 +104,31 @@ export const LIVE_CHAINS = {
 } as const;
 
 /**
+ * Paseo Asset Hub in `@parity/host-api-test-sdk`'s `NetworkConfig` shape.
+ *
+ * Exported under the old name so a migrating suite's `networks: [PASEO_ASSET_HUB]`
+ * keeps working. The genesis hash is the one the chain reports today, NOT the
+ * value that package ships -- its own constant went stale across a chain reset
+ * and no longer matches this endpoint, so copying it would import a known-bad
+ * value. Re-pin from `chain_getBlockHash(0)` after a reset.
+ *
+ * The other networks that package declares are deliberately not mirrored:
+ * nothing here uses them and their genesis hashes have not been checked
+ * against a live endpoint, so exporting them would ship unverified values.
+ */
+export const PASEO_ASSET_HUB = {
+  id: "paseo-asset-hub",
+  name: "Paseo Asset Hub",
+  genesisHash: LIVE_CHAINS.paseoAssetHub.genesisHash,
+  rpcUrl: LIVE_CHAINS.paseoAssetHub.rpcUrl,
+  tokenSymbol: "PAS",
+  tokenDecimals: 10,
+} as const;
+
+/** The chain a suite gets when it names none. */
+export const DEFAULT_CHAIN = PASEO_ASSET_HUB;
+
+/**
  * Fixture settings for proxying one real chain.
  *
  * A live chain has to agree in three places -- what the host proxies to, what

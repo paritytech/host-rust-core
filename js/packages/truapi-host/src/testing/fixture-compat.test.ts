@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
 import { createTestHostFixture, fromNetworks } from "./playwright.js";
+import { PASEO_ASSET_HUB, LIVE_CHAINS } from "./dev-accounts.js";
 
-const PASEO_ASSET_HUB = {
+const SAMPLE_CHAIN = {
   id: "paseo-asset-hub",
   name: "Paseo Asset Hub",
   genesisHash: "0x23e730eb",
@@ -11,21 +12,21 @@ const PASEO_ASSET_HUB = {
 
 describe("host-api-test-sdk option compatibility", () => {
   it("expands `networks` into the three settings that must agree", () => {
-    const { mock, runtimeConfig } = fromNetworks([PASEO_ASSET_HUB]);
+    const { mock, runtimeConfig } = fromNetworks([SAMPLE_CHAIN]);
     expect(mock.supportedChains).toEqual({
       network: "paseo",
       chains: [{ identifier: "AssetHub", genesisHash: "0x23e730eb" }],
     });
     // Unhashed on purpose: an unhashed proxy takes every request, so routing
     // survives a chain reset even when the declared hash goes stale.
-    expect(mock.chainProxies).toEqual([{ rpcUrl: PASEO_ASSET_HUB.rpcUrl }]);
+    expect(mock.chainProxies).toEqual([{ rpcUrl: SAMPLE_CHAIN.rpcUrl }]);
     expect(runtimeConfig).toEqual({ assetHub: { genesisHash: "0x23e730eb" } });
   });
 
   it("reads the chain's role from the id suffix", () => {
-    expect(fromNetworks([{ ...PASEO_ASSET_HUB, id: "paseo-people" }]).runtimeConfig)
+    expect(fromNetworks([{ ...SAMPLE_CHAIN, id: "paseo-people" }]).runtimeConfig)
       .toEqual({ people: { genesisHash: "0x23e730eb" } });
-    const relay = fromNetworks([{ ...PASEO_ASSET_HUB, id: "previewnet" }]);
+    const relay = fromNetworks([{ ...SAMPLE_CHAIN, id: "previewnet" }]);
     expect(relay.mock.supportedChains).toEqual({
       network: "previewnet",
       chains: [{ identifier: "Relay", genesisHash: "0x23e730eb" }],
@@ -59,6 +60,20 @@ describe("host-api-test-sdk option compatibility", () => {
         accounts: ["bob", { name: "charlie" }],
       }),
     ).not.toThrow();
+  });
+
+  it("exports PASEO_ASSET_HUB, carrying the hash we actually proxy to", () => {
+    // The old package's copy went stale across a chain reset. A suite that
+    // migrates by keeping `networks: [PASEO_ASSET_HUB]` must get the live one,
+    // or the product's descriptor check fails on a genesis mismatch.
+    expect(PASEO_ASSET_HUB.genesisHash).toBe(
+      LIVE_CHAINS.paseoAssetHub.genesisHash,
+    );
+    expect(PASEO_ASSET_HUB.id).toBe("paseo-asset-hub");
+    const expanded = fromNetworks([PASEO_ASSET_HUB]);
+    expect(expanded.runtimeConfig).toEqual({
+      assetHub: { genesisHash: LIVE_CHAINS.paseoAssetHub.genesisHash },
+    });
   });
 
   it("needs no hostUrl", () => {
