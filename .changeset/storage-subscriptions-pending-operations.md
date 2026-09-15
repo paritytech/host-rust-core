@@ -3,7 +3,7 @@
 "@parity/truapi-host": minor
 ---
 
-Add `localStorage.subscribe` and worker pending operations (RFC 0027).
+Add `localStorage.subscribe` and worker pending operations.
 
 `localStorage.subscribe(key)` streams a key's value within the product's own namespace, emitting the current
 value immediately and then one item per later write or clear from any of the product's runtimes. A write that
