@@ -154,6 +154,35 @@ on. `statement-store-demo` needs something different: a statement-store
 allowance for an onboarded person, which no amount of host-side work
 substitutes for.
 
+## What this needs to land
+
+**In this repo, to merge:** nothing outstanding. CI is green, the branch carries
+its own guards, and the Rust and TypeScript halves are checked against each
+other.
+
+**To make it usable, one release:** `@parity/truapi-host` 0.17.0, carrying the
+`./testing` subpath. Additive only — the four published subpaths are untouched
+and six are added, so nothing already installed changes behaviour. Per this
+repo's convention that is a `release: @parity/truapi-host 0.17.0` PR title.
+
+**Then product-sdk adopts**, using the patch and cover note in
+`docs/migration/`. It applies cleanly to product-sdk `main` as it stands; its
+catalog is already on `@parity/truapi` 0.16.0, so the only line the release
+changes is the `@parity/truapi-host` version. Verified by installing pristine
+main with `@parity/truapi` resolved from npm and the host linked locally: the
+suites behave exactly as recorded above.
+
+**Three things that are decisions, not work:**
+
+- Funding the derived product accounts (`13B6hYAQ…` for `tx-demo.dot/0`,
+  `12h1wPZE…` for `contracts-demo.dot/0`) brings `tx-demo` and `contracts-demo`
+  into reach. Deterministic per (account, product), and a standing cost.
+- A statement-store allowance for an onboarded identity is what
+  `statement-store-demo` needs; no host-side work substitutes for it.
+- Consumers that pin a product account to a chosen key (`productAccounts`)
+  rework those assertions to read the derived address back instead. That is a
+  real behavioural difference rather than churn, and it is the suite's call.
+
 ## Notes for review
 
 The mock is not a reimplementation of the protocol — it mocks only the platform
