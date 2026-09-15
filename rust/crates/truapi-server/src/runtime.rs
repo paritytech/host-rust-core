@@ -74,8 +74,8 @@ use truapi::versioned::chat::{
     HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
 use truapi::versioned::pocket::{
-    HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
-    HostPocketRemoveCardResponse,
+    HostPocketListSubscribeError, HostPocketListSubscribeItem, HostPocketListSubscribeRequest,
+    HostPocketRemoveCardError, HostPocketRemoveCardRequest, HostPocketRemoveCardResponse,
 };
 use truapi::versioned::preimage::RemotePreimageSubmitError;
 use truapi::versioned::renderer::{
@@ -1153,8 +1153,9 @@ impl Pocket for ProductRuntimeHost {
     async fn list_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostPocketListSubscribeItem, CallError<GenericError>> {
-        let platform = match self.pocket_platform::<GenericError>() {
+        _request: HostPocketListSubscribeRequest,
+    ) -> Subscription<HostPocketListSubscribeItem, CallError<HostPocketListSubscribeError>> {
+        let platform = match self.pocket_platform::<HostPocketListSubscribeError>() {
             Ok(platform) => platform,
             Err(error) => return Subscription::interrupted(error),
         };

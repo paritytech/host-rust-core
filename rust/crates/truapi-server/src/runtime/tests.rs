@@ -944,9 +944,19 @@ fn remove_card(
 /// ended it before any item arrived.
 fn first_pocket_item(
     host: &ProductRuntimeHost,
-) -> Option<Result<HostPocketListSubscribeItem, CallError<truapi::latest::GenericError>>> {
+) -> Option<
+    Result<
+        HostPocketListSubscribeItem,
+        CallError<truapi::versioned::pocket::HostPocketListSubscribeError>,
+    >,
+> {
     futures::executor::block_on(
-        futures::executor::block_on(Pocket::list_subscribe(host, &CallContext::default())).next(),
+        futures::executor::block_on(Pocket::list_subscribe(
+            host,
+            &CallContext::default(),
+            truapi::versioned::pocket::HostPocketListSubscribeRequest::V1,
+        ))
+        .next(),
     )
 }
 
@@ -962,8 +972,11 @@ fn pocket_list_subscribe_forwards_the_host_list_and_interrupts_on_stream_errors(
         true,
     );
 
-    let mut items =
-        futures::executor::block_on(Pocket::list_subscribe(&host, &CallContext::default()));
+    let mut items = futures::executor::block_on(Pocket::list_subscribe(
+        &host,
+        &CallContext::default(),
+        truapi::versioned::pocket::HostPocketListSubscribeRequest::V1,
+    ));
     let HostPocketListSubscribeItem::V1(first) = futures::executor::block_on(items.next())
         .expect("the host list is forwarded")
         .expect("the host list arrives as an item, not an interrupt");
