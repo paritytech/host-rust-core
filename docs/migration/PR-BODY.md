@@ -61,7 +61,7 @@ Nine of product-sdk's example suites, real browser, real core, real wire:
 | host-demo | **6/6** |
 | signer-demo | **8/9**, 1 skipped with its reason |
 | chain-client-demo | **2/2** against the real Asset Hub |
-| tx-demo | boots and signs; blocked on unfunded accounts |
+| tx-demo | boots; submit stalls before signing, times out at 300s |
 | contracts-demo | boots to `pallet-revive` account mapping, a write |
 | statement-store-demo | connects over the real people chain; cannot submit |
 | cloud-storage-demo | already skipped upstream |
@@ -81,10 +81,11 @@ cut, then product-sdk adopts.
 
 ## What it deliberately does not do
 
-**Chain writes.** `tx-demo` and `contracts-demo` reach the chain and sign, then
-fail on transaction fees: a product account derives per (session entropy, product
-id), so the addresses are not funded. Funding them is an operational decision
-with a standing cost, not a code change.
+**Chain writes.** `tx-demo` boots against the real Asset Hub and issues its
+pre-signing reads -- mortality header, account nonce, runtime metadata -- then
+stalls with them outstanding and ends on `submitAndWatch`'s own 300s timeout.
+The signer is never invoked, so the failure is upstream of the host seam
+entirely. Findings doc section 18 has the transport trace.
 
 **The statement store.** The store connects over a proxied people chain and its
 subscription traffic is observable, but publishing is rejected inside the core
@@ -109,10 +110,11 @@ In each case the mock refuses and explains rather than returning something
 plausible, so a test reaching for an unserved path learns why instead of passing
 against a fake.
 
-Funding the derived accounts would bring `tx-demo`, `contracts-demo` and
-`chain-client-demo` into reach, putting the ceiling at **8 of 9 suites**.
-`statement-store-demo` needs something different: a statement-store allowance for
-an onboarded person, which no amount of host-side work substitutes for.
+What the chain-writing suites need is not settled. The accounts are funded and
+`tx-demo` still does not reach signing, so funding alone is not the remaining
+step it was thought to be. `statement-store-demo` needs something different
+again: a statement-store allowance for an onboarded person, which no amount of
+host-side work substitutes for.
 
 ## Notes for review
 
