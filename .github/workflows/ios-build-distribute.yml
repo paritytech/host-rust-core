@@ -38,7 +38,7 @@ on:
       pr_list_markdown:
         value: ${{ jobs.prepare_build_metadata.outputs.pr_list_markdown }}
       succeeded:
-        value: ${{ jobs.check_default_build.outputs.succeeded }}
+        value: ${{ jobs.check_build_result.outputs.succeeded }}
 
 env:
   MAIN_BRANCH: main
@@ -309,7 +309,7 @@ jobs:
               core.warning(`Failed to set commit status for PR #${prNumber}: ${error.message}`);
             }
 
-  check_default_build:
+  check_build_result:
     name: Check build result
     runs-on: ubuntu-latest
     needs: [prepare_build_metadata, check_and_build]
@@ -332,7 +332,7 @@ jobs:
   send_failure_notification:
     name: Send Failure Notification
     runs-on: ubuntu-latest
-    needs: [prepare_build_metadata, check_and_build, check_default_build]
+    needs: [prepare_build_metadata, check_and_build, check_build_result]
     if: failure()
     steps:
       - name: Send failure notification
