@@ -65,4 +65,6 @@ final class MockProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sen
     func sessionChatIdentityKey() throws -> Data? {
         nil
     }
+
+    func notifyPocketCardsChanged(cards _: [PocketCard]) {}
 }

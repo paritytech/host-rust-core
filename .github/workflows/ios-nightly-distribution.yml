@@ -21,7 +21,6 @@ jobs:
       build_configuration: "Nightly"
       distribute_to_external_group: true
       external_group_name: "Daily test builds"
-      s3_static_subdir: "nightly"
     secrets: inherit
 
   # A nightly run ships the same commit to both apps: the production one (via the Nightly
@@ -40,10 +39,6 @@ jobs:
       build_configuration: "Safetynet"
       distribute_to_external_group: true
       external_group_name: "Daily test builds"
-      s3_static_subdir: "safetynet"
-      # Both legs build the same commit against the same test plan, so the Nightly leg
-      # owns the single Allure launch.
-      run_allure_tests: false
     secrets: inherit
 
   auto_merge:
