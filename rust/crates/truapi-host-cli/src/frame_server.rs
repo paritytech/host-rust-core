@@ -764,6 +764,7 @@ mod tests {
             },
             network.people_genesis,
             network.bulletin_genesis,
+            network.asset_hub_genesis,
             network.network_suffix.to_string(),
         )?;
         let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
@@ -1157,7 +1158,31 @@ mod tests {
         }
 
         fn host() -> Result<(Arc<crate::platform::CliPlatform>, SigningHostRuntime)> {
-            let network = crate::network::Network::default().config();
+            // A real Asset Hub genesis hash, so the signing role installs one
+            // and manifest resolution takes the dotNS path, but routed to a
+            // closed port so these tests never dial the live network.
+            //
+            // The override has to land on `live_chain_endpoints`, not on
+            // `asset_hub_ws`. `CliPlatform::new` builds its provider from
+            // `WsChainProvider::new(network.people_ws, network.live_chain_endpoints)`
+            // and resolves each genesis through that table; `asset_hub_ws`
+            // feeds the standalone `AssetHubReader` subcommands and is never
+            // read on this path. Setting it here looked like it worked and did
+            // nothing.
+            //
+            // It does not make them fast: a refused connection still costs the
+            // full `dotns_lookup::OPERATION_TIMEOUT`, because the provider
+            // retries rather than ending the follow, so
+            // `wait_for_chain_head_best_hash` never sees `Stop`.
+            static CLOSED_ASSET_HUB: &[crate::network::ChainEndpoint] =
+                &[crate::network::ChainEndpoint {
+                    genesis: crate::network::PASEO_ASSET_HUB.genesis,
+                    ws: "ws://127.0.0.1:1",
+                    required_for_host: true,
+                }];
+            let mut network = crate::network::Network::default().config();
+            network.live_chain_endpoints = CLOSED_ASSET_HUB;
+            let asset_hub_genesis = network.asset_hub_genesis;
             let platform = crate::platform::CliPlatform::new(
                 network,
                 None,
@@ -1177,8 +1202,18 @@ mod tests {
                 },
                 network.people_genesis,
                 network.bulletin_genesis,
+                network.asset_hub_genesis,
                 network.network_suffix.to_string(),
             )?;
+            // The override is only real if the provider routes through it.
+            // Asserted because the previous attempt set `asset_hub_ws`, which
+            // this path never reads: it compiled, changed nothing, and the
+            // timings looked identical either way.
+            assert_eq!(
+                platform.chain.routed_url(&asset_hub_genesis),
+                "ws://127.0.0.1:1",
+                "the Asset Hub genesis must route to the closed port, not to live Paseo"
+            );
             let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
             Ok((
                 platform.clone(),
@@ -1305,9 +1340,13 @@ mod tests {
 
         #[tokio::test]
         async fn a_product_with_no_config_is_refused_the_same_way() -> Result<()> {
-            // No config applied, and no Asset Hub on the signing role, so the
-            // lookup finds nothing. It must be the same refusal as a config
-            // that named someone else.
+            // No config applied, so nothing is seeded in the manifest cache
+            // and resolution falls through to dotNS, which cannot answer here.
+            // Note what this pins down: an Asset Hub that never answers is
+            // refused identically to a config that named someone else. The
+            // caller cannot tell "you were not granted this" from "the grant
+            // could not be looked up", which is the same collapse the
+            // `assetHubChainGenesisHash` docs warn about.
             let (_platform, runtime) = host()?;
             write_owner_value(&runtime).await;
             assert_eq!(

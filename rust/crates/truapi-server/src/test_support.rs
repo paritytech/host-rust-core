@@ -152,8 +152,18 @@ pub(crate) struct StubPlatform {
     /// that decodes metadata or does other work between calls.
     pub(crate) rpc_method_responses: Vec<(&'static str, String)>,
     pub(crate) sso_response_script: Option<SsoResponseScript>,
+    /// Every genesis hash handed to `connect`, in order. Lets a test assert
+    /// *which* chain a lookup reached, not merely that it reached one: the
+    /// hashes a host is configured with are same-typed `[u8; 32]` passed
+    /// positionally, so a transposed pair still connects and still answers.
+    pub(crate) chain_connects: Arc<Mutex<Vec<[u8; 32]>>>,
     /// When set, `connect` fails with this reason.
     pub(crate) chain_connect_error: Option<&'static str>,
+    /// When true, the connection's response stream ends instead of staying
+    /// pending. A follow opened over it then yields `None` rather than waiting
+    /// out `OPERATION_TIMEOUT`, which is the difference between a test that
+    /// asserts a lookup failed and a test that spends ten seconds proving it.
+    pub(crate) chain_responses_end: bool,
     /// When true, `connect` stays pending forever.
     pub(crate) chain_connect_pending: bool,
     /// Set when a `chain_connect_pending` connect future is dropped.
@@ -1021,6 +1031,7 @@ struct RecordingConnection {
     pairing_pending_response: bool,
     pairing_failure_response: bool,
     pairing_success_via_query: bool,
+    chain_responses_end: bool,
 }
 
 async fn wait_for_statement_subscribe_id(sent: Arc<Mutex<Vec<String>>>, index: usize) -> String {
@@ -1304,6 +1315,22 @@ impl JsonRpcConnection for RecordingConnection {
             return method_keyed_responses(self.sent.clone(), self.method_responses.clone());
         }
         if self.responses.is_empty() {
+            if self.chain_responses_end {
+                // Ends, but not before the caller has issued its request:
+                // ending immediately tears the connection down first and the
+                // request is never recorded. Same bounded-poll shape as
+                // `wait_for_matching_request_id`.
+                let sent = self.sent.clone();
+                return Box::pin(stream::unfold(sent, move |sent| async move {
+                    for _ in 0..100 {
+                        if !sent.lock().expect("rpc list mutex poisoned").is_empty() {
+                            return None;
+                        }
+                        futures_timer::Delay::new(Duration::from_millis(1)).await;
+                    }
+                    None
+                }));
+            }
             Box::pin(futures::stream::pending())
         } else {
             let responses = self.responses.clone();
@@ -1465,8 +1492,14 @@ impl Drop for DropFlagGuard {
 impl ChainProvider for StubPlatform {
     async fn connect(
         &self,
-        _genesis_hash: [u8; 32],
+        genesis_hash: [u8; 32],
     ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        // Recorded before the failure branches: a test asserting which chain
+        // was dialled needs the attempt even when the connect never succeeds.
+        self.chain_connects
+            .lock()
+            .expect("chain connect mutex poisoned")
+            .push(genesis_hash);
         if let Some(reason) = self.chain_connect_error {
             return Err(v01::GenericError {
                 reason: reason.to_string(),
@@ -1486,6 +1519,7 @@ impl ChainProvider for StubPlatform {
             pairing_pending_response: self.pairing_pending_response,
             pairing_failure_response: self.pairing_failure_response,
             pairing_success_via_query: self.pairing_success_via_query,
+            chain_responses_end: self.chain_responses_end,
         }))
     }
 }

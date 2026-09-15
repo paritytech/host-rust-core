@@ -252,6 +252,15 @@ pub(crate) async fn grants_scope(
 /// A failed lookup is not cached. It says nothing about the product, only that
 /// the chain could not be read, and holding that for a day would turn one blip
 /// into a day of withdrawn grants.
+///
+/// The cache dedupes misses only once one has *finished*. Concurrent misses for
+/// the same target each open their own dotNS follow, and nothing upstream caps
+/// how many dispatches a product may have in flight, so a product can hold N
+/// follows for up to `OPERATION_TIMEOUT` each. That shape predates this path —
+/// `ProductRuntime::in_flight` and the `ws_bridge` task spawn are both
+/// uncapped — but a chain round trip per request makes each one dearer than it
+/// was. A real fix is a single-flight keyed by target, or a dispatch
+/// concurrency cap; both belong with the request pipeline rather than here.
 async fn root_manifest(
     services: &RuntimeServices,
     platform: &dyn Platform,
