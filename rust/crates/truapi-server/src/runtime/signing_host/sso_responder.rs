@@ -883,11 +883,11 @@ pub(super) async fn allocate_statement_store_allowance(
 /// configured hash, so a host that does not serve it says so instead of
 /// claiming against whatever chain a stale hash happens to reach.
 ///
-/// Note that this is no longer the only rule on this role. Manifest resolution
-/// takes the Asset Hub hash from `SigningHostConfig::asset_hub` instead, so the
-/// two paths can disagree — see
-/// `product_manifest::warn_if_asset_hub_disagrees_with_chain_set`, which makes
-/// that divergence audible but deliberately does not pick a winner.
+/// Note that this is not the only rule on this role. Manifest resolution takes
+/// the Asset Hub hash from `SigningHostConfig::asset_hub_chain_genesis_hash`
+/// instead, so a host whose config disagrees with the chain set it serves
+/// resolves manifests on one chain while allocating PGAS on another. Nothing
+/// reconciles the two; see the PR's "Not addressed" notes.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_smart_contract_allowance(
     services: &RuntimeServices,

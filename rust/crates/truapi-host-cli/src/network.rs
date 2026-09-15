@@ -81,7 +81,7 @@ fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> Ne
 // usernames) resolves through Asset Hub, SSO through People, preimages through
 // Bulletin.
 
-const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+pub(crate) const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
         "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
     ),

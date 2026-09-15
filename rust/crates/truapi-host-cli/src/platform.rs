@@ -87,6 +87,9 @@ impl CliStoragePaths {
 
 /// Headless-host platform shared by both roles.
 pub struct CliPlatform {
+    #[cfg(test)]
+    pub(crate) chain: WsChainProvider,
+    #[cfg(not(test))]
     chain: WsChainProvider,
     /// Chain roles this host serves, answered by `Features::supported_chains`.
     chains: truapi_platform::HostChainSet,

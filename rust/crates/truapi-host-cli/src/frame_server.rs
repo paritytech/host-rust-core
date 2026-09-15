@@ -1159,20 +1159,30 @@ mod tests {
 
         fn host() -> Result<(Arc<crate::platform::CliPlatform>, SigningHostRuntime)> {
             // A real Asset Hub genesis hash, so the signing role installs one
-            // and manifest resolution takes the dotNS path. The preset URL is
-            // replaced with a closed port to keep this off the live network:
-            // on the preset these tests dialled `paseo-asset-hub-next-rpc`
-            // for real, so they passed or failed on Paseo's reachability.
+            // and manifest resolution takes the dotNS path, but routed to a
+            // closed port so these tests never dial the live network.
             //
-            // It does not make them fast. A closed port costs the same 10s as
-            // a live one: the provider keeps retrying rather than ending the
-            // follow, so `wait_for_chain_head_best_hash` never sees `Stop` and
-            // burns all of `dotns_lookup::OPERATION_TIMEOUT`. Measured both
-            // ways — 10.01s live, 10.02s refused, 0.01s with no Asset Hub at
-            // all. An unreachable Asset Hub is not distinguishable here from a
-            // merely slow one.
+            // The override has to land on `live_chain_endpoints`, not on
+            // `asset_hub_ws`. `CliPlatform::new` builds its provider from
+            // `WsChainProvider::new(network.people_ws, network.live_chain_endpoints)`
+            // and resolves each genesis through that table; `asset_hub_ws`
+            // feeds the standalone `AssetHubReader` subcommands and is never
+            // read on this path. Setting it here looked like it worked and did
+            // nothing.
+            //
+            // It does not make them fast: a refused connection still costs the
+            // full `dotns_lookup::OPERATION_TIMEOUT`, because the provider
+            // retries rather than ending the follow, so
+            // `wait_for_chain_head_best_hash` never sees `Stop`.
+            static CLOSED_ASSET_HUB: &[crate::network::ChainEndpoint] =
+                &[crate::network::ChainEndpoint {
+                    genesis: crate::network::PASEO_ASSET_HUB.genesis,
+                    ws: "ws://127.0.0.1:1",
+                    required_for_host: true,
+                }];
             let mut network = crate::network::Network::default().config();
-            network.asset_hub_ws = "ws://127.0.0.1:1";
+            network.live_chain_endpoints = CLOSED_ASSET_HUB;
+            let asset_hub_genesis = network.asset_hub_genesis;
             let platform = crate::platform::CliPlatform::new(
                 network,
                 None,
@@ -1195,6 +1205,15 @@ mod tests {
                 network.asset_hub_genesis,
                 network.network_suffix.to_string(),
             )?;
+            // The override is only real if the provider routes through it.
+            // Asserted because the previous attempt set `asset_hub_ws`, which
+            // this path never reads: it compiled, changed nothing, and the
+            // timings looked identical either way.
+            assert_eq!(
+                platform.chain.routed_url(&asset_hub_genesis),
+                "ws://127.0.0.1:1",
+                "the Asset Hub genesis must route to the closed port, not to live Paseo"
+            );
             let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
             Ok((
                 platform.clone(),

@@ -585,48 +585,6 @@ impl SigningHostRuntime {
             spawner,
             chat_platform,
         );
-        if let Some(configured) = services.asset_hub_chain_genesis_hash() {
-            // Spawned, not awaited: this is a diagnostic, and on the native
-            // hosts `supported_chains` is a synchronous UniFFI callback with no
-            // timeout. Spawned once per runtime *construction*, so it needs no
-            // latch of its own; a host that builds several runtimes runs it
-            // several times.
-            //
-            // `Weak`, not a cloned `Arc`. This task has no abort handle and is
-            // registered with nothing that cancels it, so an owning reference
-            // would keep the host's platform object alive past teardown and
-            // then call back into it. Upgrading at poll time makes a torn-down
-            // runtime a no-op instead, which is the shape `pairing_host`'s
-            // spawned monitors already use.
-            let platform = Arc::downgrade(&services.platform);
-            (services.spawner)(Box::pin(async move {
-                let Some(platform) = platform.upgrade() else {
-                    return;
-                };
-                // `supported_chains` is host-supplied code reached across an
-                // FFI boundary. On native the spawner is a fixed-size
-                // `ThreadPool` shared with every subscription in the core, and
-                // it does not respawn a worker that unwinds - so an unguarded
-                // panic here costs the whole core one worker of its async
-                // capacity for the life of the process. Guarded for the same
-                // reason `emit_debug` guards `DebugSink::emit`: it costs
-                // nothing when nothing panics.
-                let checked = std::panic::AssertUnwindSafe(
-                    crate::runtime::product_manifest::warn_if_asset_hub_disagrees_with_chain_set(
-                        platform.as_ref(),
-                        configured,
-                    ),
-                )
-                .catch_unwind()
-                .await;
-                if checked.is_err() {
-                    warn!(
-                        "the host panicked answering supported_chains; the Asset \
-                         Hub cross-check was skipped"
-                    );
-                }
-            }));
-        }
         if services.asset_hub_chain_genesis_hash().is_none() {
             // Said once at startup rather than inferred from every grant
             // refusing: the refusals are deliberately indistinguishable from an
@@ -634,12 +592,13 @@ impl SigningHostRuntime {
             // exactly like a product that granted nothing.
             //
             // Only as visible as the host's log level, which is the limit of
-            // what the core can do from here: `logging::init` starts at
-            // `LevelFilter::OFF`, so on the UniFFI and wasm hosts this is
-            // dropped unless the host raised the level first. The CLI installs
-            // its own subscriber and does show it. Reaching an operator who has
-            // logging off needs a channel that does not run through `tracing`,
-            // which is a host-boundary decision rather than a line here.
+            // what the core can do from here: `logging::init` installs
+            // `DEFAULT_LEVEL`, which is `ERROR`, so on the UniFFI and wasm
+            // hosts a `warn!` is dropped unless the host raised the level
+            // first. The CLI installs its own subscriber at `info` and does
+            // show it. Reaching an operator who has logging off needs a
+            // channel that does not run through `tracing`, which is a
+            // host-boundary decision rather than a line here.
             warn!(
                 "no Asset Hub configured: no product manifest will resolve, so \
                  every cross-product grant not already cached is refused"
@@ -3106,73 +3065,6 @@ mod tests {
             services.asset_hub_chain_genesis_hash(),
             Some([0xcc; 32]),
             "the third hash is Asset Hub, not People ([0xaa; 32]) or Bulletin ([0xbb; 32])"
-        );
-    }
-
-    #[test]
-    fn a_configured_signing_host_cross_checks_its_asset_hub_against_the_host() {
-        // The cross-check is a construction-time side effect, which is the same
-        // shape as the bug this PR fixes: nothing observes it, so deleting it
-        // leaves the suite green. Deleting the spawn in `new` must fail here.
-        let platform = Arc::new(StubPlatform {
-            supported_chains_asset_hub: Some([0xaa; 32]),
-            ..StubPlatform::default()
-        });
-        let calls = platform.supported_chains_calls.clone();
-        let _runtime = SigningHostRuntime::new(
-            platform,
-            signing_config_with_asset_hub([0xcc; 32]),
-            crate::test_support::immediate_spawner(),
-        );
-        assert_eq!(
-            calls.load(Ordering::Relaxed),
-            1,
-            "a configured signing host asks the host which chains it serves"
-        );
-    }
-
-    #[test]
-    fn a_signing_host_with_no_asset_hub_does_not_cross_check() {
-        // Nothing to compare against, so the host is not asked at all. Pins the
-        // `if let Some(..)` guard rather than letting it drift into an
-        // unconditional call on every construction.
-        let platform = Arc::new(StubPlatform::default());
-        let calls = platform.supported_chains_calls.clone();
-        let _runtime = SigningHostRuntime::new(
-            platform,
-            signing_config_with_asset_hub([0; 32]),
-            crate::test_support::immediate_spawner(),
-        );
-        assert_eq!(calls.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn a_host_that_panics_answering_supported_chains_does_not_take_the_runtime_with_it() {
-        // `supported_chains` is host code across an FFI boundary. On native the
-        // spawner is a shared fixed-size pool that never respawns a worker that
-        // unwinds, so an unguarded panic costs the core a worker permanently.
-        // With an inline spawner the same panic unwinds straight through the
-        // constructor, which is what this asserts against.
-        let platform = Arc::new(StubPlatform {
-            supported_chains_panics: true,
-            ..StubPlatform::default()
-        });
-        let calls = platform.supported_chains_calls.clone();
-        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            SigningHostRuntime::new(
-                platform,
-                signing_config_with_asset_hub([0xcc; 32]),
-                crate::test_support::immediate_spawner(),
-            )
-        }));
-        assert!(
-            built.is_ok(),
-            "a panicking host must not unwind through runtime construction"
-        );
-        assert_eq!(
-            calls.load(Ordering::Relaxed),
-            1,
-            "and the host was actually reached, so this is not passing vacuously"
         );
     }
 
