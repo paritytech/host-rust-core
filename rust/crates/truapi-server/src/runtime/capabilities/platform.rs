@@ -312,11 +312,9 @@ impl Worker for ProductRuntimeHost {
         self.platform
             .end_operation(&self.product, id)
             .await
-            .map(|()| {
-                self.release_worker_for_operation(id);
-                HostWorkerEndOperationResponse::V1
-            })
-            .map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))
+            .map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))?;
+        self.release_worker_for_operation(id);
+        Ok(HostWorkerEndOperationResponse::V1)
     }
 }
 
