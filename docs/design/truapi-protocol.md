@@ -76,9 +76,9 @@ The payload bytes that follow `message_type` are exactly that leg's own already-
 
 - **Request**: `{Method}Request`'s own encoding; its `V1`/`V2`/... tag is the sole version signal for this leg.
 - **Response**: `Result<{Method}Response, CallError<{Method}Error>>`, both sides already-versioned wrappers.
-- **Start**: the request wrapper's own encoding, or zero bytes when the subscription takes no request at all.
+- **Start**: the request wrapper's own encoding. A subscription that carries no request data still sends one, whose `V1` holds no payload.
 - **Receive**: the item wrapper's own encoding.
-- **Interrupt**: `Result<(), CallError<{Method}Error>>`, from the provider — `Ok(())` is natural completion, `Err(err)` is the value the subscription ended with. A subscription with no domain-specific error uses a bare `GenericError` in the same position.
+- **Interrupt**: `Result<(), CallError<{Method}Error>>`, from the provider — `Ok(())` is natural completion, `Err(err)` is the value the subscription ended with. A subscription with no domain-specific error uses a wrapper whose `V1` is `GenericError`, so the interrupt versions like every other leg.
 - **Stop**: zero bytes, unconditionally, from the consumer. Either side can be the one to end a stream, which is why both legs exist.
 
 Each leg therefore versions independently: a method's `Response` does not share a version number with its `Request`, nor do a subscription's four legs share one with each other.
