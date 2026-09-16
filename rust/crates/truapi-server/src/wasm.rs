@@ -1120,6 +1120,25 @@ impl WasmPairingHostRuntime {
     }
 }
 
+/// Whether `productId` is a first-party product the host grants every
+/// `RemotePermission` without prompting.
+///
+/// The core applies this to the permission requests a product makes through the
+/// protocol. A host that mediates product network access in its own code — a
+/// service worker, a `fetch` shim — has to ask here too, or a blessed product
+/// is prompted by the host for access the core would have granted.
+///
+/// Covers remote permissions only. Device capabilities, identity disclosure and
+/// cross-product account access always prompt, whoever asks.
+///
+/// Normalizes before matching, and answers `false` for an id that does not
+/// normalize, so an unknown spelling is never read as trusted.
+#[wasm_bindgen(js_name = hasTrustedRemotePermissions)]
+pub fn has_trusted_remote_permissions_for_wasm(product_id: String) -> bool {
+    truapi_platform::normalize_product_identifier(&product_id)
+        .is_ok_and(|normalized| truapi_platform::has_trusted_remote_permissions(&normalized))
+}
+
 /// Strictly decode a SCALE-encoded core-storage key for host storage policy.
 #[wasm_bindgen(js_name = describeCoreStorageKey)]
 pub fn describe_core_storage_key_for_wasm(encoded: Vec<u8>) -> Result<JsValue, JsValue> {

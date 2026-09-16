@@ -368,6 +368,26 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
+/// Whether `product_id` is a first-party product the host grants every
+/// [`truapi::latest::RemotePermission`] without prompting.
+///
+/// The core applies this to the permission requests a product makes through the
+/// protocol. A host that mediates product network access in its own code — a
+/// webview interceptor, a `fetch` shim — has to ask here too, or a blessed
+/// product is prompted by the host for access the core would have granted.
+///
+/// Covers remote permissions only. Device capabilities, identity disclosure and
+/// cross-product account access always prompt, whoever asks.
+///
+/// Normalizes before matching, and answers `false` for an id that does not
+/// normalize, so an unknown spelling is never read as trusted. Pure and
+/// stateless.
+#[uniffi::export]
+pub fn has_trusted_remote_permissions(product_id: String) -> bool {
+    truapi_platform::normalize_product_identifier(&product_id)
+        .is_ok_and(|normalized| truapi_platform::has_trusted_remote_permissions(&normalized))
+}
+
 /// OS status of a device capability, as a native host reports it.
 ///
 /// Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
@@ -2756,6 +2776,38 @@ mod tests {
             result,
             Err(crate::ProductRuntimeError::Unsupported)
         ));
+    }
+
+    /// Hosts mediate product network access in their own code and ask this to
+    /// decide whether to prompt, so it has to answer for the spellings a host
+    /// actually holds, not only the normalized one the core passes internally.
+    #[test]
+    fn the_trusted_export_normalizes_before_matching() {
+        for trusted in [
+            "peopl.dot",
+            "PEOPL.DOT",
+            "  peopl.dot  ",
+            "dim2.paseo",
+            "stash.dot",
+        ] {
+            assert!(
+                super::has_trusted_remote_permissions(trusted.to_string()),
+                "{trusted} is a first-party product",
+            );
+        }
+        for untrusted in [
+            "app.peopl.dot",
+            "peopl",
+            "notpeopl.dot",
+            "localhost:3000",
+            "",
+            "   ",
+        ] {
+            assert!(
+                !super::has_trusted_remote_permissions(untrusted.to_string()),
+                "{untrusted} is not",
+            );
+        }
     }
 
     #[test]
