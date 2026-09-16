@@ -1,6 +1,5 @@
 import { Observable } from "rxjs";
 import { err, ok, type Result } from "neverthrow";
-import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
 import {
   AccountId,
   Blake2128Concat,
@@ -116,6 +115,12 @@ export function createAccountIdForDotNsUsername(
       return err(new Error("DotNS username is empty"));
     }
 
+    const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    if (assetHub.isErr()) {
+      return err(toError(assetHub.error));
+    }
+    const genesisHash = assetHub.value.genesisHash;
+
     const key = liteLabelOwnerStorage.enc(
       new TextEncoder().encode(dotNsUsername),
     ) as HexString;
@@ -140,7 +145,7 @@ export function createAccountIdForDotNsUsername(
         switch (item.tag) {
           case "Initialized": {
             const result = await truapi.chain.getHeadStorage({
-              genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+              genesisHash,
               followSubscriptionId: sub.subscriptionId,
               hash: item.value.finalizedBlockHashes[0],
               items: [{ key, queryType: "Value" }],
@@ -190,10 +195,7 @@ export function createAccountIdForDotNsUsername(
       };
       const sub = truapi.chain
         .followHeadSubscribe({
-          request: {
-            genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
-            withRuntime: false,
-          },
+          request: { genesisHash, withRuntime: false },
         })
         .subscribe({
           next: (item) => {

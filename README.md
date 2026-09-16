@@ -95,7 +95,8 @@ hosts/android/             Android host app
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
-scripts/battery.sh         Run the generated battery against both headless CLI host roles
+scripts/battery.sh         Run the generated battery against both headless CLI host roles,
+                           plus the Pocket phase a Worker execution serves
 ```
 
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
@@ -202,7 +203,18 @@ scripts/battery.sh --pairing-host   # paired phase only
 make e2e-signing-cli                # same direct signing-host phase
 make e2e-pairing-cli                # same paired pairing-host phase
 make e2e-chat-cli                   # chat content screening against a chat signing-host
+make e2e-pocket-cli                 # Pocket protocol check against a Pocket signing-host
 ```
+
+The Pocket phase runs its product as a Worker execution, the only execution
+Pocket is served to. It seeds the CLI's in-memory Pocket host from
+`TRUAPI_POCKET_CARDS` (`loyalty,humanity:privileged`), which is what makes one
+card removable and one privileged, and records every removal it is asked for in
+the transcript named by `TRUAPI_POCKET_LOG`. The cases read that transcript, so
+a pass means the host and the product agree on what happened rather than
+resting on the product's word. The report lands at
+`explorer/diagnosis-reports/pocket/signing-host-cli.md` and feeds the explorer's
+Pocket compatibility matrix.
 
 To run the playground locally in a plain browser tab, against a signing host on
 your own machine:
@@ -247,7 +259,48 @@ To run the playground inside a real host instead, start it with `yarn dev` and
 open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
 [`playground/README.md`](playground/README.md) for deployment.
 
-To build the iOS host and open the playground in Simulator:
+### Working on the iOS host
+
+`hosts/ios/` is the iOS app, and it resolves the core from this tree rather than
+from a published version. The core's bindings, xcframework and FFI headers are
+gitignored build outputs, so a fresh clone cannot load the app's package graph
+until they exist. Generate them once:
+
+```bash
+make ios-bootstrap
+```
+
+Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
+the bindings are generated from, which is the `truapi`, `truapi-platform`,
+`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the device slice, which is enough for Simulator but not for an archive.
+
+Because the app builds against the core in this tree, a core change that breaks
+it fails here rather than at the next version bump. Every pull request touching
+the app, or the crates its bindings come from, runs:
+
+- `build`, a DevCI compile, failing on any build warning the committed baseline
+  does not already have
+- `test`, the unit test suite
+- `preview`, an installable simulator `.app` attached to the run, stamped with
+  the commit it came from in `TrUAPICommit`
+
+To run a preview build from a pull request:
+
+```bash
+gh run download <run-id> --name simulator-preview-<short-sha>
+unzip polkadot-app-*.app.zip
+xcrun simctl install booted polkadot-app.app
+xcrun simctl launch booted io.parity.polkadotapp.develop
+```
+
+It is an arm64 simulator slice, so it needs an Apple Silicon Mac and cannot be
+installed on a device.
+
+### Building the standalone iOS host app
+
+The targets below build `polkadot-app-ios-v2`, a separate checkout set by
+`IOS_HOST`, not `hosts/ios`. To build the playground in Simulator against it:
 
 ```bash
 make ios-run

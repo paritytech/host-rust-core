@@ -99,9 +99,10 @@ export interface ProductRuntimeConfig {
     genesisHash: string | Uint8Array;
   };
   /**
-   * Asset Hub configuration. Used to resolve session usernames from dotNS, and
-   * to read the product manifests that carry `trustedProducts` grants — so
-   * without a usable genesis hash every cross-product call is refused,
+   * Asset Hub configuration. Session usernames and the product manifests
+   * that carry `trustedProducts` grants are both read from the dotNS
+   * contracts deployed there. Without a usable genesis hash no manifest
+   * resolves, so every cross-product grant not already cached is refused,
    * indistinguishably from the other product having granted nothing. An
    * all-zero hash declares deliberately that this host has no Asset Hub.
    *

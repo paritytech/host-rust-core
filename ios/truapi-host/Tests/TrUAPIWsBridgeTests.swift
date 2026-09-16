@@ -80,7 +80,9 @@ private extension TrUAPIWsBridgeTests {
             hostName: "truapi-host-tests",
             peopleChainGenesisHash: Data(repeating: 0, count: 32),
             bulletinChainGenesisHash: Data(repeating: 0, count: 32),
-            assetHubChainGenesisHash: Data(repeating: 0, count: 32),
+            // Non-zero: all-zero is the "no Asset Hub" sentinel, and this
+            // fixture is not exercising that case.
+            assetHubChainGenesisHash: Data(repeating: 1, count: 32),
             networkSuffix: "paseo"
         )
     }
@@ -184,4 +186,12 @@ final class StubChatHostBridge: ChatHostBridge {
     }
 
     func listRooms() throws -> [ChatRoom] { [] }
+}
+
+// Conforms to `PocketHostBridge` so a new requirement there fails this job.
+// Every member is written out: the protocol supplies no defaults.
+final class StubPocketHostBridge: PocketHostBridge {
+    func listCards() throws -> [PocketCard] { [] }
+
+    func removeCard(cardId _: String) throws {}
 }
