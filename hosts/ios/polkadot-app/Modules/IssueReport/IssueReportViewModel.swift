@@ -11,7 +11,7 @@ final class IssueReportViewModel {
     var description = ""
     private(set) var isSending = false
     private(set) var errorMessage: String?
-    var isPrepared = false
+    var isSent = false
 
     private let screenshot: Data
     private let makeLogsDraft: (URL) -> EmailDraft?
@@ -25,7 +25,7 @@ final class IssueReportViewModel {
     }
 
     var canSend: Bool {
-        !isSending && !isPrepared && description.count <= Self.descriptionLimit &&
+        !isSending && !isSent && description.count <= Self.descriptionLimit &&
             !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -54,7 +54,7 @@ final class IssueReportViewModel {
                 }
                 try await sender.send(IssueReport(description: description, logs: logs, screenshot: screenshot))
                 try Task.checkCancellation()
-                isPrepared = true
+                isSent = true
             } catch is CancellationError {
             } catch IssueReportSubmissionError.unavailable {
                 errorMessage = String(localized: .reportIssueUnavailable)

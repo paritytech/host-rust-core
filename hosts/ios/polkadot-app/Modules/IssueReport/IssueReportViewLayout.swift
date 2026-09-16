@@ -42,7 +42,7 @@ struct IssueReportViewLayout: View {
         .background(.bgSurfaceMain)
         .interactiveDismissDisabled(viewModel.isSending)
         .onDisappear { viewModel.cancel() }
-        .alert(String(localized: .reportIssueThanks), isPresented: $viewModel.isPrepared) {
+        .alert(String(localized: .reportIssueThanks), isPresented: $viewModel.isSent) {
             Button(String(localized: .reportIssueDone)) { dismiss() }
         }
     }
