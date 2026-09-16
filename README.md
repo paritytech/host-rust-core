@@ -262,8 +262,6 @@ To run the playground inside a real host instead, start it with `yarn dev` and
 open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
 [`playground/README.md`](playground/README.md) for deployment.
 
-### Working on the iOS host
-
 ### Refreshing a vendored host tree
 
 The host trees under `hosts/` are snapshots of the repositories they were
@@ -277,13 +275,14 @@ scripts/refresh-host-import.sh refresh ios    # take the new tree, re-apply adap
 
 `refresh` replaces the tree with the source's, re-applies this repository's
 adaptations on top as a three-way patch, then compares every path against the
-source by blob hash. Paths are staged with `--force`, because this repository's
-ignore rules are not the source's and an earlier import silently lost 57 files
-that way. The result is left staged and uncommitted: a conflict is a decision
-about which side is right, and that is not a decision for a script.
+source by blob hash in both directions. A difference no adaptation accounts for
+is upstream work that was dropped; an adaptation that left no difference either
+did not apply or has been adopted upstream.
 
-A difference the adaptations do not account for is reported as unexplained,
-because that is upstream work the refresh dropped.
+A clean apply is staged for review. A conflicted one is left unmerged, so git
+refuses to commit it until someone decides which side is right.
+
+### Working on the iOS host
 
 `hosts/ios/` is the iOS app, and it resolves the core from this tree rather than
 from a published version. The core's bindings, xcframework and FFI headers are

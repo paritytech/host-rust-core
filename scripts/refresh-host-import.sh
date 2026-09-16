@@ -7,17 +7,13 @@
 # over, and afterwards whenever the source repository keeps a release line of
 # its own, so this runs more than once per host.
 #
-# Two failure modes motivate every step here, and both have already happened:
+# The new tree is taken whole and this repository's adaptations are re-applied
+# on top as a three-way patch, because applying only one of the two discards
+# the other side's work.
 #
-#   Replacing the tree wholesale silently discards the adaptations that make
-#   the tree work in this repository, and re-applying adaptations without
-#   replacing the tree silently discards upstream's work. So the new tree is
-#   taken whole and the adaptations are re-applied on top as a three-way patch.
-#
-#   `git add` honours this repository's ignore rules, which are not the source
-#   repository's. An earlier import lost 57 files that way and nothing noticed
-#   until the file hashes were compared. So files are staged with --force and
-#   every path is compared against the source by blob hash.
+# Paths are compared against the source by blob hash in both directions: a
+# difference no adaptation accounts for is upstream work that was dropped, and
+# an adaptation that left no difference is an adaptation that did not survive.
 #
 # Usage:
 #   scripts/refresh-host-import.sh status <host>
@@ -79,7 +75,10 @@ fetch_source() {
 # `git diff` against our own tree yields a patch that applies at the right path.
 upstream_tree_at_prefix() {
   local host=$1 ref=$2 index
+  # git tolerates a missing index file but not an empty one, and mktemp leaves
+  # a zero byte file behind.
   index="$(mktemp)"
+  rm -f "$index"
   GIT_INDEX_FILE="$index" git read-tree --prefix="hosts/${host}/" "${ref}^{tree}"
   GIT_INDEX_FILE="$index" git write-tree
   rm -f "$index"
@@ -174,28 +173,41 @@ cmd_refresh() {
   local base_tree patch
   base_tree="$(upstream_tree_at_prefix "$host" "$recorded")"
   patch="$(mktemp)"
-  git diff "$base_tree" HEAD -- "hosts/${host}" > "$patch"
+  # --binary, or a patch touching a binary file is rejected outright and git
+  # apply, which is all or nothing, then applies none of it.
+  git diff --binary "$base_tree" HEAD -- "hosts/${host}" > "$patch"
   local adapted_list
   adapted_list="$(mktemp)"
   git diff --name-only "$base_tree" HEAD -- "hosts/${host}" | sort > "$adapted_list"
   note "adaptations to re-apply: $(wc -l < "$adapted_list" | tr -d ' ') files"
 
-  # Take the new tree whole, ignoring this repository's ignore rules, because
-  # the source repository's committed content is what the vendored copy has to
-  # reproduce.
-  rm -rf "hosts/${host:?}"
-  mkdir -p "hosts/${host}"
-  git archive "${target}^{tree}" | tar -x -C "hosts/${host}"
-  git add --all --force "hosts/${host}"
+  # Tracked paths only. rm -rf would also take ignored working files such as
+  # hosts/ios/source_packages or hosts/android/local.properties, which the
+  # dirty check cannot see. read-tree writes through ignore rules, which is
+  # what reproducing the source's committed content requires.
+  git rm -r -q --ignore-unmatch "hosts/${host}"
+  git read-tree --prefix="hosts/${host}/" -u "${target}^{tree}"
 
   echo
   note "re-applying adaptations"
   if git apply --3way --whitespace=nowarn "$patch"; then
     note "applied cleanly"
+    git add --all --force "hosts/${host}"
   else
-    note "conflicts left in the working tree, resolve them before committing"
+    # Staging here would clear the unmerged entries and commit the conflict
+    # markers as ordinary content. Leave them unmerged so git refuses.
+    local unmerged
+    unmerged="$(git diff --name-only --diff-filter=U)"
+    if [ -z "$unmerged" ]; then
+      # git apply is all or nothing. No unmerged paths after a failure means
+      # the patch was rejected outright and the tree is now plain upstream with
+      # every adaptation gone, which looks like a clean refresh.
+      die "the patch was rejected outright, so no adaptation was applied; the tree is now unmodified upstream and must not be committed"
+    fi
+    note "conflicts, left unmerged:"
+    printf '%s\n' "$unmerged" | sed 's/^/      /'
+    note "resolve them, then stage and commit"
   fi
-  git add --all --force "hosts/${host}" 2>/dev/null || true
 
   echo
   note "checking the result against the source"

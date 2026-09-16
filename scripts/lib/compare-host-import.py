@@ -84,6 +84,15 @@ def main(argv):
         for path in unexplained[:20]:
             print(f"      {path}")
         return 1
+
+    # The other direction. An adaptation that left the path identical to the
+    # source either did not apply, or the source has since adopted it. Which of
+    # those it is has to be read, so it is reported rather than failed on.
+    inert = sorted(adapted - (set(differing) | set(missing) | set(extra)))
+    if inert:
+        show("adaptation left no difference", inert)
+        print("  Either the source adopted it, or it did not apply. Check before committing.")
+
     print("  every difference is accounted for by an adaptation")
     return 0
 
