@@ -336,9 +336,9 @@ and its files live under
 `<base-path>/v2/<network>/<username>_signing_host`. Provisional named sessions
 are promoted to that user-owned root, so an old name such as `pgtest` does not
 remain the durable namespace. That name keeps selecting the session it created:
-promotion records an alias, so `--session pgtest` reselects the promoted
-session instead of provisioning a second identity beside it. An alias whose
-session has been cleared names a fresh session again. The selected username is
+the promoted session records the name it was created under, so `--session
+pgtest` and `/session --clear pgtest` both act on it instead of provisioning a
+second identity beside it. Once that session is cleared the name is free again. The selected username is
 remembered per network but is not repeated in the status bar as a separate
 session field.
 `default` remains only as a compatibility/bootstrap location until a username

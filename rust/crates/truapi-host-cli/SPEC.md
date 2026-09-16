@@ -1168,8 +1168,9 @@ Managed session names must:
 At startup the initial session is:
 
 1. `ephemeral` for explicit mnemonic mode;
-2. explicit `--session`, resolved through the aliases promotion records, so a
-   name that was promoted away still selects the session it created;
+2. explicit `--session`, resolved through the name each promoted session
+   records itself as created under, so a name promoted away still selects the
+   session it created;
 3. `default` for explicit `--account`; or
 4. the network's remembered `current-session`.
 

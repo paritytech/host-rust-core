@@ -1409,9 +1409,8 @@ fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> Res
         }
         CurrentSession::Fresh => Ok(DEFAULT_SESSION_NAME.to_string()),
         CurrentSession::Ambiguous { candidates } => Err(anyhow::anyhow!(
-            "this base path holds {} provisioned sessions ({}) and no current-session pointer; \
-             name one with --session <name> rather than provisioning another identity",
-            candidates.len(),
+            "this base path holds several provisioned sessions ({}) and no current-session \
+             pointer; name one with --session <name> rather than provisioning another identity",
             candidates.join(", "),
         )),
     }
@@ -2091,11 +2090,7 @@ async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
         .flatten();
     let lite_username_prefix =
         sessions::lite_username_prefix(&profile.name, session.lite_username_prefix.as_deref());
-    if !profile
-        .account_base_path
-        .join(accounts::ACCOUNT_STORE_FILE)
-        .is_file()
-    {
+    if !profile.is_provisioned() {
         terminal_ui::output_event(SystemEvent::SigningHostProvisioning);
     }
     session.signer = Some(
@@ -3992,7 +3987,7 @@ mod cli_tests {
         let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
         for name in ["alice.01", "bob.02"] {
             let profile = catalog.ensure_profile(name)?;
-            std::fs::write(profile.path.join(accounts::ACCOUNT_STORE_FILE), "{}")?;
+            std::fs::write(profile.path.join("accounts.json"), "{}")?;
         }
 
         let error = initial_session_name(&SigningHostArgs::default(), &catalog)
@@ -4011,7 +4006,7 @@ mod cli_tests {
         let temporary = tempfile::tempdir()?;
         let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
         let profile = catalog.ensure_profile("alice.01")?;
-        std::fs::write(profile.path.join(accounts::ACCOUNT_STORE_FILE), "{}")?;
+        std::fs::write(profile.path.join("accounts.json"), "{}")?;
 
         assert_eq!(
             initial_session_name(&SigningHostArgs::default(), &catalog)?,

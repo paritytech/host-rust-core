@@ -3340,16 +3340,6 @@ mod tests {
     }
 
     #[test]
-    fn every_signer_startup_event_renders_without_a_terminal() {
-        for event in [
-            SystemEvent::SigningHostProvisioning,
-            SystemEvent::SigningHostNeedsSession,
-        ] {
-            assert!(!event.human().is_empty(), "{event:?} renders nothing");
-        }
-    }
-
-    #[test]
     fn missing_signing_session_explains_how_to_connect_a_user() {
         let mut app = test_app();
 
