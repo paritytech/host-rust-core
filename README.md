@@ -305,12 +305,13 @@ from. It uploads nowhere: not to Apple, not to any distribution service.
 
 The commit is stamped into the app before the build rather than after, because
 editing a signed bundle invalidates its signature and the archive would then
-refuse to install. The job checks the stamp survived and that the signature
-still validates.
+refuse to install. The job checks the stamp survived and that every
+seal in the bundle, including the nested extension, still validates.
 
 Installing it needs the device's UDID in the ad-hoc provisioning profile, which
-is Apple bookkeeping rather than CI. Registering a device and regenerating the
-profile so it covers one are tracked on #681.
+is Apple bookkeeping rather than CI. The workflows that register a device and
+regenerate the profile are held until the cutover, tracked on #764; the device
+preview itself is tracked on #681.
 
 ### Building the standalone iOS host app
 

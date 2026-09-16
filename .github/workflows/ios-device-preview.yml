@@ -42,7 +42,15 @@ env:
 jobs:
   build:
     name: Signed device build
-    if: contains(github.event.pull_request.labels.*.name, 'ios-device-build')
+    # Narrow on purpose. `labeled` fires for every label, so matching only on
+    # the label being present lets anything else being added, by a person or by
+    # labeler.yml, start a second run for the same commit that cancels the one
+    # already building.
+    if: >-
+      (github.event.action == 'labeled'
+       && github.event.label.name == 'ios-device-build')
+      || (github.event.action == 'synchronize'
+          && contains(github.event.pull_request.labels.*.name, 'ios-device-build'))
     runs-on: macos-26-xlarge
     timeout-minutes: 45
     steps:
@@ -54,10 +62,13 @@ jobs:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
+      # The action's default cache key deliberately, not one of this workflow's
+      # own: rust-cache's key does not include the workflow or job, so sharing
+      # it restores what the core job writes on the default branch. A key only
+      # this workflow writes would never be seeded, because it only ever runs
+      # on a pull request.
       - name: Bootstrap the in-tree core
         uses: ./.github/actions/bootstrap-ios-core
-        with:
-          cache-key: ios-device-preview
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -128,9 +139,11 @@ jobs:
             exit 1
           fi
 
-          # Stamping before the build should leave the signature intact. If it
-          # does not, the archive would fail to install rather than say why.
-          codesign --verify --verbose=1 "${apps[0]}"
+          # --deep --strict, so this covers the nested extension and frameworks
+          # rather than only the outer seal, which the stamp order already
+          # guarantees. It says nothing about whether the profile covers a given
+          # device; that is what decides installability.
+          codesign --verify --deep --strict --verbose=1 "${apps[0]}"
 
           short="${COMMIT:0:9}"
           mv "${archives[0]}" "polkadot-app-${short}.ipa"
