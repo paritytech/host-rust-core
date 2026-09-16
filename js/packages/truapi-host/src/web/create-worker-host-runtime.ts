@@ -163,11 +163,19 @@ interface RuntimeState {
    * Worker-wide rather than per-core, since a `callbackRequest` carries no core
    * id, so entries are product-scoped: `OperationId` is only unique per product
    * and two products sharing this worker may be handed the same id.
-   * TODO: no ceiling on how long one operation may hold the worker.
    */
   openOperations: Set<string>;
   /** A dispose() arrived while operations were open; run it once they drain. */
   disposePending: boolean;
+  /**
+   * Fires if those operations never drain. A worker that never sends its
+   * `endOperation` would otherwise keep the core running for a product the
+   * user has closed, still free to raise host prompts, with no way for the
+   * caller to force teardown.
+   */
+  disposeGraceTimer: ReturnType<typeof setTimeout> | undefined;
+  /** How long `dispose()` waits for open operations before forcing teardown. */
+  operationGraceMs: number;
   chainConnections: Map<number, ChainConnection>;
   pendingDisconnects: Map<
     number,
@@ -468,6 +476,7 @@ function handleCallbackRequest(
           if (hold !== null) state.openOperations.delete(hold);
           if (state.openOperations.size === 0 && state.disposePending) {
             state.disposePending = false;
+            clearDisposeGrace(state);
             teardown(state, new Error("runtime disposed"), false);
           }
         }
@@ -835,9 +844,17 @@ function closeCoreState(core: CoreState, error: Error): void {
   core.closeListeners.clear();
 }
 
+/** Drop the ceiling armed by a deferred `dispose()`, if one is pending. */
+function clearDisposeGrace(state: RuntimeState): void {
+  if (state.disposeGraceTimer === undefined) return;
+  clearTimeout(state.disposeGraceTimer);
+  state.disposeGraceTimer = undefined;
+}
+
 function teardown(state: RuntimeState, error: Error, fault: boolean): void {
   if (state.disposed) return;
   state.disposed = true;
+  clearDisposeGrace(state);
   state.closedError = error;
   rejectPendingRuntimeRequests(state, error);
   for (const core of state.cores.values()) {
@@ -881,6 +898,11 @@ export interface CreateWebWorkerPairingHostRuntimeOptions {
   logLevel?: LogLevel;
   hostConfig: WebWorkerHostConfig;
   initTimeoutMs?: number;
+  /**
+   * How long `dispose()` waits for open `worker.beginOperation` holds before
+   * tearing down anyway. Defaults to 30s.
+   */
+  operationGraceMs?: number;
 }
 
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
@@ -901,6 +923,8 @@ export function createWebWorkerPairingHostRuntime(
       subscriptionDisposers: new Map(),
       openOperations: new Set(),
       disposePending: false,
+      disposeGraceTimer: undefined,
+      operationGraceMs: options.operationGraceMs ?? 30_000,
       chainConnections: new Map(),
       pendingDisconnects: new Map(),
       pendingSessionActivations: new Map(),
@@ -1388,6 +1412,12 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
       // endOperation runs the teardown. Fault teardown is never deferred.
       if (state.openOperations.size > 0) {
         state.disposePending = true;
+        state.disposeGraceTimer ??= setTimeout(() => {
+          state.disposeGraceTimer = undefined;
+          if (!state.disposePending) return;
+          state.disposePending = false;
+          teardown(state, new Error("runtime disposed"), false);
+        }, state.operationGraceMs);
         return;
       }
       teardown(state, new Error("runtime disposed"), false);

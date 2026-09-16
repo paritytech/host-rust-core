@@ -1074,6 +1074,35 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(worker.terminated).toBe(true);
   });
 
+  it("stops waiting for an operation that never ends", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker, {
+      runtimeConfig: runtimeConfig({ executionKind: "Worker" }),
+      operationGraceMs: 10,
+    });
+
+    const product = ProductContext.enc({
+      productId: "dotli.dot",
+      executionKind: "Worker",
+    });
+    worker.emit({
+      kind: "callbackRequest",
+      requestId: 1,
+      name: "beginOperation",
+      args: [product, "funding"],
+    });
+    await settle();
+
+    provider.dispose();
+    await settle();
+    expect(worker.terminated).toBe(false);
+
+    // The operation never ends, so the grace period is what tears the worker
+    // down rather than leaving the core running for a product that is gone.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(worker.terminated).toBe(true);
+  });
+
   it("ending an unknown or already-ended operation releases no other hold", async () => {
     const worker = new FakeWorker();
     let nextId = 1;
