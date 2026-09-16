@@ -1692,17 +1692,15 @@ fn emit_error_response(
     Ok(ResponseEmission { inner_type_ts })
 }
 
-/// The codec expression that decodes this leg's own wire payload directly:
-/// the recognized wrapper's `Versioned{Name}` codec (its `V<N>` tag is the
-/// wire's only version signal), or `S._void` for a bare unit payload with no
-/// wrapper at all. Every real method's request/response/item is one of these
-/// two shapes; anything else is a codegen-internal mismatch.
+/// The codec expression that decodes this leg's own wire payload directly: the
+/// recognized wrapper's `Versioned{Name}` codec, whose `V<N>` tag is the wire's
+/// only version signal. Every method's request, response and item is one of
+/// these, an empty payload included; anything else has no describable codec.
 fn leg_codec_expr(ty: &TypeRef, wrappers: &BTreeMap<String, VersionedWrapper>) -> Result<String> {
     match versioned_wrapper_for(ty, wrappers) {
         Some((wrapper_name, _)) => Ok(format!("T.{}", versioned_wrapper_ts_name(wrapper_name))),
-        None if matches!(ty, TypeRef::Unit) => Ok("S._void".to_string()),
         None => bail!(
-            "type `{}` is neither a recognized versioned wrapper nor unit, \
+            "type `{}` is not a recognized versioned wrapper, \
              so no wire codec can be derived for it",
             ts_type_name_hint(ty)
         ),
@@ -4007,7 +4005,10 @@ mod tests {
                             name: "ExampleResponse".to_string(),
                             args: Vec::new(),
                         },
-                        err: TypeRef::Unit,
+                        err: TypeRef::Named {
+                            name: "ExampleError".to_string(),
+                            args: Vec::new(),
+                        },
                     },
                     wire: wire_attrs(Some(2)),
                     docs: None,
@@ -4018,7 +4019,10 @@ mod tests {
             types: vec![
                 versioned_tuple_wrapper("ExampleRequest", "LegacyRequest", "LatestRequest"),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
+                versioned_tuple_wrapper("ExampleError", "LegacyError", "LatestError"),
+                empty_struct("LatestError"),
                 empty_struct("LatestRequest"),
+                empty_struct("LegacyError"),
                 empty_struct("LatestResponse"),
                 empty_struct("LegacyRequest"),
                 empty_struct("LegacyResponse"),
@@ -4037,7 +4041,7 @@ mod tests {
                 "payload: T.VersionedExampleRequest.enc({ tag: \"V2\", value: request }),"
             )
         );
-        assert!(client_source.contains("ResultAsync<T.LatestResponse, undefined>"));
+        assert!(client_source.contains("ResultAsync<T.LatestResponse, T.LatestError>"));
     }
 
     #[test]
@@ -4131,7 +4135,10 @@ mod tests {
                             name: "ExampleResponse".to_string(),
                             args: Vec::new(),
                         },
-                        err: TypeRef::Unit,
+                        err: TypeRef::Named {
+                            name: "ExampleError".to_string(),
+                            args: Vec::new(),
+                        },
                     },
                     wire: wire_attrs(Some(2)),
                     docs: None,
@@ -4142,7 +4149,10 @@ mod tests {
             types: vec![
                 versioned_tuple_wrapper_variants("ExampleRequest", &[(1, "LegacyRequest")]),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
+                versioned_tuple_wrapper("ExampleError", "LegacyError", "LatestError"),
+                empty_struct("LatestError"),
                 empty_struct("LatestResponse"),
+                empty_struct("LegacyError"),
                 empty_struct("LegacyRequest"),
                 empty_struct("LegacyResponse"),
             ],
@@ -4157,7 +4167,7 @@ mod tests {
                 "payload: T.VersionedExampleRequest.enc({ tag: \"V1\", value: request }),"
             )
         );
-        assert!(client_source.contains("ResultAsync<T.LegacyResponse, undefined>"));
+        assert!(client_source.contains("ResultAsync<T.LegacyResponse, T.LegacyError>"));
     }
 
     /// A subscription declaring a `Start` parameter that is not a versioned

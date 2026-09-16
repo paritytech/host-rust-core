@@ -7,8 +7,13 @@ on:
   merge_group:
   workflow_dispatch:
 
+# release.yml publishes only when this workflow concludes success for a
+# `release:` commit, and a cancelled run is not success, so it publishes
+# nothing and reports nothing. A release commit therefore gets a group of its
+# own, keyed by its SHA, where no later push to the same branch can reach it.
+# Ordinary pushes keep sharing a group and keep cancelling each other.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ startsWith(github.event.head_commit.message, 'release:') && github.sha || 'shared' }}
   cancel-in-progress: true
 
 permissions:
@@ -217,6 +222,7 @@ jobs:
     outputs:
       sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
       sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
+      cli_package: ${{ steps.filter.outputs.cli_package }}
       workflows: ${{ steps.filter.outputs.workflows }}
       needs_changeset: ${{ steps.filter.outputs.needs_changeset }}
       adds_changeset: ${{ steps.filter.outputs.adds_changeset }}
@@ -252,6 +258,7 @@ jobs:
             {
               echo "sdk_swift=true"
               echo "sdk_kotlin=true"
+              echo "cli_package=true"
               echo "workflows=true"
             } >> "$GITHUB_OUTPUT"
             exit 0
@@ -269,6 +276,14 @@ jobs:
           gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
           gate workflows '^(\.github/workflows/|\.github/actions/|hosts/[a-z]+/\.github/)'
           gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+
+          # The packaging path has its own inputs: the archive layout in the
+          # Makefile, the runner bundle, the generated sources cli-dist refuses
+          # to build without, and the dependency set the musl link has to
+          # survive. `@parity/truapi` is here because the runner inlines it from
+          # source, and bundling it is a step no other job performs. A release
+          # is the wrong place to find out one of them moved.
+          gate cli_package '^(rust/crates/truapi-host-cli/|js/packages/truapi/(src/|package\.json$|tsconfig[^/]*\.json$)|Makefile$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|\.github/workflows/(ci|cli-package)\.yml$)'
 
           # Include generators, dependency pins and package build configuration:
           # these can change a published artifact without touching its sources.
@@ -430,6 +445,17 @@ jobs:
         run: make uniffi-kotlin
       - name: Compile the shell against the bindings
         run: gradle :truapi-host:assembleRelease
+
+  # Packages truapi-host through the same workflow the release runs, so a change
+  # that breaks packaging fails here rather than on a release that has already
+  # published its npm half. No version means no publish: archives and nothing else.
+  cli-package:
+    name: CLI packaging
+    needs: changes
+    if: needs.changes.outputs.cli_package == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cli-package.yml
 
   ts-client:
     name: "@parity/truapi"
@@ -874,6 +900,7 @@ jobs:
         changes,
         ios-swift,
         android-bindings,
+        cli-package,
         ts-client,
         ts-host,
         ts-debugger,
@@ -909,8 +936,8 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
-            android-bindings ts-client ts-host ts-debugger playground explorer
-            e2e workflow-lint release-guard changeset-guard
+            android-bindings cli-package ts-client ts-host ts-debugger playground
+            explorer e2e workflow-lint release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |

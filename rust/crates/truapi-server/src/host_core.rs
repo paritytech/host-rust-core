@@ -861,6 +861,33 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Every statement account the renewal ledger currently tracks.
+    ///
+    /// Needs no active session, so a host can audit which entries are spending
+    /// its finite per-period slots before deciding to renew.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.statement_renewal_targets"))]
+    pub async fn statement_renewal_targets(
+        &self,
+    ) -> Result<Vec<crate::runtime::TrackedStatementRenewalTarget>, v01::GenericError> {
+        self.signing_host
+            .statement_renewal_targets()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Root public key the active identity records its fixed ledger entries
+    /// under.
+    ///
+    /// Needs an active session, and fails with `Disconnected` without one.
+    /// Compare it against each entry's owner to tell what a pass will renew
+    /// from what it will prune.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.statement_renewal_owner_key"))]
+    pub fn statement_renewal_owner_key(&self) -> Result<truapi::Bytes32, v01::GenericError> {
+        self.signing_host
+            .statement_renewal_owner_key()
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Stop renewing one fixed statement account.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.untrack_statement_renewal_account"))]
     pub async fn untrack_statement_renewal_account(
@@ -1243,7 +1270,10 @@ impl ProductRuntimeControl {
                     Ok(truapi::versioned::renderer::ProductRendererRenderItem::V1(node)) => {
                         Some((Ok(node), (stream, reference)))
                     }
-                    Err(interrupt) => Some((Err(interrupt), (stream, None))),
+                    Err(interrupt) => Some((
+                        Err(crate::subscription::interrupt_into_latest(interrupt)),
+                        (stream, None),
+                    )),
                 }
             },
         );
@@ -1781,7 +1811,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         let raw = frame.encode();
@@ -1935,7 +1965,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
@@ -2054,7 +2084,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         let encoded = frame.encode();
@@ -2111,7 +2141,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
@@ -2241,6 +2271,7 @@ mod tests {
         let mut actions = futures::executor::block_on(truapi::api::Renderer::action_subscribe(
             host.as_ref(),
             &CallContext::with_request_id("renderer:1".to_string()),
+            truapi::versioned::renderer::HostRendererActionSubscribeRequest::V1,
         ));
 
         let _render = runtime
@@ -2714,8 +2745,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                // No request wrapper for this method: an empty Start payload.
-                value: Vec::new(),
+                value: truapi::versioned::chat::HostChatActionSubscribeRequest::V1.encode(),
             },
         };
 
@@ -2760,7 +2790,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();

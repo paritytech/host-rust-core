@@ -1,11 +1,11 @@
 //! Unified [`Chat`] trait.
 
-use crate::latest::GenericError;
 use crate::versioned::chat::{
-    HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
-    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
-    HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+    HostChatActionSubscribeError, HostChatActionSubscribeItem, HostChatActionSubscribeRequest,
+    HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
+    HostChatListSubscribeError, HostChatListSubscribeItem, HostChatListSubscribeRequest,
+    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -69,7 +69,8 @@ pub trait Chat: Send + Sync {
     async fn list_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostChatListSubscribeItem, CallError<GenericError>> {
+        _request: HostChatListSubscribeRequest,
+    ) -> Subscription<HostChatListSubscribeItem, CallError<HostChatListSubscribeError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 
@@ -118,7 +119,8 @@ pub trait Chat: Send + Sync {
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostChatActionSubscribeItem, CallError<GenericError>> {
+        _request: HostChatActionSubscribeRequest,
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<HostChatActionSubscribeError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 

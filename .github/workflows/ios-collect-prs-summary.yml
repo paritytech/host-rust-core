@@ -16,7 +16,6 @@ on:
 
 jobs:
   pr-summary:
-    uses: novasamatech/github-actions/.github/workflows/pr-summary-report.yml@v5
+    uses: novasamatech/github-actions/.github/workflows/pr-summary-report.yml@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
     with:
       days: ${{ fromJSON(github.event.inputs.days || '30') }}
-    secrets: inherit
