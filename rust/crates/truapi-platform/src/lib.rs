@@ -1051,6 +1051,9 @@ pub enum PermissionAuthorizationRequest {
         /// Product whose account context may be accessed.
         target_product_id: String,
     },
+    /// Product-scoped permission to bind and use wallet-held Chat identity authority.
+    #[codec(index = 4)]
+    ChatAuthority,
 }
 
 /// Authorization status for a permission request.
@@ -1439,6 +1442,14 @@ impl CoreStorageKey {
             request: PermissionAuthorizationRequest::AccountAccess {
                 target_product_id: target_product_id.to_string(),
             },
+        }
+    }
+
+    /// Persisted authorization key for wallet-held Chat identity authority.
+    pub fn chat_authority_authorization(product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::ChatAuthority,
         }
     }
 }
@@ -2357,6 +2368,8 @@ mod tests {
         let account_access =
             CoreStorageKey::account_access_authorization("product.dot", "target.dot");
         let other_target = CoreStorageKey::account_access_authorization("product.dot", "other.dot");
+        let chat_authority = CoreStorageKey::chat_authority_authorization("product.dot");
+        let other_product_chat = CoreStorageKey::chat_authority_authorization("other.dot");
 
         assert_ne!(camera, other_product);
         assert_ne!(camera, remote);
@@ -2365,6 +2378,9 @@ mod tests {
         assert_ne!(identity, other_product_identity);
         assert_ne!(account_access, other_target);
         assert_ne!(account_access, camera);
+        assert_ne!(chat_authority, identity);
+        assert_ne!(chat_authority, account_access);
+        assert_ne!(chat_authority, other_product_chat);
     }
 
     #[test]
@@ -2774,6 +2790,14 @@ pub struct IdentityDisclosureReview {
     pub product_id: String,
 }
 
+/// Review shown before a product binds or uses wallet-held Chat identity authority.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct ChatAuthorityReview {
+    /// Product requesting the Chat identity operation.
+    pub product_id: String,
+}
+
 /// Review shown before a product resolves its own account subtree over SSO,
 /// when the value is not cached and the core must ask the Account Holder.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -2820,6 +2844,8 @@ pub enum UserConfirmationReview {
     SignVrf(SignVrfReview),
     /// Resolve a product's own account subtree over SSO.
     ProductSubtree(ProductSubtreeReview),
+    /// Allow a product to bind and use wallet-held Chat identity authority.
+    ChatAuthority(ChatAuthorityReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.

@@ -19,6 +19,9 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Added
 
+- Add `account.productDeviceChat` for host-private Chat v2 identity binding and
+  identity-route sealing/opening through local or paired account authorities,
+  guarded by a dedicated, product-scoped Chat-authority permission.
 - expose local signing-wallet username registration and chain-verified identity
   refresh through the browser worker, with native UID proofs and RFC-0004
   X25519 identifier keys
@@ -29,6 +32,10 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Fixed
 
+- require separate Chat-authority consent on the local product API as well as
+  SSO; existing username-disclosure grants do not authorize Chat operations,
+  and denial or revocation blocks subsequent binding, sealing, and opening (#709)
+- move the secret-bearing SSO pairing result instead of cloning it (#709)
 - keep host-backed allowance helpers available on Wasm with browser-compatible
   polling clocks, while excluding the native-only renewal driver (#540)
 - report the immutable PolkaVM runtime revision actually pinned by the optional

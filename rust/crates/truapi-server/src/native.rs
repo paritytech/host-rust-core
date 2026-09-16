@@ -2794,6 +2794,7 @@ mod tests {
         cases.push(PermissionAuthorizationRequest::AccountAccess {
             target_product_id: "other.dot".to_string(),
         });
+        cases.push(PermissionAuthorizationRequest::ChatAuthority);
 
         for case in cases {
             let native = case.clone();
