@@ -12,15 +12,20 @@ name: release-cli
 on:
   # release.yml calls this for a `release: @parity/truapi <version>` commit
   # subject, so the release flow and a manual publish build binaries the same way.
+  # ci.yml calls it with no version, which builds and packages without
+  # publishing: the packaging path breaks in ways only a real run of it shows,
+  # and a release is far too late to find out.
   workflow_call:
     inputs:
       version:
-        description: "Version to publish"
-        required: true
+        description: "Version to publish. Empty builds and packages without publishing."
+        required: false
+        default: ""
         type: string
       ref:
         description: "Commit to build, since a called workflow does not inherit the caller's checkout"
-        required: true
+        required: false
+        default: ""
         type: string
   # Manual escape hatch. There is deliberately no tag trigger: a tag push
   # cannot use release.yml's workflow_run gate on green CI, so it would be an
@@ -101,14 +106,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      # What a publish ships, against what proves the packaging path still
+      # works. One leg answers the second question, and the macOS runner is the
+      # expensive one to spend on an answer already given.
       matrix:
-        include:
-          - target: aarch64-apple-darwin
-            runner: macos-15
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-latest
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJSON(inputs.version != ''
+          && '[{"target":"aarch64-apple-darwin","runner":"macos-15"},{"target":"x86_64-unknown-linux-musl","runner":"ubuntu-latest"},{"target":"aarch64-unknown-linux-musl","runner":"ubuntu-24.04-arm"}]'
+          || '[{"target":"x86_64-unknown-linux-musl","runner":"ubuntu-latest"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -144,29 +148,29 @@ jobs:
           name: generated-rust
           path: rust/crates/truapi-server/src
 
-      - name: Verify the crate version matches the release
+      # The crate version is what the archive is named for and what the binary
+      # reports, so a release that declares a different one is a release of the
+      # wrong build. Without a declared version the crate stands on its own.
+      - name: Resolve the version to build
         env:
-          VERSION: ${{ inputs.version }}
+          DECLARED: ${{ inputs.version }}
         run: |
           set -euo pipefail
           # awk, not `sed -n '0,/re/'`: that address form is a GNU extension and
           # silently yields nothing on the macOS runner's BSD sed.
           crate="$(awk -F'"' '/^version = /{print $2; exit}' rust/crates/truapi-host-cli/Cargo.toml)"
-          if [ "${crate}" != "${VERSION}" ]; then
-            echo "::error::truapi-host-cli is ${crate}, but the release declares ${VERSION}. Run npm run version-packages."
+          if [ -n "${DECLARED}" ] && [ "${crate}" != "${DECLARED}" ]; then
+            echo "::error::truapi-host-cli is ${crate}, but the release declares ${DECLARED}. Run npm run version-packages."
             exit 1
           fi
+          echo "VERSION=${crate}" >> "$GITHUB_ENV"
 
       - name: Build and package
-        env:
-          VERSION: ${{ inputs.version }}
         run: make cli-dist CLI_TARGET=${{ matrix.target }} CLI_VERSION="${VERSION}"
 
       # A published binary that cannot start is worse than no binary at all.
       # Every leg builds natively, so each one can run what it just produced.
       - name: Smoke-test the binary
-        env:
-          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           reported="$(./target/${{ matrix.target }}/release/truapi-host --version)"
@@ -186,6 +190,8 @@ jobs:
 
   publish:
     needs: build
+    # A run with no version to publish stops at a packaged archive.
+    if: inputs.version != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
