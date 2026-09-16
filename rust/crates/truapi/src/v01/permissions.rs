@@ -47,6 +47,9 @@ pub enum HostDevicePermissionRequest {
     /// Biometric authentication.
     #[display("biometrics")]
     Biometrics,
+    /// Ringing an alarm through the platform's alarm framework.
+    #[display("alarms")]
+    Alarms,
 }
 
 /// One remote-operation permission requested by the product (RFC 0002).

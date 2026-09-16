@@ -26,6 +26,8 @@ export const CALLBACK_NAMES = [
   "devicePermissionStatus",
   "devicePermission",
   "remotePermission",
+  "declarePill",
+  "withdrawPill",
   "removePocketCard",
   "read",
   "write",
@@ -106,10 +108,11 @@ function rawCallbacks(
       bridge.callbackRequest("navigateTo", [url]) as ReturnType<
         Required<RawCallbacks>["navigateTo"]
       >,
-    pushNotification: (notification) =>
-      bridge.callbackRequest("pushNotification", [notification]) as ReturnType<
-        Required<RawCallbacks>["pushNotification"]
-      >,
+    pushNotification: (notification, urgency) =>
+      bridge.callbackRequest("pushNotification", [
+        notification,
+        urgency,
+      ]) as ReturnType<Required<RawCallbacks>["pushNotification"]>,
     cancelNotification: (id) =>
       bridge.callbackRequest("cancelNotification", [id]) as ReturnType<
         Required<RawCallbacks>["cancelNotification"]
@@ -204,6 +207,21 @@ function permissionStatusRawCallbacks(
   };
 }
 
+function pillRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "declarePill" | "withdrawPill">> {
+  return {
+    declarePill: (request) =>
+      bridge.callbackRequest("declarePill", [request]) as ReturnType<
+        Required<RawCallbacks>["declarePill"]
+      >,
+    withdrawPill: (request) =>
+      bridge.callbackRequest("withdrawPill", [request]) as ReturnType<
+        Required<RawCallbacks>["withdrawPill"]
+      >,
+  };
+}
+
 function pocketRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<Pick<RawCallbacks, "subscribePocketCards" | "removePocketCard">> {
@@ -234,6 +252,8 @@ export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   permissionStatus?: boolean;
   /** Whether the host serves this capability. */
+  pill?: boolean;
+  /** Whether the host serves this capability. */
   pocket?: boolean;
 }
 
@@ -249,6 +269,7 @@ export function createWorkerRawCallbacks(
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
   if (capabilities.permissionStatus)
     Object.assign(callbacks, permissionStatusRawCallbacks(bridge));
+  if (capabilities.pill) Object.assign(callbacks, pillRawCallbacks(bridge));
   if (capabilities.pocket) Object.assign(callbacks, pocketRawCallbacks(bridge));
   return callbacks;
 }

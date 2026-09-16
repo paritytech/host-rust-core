@@ -426,6 +426,7 @@ pub trait HostCallbacks: Send + Sync {
     async fn push_notification(
         &self,
         request: v01::HostPushNotificationRequest,
+        urgency: v01::HostPushNotificationUrgency,
     ) -> Result<u32, HostRejection>;
 
     /// Cancel a notification by id.
@@ -543,6 +544,55 @@ pub trait HostCallbacks: Send + Sync {
     fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), HostStorageError>;
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
+}
+
+/// Native pill adapter. A host that draws pills passes one to
+/// [`NativeTrUApiHostRuntime::open_product_execution`]; a host that does not
+/// passes `None`, and the core answers the product's pill calls `Unsupported`.
+#[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
+pub trait NativePillCallbacks: Send + Sync {
+    /// Record the declaration and draw the pill from `show_from` until
+    /// `deadline`, on every surface the host draws except while the declaring
+    /// product is in the foreground. A declaration reusing a live key
+    /// replaces it. `destination` arrives canonicalised, as `navigate_to`
+    /// receives it.
+    async fn declare_pill(&self, request: v01::HostPillDeclareRequest)
+    -> Result<(), HostRejection>;
+
+    /// Withdraw the pill with this key. Idempotent.
+    async fn withdraw_pill(
+        &self,
+        request: v01::HostPillWithdrawRequest,
+    ) -> Result<(), HostRejection>;
+}
+
+/// Bridges [`NativePillCallbacks`] to the platform trait the core calls.
+struct PillCallbackPlatform {
+    pill: Arc<dyn NativePillCallbacks>,
+}
+
+#[async_trait]
+impl truapi_platform::PillHost for PillCallbackPlatform {
+    async fn declare_pill(
+        &self,
+        request: v01::HostPillDeclareRequest,
+    ) -> Result<(), v01::GenericError> {
+        self.pill
+            .declare_pill(request)
+            .await
+            .map_err(v01::GenericError::from)
+    }
+
+    async fn withdraw_pill(
+        &self,
+        request: v01::HostPillWithdrawRequest,
+    ) -> Result<(), v01::GenericError> {
+        self.pill
+            .withdraw_pill(request)
+            .await
+            .map_err(v01::GenericError::from)
+    }
 }
 
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
@@ -673,6 +723,7 @@ impl NativeTrUApiHostRuntime {
         &self,
         callbacks: Arc<dyn HostCallbacks>,
         chat_callbacks: Option<Arc<dyn NativeChatCallbacks>>,
+        pill_callbacks: Option<Arc<dyn NativePillCallbacks>>,
         pocket_callbacks: Option<Arc<dyn NativePocketCallbacks>>,
         product: ProductContext,
     ) -> Arc<NativeProductExecution> {
@@ -684,6 +735,10 @@ impl NativeTrUApiHostRuntime {
         let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
             callback_platform.clone();
         let platform: Arc<dyn truapi_platform::Platform> = callback_platform;
+        let pill: Option<Arc<dyn truapi_platform::PillHost>> =
+            pill_callbacks.map(|pill| -> Arc<dyn truapi_platform::PillHost> {
+                Arc::new(PillCallbackPlatform { pill })
+            });
         let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> =
             chat_callbacks.map(|chat| -> Arc<dyn truapi_platform::ChatPlatform> {
                 Arc::new(ChatCallbackPlatform {
@@ -705,6 +760,7 @@ impl NativeTrUApiHostRuntime {
             chat,
             pocket,
             permission_status,
+            pill,
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -827,13 +883,14 @@ impl NativeTrUApiHostRuntime {
     }
 
     /// Open a connection-scoped execution with immutable trusted context.
-    /// `chat_callbacks` installs the host's Chat adapter; hosts without the
-    /// Chat modality pass `None`. `pocket_callbacks` does the same for the
-    /// card collection.
+    /// `chat_callbacks` installs the host's Chat adapter, `pill_callbacks` the
+    /// adapter that draws its pills, and `pocket_callbacks` the card
+    /// collection; a host without one passes `None`.
     pub fn open_product_execution(
         &self,
         callbacks: Arc<dyn HostCallbacks>,
         chat_callbacks: Option<Arc<dyn NativeChatCallbacks>>,
+        pill_callbacks: Option<Arc<dyn NativePillCallbacks>>,
         pocket_callbacks: Option<Arc<dyn NativePocketCallbacks>>,
         execution_config: NativeProductExecutionConfig,
     ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
@@ -841,6 +898,7 @@ impl NativeTrUApiHostRuntime {
         Ok(self.open_product_execution_with_callbacks(
             callbacks,
             chat_callbacks,
+            pill_callbacks,
             pocket_callbacks,
             product,
         ))
@@ -1008,6 +1066,9 @@ pub struct NativeProductExecution {
     /// The same `CallbackPlatform` as `platform`, kept separately because
     /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
     permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
+    /// Pill adapter for hosts that draw pills; `None` answers every pill call
+    /// `Unsupported`.
+    pill: Option<Arc<dyn truapi_platform::PillHost>>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -1039,6 +1100,7 @@ impl NativeProductExecution {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
             permission_status: Some(self.permission_status.clone()),
+            pill: self.pill.clone(),
             chat: self.chat_connection.clone(),
             renderer: self.renderer_connection.clone(),
             pocket_platform: self.pocket.clone(),
@@ -1542,6 +1604,7 @@ impl Notifications for CallbackPlatform {
     async fn push_notification(
         &self,
         notification: v01::HostPushNotificationRequest,
+        urgency: v01::HostPushNotificationUrgency,
     ) -> Result<v01::HostPushNotificationResponse, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.push_notification".to_string(),
@@ -1550,7 +1613,7 @@ impl Notifications for CallbackPlatform {
 
         let id = self
             .callbacks
-            .push_notification(notification)
+            .push_notification(notification, urgency)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostPushNotificationResponse { id })
@@ -2312,6 +2375,7 @@ mod tests {
         async fn push_notification(
             &self,
             _request: v01::HostPushNotificationRequest,
+            _urgency: v01::HostPushNotificationUrgency,
         ) -> Result<u32, HostRejection> {
             Ok(0)
         }
@@ -2589,6 +2653,7 @@ mod tests {
             callbacks,
             None,
             None,
+            None,
             native_execution_config(product_id, ProductExecutionKind::App),
         )
         .expect("product execution config should be valid")
@@ -2633,6 +2698,7 @@ mod tests {
                 Arc::new(EventCallbacks::new()),
                 None,
                 None,
+                None,
                 native_execution_config("shared.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
@@ -2641,6 +2707,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
+                None,
                 None,
                 native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
@@ -2658,6 +2725,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
+                None,
                 None,
                 native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
@@ -2744,6 +2812,7 @@ mod tests {
         let execution = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
+                None,
                 None,
                 None,
                 native_execution_config("chat-product.dot", ProductExecutionKind::Worker),
@@ -3137,6 +3206,7 @@ mod tests {
                 Arc::new(EventCallbacks::new()),
                 None,
                 None,
+                None,
                 native_execution_config("chat.dot", ProductExecutionKind::Worker),
             )
             .expect("Worker execution should open");
@@ -3481,6 +3551,7 @@ mod tests {
                 Arc::new(EventCallbacks::new()),
                 None,
                 None,
+                None,
                 native_execution_config("chain.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
@@ -3604,6 +3675,7 @@ mod tests {
             async fn push_notification(
                 &self,
                 _request: v01::HostPushNotificationRequest,
+                _urgency: v01::HostPushNotificationUrgency,
             ) -> Result<u32, HostRejection> {
                 Ok(0)
             }
@@ -3750,6 +3822,7 @@ mod tests {
             async fn push_notification(
                 &self,
                 _request: v01::HostPushNotificationRequest,
+                _urgency: v01::HostPushNotificationUrgency,
             ) -> Result<u32, HostRejection> {
                 Ok(0)
             }
@@ -4153,6 +4226,7 @@ mod tests {
                 Arc::new(EventCallbacks::refusing(
                     v01::HostDevicePermissionRequest::Camera,
                 )),
+                None,
                 None,
                 None,
                 native_execution_config("gated.dot", ProductExecutionKind::App),

@@ -267,7 +267,15 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Deliver a push notification (`HostPushNotificationRequest`)
     /// and return the host-assigned notification id. Invoked on the dispatcher
     /// thread; hop to the main thread for any UI work and return promptly.
-    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32
+    ///
+    /// `urgency` is what the core resolved the product's request to. `critical`
+    /// rings the platform's alarm framework until the user dismisses it, and
+    /// reaches this call only where the host granted `alarms`; a host with no
+    /// alarm framework refuses that grant.
+    func pushNotification(
+        request: HostPushNotificationRequest,
+        urgency: HostPushNotificationUrgency
+    ) async throws -> UInt32
 
     /// Cancel a previously scheduled notification id.
     func cancelNotification(id: UInt32) throws
@@ -368,7 +376,7 @@ public protocol HostBridge: AnyObject, Sendable {
 }
 
 /// Native Chat storage and UI surface. Implement and pass to
-/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pill:pocket:)``
 /// when the host supports the Chat modality; hosts without it pass nothing.
 /// Native Chat storage and UI surface, called from the process-wide dispatch
 /// pool shared by every product execution: implementations must be safe to
@@ -430,7 +438,6 @@ public protocol PocketHostBridge: AnyObject, Sendable {
 public extension HostBridge {
     /// Default no-op logger. Override to plumb into your logging framework.
     func onCoreLog(marker: String, detail: String) {}
-    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32 { 0 }
     func cancelNotification(id: UInt32) throws {}
     func authStateChanged(state: AuthState) {}
     func chainConnect(genesisHash: Data) throws -> UInt32? { nil }
@@ -450,6 +457,46 @@ public extension HostBridge {
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
+}
+
+/// Draws a product's pill on the host's own surfaces. Hosts that serve one pass
+/// an implementation to
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pill:)``;
+/// hosts that do not pass nothing, and the core answers the product
+/// `Unsupported`.
+///
+/// Threading: these run on the dispatcher; hop to the main thread for any UI
+/// work and return promptly.
+public protocol PillHostBridge: AnyObject, Sendable {
+    /// Record the declaration and draw the pill from `showFrom` until
+    /// `deadline`, on every surface the host draws except while the declaring
+    /// product is in the foreground. A declaration reusing a live key replaces it. `destination`
+    /// arrives canonicalised, as `navigateTo` receives it.
+    func declarePill(request: HostPillDeclareRequest) async throws
+
+    /// Withdraw the pill with this key. Idempotent.
+    func withdrawPill(request: HostPillWithdrawRequest) async throws
+}
+
+/// Bridges ``PillHostBridge`` to the generated `NativePillCallbacks` protocol.
+private final class PillCallbackAdapter: NativePillCallbacks, @unchecked Sendable {
+    private let bridge: PillHostBridge
+
+    init(bridge: PillHostBridge) {
+        self.bridge = bridge
+    }
+
+    func declarePill(request: HostPillDeclareRequest) async throws {
+        try await withHostRejection {
+            try await bridge.declarePill(request: request)
+        }
+    }
+
+    func withdrawPill(request: HostPillWithdrawRequest) async throws {
+        try await withHostRejection {
+            try await bridge.withdrawPill(request: request)
+        }
+    }
 }
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
@@ -554,9 +601,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32 {
+    func pushNotification(
+        request: HostPushNotificationRequest,
+        urgency: HostPushNotificationUrgency
+    ) async throws -> UInt32 {
         try await withHostRejection {
-            try await bridge.pushNotification(request: request)
+            try await bridge.pushNotification(request: request, urgency: urgency)
         }
     }
 
@@ -754,14 +804,17 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         bridge: HostBridge,
         configuration: ProductExecutionConfig,
         chat: ChatHostBridge? = nil,
+        pill: PillHostBridge? = nil,
         pocket: PocketHostBridge? = nil
     ) throws -> TrUAPIProductExecution {
         let adapter = HostCallbackAdapter(bridge: bridge)
         let chatAdapter = chat.map { ChatCallbackAdapter(bridge: $0) }
+        let pillAdapter = pill.map { PillCallbackAdapter(bridge: $0) }
         let pocketAdapter = pocket.map { PocketCallbackAdapter(bridge: $0) }
         let execution = try inner.openProductExecution(
             callbacks: adapter,
             chatCallbacks: chatAdapter,
+            pillCallbacks: pillAdapter,
             pocketCallbacks: pocketAdapter,
             executionConfig: configuration.native
         )
@@ -769,6 +822,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
             inner: execution,
             callbackRetainer: adapter,
             chatRetainer: chatAdapter,
+            pillRetainer: pillAdapter,
             pocketRetainer: pocketAdapter
         )
     }
@@ -927,17 +981,20 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks
     private let chatRetainer: NativeChatCallbacks?
+    private let pillRetainer: NativePillCallbacks?
     private let pocketRetainer: NativePocketCallbacks?
 
     fileprivate init(
         inner: NativeProductExecution,
         callbackRetainer: HostCallbacks,
         chatRetainer: NativeChatCallbacks?,
+        pillRetainer: NativePillCallbacks?,
         pocketRetainer: NativePocketCallbacks?
     ) {
         self.inner = inner
         self.callbackRetainer = callbackRetainer
         self.chatRetainer = chatRetainer
+        self.pillRetainer = pillRetainer
         self.pocketRetainer = pocketRetainer
     }
 

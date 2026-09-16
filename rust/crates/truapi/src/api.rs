@@ -10,6 +10,7 @@ pub mod locale;
 pub mod notifications;
 pub mod payment;
 pub mod permissions;
+pub mod pill;
 pub mod pocket;
 pub mod preimage;
 pub mod renderer;
@@ -29,6 +30,7 @@ pub use locale::Locale;
 pub use notifications::Notifications;
 pub use payment::Payment;
 pub use permissions::Permissions;
+pub use pill::Pill;
 pub use pocket::Pocket;
 pub use preimage::Preimage;
 pub use renderer::Renderer;
@@ -50,6 +52,7 @@ pub trait TrUApi:
     + Notifications
     + Payment
     + Permissions
+    + Pill
     + Pocket
     + Preimage
     + Renderer
@@ -74,6 +77,7 @@ impl<T> TrUApi for T where
         + Notifications
         + Payment
         + Permissions
+        + Pill
         + Pocket
         + Preimage
         + Renderer

@@ -529,6 +529,8 @@ fn rust_type(ty: &TypeRef, ctx: &BridgeCtx<'_>) -> Result<String> {
         )),
         TypeRef::Named { name, args } if ctx.api_types.contains_key(name.as_str()) => {
             if args.is_empty() {
+                // The rustdoc IR keeps a type's name and drops its module, so
+                // every API type resolves through `v01`.
                 Ok(format!("v01::{name}"))
             } else {
                 bail!("generic API type `{name}` is not supported in wasm bridge")

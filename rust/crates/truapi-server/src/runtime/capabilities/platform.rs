@@ -2,7 +2,7 @@
 
 use futures::StreamExt;
 use tracing::{instrument, warn};
-use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme};
+use truapi::api::{LocalStorage, Locale, Notifications, Permissions, Pill, System, Theme};
 use truapi::latest::GenericError;
 use truapi::versioned::IntoLatest;
 use truapi::versioned::local_storage::{
@@ -19,6 +19,10 @@ use truapi::versioned::notifications::{
 use truapi::versioned::permissions::{
     HostDevicePermissionError, HostDevicePermissionRequest, HostDevicePermissionResponse,
     RemotePermissionError, RemotePermissionRequest, RemotePermissionResponse,
+};
+use truapi::versioned::pill::{
+    HostPillDeclareError, HostPillDeclareRequest, HostPillDeclareResponse, HostPillWithdrawError,
+    HostPillWithdrawRequest, HostPillWithdrawResponse,
 };
 use truapi::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
@@ -286,6 +290,60 @@ impl Locale for ProductRuntimeHost {
     }
 }
 
+#[truapi::async_trait]
+impl Pill for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "pill.declare_pill"))]
+    async fn declare_pill(
+        &self,
+        _cx: &CallContext,
+        request: HostPillDeclareRequest,
+    ) -> Result<HostPillDeclareResponse, CallError<HostPillDeclareError>> {
+        let HostPillDeclareRequest::V1(mut inner) = request;
+        let Some(pill) = self.pill.as_ref() else {
+            return Err(CallError::Unsupported);
+        };
+        let refuse = |reason: String| {
+            CallError::Domain(HostPillDeclareError::V1(v01::GenericError { reason }))
+        };
+        if inner.deadline == 0 {
+            return Err(refuse("a pill deadline cannot be zero".to_string()));
+        }
+        if inner.show_from > inner.deadline {
+            return Err(refuse(
+                "a pill window cannot end before it starts".to_string(),
+            ));
+        }
+        // Held to what `navigate_to` accepts; the per-domain grant is not taken.
+        inner.destination = match parse_navigate(&inner.destination) {
+            NavigateDecision::Reject { reason } => return Err(refuse(reason)),
+            NavigateDecision::DotName { canonical_url, .. }
+            | NavigateDecision::Localhost { canonical_url, .. }
+            | NavigateDecision::Pocket { canonical_url, .. } => canonical_url,
+            NavigateDecision::External { url } => url,
+        };
+        pill.declare_pill(inner)
+            .await
+            .map(|()| HostPillDeclareResponse::V1)
+            .map_err(|err| CallError::Domain(HostPillDeclareError::V1(err)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "pill.withdraw_pill"))]
+    async fn withdraw_pill(
+        &self,
+        _cx: &CallContext,
+        request: HostPillWithdrawRequest,
+    ) -> Result<HostPillWithdrawResponse, CallError<HostPillWithdrawError>> {
+        let HostPillWithdrawRequest::V1(inner) = request;
+        let Some(pill) = self.pill.as_ref() else {
+            return Err(CallError::Unsupported);
+        };
+        pill.withdraw_pill(inner)
+            .await
+            .map(|()| HostPillWithdrawResponse::V1)
+            .map_err(|err| CallError::Domain(HostPillWithdrawError::V1(err)))
+    }
+}
+
 // `Notifications` delegates to the platform so hosts can own scheduling and
 // cancellation while the core preserves the typed TrUAPI wire shape.
 
@@ -297,13 +355,48 @@ impl Notifications for ProductRuntimeHost {
         _cx: &CallContext,
         request: HostPushNotificationRequest,
     ) -> Result<HostPushNotificationResponse, CallError<HostPushNotificationError>> {
-        let HostPushNotificationRequest::V1(inner) = request;
+        let mut inner = request.into_latest();
+        if inner.urgency == v01::HostPushNotificationUrgency::Critical {
+            let product_id = self.product_id();
+            let authorized = match self
+                .permissions_service(&product_id)
+                .peek_device(&v01::HostDevicePermissionRequest::Alarms)
+                .await
+            {
+                Ok(status) => status == PermissionAuthorizationStatus::Authorized,
+                Err(err) => {
+                    warn!(reason = %err.reason, "alarms permission unreadable; delivering Normal");
+                    false
+                }
+            };
+            if !authorized {
+                inner.urgency = v01::HostPushNotificationUrgency::Normal;
+            }
+        }
+        let v02::HostPushNotificationRequest {
+            text,
+            deeplink,
+            scheduled_at,
+            urgency,
+        } = inner;
         self.platform
-            .push_notification(inner)
+            .push_notification(
+                v01::HostPushNotificationRequest {
+                    text,
+                    deeplink,
+                    scheduled_at,
+                },
+                urgency,
+            )
             .await
-            .map(HostPushNotificationResponse::V1)
+            .map(|response| {
+                HostPushNotificationResponse::V2(v02::HostPushNotificationResponse {
+                    id: response.id,
+                    urgency,
+                })
+            })
             .map_err(|err| {
-                CallError::Domain(HostPushNotificationError::V1(
+                CallError::Domain(HostPushNotificationError::V2(
                     v01::HostPushNotificationError::Unknown { reason: err.reason },
                 ))
             })

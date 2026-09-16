@@ -15,7 +15,7 @@ use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
-use truapi_platform::{HostInfo, JsonRpcConnection, PermissionStatusHost, Platform};
+use truapi_platform::{HostInfo, JsonRpcConnection, PermissionStatusHost, PillHost, Platform};
 
 /// Upper bound on the in-core preimage cache. The cache is a bridge until
 /// content propagates to the lookup backend, not a store, so it stays small.
@@ -38,6 +38,9 @@ pub(crate) struct RuntimeServices {
     /// startup by a host that can read it. Unset leaves device grants
     /// resolving from stored state alone.
     permission_status: OnceLock<Arc<dyn PermissionStatusHost>>,
+    /// Host adapter drawing a product's pill, installed once at startup by a
+    /// host that serves one. Unset answers every pill call `Unsupported`.
+    pill: OnceLock<Arc<dyn PillHost>>,
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
@@ -96,6 +99,7 @@ impl RuntimeServices {
             host_info,
             chat_platform: None,
             permission_status: OnceLock::new(),
+            pill: OnceLock::new(),
             pocket_platform: OnceLock::new(),
             asset_hub_chain_genesis_hash: OnceLock::new(),
             worker_ledger: WorkerLedger::default(),
@@ -146,6 +150,19 @@ impl RuntimeServices {
         host: Arc<dyn PermissionStatusHost>,
     ) -> bool {
         self.permission_status.set(host).is_ok()
+    }
+
+    /// Installs the adapter that draws a product's pill.
+    ///
+    /// Set-once, so a capability cannot be swapped out from under a running
+    /// product. Returns whether this call installed it.
+    pub(crate) fn install_pill_host(&self, host: Arc<dyn PillHost>) -> bool {
+        self.pill.set(host).is_ok()
+    }
+
+    /// The installed pill adapter, if the host serves one.
+    pub(crate) fn pill_host(&self) -> Option<Arc<dyn PillHost>> {
+        self.pill.get().cloned()
     }
 
     /// Records the Asset Hub the dotNS contracts live on. Returns false when a

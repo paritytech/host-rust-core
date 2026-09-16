@@ -5,9 +5,10 @@ use std::sync::atomic::Ordering;
 
 use parity_scale_codec::Encode;
 use truapi::api::{
-    Account, Chain, Entropy, LocalStorage, Notifications, Permissions, Preimage,
+    Account, Chain, Entropy, LocalStorage, Notifications, Permissions, Pill, Preimage,
     ResourceAllocation, Signing, System, Theme,
 };
+use truapi::latest;
 use truapi::v02;
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
@@ -32,6 +33,9 @@ use truapi::versioned::notifications::{
     HostPushNotificationRequest, HostPushNotificationResponse,
 };
 use truapi::versioned::permissions::{HostDevicePermissionRequest, HostDevicePermissionResponse};
+use truapi::versioned::pill::{
+    HostPillDeclareError, HostPillDeclareRequest, HostPillWithdrawRequest,
+};
 use truapi::versioned::preimage::{
     RemotePreimageLookupSubscribeItem, RemotePreimageLookupSubscribeRequest,
     RemotePreimageSubmitRequest,
@@ -1286,28 +1290,103 @@ fn push_notification_delegates_payload_and_returns_host_id() {
     });
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
     let cx = CallContext::default();
-    let request = HostPushNotificationRequest::V1(v01::HostPushNotificationRequest {
+    let request = HostPushNotificationRequest::V2(latest::HostPushNotificationRequest {
         text: "Hello".to_string(),
         deeplink: Some("https://example.invalid/launch".to_string()),
         scheduled_at: Some(1_776_144_000_000),
+        urgency: latest::HostPushNotificationUrgency::Normal,
     });
 
     let response = futures::executor::block_on(host.send_push_notification(&cx, request)).unwrap();
 
     assert_eq!(
         response,
-        HostPushNotificationResponse::V1(v01::HostPushNotificationResponse { id: 42 })
+        HostPushNotificationResponse::V2(latest::HostPushNotificationResponse {
+            id: 42,
+            urgency: latest::HostPushNotificationUrgency::Normal,
+        })
     );
     assert_eq!(
         pushed_notifications
             .lock()
             .expect("notification list mutex poisoned")
             .as_slice(),
-        &[v01::HostPushNotificationRequest {
-            text: "Hello".to_string(),
-            deeplink: Some("https://example.invalid/launch".to_string()),
-            scheduled_at: Some(1_776_144_000_000),
-        }]
+        &[(
+            v01::HostPushNotificationRequest {
+                text: "Hello".to_string(),
+                deeplink: Some("https://example.invalid/launch".to_string()),
+                scheduled_at: Some(1_776_144_000_000),
+            },
+            latest::HostPushNotificationUrgency::Normal,
+        )]
+    );
+}
+
+#[test]
+fn push_notification_downgrades_critical_without_alarms_grant() {
+    let pushed_notifications = Arc::new(Mutex::new(Vec::new()));
+    let platform = Arc::new(StubPlatform {
+        notification_id: 7,
+        pushed_notifications: pushed_notifications.clone(),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let cx = CallContext::default();
+    let request = HostPushNotificationRequest::V2(latest::HostPushNotificationRequest {
+        text: "Game starting".to_string(),
+        deeplink: None,
+        scheduled_at: Some(1_776_144_000_000),
+        urgency: latest::HostPushNotificationUrgency::Critical,
+    });
+
+    let response = futures::executor::block_on(host.send_push_notification(&cx, request)).unwrap();
+
+    assert_eq!(
+        pushed_notifications
+            .lock()
+            .expect("notification list mutex poisoned")[0]
+            .1,
+        latest::HostPushNotificationUrgency::Normal
+    );
+    assert_eq!(
+        response,
+        HostPushNotificationResponse::V2(latest::HostPushNotificationResponse {
+            id: 7,
+            urgency: latest::HostPushNotificationUrgency::Normal,
+        })
+    );
+}
+
+#[test]
+fn push_notification_keeps_critical_with_alarms_grant() {
+    let pushed_notifications = Arc::new(Mutex::new(Vec::new()));
+    let platform = Arc::new(StubPlatform {
+        notification_id: 7,
+        pushed_notifications: pushed_notifications.clone(),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let cx = CallContext::default();
+    futures::executor::block_on(host.request_device_permission(
+        &cx,
+        HostDevicePermissionRequest::V1(v01::HostDevicePermissionRequest::Alarms),
+    ))
+    .unwrap();
+    let request = HostPushNotificationRequest::V2(latest::HostPushNotificationRequest {
+        text: "Game starting".to_string(),
+        deeplink: None,
+        scheduled_at: Some(1_776_144_000_000),
+        urgency: latest::HostPushNotificationUrgency::Critical,
+    });
+
+    futures::executor::block_on(host.send_push_notification(&cx, request)).unwrap();
+
+    assert_eq!(
+        pushed_notifications
+            .lock()
+            .expect("notification list mutex poisoned")[0]
+            .1,
+        latest::HostPushNotificationUrgency::Critical
     );
 }
 
@@ -4168,3 +4247,184 @@ fn feature_supported_encodes_response_to_known_bytes() {
 }
 
 mod signing;
+
+/// Records what the host was asked to draw and withdraw.
+#[derive(Default)]
+struct StubPillHost {
+    declared: Mutex<Vec<v01::HostPillDeclareRequest>>,
+    withdrawn: Mutex<Vec<String>>,
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::PillHost for StubPillHost {
+    async fn declare_pill(
+        &self,
+        request: v01::HostPillDeclareRequest,
+    ) -> Result<(), v01::GenericError> {
+        self.declared
+            .lock()
+            .expect("pill declaration mutex poisoned")
+            .push(request);
+        Ok(())
+    }
+
+    async fn withdraw_pill(
+        &self,
+        request: v01::HostPillWithdrawRequest,
+    ) -> Result<(), v01::GenericError> {
+        self.withdrawn
+            .lock()
+            .expect("pill withdrawal mutex poisoned")
+            .push(request.key);
+        Ok(())
+    }
+}
+
+fn game_pill() -> v01::HostPillDeclareRequest {
+    v01::HostPillDeclareRequest {
+        key: "game".to_string(),
+        show_from: 1_776_143_820_000,
+        deadline: 1_776_144_000_000,
+        destination: "https://example.invalid/game".to_string(),
+        title: "Game starting".to_string(),
+        open_at_deadline: true,
+    }
+}
+
+#[test]
+fn pill_is_unsupported_on_a_host_that_draws_none() {
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    let cx = CallContext::default();
+
+    let declared = futures::executor::block_on(
+        host.declare_pill(&cx, HostPillDeclareRequest::V1(game_pill())),
+    );
+    let withdrawn = futures::executor::block_on(host.withdraw_pill(
+        &cx,
+        HostPillWithdrawRequest::V1(v01::HostPillWithdrawRequest {
+            key: "game".to_string(),
+        }),
+    ));
+
+    assert_eq!(declared.unwrap_err(), CallError::Unsupported);
+    assert_eq!(withdrawn.unwrap_err(), CallError::Unsupported);
+}
+
+#[test]
+fn pill_declaration_and_withdrawal_reach_the_host_that_draws_it() {
+    let pill = Arc::new(StubPillHost::default());
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner())
+        .with_pill_host(pill.clone());
+    let cx = CallContext::default();
+
+    futures::executor::block_on(host.declare_pill(&cx, HostPillDeclareRequest::V1(game_pill())))
+        .expect("declare_pill");
+    futures::executor::block_on(host.withdraw_pill(
+        &cx,
+        HostPillWithdrawRequest::V1(v01::HostPillWithdrawRequest {
+            key: "game".to_string(),
+        }),
+    ))
+    .expect("withdraw_pill");
+
+    assert_eq!(
+        pill.declared
+            .lock()
+            .expect("pill declaration mutex poisoned")
+            .as_slice(),
+        &[game_pill()]
+    );
+    assert_eq!(
+        pill.withdrawn
+            .lock()
+            .expect("pill withdrawal mutex poisoned")
+            .as_slice(),
+        &["game".to_string()]
+    );
+}
+
+#[test]
+fn a_pill_window_that_ends_before_it_starts_is_refused() {
+    let pill = Arc::new(StubPillHost::default());
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner())
+        .with_pill_host(pill.clone());
+    let cx = CallContext::default();
+    let inverted = v01::HostPillDeclareRequest {
+        show_from: 1_776_144_000_000,
+        deadline: 1_776_143_820_000,
+        ..game_pill()
+    };
+    let zero = v01::HostPillDeclareRequest {
+        deadline: 0,
+        ..game_pill()
+    };
+
+    for (declaration, reason) in [
+        (inverted, "a pill window cannot end before it starts"),
+        (zero, "a pill deadline cannot be zero"),
+    ] {
+        let refused = futures::executor::block_on(
+            host.declare_pill(&cx, HostPillDeclareRequest::V1(declaration)),
+        );
+        let Err(CallError::Domain(HostPillDeclareError::V1(err))) = refused else {
+            panic!("a malformed window is refused");
+        };
+        assert_eq!(err.reason, reason);
+    }
+    assert!(
+        pill.declared
+            .lock()
+            .expect("pill declaration mutex poisoned")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_destination_navigate_to_would_refuse_is_refused() {
+    let pill = Arc::new(StubPillHost::default());
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner())
+        .with_pill_host(pill.clone());
+    let cx = CallContext::default();
+    let declaration = v01::HostPillDeclareRequest {
+        destination: "javascript:alert(1)".to_string(),
+        ..game_pill()
+    };
+
+    let refused = futures::executor::block_on(
+        host.declare_pill(&cx, HostPillDeclareRequest::V1(declaration)),
+    );
+
+    let Err(CallError::Domain(HostPillDeclareError::V1(err))) = refused else {
+        panic!("a destination navigate_to would refuse is refused");
+    };
+    assert!(!err.reason.is_empty());
+    assert!(
+        pill.declared
+            .lock()
+            .expect("pill declaration mutex poisoned")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_dotns_destination_reaches_the_host_canonicalised() {
+    let pill = Arc::new(StubPillHost::default());
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner())
+        .with_pill_host(pill.clone());
+    let cx = CallContext::default();
+    let declaration = v01::HostPillDeclareRequest {
+        destination: "jollity.dot/game".to_string(),
+        ..game_pill()
+    };
+
+    futures::executor::block_on(host.declare_pill(&cx, HostPillDeclareRequest::V1(declaration)))
+        .expect("declare_pill");
+
+    assert_eq!(
+        pill.declared
+            .lock()
+            .expect("pill declaration mutex poisoned")[0]
+            .destination,
+        "https://jollity.dot/game"
+    );
+}

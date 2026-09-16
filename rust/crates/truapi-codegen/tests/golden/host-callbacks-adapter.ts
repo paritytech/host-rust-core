@@ -18,10 +18,13 @@ import {
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostLocaleSubscribeItem,
+  HostPillDeclareRequest,
+  HostPillWithdrawRequest,
   HostPocketListSubscribeItem,
   HostPocketRemoveCardRequest,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostPushNotificationUrgency,
   HostThemeSubscribeItem,
   RemotePermissionRequest,
   RemotePermissionResponse,
@@ -75,11 +78,16 @@ export interface RawCallbacks {
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
   navigateTo(url: string): Promise<void>;
-  pushNotification(notification: Uint8Array): Promise<Uint8Array>;
+  pushNotification(
+    notification: Uint8Array,
+    urgency: Uint8Array,
+  ): Promise<Uint8Array>;
   cancelNotification(id: NotificationId): Promise<void>;
   devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
   devicePermission(request: Uint8Array): Promise<Uint8Array>;
   remotePermission(request: Uint8Array): Promise<Uint8Array>;
+  declarePill?(request: Uint8Array): Promise<void>;
+  withdrawPill?(request: Uint8Array): Promise<void>;
   subscribePocketCards?(
     product: Uint8Array,
     sendItem: (item?: Uint8Array) => void,
@@ -107,6 +115,7 @@ export function createWasmRawCallbacks(
 ): RawCallbacks {
   const chat = callbacks.chat;
   const permissionStatus = callbacks.permissionStatus;
+  const pill = callbacks.pill;
   const pocket = callbacks.pocket;
   return {
     authStateChanged: async (state) =>
@@ -167,10 +176,11 @@ export function createWasmRawCallbacks(
         sendError,
       ),
     navigateTo: async (url) => await callbacks.navigation.navigateTo(url),
-    pushNotification: async (notification) =>
+    pushNotification: async (notification, urgency) =>
       HostPushNotificationResponse.enc(
         await callbacks.notifications.pushNotification(
           HostPushNotificationRequest.dec(notification),
+          HostPushNotificationUrgency.dec(urgency),
         ),
       ),
     cancelNotification: async (id) =>
@@ -197,6 +207,14 @@ export function createWasmRawCallbacks(
           RemotePermissionRequest.dec(request),
         ),
       ),
+    ...(pill
+      ? {
+          declarePill: async (request) =>
+            await pill.declarePill(HostPillDeclareRequest.dec(request)),
+          withdrawPill: async (request) =>
+            await pill.withdrawPill(HostPillWithdrawRequest.dec(request)),
+        }
+      : {}),
     ...(pocket
       ? {
           subscribePocketCards: (product, sendItem, sendError) =>

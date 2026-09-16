@@ -37,10 +37,13 @@ import type {
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostLocaleSubscribeItem,
+  HostPillDeclareRequest,
+  HostPillWithdrawRequest,
   HostPocketListSubscribeItem,
   HostPocketRemoveCardRequest,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostPushNotificationUrgency,
   HostThemeSubscribeItem,
   NotificationId,
   RemotePermissionResponse,
@@ -1223,9 +1226,15 @@ export interface Notifications {
   /**
    * Schedule or immediately display the given notification and return the
    * host-assigned id.
+   *
+   * `urgency` is what the core resolved the product's request to, already
+   * lowered to `Normal` when the product holds no alarm grant. A host with
+   * no alarm framework refuses that grant, so `Critical` reaches this call
+   * only where it can be rung.
    */
   pushNotification(
     notification: HostPushNotificationRequest,
+    urgency: HostPushNotificationUrgency,
   ): Promise<HostPushNotificationResponse>;
 
   /**
@@ -1295,6 +1304,28 @@ export interface Permissions {
   remotePermission(
     request: RemotePermissionRequest,
   ): Promise<RemotePermissionResponse>;
+}
+
+/**
+ * Draw a product's pill on the host's own surfaces.
+ *
+ * A host that omits this serves no pill: the core answers the product's calls
+ * with `Unsupported`.
+ */
+export interface PillHost {
+  /**
+   * Record the declaration and draw the pill from `show_from` until
+   * `deadline`, on every surface the host draws except while the declaring
+   * product is in the foreground. A declaration reusing a live key
+   * replaces it. `destination` arrives canonicalised, as `navigate_to`
+   * receives it.
+   */
+  declarePill(request: HostPillDeclareRequest): Promise<void>;
+
+  /**
+   * Withdraw the pill with this key. Idempotent.
+   */
+  withdrawPill(request: HostPillWithdrawRequest): Promise<void>;
 }
 
 /**
@@ -1411,6 +1442,7 @@ export interface HostCallbacks {
   preimage: PreimageHost;
   chat?: ChatPlatform;
   permissionStatus?: PermissionStatusHost;
+  pill?: PillHost;
   pocket?: PocketPlatform;
 }
 
@@ -1429,5 +1461,6 @@ export interface RequiredHostCallbacks {
   preimage: Required<PreimageHost>;
   chat?: Required<ChatPlatform>;
   permissionStatus?: Required<PermissionStatusHost>;
+  pill?: Required<PillHost>;
   pocket?: Required<PocketPlatform>;
 }

@@ -44,6 +44,8 @@ pub(super) struct JsBridge {
     pub(super) device_permission_status: Function,
     pub(super) device_permission: Function,
     pub(super) remote_permission: Function,
+    pub(super) declare_pill: Function,
+    pub(super) withdraw_pill: Function,
     pub(super) subscribe_pocket_cards: Function,
     pub(super) remove_pocket_card: Function,
     pub(super) lookup_preimage: Function,
@@ -54,6 +56,7 @@ pub(super) struct JsBridge {
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
     pub(super) permission_status_present: bool,
+    pub(super) pill_present: bool,
     pub(super) pocket_present: bool,
 }
 
@@ -83,6 +86,10 @@ impl JsBridge {
                 .unwrap_or_else(|| missing_callback("devicePermissionStatus")),
             device_permission: get_function(callbacks, "devicePermission")?,
             remote_permission: get_function(callbacks, "remotePermission")?,
+            declare_pill: get_optional_function(callbacks, "declarePill")?
+                .unwrap_or_else(|| missing_callback("declarePill")),
+            withdraw_pill: get_optional_function(callbacks, "withdrawPill")?
+                .unwrap_or_else(|| missing_callback("withdrawPill")),
             subscribe_pocket_cards: get_optional_function(callbacks, "subscribePocketCards")?
                 .unwrap_or_else(|| missing_callback("subscribePocketCards")),
             remove_pocket_card: get_optional_function(callbacks, "removePocketCard")?
@@ -99,6 +106,8 @@ impl JsBridge {
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
             permission_status_present: get_optional_function(callbacks, "devicePermissionStatus")?
                 .is_some(),
+            pill_present: get_optional_function(callbacks, "declarePill")?.is_some()
+                && get_optional_function(callbacks, "withdrawPill")?.is_some(),
             pocket_present: get_optional_function(callbacks, "subscribePocketCards")?.is_some()
                 && get_optional_function(callbacks, "removePocketCard")?.is_some(),
         })
@@ -112,6 +121,11 @@ impl JsBridge {
     /// Whether the host supplied every `permission_status` callback.
     pub(super) fn has_permission_status(&self) -> bool {
         self.permission_status_present
+    }
+
+    /// Whether the host supplied every `pill` callback.
+    pub(super) fn has_pill(&self) -> bool {
+        self.pill_present
     }
 
     /// Whether the host supplied every `pocket` callback.
@@ -309,10 +323,14 @@ impl truapi_platform::Notifications for WasmPlatform {
     async fn push_notification(
         &self,
         notification: v01::HostPushNotificationRequest,
+        urgency: v01::HostPushNotificationUrgency,
     ) -> Result<v01::HostPushNotificationResponse, v01::GenericError> {
         let bytes = invoke_bytes_return(
             &self.bridge.push_notification,
-            vec![Uint8Array::from(notification.encode().as_slice()).into()],
+            vec![
+                Uint8Array::from(notification.encode().as_slice()).into(),
+                Uint8Array::from(urgency.encode().as_slice()).into(),
+            ],
         )
         .await
         .map_err(generic)?;
@@ -386,6 +404,33 @@ impl truapi_platform::Permissions for WasmPlatform {
             bytes,
             "remotePermission response did not decode",
         )
+        .map_err(generic)
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::PillHost for WasmPlatform {
+    async fn declare_pill(
+        &self,
+        request: v01::HostPillDeclareRequest,
+    ) -> Result<(), v01::GenericError> {
+        invoke_unit(
+            &self.bridge.declare_pill,
+            vec![Uint8Array::from(request.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)
+    }
+
+    async fn withdraw_pill(
+        &self,
+        request: v01::HostPillWithdrawRequest,
+    ) -> Result<(), v01::GenericError> {
+        invoke_unit(
+            &self.bridge.withdraw_pill,
+            vec![Uint8Array::from(request.encode().as_slice()).into()],
+        )
+        .await
         .map_err(generic)
     }
 }

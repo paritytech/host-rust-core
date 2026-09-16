@@ -143,13 +143,18 @@ final class StubCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
 
 // Conforms to HostBridge rather than the generated HostCallbacks, so the
 // protocol extension supplies every optional callback and a new one cannot
-// leave this file behind. Only the six requirements without a default are
+// leave this file behind. Only the requirements without a default are
 // written out.
 final class StubHostBridge: HostBridge {
     let storage: HostStorageBackend = StubStorage()
     let coreStorage: HostCoreStorageBackend = StubCoreStorage()
 
     func navigateTo(url _: String) async throws {}
+
+    func pushNotification(
+        request _: HostPushNotificationRequest,
+        urgency _: HostPushNotificationUrgency
+    ) async throws -> UInt32 { 0 }
     func devicePermission(request _: HostDevicePermissionRequest) async throws -> Bool { false }
     func remotePermission(request _: RemotePermission) async throws -> Bool { false }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }

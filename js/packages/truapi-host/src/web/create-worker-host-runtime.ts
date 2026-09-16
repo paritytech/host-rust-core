@@ -1012,6 +1012,7 @@ export function createWebWorkerPairingHostRuntime(
           capabilities: {
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
+            pill: host.pill !== undefined,
             pocket: host.pocket !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,

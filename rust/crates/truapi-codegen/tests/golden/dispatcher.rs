@@ -23,6 +23,7 @@ use truapi::api::{
     Notifications,
     Payment,
     Permissions,
+    Pill,
     Pocket,
     Preimage,
     Renderer,
@@ -58,6 +59,7 @@ where
     register_notifications(dispatcher, host.clone());
     register_payment(dispatcher, host.clone());
     register_permissions(dispatcher, host.clone());
+    register_pill(dispatcher, host.clone());
     register_pocket(dispatcher, host.clone());
     register_preimage(dispatcher, host.clone());
     register_renderer(dispatcher, host.clone());
@@ -1657,6 +1659,68 @@ where
                 let result: Result<versioned::permissions::RemotePermissionResponse, truapi::CallError<versioned::permissions::RemotePermissionError>> =
                     match host.request_remote_permission(&cx, request).await {
                         Ok(response) => Ok(<versioned::permissions::RemotePermissionResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+}
+
+fn register_pill<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Pill + Send + Sync + 'static,
+{
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::PILL_DECLARE_PILL, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::pill::HostPillDeclareRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::pill::HostPillDeclareError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::pill::HostPillDeclareResponse, truapi::CallError<versioned::pill::HostPillDeclareError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let result: Result<versioned::pill::HostPillDeclareResponse, truapi::CallError<versioned::pill::HostPillDeclareError>> =
+                    match host.declare_pill(&cx, request).await {
+                        Ok(response) => Ok(<versioned::pill::HostPillDeclareResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_request(wire_table::PILL_WITHDRAW_PILL, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::pill::HostPillWithdrawRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::pill::HostPillWithdrawError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::pill::HostPillWithdrawResponse, truapi::CallError<versioned::pill::HostPillWithdrawError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let result: Result<versioned::pill::HostPillWithdrawResponse, truapi::CallError<versioned::pill::HostPillWithdrawError>> =
+                    match host.withdraw_pill(&cx, request).await {
+                        Ok(response) => Ok(<versioned::pill::HostPillWithdrawResponse as truapi::versioned::FromLatest>::from_latest(
                             truapi::versioned::IntoLatest::into_latest(response),
                             target_version,
                         )),

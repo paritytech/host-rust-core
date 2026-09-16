@@ -138,7 +138,14 @@ pub(crate) struct StubPlatform {
     /// query page; the live subscription stays silent.
     pub(crate) pairing_success_via_query: bool,
     pub(crate) notification_id: v01::NotificationId,
-    pub(crate) pushed_notifications: Arc<Mutex<Vec<v01::HostPushNotificationRequest>>>,
+    pub(crate) pushed_notifications: Arc<
+        Mutex<
+            Vec<(
+                v01::HostPushNotificationRequest,
+                v01::HostPushNotificationUrgency,
+            )>,
+        >,
+    >,
     pub(crate) cancelled_notifications: Arc<Mutex<Vec<v01::NotificationId>>>,
     pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
     pub(crate) rpc_responses: Vec<String>,
@@ -949,11 +956,12 @@ impl PlatformNotifications for StubPlatform {
     async fn push_notification(
         &self,
         notification: v01::HostPushNotificationRequest,
+        urgency: v01::HostPushNotificationUrgency,
     ) -> Result<v01::HostPushNotificationResponse, v01::GenericError> {
         self.pushed_notifications
             .lock()
             .expect("notification list mutex poisoned")
-            .push(notification);
+            .push((notification, urgency));
         Ok(v01::HostPushNotificationResponse {
             id: self.notification_id,
         })

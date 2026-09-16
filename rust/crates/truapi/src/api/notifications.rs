@@ -20,11 +20,17 @@ pub trait Notifications: Send + Sync {
     /// persists the notification across restarts and fires it through the
     /// platform-native scheduler. See [RFC 0019].
     ///
+    /// `urgency` selects delivery. `Critical` rings the device through the
+    /// platform's alarm framework until the user dismisses it, and requires the
+    /// [`Alarms`](crate::v01::HostDevicePermissionRequest::Alarms) grant. A host
+    /// without that grant, or without an alarm framework, delivers `Normal`.
+    ///
     /// [RFC 0019]: https://github.com/paritytech/host-rust-core/blob/main/docs/rfcs/0019-scheduled-notifications.md
     ///
     /// ```ts
     /// const result = await truapi.notifications.sendPushNotification({
     ///   text: "Hello!",
+    ///   urgency: "Normal",
     /// });
     /// assert(result.isOk(), "sendPushNotification failed:", result);
     /// console.log("notification sent:", result.value);

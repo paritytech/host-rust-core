@@ -249,6 +249,8 @@ pub struct ProductRuntimeHost {
     chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     /// Live OS permission state for this connection, when the host serves it.
     permission_status: Option<Arc<dyn truapi_platform::PermissionStatusHost>>,
+    /// Pill adapter for this connection, when the host draws pills.
+    pill: Option<Arc<dyn truapi_platform::PillHost>>,
     authority: Arc<dyn ProductAuthority>,
     product: ProductContext,
     /// Stable per-product-runtime id used to scope long-lived chain follow
@@ -274,6 +276,7 @@ impl ProductRuntimeHost {
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
             permission_status: adapters.permission_status,
+            pill: adapters.pill,
             authority,
             product,
             core_instance,
@@ -398,6 +401,7 @@ impl ProductRuntimeHost {
             platform,
             chat_platform: None,
             permission_status: None,
+            pill: None,
             authority: pairing_host.clone(),
             product,
             core_instance,
@@ -406,6 +410,14 @@ impl ProductRuntimeHost {
             pocket_platform: None,
         };
         (host, pairing_host)
+    }
+
+    /// Test-only installer that goes through the services a host installs into.
+    #[cfg(test)]
+    pub(crate) fn with_pill_host(mut self, pill: Arc<dyn truapi_platform::PillHost>) -> Self {
+        assert!(self.services.install_pill_host(pill), "pill host installed");
+        self.pill = self.services.pill_host();
+        self
     }
 
     /// Test-only access to the shared session-state holder.

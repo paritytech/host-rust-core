@@ -37,12 +37,13 @@ use truapi::latest::{
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocaleSubscribeItem,
-    HostNavigateToError, HostPlatform, HostPocketListSubscribeItem, HostPocketRemoveCardError,
-    HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
-    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
-    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
+    HostNavigateToError, HostPillDeclareRequest, HostPillWithdrawRequest, HostPlatform,
+    HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
+    HostPushNotificationUrgency, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
+    LegacyAccountTxPayload, NotificationId, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RemotePermission, RemotePermissionRequest, RemotePermissionResponse,
+    RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -1004,10 +1005,16 @@ pub trait Navigation: Send + Sync {
 pub trait Notifications: Send + Sync {
     /// Schedule or immediately display the given notification and return the
     /// host-assigned id.
+    ///
+    /// `urgency` is what the core resolved the product's request to, already
+    /// lowered to `Normal` when the product holds no alarm grant. A host with
+    /// no alarm framework refuses that grant, so `Critical` reaches this call
+    /// only where it can be rung.
     async fn push_notification(
         &self,
-        notification: HostPushNotificationRequest,
-    ) -> Result<HostPushNotificationResponse, GenericError>;
+        notification: truapi::v01::HostPushNotificationRequest,
+        urgency: HostPushNotificationUrgency,
+    ) -> Result<truapi::v01::HostPushNotificationResponse, GenericError>;
 
     /// Cancel a notification by id. Idempotent: cancelling an already-fired or
     /// unknown id still returns `Ok(())`.
@@ -2982,6 +2989,23 @@ pub trait PermissionStatusHost: Send + Sync {
     ) -> Result<DevicePermissionStatus, GenericError>;
 }
 
+/// Draw a product's pill on the host's own surfaces.
+///
+/// A host that omits this serves no pill: the core answers the product's calls
+/// with `Unsupported`.
+#[async_trait]
+pub trait PillHost: Send + Sync {
+    /// Record the declaration and draw the pill from `show_from` until
+    /// `deadline`, on every surface the host draws except while the declaring
+    /// product is in the foreground. A declaration reusing a live key
+    /// replaces it. `destination` arrives canonicalised, as `navigate_to`
+    /// receives it.
+    async fn declare_pill(&self, request: HostPillDeclareRequest) -> Result<(), GenericError>;
+
+    /// Withdraw the pill with this key. Idempotent.
+    async fn withdraw_pill(&self, request: HostPillWithdrawRequest) -> Result<(), GenericError>;
+}
+
 /// Combined platform interface. A host must provide every capability trait
 /// listed here. Members marked optional may be omitted; the core answers their
 /// product calls with `Unsupported`. See [`OptionalPlatform`].
@@ -3021,6 +3045,12 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+pub trait OptionalPlatform:
+    ChatPlatform + PermissionStatusHost + PillHost + PocketPlatform
+{
+}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+impl<T> OptionalPlatform for T where
+    T: ChatPlatform + PermissionStatusHost + PillHost + PocketPlatform
+{
+}

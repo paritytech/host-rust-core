@@ -121,6 +121,7 @@ impl Notifications for WireShapePlatform {
     async fn push_notification(
         &self,
         _notification: v01::HostPushNotificationRequest,
+        _urgency: v01::HostPushNotificationUrgency,
     ) -> Result<v01::HostPushNotificationResponse, v01::GenericError> {
         Ok(v01::HostPushNotificationResponse { id: 0 })
     }

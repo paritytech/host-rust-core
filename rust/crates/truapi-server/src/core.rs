@@ -373,22 +373,26 @@ mod tests {
     #[test]
     fn send_push_notification_delegates_to_platform() {
         let core = make_core();
-        let request = v01::HostPushNotificationRequest {
+        let request = truapi::latest::HostPushNotificationRequest {
             text: "hi".into(),
             deeplink: None,
             scheduled_at: None,
+            urgency: truapi::latest::HostPushNotificationUrgency::Normal,
         };
         let payload = run_request(
             &core,
             "notifications_send_push_notification",
-            truapi::versioned::notifications::HostPushNotificationRequest::V1(request).encode(),
+            truapi::versioned::notifications::HostPushNotificationRequest::V2(request).encode(),
         );
         let expected: Result<
             truapi::versioned::notifications::HostPushNotificationResponse,
             truapi::CallError<truapi::versioned::notifications::HostPushNotificationError>,
         > = Ok(
-            truapi::versioned::notifications::HostPushNotificationResponse::V1(
-                v01::HostPushNotificationResponse { id: 0 },
+            truapi::versioned::notifications::HostPushNotificationResponse::V2(
+                truapi::latest::HostPushNotificationResponse {
+                    id: 0,
+                    urgency: truapi::latest::HostPushNotificationUrgency::Normal,
+                },
             ),
         );
         assert_eq!(payload, expected.encode());

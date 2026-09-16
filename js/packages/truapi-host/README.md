@@ -101,9 +101,20 @@ const callbacks: HostCallbacks = {
   // ...required groups...
   chat, // optional: leave it out and chat products get `Unsupported`
   permissionStatus, // optional: reports live OS permission state
+  pill, // optional: draws a product's countdown on the host's own surfaces
   pocket, // optional: serves the host's Pocket card collection
 };
 ```
+
+`pill.declarePill` records a declaration and draws the pill from `showFrom`
+until `deadline`, on every surface except while the declaring product is in the
+foreground; `pill.withdrawPill` takes the key back and is idempotent. Omit the
+group and a product's pill calls answer `Unsupported`.
+
+`notifications.pushNotification` takes the urgency the core resolved beside the
+notification. `Critical` asks for the platform's alarm framework; a host without
+one refuses the `Alarms` device permission, so the core resolves such a request
+to `Normal` before it arrives.
 
 `permissionStatus.devicePermissionStatus` must answer from the OS without
 prompting. Supply it and the core revalidates a stored device grant against it

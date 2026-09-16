@@ -104,7 +104,7 @@ pub struct CliPlatform {
     preimages: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     next_notification_id: AtomicU32,
     scheduled_notifications:
-        Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
+        Arc<Mutex<HashMap<api::NotificationId, truapi::v01::HostPushNotificationRequest>>>,
     approval: Mutex<ApprovalPolicy>,
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
@@ -568,8 +568,9 @@ impl Navigation for CliPlatform {
 impl Notifications for CliPlatform {
     async fn push_notification(
         &self,
-        notification: api::HostPushNotificationRequest,
-    ) -> Result<api::HostPushNotificationResponse, api::GenericError> {
+        notification: truapi::v01::HostPushNotificationRequest,
+        _urgency: api::HostPushNotificationUrgency,
+    ) -> Result<truapi::v01::HostPushNotificationResponse, api::GenericError> {
         let id = self.next_notification_id.fetch_add(1, Ordering::Relaxed);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -626,7 +627,7 @@ impl Notifications for CliPlatform {
                 },
             );
         }
-        Ok(api::HostPushNotificationResponse { id })
+        Ok(truapi::v01::HostPushNotificationResponse { id })
     }
 
     async fn cancel_notification(&self, id: api::NotificationId) -> Result<(), api::GenericError> {
@@ -668,8 +669,13 @@ impl PermissionStatusHost for CliPlatform {
 impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
-        _request: api::HostDevicePermissionRequest,
+        request: api::HostDevicePermissionRequest,
     ) -> Result<api::HostDevicePermissionResponse, api::GenericError> {
+        // A terminal has no alarm framework, so it cannot honour the grant that
+        // asks for one.
+        if matches!(request, api::HostDevicePermissionRequest::Alarms) {
+            return Ok(api::HostDevicePermissionResponse { granted: false });
+        }
         let granted = self
             .decide(
                 "device permission",
@@ -1834,19 +1840,21 @@ mod tests {
     fn cli_notifications_return_stable_ids_and_cancel_idempotently() {
         let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::AutoAccept, None);
         let first = futures::executor::block_on(platform.push_notification(
-            api::HostPushNotificationRequest {
+            truapi::v01::HostPushNotificationRequest {
                 text: "Hello".to_string(),
                 deeplink: None,
                 scheduled_at: None,
             },
+            api::HostPushNotificationUrgency::Normal,
         ))
         .expect("immediate notification");
         let second = futures::executor::block_on(platform.push_notification(
-            api::HostPushNotificationRequest {
+            truapi::v01::HostPushNotificationRequest {
                 text: "Again".to_string(),
                 deeplink: Some("polkadot://example".to_string()),
                 scheduled_at: None,
             },
+            api::HostPushNotificationUrgency::Normal,
         ))
         .expect("second notification");
 

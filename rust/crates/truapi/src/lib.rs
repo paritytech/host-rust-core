@@ -60,17 +60,17 @@ pub mod latest {
         Effect, EffectProps, GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
-        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
-        ImageFit, ImageProps, ImageSource, Modifier, NotificationId, OperationStartedResult,
-        PocketCard, ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey,
-        RemotePermission, RemoteStatementStoreCreateProofError,
-        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
-        RendererNode, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi,
-        RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps, TextProps,
-        ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
-        VrfSignature,
+        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform,
+        HostPushNotificationUrgency, HostSignPayloadData, ImageFit, ImageProps, ImageSource,
+        Modifier, NotificationId, OperationStartedResult, PocketCard, ProductAccountId,
+        ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
+        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
+        RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
+        RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi, RuntimeSpec, RuntimeType,
+        Shape, SignedStatement, Size, Statement, StatementProof, StorageQueryItem,
+        StorageQueryType, StorageResultItem, TextFieldProps, TextProps, ThemeName, ThemeVariant,
+        TxPayloadExtension, TypographyStyle, VerticalAlignment, VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -148,6 +148,10 @@ pub mod latest {
     pub type HostLocaleSubscribeItem = LatestOf<versioned::locale::HostLocaleSubscribeItem>;
     /// Navigation request error.
     pub type HostNavigateToError = LatestOf<versioned::system::HostNavigateToError>;
+    /// Pill declaration.
+    pub type HostPillDeclareRequest = LatestOf<versioned::pill::HostPillDeclareRequest>;
+    /// Request to withdraw a declared pill.
+    pub type HostPillWithdrawRequest = LatestOf<versioned::pill::HostPillWithdrawRequest>;
     /// The calling product's Pocket cards.
     pub type HostPocketListSubscribeItem = LatestOf<versioned::pocket::HostPocketListSubscribeItem>;
     /// Pocket card removal request.

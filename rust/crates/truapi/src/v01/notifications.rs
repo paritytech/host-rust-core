@@ -22,6 +22,19 @@ pub struct HostPushNotificationRequest {
     pub scheduled_at: Option<u64>,
 }
 
+/// Delivery level of a push notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum HostPushNotificationUrgency {
+    /// A notification the host shows.
+    Normal,
+    /// An alarm the host rings through the platform's alarm framework until the
+    /// user dismisses it. Delivered as an alarm only to a product holding
+    /// [`Alarms`](super::HostDevicePermissionRequest::Alarms), on a host that
+    /// has an alarm framework; otherwise it is delivered as `Normal`.
+    Critical,
+}
+
 /// Successful push notification response carrying the assigned id.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPushNotificationResponse {
