@@ -82,22 +82,17 @@ jobs:
           path: target/dist/runner.js
           if-no-files-found: error
 
-      # `truapi-server` declares `pub mod generated` unconditionally and those
-      # files stopped being tracked in #551, so every leg of the matrix needs
-      # them to compile at all. `codegen.sh` above has just produced them;
-      # carrying them as an artifact keeps the matrix from installing Node,
-      # bun and a nightly toolchain three more times to regenerate identical
-      # files, and guarantees all three legs build the same bytes.
-      #
-      # The paths share `rust/crates/truapi-server/src`, so the artifact holds
-      # `generated/` and `wasm/generated_bridge.rs` and unpacks back onto that
-      # directory.
+      # `codegen.sh` above has just produced these, and carrying them beats
+      # standing up Node and a nightly toolchain on three more runners to
+      # regenerate identical files. Every path here must stay under
+      # `truapi-server/src`: that shared prefix is the artifact root the matrix
+      # unpacks onto, and one path outside it moves the root.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: generated-rust
           path: |
             rust/crates/truapi-server/src/generated
-            rust/crates/truapi-server/src/wasm/generated_bridge.rs
+            rust/crates/truapi-server/src/wasm
           if-no-files-found: error
 
   build:
@@ -142,9 +137,8 @@ jobs:
           name: runner-bundle
           path: target/dist
 
-      # Restores `generated/` and `wasm/generated_bridge.rs`, which
-      # `make cli-dist`'s `check-generated` prerequisite refuses to build
-      # without. Untracked since #551, so a fresh checkout does not have them.
+      # `make cli-dist` runs `check-generated` first, which refuses to proceed
+      # without these. Untracked since #551, so a fresh checkout has none.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: generated-rust
