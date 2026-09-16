@@ -93,8 +93,11 @@ playground/                Interactive Next.js playground (truapi-playground dot
 hosts/ios/                 iOS host app; resolves the core from this tree
 hosts/android/             Android host app
 hosts/dotli/               dotli host, vendored as a submodule
+hosts/imports.json         Source repository and imported revision per host
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
+scripts/refresh-host-import.sh
+                           Refresh a vendored host tree from its source repository
 scripts/battery.sh         Run the generated battery against both headless CLI host roles,
                            plus the Pocket phase a Worker execution serves
 ```
@@ -260,6 +263,27 @@ open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
 [`playground/README.md`](playground/README.md) for deployment.
 
 ### Working on the iOS host
+
+### Refreshing a vendored host tree
+
+The host trees under `hosts/` are snapshots of the repositories they were
+imported from, and those repositories keep moving. `hosts/imports.json` records
+where each tree came from and at which revision.
+
+```bash
+scripts/refresh-host-import.sh status ios     # how far behind, and what differs
+scripts/refresh-host-import.sh refresh ios    # take the new tree, re-apply adaptations
+```
+
+`refresh` replaces the tree with the source's, re-applies this repository's
+adaptations on top as a three-way patch, then compares every path against the
+source by blob hash. Paths are staged with `--force`, because this repository's
+ignore rules are not the source's and an earlier import silently lost 57 files
+that way. The result is left staged and uncommitted: a conflict is a decision
+about which side is right, and that is not a decision for a script.
+
+A difference the adaptations do not account for is reported as unexplained,
+because that is upstream work the refresh dropped.
 
 `hosts/ios/` is the iOS app, and it resolves the core from this tree rather than
 from a published version. The core's bindings, xcframework and FFI headers are
