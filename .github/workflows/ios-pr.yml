@@ -374,16 +374,10 @@ jobs:
 
       # The stamp is inside the bundle, so the only way to read it before
       # downloading is for the pull request to say which commit the build came
-      # from. Upserted, so the link tracks the head commit instead of the
-      # thread collecting one comment per push.
-      - name: Link the preview build from the pull request
+      # from.
+      - name: Write the preview comment
         if: github.event_name == 'pull_request'
-        continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          MARKER: "<!-- ios-preview-build -->"
           SHORT: ${{ steps.package.outputs.short }}
           URL: ${{ steps.upload.outputs.artifact-url }}
         run: |
@@ -395,11 +389,9 @@ jobs:
           fi
 
           cat > "$RUNNER_TEMP/preview.md" <<EOF
-          $MARKER
           ### iOS simulator preview
 
-          [\`simulator-preview-${SHORT}\`](${URL}), built from ${SHORT} and
-          stamped with it in \`TrUAPICommit\`.
+          Built from \`${SHORT}\`, stamped with it in \`TrUAPICommit\`.
 
           \`\`\`bash
           gh run download ${GITHUB_RUN_ID} --name simulator-preview-${SHORT}
@@ -408,29 +400,21 @@ jobs:
           xcrun simctl launch booted io.parity.polkadotapp.develop
           \`\`\`
 
+          Or [download it](${URL}) in a browser, which arrives as a zip wrapping
+          the \`.app.zip\`, so it needs unzipping twice.
+
           An arm64 simulator slice, so it needs an Apple Silicon Mac and does not
-          install on a device.
+          install on a device. Kept for 14 days, after which the link stops
+          resolving and a new push rebuilds it.
           EOF
 
-          ids="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            | jq -s --arg m "$MARKER" '[.[][] | select(.body | startswith($m)) | .id]')"
-
-          if [ "$(jq 'length' <<<"$ids")" -eq 0 ]; then
-            gh api --method POST "repos/$REPO/issues/$PR/comments" \
-              -F body=@"$RUNNER_TEMP/preview.md" >/dev/null
-            echo "created a comment"
-            exit 0
-          fi
-
-          keep="$(jq -r 'last' <<<"$ids")"
-          gh api --method PATCH "repos/$REPO/issues/comments/$keep" \
-            -F body=@"$RUNNER_TEMP/preview.md" >/dev/null
-          echo "updated comment $keep"
-
-          for stale in $(jq -r '.[:-1][]' <<<"$ids"); do
-            gh api --method DELETE "repos/$REPO/issues/comments/$stale" >/dev/null
-            echo "deleted duplicate comment $stale"
-          done
+      - name: Link the preview build from the pull request
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: ./.github/actions/upsert-pr-comment
+        with:
+          marker: "<!-- ios-preview-build -->"
+          body-file: ${{ runner.temp }}/preview.md
 
   test:
     needs: [check-skip-label, core]

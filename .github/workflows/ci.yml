@@ -885,6 +885,12 @@ jobs:
         changeset-guard,
       ]
     steps:
+      # Only for `.github/actions/upsert-pr-comment`, which is a local action
+      # and so has to exist on disk. Nothing here reads the rest of the tree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       # The results come from the needs context itself rather than a second list
       # of `needs.<job>.result` expressions, so the set of jobs checked cannot
       # drift from the set depended on. `REQUIRED` is the one list to maintain:
@@ -1008,35 +1014,10 @@ jobs:
       - name: Upsert the pull request comment
         if: always() && github.event_name == 'pull_request'
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          MARKER: "<!-- ci-status-summary -->"
-        run: |
-          set -euo pipefail
-          [ -f "$RUNNER_TEMP/ci-summary.md" ] || { echo "no verdict to post"; exit 0; }
-          { echo "$MARKER"; cat "$RUNNER_TEMP/ci-summary.md"; } > "$RUNNER_TEMP/body.md"
-
-          ids="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            | jq -s --arg m "$MARKER" '[.[][] | select(.body | startswith($m)) | .id]')"
-
-          if [ "$(jq 'length' <<<"$ids")" -eq 0 ]; then
-            gh api --method POST "repos/$REPO/issues/$PR/comments" \
-              -F body=@"$RUNNER_TEMP/body.md" >/dev/null
-            echo "created a comment"
-            exit 0
-          fi
-
-          keep="$(jq -r 'last' <<<"$ids")"
-          gh api --method PATCH "repos/$REPO/issues/comments/$keep" \
-            -F body=@"$RUNNER_TEMP/body.md" >/dev/null
-          echo "updated comment $keep"
-
-          for stale in $(jq -r '.[:-1][]' <<<"$ids"); do
-            gh api --method DELETE "repos/$REPO/issues/comments/$stale" >/dev/null
-            echo "deleted duplicate comment $stale"
-          done
+        uses: ./.github/actions/upsert-pr-comment
+        with:
+          marker: "<!-- ci-status-summary -->"
+          body-file: ${{ runner.temp }}/ci-summary.md
 
       # Last, so the verdict above reaches the pull request first. Anything
       # other than an explicit pass fails the check, including the evaluation
