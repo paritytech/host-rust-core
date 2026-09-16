@@ -8,6 +8,7 @@ import {
   type Page,
 } from "playwright";
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,8 +40,7 @@ const smokeOnly = process.env.E2E_DOTLI_SMOKE === "1";
 const loginUserBadgeTimeoutMs = Number(
   process.env.E2E_DOTLI_LOGIN_TIMEOUT_MS ?? "600000",
 );
-const signingHostNetwork =
-  process.env.E2E_DOTLI_NETWORK ?? "paseo-next-v2";
+const signingHostNetwork = process.env.E2E_DOTLI_NETWORK ?? "paseo-next-v2";
 const signingHostConfig: SigningHostCliConfig = {
   binary: resolve(
     process.env.E2E_DOTLI_SIGNING_HOST_BIN ??
@@ -54,7 +54,10 @@ const signingHostConfig: SigningHostCliConfig = {
   network: signingHostNetwork,
   liteUsernamePrefix: process.env.HOST_CLI_SIGNER_MNEMONIC?.trim()
     ? undefined
-    : "dotlitest",
+    : (process.env.E2E_DOTLI_LITE_USERNAME_PREFIX?.trim() ||
+      `dotlitest${Array.from(randomBytes(8), (byte) =>
+        String.fromCharCode(97 + (byte % 26)),
+      ).join("")}`),
 };
 const expectedHostGaps = [
   "Account/create_account_proof",
@@ -124,6 +127,7 @@ function startServer(
     cwd,
     env: { ...process.env, ...env },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
   serverProcesses.push(child);
 
@@ -288,10 +292,7 @@ async function signInWithSigningHost(page: Page): Promise<SignedInSession> {
     } catch (error) {
       signingHostLogs.push(signingHost.output());
       await stopSigningHost(signingHost);
-      if (
-        attempt === maxAttempts ||
-        !isRetryableSigningHostPairError(error)
-      ) {
+      if (attempt === maxAttempts || !isRetryableSigningHostPairError(error)) {
         throw error;
       }
       console.warn(
@@ -356,7 +357,9 @@ async function waitForSignedIn(
       })),
     ]);
     if (outcome.tag === "signing-host-exit") {
-      throw new Error(formatSigningHostExit(outcome.result, signingHost.output()));
+      throw new Error(
+        formatSigningHostExit(outcome.result, signingHost.output()),
+      );
     }
     const username = (
       await page.locator("#user-popover-username").innerText()
@@ -859,10 +862,7 @@ async function main(): Promise<void> {
             signingHost: {
               binary: signingHostConfig.binary,
               basePath: signingHostConfig.basePath,
-              output: [
-                ...signingHostLogs,
-                signedInSession.process.output(),
-              ],
+              output: [...signingHostLogs, signedInSession.process.output()],
             },
             sessionLifecycle: "host-sign-out-reconnect",
             pageErrors,
@@ -904,7 +904,15 @@ async function main(): Promise<void> {
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
     for (const child of serverProcesses) {
-      child.kill("SIGTERM");
+      try {
+        if (process.platform !== "win32" && child.pid !== undefined) {
+          process.kill(-child.pid, "SIGTERM");
+        } else {
+          child.kill("SIGTERM");
+        }
+      } catch {
+        // The server process tree already exited.
+      }
     }
   }
 }
