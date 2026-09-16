@@ -1,3 +1,4 @@
+import DurableTransactionsTestSupport
 import Foundation
 @testable import Coinage
 
@@ -37,7 +38,7 @@ struct FakeCoinInfo: Equatable {
 ///
 /// `outcomes` is per-block rather than cumulative, so a transaction reorged out of one block and
 /// re-applied in another carries the outcome of the block it is read at.
-struct CoinageChainState {
+struct CoinageChainState: FakeChainState {
     var coins: [PublicKey: FakeCoinInfo]
     /// `RecyclersCoinToRecycler`: which denomination's recycler a voucher member belongs to.
     var recyclerMembers: [PublicKey: Int]
@@ -56,6 +57,10 @@ struct CoinageChainState {
         outcomes: [:]
     )
 }
+
+/// The chain and block types the coinage harness drives.
+typealias CoinageFakeChain = FakeChain<CoinageChainState>
+typealias FakeBlock = DurableTransactionsTestSupport.FakeBlock<CoinageChainState>
 
 // MARK: - Mutations
 
@@ -109,30 +114,24 @@ extension CoinageChainState {
 
 // MARK: - Faults
 
-/// Which reads fail, so a scenario can hold an entry undecided without changing what the chain holds.
+/// Which coinage reads fail, so a scenario can hold an entry undecided without changing what the chain
+/// holds. The engine-shaped faults (blocks, outcomes, pinning, the body search) live on the fake pinned
+/// view factory's ``FakeChainFaults``.
 ///
 /// Failures are per-key and per-block rather than global, because the spec distinguishes a pass that
 /// reads nothing from one that reads only part of its window.
-struct ChainReadFaults {
+struct CoinageReadFaults {
     /// Coin keys that fail at every head.
     var unreadableCoins: Set<PublicKey> = []
     var unreadableAliases: Set<FakeAliasKey> = []
     var membershipsUnreadable = false
     var ringPositionsUnreadable = false
-    var unreadableBlocks: Set<UInt32> = []
-    /// A standing rule rather than a set, so it covers blocks produced after it was switched on.
-    var everyBlockUnreadable = false
-    var unreadableOutcomes: Set<Data> = []
-    var pinFails = false
-    /// The body search reads nothing, so it can never decide an entry. Separate from
-    /// `everyBlockUnreadable`, which also takes out the block reads registration and pinning need.
-    var txSearchDisabled = false
     /// Coin reads fail at these block *hashes* only. Separate from `unreadableCoins`, which fails a
     /// key at every head: the rules read the same asset at the finalized and the best head, and some
     /// turn on the two answers differing.
     var statelessBlocks: Set<Data> = []
 
-    static let none = ChainReadFaults()
+    static let none = CoinageReadFaults()
 }
 
 /// A read that fails for the length of one pass. Every one leaves the ledger a state it cannot judge,
@@ -145,9 +144,4 @@ enum FuzzFault: CaseIterable {
     case blocks
     case outcomes
     case pin
-}
-
-/// Raised by the fake chain view when a fault silences a read.
-struct ChainReadFailure: Error {
-    let message: String
 }

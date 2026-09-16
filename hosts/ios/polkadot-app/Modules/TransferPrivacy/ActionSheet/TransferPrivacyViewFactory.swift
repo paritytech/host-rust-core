@@ -1,6 +1,8 @@
-import UIKit
+import Foundation
 import PolkadotUI
+import UIKit
 import UIKit_iOS
+import UIKitExt
 
 @MainActor
 enum TransferPrivacyViewFactory {
@@ -8,7 +10,7 @@ enum TransferPrivacyViewFactory {
         amount: String,
         onSendAnyway: @escaping () -> Void,
         onCancel: @escaping () -> Void
-    ) -> UIViewController {
+    ) -> ControllerBackedProtocol {
         let wireframe = TransferPrivacyWireframe()
         let presenter = TransferPrivacyPresenter(
             model: TransferPrivacyModel(amount: amount),
@@ -18,10 +20,7 @@ enum TransferPrivacyViewFactory {
         )
         let view = TransferPrivacyViewController(presenter: presenter)
         presenter.view = view
-
-        let nav = UINavigationController(rootViewController: view)
-        BottomSheetViewFacade.setupBottomSheet(from: nav)
-
-        return nav
+        BottomSheetViewFacade.setupBottomSheet(from: view)
+        return view
     }
 }

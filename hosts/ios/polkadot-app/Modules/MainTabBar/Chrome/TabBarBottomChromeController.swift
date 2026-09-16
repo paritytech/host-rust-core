@@ -4,29 +4,17 @@ import PolkadotUI
 import SnapKit
 
 final class TabBarBottomChromeController: UIViewController {
-    private let glassContainer = DSGlassContainerView(
-        shape: .rounded(32),
-        tint: UIColor.bgSurfaceContainer
-    )
+    private let chromeSurface = TabBarChromeSurfaceView()
     private let barView = DSTabBarView()
     private let backdropView = DSTabBarBackdropView()
     private let floatingWidgetContainerView = MainTabBarFloatingWidgetStackView()
-    private let tabsPanelView = DSTabBarTabsPanelView()
-    private let contentPanelView = DSTabBarContentPanelView()
 
     private var widgetControllers: [AppWidgetID: AppWidgetContentViewController] = [:]
     private weak var contentSafeAreaAdjustedViewController: UIViewController?
     private var floatingWidgetBottomConstraint: Constraint?
-    private var glassContainerHeightConstraint: Constraint?
 
     private weak var appliedTabController: UIViewController?
     private weak var appliedContentController: UIViewController?
-
-    private var appliedGlassContainerHeight: CGFloat = 0
-    private var panelAnimator: UIViewPropertyAnimator?
-    private var openPanel: TabBarPanelKind?
-    private var pendingPanel: TabBarPanelKind?
-    private var isApplyingPanel = false
 
     private var slots: [TabBarSlot] = []
     private var slotMap = TabBarSlotMap(slots: [])
@@ -37,13 +25,46 @@ final class TabBarBottomChromeController: UIViewController {
 
     private lazy var foldController = TabBarFoldController(
         barView: barView,
-        glassContainer: glassContainer,
+        foldSurface: chromeSurface,
         chromeBounds: { [unowned self] in view.bounds },
         grabZoneSink: { [weak self] zone in
             (self?.viewIfLoaded as? TabBarChromePassthroughView)?.foldGrabZone = zone
         },
         closePanel: { [weak self] in
             self?.setPanel(nil, animated: false)
+        },
+        stateSink: { [weak self] state in
+            self?.tipController.setBarShown(state == .shown)
+        }
+    )
+
+    private lazy var tipController = TabBarTipController(
+        host: self,
+        barView: barView,
+        sequence: TabBarTipOrderedSequence(steps: TabBarTips.steps),
+        itemIndex: { [weak self] slot in self?.slotMap.itemIndex(for: slot) },
+        statusStripAnchor: { [weak self] in self?.statusStripAnchorProvider?() }
+    )
+
+    private lazy var panelController = TabBarPanelController(
+        surface: chromeSurface,
+        onPanelChanged: { [weak self] kind in
+            self?.onPanelChanged?(kind)
+        },
+        onOpenPanelChanged: { [weak self] kind in
+            self?.updateActiveActionIndex()
+            (self?.viewIfLoaded as? TabBarChromePassthroughView)?.isOutsideTapEnabled = kind != nil
+        },
+        dismissTips: { [weak self] in
+            self?.tipController.dismissForPanel()
+        },
+        tearDownContent: { [weak self] in
+            self?.detachHostedController()
+            self?.chromeSurface.setContentHostedView(nil)
+            self?.chromeSurface.setContentConfiguration(nil)
+        },
+        setBackdropOpen: { [weak self] isOpen, animator in
+            self?.backdropView.setOpen(isOpen, animator: animator)
         }
     )
 
@@ -51,6 +72,10 @@ final class TabBarBottomChromeController: UIViewController {
     var onChipTapped: ((UUID) -> Void)?
     var onChipCloseRequested: ((UUID) -> Void)?
     var onPanelChanged: ((TabBarPanelKind?) -> Void)?
+
+    /// The chain-status strip is installed by `MainTabBarViewController`, not by the chrome,
+    /// so its tip anchor is handed down rather than reached for.
+    var statusStripAnchorProvider: (() -> (any UIPopoverPresentationControllerSourceItem)?)?
 
     private var occupiedHeight: CGFloat {
         guard TabBarVisibilityPolicy.contributesClearance(isTabRoot: foldController.isTabRoot) else {
@@ -63,12 +88,6 @@ final class TabBarBottomChromeController: UIViewController {
         max(0, occupiedHeight - view.safeAreaInsets.bottom)
     }
 
-    private var availablePanelHeight: CGFloat {
-        view.bounds.height
-            - view.safeAreaInsets.top
-            - DSTabBarView.preferredHeight()
-    }
-
     override func loadView() {
         view = TabBarChromePassthroughView()
     }
@@ -78,15 +97,23 @@ final class TabBarBottomChromeController: UIViewController {
 
         view.backgroundColor = .clear
 
-        installGlassContainer()
+        installChromeSurface()
         installBar()
-        installFloatingWidgetContainer()
         installBackdrop()
-        installTabsPanel()
-        installContentPanel()
+        installFloatingWidgetContainer()
         installWidgetsIfNeeded()
 
         installOutsideTapRecognizer()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        tipController.start()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        tipController.stop()
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -98,7 +125,7 @@ final class TabBarBottomChromeController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
 
-        updateGlassContainerHeight(animator: nil)
+        panelController.refreshHeightAfterLayout()
 
         foldController.reapplyForWidthChange()
     }
@@ -132,103 +159,42 @@ final class TabBarBottomChromeController: UIViewController {
             spaTabCount = chips.count
             rebuildItems()
         }
-        tabsPanelView.setChips(chips, selected: selected)
-        tabsPanelView.closeActionTitle = String(localized: .Common.close)
+        chromeSurface.setChips(chips, selected: selected, closeActionTitle: String(localized: .Common.close))
 
-        if chips.isEmpty || availablePanelHeight <= 0 {
-            if openPanel == .spaTabs {
-                setPanel(nil, animated: true)
+        if chips.isEmpty || chromeSurface.availablePanelHeight <= 0 {
+            if panelController.open == .spaTabs {
+                panelController.setPanel(nil, animated: true)
             }
             return
         }
 
-        let animator = openPanel == .spaTabs ? makePanelAnimator() : nil
-        updateGlassContainerHeight(animator: animator)
-        animator?.startAnimation()
+        panelController.refreshHeightAfterChipsChange()
     }
 
     func setPanel(_ kind: TabBarPanelKind?, animated: Bool) {
-        pendingPanel = nil
-
-        let previousPanel = openPanel
-        let animator = animated ? makePanelAnimator() : nil
-
-        backdropView.setOpen(kind != nil, animator: animator)
-        tabsPanelView.setOpen(kind == .spaTabs, animator: animator)
-        contentPanelView.setOpen(kind?.contentAction != nil, animator: animator)
-        (viewIfLoaded as? TabBarChromePassthroughView)?.isOutsideTapEnabled = kind != nil
-        openPanel = kind
-        updateActiveActionIndex()
-
-        // Content is requested before the height is measured, so the open animates
-        // straight to its final size and the scanner's capture session warms up during
-        // the animation rather than after it. `isApplyingPanel` stops that push starting
-        // a rival animator.
-        if previousPanel != kind {
-            isApplyingPanel = true
-            onPanelChanged?(kind)
-            isApplyingPanel = false
-        }
-
-        updateGlassContainerHeight(animator: animator)
-
-        // The scanner's capture session must be released once the panel is gone, so the teardown
-        // rides the same animator and still runs when there is none (a fold closes unanimated).
-        if previousPanel?.contentAction != nil, kind?.contentAction == nil {
-            let teardown = { [weak self] in self?.clearContentPanel() }
-            if let animator {
-                animator.addCompletion { _ in teardown() }
-            } else {
-                teardown()
-            }
-        }
-
-        // `togglePanel` sets `pendingPanel` after this close returns, so the reopen is read at
-        // completion time: a fold or another tap in between clears it and cancels the switch.
-        if kind == nil, let animator {
-            animator.addCompletion { [weak self] _ in
-                guard let self, let pendingPanel else {
-                    return
-                }
-                self.pendingPanel = nil
-                setPanel(pendingPanel, animated: true)
-            }
-        }
-
-        animator?.startAnimation()
+        panelController.setPanel(kind, animated: animated)
     }
 
     /// Selecting a different action closes the open panel before opening the new one, so the
     /// change reads as a close followed by an open instead of a silent content swap.
-    func togglePanel(_ kind: TabBarPanelKind) {
-        guard let openPanel else {
-            setPanel(kind, animated: true)
-            return
-        }
-
-        guard openPanel != kind else {
-            setPanel(nil, animated: true)
-            return
-        }
-
-        setPanel(nil, animated: true)
-        pendingPanel = kind
+    private func togglePanel(_ kind: TabBarPanelKind) {
+        panelController.togglePanel(kind)
     }
 
     func setContentPanel(_ configuration: (any HashableContentConfiguration)?, for action: TabBarAction) {
-        guard openPanel == .content(action) else {
+        guard panelController.open == .content(action) else {
             return
         }
 
         detachHostedController()
-        contentPanelView.setConfiguration(configuration)
-        resizeForContentPanel()
+        chromeSurface.setContentConfiguration(configuration)
+        panelController.resizeForContentPanel()
     }
 
     /// A camera controller needs its appearance callbacks, so it is hosted as a child rather than
     /// wrapped in a content view.
     func setContentController(_ controller: UIViewController?, for action: TabBarAction) {
-        guard openPanel == .content(action) else {
+        guard panelController.open == .content(action) else {
             return
         }
 
@@ -236,14 +202,14 @@ final class TabBarBottomChromeController: UIViewController {
 
         if let controller {
             addChild(controller)
-            contentPanelView.setHostedView(controller.view)
+            chromeSurface.setContentHostedView(controller.view)
             controller.didMove(toParent: self)
             hostedPanelController = controller
         } else {
-            contentPanelView.setHostedView(nil)
+            chromeSurface.setContentHostedView(nil)
         }
 
-        resizeForContentPanel()
+        panelController.resizeForContentPanel()
     }
 
     func apply(
@@ -254,6 +220,7 @@ final class TabBarBottomChromeController: UIViewController {
 
         applyLayout(context, animatingAlongside: transitionCoordinator)
         foldController.refresh()
+        tipController.setBarShown(foldController.state == .shown)
     }
 
     func applyLayout(
@@ -300,10 +267,6 @@ final class TabBarBottomChromeController: UIViewController {
 
         updateLayout()
     }
-
-    deinit {
-        panelAnimator?.cancelInPlace()
-    }
 }
 
 // MARK: - Bar items and panel content
@@ -322,28 +285,11 @@ private extension TabBarBottomChromeController {
 
         setSelectedIndex(selectedTabIndex)
         updateActiveActionIndex()
+        tipController.setBarLaidOut(false)
     }
 
     func updateActiveActionIndex() {
-        barView.activeActionIndex = openPanel.flatMap { slotMap.itemIndex(for: $0.action) }
-    }
-
-    /// A push that arrives while `setPanel` is applying is already covered by the
-    /// open animation.
-    func resizeForContentPanel() {
-        guard !isApplyingPanel, openPanel?.contentAction != nil else {
-            return
-        }
-
-        let animator = makePanelAnimator()
-        updateGlassContainerHeight(animator: animator)
-        animator.startAnimation()
-    }
-
-    func clearContentPanel() {
-        detachHostedController()
-        contentPanelView.setHostedView(nil)
-        contentPanelView.setConfiguration(nil)
+        barView.activeActionIndex = panelController.open.flatMap { slotMap.itemIndex(for: $0.action) }
     }
 
     func detachHostedController() {
@@ -361,15 +307,15 @@ private extension TabBarBottomChromeController {
 // MARK: - Layout
 
 private extension TabBarBottomChromeController {
-    func installGlassContainer() {
-        view.insertSubview(glassContainer, at: 0)
-        glassContainer.snp.makeConstraints { make in
-            make.centerX.equalToSuperview()
-            make.width.lessThanOrEqualTo(DSTabBarView.maxWidth)
-            make.width.equalToSuperview().offset(-DSTabBarView.horizontalMargin * 2).priority(.high)
-            make.bottom.equalToSuperview().offset(-DSTabBarView.bottomGap)
-            glassContainerHeightConstraint = make.height.equalTo(DSTabBarView.capsuleHeight).constraint
+    func installChromeSurface() {
+        chromeSurface.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(chromeSurface)
+        chromeSurface.snp.makeConstraints { make in
+            make.edges.equalToSuperview()
         }
+
+        chromeSurface.onChipTapped = { [weak self] id in self?.onChipTapped?(id) }
+        chromeSurface.onChipCloseRequested = { [weak self] id in self?.onChipCloseRequested?(id) }
     }
 
     func installOutsideTapRecognizer() {
@@ -383,56 +329,13 @@ private extension TabBarBottomChromeController {
             foldController.setUserOverride(.shown, velocityX: 0)
             return
         }
-        setPanel(nil, animated: true)
-    }
-
-    /// One animator drives the panel contents and the container resize so they cannot drift apart.
-    func makePanelAnimator() -> UIViewPropertyAnimator {
-        let previousPanelAnimator = panelAnimator
-        panelAnimator = nil
-        previousPanelAnimator?.cancelInPlace()
-
-        let animator = UIViewPropertyAnimator(
-            duration: DSTabBarTabsPanelView.openDuration,
-            dampingRatio: DSTabBarTabsPanelView.openDampingRatio
-        )
-        animator.addCompletion { [weak self] _ in
-            self?.panelAnimator = nil
-        }
-        panelAnimator = animator
-
-        return animator
-    }
-
-    func updateGlassContainerHeight(animator: UIViewPropertyAnimator?) {
-        let containerHeight: CGFloat =
-            switch openPanel {
-            case .spaTabs:
-                tabsPanelView.preferredHeight(availableHeight: availablePanelHeight)
-            case .content:
-                contentPanelView.preferredHeight(availableHeight: availablePanelHeight)
-            case nil:
-                DSTabBarView.capsuleHeight
-            }
-
-        guard containerHeight != appliedGlassContainerHeight else {
-            return
-        }
-
-        appliedGlassContainerHeight = containerHeight
-        glassContainerHeightConstraint?.update(offset: containerHeight)
-
-        animator?.addAnimations { [weak self] in
-            self?.view.layoutIfNeeded()
-        }
+        panelController.setPanel(nil, animated: true)
     }
 
     func installBar() {
-        glassContainer.contentView.addSubview(barView)
-
+        chromeSurface.addBar(barView)
         barView.snp.makeConstraints { make in
-            make.leading.trailing.equalToSuperview()
-            make.bottom.equalToSuperview()
+            make.bottom.leading.trailing.equalTo(chromeSurface.capsuleLayoutReference)
             make.height.equalTo(DSTabBarView.capsuleHeight)
         }
 
@@ -441,6 +344,7 @@ private extension TabBarBottomChromeController {
         }
 
         barView.onSelect = { [weak self] itemIndex, isReselection in
+            self?.tipController.retireForUserInteraction()
             guard let self, let tabIndex = slotMap.tabIndex(forItemIndex: itemIndex) else {
                 return
             }
@@ -448,16 +352,21 @@ private extension TabBarBottomChromeController {
         }
 
         barView.onActionTapped = { [weak self] itemIndex in
+            self?.tipController.retireForUserInteraction()
             guard let self, let action = slotMap.action(forItemIndex: itemIndex) else {
                 return
             }
             togglePanel(action == .spaTabs ? .spaTabs : .content(action))
         }
+
+        barView.onItemsLaidOut = { [weak self] in
+            self?.tipController.setBarLaidOut(true)
+        }
     }
 
     func installFloatingWidgetContainer() {
         floatingWidgetContainerView.translatesAutoresizingMaskIntoConstraints = false
-        view.insertSubview(floatingWidgetContainerView, belowSubview: glassContainer)
+        view.insertSubview(floatingWidgetContainerView, belowSubview: chromeSurface)
 
         floatingWidgetContainerView.snp.makeConstraints { make in
             make.leading.trailing.equalToSuperview()
@@ -471,29 +380,6 @@ private extension TabBarBottomChromeController {
 
         backdropView.snp.makeConstraints { make in
             make.edges.equalToSuperview()
-        }
-    }
-
-    func installTabsPanel() {
-        glassContainer.contentView.insertSubview(tabsPanelView, belowSubview: barView)
-
-        tabsPanelView.snp.makeConstraints { make in
-            make.top.equalToSuperview()
-            make.leading.trailing.equalToSuperview()
-            make.bottom.equalTo(barView.snp.top)
-        }
-
-        tabsPanelView.onChipTapped = { [weak self] id in self?.onChipTapped?(id) }
-        tabsPanelView.onChipCloseRequested = { [weak self] id in self?.onChipCloseRequested?(id) }
-    }
-
-    func installContentPanel() {
-        glassContainer.contentView.insertSubview(contentPanelView, belowSubview: barView)
-
-        contentPanelView.snp.makeConstraints { make in
-            make.top.equalToSuperview()
-            make.leading.trailing.equalToSuperview()
-            make.bottom.equalTo(barView.snp.top)
         }
     }
 
@@ -599,46 +485,5 @@ private extension TabBarBottomChromeController {
 extension TabBarBottomChromeController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         touch.view === view
-    }
-}
-
-private final class TabBarChromePassthroughView: UIView {
-    var isOutsideTapEnabled = false
-    var foldGrabZone: CGRect = .zero
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hitView = super.hitTest(point, with: event)
-
-        guard hitView === self else {
-            return hitView
-        }
-
-        if !foldGrabZone.isEmpty, foldGrabZone.contains(point) {
-            return self
-        }
-        return isOutsideTapEnabled ? self : nil
-    }
-}
-
-private final class MainTabBarFloatingWidgetStackView: UIStackView {
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-
-        axis = .vertical
-        alignment = .fill
-        distribution = .fill
-        spacing = 0
-        setContentHuggingPriority(.required, for: .vertical)
-        setContentCompressionResistancePriority(.required, for: .vertical)
-    }
-
-    @available(*, unavailable)
-    required init(coder _: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hitView = super.hitTest(point, with: event)
-        return hitView === self ? nil : hitView
     }
 }

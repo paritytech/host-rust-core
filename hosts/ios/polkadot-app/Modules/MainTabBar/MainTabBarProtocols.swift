@@ -19,6 +19,7 @@ protocol MainTabBarPresenterProtocol: AnyObject {
     func setup()
     func configureViews()
     func didRequestContentPanel(for action: TabBarAction)
+    func didRequestContactSearch()
 }
 
 protocol MainTabBarInteractorInputProtocol: AnyObject {
@@ -41,6 +42,7 @@ protocol MainTabBarInteractorOutputProtocol: AnyObject {
 @MainActor
 protocol MainTabBarWireframeProtocol: AnyObject {
     func showPolkadotSignIn(with url: URL, view: MainTabBarViewProtocol?)
+    func showSearchContact(from view: MainTabBarViewProtocol?)
 }
 
 enum TabBarItem: String, CaseIterable {
@@ -78,7 +80,7 @@ extension TabBarItem {
     func makeBarItem(badge: DSTabBarItem.Badge?) -> DSTabBarItem {
         DSTabBarItem(
             icon: image,
-            title: title,
+            title: nil,
             badge: badge,
             accessibilityLabel: title,
             accessibilityIdentifier: AccessibilityID.Tab.item(for: self)?.rawValue

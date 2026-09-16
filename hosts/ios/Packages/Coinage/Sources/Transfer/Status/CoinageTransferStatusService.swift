@@ -1,7 +1,9 @@
 import AsyncExtensions
+import DurableTransactions
 import Foundation
 import NovaCrypto
 import SDKLogger
+import SubstrateSdk
 
 public protocol CoinageTransferStatusServicing: Sendable {
     /// The derived payment status of each handed-off coin, keyed by public key. `coinKeys` are the
@@ -11,20 +13,23 @@ public protocol CoinageTransferStatusServicing: Sendable {
 
 public final class CoinageTransferStatusService: CoinageTransferStatusServicing, @unchecked Sendable {
     private let databaseFactory: any DatabaseDependencyFactoring
-    private let chainViewFactory: any CoinageChainViewFactoryProtocol
+    private let chainViewFactory: any PinnedChainViewFactoryProtocol
+    private let chainId: ChainId
     private let coinOnChainQuery: any CoinOnChainQuerying
     private let snKeyFactory: any SNKeyFactoryProtocol
     private let logger: SDKLoggerProtocol?
 
     init(
         databaseFactory: any DatabaseDependencyFactoring,
-        chainViewFactory: any CoinageChainViewFactoryProtocol,
+        chainViewFactory: any PinnedChainViewFactoryProtocol,
+        chainId: ChainId,
         coinOnChainQuery: any CoinOnChainQuerying,
         snKeyFactory: any SNKeyFactoryProtocol,
         logger: SDKLoggerProtocol?
     ) {
         self.databaseFactory = databaseFactory
         self.chainViewFactory = chainViewFactory
+        self.chainId = chainId
         self.coinOnChainQuery = coinOnChainQuery
         self.snKeyFactory = snKeyFactory
         self.logger = logger
@@ -95,7 +100,7 @@ extension CoinageTransferStatusService {
             .map(\.coin.publicKey)
         guard !minted.isEmpty else { return [:] }
 
-        guard let view = try? await chainViewFactory.pin() else { return [:] }
+        guard let view = try? await chainViewFactory.pin(chainId: chainId) else { return [:] }
         guard
             let responses = try? await coinOnChainQuery.fetchCoins(for: minted, atBlockHash: view.finalizedHead.hash),
             responses.count == minted.count

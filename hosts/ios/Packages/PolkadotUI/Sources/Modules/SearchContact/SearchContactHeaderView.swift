@@ -7,12 +7,12 @@ internal import UIKit_iOS
 final class SearchContactHeaderView: UIView {
     private let searchCapsuleContainer = {
         let view = DSChatInputGlassBackground(
-            cornerRadius: 18,
+            cornerRadius: 24,
             fallbackColor: .bgSurfaceContainer,
             interactive: false
         )
         view.snp.makeConstraints {
-            $0.height.equalTo(36)
+            $0.height.equalTo(48)
         }
 
         return view
@@ -62,16 +62,8 @@ final class SearchContactHeaderView: UIView {
         $0.text = "Cancel"
     }
 
-    let scanButton = DSIconButton(
-        style: .ghost,
-        shape: .pill,
-        size: .small,
-        icon: UIImage(resource: .scan18)
-    )
-
     var searchHandler: ((String?) -> Void)?
     var cancelHandler: (() -> Void)?
-    var scanHandler: (() -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -91,7 +83,6 @@ final class SearchContactHeaderView: UIView {
         cancelLabel.isUserInteractionEnabled = true
 
         addSubview(searchCapsuleContainer)
-        addSubview(scanButton)
         addSubview(cancelLabel)
 
         searchCapsuleContainer.snp.makeConstraints {
@@ -100,13 +91,8 @@ final class SearchContactHeaderView: UIView {
             $0.bottom.equalToSuperview().inset(8)
         }
 
-        scanButton.snp.makeConstraints {
-            $0.leading.equalTo(searchCapsuleContainer.snp.trailing).offset(4)
-            $0.centerY.equalToSuperview()
-        }
-
         cancelLabel.snp.makeConstraints {
-            $0.leading.equalTo(scanButton.snp.trailing)
+            $0.leading.equalTo(searchCapsuleContainer.snp.trailing)
             $0.top.bottom.equalToSuperview()
             $0.trailing.equalToSuperview().inset(4)
         }
@@ -128,9 +114,6 @@ final class SearchContactHeaderView: UIView {
 
     private func setupHandlers() {
         searchField.addTarget(self, action: #selector(searchChanged), for: .editingChanged)
-        scanButton.onTap = { [weak self] in
-            self?.scanHandler?()
-        }
     }
 
     @objc private func searchChanged() {

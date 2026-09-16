@@ -26,12 +26,10 @@ extension ContactsListWireframe: ContactsListWireframeProtocol {
             self?.performChatShow(from: view, for: openModel)
         }
 
-        guard let search = SearchContactViewFactory.createView(
-            with: searchModel,
-            coinageService: flowState.coinageService
-        ) else {
+        guard let search = SearchContactViewFactory.createView(with: searchModel) else {
             return
         }
+
         search.controller.modalPresentationStyle = .fullScreen
         search.controller.modalTransitionStyle = .crossDissolve
         view?.controller.present(search.controller, animated: true)

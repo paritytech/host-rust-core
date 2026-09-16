@@ -5,15 +5,14 @@ enum DSTabBarMetrics {
     static let itemHeight: CGFloat = 54
     static let innerInset: CGFloat = 4
     static let rowPadding: CGFloat = 2
-    static let itemOverlap: CGFloat = 8
+    static let itemOverlap: CGFloat = 0
     static let horizontalMargin: CGFloat = 21
     static let bottomGap: CGFloat = 21
     static let maxWidth: CGFloat = 500
     static let iconSize: CGFloat = 28
     static let itemTopPadding: CGFloat = 6
     static let itemBottomPadding: CGFloat = 7
-    static let pillLeftExtension: CGFloat = 2
-    static let pillRightExtension: CGFloat = 2.4
+    static let pillHorizontalInset: CGFloat = 0
     static let badgeDiameter: CGFloat = 8
     static let liftedScaleX: CGFloat = 1.08
     static let liftedScaleY: CGFloat = 1.3
@@ -81,13 +80,7 @@ extension DSTabBarRow {
     }
 
     func pillFrame(at index: Int) -> CGRect {
-        let item = itemFrame(at: index)
-        return CGRect(
-            x: item.minX - DSTabBarMetrics.pillLeftExtension,
-            y: item.minY,
-            width: item.width + DSTabBarMetrics.pillLeftExtension + DSTabBarMetrics.pillRightExtension,
-            height: item.height
-        )
+        itemFrame(at: index).insetBy(dx: DSTabBarMetrics.pillHorizontalInset, dy: 0)
     }
 
     /// Snaps to the nearest centre among `candidates` only, so a drag sweeping over an action item

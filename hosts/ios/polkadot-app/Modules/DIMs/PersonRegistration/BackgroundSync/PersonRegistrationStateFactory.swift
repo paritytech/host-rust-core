@@ -5,7 +5,8 @@ protocol PersonRegistrationStateFactoryProtocol {
     func makeState(
         remoteState: PersonhoodRegistrationSyncState?,
         memberRingPosition: MembersPallet.RingPosition?,
-        keysStatus: MembersPallet.RingKeysStatus?
+        keysStatus: MembersPallet.RingKeysStatus?,
+        keysPerPage: Int
     ) -> PersonRegistrationSyncState?
 }
 
@@ -13,7 +14,8 @@ final class PersonRegistrationStateFactory: PersonRegistrationStateFactoryProtoc
     func makeState(
         remoteState: PersonhoodRegistrationSyncState?,
         memberRingPosition: MembersPallet.RingPosition?,
-        keysStatus: MembersPallet.RingKeysStatus?
+        keysStatus: MembersPallet.RingKeysStatus?,
+        keysPerPage: Int
     ) -> PersonRegistrationSyncState? {
         guard let remoteState else {
             return nil
@@ -23,7 +25,10 @@ final class PersonRegistrationStateFactory: PersonRegistrationStateFactoryProtoc
             return .aliasAssigned
         }
 
-        if let memberRingPosition, let keysStatus, keysStatus.includesKey(from: memberRingPosition) {
+        if
+            let memberRingPosition,
+            let keysStatus,
+            keysStatus.includesKey(from: memberRingPosition, keysPerPage: keysPerPage) {
             return .personAdded
         }
 

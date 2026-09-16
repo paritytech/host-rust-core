@@ -18,13 +18,87 @@
         }
       }
     },
-    "≈ %@": {
-      "comment": "A label displaying the fee amount.",
+    "action.send.cash": {
+      "extractionState": "manual",
       "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send CASH"
+          }
+        },
         "es-ES": {
           "stringUnit": {
             "state": "translated",
-            "value": "≈ %@"
+            "value": "Enviar CASH"
+          }
+        }
+      }
+    },
+    "Chat.contactAddedYou": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$(username)@ added you"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$(username)@ te agregó"
+          }
+        }
+      }
+    },
+    "Chat.peerLeft": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$(username)@ left the chat"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$(username)@ salió del chat"
+          }
+        }
+      }
+    },
+    "Chat.youAddedContact": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You added %1$(username)@"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agregaste a %1$(username)@"
+          }
+        }
+      }
+    },
+    "Chat.youLeft": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You left the chat"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saliste del chat"
           }
         }
       }
@@ -195,23 +269,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Recuperar Polkadot ID"
-          }
-        }
-      }
-    },
-    "action.send.cash": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Send CASH"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviar CASH"
           }
         }
       }
@@ -709,23 +766,6 @@
         }
       }
     },
-    "Chat.contactAddedYou": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ added you"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ te agregó"
-          }
-        }
-      }
-    },
     "chat.contactReactedToMessage": {
       "extractionState": "manual",
       "localizations": {
@@ -1021,23 +1061,6 @@
         }
       }
     },
-    "Chat.peerLeft": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ left the chat"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ salió del chat"
-          }
-        }
-      }
-    },
     "chat.reply": {
       "extractionState": "manual",
       "localizations": {
@@ -1308,40 +1331,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Contenido de mensaje no compatible. Actualiza la app"
-          }
-        }
-      }
-    },
-    "Chat.youAddedContact": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You added %1$(username)@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agregaste a %1$(username)@"
-          }
-        }
-      }
-    },
-    "Chat.youLeft": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You left the chat"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Saliste del chat"
           }
         }
       }
@@ -1971,6 +1960,210 @@
           "stringUnit": {
             "state": "translated",
             "value": "Activar el respaldo en iCloud"
+          }
+        }
+      }
+    },
+    "coinageHideDetails": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide Details"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocultar detalles"
+          }
+        }
+      }
+    },
+    "coinageHowToRead": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to read this"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cómo interpretar esto"
+          }
+        }
+      }
+    },
+    "coinageKeyHops": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coins show one circle per past payment. Dots represent other coins that moved with the payment."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las monedas muestran un círculo por cada pago anterior. Los puntos representan otras monedas que se movieron con el pago."
+          }
+        }
+      }
+    },
+    "coinageKeySolid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A single block means no past payments at all. The shorter it is, the more fungible the coin."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un solo bloque significa que no hay pagos anteriores. Cuanto más corto sea, más fungible es la moneda."
+          }
+        }
+      }
+    },
+    "coinageKeyUnknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A thin red and orange line means we have no record for that part of the coin's past."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una línea fina roja y naranja significa que no tenemos registro de esa parte del historial de la moneda."
+          }
+        }
+      }
+    },
+    "coinageKeyVoucher": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coins that gain privacy. The solid block is how fungible they will be at best; the striped part is the current level."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Monedas que ganan privacidad. El bloque sólido indica qué tan fungibles serán en el mejor de los casos; la parte rayada muestra el nivel actual."
+          }
+        }
+      }
+    },
+    "coinageLoading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reloading"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recargando"
+          }
+        }
+      }
+    },
+    "coinageShowDetails": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Details"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar detalles"
+          }
+        }
+      }
+    },
+    "coinageSpendable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spendable"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disponible"
+          }
+        }
+      }
+    },
+    "coinageSummaryTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coinage Balance"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saldo de Coinage"
+          }
+        }
+      }
+    },
+    "coinageTotalBalance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total balance"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saldo total"
+          }
+        }
+      }
+    },
+    "coinageUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No disponible"
           }
         }
       }
@@ -2763,13 +2956,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Show this QR to someone who wants to add you as a contact or send you money"
+            "value": "Show this QR to someone who wants to add you as a contact or send you %@"
           }
         },
         "es-ES": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muestra este QR a quien quiera agregarte como contacto o enviarte dinero"
+            "value": "Muestra este QR a quien quiera agregarte como contacto o enviarte %@"
           }
         }
       }
@@ -3554,13 +3747,30 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Waiting for network connection..."
+            "value": "Configuring application..."
           }
         },
         "es-ES": {
           "stringUnit": {
             "state": "translated",
-            "value": "Esperando la conexión a la red..."
+            "value": "Configurando la aplicación..."
+          }
+        }
+      }
+    },
+    "searchContact.NoSuchUsername": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No results for\n“%1$(username)@”"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin resultados para\n“%1$(username)@”"
           }
         }
       }
@@ -3582,19 +3792,19 @@
         }
       }
     },
-    "searchContact.NoSuchUsername": {
+    "searchContact.recent.chats": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No results for\n“%1$(username)@”"
+            "value": "Recent chats"
           }
         },
         "es-ES": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sin resultados para\n“%1$(username)@”"
+            "value": "Chats recientes"
           }
         }
       }
@@ -3952,6 +4162,125 @@
           "stringUnit": {
             "state": "translated",
             "value": "Configuración"
+          }
+        }
+      }
+    },
+    "settings.privacymode.balanced.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stronger privacy, moderate speed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mayor privacidad, velocidad moderada"
+          }
+        }
+      }
+    },
+    "settings.privacymode.balanced.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balanced"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Equilibrado"
+          }
+        }
+      }
+    },
+    "settings.privacymode.fastest.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fastest payments, lower privacy"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pagos más rápidos, menor privacidad"
+          }
+        }
+      }
+    },
+    "settings.privacymode.fastest.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fastest"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más rápido"
+          }
+        }
+      }
+    },
+    "settings.privacymode.private.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum privacy, lowest speed"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacidad máxima, menor velocidad"
+          }
+        }
+      }
+    },
+    "settings.privacymode.private.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Most Private"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más privado"
+          }
+        }
+      }
+    },
+    "settings.privacymode.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Privacy Mode"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modo de privacidad de %@"
           }
         }
       }
@@ -4432,6 +4761,40 @@
         }
       }
     },
+    "transaction.search.all.users": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All users"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todos los usuarios"
+          }
+        }
+      }
+    },
+    "transaction.search.my.contacts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My contacts"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mis contactos"
+          }
+        }
+      }
+    },
     "transaction.success.title": {
       "extractionState": "manual",
       "localizations": {
@@ -4755,121 +5118,13 @@
         }
       }
     },
-    "settings.privacymode.title": {
-      "extractionState": "manual",
+    "≈ %@": {
+      "comment": "A label displaying the fee amount.",
       "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Payments Privacy Mode"
-          }
-        },
         "es-ES": {
           "stringUnit": {
             "state": "translated",
-            "value": "Modo de privacidad de pagos"
-          }
-        }
-      }
-    },
-    "settings.privacymode.fastest.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fastest"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Más rápido"
-          }
-        }
-      }
-    },
-    "settings.privacymode.fastest.details": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fastest payments, lower privacy"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pagos más rápidos, menor privacidad"
-          }
-        }
-      }
-    },
-    "settings.privacymode.balanced.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Balanced"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Equilibrado"
-          }
-        }
-      }
-    },
-    "settings.privacymode.balanced.details": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stronger privacy, moderate speed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mayor privacidad, velocidad moderada"
-          }
-        }
-      }
-    },
-    "settings.privacymode.private.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Most Private"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Más privado"
-          }
-        }
-      }
-    },
-    "settings.privacymode.private.details": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maximum privacy, lowest speed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Privacidad máxima, menor velocidad"
+            "value": "≈ %@"
           }
         }
       }

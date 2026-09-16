@@ -221,6 +221,17 @@
         }
       }
     },
+    "connectionStatusAccessibilityLabel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection status"
+          }
+        }
+      }
+    },
     "continue" : {
       "extractionState" : "manual",
       "localizations" : {

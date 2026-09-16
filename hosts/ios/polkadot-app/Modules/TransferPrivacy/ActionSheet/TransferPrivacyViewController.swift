@@ -45,3 +45,12 @@ extension TransferPrivacyViewController: TransferPrivacyViewProtocol {
         rootView.bind(viewModel: viewModel)
     }
 }
+
+/// The decision is taken with the buttons only: a backdrop tap or a swipe does not close the sheet.
+extension TransferPrivacyViewController: ModalPresenterDelegate {
+    func presenterShouldHide(_: ModalPresenterProtocol) -> Bool {
+        false
+    }
+
+    func presenterDidHide(_: ModalPresenterProtocol) {}
+}

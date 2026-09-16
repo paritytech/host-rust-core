@@ -173,9 +173,11 @@ public enum AccessibilityID {
         case cashCardBalance = "wallet_cash_card_balance"
         /// Total balance text on the CASH card
         case totalBalance = "wallet_total_balance"
-        /// Faucet "+" button on the expanded CASH card
+        /// Top up pill on the expanded CASH card
         case addFundsButton = "wallet_add_funds_button"
-        /// Send CASH button on the expanded CASH card
+        /// Withdraw pill on the expanded CASH card
+        case withdrawButton = "wallet_withdraw_button"
+        /// Send pill on the expanded CASH card
         case sendPaymentButton = "wallet_send_payment_button"
         /// "Make all vouchers ready" button in the coinage breakdown
         case makeVouchersReadyButton = "wallet_make_vouchers_ready_button"

@@ -32,6 +32,18 @@ final class MockJSEngine: JSEngineProtocol, @unchecked Sendable {
         handlers[name] = handler
     }
 
+    /// Calls a native function the way the page would, so a test can drive a bridge end to end.
+    func invokeNative(_ name: String, args: String) async throws {
+        guard let handler = handlers[name] else {
+            throw MissingNativeFunction(name: name)
+        }
+        try await handler(args)
+    }
+
+    struct MissingNativeFunction: Error {
+        let name: String
+    }
+
     func dispatchEvent(actionId _: String, payload _: String) async throws {}
 
     func destroy() async {

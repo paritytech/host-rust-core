@@ -16,12 +16,14 @@ final class MainTabBarPresenter {
         ]
     #else
         let slots: [TabBarSlot] = [
-            .tab(.chat), .tab(.wallet), .action(.scan), .action(.spaTabs), .tab(.settings)
+            .tab(.chat), .tab(.wallet), .action(.scan), .action(.spaTabs), .tab(.settings),
+            .action(.connectionStatus)
         ]
     #endif
 
     private let chipViewModelFactory: SPATabChipViewModelFactory
     private var settingsBadge: TabBarBadge?
+    private var chainStatusRows: [ChainConnectionStatusViewModel] = []
 
     init(
         interactor: MainTabBarInteractorInputProtocol,
@@ -40,7 +42,7 @@ extension MainTabBarPresenter: MainTabBarPresenterProtocol {
     }
 
     func configureViews() {
-        view?.show(slots: slots, selecting: .wallet)
+        view?.show(slots: slots, selecting: .chat)
         view?.setBadge(settingsBadge, for: .settings)
     }
 
@@ -50,7 +52,13 @@ extension MainTabBarPresenter: MainTabBarPresenterProtocol {
             view?.showScanPanel()
         case .spaTabs:
             break
+        case .connectionStatus:
+            showConnectionStatusPanel()
         }
+    }
+
+    func didRequestContactSearch() {
+        wireframe.showSearchContact(from: view)
     }
 }
 
@@ -88,5 +96,18 @@ extension MainTabBarPresenter: MainTabBarInteractorOutputProtocol {
 
     func didReceiveChainStatus(_ rows: [ChainConnectionStatusViewModel]) {
         view?.showChainStatus(rows)
+
+        chainStatusRows = rows
+        showConnectionStatusPanel()
+    }
+}
+
+private extension MainTabBarPresenter {
+    /// `setContentPanel` ignores pushes unless its panel is open, so this is a no-op while closed.
+    func showConnectionStatusPanel() {
+        view?.showTabBarPanelContent(
+            SwiftUIContentConfiguration(view: ConnectionStatusPanelView(rows: chainStatusRows)),
+            for: .connectionStatus
+        )
     }
 }

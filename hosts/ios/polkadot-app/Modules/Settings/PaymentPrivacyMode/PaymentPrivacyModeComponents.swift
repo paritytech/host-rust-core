@@ -3,145 +3,131 @@ import UIKit
 import DesignSystem
 import Coinage
 
-// Presentation pieces for `PaymentPrivacyModeCard`: the layout constants, the lit sphere, the pointer, the
-// stepped scale, and the accent-derived shading. Split from the card so each stays a small, focused unit.
+// Presentation pieces for `PaymentPrivacyModeCard`: the layout constants, the lit sphere, the stepped
+// scale, and the accent-derived shading. Split from the card so each stays a small, focused unit.
 
 // MARK: - Layout constants
 
+/// Geometry from the Settings mock-up (Figma node 758:2203), in points.
 enum PrivacyModeMetrics {
     static let circle: CGFloat = 28
-    static let selectedCircle: CGFloat = 40
+    static let selectedCircle: CGFloat = 50
     static let trackHeight: CGFloat = 40
     static let glowBlur: CGFloat = 12
-    static let iconFraction: CGFloat = 0.42
+    static let glyphSize: CGFloat = 16
+    static let selectedGlyphSize: CGFloat = 28
     static let tickWidth: CGFloat = 2
     static let tickHeight: CGFloat = 6
     static let tickStep: CGFloat = 8
-    static let marker: CGFloat = 8
-    static let selectedMarker: CGFloat = 12
-    static let markerGlowBlur: CGFloat = 8
-
-    /// Mid-drag cross-fade bounds: a slow drag has room for a gentle dissolve, a flick must not leave the
-    /// outgoing glyph hanging behind the finger. `fastDragSpeed` is the mode-widths-per-second at which the
-    /// fade reaches its shortest.
+    static let selectedRing: CGFloat = 62
+    static let ringCornerRadius: CGFloat = 24
+    static let ringWidth: CGFloat = 2
+    static let glowOpacity: Double = 0.5
+    static let boxHeight: CGFloat = 78
+    static let headerMinHeight: CGFloat = 52
+    static let inset: CGFloat = 20
+    static let selectionAnimation: Animation = .easeInOut(duration: 0.2)
     static let slowDragFade: Double = 0.28
     static let fastDragFade: Double = 0.14
+    static let tapFade: Double = fastDragFade
     static let fastDragSpeed: CGFloat = 3
 
     /// How much of the recess shadow a fully lit floor removes; a dark floor keeps nearly all of it.
     static let lightSurfaceFalloff: CGFloat = 0.8
-
-    /// Half the selected sphere, so the outer modes' centres sit that far from the track edges and the
-    /// spheres rest fully inside — matching the design's ~20pt leading/trailing offsets.
-    static var inset: CGFloat { selectedCircle / 2 }
-
-    /// Tall enough for the selected sphere plus the glow spreading either side of it.
-    static var boxHeight: CGFloat { selectedCircle + glowBlur * 2 }
 }
 
 // MARK: - Mode circle
 
-/// One mode as a lit sphere on the track: a vertical accent gradient with a gradient rim, a drop shadow,
-/// and — only once a mode is settled on — an accent glow. Selecting grows the sphere; dragging keeps it
-/// grown but unlit. A dragged sphere adopts each mode as it passes the midpoint towards it, so `mode`
-/// changes under it mid-gesture: the glyph is then cross-faded and the accent blended rather than swapped
-/// in a single frame.
+enum ModeCircleState {
+    case resting
+    case grown
+    case settled
+}
+
 struct ModeCircleView: View {
     let mode: RecyclingStrategyType
-    let isSelected: Bool
-    let hasGlow: Bool
-    var fadeDuration: Double = 0.2
-
-    /// The mode being faded away from, held until the fade completes; `fadeProgress` runs 0 → 1 across it.
-    @State private var previousMode: RecyclingStrategyType
-    @State private var currentMode: RecyclingStrategyType
-    @State private var fadeProgress: CGFloat
-
-    init(mode: RecyclingStrategyType, isSelected: Bool, hasGlow: Bool, fadeDuration: Double = 0.2) {
-        self.mode = mode
-        self.isSelected = isSelected
-        self.hasGlow = hasGlow
-        self.fadeDuration = fadeDuration
-        _previousMode = State(initialValue: mode)
-        _currentMode = State(initialValue: mode)
-        _fadeProgress = State(initialValue: 1)
-    }
+    let state: ModeCircleState
 
     var body: some View {
-        let diameter = isSelected ? PrivacyModeMetrics.selectedCircle : PrivacyModeMetrics.circle
-        let accent = previousMode.displayAccentColor
-            .blended(with: currentMode.displayAccentColor, fraction: fadeProgress)
+        let grown = state != .resting
+        let diameter = grown ? PrivacyModeMetrics.selectedCircle : PrivacyModeMetrics.circle
+        let accent = mode.displayAccentColor
 
         ZStack {
-            Circle()
+            RoundedRectangle(cornerRadius: mode.glowCornerRadius, style: .circular)
                 .fill(accent)
-                .frame(width: diameter, height: diameter)
+                .frame(width: mode.glowSize, height: mode.glowSize)
                 .blur(radius: PrivacyModeMetrics.glowBlur)
-                .opacity(hasGlow ? 0.45 : 0)
+                .opacity(state == .settled ? PrivacyModeMetrics.glowOpacity : 0)
 
             Circle()
-                .fill(currentMode.circleGradient(accent: accent, selected: isSelected))
-                .overlay(Circle().strokeBorder(currentMode.circleBorderGradient(accent: accent), lineWidth: 1))
+                .fill(mode.circleGradient(accent: accent, selected: grown))
+                .overlay(Circle().strokeBorder(mode.circleBorderGradient(accent: accent), lineWidth: 1))
                 .frame(width: diameter, height: diameter)
-                .shadow(color: .shadowMedium.opacity(0.7), radius: 4, y: 4)
-                .overlay(glyphs(diameter: diameter))
+                .shadow(color: .shadowMedium.opacity(0.7), radius: 2, y: 4)
+                .overlay(glyph(size: grown ? PrivacyModeMetrics.selectedGlyphSize : PrivacyModeMetrics.glyphSize))
         }
         .frame(width: PrivacyModeMetrics.boxHeight, height: PrivacyModeMetrics.boxHeight)
-        .animation(.easeInOut(duration: 0.2), value: isSelected)
-        .animation(.easeInOut(duration: 0.2), value: hasGlow)
-        .onChange(of: mode) { _, newMode in
-            guard newMode != currentMode else { return }
-            previousMode = currentMode
-            currentMode = newMode
-            fadeProgress = 0
-            // Linear on purpose: an eased cross-fade loses ink in the middle of the exchange and reads
-            // as a blink.
-            withAnimation(.linear(duration: fadeDuration)) { fadeProgress = 1 }
-        }
+        .animation(PrivacyModeMetrics.selectionAnimation, value: state)
     }
 
-    /// Outgoing and incoming glyphs dissolving into each other on the same fade.
-    @ViewBuilder
-    private func glyphs(diameter: CGFloat) -> some View {
-        let font = Font.system(size: diameter * PrivacyModeMetrics.iconFraction, weight: .semibold)
-        ZStack {
-            Image(systemName: previousMode.displayIconName)
-                .font(font)
-                .foregroundStyle(.fgStaticWhite)
-                .opacity(1 - fadeProgress)
-
-            Image(systemName: currentMode.displayIconName)
-                .font(font)
-                .foregroundStyle(.fgStaticWhite)
-                .opacity(fadeProgress)
-        }
+    private func glyph(size: CGFloat) -> some View {
+        Image(systemName: mode.displayIconName)
+            .resizable()
+            .scaledToFit()
+            .fontWeight(.semibold)
+            .foregroundStyle(.fgStaticWhite)
+            .frame(width: size, height: size)
     }
 }
 
-// MARK: - Mode marker
+// MARK: - Selection ring
 
-/// The pointer under a mode, tying its sphere to its label. The selected one is larger and glows in the
-/// mode's own accent.
-struct ModeMarkerView: View {
+struct SelectionRingView: View {
     let mode: RecyclingStrategyType
-    let isSelected: Bool
+    let fadeDuration: Double
+
+    @State private var fadeFrom: Color
+    @State private var fadeTo: RecyclingStrategyType
+    @State private var fadeProgress: CGFloat = 1
+
+    init(mode: RecyclingStrategyType, fadeDuration: Double) {
+        self.mode = mode
+        self.fadeDuration = fadeDuration
+        _fadeFrom = State(initialValue: mode.displayAccentColor)
+        _fadeTo = State(initialValue: mode)
+    }
 
     var body: some View {
-        let side = isSelected ? PrivacyModeMetrics.selectedMarker : PrivacyModeMetrics.marker
-        let color = isSelected ? mode.displayAccentColor : mode.markerMutedColor
+        BlendedRing(source: fadeFrom, target: fadeTo.displayAccentColor, progress: fadeProgress)
+            .frame(width: PrivacyModeMetrics.boxHeight, height: PrivacyModeMetrics.boxHeight)
+            .onChange(of: mode) { _, newMode in
+                guard newMode != fadeTo else { return }
 
-        Triangle()
-            .fill(color)
-            .frame(width: side, height: side)
-            .background(
-                Triangle()
-                    .fill(mode.displayAccentColor)
-                    .frame(width: side, height: side)
-                    .blur(radius: PrivacyModeMetrics.markerGlowBlur)
-                    .opacity(isSelected ? 0.45 : 0)
-            )
-            .frame(height: PrivacyModeMetrics.selectedMarker)
-            .animation(.easeInOut(duration: 0.2), value: isSelected)
+                fadeFrom = fadeFrom.blended(with: fadeTo.displayAccentColor, fraction: fadeProgress)
+                fadeTo = newMode
+                fadeProgress = 0
+
+                withAnimation(.linear(duration: fadeDuration)) { fadeProgress = 1 }
+            }
+    }
+}
+
+private struct BlendedRing: View, Animatable {
+    let source: Color
+    let target: Color
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: PrivacyModeMetrics.ringCornerRadius, style: .circular)
+            .strokeBorder(source.blended(with: target, fraction: progress), lineWidth: PrivacyModeMetrics.ringWidth)
+            .frame(width: PrivacyModeMetrics.selectedRing, height: PrivacyModeMetrics.selectedRing)
+            .shadow(color: .shadowMedium.opacity(0.7), radius: 2, y: 4)
     }
 }
 
@@ -179,23 +165,20 @@ struct TickScale: View {
     }
 }
 
-private struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.closeSubpath()
-        return path
-    }
-}
-
 // MARK: - Mode appearance
 
 /// Per-mode shades derived from the mode's flat accent token rather than hardcoded, so the lit sphere stays
 /// self-consistent: the fill is a vertical gradient, tinted towards static white at the top when selected
-/// and shaded towards onyx below; the rim and muted marker share the same derivation.
+/// and shaded towards onyx below; the rim shares the same derivation.
 private extension RecyclingStrategyType {
+    var glowSize: CGFloat {
+        self == .balanced ? 40 : 56
+    }
+
+    var glowCornerRadius: CGFloat {
+        self == .balanced ? 20 : 24
+    }
+
     func circleGradient(accent: Color, selected: Bool) -> LinearGradient {
         let top = selected
             ? accent.blended(with: .fgStaticWhite, fraction: 0.1)
@@ -215,10 +198,6 @@ private extension RecyclingStrategyType {
             startPoint: .top,
             endPoint: .bottom
         )
-    }
-
-    var markerMutedColor: Color {
-        displayAccentColor.blended(with: .avatarBgOnyx, fraction: 0.45)
     }
 }
 

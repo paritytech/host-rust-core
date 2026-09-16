@@ -33,8 +33,14 @@ extension AppConfig {
         }
 
         static let dotNsBrowse = "browse"
+        /// The funding product's label: the host name of the funding page URL, falling back to the legacy
+        /// `funding_domain` key while both are published.
         static var dotNsGetSome: String {
-            AppConfigProvider.shared.getRemoteConfig()!.fundingDomain!
+            let config = AppConfigProvider.shared.getRemoteConfig()
+            let fromUrl = config?.fundingUrl.flatMap { destination in
+                ProductHost.name(fromDotDomain: URL(string: destination)?.host() ?? destination)
+            }
+            return fromUrl ?? config?.fundingDomain ?? ""
         }
 
         static let dotNsGameWebview = "game-webview"

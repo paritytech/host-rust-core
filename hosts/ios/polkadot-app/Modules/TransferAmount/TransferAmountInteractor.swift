@@ -26,6 +26,7 @@ struct TransferAmountDependency {
     let transferMethod: () -> TransferMethod
     let chatSubmitter: () -> TransferSubmitting
     var lifecycleReporter: () -> TransferLifecycleReporting = { NoOpTransferLifecycleReporter() }
+    var recyclingStrategy: () -> any CoinageRecyclingStrategyProviding = { CoinageRecyclingStrategyStore.shared }
 }
 
 final class TransferAmountInteractor {
@@ -43,6 +44,7 @@ final class TransferAmountInteractor {
     let transferMethod: TransferMethod
     let transferSubmitter: TransferSubmitting
     let lifecycleReporter: TransferLifecycleReporting
+    let recyclingStrategy: any CoinageRecyclingStrategyProviding
 
     private var coinageBalanceTask: Task<Void, Never>?
     /// Coalesces concurrent confirmations (e.g. double-tap): late callers join
@@ -63,6 +65,7 @@ final class TransferAmountInteractor {
         transferMethod = dependencies.transferMethod()
         transferSubmitter = dependencies.chatSubmitter()
         lifecycleReporter = dependencies.lifecycleReporter()
+        recyclingStrategy = dependencies.recyclingStrategy()
         self.logger = logger
     }
 }
@@ -97,7 +100,13 @@ extension TransferAmountInteractor: TransferAmountInteractorInputProtocol {
             return .coinage(preview)
         case .externalPayment:
             let preview = try await coinageService.previewExternalPayment(for: planks)
-            return .externalPayment(preview)
+            // Same rule as product payments: warn unless private vouchers pay or the preset is minPrivacy.
+            var requiresPrivacyConfirmation = false
+            if recyclingStrategy.strategy != .minPrivacy {
+                requiresPrivacyConfirmation = try await !coinageService
+                    .canExecuteExternalPaymentPrivately(amount: planks)
+            }
+            return .externalPayment(preview, amount: planks, requiresPrivacyConfirmation: requiresPrivacyConfirmation)
         }
     }
 
@@ -110,8 +119,8 @@ extension TransferAmountInteractor: TransferAmountInteractorInputProtocol {
                 switch validation {
                 case let .coinage(preview):
                     try await confirmCoinageTransfer(preview: preview)
-                case let .externalPayment(preview):
-                    try await confirmExternalPayment(preview: preview)
+                case let .externalPayment(_, amount, _):
+                    try await confirmExternalPayment(amount: amount)
                 }
             } catch {
                 logger?.error("Did fail transfer: \(error)")
@@ -175,17 +184,22 @@ private extension TransferAmountInteractor {
 // MARK: - External Payment
 
 private extension TransferAmountInteractor {
-    func confirmExternalPayment(preview: ExternalPaymentPreview) async throws {
-        let paymentId = try await coinageService.initiateExternalPayment(
-            origin: recipient.accountId.toAddress(using: .genericFormat),
-            amountInPlanks: preview.fullAmount,
+    /// Reaches here only after the presenter's privacy confirmation when the plan requires one.
+    func confirmExternalPayment(amount: BigUInt) async throws {
+        let productId = ExternalPayment.nativeProductId
+        let paymentId = try Data.randomOrError(of: 32).toHex(includePrefix: true)
+
+        try await coinageService.initiateExternalPayment(
+            productId: productId,
+            paymentId: paymentId,
+            amountInPlanks: amount,
             destination: recipient.accountId
         )
 
         // Completion and failure are observed by the presenter through the
         // lifecycle stream — initiation success is enough to return here.
         lifecycleReporter.start(
-            with: .externalPayment(paymentId: paymentId, amountInPlanks: preview.fullAmount)
+            with: .externalPayment(productId: productId, paymentId: paymentId, amountInPlanks: amount)
         )
     }
 }

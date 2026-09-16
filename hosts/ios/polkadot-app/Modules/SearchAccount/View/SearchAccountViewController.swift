@@ -18,11 +18,13 @@ final class SearchAccountViewController: UIViewController, ViewHolder {
     enum Cell: Hashable {
         case account(SearchAccountViewModel.AccountType)
         case recentContact(RecipientViewModel)
+        case globalContact(SearchAccountViewModel.AccountType)
 
         var accountType: SearchAccountViewModel.AccountType {
             switch self {
             case let .account(accountType): accountType
             case let .recentContact(recentContact): recentContact.accountType
+            case let .globalContact(accountType): accountType
             }
         }
     }
@@ -138,24 +140,25 @@ final class SearchAccountViewController: UIViewController, ViewHolder {
         rootView.addressInputView.textField.becomeFirstResponder()
     }
 
-    private func prepareData(_ dataType: SearchAccountViewModel.DataType) -> Snapshot {
+    private func prepareData(_ content: SearchAccountViewModel.Content) -> Snapshot {
         var snapshot = SearchAccountViewController.Snapshot()
-        switch dataType {
-        case let .idle(recent, contacts):
-            if !recent.isEmpty {
-                snapshot.appendSections([.recentContacts])
-                snapshot.appendItems(recent.map { .recentContact($0) })
-            }
-            if !contacts.isEmpty {
-                snapshot.appendSections([.default])
-                snapshot.appendItems(contacts.map { .account($0) })
-            }
-        case let .searchResults(accounts):
-            snapshot.appendSections([.default])
-            snapshot.appendItems(accounts.map { .account($0) })
-        }
+
+        appendSection(.recentContacts, items: content.recent.map { .recentContact($0) }, to: &snapshot)
+        appendSection(.contacts, items: content.contacts.map { .account($0) }, to: &snapshot)
+        appendSection(.globalSearch, items: content.global.map { .globalContact($0) }, to: &snapshot)
 
         return snapshot
+    }
+
+    private func appendSection(
+        _ section: SearchAccountViewModel.Section,
+        items: [Cell],
+        to snapshot: inout Snapshot
+    ) {
+        guard !items.isEmpty else { return }
+
+        snapshot.appendSections([section])
+        snapshot.appendItems(items)
     }
 
     private func applySnapshot(_ snapshot: Snapshot) {
@@ -184,15 +187,13 @@ extension SearchAccountViewController: SearchAccountViewProtocol {
 
     func applyData(_ viewModel: SearchAccountViewModel) {
         self.viewModel = viewModel
-        let snapshot = prepareData(viewModel.dataType)
+        let snapshot = prepareData(viewModel.content)
         applySnapshot(snapshot)
 
         let query = rootView.addressInputView.inputValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let isEmpty: Bool =
-            switch viewModel.dataType {
-            case let .idle(recent, contacts): recent.isEmpty && contacts.isEmpty
-            case let .searchResults(accounts): accounts.isEmpty
-            }
+        let isEmpty = viewModel.content.recent.isEmpty
+            && viewModel.content.contacts.isEmpty
+            && viewModel.content.global.isEmpty
 
         noResultsQuery = (!query.isEmpty && isEmpty) ? query : nil
         setNeedsUpdateContentUnavailableConfiguration()
@@ -227,7 +228,9 @@ extension SearchAccountViewController: UITableViewDelegate {
         let sections = snapshot.sectionIdentifiers
         let sectionType = sections[safe: section]
         switch sectionType {
-        case .recentContacts:
+        case .recentContacts,
+             .contacts,
+             .globalSearch:
             let frame = CGRect(
                 x: .zero,
                 y: .zero,
@@ -244,7 +247,9 @@ extension SearchAccountViewController: UITableViewDelegate {
         let sectionIdentifier = snapshot.sectionIdentifiers[safe: section]
 
         switch sectionIdentifier {
-        case .recentContacts:
+        case .recentContacts,
+             .contacts,
+             .globalSearch:
             return 20
         default:
             return .zero

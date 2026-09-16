@@ -23,15 +23,15 @@ extension RecyclingStrategyType {
 
     var displayIconName: String {
         switch self {
-        case .minPrivacy: "bolt.fill"
+        case .minPrivacy: "bolt.circle.fill"
         case .balanced: "shield.lefthalf.filled"
         case .maxPrivacy: "eye.slash.fill"
         }
     }
 
-    /// The vivid hue: knob icon, gradient stop, marker and selected-label colour. Amethyst's vivid value is
-    /// the avatar *background* token (`#7C3AED`); the foreground one is a near-white lavender that washes
-    /// out to grey when shaded, so it is not the accent.
+    /// The vivid hue: sphere shading, tick gradient stop, selection ring and glow. Amethyst's vivid value
+    /// is the avatar *background* token (`#7C3AED`); the foreground one is a near-white lavender that
+    /// washes out to grey when shaded, so it is not the accent.
     var displayAccentColor: Color {
         switch self {
         case .minPrivacy: .fgWarning

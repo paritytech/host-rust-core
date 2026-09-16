@@ -49,27 +49,22 @@ public struct ParametricRecyclingStrategy: CoinRecyclingStrategyProtocol {
     public func isVoucherUsable(_ voucher: Voucher, context: VoucherUsabilityContext) -> Bool {
         guard case let .inRecycler(recycler) = voucher.remoteState else { return false }
 
-        guard params.requiredRingFill > .withInt(0) else {
-            // ring state does not matter, unlock voucher
+        switch params.voucherReadiness {
+        case .immediate:
             return true
+        case let .ringFillOrMembersAndAge(requiredRingFill, _, _):
+            let ringFilled =
+                if let capacity = context.capacity(for: voucher.exponent), capacity > 0 {
+                    BigRational(numerator: BigUInt(recycler.membersCount), denominator: BigUInt(capacity))
+                        >= requiredRingFill
+                } else {
+                    false
+                }
+
+            let delayElapsed = params.voucherReadiness.readyAt(for: voucher).map { context.now >= $0 } ?? false
+
+            return ringFilled || delayElapsed
         }
-
-        let members = BigUInt(recycler.membersCount)
-
-        // members >= requiredRingFill * capacity. `mul(value:)` returns the required member count as a
-        // BigUInt, so both sides are BigUInt. An unresolved capacity reads as never full.
-        let ringFilled =
-            if let capacity = context.capacity(for: voucher.exponent) {
-                members >= params.requiredRingFill.mul(value: BigUInt(capacity))
-            } else {
-                false
-            }
-
-        // Below a full ring the random unload delay is an acceptable substitute for anonymity-set
-        // size; at 100% nothing but a full ring will do.
-        let delayElapsed = params.requiredRingFill < .full && voucher.readyAt < context.now
-
-        return ringFilled || delayElapsed
     }
 
     public func allowsConfirmedSpend() -> Bool {

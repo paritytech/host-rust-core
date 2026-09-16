@@ -8,7 +8,6 @@ public typealias RenderWidgetHandler = (_ messageId: String, _ scaleHex: String)
 public enum ContainerBridgeHostApiError: Error {
     case missingRequiredParam(String)
     case invalidSignRawParams
-    case invalidPaymentTopUpAmount(String)
 
     public var errorDescription: String? {
         switch self {
@@ -16,8 +15,6 @@ public enum ContainerBridgeHostApiError: Error {
             "missing required param \(param)"
         case .invalidSignRawParams:
             "signRaw must have either data or payload"
-        case let .invalidPaymentTopUpAmount(value):
-            "invalid paymentTopUp amount: \(value)"
         }
     }
 }
@@ -67,6 +64,7 @@ public extension ContainerBridge {
         registerRemotePermission(nativeApi: nativeApi)
         registerPaymentBalanceSubscribe(nativeApi: nativeApi)
         registerPaymentTopUp(nativeApi: nativeApi)
+        registerPaymentTopUpStatusSubscribe(nativeApi: nativeApi)
         registerHostPaymentRequest(nativeApi: nativeApi)
         registerHostPaymentStatusSubscribe(nativeApi: nativeApi)
         registerPushNotification(nativeApi: nativeApi)
@@ -551,54 +549,48 @@ private extension ContainerBridge {
 
     func registerHostPaymentRequest(nativeApi: ProductsNativeApiProtocol) {
         registerRequestHandler(method: "paymentRequest") { params in
-            let amount = try params.mapOrMissing(for: "amount") { $0.stringValue }
-            let destHex = try params.mapOrMissing(for: "destinationHex") { $0.stringValue }
-            let destination = try AccountId(hexString: destHex)
+            let request = try params.map(to: PaymentRequestDto.self)
 
-            let receipt = try await nativeApi.requestPayment(
-                amountInPlanks: amount,
-                destination: destination
+            try await nativeApi.requestPayment(
+                amount: request.amount,
+                destination: request.destination,
+                id: request.id
             )
 
-            return JSON.dictionaryValue([
-                "id": .stringValue(receipt.paymentId)
-            ])
+            return JSON.dictionaryValue([:])
         }
     }
 
     func registerHostPaymentStatusSubscribe(nativeApi: ProductsNativeApiProtocol) {
         registerSubscriptionHandler(method: "paymentStatusSubscribe") { params in
-            let paymentId = try params.mapOrMissing(for: "paymentId") { $0.stringValue }
+            let request = try params.map(to: PaymentStatusSubscribeDto.self)
 
-            return try await nativeApi.subscribePaymentStatus(paymentId: paymentId)
-                .map { status -> JSON in
-                    switch status {
-                    case .processing:
-                        JSON.dictionaryValue(["tag": .stringValue("Processing")])
-                    case .completed:
-                        JSON.dictionaryValue(["tag": .stringValue("Completed")])
-                    case let .failed(reason):
-                        JSON.dictionaryValue([
-                            "tag": .stringValue("Failed"),
-                            "value": .stringValue(reason)
-                        ])
-                    }
-                }
+            return try await nativeApi.subscribePaymentStatus(id: request.id)
+                .map { try HostPaymentStatusDto(status: $0).toScaleCompatibleJSON() }
                 .eraseToAnyAsyncSequence()
         }
     }
 
     func registerPaymentTopUp(nativeApi: ProductsNativeApiProtocol) {
         registerRequestHandler(method: "paymentTopUp") { params in
-            let amountString = try params.mapOrMissing(for: "amount") { $0.stringValue }
-            guard let amount = Balance(amountString) else {
-                throw ContainerBridgeHostApiError.invalidPaymentTopUpAmount(amountString)
-            }
+            let request = try params.map(to: PaymentTopUpRequestDto.self)
 
-            let source = try params.map(to: PaymentTopUpSource.self)
-
-            try await nativeApi.paymentTopUp(amount: amount, source: source)
+            try await nativeApi.paymentTopUp(
+                amount: request.amount,
+                source: request.source,
+                id: request.id
+            )
             return JSON.dictionaryValue([:])
+        }
+    }
+
+    func registerPaymentTopUpStatusSubscribe(nativeApi: ProductsNativeApiProtocol) {
+        registerSubscriptionHandler(method: "paymentTopUpStatusSubscribe") { params in
+            let request = try params.map(to: PaymentTopUpStatusSubscribeDto.self)
+
+            return try await nativeApi.subscribePaymentTopUpStatus(id: request.id)
+                .map { try HostPaymentTopUpStatusDto(status: $0).toScaleCompatibleJSON() }
+                .eraseToAnyAsyncSequence()
         }
     }
 }

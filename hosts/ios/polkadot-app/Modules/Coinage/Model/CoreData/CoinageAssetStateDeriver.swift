@@ -21,7 +21,7 @@ enum CoinageAssetStateDeriver {
             .first { $0 != .failure }
     }
 
-    private static func status(of entry: CDCoinageTxEntry?) -> CoinageTxStatus? {
+    private static func status(of entry: CDDurableTx?) -> CoinageTxStatus? {
         entry.flatMap { CoinageTxStatus(rawValue: Int($0.status)) }
     }
 }

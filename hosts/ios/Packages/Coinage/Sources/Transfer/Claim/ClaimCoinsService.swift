@@ -95,7 +95,7 @@ private extension ClaimCoinsService {
         let coins = Set(keypairs.keys)
         guard !coins.isEmpty else { report(.notClaimed); return }
 
-        let onChainUpdates = AsyncBufferedChannel<[PublicKey: Int16]>()
+        let onChainUpdates = AsyncBufferedChannel<[PublicKey: ClaimableCoinInfo]>()
         let pump = Task { [coinOnChainQuery] in
             do {
                 for try await snapshot in coinOnChainQuery.subscribeCoinInfos(for: Array(coins)) {
@@ -104,16 +104,46 @@ private extension ClaimCoinsService {
             } catch {}
         }
         defer { pump.cancel() }
-        let onChain = onChainUpdates.makeAsyncIterator()
-
-        var settled: [CoinageTxEntry] = []
 
         logger?.debug("Will start claiming coins with group=\(groupId)")
+
+        do {
+            let settled = try await claimUntilDone(
+                keypairs: keypairs,
+                groupId: groupId,
+                retryUntil: retryUntil,
+                context: context,
+                onChain: onChainUpdates.makeAsyncIterator(),
+                report: report
+            )
+            let verdict = try await toVerdict(settled, coins: coins, context: context)
+
+            // A cancelled run has no last word: the record stays active for the next launch.
+            guard !Task.isCancelled else { return }
+
+            report(verdict)
+        } catch {
+            logger?.error("Claim: run ended without a verdict group=\(groupId): \(error)")
+        }
+    }
+
+    /// Claims against the chain until every coin has a finalized claim or the window closes. Returns
+    /// the group as it last settled. Throws when the group's value cannot be read: never a shortfall.
+    func claimUntilDone(
+        keypairs: [PublicKey: Data],
+        groupId: CoinageTxGroupId,
+        retryUntil: Date,
+        context: DenominationBreakdownContext,
+        onChain: AsyncBufferedChannel<[PublicKey: ClaimableCoinInfo]>.Iterator,
+        report: @Sendable (CoinageTransferDetection) -> Void
+    ) async throws -> [CoinageTxEntry] {
+        let coins = Set(keypairs.keys)
+        var settled: [CoinageTxEntry] = []
 
         while !Task.isCancelled {
             logger?.debug("Awaiting settles coins=\(coins.count) with group=\(groupId)")
 
-            settled = await awaitKnownOperationsSettled(
+            settled = try await awaitKnownOperationsSettled(
                 groupId: groupId, coins: coins, context: context, report: report
             )
             let unclaimed = coins.subtracting(settled.finalizedSuccess().receivedPublicKeys())
@@ -131,7 +161,12 @@ private extension ClaimCoinsService {
             if !claimable.isEmpty {
                 logger?.debug("Claiming coins for group=\(groupId)")
 
-                await submit(claimable: claimable, keypairs: keypairs, groupId: groupId)
+                await submit(
+                    claimable: claimable,
+                    keypairs: keypairs,
+                    bundleSize: coins.count,
+                    groupId: groupId
+                )
 
                 logger?.debug("Claiming complete for group=\(groupId)")
             } else if Date() >= retryUntil {
@@ -140,37 +175,54 @@ private extension ClaimCoinsService {
             }
         }
 
-        await report(toVerdict(settled, coins: coins, context: context))
+        return settled
     }
 
     /// Reports the group on every ledger update until nothing in it is live, then returns what it
-    /// settled on. An empty group is already settled — a first attempt, nothing to wait for.
+    /// settled on. An empty group is already settled — a first attempt, nothing to wait for. A stream
+    /// that fails settles on the last states seen; a valuation failure propagates.
     func awaitKnownOperationsSettled(
         groupId: CoinageTxGroupId,
         coins: Set<PublicKey>,
         context: DenominationBreakdownContext,
         report: @Sendable (CoinageTransferDetection) -> Void
-    ) async -> [CoinageTxEntry] {
+    ) async throws -> [CoinageTxEntry] {
         var last: [CoinageTxEntry] = []
         do {
             for try await states in txService.subscribeOperationGroupStatuses(groupId) {
                 last = states
-                await report(toProgress(states, coins: coins, context: context))
+                try await report(toProgress(states, coins: coins, context: context))
                 if states.allSatisfy({ !$0.status.isLive }) { break }
             }
+        } catch let error as ClaimValuationError {
+            throw error
         } catch {
             logger?.error("Claim group-status stream failed group=\(groupId): \(error)")
         }
         return last
     }
 
-    func submit(claimable: [PublicKey: Int16], keypairs: [PublicKey: Data], groupId: CoinageTxGroupId) async {
-        let items = claimable.compactMap { key, exponent -> ClaimableCoin? in
+    func submit(
+        claimable: [PublicKey: ClaimableCoinInfo],
+        keypairs: [PublicKey: Data],
+        bundleSize: Int,
+        groupId: CoinageTxGroupId
+    ) async {
+        let items = claimable.compactMap { key, info -> ClaimableCoin? in
             guard let privateKey = keypairs[key] else { return nil }
-            return ClaimableCoin(privateKey: privateKey, publicKey: key, valueExponent: exponent)
+            return ClaimableCoin(
+                privateKey: privateKey,
+                publicKey: key,
+                valueExponent: info.exponent,
+                age: info.age
+            )
         }
         do {
-            try await claimSubmitter.submit(claimable: items, groupId: groupId)
+            try await claimSubmitter.submit(
+                claimable: items,
+                bundleSize: bundleSize,
+                groupId: groupId
+            )
         } catch {
             logger?.error("Claim submission failed group=\(groupId): \(error)")
         }
@@ -181,10 +233,10 @@ private extension ClaimCoinsService {
     /// cannot spin the loop. Settling for the last look is deliberate: a coin that never arrives is
     /// the peer's problem, and holding the others hostage to it would strand money sitting right there.
     func awaitOnChainWithTimeout(
-        _ onChain: AsyncBufferedChannel<[PublicKey: Int16]>.Iterator,
+        _ onChain: AsyncBufferedChannel<[PublicKey: ClaimableCoinInfo]>.Iterator,
         unclaimed: Set<PublicKey>
-    ) async -> [PublicKey: Int16] {
-        let latest = OSAllocatedUnfairLock<[PublicKey: Int16]>(initialState: [:])
+    ) async -> [PublicKey: ClaimableCoinInfo] {
+        let latest = OSAllocatedUnfairLock<[PublicKey: ClaimableCoinInfo]>(initialState: [:])
         _ = try? await withTimeout(Self.detectionTimeout) {
             while let look = await onChain.next() {
                 let filtered = look.filter { unclaimed.contains($0.key) }
@@ -217,18 +269,18 @@ private extension ClaimCoinsService {
         _ states: [CoinageTxEntry],
         coins: Set<PublicKey>,
         context: DenominationBreakdownContext
-    ) async -> CoinageTransferDetection {
+    ) async throws -> CoinageTransferDetection {
         let arrived = states.filter(\.status.isArrived)
         let outstanding = coins.subtracting(arrived.receivedPublicKeys())
 
         if outstanding.isEmpty {
             let finalized = coins.subtracting(states.finalizedSuccess().receivedPublicKeys()).isEmpty
-            return await .claimed(amount: valueMinted(by: arrived, context: context), finalized: finalized)
+            return try await .claimed(amount: valueMinted(by: arrived, context: context), finalized: finalized)
         }
 
         let failed = states.filter { $0.status == .failure }.receivedPublicKeys()
         if !arrived.isEmpty, outstanding.contains(where: { failed.contains($0) }) {
-            return await .claimingRest(claimed: valueMinted(by: arrived, context: context))
+            return try await .claimingRest(claimed: valueMinted(by: arrived, context: context))
         }
 
         return states.isEmpty ? .detecting : .claiming
@@ -239,27 +291,32 @@ private extension ClaimCoinsService {
         _ states: [CoinageTxEntry],
         coins: Set<PublicKey>,
         context: DenominationBreakdownContext
-    ) async -> CoinageTransferDetection {
+    ) async throws -> CoinageTransferDetection {
         let arrived = states.filter(\.status.isArrived)
         let notArrived = coins.subtracting(arrived.receivedPublicKeys())
 
         if notArrived.isEmpty {
             let finalized = coins.subtracting(states.finalizedSuccess().receivedPublicKeys()).isEmpty
-            return await .claimed(amount: valueMinted(by: arrived, context: context), finalized: finalized)
+            return try await .claimed(amount: valueMinted(by: arrived, context: context), finalized: finalized)
         }
         if !arrived.isEmpty {
-            return await .claimedPartially(claimed: valueMinted(by: arrived, context: context))
+            return try await .claimedPartially(claimed: valueMinted(by: arrived, context: context))
         }
         return .notClaimed
     }
 
     /// The planks minted by `entries` — their output coins valued against the denomination context.
-    func valueMinted(by entries: [CoinageTxEntry], context: DenominationBreakdownContext) async -> Balance {
+    /// A store that cannot be read is a `ClaimValuationError`, never zero.
+    func valueMinted(by entries: [CoinageTxEntry], context: DenominationBreakdownContext) async throws -> Balance {
         let outputKeys = entries.outputPublicKeys()
 
         guard !outputKeys.isEmpty else { return 0 }
 
-        let coins = await (try? coinService.fetchCoins(publicKeys: outputKeys)) ?? []
-        return coins.reduce(Balance(0)) { $0 + context.valueInPlanks(for: $1.exponent) }
+        do {
+            let coins = try await coinService.fetchCoins(publicKeys: outputKeys)
+            return coins.reduce(Balance(0)) { $0 + context.valueInPlanks(for: $1.exponent) }
+        } catch {
+            throw ClaimValuationError(underlying: error)
+        }
     }
 }

@@ -136,7 +136,7 @@ let dependencyConfigs: [DependencyConfig] = [
     .init(
         name: "host-rust-core",
         url: coreIsInTree ? corePath : "https://github.com/paritytech/host-rust-core",
-        version: coreIsInTree ? .local : .exact("0.12.0"),
+        version: coreIsInTree ? .local : .exact("0.16.0"),
         products: ["TrUAPIHost"]
     ),
     .init(

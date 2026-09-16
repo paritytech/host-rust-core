@@ -1,0 +1,78 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "chainStatus.message": {
+      "comment": "Message of the tip pointing at the chain status strip",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These rings track your connection to each chain."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estos anillos muestran tu conexión con cada cadena."
+          }
+        }
+      }
+    },
+    "chainStatus.title": {
+      "comment": "Title of the tip pointing at the chain status strip",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network status"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estado de la red"
+          }
+        }
+      }
+    },
+    "scan.message": {
+      "comment": "Message of the tab bar tip pointing at the scan action",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan to pay or add a contact."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escanea para pagar o agregar un contacto."
+          }
+        }
+      }
+    },
+    "scan.title": {
+      "comment": "Title of the tab bar tip pointing at the scan action",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan a QR code"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escanear código QR"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.1"
+}

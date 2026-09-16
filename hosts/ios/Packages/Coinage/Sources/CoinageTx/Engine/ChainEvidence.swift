@@ -1,8 +1,9 @@
+import DurableTransactions
 import Foundation
 
 /// A three-valued on-chain read. `unknown` is a read that did not answer — a transport error, a key
-/// missing from a batched response, an undecodable value — or an asset whose kind cannot establish
-/// the fact at all. It is never a verdict: a rule that needs `present`/`absent` simply does not match.
+/// missing from a batched response, an undecodable value — or an asset whose kind cannot establish the
+/// fact at all. It is never a verdict: a rule that needs `present`/`absent` simply does not match.
 public enum ChainPresence: Sendable, Equatable {
     case present
     case absent
@@ -16,12 +17,15 @@ public enum AliasRead: Sendable, Equatable {
     case unknown
 }
 
-/// Everything the rules may read about the chain, gathered for one entry against one pinned view.
+/// Everything coinage's oracle reads about the chain, gathered for one entry against one pinned view.
 ///
-/// Keyed by each asset's stable identifier; every asset of the entry appears in every map — a read
-/// that did not establish a fact is ``ChainPresence/unknown`` rather than a missing key, so "we did
-/// not find out" is a value you can see rather than an absence you infer. Every predicate over these
-/// is positive-form and paired with its opposite, so an unknown read satisfies neither side.
+/// Whether a recorded block is still canonical is not here: that is true of any transaction, so the
+/// engine resolves it for the whole pass at once rather than one read per transaction.
+///
+/// Keyed by each asset's stable identifier; every asset of the entry appears in every map — a read that
+/// did not establish a fact is ``ChainPresence/unknown`` rather than a missing key, so "we did not find
+/// out" is a value you can see rather than an absence you infer. Every predicate over these is
+/// positive-form and paired with its opposite, so an unknown read satisfies neither side.
 public struct ChainEvidence: Sendable {
     public let finalized: BlockRef
     public let best: BlockRef
@@ -29,9 +33,6 @@ public struct ChainEvidence: Sendable {
     public let presenceAtBest: [PublicKey: ChainPresence]
     public let aliasAtFinalized: [PublicKey: AliasRead]
     public let aliasAtBest: [PublicKey: AliasRead]
-    /// Whether the block this entry recorded success at is still canonical. `nil` when the read
-    /// failed; absent from the model when no success block is recorded.
-    public let recordedBlockStillCanonical: Bool?
 
     public init(
         finalized: BlockRef,
@@ -39,8 +40,7 @@ public struct ChainEvidence: Sendable {
         presenceAtFinalized: [PublicKey: ChainPresence],
         presenceAtBest: [PublicKey: ChainPresence],
         aliasAtFinalized: [PublicKey: AliasRead],
-        aliasAtBest: [PublicKey: AliasRead],
-        recordedBlockStillCanonical: Bool?
+        aliasAtBest: [PublicKey: AliasRead]
     ) {
         self.finalized = finalized
         self.best = best
@@ -48,14 +48,13 @@ public struct ChainEvidence: Sendable {
         self.presenceAtBest = presenceAtBest
         self.aliasAtFinalized = aliasAtFinalized
         self.aliasAtBest = aliasAtBest
-        self.recordedBlockStillCanonical = recordedBlockStillCanonical
     }
 }
 
 // MARK: - Predicates
 
-/// Positive-form, key-based reads over the evidence, each paired with its opposite so an `unknown`
-/// read satisfies neither side.
+/// Positive-form, key-based reads over the evidence, each paired with its opposite so an `unknown` read
+/// satisfies neither side.
 public extension ChainEvidence {
     func exists(_ key: PublicKey, atFinalized: Bool) -> Bool {
         presence(atFinalized)[key] == .present
@@ -75,7 +74,7 @@ public extension ChainEvidence {
 
     /// This entry can no longer execute, so anything it did has already happened below finality.
     func windowClosed(_ entry: CoinageTxEntry) -> Bool {
-        UInt64(finalized.number) > UInt64(entry.checkpoint.number) + UInt64(entry.mortality)
+        entry.isWindowClosed(atFinalized: finalized.number)
     }
 
     /// Execution is visible: an output appeared, or a voucher input was proven unloaded. A coin's

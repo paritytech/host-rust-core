@@ -59,7 +59,8 @@ enum MainTabBarViewFactory {
 
         let wireframe = MainTabBarWireframe(
             serviceCoordinator: serviceCoordinator,
-            scanResultHandler: qrHandler
+            scanResultHandler: qrHandler,
+            moduleNavigator: moduleNavigator
         )
 
         let chipViewModelFactory = SPATabChipViewModelFactory(
