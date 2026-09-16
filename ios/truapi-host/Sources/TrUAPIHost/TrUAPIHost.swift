@@ -80,10 +80,10 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,
             bulletinChainGenesisHash: bulletinChainGenesisHash,
-            assetHubChainGenesisHash: assetHubChainGenesisHash,
             networkSuffix: networkSuffix,
             localSessionSecret: localSessionSecret,
-            localSessionLiteUsername: localSessionLiteUsername
+            localSessionLiteUsername: localSessionLiteUsername,
+            assetHubChainGenesisHash: assetHubChainGenesisHash
         )
     }
 }
