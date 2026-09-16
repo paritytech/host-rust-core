@@ -64,8 +64,8 @@ use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
 use crate::network::{Network, NetworkConfig};
 use crate::platform::{ApprovalPolicy, CliPlatform, CliStoragePaths};
 use crate::sessions::{
-    DEFAULT_SESSION_NAME, PairedHost, PairedHostMetadata, SessionCatalog, SessionClearTarget,
-    SessionProfile,
+    CurrentSession, DEFAULT_SESSION_NAME, PairedHost, PairedHostMetadata, SessionCatalog,
+    SessionClearTarget, SessionProfile,
 };
 use crate::signing_shell::{
     ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, PairCommand, ProductCommand,
@@ -1174,7 +1174,7 @@ async fn run_signing_host(
     let network = args.network.config();
     let base_path = state_base_path(args.base_path.clone());
     let session_catalog = SessionCatalog::new(base_path.clone(), network.id)?;
-    let initial_session_name = initial_session_name(&args, &session_catalog);
+    let initial_session_name = initial_session_name(&args, &session_catalog)?;
     if normalized(args.mnemonic.clone()).is_none() {
         session_catalog.set_current(&initial_session_name)?;
     }
@@ -1382,13 +1382,38 @@ impl Drop for ResponderManager {
     }
 }
 
-fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> String {
+/// The session a signing host starts in.
+///
+/// A name the caller chose is resolved through the aliases promotion records,
+/// so a name that provisioned a session keeps selecting it instead of
+/// provisioning a second identity beside it. Without a name, the base path
+/// decides, and an ambiguous base path is refused rather than guessed.
+fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> Result<String> {
     if normalized(args.mnemonic.clone()).is_some() {
-        return "ephemeral".to_string();
+        return Ok("ephemeral".to_string());
     }
-    normalized(args.session.clone())
-        .or_else(|| normalized(args.account.clone()).map(|_| DEFAULT_SESSION_NAME.to_string()))
-        .unwrap_or_else(|| catalog.current_name())
+    if let Some(name) = normalized(args.session.clone()) {
+        return catalog.resolve_session_name(&name);
+    }
+    if normalized(args.account.clone()).is_some() {
+        return Ok(DEFAULT_SESSION_NAME.to_string());
+    }
+    match catalog.current_session()? {
+        CurrentSession::Pointed(name) => Ok(name),
+        CurrentSession::Recovered(name) => {
+            tracing::warn!(
+                session = %name,
+                "selected session from its account store; the current-session pointer was missing or stale"
+            );
+            Ok(name)
+        }
+        CurrentSession::Fresh => Ok(DEFAULT_SESSION_NAME.to_string()),
+        CurrentSession::Ambiguous { candidates } => Err(anyhow::anyhow!(
+            "this base path holds several provisioned sessions ({}) and no current-session \
+             pointer; name one with --session <name> rather than provisioning another identity",
+            candidates.join(", "),
+        )),
+    }
 }
 
 async fn start_signing_host(
@@ -1521,11 +1546,8 @@ async fn start_signing_host(
             ui.session(profile.name.clone(), catalog.list()?);
         }
     }
-    if profile.is_some()
-        && signer.is_none()
-        && let Some(ui) = &ui
-    {
-        ui.event(SystemEvent::SigningHostNeedsSession);
+    if profile.is_some() && signer.is_none() {
+        terminal_ui::output_event(SystemEvent::SigningHostNeedsSession);
     }
 
     Ok(SigningHostSession {
@@ -2068,6 +2090,9 @@ async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
         .flatten();
     let lite_username_prefix =
         sessions::lite_username_prefix(&profile.name, session.lite_username_prefix.as_deref());
+    if !profile.is_provisioned() {
+        terminal_ui::output_event(SystemEvent::SigningHostProvisioning);
+    }
     session.signer = Some(
         accounts::resolve_signer(ResolveSignerConfig {
             base_path: &profile.account_base_path,
@@ -2813,6 +2838,9 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         bail!("session switching is unavailable when launched with --mnemonic");
     }
     sessions::validate_selectable_name(&name).map_err(anyhow::Error::msg)?;
+    // A name that already provisioned a session was promoted to its Lite
+    // username, so it selects that session rather than creating another.
+    let name = session.catalog.resolve_session_name(&name)?;
     if session
         .profile
         .as_ref()
@@ -3935,6 +3963,56 @@ mod cli_tests {
             format_paired_device_list("alice.01", Vec::new()),
             "No paired devices for session alice.01"
         );
+    }
+
+    #[test]
+    fn a_session_name_promoted_away_still_selects_its_own_session() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let provisional = catalog.ensure_profile("worker-0")?;
+        catalog.promote_to_user(&provisional, "alice.01")?;
+        let args = SigningHostArgs {
+            session: Some("worker-0".to_string()),
+            ..SigningHostArgs::default()
+        };
+
+        assert_eq!(initial_session_name(&args, &catalog)?, "alice.01");
+        Ok(())
+    }
+
+    #[test]
+    fn a_base_path_with_several_provisioned_sessions_and_no_pointer_refuses_to_guess() -> Result<()>
+    {
+        let temporary = tempfile::tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        for name in ["alice.01", "bob.02"] {
+            let profile = catalog.ensure_profile(name)?;
+            std::fs::write(profile.path.join("accounts.json"), "{}")?;
+        }
+
+        let error = initial_session_name(&SigningHostArgs::default(), &catalog)
+            .expect_err("an ambiguous base path must not select an identity");
+
+        let message = error.to_string();
+        assert!(message.contains("alice.01"), "{message}");
+        assert!(message.contains("bob.02"), "{message}");
+        assert!(message.contains("--session"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_pointer_reselects_the_provisioned_session_instead_of_the_bootstrap_profile()
+    -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice.01")?;
+        std::fs::write(profile.path.join("accounts.json"), "{}")?;
+
+        assert_eq!(
+            initial_session_name(&SigningHostArgs::default(), &catalog)?,
+            "alice.01"
+        );
+        Ok(())
     }
 
     #[test]

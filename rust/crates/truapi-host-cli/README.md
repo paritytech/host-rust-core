@@ -335,8 +335,12 @@ Once a signer identity is known, its public session name is the Lite username
 and its files live under
 `<base-path>/v2/<network>/<username>_signing_host`. Provisional named sessions
 are promoted to that user-owned root, so an old name such as `pgtest` does not
-remain the durable namespace. The selected username is remembered per
-network but is not repeated in the status bar as a separate session field.
+remain the durable namespace. That name keeps selecting the session it created:
+the promoted session records the name it was created under, so `--session
+pgtest` and `/session --clear pgtest` both act on it instead of provisioning a
+second identity beside it. Once that session is cleared the name is free again. The selected username is
+remembered per network but is not repeated in the status bar as a separate
+session field.
 `default` remains only as a compatibility/bootstrap location until a username
 is resolved. It is hidden from session completion and listing and cannot be
 selected with `/session default`. User session names contain lowercase ASCII
@@ -420,6 +424,15 @@ asks for `[y/N]` confirmation. `exec` treats the explicit one-shot command as
 confirmation and runs it immediately. Clearing an inactive named session keeps
 the host running; clearing the active session or all sessions stops the signing
 host after its runtime and product connections have shut down.
+
+Without `--session`, the session is the one the network's `current-session`
+pointer names. When that pointer is missing or names a session that no longer
+exists, the provisioned sessions decide instead: a base path holding exactly one
+session with an account store reselects it, and a base path holding several is
+refused with their names so `--session` can choose, rather than provisioning
+another identity. A session directory without an account store is not an
+identity and is never reselected. This makes one `--base-path` per caller the
+supported way to hold a reusable signer.
 
 Select or create a session at startup with:
 
@@ -793,7 +806,9 @@ both halves are up: the frame socket accepts connections well before a signer
 exists, and `Signing host ready` can arrive either side of it depending on
 whether the session was cached or is being registered. A first run registers a
 lite username and the statement-store allowance on-chain, which can take
-minutes.
+minutes; it announces `Provisioning a signer` when it starts, so a supervisor
+can tell that work from a stalled process. A session with no signer at all
+reports `No connected user` here as it does in the terminal.
 
 Stopping it: Ctrl-C is handled, so the host logs its own shutdown. `SIGTERM`
 ends the process, which is what a supervising dev server sends.
