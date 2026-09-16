@@ -58,7 +58,7 @@ jobs:
           # other releases postdate the newest iOS one.
           newest="$(gh api --paginate "repos/${GH_REPO}/releases" --jq '.[].tag_name' \
             | sed -n 's|^@parity/ios-host@||p' \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } \
             | sort -V | tail -1)"
 
           if [ -n "${newest}" ] && [ "${declared}" != "${newest}" ]; then

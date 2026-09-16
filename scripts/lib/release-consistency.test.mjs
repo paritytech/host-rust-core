@@ -513,6 +513,14 @@ test("a pre-release is never treated as the newest iOS release", (t) => {
   assert.equal(existsSync(join(f.root, "ios-drift.txt")), false);
 });
 
+test("no published iOS release at all is not drift, and does not kill the step", (t) => {
+  const f = fixture(t);
+  f.write("Package.swift", packageSwift("0.16.0"));
+  f.stub("gh", releases("@parity/truapi@1.0.0"));
+  passed(f.execute(iosFallback));
+  assert.equal(existsSync(join(f.root, "ios-drift.txt")), false);
+});
+
 test("a manifest naming no iOS release fails rather than reporting no drift", (t) => {
   const f = fixture(t);
   f.write("Package.swift", "let publishedBinaryURL = \"https://example.com/nothing.zip\"\n");
