@@ -27,6 +27,7 @@ package io.parity.truapi
 
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -219,6 +220,9 @@ interface HostCoreStorage {
     fun clear(key: ByteArray)
 }
 
+/** Ids handed out by the default [HostBridge.beginOperation], distinct for the life of the process. */
+private val defaultOperationIds = AtomicInteger(0)
+
 /**
  * Host-side callback bundle that the Rust core invokes for capabilities the
  * native shell owns. The interface mirrors the underlying UniFFI surface but
@@ -397,9 +401,15 @@ interface HostBridge {
      * Begin a pending operation. [label] is a log/UI hint, empty when the
      * product gave none. Leave unimplemented to opt out of worker keep-alive;
      * override to run background work past the product's surface.
+     *
+     * The default id is still distinct per call, because an operation id names
+     * one operation: a host overriding only [endOperation], and the core's own
+     * demand accounting, both end the wrong ones when every operation shares an
+     * id.
      */
     @Throws(HostRejection::class)
-    suspend fun beginOperation(productId: String, label: String): UInt = 0u
+    suspend fun beginOperation(productId: String, label: String): UInt =
+        defaultOperationIds.incrementAndGet().toUInt()
 
     /** End a pending operation. Idempotent, so a retry after an ambiguous failure is safe. */
     @Throws(HostRejection::class)

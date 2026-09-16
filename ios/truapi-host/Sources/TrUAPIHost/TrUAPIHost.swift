@@ -468,10 +468,35 @@ public extension HostBridge {
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
     /// Defaults opt out of worker keep-alive; override to run background work
-    /// past the product's surface.
-    func beginOperation(productId: String, label: String) async throws -> UInt32 { 0 }
+    /// past the product's surface. The id is still distinct per call, because
+    /// an `OperationId` names one operation: a host overriding only
+    /// `endOperation`, and the core's own demand accounting, both end the
+    /// wrong ones when every operation shares an id.
+    func beginOperation(productId: String, label: String) async throws -> UInt32 {
+        defaultOperationIds.take()
+    }
+
     func endOperation(productId: String, id: UInt32) async throws {}
 }
+
+/// Ids handed out by the default `beginOperation`, distinct for the life of
+/// the process.
+private final class DefaultOperationIds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextId: UInt32 = 1
+
+    func take() -> UInt32 {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = nextId
+        // Never zero, and never traps: an id is only ever compared, so wrapping
+        // back to one costs nothing.
+        nextId = nextId == UInt32.max ? 1 : nextId + 1
+        return id
+    }
+}
+
+private let defaultOperationIds = DefaultOperationIds()
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
 /// `NativeChatCallbacks` protocol.
