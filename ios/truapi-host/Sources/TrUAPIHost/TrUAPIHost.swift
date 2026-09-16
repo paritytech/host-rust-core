@@ -350,7 +350,7 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Demand is runtime-wide, so the core invokes this only on the bridge
     /// ``TrUAPIHostRuntime/init(bridge:runtimeConfig:)`` was given, never on
     /// the per-execution bridge passed to
-    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:)``.
+    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``.
     /// Can arrive on any thread, including synchronously on the calling
     /// thread during `acquireWorker`/`releaseWorker`, often the main thread
     /// and re-entrantly: hand the transition off rather than blocking on
@@ -368,7 +368,7 @@ public protocol HostBridge: AnyObject, Sendable {
 }
 
 /// Native Chat storage and UI surface. Implement and pass to
-/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:)``
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``
 /// when the host supports the Chat modality; hosts without it pass nothing.
 /// Native Chat storage and UI surface, called from the process-wide dispatch
 /// pool shared by every product execution: implementations must be safe to
@@ -405,6 +405,26 @@ public protocol ChatHostBridge: AnyObject, Sendable {
 
     /// Return the current product-scoped native Chat rooms.
     func listRooms() throws -> [ChatRoom]
+}
+
+/// Native Pocket collection surface. Implement and pass to
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``
+/// when the host has a Pocket surface; hosts without one pass nothing. Called
+/// from the process-wide dispatch pool shared by every product execution:
+/// implementations must be safe to enter concurrently, and one that blocks
+/// stalls the others.
+///
+/// Throw ``HostRejection`` (or an error conforming to `LocalizedError`) to
+/// decline a call.
+public protocol PocketHostBridge: AnyObject, Sendable {
+    /// Return the product's cards as this host holds them, each carrying
+    /// whether the host pinned it.
+    func listCards() throws -> [PocketCard]
+
+    /// Remove one of the product's cards and report what happened. Decide and
+    /// remove together, under whatever lock this host holds, so a card cannot
+    /// be pinned between the two.
+    func removeCard(cardId: String) throws -> NativePocketRemoval
 }
 
 public extension HostBridge {
@@ -469,6 +489,34 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
 
     func listRooms() throws -> [ChatRoom] {
         try withHostRejection { try bridge.listRooms() }
+    }
+
+    private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
+        do {
+            return try operation()
+        } catch let error as HostRejection {
+            throw error
+        } catch {
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
+        }
+    }
+}
+
+/// Adapter that bridges the public `PocketHostBridge` to the generated UniFFI
+/// `NativePocketCallbacks` protocol.
+private final class PocketCallbackAdapter: NativePocketCallbacks, @unchecked Sendable {
+    private let bridge: PocketHostBridge
+
+    init(bridge: PocketHostBridge) {
+        self.bridge = bridge
+    }
+
+    func listCards() throws -> [PocketCard] {
+        try withHostRejection { try bridge.listCards() }
+    }
+
+    func removeCard(cardId: String) throws -> NativePocketRemoval {
+        try withHostRejection { try bridge.removeCard(cardId: cardId) }
     }
 
     private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
@@ -700,23 +748,28 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
 
     /// Open one executable connection with a host-assigned immutable context.
     /// Pass `chat` to install the host's Chat adapter; hosts without the Chat
-    /// modality omit it.
+    /// modality omit it. Pass `pocket` to install the card collection, and
+    /// omit that where the host has no Pocket surface.
     public func openProductExecution(
         bridge: HostBridge,
         configuration: ProductExecutionConfig,
-        chat: ChatHostBridge? = nil
+        chat: ChatHostBridge? = nil,
+        pocket: PocketHostBridge? = nil
     ) throws -> TrUAPIProductExecution {
         let adapter = HostCallbackAdapter(bridge: bridge)
         let chatAdapter = chat.map { ChatCallbackAdapter(bridge: $0) }
+        let pocketAdapter = pocket.map { PocketCallbackAdapter(bridge: $0) }
         let execution = try inner.openProductExecution(
             callbacks: adapter,
             chatCallbacks: chatAdapter,
+            pocketCallbacks: pocketAdapter,
             executionConfig: configuration.native
         )
         return TrUAPIProductExecution(
             inner: execution,
             callbackRetainer: adapter,
-            chatRetainer: chatAdapter
+            chatRetainer: chatAdapter,
+            pocketRetainer: pocketAdapter
         )
     }
 
@@ -866,6 +919,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func notifyChainClosed(connectionId: UInt32)
     func notifyChatRoomsChanged(rooms: [ChatRoom])
     func sessionChatIdentityKey() throws -> Data?
+    func notifyPocketCardsChanged(cards: [PocketCard])
 }
 
 /// One App, Widget, or Worker executable connected to a shared host runtime.
@@ -873,15 +927,18 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks
     private let chatRetainer: NativeChatCallbacks?
+    private let pocketRetainer: NativePocketCallbacks?
 
     fileprivate init(
         inner: NativeProductExecution,
         callbackRetainer: HostCallbacks,
-        chatRetainer: NativeChatCallbacks?
+        chatRetainer: NativeChatCallbacks?,
+        pocketRetainer: NativePocketCallbacks?
     ) {
         self.inner = inner
         self.callbackRetainer = callbackRetainer
         self.chatRetainer = chatRetainer
+        self.pocketRetainer = pocketRetainer
     }
 
     deinit {
@@ -914,6 +971,10 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func publishRendererAction(_ item: HostRendererActionSubscribeItem) throws {
         try inner.publishRendererAction(item: item)
+    }
+
+    public func notifyPocketCardsChanged(cards: [PocketCard]) {
+        inner.notifyPocketCardsChanged(cards: cards)
     }
 
     public func permissionAuthorizationStatus(

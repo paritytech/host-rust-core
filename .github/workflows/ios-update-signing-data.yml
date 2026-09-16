@@ -14,6 +14,13 @@ on:
 
 jobs:
   update_signing_data:
+    # Held until the iOS cutover. This tree is behind the app repository.
+    # It runs match with readonly false over the production and safety
+    # identifiers using the read-write Match credential, so it mutates signing
+    # state at Apple rather than only reading it. It had no condition at all.
+    #
+    # Removing this is part of the cutover, tracked on #764.
+    if: false
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v6

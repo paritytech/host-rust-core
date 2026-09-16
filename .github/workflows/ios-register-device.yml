@@ -19,7 +19,15 @@ on:
 jobs:
   register_device:
     runs-on: macos-26
-    if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    # Held until the iOS cutover. This tree is behind the app repository.
+    # It registers devices at App Store Connect. Its existing guard is a
+    # substring test against a string literal, so a login that appears anywhere
+    # inside it passes.
+    #
+    # Removing this is part of the cutover, tracked on #764.
+    if: false
+    # The condition this replaces, to restore at cutover:
+    #   if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
     steps:
       - uses: actions/checkout@v6
 

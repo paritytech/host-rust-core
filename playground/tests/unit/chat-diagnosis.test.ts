@@ -3,6 +3,18 @@ import { services as generatedServices } from "@parity/truapi/playground/service
 import { servicesForExecution } from "@parity/truapi/playground/services-types";
 import { WORKER_DIAGNOSIS_METHODS, ChatDiagnosis } from "../../worker/diagnosis";
 
+/**
+ * Worker-pinned methods the playground deliberately leaves out of its
+ * diagnosis. The CLI battery drives Pocket over the real wire instead. Naming
+ * each method rather than the whole service keeps the guard on the rest of it,
+ * so a third Pocket method fails the check below until it is either diagnosed
+ * or listed here.
+ */
+const UNDIAGNOSED_WORKER_METHODS: ReadonlySet<string> = new Set([
+  "Pocket/list_subscribe",
+  "Pocket/remove_card",
+]);
+
 describe("ChatDiagnosis", () => {
   // Expectation comes from codegen, so a missing method fails here.
   test("covers every generated Worker method", () => {
@@ -10,7 +22,8 @@ describe("ChatDiagnosis", () => {
       .filter((service) => service.requiredExecution === "Worker")
       .flatMap((service) =>
         service.methods.map((method) => `${service.name}/${method.name}`),
-      );
+      )
+      .filter((id) => !UNDIAGNOSED_WORKER_METHODS.has(id));
 
     expect(generated.length).toBeGreaterThan(0);
     expect([...WORKER_DIAGNOSIS_METHODS].sort()).toEqual(generated.sort());

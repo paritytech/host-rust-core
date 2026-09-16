@@ -21,12 +21,19 @@ env:
 jobs:
   distribute_testflight:
     runs-on: macos-26
-    if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    # Held until the iOS cutover. This tree is behind the app repository, so a
+    # build from here would ship stale code and, for this workflow, consume a
+    # TestFlight build number the production record depends on.
+    #
+    # This workflow calls the distribute action directly rather than through
+    # ios-build-distribute.yml, so it does not inherit that workflow's
+    # github-actions[bot] check and nothing else would stop a hand-started run.
+    #
+    # Removing this is part of the cutover, tracked on #764.
+    if: false
+    # The condition this replaces, to restore at cutover:
+    #   if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
     name: Distribute TestFlight Build
-    outputs:
-      build_number: ${{ steps.read_marketing_version.outputs.build_number }}
-      marketing_version: ${{ steps.read_marketing_version.outputs.marketing_version }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -73,55 +80,3 @@ jobs:
           name: polkadot-app-release-ipa
           path: "hosts/ios/*.ipa"
           retention-days: 7
-
-  upload-to-s3:
-    name: Upload IPA to S3
-    runs-on: ubuntu-latest
-    needs: distribute_testflight
-    if: success()
-    env:
-      S3_BUCKET: s3://polkadot-app-artefacts
-      S3_REGION: fr-par
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download built artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: polkadot-app-release-ipa
-          path: ipa
-
-      - name: Upload to S3
-        uses: novasamatech/github-actions/s3-upload@v5
-        with:
-          s3_region: ${{ env.S3_REGION }}
-          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
-          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          s3_bucket: ${{ env.S3_BUCKET }}
-          source_path: ipa/polkadot-app.ipa
-          destination_path: /ios/releases-manual/polkadot-app-${{ needs.distribute_testflight.outputs.marketing_version }}-${{ needs.distribute_testflight.outputs.build_number }}.ipa
-
-      - name: Upload to S3 (static path)
-        uses: novasamatech/github-actions/s3-upload@v5
-        with:
-          s3_region: ${{ env.S3_REGION }}
-          s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
-          s3_secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          s3_bucket: ${{ env.S3_BUCKET }}
-          source_path: ipa/polkadot-app.ipa
-          destination_path: /ios/releases-manual/polkadot-app.ipa
-
-  trigger-allure-tests:
-    name: Trigger Allure TestOps
-    runs-on: ubuntu-latest
-    needs: upload-to-s3
-    if: success()
-
-    steps:
-      - name: Trigger Allure TestOps Job
-        uses: novasamatech/github-actions/trigger-allure-testops@v5
-        with:
-          testplan_id: '734'
-          launch_name: 'iOS TestFlight Tests'
-          allure_token: ${{ secrets.ALLURE_TOKEN }}
