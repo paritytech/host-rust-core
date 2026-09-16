@@ -1,5 +1,6 @@
 //! Network-scoped signing-host session directories and current selection.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Component, Path, PathBuf};
@@ -17,6 +18,30 @@ const PAIRED_HOSTS_FILE: &str = "paired-hosts.json";
 const PAIRED_HOSTS_LOCK_FILE: &str = "paired-hosts.json.lock";
 const PAIRED_HOST_VERSION: u32 = 1;
 const PAIRED_HOST_STORE_VERSION: u32 = 1;
+const SESSION_ALIASES_FILE: &str = "session-aliases.json";
+
+/// Which session a base path restores when no name is selected.
+///
+/// The pointer file names it. It can be lost or left naming a session that no
+/// longer exists, so the provisioned session directories are consulted in that
+/// case rather than falling straight back to the bootstrap profile, which would
+/// provision a second identity beside the one already on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CurrentSession {
+    /// The pointer file named a session that exists.
+    Pointed(String),
+    /// The pointer was missing or stale and exactly one provisioned session
+    /// was adopted in its place.
+    Recovered(String),
+    /// The pointer was missing or stale and more than one provisioned session
+    /// could have been meant. Picking one would bind an identity by accident.
+    Ambiguous {
+        /// Every provisioned session the pointer could have named.
+        candidates: Vec<String>,
+    },
+    /// No provisioned session exists yet.
+    Fresh,
+}
 
 /// Safe display metadata retained from a paired host's proposal.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,17 +247,101 @@ impl SessionCatalog {
             .is_ok_and(|profile| name == DEFAULT_SESSION_NAME || profile.path.is_dir())
     }
 
+    /// The session name this base path restores, or the bootstrap profile when
+    /// no single provisioned session answers for it.
     pub fn current_name(&self) -> String {
-        let path = self.role_path.join(CURRENT_SESSION_FILE);
-        let Ok(name) = fs::read_to_string(path) else {
-            return DEFAULT_SESSION_NAME.to_string();
-        };
-        let name = name.trim();
-        if self.exists(name) {
-            name.to_string()
-        } else {
-            DEFAULT_SESSION_NAME.to_string()
+        match self.current_session() {
+            Ok(CurrentSession::Pointed(name) | CurrentSession::Recovered(name)) => name,
+            _ => DEFAULT_SESSION_NAME.to_string(),
         }
+    }
+
+    /// Resolve which session this base path restores, and how confidently.
+    ///
+    /// A session counts as provisioned only once it holds an account store, so
+    /// a bare directory left by a name that was only ever inspected is not
+    /// mistaken for an identity.
+    pub fn current_session(&self) -> Result<CurrentSession> {
+        if let Ok(name) = fs::read_to_string(self.role_path.join(CURRENT_SESSION_FILE)) {
+            let name = name.trim();
+            if self.exists(name) {
+                return Ok(CurrentSession::Pointed(name.to_string()));
+            }
+        }
+        let mut provisioned = Vec::new();
+        for name in self.list()? {
+            if self
+                .profile(&name)?
+                .path
+                .join(accounts::ACCOUNT_STORE_FILE)
+                .is_file()
+            {
+                provisioned.push(name);
+            }
+        }
+        let mut provisioned = provisioned.into_iter();
+        Ok(match (provisioned.next(), provisioned.next()) {
+            (None, _) => CurrentSession::Fresh,
+            (Some(only), None) => CurrentSession::Recovered(only),
+            (Some(first), Some(second)) => CurrentSession::Ambiguous {
+                candidates: std::iter::once(first)
+                    .chain(std::iter::once(second))
+                    .chain(provisioned)
+                    .collect(),
+            },
+        })
+    }
+
+    /// The session a caller-chosen name refers to now.
+    ///
+    /// A name that provisioned a session is promoted away to the Lite username,
+    /// so it stops naming anything. The alias recorded at promotion keeps the
+    /// caller's own name usable instead of provisioning a second identity under
+    /// it. A name whose target has since been cleared resolves to itself again.
+    pub fn resolve_session_name(&self, name: &str) -> Result<String> {
+        if self.exists(name) {
+            return Ok(name.to_string());
+        }
+        Ok(match self.read_aliases()?.remove(name) {
+            Some(target) if self.exists(&target) => target,
+            _ => name.to_string(),
+        })
+    }
+
+    fn read_aliases(&self) -> Result<BTreeMap<String, String>> {
+        let path = self.role_path.join(SESSION_ALIASES_FILE);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BTreeMap::new());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("read session aliases {}", path.display()));
+            }
+        };
+        serde_json::from_str(&text)
+            .with_context(|| format!("decode session aliases {}", path.display()))
+    }
+
+    fn store_alias(&self, from: &str, to: &str) -> Result<()> {
+        let mut aliases = self.read_aliases()?;
+        if aliases.get(from).is_some_and(|current| current == to) {
+            return Ok(());
+        }
+        aliases.insert(from.to_string(), to.to_string());
+        fs::create_dir_all(&self.role_path)
+            .with_context(|| format!("create session root {}", self.role_path.display()))?;
+        let path = self.role_path.join(SESSION_ALIASES_FILE);
+        let temporary = self.role_path.join(format!(
+            ".{SESSION_ALIASES_FILE}.{}.tmp",
+            std::process::id()
+        ));
+        let text = serde_json::to_string_pretty(&aliases)?;
+        fs::write(&temporary, format!("{text}\n"))
+            .with_context(|| format!("write session aliases {}", temporary.display()))?;
+        fs::rename(&temporary, &path)
+            .with_context(|| format!("persist session aliases {}", path.display()))
     }
 
     pub fn set_current(&self, name: &str) -> Result<()> {
@@ -364,6 +473,9 @@ impl SessionCatalog {
         fs::create_dir_all(&promoted.path)
             .with_context(|| format!("create user host {}", promoted.path.display()))?;
         self.store_user_id(&promoted, user_id)?;
+        if profile.name != user_id && profile.name != DEFAULT_SESSION_NAME {
+            self.store_alias(&profile.name, user_id)?;
+        }
         Ok(promoted)
     }
 
@@ -1227,6 +1339,102 @@ mod tests {
         );
         let metadata = fs::read_to_string(profile.path.join(SESSION_INFO_FILE))?;
         assert!(metadata.contains(script.to_str().context("temporary path is not UTF-8")?));
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_pointer_recovers_the_only_provisioned_session() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let alice = catalog.ensure_profile("alice.01")?;
+        fs::write(alice.path.join(accounts::ACCOUNT_STORE_FILE), "{}")?;
+        catalog.set_current("alice.01")?;
+        fs::remove_file(catalog.role_path.join(CURRENT_SESSION_FILE))?;
+
+        assert_eq!(
+            catalog.current_session()?,
+            CurrentSession::Recovered("alice.01".to_string())
+        );
+        assert_eq!(catalog.current_name(), "alice.01");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pointer_naming_a_removed_session_recovers_the_remaining_one() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let alice = catalog.ensure_profile("alice.01")?;
+        fs::write(alice.path.join(accounts::ACCOUNT_STORE_FILE), "{}")?;
+        catalog.set_current("alice.01")?;
+        fs::write(catalog.role_path.join(CURRENT_SESSION_FILE), "gone.99\n")?;
+
+        assert_eq!(
+            catalog.current_session()?,
+            CurrentSession::Recovered("alice.01".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_pointer_with_several_provisioned_sessions_is_ambiguous() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        for name in ["alice.01", "bob.02"] {
+            let profile = catalog.ensure_profile(name)?;
+            fs::write(profile.path.join(accounts::ACCOUNT_STORE_FILE), "{}")?;
+        }
+
+        assert_eq!(
+            catalog.current_session()?,
+            CurrentSession::Ambiguous {
+                candidates: vec!["alice.01".to_string(), "bob.02".to_string()],
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unprovisioned_session_directory_is_not_recovered() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        catalog.ensure_profile("alice.01")?;
+
+        assert_eq!(catalog.current_session()?, CurrentSession::Fresh);
+        assert_eq!(catalog.current_name(), DEFAULT_SESSION_NAME);
+        Ok(())
+    }
+
+    #[test]
+    fn a_promoted_session_still_resolves_under_the_name_that_created_it() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let provisional = catalog.ensure_profile("worker-0")?;
+
+        let promoted = catalog.promote_to_user(&provisional, "alice.01")?;
+
+        assert_eq!(promoted.name, "alice.01");
+        assert_eq!(catalog.resolve_session_name("worker-0")?, "alice.01");
+        Ok(())
+    }
+
+    #[test]
+    fn an_unpromoted_name_resolves_to_itself() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+
+        assert_eq!(catalog.resolve_session_name("worker-0")?, "worker-0");
+        Ok(())
+    }
+
+    #[test]
+    fn an_alias_whose_target_was_cleared_resolves_to_itself_again() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let provisional = catalog.ensure_profile("worker-0")?;
+        catalog.promote_to_user(&provisional, "alice.01")?;
+        catalog.clear(&SessionClearTarget::Named("alice.01".to_string()))?;
+
+        assert_eq!(catalog.resolve_session_name("worker-0")?, "worker-0");
         Ok(())
     }
 }

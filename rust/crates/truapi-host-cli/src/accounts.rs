@@ -20,7 +20,7 @@ use truapi_server::statement_allowance as alloc;
 use truapi_server::statement_allowance::collection::PersonhoodCollection;
 use zeroize::ZeroizeOnDrop;
 
-const ACCOUNT_STORE_FILE: &str = "accounts.json";
+pub(crate) const ACCOUNT_STORE_FILE: &str = "accounts.json";
 const ACCOUNT_STORE_LOCK_FILE: &str = "accounts.json.lock";
 const DEFAULT_USERNAME_PREFIX: &str = "headless";
 const IMPORTED_ACCOUNT_NAME: &str = "imported";
