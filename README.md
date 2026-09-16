@@ -297,6 +297,21 @@ xcrun simctl launch booted io.parity.polkadotapp.develop
 It is an arm64 simulator slice, so it needs an Apple Silicon Mac and cannot be
 installed on a device.
 
+### A build that installs on a phone
+
+Label a pull request `ios-device-build` and `ios-device-preview.yml` produces a
+signed ad-hoc archive attached to the run, named for the commit it was built
+from. It uploads nowhere: not to Apple, not to any distribution service.
+
+The commit is stamped into the app before the build rather than after, because
+editing a signed bundle invalidates its signature and the archive would then
+refuse to install. The job checks the stamp survived and that the signature
+still validates.
+
+Installing it needs the device's UDID in the ad-hoc provisioning profile, which
+is Apple bookkeeping rather than CI. Registering a device and regenerating the
+profile so it covers one are tracked on #681.
+
 ### Building the standalone iOS host app
 
 The targets below build `polkadot-app-ios-v2`, a separate checkout set by
