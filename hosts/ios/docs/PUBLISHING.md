@@ -89,14 +89,12 @@ Required only by the distribution target you actually use:
 |--------|----------|---------|
 | `CREDENTIAL_FILE_CONTENT` | Google service-account JSON for App Distribution | `firebase_debug_distribution.yml` |
 | `FIREBASE_APP_ID` | Firebase App Distribution app ID (`1:…:ios:…`) | `firebase_debug_distribution.yml` |
-| `SCW_ACCESS_KEY`, `SCW_SECRET_KEY` | Credentials for the S3 artifact bucket | every workflow that uploads an `.ipa` |
 | `SENTRY_AUTH_TOKEN` | Uploading dSYMs to Sentry (the build phase skips when `sentry-cli` is unconfigured — see §9) | signed builds |
 
 Optional — these gate reporting steps only, and a fork can leave them unset:
 
 | Secret | Used for | Read by |
 |--------|----------|---------|
-| `ALLURE_TOKEN` | Triggering the Allure TestOps run after a build | `_build_distribute.yml`, `testflight_distribution.yml` |
 | `NOTIFICATION_BOT_URL`, `NOTIFICATION_BOT_TOKEN` | Build success/failure notifications | `_build_distribute.yml`, `nightly_distribution.yml` |
 | `TESTFLIGHT_DISTRIBUTION_LINK`, `WEB_PAGE_DISTRIBUTION_LINK` | One ready-to-render markdown link entry each, e.g. `[TestFlight](https://testflight.apple.com/join/<id>)`. Kept in secrets so access hints stay out of the repo. | `release_distribution.yml`, `nightly_distribution.yml` |
 | `TESTFLIGHT_SAFETY_DISTRIBUTION_LINK`, `WEB_PAGE_SAFETY_DISTRIBUTION_LINK` | A TestFlight join link is per-group per-app, and Safetynet is its own app | `nightly_distribution.yml` |

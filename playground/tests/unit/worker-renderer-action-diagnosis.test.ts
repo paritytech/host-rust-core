@@ -9,6 +9,7 @@ import type {
   HostChatPostMessageRequest,
   HostChatPostMessageResponse,
   HostChatRegisterBotResponse,
+  HostPocketListSubscribeItem,
   HostRendererActionSubscribeItem,
   Observer,
   ProductRendererRenderRequest,
@@ -57,6 +58,7 @@ test("worker diagnosis completes after !diagnose alone, without a renderer actio
   const chatActions = fakeObservable<HostChatActionSubscribeItem>();
   const chatRooms = fakeObservable<HostChatListSubscribeItem>();
   const rendererActions = fakeObservable<HostRendererActionSubscribeItem>();
+  const pocketCards = fakeObservable<HostPocketListSubscribeItem>();
 
   const postMessageCalls: HostChatPostMessageRequest[] = [];
   let createRoomCalls = 0;
@@ -129,6 +131,12 @@ test("worker diagnosis completes after !diagnose alone, without a renderer actio
         return { unsubscribe() {} };
       },
       actionSubscribe: () => rendererActions.observable,
+    },
+    // The worker observes its Pocket collection on startup. The generated
+    // client always exposes the surface, so a stub without it diverges from
+    // what the worker actually runs against.
+    pocket: {
+      listSubscribe: () => pocketCards.observable,
     },
   };
 

@@ -62,14 +62,15 @@ pub mod latest {
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
         HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
         ImageFit, ImageProps, ImageSource, Modifier, NotificationId, OperationStartedResult,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi, RuntimeSpec, RuntimeType,
-        Shape, SignedStatement, Size, Statement, StatementProof, StorageQueryItem,
-        StorageQueryType, StorageResultItem, TextFieldProps, TextProps, ThemeName, ThemeVariant,
-        TxPayloadExtension, TypographyStyle, VerticalAlignment, VrfSignature,
+        PocketCard, ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey,
+        RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
+        RendererNode, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi,
+        RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement, StatementProof,
+        StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps, TextProps,
+        ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
+        VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -147,6 +148,12 @@ pub mod latest {
     pub type HostLocaleSubscribeItem = LatestOf<versioned::locale::HostLocaleSubscribeItem>;
     /// Navigation request error.
     pub type HostNavigateToError = LatestOf<versioned::system::HostNavigateToError>;
+    /// The calling product's Pocket cards.
+    pub type HostPocketListSubscribeItem = LatestOf<versioned::pocket::HostPocketListSubscribeItem>;
+    /// Pocket card removal request.
+    pub type HostPocketRemoveCardRequest = LatestOf<versioned::pocket::HostPocketRemoveCardRequest>;
+    /// Pocket card removal failure.
+    pub type HostPocketRemoveCardError = LatestOf<versioned::pocket::HostPocketRemoveCardError>;
     /// Push notification scheduling request.
     pub type HostPushNotificationRequest =
         LatestOf<versioned::notifications::HostPushNotificationRequest>;

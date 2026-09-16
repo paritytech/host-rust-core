@@ -41,7 +41,6 @@ jobs:
       build_configuration: "Release"
       distribute_to_external_group: false
       external_group_name: ""
-      s3_static_subdir: "releases"
     secrets: inherit
 
   send-release-notification:

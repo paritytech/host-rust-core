@@ -18,6 +18,8 @@ import {
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostLocaleSubscribeItem,
+  HostPocketListSubscribeItem,
+  HostPocketRemoveCardRequest,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
@@ -78,6 +80,12 @@ export interface RawCallbacks {
   devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
   devicePermission(request: Uint8Array): Promise<Uint8Array>;
   remotePermission(request: Uint8Array): Promise<Uint8Array>;
+  subscribePocketCards?(
+    product: Uint8Array,
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
+  removePocketCard?(product: Uint8Array, request: Uint8Array): Promise<void>;
   lookupPreimage(
     key: Uint8Array,
     sendItem: (item?: Uint8Array) => void,
@@ -99,6 +107,7 @@ export function createWasmRawCallbacks(
 ): RawCallbacks {
   const chat = callbacks.chat;
   const permissionStatus = callbacks.permissionStatus;
+  const pocket = callbacks.pocket;
   return {
     authStateChanged: async (state) =>
       await callbacks.auth.authStateChanged(AuthState.dec(state)),
@@ -188,6 +197,21 @@ export function createWasmRawCallbacks(
           RemotePermissionRequest.dec(request),
         ),
       ),
+    ...(pocket
+      ? {
+          subscribePocketCards: (product, sendItem, sendError) =>
+            driveResultStream(
+              pocket.subscribePocketCards(ProductContext.dec(product)),
+              (item) => sendItem(HostPocketListSubscribeItem.enc(item)),
+              sendError,
+            ),
+          removePocketCard: async (product, request) =>
+            await pocket.removePocketCard(
+              ProductContext.dec(product),
+              HostPocketRemoveCardRequest.dec(request),
+            ),
+        }
+      : {}),
     lookupPreimage: (key, sendItem, sendError) =>
       driveResultStream(
         callbacks.preimage.lookupPreimage(key),
