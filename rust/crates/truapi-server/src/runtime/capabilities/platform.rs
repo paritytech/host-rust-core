@@ -231,13 +231,6 @@ impl LocalStorage for ProductRuntimeHost {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
         let storage_key = self.product_storage_key(self.product.product_id.as_str(), key);
-        // Dedupe so subscribers see only real changes. A failed pre-read falls
-        // through to the write rather than blocking it.
-        if let Ok(Some(current)) = self.platform.read(storage_key.clone()).await
-            && current == value
-        {
-            return Ok(HostLocalStorageWriteResponse::V1);
-        }
         self.platform
             .write(storage_key, value)
             .await
@@ -267,20 +260,32 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Subscription<HostLocalStorageChangeItem, CallError<HostLocalStorageSubscribeError>> {
         let HostLocalStorageSubscribeRequest::V1(v01::HostLocalStorageSubscribeRequest { key }) =
             request;
+        // A write that left the bytes alone is not a change, and the
+        // subscription is where that holds for every host: the core cannot
+        // know whether one reports repeats, and withholding the write instead
+        // would hide it from a host hanging quota or sync off it.
+        let mut delivered: Option<Option<Vec<u8>>> = None;
         let stream = self
             .platform
             .subscribe_storage(self.product_storage_key(self.product.product_id.as_str(), key))
-            .map(|item| match item {
-                Ok(item) => Ok(HostLocalStorageChangeItem::V1(item)),
-                Err(error) => {
-                    warn!(
-                        reason = %error.reason,
-                        "local storage subscription platform stream failed"
-                    );
-                    Err(CallError::HostFailure {
-                        reason: error.reason,
-                    })
-                }
+            .filter_map(move |item| {
+                let next = match item {
+                    Ok(item) if delivered.as_ref() == Some(&item.value) => None,
+                    Ok(item) => {
+                        delivered = Some(item.value.clone());
+                        Some(Ok(HostLocalStorageChangeItem::V1(item)))
+                    }
+                    Err(error) => {
+                        warn!(
+                            reason = %error.reason,
+                            "local storage subscription platform stream failed"
+                        );
+                        Some(Err(CallError::HostFailure {
+                            reason: error.reason,
+                        }))
+                    }
+                };
+                futures::future::ready(next)
             });
         Subscription::new(stream)
     }

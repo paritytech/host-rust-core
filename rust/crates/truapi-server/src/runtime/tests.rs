@@ -2460,8 +2460,9 @@ fn local_storage_subscribe_sees_writes_and_clears_but_not_identical_rewrites() {
             .lock()
             .expect("local storage writes mutex poisoned")
             .len(),
-        1,
-        "the core skips the identical write before it reaches the platform"
+        2,
+        "every write reaches the platform, so a host hanging quota or sync off \
+         one still sees it; the subscription is what drops the repeat"
     );
 
     futures::executor::block_on(host.clear(

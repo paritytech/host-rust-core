@@ -1097,8 +1097,12 @@ pub trait ProductStorage: Send + Sync {
     async fn clear(&self, key: String) -> Result<(), truapi::v01::HostLocalStorageReadError>;
 
     /// Emit `key`'s current value, then each later change from any of the
-    /// product's runtimes. A write that leaves the bytes unchanged emits
-    /// nothing. `key` is namespaced exactly as [`Self::read`] takes it.
+    /// product's runtimes. `key` is namespaced exactly as [`Self::read`] takes
+    /// it.
+    ///
+    /// Reporting a write that left the bytes unchanged is allowed: the core
+    /// drops an item repeating the value it last delivered, so the product
+    /// sees only real changes whether or not a host filters them itself.
     fn subscribe_storage(
         &self,
         key: String,
