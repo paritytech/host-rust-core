@@ -669,6 +669,23 @@ mod tests {
         block_on(provider.connect(RELAY_GENESIS)).expect("the closed connection freed its slot");
     }
 
+    /// Dropping a handle without closing it is exactly what the consumer the
+    /// ceiling exists for does, and `Drop` is the only thing that frees the
+    /// slot on that path. Without it the ceiling stops being a bound on live
+    /// connections and becomes a budget of [`MAX_CONNECTIONS`] for the life of
+    /// the process.
+    #[test]
+    fn dropping_a_handle_frees_its_slot() {
+        let provider = offline_provider();
+        let mut held = Vec::new();
+        for _ in 0..super::MAX_CONNECTIONS {
+            held.push(block_on(provider.connect(RELAY_GENESIS)).expect("connect under the cap"));
+        }
+
+        drop(held.pop().expect("one to drop"));
+        block_on(provider.connect(RELAY_GENESIS)).expect("the dropped handle freed its slot");
+    }
+
     /// Why the count is its own field rather than a sum over the chain
     /// refcounts: a parachain raises two of those, its own and the relay it
     /// borrows, so summing them would spend the ceiling twice as fast as
