@@ -783,7 +783,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-
       # Check the merge result, including a queued stack, for unconsumed changes
       # whenever a published version changes. The PR title cannot bypass this.
       - name: A version bump must consume every changeset

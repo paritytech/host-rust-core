@@ -34,11 +34,8 @@ on:
         description: "Version to publish (e.g. 0.12.0 or 0.12.0-beta.1)"
         required: true
         type: string
-      # A dispatch declared no manifest branch at all, so a manual publish
-      # skipped the follow-up silently and the default branch kept falling back
-      # to whatever it named before. Empty by default, because a dispatch is
-      # also how a pre-release is cut and the default branch should not fall
-      # back to one.
+      # Empty by default: a dispatch is also how a pre-release is cut, and the
+      # default branch must not fall back to one.
       manifest_branch:
         description: "Branch for the Package.swift follow-up pull request; empty to skip it, main for a real release"
         required: false
@@ -62,7 +59,8 @@ jobs:
       # up falling back to an older release with nothing saying so. A
       # pre-release is the opposite case: it exists for app-side testing of an
       # unmerged change and must never become the fallback.
-      - name: A stable release must name a manifest branch, a pre-release must not
+      - name: Decide whether the manifest follows this release
+        id: manifest
         env:
           IOS_VERSION: ${{ inputs.version }}
           MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
@@ -76,17 +74,18 @@ jobs:
 
           case "${IOS_VERSION}" in
             *-*)
-              if [ -n "${MANIFEST_BRANCH}" ]; then
-                echo "::error::${IOS_VERSION} is a pre-release, so it must not be the branch fallback. Dispatch it with an empty manifest_branch."
-                exit 1
-              fi
-              echo "${IOS_VERSION} is a pre-release; leaving the manifest alone."
+              # A pre-release exists for app-side testing of an unmerged change.
+              # The branch must never fall back to one, whichever path asked
+              # for it, so this is a decision rather than a rejection.
+              echo "update=false" >> "$GITHUB_OUTPUT"
+              echo "${IOS_VERSION} is a pre-release; the manifest is left alone."
               ;;
             *)
               if [ -z "${MANIFEST_BRANCH}" ]; then
                 echo "::error::${IOS_VERSION} is a stable release, so the manifest has to follow it. Dispatch it with manifest_branch set to the branch to open the follow-up against, normally main."
                 exit 1
               fi
+              echo "update=true" >> "$GITHUB_OUTPUT"
               echo "${IOS_VERSION} will update the manifest on ${MANIFEST_BRANCH}."
               ;;
           esac
@@ -228,7 +227,7 @@ jobs:
       # rather than a direct push so the branch protection still applies.
       # Skipped for a dispatched pre-release, which must not touch any branch.
       - name: Open published manifest pull request
-        if: inputs.manifest_branch != ''
+        if: steps.manifest.outputs.update == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IOS_VERSION: ${{ inputs.version }}

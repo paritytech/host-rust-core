@@ -54,7 +54,9 @@ jobs:
 
           # Pre-releases are cut by hand for app-side testing and are not what
           # the default branch should fall back to.
-          newest="$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
+          # Paginated: a fixed limit silently reports no drift once that many
+          # other releases postdate the newest iOS one.
+          newest="$(gh api --paginate "repos/${GH_REPO}/releases" --jq '.[].tag_name' \
             | sed -n 's|^@parity/ios-host@||p' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V | tail -1)"

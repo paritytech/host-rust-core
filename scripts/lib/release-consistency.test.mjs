@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
-  existsSync,} from "node:fs";
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
