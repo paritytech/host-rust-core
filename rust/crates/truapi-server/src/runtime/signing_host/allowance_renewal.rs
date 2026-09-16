@@ -1051,6 +1051,34 @@ mod tests {
         });
     }
 
+    // The reader is the one ledger operation whose whole job is to run while a
+    // pass may be writing: a scheduled host wakes, lists, and decides. `track`
+    // is polled first so it holds the lock across its read, which is what makes
+    // the guarantee observable; without the lock the listing reads the ledger
+    // the track is in the middle of replacing.
+    #[test]
+    fn a_listing_during_a_track_reports_the_settled_ledger() {
+        let storage = YieldingStorage::default();
+        let ledger_lock = lock();
+
+        futures::executor::block_on(async {
+            let (tracked, listed) = futures::join!(
+                track_targets(&storage, &ledger_lock, OWNER, vec![product("a.dot")]),
+                list_entries(&storage, &ledger_lock),
+            );
+            tracked.unwrap();
+
+            assert_eq!(
+                listed.unwrap(),
+                vec![TrackedStatementRenewalTarget {
+                    target: product("a.dot"),
+                    owner: None,
+                }],
+                "the listing observed the ledger the track was replacing"
+            );
+        });
+    }
+
     #[test]
     fn an_undecodable_ledger_lists_as_empty() {
         let storage = MemStorage::default();
