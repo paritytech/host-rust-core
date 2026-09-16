@@ -53,6 +53,7 @@ final class RootWindow: UIWindow {
 #if TESTNET_FEATURE
     @MainActor
     private extension RootWindow {
+        /// Captures app content because screenshot notifications do not include the image.
         @objc func showIssueReport() {
             guard
                 isKeyWindow,

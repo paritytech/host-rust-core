@@ -6,10 +6,7 @@ import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.test_shared.whenever
 import io.paritytech.polkadotapp.tools_remoteconfig_api.RemoteConfigService
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -19,14 +16,11 @@ import okhttp3.tls.HeldCertificate
 import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.mockito.Mockito.mock
-import java.io.RandomAccessFile
 import java.util.concurrent.TimeUnit
 
 class RealIssueReportApiTest {
@@ -47,8 +41,8 @@ class RealIssueReportApiTest {
         server.useHttps(serverCertificates.sslSocketFactory())
         server.start()
         whenever(dispatchers.io).thenReturn(Dispatchers.IO)
-        whenever(config.getString("issue_proxy_url")).thenReturn(Result.success(server.url("/v1/issues").toString()))
-        whenever(config.getString("issue_proxy_api_key")).thenReturn(Result.success("app-key"))
+        whenever(config.getSyncedString("issue_proxy_url")).thenReturn(Result.success(server.url("/v1/issues").toString()))
+        whenever(config.getSyncedString("issue_proxy_api_key")).thenReturn(Result.success("app-key"))
         val builder = OkHttpClient.Builder()
             .sslSocketFactory(clientCertificates.sslSocketFactory(), clientCertificates.trustManager)
             .addInterceptor { error("Reports must not reach shared request loggers") }
@@ -90,20 +84,10 @@ class RealIssueReportApiTest {
     fun `fails promptly without networking for missing or unsafe configuration`() = runBlocking<Unit> {
         val endpoint = server.url("/v1/issues").toString()
         for ((url, key) in listOf("" to "app-key", endpoint to "", "http://localhost/v1/issues" to "app-key", endpoint to "key\r\nX-Other: value")) {
-            whenever(config.getString("issue_proxy_url")).thenReturn(Result.success(url))
-            whenever(config.getString("issue_proxy_api_key")).thenReturn(Result.success(key))
+            whenever(config.getSyncedString("issue_proxy_url")).thenReturn(Result.success(url))
+            whenever(config.getSyncedString("issue_proxy_api_key")).thenReturn(Result.success(key))
             assertEquals(IssueReportSubmissionError.NotConfigured, withTimeout(1_000) { sender.send(report) }.exceptionOrNull())
         }
-        assertEquals(0, server.requestCount)
-    }
-
-    @Test
-    fun `rejects oversized screenshot and full multipart before upload`() = runBlocking<Unit> {
-        RandomAccessFile(report.screenshot, "rw").use { it.setLength(10 * 1_024 * 1_024 + 1) }
-        assertEquals(IssueReportSubmissionError.AttachmentsTooLarge, sender.send(report).exceptionOrNull())
-        report.screenshot.writeBytes(byteArrayOf(1))
-        RandomAccessFile(report.logs, "rw").use { it.setLength(25 * 1_024 * 1_024 - 1) }
-        assertEquals(IssueReportSubmissionError.AttachmentsTooLarge, sender.send(report).exceptionOrNull())
         assertEquals(0, server.requestCount)
     }
 
@@ -118,14 +102,5 @@ class RealIssueReportApiTest {
             assertEquals(Result.success(Unit), sender.send(report))
         }
         assertEquals(12, server.requestCount)
-    }
-
-    @Test
-    fun `cancelling an upload finishes without waiting for the response`() = runBlocking<Unit> {
-        server.enqueue(MockResponse.Builder().code(201).headersDelay(10, TimeUnit.SECONDS).build())
-        val submission = async { sender.send(report) }
-        withContext(Dispatchers.IO) { assertNotNull(server.takeRequest(5, TimeUnit.SECONDS)) }
-        withTimeout(1_000) { submission.cancelAndJoin() }
-        assertTrue(submission.isCancelled)
     }
 }

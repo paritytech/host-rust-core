@@ -7,6 +7,7 @@ struct IssueReport: Sendable {
 }
 
 protocol IssueReportSending: Sendable {
+    /// Completes successfully only after the proxy confirms issue creation.
     func send(_ report: IssueReport) async throws
 }
 
@@ -38,11 +39,11 @@ struct IssueProxyConfiguration: Sendable {
 }
 
 struct IssueProxyReportSender: IssueReportSending {
-    private let configuration: @Sendable () throws -> IssueProxyConfiguration
+    private let configuration: @Sendable () async throws -> IssueProxyConfiguration
     private let client: any HTTPDataLoading
 
     init(
-        configuration: @escaping @Sendable () throws -> IssueProxyConfiguration,
+        configuration: @escaping @Sendable () async throws -> IssueProxyConfiguration,
         client: (any HTTPDataLoading)? = nil
     ) {
         self.configuration = configuration
@@ -50,7 +51,7 @@ struct IssueProxyReportSender: IssueReportSending {
     }
 
     func send(_ report: IssueReport) async throws {
-        let configuration = try configuration()
+        let configuration = try await configuration()
         try Task.checkCancellation()
         guard report.screenshot.count <= 10 * 1_024 * 1_024, report.logs.count <= 25 * 1_024 * 1_024 else {
             throw IssueReportSubmissionError.tooLarge

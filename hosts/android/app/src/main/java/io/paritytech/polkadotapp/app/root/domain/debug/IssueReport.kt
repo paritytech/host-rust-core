@@ -9,5 +9,6 @@ data class IssueReport(
 )
 
 fun interface IssueReportApi {
+    /** Returns success only after the proxy confirms issue creation. */
     suspend fun send(report: IssueReport): Result<Unit>
 }

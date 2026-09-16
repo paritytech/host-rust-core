@@ -14,6 +14,7 @@ import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** Reconstructs the app image because Android reports screenshots without providing their bitmap. */
 @RequiresApi(34)
 internal suspend fun captureAppScreenshot(activity: Activity): Bitmap {
     val root = activity.window.decorView

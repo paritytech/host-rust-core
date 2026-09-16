@@ -110,10 +110,10 @@ Configure these Firebase Remote Config string parameters for each mobile environ
 | `issue_proxy_url` | Full HTTPS endpoint, including `/v1/issues` |
 | `issue_proxy_api_key` | The proxy's `ISSUE_PROXY_API_KEY`, sent as a bearer token |
 
-Both hosts read the currently activated values when sending. There are no bundled
-URL or key defaults; missing configuration shows an error. Remote Config values
-are readable by clients, so the GitHub credential stays on the proxy and must
-never be placed here. The thank-you popup appears only after HTTP 201. Uploads
+Both hosts use the app's existing Remote Config readiness path before reading
+the URL and key. There are no bundled defaults; missing configuration shows an
+error. Remote Config values are readable by clients, so the GitHub credential
+stays on the proxy and must never be placed here. The thank-you popup appears only after HTTP 201. Uploads
 include PNG screenshots up to 10 MiB and ZIP logs, with a 25 MiB limit for the
 whole multipart request. The Debug menu and **Share logs** remain available.
 

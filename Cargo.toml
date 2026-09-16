@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["rust/crates/*"]
+# Gradle builds these Android JNI crates independently of the core workspace.
 exclude = [
     "hosts/android/bindings/bandersnatch-crypto/rust",
     "hosts/android/bindings/hydra-dx-math/rust",

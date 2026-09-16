@@ -27,6 +27,7 @@ import javax.inject.Inject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** Uses synchronized Firebase configuration without request logging or automatic replay. */
 class RealIssueReportApi @Inject constructor(
     private val remoteConfig: RemoteConfigService,
     builder: OkHttpClient.Builder,
@@ -48,9 +49,9 @@ class RealIssueReportApi @Inject constructor(
         .build()
 
     override suspend fun send(report: IssueReport): Result<Unit> = withContext(dispatchers.io) {
-        val endpoint = remoteConfig.getString("issue_proxy_url")
+        val endpoint = remoteConfig.getSyncedString("issue_proxy_url")
             .getOrElse { return@withContext Result.failure(it) }
-        val configuredKey = remoteConfig.getString("issue_proxy_api_key")
+        val configuredKey = remoteConfig.getSyncedString("issue_proxy_api_key")
             .getOrElse { return@withContext Result.failure(it) }
         val url = endpoint.trim().toHttpUrlOrNull()
         val key = configuredKey.trim()
