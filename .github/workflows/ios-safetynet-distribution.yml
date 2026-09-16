@@ -6,9 +6,9 @@ name: Safetynet Distribution
 # environment, under its own bundle id so it installs alongside the real app. See
 # Configs/base.safetynet.xcconfig.
 #
-# The nightly pipeline already builds Safetynet as a leg of nightly_distribution.yml;
+# The nightly pipeline already builds Safetynet as a leg of ios-nightly-distribution.yml;
 # this workflow exists for ad-hoc builds outside that pipeline. It deliberately does not
-# reuse _build_distribute.yml: that workflow's security gate fails any workflow_dispatch
+# reuse ios-build-distribute.yml: that workflow's security gate fails any workflow_dispatch
 # not triggered by github-actions[bot], which is exactly the human-triggered case here.
 # The scope is correspondingly narrower — one variant, no release PR,
 # no release notification.
@@ -45,6 +45,16 @@ env:
 
 jobs:
   build_safetynet:
+    # Held until the iOS cutover. This tree is behind the app repository, so a
+    # build from here would ship stale code and, for this workflow, consume a
+    # TestFlight build number the production record depends on.
+    #
+    # This workflow calls the distribute action directly rather than through
+    # ios-build-distribute.yml, so it does not inherit that workflow's
+    # github-actions[bot] check and nothing else would stop a hand-started run.
+    #
+    # Removing this is part of the cutover, tracked on #764.
+    if: false
     name: Build and distribute Safetynet
     runs-on: macos-26
     timeout-minutes: 120
