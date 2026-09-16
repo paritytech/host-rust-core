@@ -34,6 +34,9 @@ jobs:
 
       - name: Compare every published manifest against npm
         id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -65,6 +68,32 @@ jobs:
               exit 1
             fi
           done
+
+          # The iOS package falls back to a published xcframework when no local
+          # one is staged. Bindings are generated per commit and UniFFI checks
+          # the pairing at initialization, so a fallback naming an older release
+          # means anything resolving this package fails to initialize. Every CI
+          # job sets TRUAPI_USE_LOCAL_BINARY=1, so nothing else looks at it.
+          declared_url="$(sed -n -E 's/^let publishedBinaryURL = "(.*)"$/\1/p' Package.swift)"
+          declared="$(printf '%s' "${declared_url}" \
+            | sed -n -E 's|.*%40parity%2Fios-host%40([^/]+)/.*|\1|p')"
+          if [ -z "${declared}" ]; then
+            echo "::error::Cannot read an @parity/ios-host version from publishedBinaryURL."
+            exit 1
+          fi
+
+          # Pre-releases are cut by hand for app-side testing and are not what
+          # the default branch should fall back to.
+          newest_ios="$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
+            | sed -n 's|^@parity/ios-host@||p' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1)"
+          if [ -n "${newest_ios}" ] && [ "${declared}" != "${newest_ios}" ]; then
+            echo "@parity/ios-host@${newest_ios} is published but Package.swift falls back to ${declared}."
+            missing+=("@parity/ios-host@${newest_ios} (Package.swift falls back to ${declared})")
+          else
+            echo "Package.swift falls back to @parity/ios-host@${declared}."
+          fi
 
           if [ "${#missing[@]}" -eq 0 ]; then
             echo "drift=false" >> "$GITHUB_OUTPUT"
@@ -98,7 +127,7 @@ jobs:
           # The format string is deliberately single quoted: the backticks are
           # markdown and the values arrive as printf arguments, not expansions.
           # shellcheck disable=SC2016
-          printf 'The default branch declares package versions the registry does not serve.\n\n```\n%s\n```\n\nCheck the most recent `Release` run for a failed publish or an omitted target. Document deliberately unpublished versions in `.github/registry-drift-exceptions.json` with a reason.\n\n[Registry drift runs](%s)\n' "$REPORT" "$WORKFLOW_URL" > "$body_file"
+          printf 'The default branch declares versions that do not match what is published.\n\n```\n%s\n```\n\nCheck the most recent `Release` run for a failed publish or an omitted target. Document deliberately unpublished versions in `.github/registry-drift-exceptions.json` with a reason.\n\n[Registry drift runs](%s)\n' "$REPORT" "$WORKFLOW_URL" > "$body_file"
 
           if [ -n "${existing}" ]; then
             current_body="$(jq -sr --argjson number "$existing" 'add | .[] | select(.number == $number) | .body' <<<"$issues")"

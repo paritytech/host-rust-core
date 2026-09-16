@@ -58,6 +58,39 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # A stable version and no manifest branch is how the default branch ends
+      # up falling back to an older release with nothing saying so. A
+      # pre-release is the opposite case: it exists for app-side testing of an
+      # unmerged change and must never become the fallback.
+      - name: A stable release must name a manifest branch, a pre-release must not
+        env:
+          IOS_VERSION: ${{ inputs.version }}
+          MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${IOS_VERSION}" ]; then
+            echo "::error::No version to publish."
+            exit 1
+          fi
+
+          case "${IOS_VERSION}" in
+            *-*)
+              if [ -n "${MANIFEST_BRANCH}" ]; then
+                echo "::error::${IOS_VERSION} is a pre-release, so it must not be the branch fallback. Dispatch it with an empty manifest_branch."
+                exit 1
+              fi
+              echo "${IOS_VERSION} is a pre-release; leaving the manifest alone."
+              ;;
+            *)
+              if [ -z "${MANIFEST_BRANCH}" ]; then
+                echo "::error::${IOS_VERSION} is a stable release, so the manifest has to follow it. Dispatch it with manifest_branch set to the branch to open the follow-up against, normally main."
+                exit 1
+              fi
+              echo "${IOS_VERSION} will update the manifest on ${MANIFEST_BRANCH}."
+              ;;
+          esac
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

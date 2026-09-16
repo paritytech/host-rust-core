@@ -784,51 +784,6 @@ jobs:
           persist-credentials: false
 
 
-      # Every job here builds against the locally generated xcframework, so a
-      # published fallback naming an old release is invisible: the pairing the
-      # generated bindings check at initialization is only correct when binary
-      # and bindings come from one commit. A consumer that resolves this package
-      # gets `apiChecksumMismatch` for the whole library, not one degraded call.
-      #
-      # Releases move this, not pull requests, so it cannot be path-filtered.
-      - name: The published fallback must name the newest iOS host release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          declared_url="$(sed -n -E 's/^let publishedBinaryURL = "(.*)"$/\1/p' Package.swift)"
-          if [ -z "${declared_url}" ]; then
-            echo "::error::cannot read publishedBinaryURL from Package.swift"
-            exit 1
-          fi
-
-          declared="$(printf '%s' "${declared_url}" \
-            | sed -n -E 's|.*%40parity%2Fios-host%40([^/]+)/.*|\1|p')"
-          if [ -z "${declared}" ]; then
-            echo "::error::publishedBinaryURL names no @parity/ios-host release: ${declared_url}"
-            exit 1
-          fi
-
-          # Pre-releases are cut by hand for app-side testing of an unmerged
-          # change, and are not what the default branch should fall back to.
-          newest="$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
-            | sed -n 's|^@parity/ios-host@||p' \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V | tail -1)"
-          if [ -z "${newest}" ]; then
-            echo "::notice::no published iOS host release to compare against"
-            exit 0
-          fi
-
-          if [ "${declared}" != "${newest}" ]; then
-            echo "::error::The published fallback is @parity/ios-host@${declared} but ${newest} is released. Anything resolving this package pairs bindings from this tree with an older binary, and every use of TrUAPIHost fails to initialize. Update publishedBinaryURL and publishedBinaryChecksum, which release-ios.yml opens a pull request for when it is given a manifest branch."
-            exit 1
-          fi
-
-          echo "published fallback names ${newest}"
-
       # Check the merge result, including a queued stack, for unconsumed changes
       # whenever a published version changes. The PR title cannot bypass this.
       - name: A version bump must consume every changeset
