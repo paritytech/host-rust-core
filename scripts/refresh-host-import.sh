@@ -191,8 +191,11 @@ cmd_refresh() {
   echo
   note "re-applying adaptations"
   if git apply --3way --whitespace=nowarn "$patch"; then
+    # No staging here. --3way has already updated the index for every path it
+    # touched, and a forced add would sweep in whatever the developer has
+    # ignored under this tree, which on these hosts includes plist and env
+    # files that must never be committed.
     note "applied cleanly"
-    git add --all --force "hosts/${host}"
   else
     # Staging here would clear the unmerged entries and commit the conflict
     # markers as ordinary content. Leave them unmerged so git refuses.
@@ -202,23 +205,29 @@ cmd_refresh() {
       # git apply is all or nothing. No unmerged paths after a failure means
       # the patch was rejected outright and the tree is now plain upstream with
       # every adaptation gone, which looks like a clean refresh.
-      die "the patch was rejected outright, so no adaptation was applied; the tree is now unmodified upstream and must not be committed"
+      die "the patch was rejected outright, so no adaptation was applied. The tree is now unmodified upstream and must not be committed. Recover with: git reset --hard HEAD"
     fi
     note "conflicts, left unmerged:"
     printf '%s\n' "$unmerged" | sed 's/^/      /'
     note "resolve them, then stage and commit"
   fi
 
-  echo
-  note "checking the result against the source"
-  compare_against_source "$host" "$target" "$adapted_list" || true
-
   manifest_set_ref "$host" "$target"
   git add "$MANIFEST"
   echo
   note "recorded ${target} in ${MANIFEST}"
-  note "the refresh is staged and uncommitted; review it, then commit"
+
+  echo
+  note "checking the result against the source"
+  local verdict=0
+  compare_against_source "$host" "$target" "$adapted_list" || verdict=$?
   rm -f "$patch" "$adapted_list"
+
+  echo
+  if [ "$verdict" -ne 0 ]; then
+    die "the refresh dropped work no adaptation accounts for; do not commit it"
+  fi
+  note "the refresh is staged and uncommitted; review it, then commit"
 }
 
 main() {
