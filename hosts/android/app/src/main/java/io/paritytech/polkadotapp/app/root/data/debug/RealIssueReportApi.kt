@@ -6,7 +6,6 @@ import io.paritytech.polkadotapp.app.root.domain.debug.IssueReportSubmissionErro
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.InformationSize.Companion.bytes
 import io.paritytech.polkadotapp.common.utils.InformationSize.Companion.megabytes
-import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.tools_remoteconfig_api.RemoteConfigService
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -49,41 +48,39 @@ class RealIssueReportApi @Inject constructor(
         .build()
 
     override suspend fun send(report: IssueReport): Result<Unit> = withContext(dispatchers.io) {
-        remoteConfig.getString("issue_proxy_url").flatMap { endpoint ->
-            remoteConfig.getString("issue_proxy_api_key").flatMap { configuredKey ->
-                val url = endpoint.trim().toHttpUrlOrNull()
-                val key = configuredKey.trim()
-                if (url == null || !url.isHttps || url.username.isNotEmpty() || url.password.isNotEmpty() ||
-                    url.fragment != null || key.isEmpty() || key.any { it.code !in 33..126 }
-                ) {
-                    Result.failure(IssueReportSubmissionError.NotConfigured)
-                } else {
-                    runCancellableCatching {
-                        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-                            .addFormDataPart("title", "Android app issue")
-                            .addFormDataPart("body", report.description)
-                            .addFormDataPart("screenshot", "screenshot.png", report.screenshot.asRequestBody("image/png".toMediaType()))
-                            .addFormDataPart("logs", "logs.zip", report.logs.asRequestBody("application/zip".toMediaType()))
-                            .build()
-                        if (report.screenshot.length().bytes > 10.megabytes || body.contentLength().bytes > 25.megabytes) {
-                            Result.failure(IssueReportSubmissionError.AttachmentsTooLarge)
-                        } else {
-                            val request = Request.Builder()
-                                .url(url)
-                                .header("Authorization", "Bearer $key")
-                                .post(object : RequestBody() {
-                                    override fun contentType() = body.contentType()
-                                    override fun contentLength() = body.contentLength()
-                                    override fun writeTo(sink: BufferedSink) = body.writeTo(sink)
-                                    override fun isOneShot() = true
-                                })
-                                .build()
-                            submit(request)
-                            Result.success(Unit)
-                        }
-                    }.flatMap { it }
-                }
+        val endpoint = remoteConfig.getString("issue_proxy_url")
+            .getOrElse { return@withContext Result.failure(it) }
+        val configuredKey = remoteConfig.getString("issue_proxy_api_key")
+            .getOrElse { return@withContext Result.failure(it) }
+        val url = endpoint.trim().toHttpUrlOrNull()
+        val key = configuredKey.trim()
+        if (url == null || !url.isHttps || url.username.isNotEmpty() || url.password.isNotEmpty() ||
+            url.fragment != null || key.isEmpty() || key.any { it.code !in 33..126 }
+        ) {
+            return@withContext Result.failure(IssueReportSubmissionError.NotConfigured)
+        }
+
+        runCancellableCatching {
+            val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("title", "Android app issue")
+                .addFormDataPart("body", report.description)
+                .addFormDataPart("screenshot", "screenshot.png", report.screenshot.asRequestBody("image/png".toMediaType()))
+                .addFormDataPart("logs", "logs.zip", report.logs.asRequestBody("application/zip".toMediaType()))
+                .build()
+            if (report.screenshot.length().bytes > 10.megabytes || body.contentLength().bytes > 25.megabytes) {
+                return@withContext Result.failure(IssueReportSubmissionError.AttachmentsTooLarge)
             }
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $key")
+                .post(object : RequestBody() {
+                    override fun contentType() = body.contentType()
+                    override fun contentLength() = body.contentLength()
+                    override fun writeTo(sink: BufferedSink) = body.writeTo(sink)
+                    override fun isOneShot() = true
+                })
+                .build()
+            submit(request)
         }
     }
 
