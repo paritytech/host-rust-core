@@ -281,9 +281,9 @@ jobs:
 
           # The provider AAR is generated from its own cdylib and compiles
           # without codegen output, so it moves on a narrower set than the host
-          # shell: the crate, the crate it depends on, the bindings generator
-          # and the Gradle wiring that compiles the result.
-          gate sdk_provider_kotlin '^(android/truapi-provider/|rust/crates/truapi-provider/|rust/crates/truapi-platform/|rust/crates/uniffi-bindgen-cli/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|\.github/workflows/ci\.yml$)'
+          # shell: the crate, the two it depends on, the bindings generator and
+          # the Gradle wiring that compiles the result.
+          gate sdk_provider_kotlin '^(android/truapi-provider/|rust/crates/truapi-provider/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/uniffi-bindgen-cli/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -457,7 +457,9 @@ jobs:
   # The provider ships as its own AAR, so its bindings compile on a path the
   # host gate never touches. `make provider-android-check` generates first and
   # refuses to run against an empty source set, which is the way this gate
-  # would otherwise pass without compiling anything.
+  # would otherwise pass without compiling anything, then assembles the AAR so
+  # the Gradle wiring this exists to cover is exercised rather than only the
+  # Kotlin.
   provider-android-bindings:
     name: Android provider (kotlin compile)
     needs: changes
