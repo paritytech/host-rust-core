@@ -747,6 +747,23 @@ jobs:
           "$RUNNER_TEMP/actionlint" \
             -ignore 'constant expression "false" in condition' \
             -color
+
+      # actionlint reads a local action.yml only to validate the caller's
+      # inputs, so a composite action's shell reaches shellcheck only if it
+      # lives in a file of its own and is checked here.
+      - name: Lint the composite action scripts
+        env:
+          SHELLCHECK_OPTS: "--exclude=SC2012,SC2129"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          scripts=(.github/actions/*/*.sh)
+          if [ ${#scripts[@]} -eq 0 ]; then
+            echo "no composite action scripts to lint"
+            exit 0
+          fi
+          printf 'linting %s\n' "${scripts[@]}"
+          shellcheck "${scripts[@]}"
   release-guard:
     name: Release guard
     timeout-minutes: 10
@@ -887,9 +904,15 @@ jobs:
     steps:
       # Only for `.github/actions/upsert-pr-comment`, which is a local action
       # and so has to exist on disk. Nothing here reads the rest of the tree.
+      # Only for .github/actions/upsert-pr-comment, which is a local action and
+      # so has to exist on disk. Nothing else here reads the tree, and a
+      # checkout that fails must not redden the one required check, so the
+      # comment step is allowed to be the only casualty.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
         with:
           persist-credentials: false
+          sparse-checkout: .github/actions/upsert-pr-comment
 
       # The results come from the needs context itself rather than a second list
       # of `needs.<job>.result` expressions, so the set of jobs checked cannot

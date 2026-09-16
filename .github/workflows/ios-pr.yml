@@ -40,6 +40,7 @@ on:
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
       - ".github/actions/bootstrap-ios-core/**"
+      - ".github/actions/upsert-pr-comment/**"
   # Also on the default branch, which is the only way the SPM cache becomes
   # useful. A cache written during a pull request is scoped to that pull
   # request's ref, so nothing else can read it. Only a run on the default
@@ -72,6 +73,7 @@ on:
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
       - ".github/actions/bootstrap-ios-core/**"
+      - ".github/actions/upsert-pr-comment/**"
   # Kept alongside pull_request so a build can be reproduced on demand without
   # pushing a commit.
   workflow_dispatch:
