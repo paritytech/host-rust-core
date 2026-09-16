@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.app.root.data.debug
 
+import io.paritytech.polkadotapp.app.BuildConfig
 import io.paritytech.polkadotapp.app.root.domain.debug.IssueReport
 import io.paritytech.polkadotapp.app.root.domain.debug.IssueReportSubmissionError
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
@@ -72,7 +73,11 @@ class RealIssueReportApiTest {
             expectedBody.write(bytes).writeUtf8("\r\n")
         }
         append("title", "Android app issue".toByteArray())
-        append("body", report.description.toByteArray())
+        val expectedDescription = report.description + "\n\n## App information\n\n" +
+            "- App ID: `${BuildConfig.APPLICATION_ID}`\n" +
+            "- App version: `${BuildConfig.VERSION_NAME}`\n" +
+            "- Build: `${BuildConfig.VERSION_CODE}`"
+        append("body", expectedDescription.toByteArray())
         append("screenshot", report.screenshot.readBytes(), "; filename=\"screenshot.png\"\r\nContent-Type: image/png")
         append("logs", report.logs.readBytes(), "; filename=\"logs.zip\"\r\nContent-Type: application/zip")
         expectedBody.writeUtf8("--$boundary--\r\n")

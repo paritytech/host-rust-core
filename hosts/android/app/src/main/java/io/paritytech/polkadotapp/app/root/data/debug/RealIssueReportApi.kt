@@ -1,17 +1,16 @@
 package io.paritytech.polkadotapp.app.root.data.debug
 
+import io.paritytech.polkadotapp.app.BuildConfig
 import io.paritytech.polkadotapp.app.root.domain.debug.IssueReport
 import io.paritytech.polkadotapp.app.root.domain.debug.IssueReportApi
 import io.paritytech.polkadotapp.app.root.domain.debug.IssueReportSubmissionError
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.InformationSize.Companion.bytes
 import io.paritytech.polkadotapp.common.utils.InformationSize.Companion.megabytes
+import io.paritytech.polkadotapp.common.utils.await
 import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.tools_remoteconfig_api.RemoteConfigService
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -19,13 +18,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.Response
 import okio.BufferedSink
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /** Uses synchronized Firebase configuration without request logging or automatic replay. */
 class RealIssueReportApi @Inject constructor(
@@ -62,9 +57,16 @@ class RealIssueReportApi @Inject constructor(
         }
 
         runCancellableCatching {
+            val description = report.description + "\n\n" + """
+                ## App information
+
+                - App ID: `${BuildConfig.APPLICATION_ID}`
+                - App version: `${BuildConfig.VERSION_NAME}`
+                - Build: `${BuildConfig.VERSION_CODE}`
+            """.trimIndent()
             val body = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("title", "Android app issue")
-                .addFormDataPart("body", report.description)
+                .addFormDataPart("body", description)
                 .addFormDataPart("screenshot", "screenshot.png", report.screenshot.asRequestBody("image/png".toMediaType()))
                 .addFormDataPart("logs", "logs.zip", report.logs.asRequestBody("application/zip".toMediaType()))
                 .build()
@@ -81,27 +83,11 @@ class RealIssueReportApi @Inject constructor(
                     override fun isOneShot() = true
                 })
                 .build()
-            submit(request)
-        }
-    }
-
-    private suspend fun submit(request: Request): Unit = suspendCancellableCoroutine { continuation ->
-        val call = client.newCall(request)
-        continuation.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
-            override fun onFailure(call: Call, exception: IOException) {
-                if (continuation.isActive) continuation.resumeWithException(exception)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    if (continuation.isActive) {
-                        if (response.code == 201) continuation.resume(Unit)
-                        else continuation.resumeWithException(IssueReportSubmissionError.HttpFailure(response.code))
-                    }
+            client.newCall(request).await().use { response ->
+                if (response.code != 201) {
+                    return@withContext Result.failure(IssueReportSubmissionError.HttpFailure(response.code))
                 }
             }
-        })
+        }
     }
 }

@@ -93,6 +93,15 @@ private extension IssueProxyReportSender {
     }()
 
     func multipart(_ report: IssueReport, boundary: String) -> Data {
+        let description = """
+        \(report.description)
+
+        ## App information
+
+        - App ID: `\(Bundle.main.bundleIdentifier ?? "Unknown")`
+        - App version: `\(Bundle.main.appVersion ?? "Unknown")`
+        - Build: `\(Bundle.main.appBuild ?? "Unknown")`
+        """
         var body = Data()
         func append(_ headers: String, data: Data) {
             body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; \(headers)\r\n\r\n".utf8))
@@ -100,7 +109,7 @@ private extension IssueProxyReportSender {
             body.append(Data("\r\n".utf8))
         }
         append("name=\"title\"", data: Data("iOS app issue".utf8))
-        append("name=\"body\"", data: Data(report.description.utf8))
+        append("name=\"body\"", data: Data(description.utf8))
         append(
             "name=\"screenshot\"; filename=\"screenshot.png\"\r\nContent-Type: image/png",
             data: report.screenshot

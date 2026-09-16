@@ -22,9 +22,18 @@ struct IssueProxyReportSenderTests {
         let request = try #require(client.recordedRequests.first)
         let contentType = try #require(request.value(forHTTPHeaderField: "Content-Type"))
         let boundary = try #require(contentType.components(separatedBy: "boundary=").last)
+        let description = """
+        The screen froze 🐛
+
+        ## App information
+
+        - App ID: `\(Bundle.main.bundleIdentifier ?? "Unknown")`
+        - App version: `\(Bundle.main.appVersion ?? "Unknown")`
+        - Build: `\(Bundle.main.appBuild ?? "Unknown")`
+        """
         var body = Data((
             "--\(boundary)\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\niOS app issue\r\n" +
-                "--\(boundary)\r\nContent-Disposition: form-data; name=\"body\"\r\n\r\nThe screen froze 🐛\r\n" +
+                "--\(boundary)\r\nContent-Disposition: form-data; name=\"body\"\r\n\r\n\(description)\r\n" +
                 "--\(boundary)\r\nContent-Disposition: form-data; name=\"screenshot\"; " +
                 "filename=\"screenshot.png\"\r\nContent-Type: image/png\r\n\r\n"
         ).utf8)

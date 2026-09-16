@@ -1,5 +1,6 @@
 import DesignSystem
 import UIKit
+import UIKitExt
 
 final class RootWindow: UIWindow {
     #if TESTNET_FEATURE
@@ -59,12 +60,9 @@ final class RootWindow: UIWindow {
                 isKeyWindow,
                 windowScene?.activationState == .foregroundActive,
                 issueReportController == nil,
-                var presenter = rootViewController
+                let presenter = topmostViewController
             else { return }
 
-            while let presented = presenter.presentedViewController {
-                presenter = presented
-            }
             guard
                 presenter.viewIfLoaded?.window === self,
                 !presenter.isBeingPresented,
