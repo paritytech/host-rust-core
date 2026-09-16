@@ -1024,6 +1024,33 @@ mod tests {
         SsoAllocationOutcome,
     };
     use crate::host_logic::sso::wire::ResponseOutcome;
+
+    /// The key a host advertises on chain must be the one it serves over
+    /// pairing. These derive independently, so a test that asks only one of
+    /// them cannot see the two drift apart — which is the failure this pins.
+    #[test]
+    fn the_advertised_chat_key_is_the_one_the_responder_serves() {
+        const CHAT_ENTROPY: [u8; 16] = [0xAB; 16];
+        const SUFFIX: &str = "paseo";
+
+        let (_, served) =
+            derive_responder_identity(&CHAT_ENTROPY, SUFFIX).expect("responder identity derives");
+        let registration = crate::host_logic::attestation::build_lite_registration(
+            &CHAT_ENTROPY,
+            SUFFIX,
+            [0x11; 32],
+            "headless",
+            None,
+            0,
+        )
+        .expect("registration builds");
+
+        assert_eq!(
+            &registration.identifier_key[1..33],
+            &crate::host_logic::sso::pairing::x25519_public_key(served),
+            "the advertised chat key is not the one served over pairing"
+        );
+    }
     use crate::host_logic::statement_store::decode_verified_statement_data;
     use crate::runtime::authority::ProductAuthority;
     use crate::runtime::services::RuntimeServices;

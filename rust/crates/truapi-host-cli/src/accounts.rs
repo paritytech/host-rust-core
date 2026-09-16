@@ -23,6 +23,15 @@ use zeroize::ZeroizeOnDrop;
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
 const ACCOUNT_STORE_LOCK_FILE: &str = "accounts.json.lock";
 const DEFAULT_USERNAME_PREFIX: &str = "headless";
+
+/// Whether an account store has been written under `base_path`.
+///
+/// This is the judgement "a signer was provisioned here"; the store's filename
+/// stays private to this module.
+pub(crate) fn has_account_store(base_path: &std::path::Path) -> bool {
+    base_path.join(ACCOUNT_STORE_FILE).is_file()
+}
+
 const IMPORTED_ACCOUNT_NAME: &str = "imported";
 
 /// Signer material selected for a signing-host session.
