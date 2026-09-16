@@ -215,9 +215,8 @@ struct MethodEmission {
     wire_name: String,
     module: String,
     kind: MethodKind,
-    /// `None` when the method declares no request parameter. Never `Raw`:
-    /// `build` rejects an unrepresentable parameter outright.
-    request_payload: Option<String>,
+    /// The versioned wrapper naming this method's request payload.
+    request_payload: String,
     response_wrapper: Option<String>,
     error_payload: String,
     item_wrapper: Option<String>,
@@ -243,12 +242,8 @@ impl MethodEmission {
                 TypeRef::Named { name, args }
                     if args.is_empty() && versioned_wrappers.contains(name) =>
                 {
-                    Some(name.clone())
+                    name.clone()
                 }
-                // Rejected here rather than stored as `Raw`: the
-                // subscription path reads an absent request off this field,
-                // so a `Raw` reaching it would emit a host call missing its
-                // declared argument instead of failing codegen.
                 _ => bail!(
                     "Method `{}`: its request parameter is not a versioned wrapper, so it has no \
                      representable wire payload",
@@ -321,9 +316,7 @@ impl MethodEmission {
         let method = &self.name;
         let ids = const_name(&self.wire_name);
 
-        let Some(request_name) = &self.request_payload else {
-            bail!("Method `{method}`: every request method needs a versioned request wrapper");
-        };
+        let request_name = &self.request_payload;
         let error_name = &self.error_payload;
         let request_path = format!("versioned::{module}::{request_name}");
         let error_path = format!("versioned::{module}::{error_name}");
@@ -456,18 +449,8 @@ impl MethodEmission {
         };
         let item_path = format!("versioned::{module}::{item_name}");
 
-        let has_request = self.request_payload.is_some();
-
-        let start_ty = match &self.request_payload {
-            Some(request_name) => {
-                format!("versioned::{module}::{request_name}")
-            }
-            _ => "()".to_string(),
-        };
-        // A unit-typed binding trips clippy's `let_unit_value` lint, so a
-        // subscription with no `Start` payload names it `_request` instead
-        // of relying on a follow-up `let _ = request;` to silence it.
-        let request_binding = if has_request { "request" } else { "_request" };
+        let request_name = &self.request_payload;
+        let start_ty = format!("versioned::{module}::{request_name}");
 
         let error_ty = error_type_path(module, &self.error_payload);
 
@@ -491,7 +474,7 @@ impl MethodEmission {
             16,
             &formatdoc! {
                 r#"
-                let {request_binding}: {start_ty} = match DecodeAll::decode_all(&mut &bytes[..]) {{
+                let request: {start_ty} = match DecodeAll::decode_all(&mut &bytes[..]) {{
                     Ok(request) => request,
                     Err(err) => {{
                         let error: truapi::CallError<{error_ty}> =
@@ -503,21 +486,11 @@ impl MethodEmission {
             },
         );
 
-        if has_request {
-            writeln!(
-                out,
-                "                let target_version = request.version();"
-            )
-            .unwrap();
-        } else {
-            write_indented(
-                out,
-                16,
-                &format!(
-                    "let target_version = <{item_path} as truapi::versioned::Versioned>::LATEST;\n"
-                ),
-            );
-        }
+        writeln!(
+            out,
+            "                let target_version = request.version();"
+        )
+        .unwrap();
         write_indented(
             out,
             16,
@@ -539,7 +512,7 @@ impl MethodEmission {
             );
         }
 
-        let call_args = if has_request { "&cx, request" } else { "&cx" };
+        let call_args = "&cx, request";
 
         writeln!(
             out,
