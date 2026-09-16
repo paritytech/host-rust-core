@@ -1328,13 +1328,11 @@ impl JsonRpcConnection for RecordingConnection {
         }
         if self.responses.is_empty() {
             if self.chain_responses_end {
-                // Ends, but not before the caller has issued its request:
-                // ending immediately tears the connection down first and the
-                // request is never recorded. Same bounded-poll shape as
-                // `wait_for_matching_request_id`.
+                // Ending immediately tears the connection down before the
+                // request is recorded.
                 let sent = self.sent.clone();
                 return Box::pin(stream::unfold(sent, move |sent| async move {
-                    for _ in 0..100 {
+                    for _ in 0..2000 {
                         if !sent.lock().expect("rpc list mutex poisoned").is_empty() {
                             return None;
                         }

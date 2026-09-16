@@ -316,13 +316,10 @@ mod tests {
 
     #[test]
     fn the_core_constructor_hands_its_services_the_asset_hub_hash() {
-        // `from_platform_with_config` feeds three adjacent same-typed `[u8; 32]`
-        // into `RuntimeServices::new` positionally, and of the three constructor
-        // paths it is the only one nothing pins. A transposition here compiles,
-        // and manifest resolution then dials People or Bulletin, where no dotNS
-        // contract is deployed, so every uncached `trustedProducts` grant is
-        // refused indistinguishably from the other product granting nothing.
-        // That is #660's failure mode one line over.
+        // The third constructor path, and the only one nothing else pins. A
+        // transposition here compiles and dials People or Bulletin, where no
+        // dotNS contract is deployed, which is #660's failure mode one line
+        // over.
         let platform = Arc::new(StubPlatform {
             // Ends the follow rather than waiting out `OPERATION_TIMEOUT`; this
             // asserts which chain was dialled, not that the lookup succeeded.

@@ -596,19 +596,9 @@ impl SigningHostRuntime {
             chat_platform,
         );
         if services.asset_hub_chain_genesis_hash().is_none() {
-            // Said once at startup rather than inferred from every grant
-            // refusing: the refusals are deliberately indistinguishable from an
-            // ungranted read, so a host with no Asset Hub otherwise looks
-            // exactly like a product that granted nothing.
-            //
-            // Only as visible as the host's log level, which is the limit of
-            // what the core can do from here: `logging::init` installs
-            // `DEFAULT_LEVEL`, which is `ERROR`, so on the UniFFI and wasm
-            // hosts a `warn!` is dropped unless the host raised the level
-            // first. The CLI installs its own subscriber at `info` and does
-            // show it. Reaching an operator who has logging off needs a
-            // channel that does not run through `tracing`, which is a
-            // host-boundary decision rather than a line here.
+            // Said once at startup because the refusals themselves are
+            // indistinguishable from an ungranted read. Only as visible as the
+            // host's log level, which defaults to `ERROR`.
             warn!(
                 "no Asset Hub configured: no product manifest will resolve, so \
                  every cross-product grant not already cached is refused"
@@ -1649,8 +1639,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
-            // Asset Hub, added by #660 after this fixture was written. Distinct
-            // from its siblings so a transposition stays visible.
+            // Distinct from its siblings so a transposition stays visible.
             [0xcc; 32],
             "testnet".to_string(),
         )
@@ -2985,9 +2974,8 @@ mod tests {
                 platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
-            // Three distinct non-zero values: these are same-typed `[u8; 32]`
-            // passed positionally, so a transposed pair only shows up if no
-            // two of them are equal.
+            // Same-typed and positional, so a transposition only shows up if
+            // no two are equal.
             [0xaa; 32],
             [0xbb; 32],
             asset_hub,
@@ -2998,14 +2986,9 @@ mod tests {
 
     #[test]
     fn a_signing_host_runtime_carries_its_asset_hub_for_manifest_resolution() {
-        // Manifest grants are resolved from dotNS on Asset Hub. The pairing
-        // role took its hash from config; the signing role
-        // did not, so `root_manifest` returned before reaching the chain and
-        // refused every `trustedProducts` grant the manifest cache could not
-        // already answer, on iOS, Android, the `truapi-host` CLI and the wasm
-        // signing host. The cache is why the CLI looked healthy:
-        // `--product-config` seeds it, and a seeded entry is served before the
-        // hash is ever consulted.
+        // Without this the signing role resolves no manifest and refuses every
+        // uncached grant. A seeded cache entry is served before the hash is
+        // consulted, which is why a seeded CLI looked healthy.
         let runtime = SigningHostRuntime::new(
             Arc::new(StubPlatform::default()),
             signing_config_with_asset_hub([0xcc; 32]),
@@ -3020,9 +3003,8 @@ mod tests {
 
     #[test]
     fn a_pairing_host_runtime_carries_its_asset_hub_too() {
-        // The sibling half of the same invariant. Deleting the pairing role's
-        // install left every test green before this, so #660 could recur one
-        // line over in a role that has always been correct.
+        // The sibling half of the same invariant, so #660 cannot recur one role
+        // over.
         use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
 
         let config = PairingHostConfig::new(
@@ -3050,29 +3032,23 @@ mod tests {
 
     #[test]
     fn an_all_zero_asset_hub_is_how_a_signing_host_says_it_has_none() {
-        // The one spelling of "no Asset Hub". A host that has none passes zeros
-        // deliberately and reads back as unconfigured, so grants fail closed
-        // without a second sentinel to carry through the boundary.
+        // One spelling of "no Asset Hub", so grants fail closed without a
+        // second sentinel crossing the boundary.
         let runtime = SigningHostRuntime::new(
             Arc::new(StubPlatform::default()),
             signing_config_with_asset_hub([0; 32]),
             test_spawner(),
         );
-        // This used to also assert that a second install was refused, to tell
-        // "zeros were written" apart from "nothing was ever written". The hash
-        // is a constructor argument now, so the second state does not exist and
-        // there is nothing left to separate: reading `None` here can only mean
-        // the configured zeros.
+        // The hash is a constructor argument, so `None` here can only mean the
+        // configured zeros.
         assert_eq!(runtime.services.asset_hub_chain_genesis_hash(), None);
     }
 
     #[test]
     fn the_asset_hub_argument_reaches_the_asset_hub_slot() {
-        // `RuntimeServices::new` now takes three adjacent `[u8; 32]` by
-        // position, which is the shape that hides a transposition: swapping two
-        // compiles and every type still lines up. People and Bulletin are
-        // consumed into their RPC clients and are not readable back, so this
-        // pins the one slot that is, which is also the one this PR added.
+        // Three adjacent `[u8; 32]` by position: a transposition compiles.
+        // People and Bulletin are not readable back, so pin the one slot that
+        // is.
         let services = crate::runtime::services::RuntimeServices::new(
             Arc::new(StubPlatform::default()),
             truapi_platform::HostInfo {
@@ -3107,10 +3083,8 @@ mod tests {
         use truapi::api::LocalStorage;
         use truapi::versioned::local_storage::HostLocalStorageReadRequest;
 
-        // The follow ends instead of hanging: this test asserts which chain the
-        // lookup dialled, and the stub serves no dotNS either way. Without this
-        // it waits out the full `dotns_lookup::OPERATION_TIMEOUT` to reach the
-        // same refusal.
+        // The stub serves no dotNS either way, so end the follow rather than
+        // wait out `dotns_lookup::OPERATION_TIMEOUT` for the same refusal.
         let platform = Arc::new(StubPlatform {
             chain_responses_end: true,
             ..StubPlatform::default()
@@ -3127,7 +3101,7 @@ mod tests {
             ProductContext::new("unknown.dot".to_string()).expect("valid product id"),
         );
         // Nothing is cached for `wallet.dot`, so resolution has to reach dotNS
-        // — which is exactly the path the missing hash short-circuited.
+        // This is the path the missing hash short-circuited.
         let read = futures::executor::block_on(LocalStorage::read(
             &host,
             &truapi::CallContext::default(),
@@ -3156,19 +3130,16 @@ mod tests {
 
     #[test]
     fn a_signing_host_takes_a_manifest_miss_to_the_chain() {
-        // The refusal is identical with and without an Asset Hub, so the only
-        // observable difference is whether the core asked the chain at all.
-        // Without the install it never asks, which is what made this silent.
+        // The refusal is identical either way, so whether the core asked the
+        // chain is the only observable difference.
         let configured = signing_manifest_lookup_rpc([0xcc; 32]);
         assert!(
             !configured.rpc.is_empty(),
             "a configured signing role resolves an uncached manifest over dotNS"
         );
 
-        // Asking *a* chain is not the property under test. The host holds three
-        // same-typed genesis hashes and hands them over positionally, so a
-        // lookup wired to People or Bulletin would also produce RPC here and
-        // also refuse. Pin the chain it actually dialled.
+        // A lookup wired to People or Bulletin also produces RPC and also
+        // refuses, so pin the chain actually dialled.
         assert_eq!(
             configured.connects,
             vec![[0xcc; 32]],

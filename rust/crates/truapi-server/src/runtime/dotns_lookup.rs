@@ -22,7 +22,7 @@ use crate::chain_runtime::{
     wait_for_chain_head_best_hash, wait_for_chain_head_call_output,
     wait_for_chain_head_storage_value,
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::host_logic::dotns_gateway::{
     DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, encode_revive_call, view_output,
@@ -70,10 +70,9 @@ impl<'a> DotnsLookup<'a> {
                 with_runtime: true,
             },
         );
-        // This whole path used to be unreachable on the signing role, so it
-        // had no logging of its own at all. It can now do network I/O, stall
-        // for `OPERATION_TIMEOUT`, and fail closed into a refusal a caller
-        // cannot tell from "you were not granted this" — so say what it did.
+        // This path does network I/O, can stall for `OPERATION_TIMEOUT`, and
+        // fails closed into a refusal a caller cannot tell from "you were not
+        // granted this", so say what it did.
         debug!(
             target: "truapi_server::dotns",
             %follow_id,
@@ -88,7 +87,7 @@ impl<'a> DotnsLookup<'a> {
         )
         .await
         .inspect_err(|reason| {
-            debug!(
+            info!(
                 target: "truapi_server::dotns",
                 %follow_id, %reason,
                 "the Asset Hub follow never initialized; every grant behind \
@@ -159,7 +158,7 @@ impl DotnsTransport for DotnsLookup<'_> {
                 Ok(None)
             }
             ChainHeadStorageValue::Inaccessible => {
-                debug!(
+                info!(
                     target: "truapi_server::dotns",
                     follow_id = %self.follow_id,
                     "dotNS storage was inaccessible, which is not the same as absent"

@@ -189,15 +189,6 @@ pub struct NativeHostRuntimeConfig {
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
-    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Must be
-    /// exactly 32 bytes.
-    ///
-    /// Product manifests are read from dotNS, so this is what makes a
-    /// `trustedProducts` grant resolvable. Pass 32 zero bytes to say this host
-    /// has no Asset Hub; no manifest then resolves, so every cross-product
-    /// grant is refused — except one already in the manifest cache, which is
-    /// served without consulting this and stays honoured until it expires.
-    pub asset_hub_chain_genesis_hash: Vec<u8>,
     /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
     /// `testnet`). The wallet's reserved identities are derived under it:
     /// `uid.<suffix>` for the identity account, `peopl.<suffix>` for the person
@@ -209,6 +200,18 @@ pub struct NativeHostRuntimeConfig {
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
     pub local_session_lite_username: Option<String>,
+    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Must be
+    /// exactly 32 bytes.
+    ///
+    /// Product manifests are read from dotNS, so this is what makes a
+    /// `trustedProducts` grant resolvable. 32 zero bytes says this host has no
+    /// Asset Hub; grants already in the manifest cache stay honoured until they
+    /// expire.
+    ///
+    /// Appended rather than placed with its sibling hashes: record fields are
+    /// positional over the FFI and the checksum does not cover their order, so
+    /// an insert shifts every field below it.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -286,20 +289,9 @@ pub enum NativeRuntimeConfigError {
     },
     /// Asset Hub genesis hash was not exactly 32 bytes.
     ///
-    /// Appended rather than grouped with the other genesis-hash variants: these
-    /// map to FFI discriminants by declaration order, and nothing in the UniFFI
-    /// checksum covers that order, so inserting mid-enum silently renumbers
-    /// every variant below it.
-    ///
-    /// Record fields are positional too, and nothing here protects them either:
-    /// `String` and `Vec<u8>` are both an i32 length followed by that many
-    /// bytes, so the two are wire-identical. A shifted field that reads a
-    /// `String` where a hash was written usually fails, but only because
-    /// `String::try_read` runs `from_utf8` and 32 random bytes are rarely valid
-    /// UTF-8 — an accident of the value, not a guarantee. The other direction,
-    /// reading `Vec<u8>` where a `String` was written, always succeeds and
-    /// lies. What keeps the config record honest is regenerating the bindings
-    /// with the lib (`make uniffi`), not its field order.
+    /// Appended, not grouped with the sibling genesis-hash variants: declaration
+    /// order is the FFI discriminant and the checksum does not cover it, so an
+    /// insert renumbers every variant below it.
     #[error("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
     InvalidAssetHubChainGenesisHash {
         /// Supplied byte length.
@@ -3587,11 +3579,8 @@ mod tests {
 
     #[test]
     fn each_configured_genesis_hash_reaches_its_own_field() {
-        // Three adjacent `Vec<u8>` at the boundary feeding three adjacent
-        // `[u8; 32]` in a positional constructor: transposing any two compiles
-        // and, without this, passes every test. Getting Asset Hub wrong sends
-        // manifest resolution to a chain with no dotNS contracts, which refuses
-        // every grant indistinguishably from a product that granted nothing.
+        // Three adjacent `Vec<u8>` feeding a positional constructor:
+        // transposing any two compiles and, without this, passes.
         let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
             people_chain_genesis_hash: vec![0xa1; 32],
             bulletin_chain_genesis_hash: vec![0xb2; 32],
@@ -3607,9 +3596,8 @@ mod tests {
 
     #[test]
     fn a_wrong_size_asset_hub_genesis_hash_is_rejected_as_its_own_field() {
-        // Names the field it rejects and reports that field's length, so a
-        // copy-paste of a sibling's validation cannot pass unnoticed. An empty
-        // vec must be an error, never a silent all-zero "no Asset Hub".
+        // An empty vec must be an error, never a silent all-zero "no Asset
+        // Hub".
         for len in [0usize, 31, 33] {
             let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
                 asset_hub_chain_genesis_hash: vec![0; len],

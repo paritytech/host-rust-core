@@ -1158,22 +1158,10 @@ mod tests {
         }
 
         fn host() -> Result<(Arc<crate::platform::CliPlatform>, SigningHostRuntime)> {
-            // A real Asset Hub genesis hash, so the signing role installs one
-            // and manifest resolution takes the dotNS path, but routed to a
-            // closed port so these tests never dial the live network.
-            //
-            // The override has to land on `live_chain_endpoints`, not on
-            // `asset_hub_ws`. `CliPlatform::new` builds its provider from
-            // `WsChainProvider::new(network.people_ws, network.live_chain_endpoints)`
-            // and resolves each genesis through that table; `asset_hub_ws`
-            // feeds the standalone `AssetHubReader` subcommands and is never
-            // read on this path. Setting it here looked like it worked and did
-            // nothing.
-            //
-            // It does not make them fast: a refused connection still costs the
-            // full `dotns_lookup::OPERATION_TIMEOUT`, because the provider
-            // retries rather than ending the follow, so
-            // `wait_for_chain_head_best_hash` never sees `Stop`.
+            // The override must land on `live_chain_endpoints`: that is the
+            // table `CliPlatform` resolves a genesis through. `asset_hub_ws`
+            // feeds the standalone `AssetHubReader` subcommands. Only Asset Hub
+            // is rerouted here.
             static CLOSED_ASSET_HUB: &[crate::network::ChainEndpoint] =
                 &[crate::network::ChainEndpoint {
                     genesis: crate::network::PASEO_ASSET_HUB.genesis,
@@ -1205,12 +1193,10 @@ mod tests {
                 network.asset_hub_genesis,
                 network.network_suffix.to_string(),
             )?;
-            // The override is only real if the provider routes through it.
-            // Asserted because the previous attempt set `asset_hub_ws`, which
-            // this path never reads: it compiled, changed nothing, and the
-            // timings looked identical either way.
+            // An override written to a field this path never reads compiles,
+            // changes nothing, and looks identical in timings. Assert it.
             assert_eq!(
-                platform.chain.routed_url(&asset_hub_genesis),
+                platform.routed_url(&asset_hub_genesis),
                 "ws://127.0.0.1:1",
                 "the Asset Hub genesis must route to the closed port, not to live Paseo"
             );
@@ -1340,13 +1326,9 @@ mod tests {
 
         #[tokio::test]
         async fn a_product_with_no_config_is_refused_the_same_way() -> Result<()> {
-            // No config applied, so nothing is seeded in the manifest cache
-            // and resolution falls through to dotNS, which cannot answer here.
-            // Note what this pins down: an Asset Hub that never answers is
-            // refused identically to a config that named someone else. The
-            // caller cannot tell "you were not granted this" from "the grant
-            // could not be looked up", which is the same collapse the
-            // `assetHubChainGenesisHash` docs warn about.
+            // An Asset Hub that never answers is refused identically to a
+            // config that named someone else: the caller cannot tell "not
+            // granted" from "could not look it up".
             let (_platform, runtime) = host()?;
             write_owner_value(&runtime).await;
             assert_eq!(

@@ -94,8 +94,8 @@ impl RuntimeServices {
     ///   boundary that feeds it.
     /// - Each of the three *call sites* is pinned separately, because pinning
     ///   the function says nothing about what a caller passes it:
-    ///   `a_signing_host_runtime_installs_its_asset_hub_for_manifest_resolution`
-    ///   and `a_pairing_host_runtime_installs_its_asset_hub_too` for the two in
+    ///   `a_signing_host_runtime_carries_its_asset_hub_for_manifest_resolution`
+    ///   and `a_pairing_host_runtime_carries_its_asset_hub_too` for the two in
     ///   `host_core`, and `the_core_constructor_hands_its_services_the_asset_hub_hash`
     ///   for `TrUApiCore::from_platform_with_config`.
     ///
