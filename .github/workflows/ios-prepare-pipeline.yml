@@ -268,7 +268,7 @@ jobs:
       - name: Collect PRs info
         id: collect-prs
         if: steps.decide.outputs.should_release == 'true' && steps.decide.outputs.direct_build != 'true'
-        uses: novasamatech/github-actions/collect-prs@v5
+        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           github_token: ${{ github.token }}
           src_ref: ${{ steps.bump_version.outputs.branch_name }}

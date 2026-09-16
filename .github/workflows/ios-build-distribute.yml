@@ -167,7 +167,7 @@ jobs:
 
       - name: Collect merged PRs (markdown for notification)
         id: collect_prs_markdown
-        uses: novasamatech/github-actions/collect-prs@v5
+        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           github_token: ${{ github.token }}
           src_ref: ${{ inputs.release_branch }}
@@ -336,7 +336,7 @@ jobs:
     if: failure()
     steps:
       - name: Send failure notification
-        uses: novasamatech/github-actions/send-notification@v5
+        uses: novasamatech/github-actions/send-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           message: |
             ❌ iOS ${{ inputs.build_configuration }} build failed
