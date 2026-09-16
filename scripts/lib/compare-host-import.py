@@ -63,8 +63,9 @@ def main(argv):
 
     adapted = set()
     try:
-        with open(adapted_path, encoding="utf-8", errors="surrogateescape") as fh:
-            adapted = {line.strip() for line in fh if line.strip()}
+        adapted = {
+            record.decode("utf-8", "surrogateescape") for record in records(adapted_path)
+        }
     except OSError:
         pass
 

@@ -178,8 +178,11 @@ cmd_refresh() {
   git diff --binary "$base_tree" HEAD -- "hosts/${host}" > "$patch"
   local adapted_list
   adapted_list="$(mktemp)"
-  git diff --name-only "$base_tree" HEAD -- "hosts/${host}" | sort > "$adapted_list"
-  note "adaptations to re-apply: $(wc -l < "$adapted_list" | tr -d ' ') files"
+  # NUL-delimited to match the listings it is compared against. --name-only
+  # quotes and escapes any path outside ASCII, and one asset in the iOS tree
+  # would then never match its own entry and read as dropped work.
+  git diff -z --name-only "$base_tree" HEAD -- "hosts/${host}" > "$adapted_list"
+  note "adaptations to re-apply: $(tr -cd '\0' < "$adapted_list" | wc -c | tr -d ' ') files"
 
   # Tracked paths only. rm -rf would also take ignored working files such as
   # hosts/ios/source_packages or hosts/android/local.properties, which the
