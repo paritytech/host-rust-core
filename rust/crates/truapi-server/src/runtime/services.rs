@@ -41,15 +41,8 @@ pub(crate) struct RuntimeServices {
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
-    /// Asset Hub the dotNS contracts are deployed on.
-    ///
-    /// By value, alongside its sibling hashes, rather than installed after
-    /// construction. #660 was exactly that: one role called the installer, the
-    /// other did not, and the omission was invisible because an unresolvable
-    /// manifest refuses identically to a product that granted nothing. A
-    /// constructor argument cannot be forgotten by a new construction site.
-    ///
-    /// All-zero is how a host says it has no Asset Hub.
+    /// Asset Hub the dotNS contracts are deployed on. All-zero says this host
+    /// has none, which leaves every manifest unresolvable.
     asset_hub_chain_genesis_hash: [u8; 32],
     /// Reference counts per product worker.
     pub(crate) worker_ledger: WorkerLedger,
@@ -85,24 +78,8 @@ impl RuntimeServices {
     /// for in-core preimage submission, and the Asset Hub genesis hash product
     /// manifests are resolved from.
     ///
-    /// The three genesis hashes are adjacent and same-typed, so transposing any
-    /// two compiles and type-checks. What pins them, and what does not:
-    ///
-    /// - `the_asset_hub_argument_reaches_the_asset_hub_slot` pins this
-    ///   function, calling it directly with three distinct literals.
-    /// - `each_configured_genesis_hash_reaches_its_own_field` pins the config
-    ///   boundary that feeds it.
-    /// - Each of the three *call sites* is pinned separately, because pinning
-    ///   the function says nothing about what a caller passes it:
-    ///   `a_signing_host_runtime_carries_its_asset_hub_for_manifest_resolution`
-    ///   and `a_pairing_host_runtime_carries_its_asset_hub_too` for the two in
-    ///   `host_core`, and `the_core_constructor_hands_its_services_the_asset_hub_hash`
-    ///   for `TrUApiCore::from_platform_with_config`.
-    ///
-    /// People and Bulletin are consumed into their RPC clients and are not
-    /// readable back off `RuntimeServices`, so only the Asset Hub slot is
-    /// directly observable; the call-site guards reach it through a manifest
-    /// lookup instead.
+    /// The three genesis hashes are adjacent and same-typed, so a transposition
+    /// compiles. Each call site is pinned by its own test.
     pub(crate) fn new(
         platform: Arc<dyn Platform>,
         host_info: HostInfo,

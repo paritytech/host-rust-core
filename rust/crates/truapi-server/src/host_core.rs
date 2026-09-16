@@ -3100,8 +3100,8 @@ mod tests {
             runtime.signing_host.clone(),
             ProductContext::new("unknown.dot".to_string()).expect("valid product id"),
         );
-        // Nothing is cached for `wallet.dot`, so resolution has to reach dotNS
-        // This is the path the missing hash short-circuited.
+        // Nothing is cached for `wallet.dot`, so resolution reaches dotNS,
+        // the path the missing hash short-circuited.
         let read = futures::executor::block_on(LocalStorage::read(
             &host,
             &truapi::CallContext::default(),

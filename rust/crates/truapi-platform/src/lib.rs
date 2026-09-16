@@ -100,14 +100,8 @@ pub struct SigningHostConfig {
     /// Asset Hub genesis hash the dotNS contracts are deployed on, used to
     /// resolve the product manifests that carry `trustedProducts` grants.
     ///
-    /// All-zero says this host has no Asset Hub. No manifest then resolves, so
-    /// every cross-product grant is refused, the same answer as a chain that
-    /// cannot be read, and the reason a host must set this deliberately rather
-    /// than by omission.
-    ///
-    /// Not a kill switch: a manifest already in the core-storage cache is
-    /// served before this is consulted, so grants resolved earlier stay
-    /// honoured until that entry expires.
+    /// All-zero says this host has no Asset Hub, which refuses every grant not
+    /// already in the manifest cache.
     pub asset_hub_chain_genesis_hash: [u8; 32],
     /// The network's dotNS TLD without the leading dot: `dot`, `paseo`,
     /// `testnet`. Every reserved RFC-0022 identity the wallet derives ends in
@@ -969,12 +963,8 @@ pub enum RuntimeConfigValidationError {
     },
     /// Product id was longer than [`PRODUCT_ID_MAX_BYTES`] after normalization.
     ///
-    /// Appended, not grouped with `InvalidProductId`: the native mirror of this
-    /// enum maps to FFI discriminants by declaration order, so inserting here
-    /// silently renumbers every variant below it.
-    ///
-    /// Carries lengths rather than the id, because the whole point of this
-    /// variant is that the id may be enormous.
+    /// Carries lengths rather than the id, which may be enormous. Appended
+    /// because the native mirror maps variants to FFI discriminants by order.
     #[display("product_id must be at most {limit} bytes, got {actual}")]
     ProductIdTooLong {
         /// Accepted maximum, in bytes.
