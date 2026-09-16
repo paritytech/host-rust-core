@@ -4,7 +4,7 @@
 // product signs with another product's registered ring-VRF key, which the
 // owner's manifest grant is the only thing permitting. The host resolves that
 // grant from the `trustedProducts` in a local product config, so the flow runs
-// before either product is deployed — see `--product-config` and
+// before either product is deployed. See `--product-config` and
 // `truapi-host-cli/src/product_config.rs`.
 //
 // This is the first end-to-end exercise of a *granted* cross-product call.
@@ -26,7 +26,7 @@
 //   register        peopl.paseo registers a ring-VRF key and signs with it,
 //                   then stores the signature in its own storage.
 //   sign-granted    dim2.paseo signs with peopl.paseo's key handle. Named in
-//                   trustedProducts with `context`, so allowed — and the
+//                   trustedProducts with `context`, so allowed, and the
 //                   signature must equal the owner's own, which is what proves
 //                   the grant reached the owner's key rather than deriving a
 //                   new one for the caller.
@@ -120,8 +120,8 @@ async function expectGrantedSignature(): Promise<void> {
 
   // Read what the owner signed, through the storage grant, and require the
   // same bytes. A host deriving the key from the caller rather than the handle
-  // owner still returns a valid 64-byte signature — it is only the comparison
-  // that catches it.
+  // owner still returns a valid 64-byte signature, and only the comparison
+  // catches it.
   const stored = await truapi.localStorage.read({
     product: OWNER,
     key: SIGNATURE_KEY,

@@ -225,7 +225,7 @@ pub(crate) struct PairingHost {
     /// Shared runtime services. Held, not just borrowed at construction, so
     /// this role can resolve a product manifest for itself when it adjudicates
     /// a cross-product grant. `RuntimeServices` does not hold the pairing host
-    /// back — `host_core` owns both — so this is not a cycle.
+    /// back (`host_core` owns both), so this is not a cycle.
     services: Arc<RuntimeServices>,
     /// Host platform backing all syscalls.
     pub(super) platform: Arc<dyn Platform>,

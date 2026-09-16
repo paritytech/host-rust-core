@@ -452,14 +452,14 @@ impl ProductRuntimeHost {
     ///
     /// Called before `remote_authority_call`, not inside it. Inside, two timers
     /// armed on the same budget race, and whichever fires first decides the
-    /// error the caller sees — this one answers the uniform refusal, that one
-    /// answers `Unknown` with a reason — so the refusal shape would depend on
+    /// error the caller sees: this one answers the uniform refusal, that one
+    /// answers `Unknown` with a reason. The refusal shape would then depend on
     /// scheduling. Bounded here instead, the gate is decided before the
     /// authority call is made at all.
     ///
     /// Left to `remote_authority_call`, a deadline that expires during the
     /// lookup surfaces as `Unknown { reason }`, while an already-cached target
-    /// that grants nothing answers immediately — so the error tag alone tells a
+    /// that grants nothing answers immediately, so the error tag alone tells a
     /// caller which targets this device has resolved before. That is the
     /// enumeration the denial read was moved after the manifest to avoid,
     /// arriving by another route. Expiry here is indistinguishable from

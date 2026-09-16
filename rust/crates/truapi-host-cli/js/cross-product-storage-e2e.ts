@@ -4,7 +4,7 @@
 // grant is the only thing permitting. The host resolves that grant from the
 // `trustedProducts` in a local product config, which seeds the manifest cache,
 // so the granted read runs before either product is deployed and without a
-// chain — see `--product-config` and `truapi-host-cli/src/product_config.rs`.
+// chain. See `--product-config` and `truapi-host-cli/src/product_config.rs`.
 //
 // A target with no seeded entry is not chain-free: the cache miss goes to dotNS
 // on Asset Hub before refusing, so the `read-missing` phase does reach the

@@ -35,7 +35,7 @@ type Granted = 'all' | 'storage' | 'context';
 
 `trustedProducts` keeps its `Record<string, Granted[]>` shape, so this needs no new field and no `$v` bump.
 
-- **`all` is a superset, not a peer.** `["all"]` implies `storage` and `context`, so `["all", "storage"]` is `["all"]`. A Host MUST NOT read a narrower value as a restriction on `all`. Enumerating the narrow values covers the same interactions today but does not widen when a further value is defined — that difference is the point of enumerating.
+- **`all` is a superset, not a peer.** `["all"]` implies `storage` and `context`, so `["all", "storage"]` is `["all"]`. A Host MUST NOT read a narrower value as a restriction on `all`. Enumerating the narrow values covers the same interactions today but does not widen when a further value is defined. That difference is the point of enumerating.
 - **Values are a set.** Order is not significant, duplicates collapse.
 - **Scopes are independent.** `["storage"]` leaves account interactions prompting as usual, and vice versa.
 - **Existing rules are unchanged.** Hosts MUST ignore unrecognised values and MUST NOT fail validation over them, so a Host implementing only `all` reads `["storage"]` as an empty grant and prompts. Publishers MUST NOT emit a value outside `Granted`. A grant never overrides a denial the user already gave.
@@ -48,13 +48,13 @@ Which calls each scope gates remains a Host runtime contract, as it already is f
 - The **authority holding the keys** is the gate. It resolves the granting product's manifest for itself and derives the key from the identity it authorized, never from the spelling it was handed. On a paired Host the request arrives over the wire from another Host, which names the product it is acting for, so relaying a verdict to it would take the manifest out of the decision entirely and let a peer reach every handle on the device rather than only the ones a publisher really granted. This is the only gate on that path.
 - The **runtime frontend** refuses a cross-product caller before the authority is reached. For a product on this Host it computes the same answer from the same inputs, so it adds no decision the authority would not reach: what it adds is that a refusal costs no authority round-trip, and on a paired Host no wire traffic. Removing it is not a hole, because the authority still refuses; changing it to something other than the grant is a regression, and is what the tests pin.
 
-A grant never overrides a refusal the user already gave: the stored account-access decision is read-only, so a grant lookup never raises the prompt that would settle an undecided one. It is read after the manifest, not before. Reading it first let a denied pair refuse without the chain lookup every other refusal pays for, and that difference in cost enumerates the user's stored denials to anyone who can name a caller id — on the wire that is anyone the peer chooses to name. The decision is filed against the product on both sides, matching the granularity of the grant it overrides.
+A grant never overrides a refusal the user already gave: the stored account-access decision is read-only, so a grant lookup never raises the prompt that would settle an undecided one. It is read after the manifest, not before. Reading it first let a denied pair refuse without the chain lookup every other refusal pays for, and that difference in cost enumerates the user's stored denials to anyone who can name a caller id, which on the wire is anyone the peer chooses to name. The decision is filed against the product on both sides, matching the granularity of the grant it overrides.
 
 The account and identity *reads* `context` names are covered by the grant, not prompted for again: the contextual alias and the proof come out of one VRF evaluation, so a grantee that may `create_account_proof` already holds the alias that proof attests. Prompting for it would ask the user to approve what the grant has already authorized. A refusal the user already gave still overrides, as everywhere else.
 
 ## Drawbacks
 
-Writes stay on the wildcard: `storage` is read-only, so "read and write, nothing else" is still inexpressible. `context` bundles reading an account with signing under it, so "see who I am, sign nothing" is not expressible either — splitting them costs a third value and neither half has a use without the other yet. And `all` still widens silently, so staying narrow means revisiting the manifest as scopes are added.
+Writes stay on the wildcard: `storage` is read-only, so "read and write, nothing else" is still inexpressible. `context` bundles reading an account with signing under it, so "see who I am, sign nothing" is not expressible either: splitting them costs a third value and neither half has a use without the other yet. And `all` still widens silently, so staying narrow means revisiting the manifest as scopes are added.
 
 ## Alternatives
 

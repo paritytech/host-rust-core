@@ -450,7 +450,7 @@ fn a_cached_grant_stops_being_honoured_once_it_expires() {
 ///
 /// This is the ordering hazard closed. `create_account_proof` consults the
 /// session before the grant, so a granting target, a non-granting target and
-/// the caller's own key all answer `Rejected` — and the pair of refusals stops
+/// the caller's own key all answer `Rejected`, and the pair of refusals stops
 /// being a probe for who granted whom. The grant path itself is covered
 /// end-to-end, with a live session, in
 /// `runtime::signing_host::tests::a_context_grant_lets_a_foreign_product_prove_with_the_owners_key`.
@@ -504,7 +504,7 @@ fn an_unresolvable_product_cannot_reach_a_foreign_key() {
     // reached. Note what this asserts: the frontend answers `Unknown { reason }`
     // here, naming the malformed handle, where the authority answers the uniform
     // `NotAllowlisted` for the same input. That asymmetry is real and deliberate
-    // at this layer — the id came from this Host's own caller, not off the wire,
+    // at this layer: the id came from this Host's own caller, not off the wire,
     // so telling it that its handle is malformed discloses nothing it did not
     // already send. The authority cannot say the same and does not.
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
@@ -4307,9 +4307,9 @@ mod signing;
 ///
 /// `pairing_host.rs` carried no `#[test]` at all: every grant test drove the
 /// signing role, and the e2e drives the signing-host CLI. Replacing the body of
-/// `PairingHost::require_ring_vrf_key_access` with `Ok(())` — any paired peer
-/// reaching any product's ring-VRF key by naming it — left the entire package
-/// green. That is the exact threat #655 gives as the reason the authority must
+/// `PairingHost::require_ring_vrf_key_access` with `Ok(())`, which lets any
+/// paired peer reach any product's ring-VRF key by naming it, left the entire
+/// package green. That is the exact threat #655 gives as the reason the authority must
 /// adjudicate for itself rather than trust a relayed verdict, so it cannot be
 /// the one path with no coverage.
 ///
@@ -4421,7 +4421,7 @@ fn a_grant_lookup_obeys_the_callers_deadline() {
     // The uniform refusal, not a transport error carrying a reason. Left to
     // `remote_authority_call`, a deadline that expires during the lookup answers
     // `Unknown { reason }` while an already-cached target that grants nothing
-    // answers `NotAllowlisted` at once — so the error tag alone would tell a
+    // answers `NotAllowlisted` at once, so the error tag alone would tell a
     // caller which targets this device has resolved before, which is the
     // enumeration the denial read was moved after the manifest to prevent.
     assert!(

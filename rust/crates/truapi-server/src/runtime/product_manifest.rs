@@ -407,7 +407,7 @@ const MANIFEST_RESOLUTION_CEILING: Duration = Duration::from_secs(30);
 
 /// Run `future`, giving up after `ceiling`.
 ///
-/// `None` on expiry, which every caller here treats as "no manifest" — the same
+/// `None` on expiry, which every caller here treats as "no manifest": the same
 /// answer an unreachable chain gives, and the same uniform refusal.
 async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> Option<T> {
     use futures::FutureExt;
@@ -427,7 +427,7 @@ async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> 
 ///
 /// The contextual alias is a function of (owner key, context), so an
 /// unconstrained context lets a grantee produce the alias the owner presents to
-/// a third product — one that granted nothing, is not a party to the grant, and
+/// a third product, one that granted nothing, is not a party to the grant, and
 /// cannot consent here. The owner's own calls are unaffected: minting your own
 /// aliases in any context is what the parameter is for.
 ///
@@ -452,7 +452,7 @@ pub(crate) fn require_own_context(
     }
     // Normalized like every other identity the gate decided about. This is the
     // one that arrives straight off the request payload, so leaving it raw would
-    // refuse a grantee for spelling its own context `DIM2.paseo` — the hazard
+    // refuse a grantee for spelling its own context `DIM2.paseo`, the hazard
     // the gate exists to remove, one layer down. A context that names no product
     // cannot be the caller's own, so it fails closed.
     let Ok(context_id) = normalize_product_identifier(&context.product_id) else {
@@ -535,8 +535,8 @@ pub(crate) async fn ring_vrf_key_access_granted(
         // line the only audible half of the decision is the refusal below: a
         // publisher's grant would let one product act with another's keys and
         // leave no trace on the device that it happened. This does not make the
-        // access revocable — that needs a surface for the user to record a
-        // decision about a pair they were never asked about — but it is what any
+        // access revocable, which needs a surface for the user to record a
+        // decision about a pair they were never asked about, but it is what any
         // such surface would have to be built on.
         info!(
             caller = %caller,

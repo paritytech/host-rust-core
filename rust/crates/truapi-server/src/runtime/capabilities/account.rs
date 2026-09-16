@@ -192,7 +192,7 @@ impl Account for ProductRuntimeHost {
         // operations each bounded only by `OPERATION_TIMEOUT`, so it needs a
         // deadline either way. Running it inside would arm two timers on one
         // budget, and whichever fired first would decide whether the caller sees
-        // the uniform refusal or a transport error naming a reason — making the
+        // the uniform refusal or a transport error naming a reason, making the
         // refusal shape depend on scheduling. Decided here instead, a lookup that
         // runs out of time answers `NotAllowlisted` like every other refusal on
         // this path. The stages are bounded separately, so a caller asking for
@@ -210,9 +210,9 @@ impl Account for ProductRuntimeHost {
             .await
         else {
             // Recorded here, because this door answers without reaching the
-            // authority — so without this line a product probing which
-            // handles exist on the device leaves no trace, while every
-            // success is logged. The wire answers one refusal for every
+            // authority. Without this line a product probing which handles
+            // exist on the device leaves no trace, while every success is
+            // logged. The wire answers one refusal for every
             // reason; this is the operator's copy.
             tracing::info!(
                 caller = %calling_product_id,
@@ -353,9 +353,9 @@ impl Account for ProductRuntimeHost {
             .await
         else {
             // Recorded here, because this door answers without reaching the
-            // authority — so without this line a product probing which
-            // handles exist on the device leaves no trace, while every
-            // success is logged. The wire answers one refusal for every
+            // authority. Without this line a product probing which handles
+            // exist on the device leaves no trace, while every success is
+            // logged. The wire answers one refusal for every
             // reason; this is the operator's copy.
             tracing::info!(
                 caller = %calling_product_id,

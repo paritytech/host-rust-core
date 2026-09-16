@@ -32,7 +32,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     /// Asset Hub genesis hash, where the dotNS contracts are deployed. Product
     /// manifests are read from there, so this is what makes a `trustedProducts`
     /// grant resolvable. 32 zero bytes says this host has no Asset Hub, and no
-    /// manifest then resolves, so every cross-product grant is refused — except
+    /// manifest then resolves, so every cross-product grant is refused except
     /// one already cached, which is served without consulting this.
     public let assetHubChainGenesisHash: Data
     /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,

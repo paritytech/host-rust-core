@@ -1468,7 +1468,7 @@ mod tests {
     /// Worth pinning because the two halves are testable apart and were built
     /// apart. #660's own tests prove the hash is installed; #655's grant tests
     /// seed the manifest **cache**, and `root_manifest` reads the cache before
-    /// it ever needs a genesis hash — so every one of them would pass with
+    /// it ever needs a genesis hash, so every one of them would pass with
     /// #660 absent. This asserts the seam itself: the grant path's chain
     /// lookup has an Asset Hub to run against on a role whose config used to
     /// carry none.
@@ -1660,7 +1660,7 @@ mod tests {
     /// The test whose absence let the inert scope ship. The earlier
     /// `a_cached_context_grant_lets_a_foreign_proof_through` asserted
     /// `Rejected` with no session, which only proved the call reached the
-    /// session guard — the authority, one layer down, would have refused it
+    /// session guard, and the authority one layer down would have refused it
     /// anyway. This one runs the whole stack with a live session and a
     /// registered key, so a proof actually comes back.
     #[test]
@@ -1718,7 +1718,7 @@ mod tests {
     /// manifest.
     ///
     /// This drives the authority directly, the way `sso_responder` does for a
-    /// request arriving over the pairing wire — the frontend, and its grant
+    /// request arriving over the pairing wire. The frontend, and its grant
     /// check, are not on this path at all. The request names `dim2.dot` as the
     /// caller and `peopl.dot`'s key as the handle, which is the most a peer can
     /// assert. With no grant published it is refused; with the grant published
@@ -1729,8 +1729,8 @@ mod tests {
     /// What makes this cover the wire path is an invariant, not a convention:
     /// the authority has exactly one behaviour, shared by both doors, because
     /// nothing it reads records which door a request came through. Should a
-    /// door-dependent relaxation ever land — a dev allowlist consulted only
-    /// for local callers, say — that invariant is gone, and this test has to
+    /// door-dependent relaxation ever land (a dev allowlist consulted only for
+    /// local callers, say), that invariant is gone, and this test has to
     /// declare the paired-peer door explicitly or it silently stops covering
     /// it. Whoever adds the distinction owns updating this.
     #[test]
@@ -1831,7 +1831,7 @@ mod tests {
     ///
     /// The contextual alias is a function of (owner key, context), so with the
     /// context unconstrained a `context` grant from `peopl.dot` let `dim2.dot`
-    /// produce the alias `peopl.dot` presents to `bank.dot` — a third product
+    /// produce the alias `peopl.dot` presents to `bank.dot`, a third product
     /// that granted nothing, is not a party to the grant, and cannot consent
     /// here. The grant is to act in the grantee's own context, not in anyone's.
     ///
@@ -2022,7 +2022,7 @@ mod tests {
     ///
     /// This release files the decision under the product label; earlier ones
     /// used the full product id. Reading only the new shape would discard the
-    /// old decision — and on the granted path it would not even re-ask, because
+    /// old decision, and on the granted path it would not even re-ask, because
     /// the lookup reads `NotDetermined`, admits the grant and raises no prompt.
     /// A user's "no" would become a "yes" on upgrade.
     #[test]
@@ -2163,7 +2163,7 @@ mod tests {
     /// The context guard compares the identities the gate normalized, not the
     /// ones the request carried. Deriving the caller from the request again
     /// compares a peer's spelling against a normalized owner and refuses the
-    /// owner on its own key — `require_ring_vrf_key_access` returns the
+    /// owner on its own key. `require_ring_vrf_key_access` returns the
     /// normalized owner to stop exactly that, and `sso_responder` hands
     /// `calling_product_id` through untouched.
     #[test]
@@ -2278,7 +2278,7 @@ mod tests {
     /// #655 lists this as untested and it was: the other grant tests here all
     /// drive `create_proof`. Both authorities call the same
     /// `require_ring_vrf_key_access` from both methods, so the code was
-    /// covered — but a scope that admits one call and not the other is exactly
+    /// covered, but a scope that admits one call and not the other is exactly
     /// the kind of half-wired gate this issue exists to fix, and nothing
     /// asserted the second half.
     ///
@@ -2368,7 +2368,7 @@ mod tests {
     /// Asset Hub the role was configured with.
     ///
     /// Every other grant test here seeds the manifest cache, and `root_manifest`
-    /// serves that before it consults the genesis hash — so the whole suite
+    /// serves that before it consults the genesis hash, so the whole suite
     /// passes on a role with no Asset Hub, and deleting the production install
     /// would not turn any of it red. That is the blind spot #660 survived in.
     /// This is the one case that takes the other branch: it asserts the dial

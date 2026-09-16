@@ -27,7 +27,7 @@ network="${E2E_NETWORK:-paseo-next-v2}"
 # registers a lite username on a real chain, and this directory holds the only
 # copy of the account that owns it. Discarding it strands that name: the next
 # run generates a fresh mnemonic, asks for the same username, and is told it is
-# taken — permanently, because nothing can prove ownership of it any more.
+# taken, permanently, because nothing can prove ownership of it any more.
 #
 # Point E2E_STATE_DIR elsewhere to run against a fresh identity, and expect to
 # supply an unused --lite-username-prefix with it.

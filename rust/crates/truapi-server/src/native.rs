@@ -3589,9 +3589,14 @@ mod tests {
         })
         .expect("config is valid");
 
-        assert_eq!(resolved.signing.people_chain_genesis_hash, [0xa1; 32]);
-        assert_eq!(resolved.signing.bulletin_chain_genesis_hash, [0xb2; 32]);
-        assert_eq!(resolved.signing.asset_hub_chain_genesis_hash, [0xc3; 32]);
+        assert_eq!(
+            (
+                resolved.signing.people_chain_genesis_hash,
+                resolved.signing.bulletin_chain_genesis_hash,
+                resolved.signing.asset_hub_chain_genesis_hash,
+            ),
+            ([0xa1; 32], [0xb2; 32], [0xc3; 32]),
+        );
     }
 
     #[test]
