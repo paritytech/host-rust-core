@@ -120,7 +120,7 @@ type Granted =            // Grants v1 defines. Unrecognised values are ignored,
   | 'all'                 // Wildcard: every mediated interaction, present and future.
   | 'storage'             // Read this product's host-local storage.
   | 'context';            // Act as this product's account: read it, the identity
-                                 // behind it, and sign under its keys.
+                          // behind it, and sign under its keys.
 ```
 
 #### Icons

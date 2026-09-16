@@ -54,4 +54,6 @@ Resolving a grant can require reading a product manifest from dotNS, so the
 lookup is bounded by the caller's timeout and cancellation rather than running
 outside both. A manifest is cached under the label it resolves by, so every
 executable of one product shares one entry, and an entry stamped in the future is
-re-read rather than treated as fresh forever.
+re-read rather than treated as fresh forever. Entries written by earlier releases
+under the full product id are no longer read and nothing evicts them, so they sit
+in core storage until the cache is cleared.

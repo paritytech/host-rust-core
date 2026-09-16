@@ -631,7 +631,7 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         },
     };
     futures::executor::block_on(core.dispatch(stop, dyn_transport));
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::thread::sleep(Duration::from_millis(50));
 
     core.session_state()
         .set_session(truapi_server::host_logic::session::SessionInfo {
@@ -644,7 +644,7 @@ fn subscription_start_receive_stop_through_wire_boundary() {
             lite_username: None,
             full_username: None,
         });
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::thread::sleep(Duration::from_millis(50));
 
     assert_eq!(
         transport.sent.lock().unwrap().len(),

@@ -166,7 +166,8 @@ Each entry's value list scopes the grant:
 trustedProducts: {
   "wallet":  ["all"],                  → every mediated interaction, now and later
   "tracker": ["storage"],              → storage reads promptless; account reads still prompt
-  "hub":     ["storage", "context"]    → both, and no more when a fourth scope is defined
+  "reader":  ["storage", "context"]    → both, and no more when a fourth scope is defined
+  "hub":     ["all", "storage"]        → just ["all"]; a narrow value never carves into the wildcard
 }
 ```
 

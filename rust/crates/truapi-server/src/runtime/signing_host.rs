@@ -2163,9 +2163,9 @@ mod tests {
     /// The context guard compares the identities the gate normalized, not the
     /// ones the request carried. Deriving the caller from the request again
     /// compares a peer's spelling against a normalized owner and refuses the
-    /// owner on its own key — the gate two statements above exists to stop
-    /// exactly that, and `sso_responder` hands `calling_product_id` through
-    /// untouched.
+    /// owner on its own key — `require_ring_vrf_key_access` returns the
+    /// normalized owner to stop exactly that, and `sso_responder` hands
+    /// `calling_product_id` through untouched.
     #[test]
     fn an_owner_spelled_differently_still_proves_with_its_own_key() {
         let platform = Arc::new(StubPlatform::default());
@@ -2311,15 +2311,6 @@ mod tests {
         );
     }
 
-    /// Casing cannot turn a product's own key into a refusal — on the wire
-    /// path too, not only at the frontend.
-    ///
-    /// `3f6ec081`'s message says "the handle is normalized before the
-    /// comparison, so casing still cannot turn a product's own key into a
-    /// refusal". That was true of the frontend, which normalizes before
-    /// delegating, and false of `sso_responder`, which hands a wire request to
-    /// the authority untouched. The two doors have to agree here, because the
-    /// authority is the component that decides.
     /// An unreadable permission store refuses the grant rather than honouring it.
     ///
     /// The stored `AccountAccess` decision is the only thing that can override a
@@ -2437,22 +2428,6 @@ mod tests {
             signed.ok(),
             ring_vrf_sign_at_the_authority("peopl.dot", "peopl.dot").ok(),
             "the two spellings must produce the same signature, not merely both succeed"
-        );
-    }
-
-    #[test]
-    fn an_owner_naming_its_own_key_in_another_spelling_is_admitted_over_the_wire() {
-        // Past the gate: not `NotAllowlisted`. It stops one layer further on,
-        // at `KeyNotRegistered`, because the registry lookup and
-        // `derive_ring_vrf_entropy` (`:426`) still read the raw handle — a
-        // separate, pre-existing wire-path gap that #655 does not own and that
-        // would derive a different key rather than refuse. Asserted exactly,
-        // so this test fails loudly in both directions: red if the gate
-        // regresses, and red again when that gap is closed, which is when this
-        // should become `is_ok()`.
-        assert!(
-            ring_vrf_sign_at_the_authority("peopl.dot", "PEOPL.DOT").is_ok(),
-            "the gate must admit an owner's own key however it is spelled"
         );
     }
 

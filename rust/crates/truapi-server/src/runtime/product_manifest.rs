@@ -443,8 +443,8 @@ pub(crate) fn require_own_context(
     context: &v01::ProductProofContext,
 ) -> Result<(), RingVrfError> {
     // The same ownership test the gate makes, on the same values. Comparing bare
-    // labels here instead would answer "is this the owner?" differently from the
-    // function two above: a caller `peopl.paseo` against a handle `peopl.dot`
+    // labels here instead would answer "is this the owner?" differently from
+    // `ring_vrf_key_access_granted`: a caller `peopl.paseo` against a handle `peopl.dot`
     // would be told to bring a grant by one and waved through as the owner by
     // the other, leaving its context unconstrained.
     if access.caller == access.owner {
