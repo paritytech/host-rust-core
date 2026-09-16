@@ -7,8 +7,13 @@ on:
   merge_group:
   workflow_dispatch:
 
+# release.yml publishes only when this workflow concludes success for a
+# `release:` commit, and a cancelled run is not success, so it publishes
+# nothing and reports nothing. A release commit therefore gets a group of its
+# own, keyed by its SHA, where no later push to the same branch can reach it.
+# Ordinary pushes keep sharing a group and keep cancelling each other.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ startsWith(github.event.head_commit.message, 'release:') && github.sha || 'shared' }}
   cancel-in-progress: true
 
 permissions:
