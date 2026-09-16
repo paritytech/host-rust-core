@@ -285,7 +285,8 @@ the app, or the crates its bindings come from, runs:
 - `preview`, an installable simulator `.app` attached to the run, stamped with
   the commit it came from in `TrUAPICommit`
 
-To run a preview build from a pull request:
+Each pull request carries a comment linking the build for its head commit,
+updated in place as the branch moves. To run one:
 
 ```bash
 gh run download <run-id> --name simulator-preview-<short-sha>
