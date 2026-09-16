@@ -385,9 +385,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          # No URL means the upload failed, and that is the upload step's to
+          # report. Writing no body leaves the link step with nothing to post,
+          # which the action treats as nothing to say, so a build that
+          # succeeded is never failed by a comment that could not be composed.
           if [ -z "${URL}" ]; then
-            echo "::error::The preview build uploaded but produced no URL to link"
-            exit 1
+            echo "::warning::The preview build produced no URL, so no comment will be posted"
+            exit 0
           fi
 
           cat > "$RUNNER_TEMP/preview.md" <<EOF

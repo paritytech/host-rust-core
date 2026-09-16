@@ -903,9 +903,7 @@ jobs:
       ]
     steps:
       # Only for `.github/actions/upsert-pr-comment`, which is a local action
-      # and so has to exist on disk. Nothing here reads the rest of the tree.
-      # Only for .github/actions/upsert-pr-comment, which is a local action and
-      # so has to exist on disk. Nothing else here reads the tree, and a
+      # and so has to exist on disk. Nothing else here reads the tree, and a
       # checkout that fails must not redden the one required check, so the
       # comment step is allowed to be the only casualty.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
