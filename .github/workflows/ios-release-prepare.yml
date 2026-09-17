@@ -23,7 +23,7 @@ on:
           'main' builds directly from main without a release branch/PR (bump_level must be no-bump)
         type: string
         required: false
-        default: develop
+        default: main
       increment_step:
         description: "Build number increment step (1 if empty)"
         type: string
@@ -37,19 +37,11 @@ permissions:
 
 jobs:
   prepare:
-    # Held until the iOS cutover. This tree is behind the app repository.
-    # It drives the release distribution chain. The dispatch it creates carries
-    # GITHUB_TOKEN, so its triggering actor is github-actions[bot], which is what
-    # the check in ios-build-distribute.yml accepts. That check stops a human
-    # dispatching distribution directly, not this path.
-    #
-    # Removing this is part of the cutover, tracked on #764.
-    if: false
     uses: ./.github/workflows/ios-prepare-pipeline.yml
     with:
       is_nightly: false
       bump_level: ${{ inputs.bump_level }}
       source_ref: ${{ inputs.source_ref }}
       increment_step: ${{ inputs.increment_step }}
-      distribution_workflow: release_distribution.yml
+      distribution_workflow: ios-release-distribution.yml
     secrets: inherit

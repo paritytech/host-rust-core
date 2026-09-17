@@ -14,14 +14,11 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  # Held on workflow_dispatch until the build credentials tracked in #672
-  # land. The trigger below is the one this workflow runs on; restoring it
-  # is the change that puts this workflow live.
-#   schedule:
-#     # 02:30 UTC — runs after the nightly Firebase distribution on develop
-#     # (typically completes by ~01:00 UTC after the day's last merge), so
-#     # the simulator artifact reflects the same code that Firebase shipped.
-#     - cron: "30 2 * * *"
+  schedule:
+    # 02:30 UTC — runs after the nightly Firebase distribution on main
+    # (typically completes by ~01:00 UTC after the day's last merge), so
+    # the simulator artifact reflects the same code that Firebase shipped.
+    - cron: "30 2 * * *"
   workflow_dispatch:
 
 permissions:

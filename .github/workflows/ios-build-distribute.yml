@@ -67,6 +67,22 @@ jobs:
       release_notes: ${{ steps.release_notes.outputs.notes }}
       pr_list_markdown: ${{ steps.collect_prs_markdown.outputs.release_notes }}
     steps:
+      # Safetynet ships from the app repository, which produces it from its
+      # nightly pipeline. Every upload to Apple passes through this workflow,
+      # so refusing the configuration here closes the standalone route and the
+      # leg inside nightly at once, and fails closed for any caller added
+      # later. Remove this when Safetynet moves here, not before.
+      - name: Safetynet is not published from this repository
+        env:
+          BUILD_CONFIGURATION: ${{ inputs.build_configuration }}
+        run: |
+          set -euo pipefail
+          if [ "${BUILD_CONFIGURATION}" = "Safetynet" ]; then
+            echo "::error::Safetynet is published from the app repository. Building it here would upload a second binary to the same App Store Connect record."
+            exit 1
+          fi
+          echo "${BUILD_CONFIGURATION} is published from this repository."
+
       - name: Security Check - Verify bot-initiated workflow
         uses: actions/github-script@v8
         env:

@@ -1,13 +1,10 @@
 name: Release Distribution
 
 on:
-  # Held on workflow_dispatch until the build credentials tracked in #672
-  # land. The trigger below is the one this workflow runs on; restoring it
-  # is the change that puts this workflow live.
-#   pull_request:
-#     types: [opened, synchronize, reopened]
-#     branches:
-#       - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       release_branch:
