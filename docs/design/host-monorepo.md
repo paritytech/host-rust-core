@@ -176,6 +176,10 @@ The sources are `polkadot-ios-community`, `polkadot-android-community` and `dotl
 importing them into this public repository publishes nothing that was not already public. The private application
 repositories are not in scope.
 
+`hosts/imports.json` records which source each tree came from and the revision it was taken at.
+`scripts/refresh-host-import.sh status <host>` reports how far a tree has drifted from its source, and `refresh` moves it
+forward, re-applying this repository's adaptations on top.
+
 Each host's tracked tree at a recorded commit, not its history. This keeps the imports ordinary additive changes with no
 rewriting, and keeps repository growth to the size of the trees.
 

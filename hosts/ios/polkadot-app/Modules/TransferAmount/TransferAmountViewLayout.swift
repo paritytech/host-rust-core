@@ -45,7 +45,9 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
         $0.isHidden = true
     }
 
-    let amountInputView = AmountInputView()
+    let amountInputView: AmountInputView = .create {
+        $0.symbolImage = .cashLogo
+    }
 
     let cashLabel: PolkadotUI.Label = .create {
         $0.text = String(localized: .tokenName)
@@ -151,7 +153,7 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
 
         addSubview(cashLabel)
         cashLabel.snp.makeConstraints { make in
-            make.centerX.equalTo(amountInputView.textField.snp.centerX)
+            make.centerX.equalToSuperview()
             make.top.equalTo(amountInputView.snp.bottom).offset(DSSpacings.medium)
         }
 

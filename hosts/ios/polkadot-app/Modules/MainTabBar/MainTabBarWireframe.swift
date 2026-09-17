@@ -5,13 +5,16 @@ import PolkadotUI
 final class MainTabBarWireframe: MainTabBarWireframeProtocol {
     private let serviceCoordinator: ServiceCoordinatorProtocol
     private let scanResultHandler: WalletQRScanDelegate
+    private let moduleNavigator: ModuleNavigating
 
     init(
         serviceCoordinator: ServiceCoordinatorProtocol,
-        scanResultHandler: WalletQRScanDelegate
+        scanResultHandler: WalletQRScanDelegate,
+        moduleNavigator: ModuleNavigating
     ) {
         self.serviceCoordinator = serviceCoordinator
         self.scanResultHandler = scanResultHandler
+        self.moduleNavigator = moduleNavigator
     }
 
     func showPolkadotSignIn(with url: URL, view: MainTabBarViewProtocol?) {
@@ -25,6 +28,20 @@ final class MainTabBarWireframe: MainTabBarWireframeProtocol {
             return
         }
         view?.controller.present(signInView.controller, animated: true)
+    }
+
+    func showSearchContact(from view: MainTabBarViewProtocol?) {
+        let searchModel = SearchContactModel { [moduleNavigator] openModel in
+            moduleNavigator.openChat(openModel)
+        }
+
+        guard let search = SearchContactViewFactory.createView(with: searchModel) else {
+            return
+        }
+
+        search.controller.modalPresentationStyle = .fullScreen
+        search.controller.modalTransitionStyle = .crossDissolve
+        view?.controller.present(search.controller, animated: true)
     }
 }
 

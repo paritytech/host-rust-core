@@ -3,6 +3,7 @@ import UIKit
 import UIKitExt
 import TrUAPIHost
 import ChainRegistry
+import Products
 import SubstrateSdk
 import KeyDerivation
 import Keystore_iOS
@@ -35,6 +36,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
     private let settingsManager: SettingsManagerProtocol
     private let coreStorage: TrUAPILocalStoring
     private let confirmationRouterFacade: ProductRoutersFacadeProtocol
+    private let tldProvider: DotNsTldProviding
     private let logger: LoggerProtocol
 
     private let lock = NSLock()
@@ -46,6 +48,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         settingsManager: SettingsManagerProtocol,
         coreStorage: TrUAPILocalStoring,
         confirmationRouterFacade: ProductRoutersFacadeProtocol,
+        tldProvider: DotNsTldProviding = DotNsTldProviderFacade.shared,
         logger: LoggerProtocol
     ) {
         self.chainRegistry = chainRegistry
@@ -53,6 +56,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         self.settingsManager = settingsManager
         self.coreStorage = coreStorage
         self.confirmationRouterFacade = confirmationRouterFacade
+        self.tldProvider = tldProvider
         self.logger = logger
     }
 
@@ -70,10 +74,12 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         }
 
         let secret = try entropyManager.fetchRootEntropy()
+        let networkSuffix = try tldProvider.currentTldOrError()
         let runtimeConfig = try Self.makeRuntimeConfig(
             chainRegistry: chainRegistry,
             secret: secret,
-            liteUsername: settingsManager.string(for: .username)
+            liteUsername: settingsManager.string(for: .username),
+            networkSuffix: networkSuffix
         )
 
         let chainConnections = TrUAPIChainConnectionPool(
@@ -105,20 +111,32 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
 extension TrUAPIHostRuntimeProvider {
     /// Assemble the immutable host-wide config. Genesis hashes are fetched from
     /// the registry and must resolve; a missing hash fails explicitly rather
-    /// than degrading. Exposed for testing the genesis-validation seam.
+    /// than degrading. `networkSuffix` is the dotNS TLD the core derives the
+    /// wallet's reserved identities under, so it has to be the one the app's own
+    /// built-in accounts derive from. Exposed for testing the genesis-validation
+    /// seam.
     static func makeRuntimeConfig(
         chainRegistry: ChainRegistryProtocol,
         secret: Data,
-        liteUsername: String?
+        liteUsername: String?,
+        networkSuffix: String
     ) throws -> HostRuntimeConfig {
         let peopleChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.usernameChain)
         let bulletinChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.bulletInChain)
+        let assetHubChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.assethubChain)
 
         guard let peopleGenesisHex = peopleChain.explicitGenesisHash else {
             throw TrUAPIRuntimeConfigError.missingGenesisHash(chain: "people")
         }
         guard let bulletinGenesisHex = bulletinChain.explicitGenesisHash else {
             throw TrUAPIRuntimeConfigError.missingGenesisHash(chain: "bulletin")
+        }
+        // Product manifests are read from the dotNS contracts on Asset Hub, so
+        // a missing hash here refuses every cross-product `trustedProducts`
+        // grant indistinguishably from the other product granting nothing.
+        // Fail explicitly, like its siblings, rather than passing all-zero.
+        guard let assetHubGenesisHex = assetHubChain.explicitGenesisHash else {
+            throw TrUAPIRuntimeConfigError.missingGenesisHash(chain: "assetHub")
         }
 
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
@@ -130,7 +148,8 @@ extension TrUAPIHostRuntimeProvider {
             platformVersion: UIDevice.current.systemVersion,
             peopleChainGenesisHash: Data(hexString: peopleGenesisHex),
             bulletinChainGenesisHash: Data(hexString: bulletinGenesisHex),
-            networkSuffix: KnownNetworkSuffix.current,
+            assetHubChainGenesisHash: Data(hexString: assetHubGenesisHex),
+            networkSuffix: networkSuffix,
             localSessionSecret: secret,
             localSessionLiteUsername: liteUsername
         )

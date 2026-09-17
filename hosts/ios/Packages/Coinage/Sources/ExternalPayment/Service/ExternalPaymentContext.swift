@@ -49,13 +49,6 @@ actor ExternalPaymentContext {
 
         startNextPendingIfNeeded()
     }
-
-    func cancelAll() {
-        currentTask?.cancel()
-        currentTask = nil
-        currentPaymentId = nil
-        pendingTasks.removeAll()
-    }
 }
 
 // MARK: - Private

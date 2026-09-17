@@ -13,6 +13,8 @@ public extension RecyclingStrategyType {
     static let minRecyclableAge: Int16 = 1
 
     private static let balancedAgeDivisor: Int16 = 3
+    private static let minimumVoucherMembers: UInt32 = 32
+    private static let minimumVoucherAge: TimeInterval = 10 * 60
 
     /// Resolves the preset into concrete parameters. `forcedRecyclingAge` is the chain ceiling
     /// (`getCoinRecyclingAge()` = `coinMaxAge - 2`), the anchor the presets are expressed against.
@@ -24,14 +26,18 @@ public extension RecyclingStrategyType {
             RecyclingParams(
                 maxUnavailableBalance: .percent(of: 0),
                 minRecyclingAge: forcedRecyclingAge,
-                requiredRingFill: .percent(of: 0),
+                voucherReadiness: .immediate,
                 allowsConfirmedSpend: true
             )
         case .balanced:
             RecyclingParams(
                 maxUnavailableBalance: .percent(of: 20),
                 minRecyclingAge: max(Self.minRecyclableAge, forcedRecyclingAge / Self.balancedAgeDivisor),
-                requiredRingFill: .percent(of: 50),
+                voucherReadiness: .ringFillOrMembersAndAge(
+                    requiredRingFill: .percent(of: 20),
+                    minimumMembers: Self.minimumVoucherMembers,
+                    minimumAge: Self.minimumVoucherAge
+                ),
                 allowsConfirmedSpend: true
             )
         case .maxPrivacy:
@@ -40,7 +46,11 @@ public extension RecyclingStrategyType {
             RecyclingParams(
                 maxUnavailableBalance: .percent(of: 100),
                 minRecyclingAge: Self.minRecyclableAge,
-                requiredRingFill: .percent(of: 100),
+                voucherReadiness: .ringFillOrMembersAndAge(
+                    requiredRingFill: .percent(of: 90),
+                    minimumMembers: Self.minimumVoucherMembers,
+                    minimumAge: Self.minimumVoucherAge
+                ),
                 allowsConfirmedSpend: false
             )
         }

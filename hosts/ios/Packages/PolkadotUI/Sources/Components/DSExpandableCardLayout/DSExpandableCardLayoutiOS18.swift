@@ -92,7 +92,19 @@ struct DSExpandableCardLayoutiOS18<Card: View, Details: View>: View {
                 .zIndex(1)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // The host embeds this in a vertical ScrollView, which proposes an unbounded height. Without
+        // a definite one the expanded ScrollView below sizes its viewport to its own content, so
+        // there is never anything to scroll and everything past the screen is simply clipped.
+        .frame(height: expandedHeight)
         .onAppear { containerHeight = Self.screenHeight }
+    }
+
+    /// A definite height once expanded, and no constraint while collapsed so the card keeps sizing
+    /// to its own content. `nil` until ``containerHeight`` is known, rather than zero.
+    private var expandedHeight: CGFloat? {
+        guard isExpanded, containerHeight > 0 else { return nil }
+
+        return containerHeight
     }
 
     private static var screenHeight: CGFloat {

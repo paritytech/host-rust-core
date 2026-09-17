@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Don't Enable"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No activar"
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Enable Notifications to Receive Updates"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activa las notificaciones para recibir novedades"
           }
         }
       }

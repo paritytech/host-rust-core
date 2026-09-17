@@ -5,7 +5,7 @@ import KeyDerivation
 import Operation_iOS
 
 protocol CoinAllocating: Actor {
-    func allocate(exponent: Int16) async throws -> Coin
+    func allocate(exponent: Int16, provenance: CoinProvenance) async throws -> Coin
 }
 
 /// Actor isolation serialises the index counter's read-modify-write, so a single shared instance is
@@ -27,12 +27,14 @@ actor CoinAllocator: CoinAllocating {
 
     /// Allocates a new coin index and persists the coin — with its on-chain public key cached so the
     /// durability layer never re-derives it — from the moment it is minted.
-    func allocate(exponent: Int16) async throws -> Coin {
+    func allocate(exponent: Int16, provenance: CoinProvenance) async throws -> Coin {
         let index = try storage.getNextIndex()
         let coin = try Coin(
             exponent: exponent,
             derivationIndex: index,
             age: nil,
+            recyclerFungibility: provenance.recyclerFungibility,
+            hops: provenance.hops,
             publicKey: keyFactory.derivePublicKey(index: index)
         )
         try await coinRepository.saveOperation({ [coin] }, { [] }).asyncExecute()

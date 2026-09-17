@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import Foundation_iOS
 import Individuality
 @testable import Coinage
@@ -9,6 +10,10 @@ import Individuality
 /// retracted), and `.defined(value)` (delivered with a value).
 @Suite("VoucherLocationService.resolveLocations")
 struct VoucherLocationResolveTests {
+    private let observedAt = Date(timeIntervalSince1970: 1_000)
+    /// A page holds `MaxFlexibleRingExponent.ringCapacity()` keys — 255 when the exponent is `R2e9`.
+    private let keysPerPage = 255
+
     @Test("A member row delivered empty (retracted) reverts the voucher to unlocated")
     func retractedMemberBecomesUnlocated() {
         let resolved = resolve([0: .defined(nil)])
@@ -28,7 +33,7 @@ struct VoucherLocationResolveTests {
             [0: .defined(included(ring: 5, position: 1))],
             [0: .defined(status(total: 10, included: 3))]
         )
-        #expect(resolved[0] == .inRecycler(.init(index: 5, membersCount: 3)))
+        #expect(resolved[0] == .inRecycler(.init(index: 5, membersCount: 3, enteredAt: observedAt)))
     }
 
     @Test("An onboarding position is onboarding")
@@ -59,13 +64,24 @@ struct VoucherLocationResolveTests {
 
     @Test("An included voucher whose ring does not yet cover its key is deferred — no write")
     func includedButKeyNotYetInRingIsDeferred() {
-        // The key sits at raw position 3; a ring that has admitted only 2 keys does not cover it yet
-        // (`includesKey` requires included > rawPosition).
+        // The key sits at position 3 of page 0; a ring that has admitted only 2 keys does not cover it yet.
         let resolved = resolve(
             [0: .defined(included(ring: 5, position: 3))],
             [0: .defined(status(total: 10, included: 2))]
         )
         #expect(resolved[0] == nil)
+    }
+
+    @Test("A key on a later ring page counts the pages before it")
+    func includedOnLaterPageCountsPrecedingPages() {
+        // Page 1, position 3 is the ring's 259th key, so 258 baked keys stop just short of it.
+        let position = included(ring: 5, page: 1, position: 3)
+
+        #expect(resolve([0: .defined(position)], [0: .defined(status(total: 300, included: 258))])[0] == nil)
+        #expect(
+            resolve([0: .defined(position)], [0: .defined(status(total: 300, included: 259))])[0]
+                == .inRecycler(.init(index: 5, membersCount: 259, enteredAt: observedAt))
+        )
     }
 
     @Test("A retraction, a confirmed inclusion and an onboarding resolve independently in one batch")
@@ -79,7 +95,7 @@ struct VoucherLocationResolveTests {
             [1: .defined(status(total: 4, included: 2))]
         )
         #expect(resolved[0] == .unlocated)
-        #expect(resolved[1] == .inRecycler(.init(index: 7, membersCount: 2)))
+        #expect(resolved[1] == .inRecycler(.init(index: 7, membersCount: 2, enteredAt: observedAt)))
         #expect(resolved[2] == .onboarding)
         #expect(resolved.count == 3)
     }
@@ -92,11 +108,20 @@ private extension VoucherLocationResolveTests {
         _ positions: [DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>],
         _ statuses: [DerivationIndex: UncertainStorage<MembersPallet.RingKeysStatus?>] = [:]
     ) -> [DerivationIndex: Voucher.OnChainState] {
-        VoucherLocationService.resolveLocations(positions: positions, statuses: statuses)
+        VoucherLocationService.resolveLocations(
+            positions: positions,
+            statuses: statuses,
+            keysPerPage: keysPerPage,
+            observedAt: observedAt
+        )
     }
 
-    func included(ring: MembersPallet.RingIndex, position: UInt32) -> MembersPallet.RingPosition {
-        .included(.init(ringIndex: ring, ringPage: 0, ringPosition: position))
+    func included(
+        ring: MembersPallet.RingIndex,
+        page: MembersPallet.PageIndex = 0,
+        position: UInt32
+    ) -> MembersPallet.RingPosition {
+        .included(.init(ringIndex: ring, ringPage: page, ringPosition: position))
     }
 
     func onboarding() -> MembersPallet.RingPosition {

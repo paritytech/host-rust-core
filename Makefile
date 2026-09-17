@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
+.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -312,10 +312,10 @@ provider-android-jni: ## Cross-compile libtruapi_provider.so for Android ABIs in
 		-o $(PROVIDER_JNILIBS) \
 		build --release -p truapi-provider --no-default-features --features uniffi
 
-provider-android-check: provider-kotlin ## Compile the provider Kotlin bindings against freshly generated sources (needs Gradle + Android SDK).
+provider-android-check: provider-kotlin ## Assemble the provider AAR against freshly generated bindings (needs Gradle + Android SDK).
 	@test -n "$$(find $(PROVIDER_KOTLIN_OUT) -name '*.kt' -print -quit)" \
 		|| { echo "no generated Kotlin under $(PROVIDER_KOTLIN_OUT): the module would compile an empty source set and pass"; exit 1; }
-	gradle :truapi-provider:compileReleaseKotlin
+	gradle :truapi-provider:assembleRelease
 
 provider-android-publish-local: provider-kotlin provider-android-jni ## Publish the self-contained provider AAR (bindings + cdylib) to ~/.m2.
 	gradle :truapi-provider:publishReleasePublicationToMavenLocal
@@ -426,6 +426,9 @@ e2e-pocket-cli: ## Run the Pocket protocol battery against a Pocket signing-host
 
 e2e-cross-product-storage: ## One product reads another's storage on the signing-host CLI, granted by a local product config.
 	scripts/cross-product-storage-e2e.sh
+
+e2e-cross-product-ringvrf: ## One product signs with another's ring-VRF key on the signing-host CLI, granted by a local product config.
+	scripts/cross-product-ringvrf-e2e.sh
 
 e2e-cli-update: cli-dist ## Install the packaged truapi-host from a fake release and self-update it, with no network.
 	node scripts/e2e-cli-update.mjs

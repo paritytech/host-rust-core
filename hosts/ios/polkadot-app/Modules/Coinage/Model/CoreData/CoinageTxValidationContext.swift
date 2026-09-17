@@ -43,7 +43,7 @@ struct CoinageTxValidationContext: CoinageTxValidationContextProtocol {
         let nonFailure = NSPredicate(
             format: "%K.%K != %d",
             #keyPath(CDCoinageTxInput.entry),
-            #keyPath(CDCoinageTxEntry.status),
+            #keyPath(CDDurableTx.status),
             CoinageTxStatus.failure.rawValue
         )
         let request = NSFetchRequest<CDCoinageTxInput>(entityName: "CDCoinageTxInput")

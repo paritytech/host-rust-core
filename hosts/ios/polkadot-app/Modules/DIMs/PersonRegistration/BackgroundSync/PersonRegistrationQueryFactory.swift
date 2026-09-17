@@ -44,28 +44,20 @@ extension PersonRegistrationQueryFactory: PersonRegistrationQueryFactoryProtocol
     ) -> CompoundOperationWrapper<PersonRegistrationSyncState?> {
         let codingFactoryOperation = runtimeProvider.fetchCoderFactoryOperation()
 
-        let mobRuleAliasWrapper: CompoundOperationWrapper<[StorageResponse<PeoplePallet.RevisedContextualAlias>]>
-        mobRuleAliasWrapper = storageRequestFactory.queryItems(
-            engine: connection,
-            keyParams: { [BytesCodable(wrappedValue: input.mobRuleAccountId)] },
-            factory: { try codingFactoryOperation.extractNoCancellableResultData() },
-            storagePath: PeoplePallet.accountToAliasPath
+        let mobRuleAliasWrapper = aliasWrapper(
+            for: input.mobRuleAccountId,
+            connection: connection,
+            dependingOn: codingFactoryOperation
         )
-
-        let scoreAliasWrapper: CompoundOperationWrapper<[StorageResponse<PeoplePallet.RevisedContextualAlias>]>
-        scoreAliasWrapper = storageRequestFactory.queryItems(
-            engine: connection,
-            keyParams: { [BytesCodable(wrappedValue: input.scoreAccountId)] },
-            factory: { try codingFactoryOperation.extractNoCancellableResultData() },
-            storagePath: PeoplePallet.accountToAliasPath
+        let scoreAliasWrapper = aliasWrapper(
+            for: input.scoreAccountId,
+            connection: connection,
+            dependingOn: codingFactoryOperation
         )
-
-        let resourcesAliasWrapper: CompoundOperationWrapper<[StorageResponse<PeoplePallet.RevisedContextualAlias>]>
-        resourcesAliasWrapper = storageRequestFactory.queryItems(
-            engine: connection,
-            keyParams: { [BytesCodable(wrappedValue: input.resourcesAccountId)] },
-            factory: { try codingFactoryOperation.extractNoCancellableResultData() },
-            storagePath: PeoplePallet.accountToAliasPath
+        let resourcesAliasWrapper = aliasWrapper(
+            for: input.resourcesAccountId,
+            connection: connection,
+            dependingOn: codingFactoryOperation
         )
 
         let personIdWrapper: CompoundOperationWrapper<[StorageResponse<StringScaleMapper<PeoplePallet.PersonalId>>]>
@@ -76,9 +68,6 @@ extension PersonRegistrationQueryFactory: PersonRegistrationQueryFactoryProtocol
             storagePath: PeoplePallet.memberKeysPath
         )
 
-        mobRuleAliasWrapper.addDependency(operations: [codingFactoryOperation])
-        scoreAliasWrapper.addDependency(operations: [codingFactoryOperation])
-        resourcesAliasWrapper.addDependency(operations: [codingFactoryOperation])
         personIdWrapper.addDependency(operations: [codingFactoryOperation])
 
         let ringPositionWrapper: CompoundOperationWrapper<[StorageResponse<MembersPallet.RingPosition>]>
@@ -115,6 +104,13 @@ extension PersonRegistrationQueryFactory: PersonRegistrationQueryFactoryProtocol
 
         ringKeysMetaWrapper.addDependency(wrapper: ringPositionWrapper)
 
+        let ringKeysPageSizeOperation = StorageConstantOperation<MembersPallet.RingExponent>.operation(
+            path: MembersPallet.Constants.maxFlexibleRingExponent(),
+            dependingOn: codingFactoryOperation
+        )
+
+        ringKeysPageSizeOperation.addDependency(codingFactoryOperation)
+
         let finalMappingOperation = ClosureOperation<PersonRegistrationSyncState?> { [stateFactory] in
             let mobRuleAliasResponses = try mobRuleAliasWrapper.targetOperation.extractNoCancellableResultData()
             let scoreAliasResponses = try scoreAliasWrapper.targetOperation.extractNoCancellableResultData()
@@ -122,6 +118,7 @@ extension PersonRegistrationQueryFactory: PersonRegistrationQueryFactoryProtocol
             let personIdResponses = try personIdWrapper.targetOperation.extractNoCancellableResultData()
             let ringPositionResponses = try ringPositionWrapper.targetOperation.extractNoCancellableResultData()
             let ringKeysMetaResponses = try ringKeysMetaWrapper.targetOperation.extractNoCancellableResultData()
+            let ringExponent = try ringKeysPageSizeOperation.extractNoCancellableResultData()
 
             let remoteState = PersonhoodRegistrationSyncState(
                 personalId: personIdResponses.first?.value?.value,
@@ -134,7 +131,8 @@ extension PersonRegistrationQueryFactory: PersonRegistrationQueryFactoryProtocol
             return stateFactory.makeState(
                 remoteState: remoteState,
                 memberRingPosition: ringPositionResponses.first?.value,
-                keysStatus: ringKeysMetaResponses.first?.value
+                keysStatus: ringKeysMetaResponses.first?.value,
+                keysPerPage: ringExponent.ringCapacity
             )
         }
 
@@ -144,6 +142,7 @@ extension PersonRegistrationQueryFactory: PersonRegistrationQueryFactoryProtocol
         finalMappingOperation.addDependency(personIdWrapper.targetOperation)
         finalMappingOperation.addDependency(ringPositionWrapper.targetOperation)
         finalMappingOperation.addDependency(ringKeysMetaWrapper.targetOperation)
+        finalMappingOperation.addDependency(ringKeysPageSizeOperation)
 
         let wrapperDependencies = mobRuleAliasWrapper.allOperations
             + scoreAliasWrapper.allOperations
@@ -154,7 +153,27 @@ extension PersonRegistrationQueryFactory: PersonRegistrationQueryFactoryProtocol
 
         return CompoundOperationWrapper(
             targetOperation: finalMappingOperation,
-            dependencies: [codingFactoryOperation] + wrapperDependencies
+            dependencies: [codingFactoryOperation, ringKeysPageSizeOperation] + wrapperDependencies
         )
+    }
+}
+
+private extension PersonRegistrationQueryFactory {
+    func aliasWrapper(
+        for accountId: AccountId,
+        connection: JSONRPCEngine,
+        dependingOn codingFactoryOperation: BaseOperation<RuntimeCoderFactoryProtocol>
+    ) -> CompoundOperationWrapper<[StorageResponse<PeoplePallet.RevisedContextualAlias>]> {
+        let wrapper: CompoundOperationWrapper<[StorageResponse<PeoplePallet.RevisedContextualAlias>]>
+        wrapper = storageRequestFactory.queryItems(
+            engine: connection,
+            keyParams: { [BytesCodable(wrappedValue: accountId)] },
+            factory: { try codingFactoryOperation.extractNoCancellableResultData() },
+            storagePath: PeoplePallet.accountToAliasPath
+        )
+
+        wrapper.addDependency(operations: [codingFactoryOperation])
+
+        return wrapper
     }
 }

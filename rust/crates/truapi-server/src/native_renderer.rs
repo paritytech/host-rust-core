@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
-use truapi::{CallError, Subscription, latest::GenericError, latest::ProductRendererRenderItem};
+use truapi::{CallError, Subscription, latest::ProductRendererRenderItem};
 
 use crate::subscription::{Spawner, interrupt_reason};
 
@@ -52,7 +52,7 @@ impl Drop for NativeRendererSubscription {
 
 #[cfg_attr(not(feature = "ws-bridge"), allow(dead_code))]
 pub(crate) fn observe_renderer(
-    mut stream: Subscription<ProductRendererRenderItem, CallError<GenericError>>,
+    mut stream: Subscription<ProductRendererRenderItem, CallError<truapi::latest::GenericError>>,
     observer: Arc<dyn NativeRendererObserver>,
     spawner: Spawner,
 ) -> Arc<NativeRendererSubscription> {

@@ -16,7 +16,9 @@ final class MockRemoteConfigManager: RemoteConfigManaging {
         dotNsResolver: nil,
         dotNsNameRegistry: nil,
         coinageInstanceId: nil,
-        fundingDomain: nil
+        fundingDomain: nil,
+        fundingUrl: nil,
+        offrampUrl: nil
     )
 
     func fetchRemoteConfigValues() {}

@@ -23,6 +23,15 @@ use zeroize::ZeroizeOnDrop;
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
 const ACCOUNT_STORE_LOCK_FILE: &str = "accounts.json.lock";
 const DEFAULT_USERNAME_PREFIX: &str = "headless";
+
+/// Whether an account store has been written under `base_path`.
+///
+/// This is the judgement "a signer was provisioned here"; the store's filename
+/// stays private to this module.
+pub(crate) fn has_account_store(base_path: &std::path::Path) -> bool {
+    base_path.join(ACCOUNT_STORE_FILE).is_file()
+}
+
 const IMPORTED_ACCOUNT_NAME: &str = "imported";
 
 /// Signer material selected for a signing-host session.
@@ -778,8 +787,18 @@ fn mnemonic_entropy(mnemonic: &str) -> Result<Vec<u8>> {
         .to_entropy())
 }
 
+/// The two rejections are reported apart because they suggest opposite fixes.
+/// A prefix is most often made unique by appending digits or a hyphen, and
+/// answering that with a length complaint sends the reader to lengthen a prefix
+/// that is already long enough.
 fn lite_username_base(prefix: &str) -> Result<String> {
-    if prefix.len() < 6 || !prefix.bytes().all(|byte| byte.is_ascii_lowercase()) {
+    if !prefix.bytes().all(|byte| byte.is_ascii_lowercase()) {
+        bail!(
+            "--lite-username-prefix must be lowercase ASCII letters only; \
+             digits, hyphens and uppercase are not accepted"
+        );
+    }
+    if prefix.len() < 6 {
         bail!("--lite-username-prefix must contain at least 6 lowercase ASCII letters");
     }
     Ok(prefix.to_string())
@@ -909,6 +928,23 @@ mod tests {
             lite_username_base("short").unwrap_err().to_string(),
             "--lite-username-prefix must contain at least 6 lowercase ASCII letters"
         );
+    }
+
+    #[test]
+    fn a_long_enough_prefix_is_not_refused_for_its_length() {
+        // The shape a reader reaches for when told to pass a different prefix:
+        // long enough, but made unique with something other than a letter. It
+        // must not come back as a length complaint.
+        for prefix in ["headless12ab", "headless-run", "Headlessabcd"] {
+            let error = lite_username_base(prefix)
+                .expect_err("a non-letter prefix is refused")
+                .to_string();
+            assert!(
+                error.contains("lowercase ASCII letters only"),
+                "{prefix:?} reported as {error:?}"
+            );
+        }
+        assert_eq!(lite_username_base("abcdefghijkl").unwrap(), "abcdefghijkl");
     }
 
     #[test]

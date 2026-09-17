@@ -42,7 +42,7 @@ final class ProductBotFactory {
 
         let product = resolved.product
 
-        if settingsManager.value(for: .truApiRuntimeEnabled) {
+        if settingsManager.isTrUAPIRuntimeEnabled {
             do {
                 let runtime = try createRustRuntime(product: product, source: source)
                 return ProductBot(product: product, runtime: runtime, logger: logger)

@@ -124,7 +124,8 @@ struct TrUAPIHostRuntimeProviderConfigTests {
             _ = try TrUAPIHostRuntimeProvider.makeRuntimeConfig(
                 chainRegistry: MockChainRegistry(),
                 secret: Data([0x01]),
-                liteUsername: nil
+                liteUsername: nil,
+                networkSuffix: "paseo"
             )
         }
     }

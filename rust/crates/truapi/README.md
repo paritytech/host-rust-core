@@ -45,7 +45,9 @@ use truapi::{CallContext, CallError, Subscription};
 use truapi::api::{Account, TrUApi};
 use truapi::latest::GenericError;
 use truapi::versioned::account::{
+    HostAccountConnectionStatusSubscribeError,
     HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest,
     HostAccountGetError,
     HostAccountGetRequest,
     HostAccountGetResponse,
@@ -71,7 +73,11 @@ impl Account for MyHost {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+        _request: HostAccountConnectionStatusSubscribeRequest,
+    ) -> Subscription<
+        HostAccountConnectionStatusSubscribeItem,
+        CallError<HostAccountConnectionStatusSubscribeError>,
+    > {
         Subscription::interrupted(CallError::unavailable())
     }
 }
@@ -83,12 +89,15 @@ Subscription endpoints return `Subscription<Item, Interrupt>`, a stream of `Resu
 ends it. A stream that ends without one completes normally:
 
 ```rust
-use truapi::latest::GenericError;
-use truapi::versioned::account::HostAccountConnectionStatusSubscribeItem;
+use truapi::versioned::account::{
+    HostAccountConnectionStatusSubscribeError, HostAccountConnectionStatusSubscribeItem,
+};
 use truapi::{CallError, Subscription};
 
-fn _subscription_shape()
--> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+fn _subscription_shape() -> Subscription<
+    HostAccountConnectionStatusSubscribeItem,
+    CallError<HostAccountConnectionStatusSubscribeError>,
+> {
     Subscription::interrupted(CallError::unavailable())
 }
 ```

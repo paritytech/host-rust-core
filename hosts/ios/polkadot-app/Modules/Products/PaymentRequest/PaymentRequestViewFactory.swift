@@ -10,13 +10,7 @@ import ChainRegistry
 @MainActor
 enum PaymentRequestViewFactory {
     static func createView(context: PaymentRequestContext) -> ControllerBackedProtocol? {
-        let chainRegistry = ChainRegistryFacade.sharedRegistry
-        let chainAssetId = AppConfig.Assets.mainAsset
-
-        guard
-            let chain = chainRegistry.getChain(for: chainAssetId.chainId),
-            let chainAsset = chain.chainAsset(for: chainAssetId.assetId)
-        else {
+        guard let chainAsset = mainChainAsset() else {
             return nil
         }
 
@@ -32,6 +26,31 @@ enum PaymentRequestViewFactory {
         BottomSheetViewFacade.setupBottomSheet(from: view.controller)
 
         return view
+    }
+}
+
+// MARK: - Shared Helpers
+
+extension PaymentRequestViewFactory {
+    static func mainChainAsset() -> ChainAsset? {
+        let chainRegistry = ChainRegistryFacade.sharedRegistry
+        let chainAssetId = AppConfig.Assets.mainAsset
+
+        guard let chain = chainRegistry.getChain(for: chainAssetId.chainId) else {
+            return nil
+        }
+
+        return chain.chainAsset(for: chainAssetId.assetId)
+    }
+
+    static func formatAmount(_ balance: Balance, chainAsset: ChainAsset) -> String {
+        let decimalAmount = balance.decimal(assetInfo: chainAsset.assetDisplayInfo)
+
+        let formatter = AssetBalanceFormatterFactory()
+            .createTokenFormatter(for: chainAsset.assetDisplayInfo)
+            .value(for: .current)
+
+        return formatter.stringFromDecimal(decimalAmount) ?? ""
     }
 }
 
@@ -64,16 +83,6 @@ private extension PaymentRequestViewFactory {
                 title: String(localized: .Common.reject)
             ) { context.deliverRejected() }
         )
-    }
-
-    static func formatAmount(_ balance: Balance, chainAsset: ChainAsset) -> String {
-        let decimalAmount = balance.decimal(assetInfo: chainAsset.assetDisplayInfo)
-
-        let formatter = AssetBalanceFormatterFactory()
-            .createTokenFormatter(for: chainAsset.assetDisplayInfo)
-            .value(for: .current)
-
-        return formatter.stringFromDecimal(decimalAmount) ?? ""
     }
 
     static func makeAction(

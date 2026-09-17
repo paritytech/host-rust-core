@@ -24,6 +24,8 @@ pub enum Granted {
     All,
     /// Reading the granting product's host-local storage.
     Storage,
+    /// Using the granting product's account and the identity behind it.
+    Context,
     /// A grant value defined after this core was built.
     #[serde(other)]
     Unrecognised,
@@ -120,29 +122,39 @@ mod tests {
 
     #[test]
     fn a_named_scope_is_granted_only_to_the_product_named() {
-        let m = manifest(r#"{"dim2":["storage"]}"#);
-        assert!(m.grants("dim2", Granted::Storage));
-        assert!(!m.grants("stash", Granted::Storage));
+        let root = manifest(r#"{"dim2":["storage"]}"#);
+        assert!(root.grants("dim2", Granted::Storage));
+        assert!(!root.grants("stash", Granted::Storage));
     }
 
     #[test]
-    fn all_satisfies_a_narrower_scope() {
-        let m = manifest(r#"{"dim2":["all"]}"#);
-        assert!(m.grants("dim2", Granted::Storage));
+    fn scopes_are_independent() {
+        // `storage` must leave account interactions prompting as usual.
+        let root = manifest(r#"{"dim2":["storage"]}"#);
+        assert!(!root.grants("dim2", Granted::Context));
+    }
+
+    #[test]
+    fn all_satisfies_every_narrower_scope() {
+        let root = manifest(r#"{"dim2":["all"]}"#);
+        assert!(root.grants("dim2", Granted::Storage));
+        assert!(root.grants("dim2", Granted::Context));
     }
 
     #[test]
     fn an_unrecognised_grant_is_ignored_and_its_neighbours_still_apply() {
         // The RFC forbids failing validation over a value defined after this
         // core was built.
-        let m = manifest(r#"{"dim2":["storage-write","storage"]}"#);
-        assert!(m.grants("dim2", Granted::Storage));
+        let root = manifest(r#"{"dim2":["storage-write","storage"]}"#);
+        assert!(root.grants("dim2", Granted::Storage));
+        assert!(!root.grants("dim2", Granted::Context));
     }
 
     #[test]
     fn an_entry_of_only_unrecognised_grants_grants_nothing() {
-        let m = manifest(r#"{"dim2":["storage-write"]}"#);
-        assert!(!m.grants("dim2", Granted::Storage));
+        let root = manifest(r#"{"dim2":["storage-write"]}"#);
+        assert!(!root.grants("dim2", Granted::Storage));
+        assert!(!root.grants("dim2", Granted::Context));
     }
 
     #[test]
@@ -150,8 +162,8 @@ mod tests {
         // The runtime asks with a `Granted`, so nothing in the type system stops
         // it asking for `Unrecognised`. A manifest full of values this core does
         // not know must still answer no.
-        let m = manifest(r#"{"dim2":["storage-write"]}"#);
-        assert!(!m.grants("dim2", Granted::Unrecognised));
+        let root = manifest(r#"{"dim2":["storage-write"]}"#);
+        assert!(!root.grants("dim2", Granted::Unrecognised));
 
         let wildcard = manifest(r#"{"dim2":["all"]}"#);
         assert!(!wildcard.grants("dim2", Granted::Unrecognised));
@@ -175,17 +187,17 @@ mod tests {
     fn a_key_written_with_a_tld_suffix_is_inert() {
         // It names `dim2.dot.<tld>`, which does not exist, so the caller `dim2`
         // matches nothing.
-        let m = manifest(r#"{"dim2.dot":["storage"]}"#);
-        assert!(!m.grants("dim2", Granted::Storage));
+        let root = manifest(r#"{"dim2.dot":["storage"]}"#);
+        assert!(!root.grants("dim2", Granted::Storage));
     }
 
     #[test]
     fn an_absent_trusted_products_field_grants_nothing() {
-        let m = RootManifest::parse(
+        let root = RootManifest::parse(
             r#"{"$v":1,"displayName":"D","description":"d","icon":{"cid":"c","format":"png"}}"#,
         )
         .expect("manifest without trustedProducts parses");
-        assert!(!m.grants("dim2", Granted::Storage));
+        assert!(!root.grants("dim2", Granted::Storage));
     }
 
     #[test]

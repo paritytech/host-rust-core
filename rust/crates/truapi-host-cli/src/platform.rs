@@ -116,6 +116,13 @@ pub struct CliPlatform {
 }
 
 impl CliPlatform {
+    /// The URL a genesis routes to, so a test can assert a routing override
+    /// rather than assume it.
+    #[cfg(test)]
+    pub(crate) fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
+        self.chain.routed_url(genesis_hash)
+    }
+
     /// Build a platform whose chain provider connects to the network's People
     /// chain and whose optional state directory backs product/core storage.
     pub fn new(

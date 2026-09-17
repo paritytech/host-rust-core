@@ -31,21 +31,23 @@ extension TransferSenderServiceTests {
         private var nextIndex: UInt64 = 100
         private(set) var mintedCoins: [Coin] = []
 
-        func allocate(exponent: Int16) async throws -> Coin {
+        func allocate(exponent: Int16, provenance: CoinProvenance) async throws -> Coin {
             let index = nextIndex
             nextIndex += 1
             let coin = Coin(
                 exponent: exponent,
                 derivationIndex: index,
                 age: nil,
+                recyclerFungibility: provenance.recyclerFungibility,
+                hops: provenance.hops,
                 publicKey: Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
             )
             mintedCoins.append(coin)
             return coin
         }
 
-        func mintCoin(exponent: Int16) async throws -> Coin {
-            try await allocate(exponent: exponent)
+        func mintCoin(exponent: Int16, provenance: CoinProvenance) async throws -> Coin {
+            try await allocate(exponent: exponent, provenance: provenance)
         }
     }
 
@@ -142,6 +144,10 @@ extension TransferSenderServiceTests {
 
         func fetchBlockHash(_: BlockNumber) async throws -> BlockHashData {
             Data(repeating: 0x00, count: 32)
+        }
+
+        func fetchBlockNumber(byHash _: BlockHashData) async throws -> BlockNumber {
+            BlockNumber(123)
         }
 
         func subscribeFinalizedHeads() -> AnyAsyncSequence<Block.Header> {

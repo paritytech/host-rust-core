@@ -96,7 +96,7 @@ jobs:
       needs.build_safetynet.outputs.succeeded == 'true' }}
     steps:
       - name: Send nightly release notification
-        uses: novasamatech/github-actions/send-release-notification@v5
+        uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           platform: iOS
           # Both legs build the same commit, so either PR list is the same set.

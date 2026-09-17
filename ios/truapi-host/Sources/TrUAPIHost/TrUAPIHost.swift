@@ -29,6 +29,12 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     public let platformVersion: String?
     public let peopleChainGenesisHash: Data
     public let bulletinChainGenesisHash: Data
+    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Product
+    /// manifests are read from there, so this is what makes a `trustedProducts`
+    /// grant resolvable. 32 zero bytes says this host has no Asset Hub, and no
+    /// manifest then resolves, so every cross-product grant is refused except
+    /// one already cached, which is served without consulting this.
+    public let assetHubChainGenesisHash: Data
     /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
     /// `testnet`). The core derives the wallet's reserved identities under it:
     /// `uid.<suffix>` for the identity account and `peopl.<suffix>` for the
@@ -46,6 +52,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         platformVersion: String? = nil,
         peopleChainGenesisHash: Data,
         bulletinChainGenesisHash: Data,
+        assetHubChainGenesisHash: Data,
         networkSuffix: String,
         localSessionSecret: Data? = nil,
         localSessionLiteUsername: String? = nil
@@ -57,6 +64,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.assetHubChainGenesisHash = assetHubChainGenesisHash
         self.networkSuffix = networkSuffix
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
@@ -74,7 +82,8 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             bulletinChainGenesisHash: bulletinChainGenesisHash,
             networkSuffix: networkSuffix,
             localSessionSecret: localSessionSecret,
-            localSessionLiteUsername: localSessionLiteUsername
+            localSessionLiteUsername: localSessionLiteUsername,
+            assetHubChainGenesisHash: assetHubChainGenesisHash
         )
     }
 }
@@ -836,6 +845,33 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         try inner.trackStatementRenewalTargets(targets: targets.map(\.native))
     }
 
+    /// The accounts the ledger tracks, in the order they were tracked.
+    ///
+    /// Needs no active session, so a `BGTaskScheduler` wake can read it on a
+    /// cold start before deciding whether a pass is worth running.
+    public func statementRenewalTargets() throws -> [TrackedStatementRenewalTarget] {
+        try inner.statementRenewalTargets().map(TrackedStatementRenewalTarget.init(native:))
+    }
+
+    /// The root public key the active identity records its fixed entries under.
+    ///
+    /// Needs an active session. An entry from ``statementRenewalTargets()``
+    /// whose owner is this key, or which has no owner, is one a pass will
+    /// renew; any other is one it will prune.
+    public func statementRenewalOwnerKey() throws -> Data {
+        try inner.statementRenewalOwnerKey()
+    }
+
+    /// Stop renewing one fixed statement account, reporting whether the ledger
+    /// held it.
+    ///
+    /// Scoped to the active identity, so it never removes an entry another
+    /// identity promised.
+    @discardableResult
+    public func untrackStatementRenewalAccount(accountId: Data) throws -> Bool {
+        try inner.untrackStatementRenewalAccount(accountId: accountId)
+    }
+
     /// Run one renewal pass now, reporting what each tracked target got.
     ///
     /// Submits extrinsics and blocks until they are included, so call it off the
@@ -894,6 +930,33 @@ public enum StatementRenewalTarget: Sendable {
         case let .account(accountId, label):
             .account(accountId: accountId, label: label)
         }
+    }
+
+    init(native: NativeStatementRenewalTarget) {
+        switch native {
+        case let .productStatementAllowance(productId):
+            self = .productStatementAllowance(productId: productId)
+        case .walletSso:
+            self = .walletSso
+        case let .account(accountId, label):
+            self = .account(accountId: accountId, label: label)
+        }
+    }
+}
+
+/// One entry the renewal ledger holds, as a host reads it back.
+public struct TrackedStatementRenewalTarget: Sendable {
+    /// The account, or the recipe for one, that the host promised to renew.
+    public let target: StatementRenewalTarget
+    /// Root public key that promised a fixed account. A recipe carries none and
+    /// resolves under whichever identity is active. Compare it against
+    /// ``TrUAPIHostRuntime/statementRenewalOwnerKey()`` to tell an entry a pass
+    /// will renew from one it will prune.
+    public let owner: Data?
+
+    init(native: NativeTrackedStatementRenewalTarget) {
+        target = StatementRenewalTarget(native: native.target)
+        owner = native.owner
     }
 }
 

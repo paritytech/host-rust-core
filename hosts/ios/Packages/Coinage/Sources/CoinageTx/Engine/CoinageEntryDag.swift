@@ -2,11 +2,12 @@ import Foundation
 
 /// The live and terminal entries of one pass, indexed for O(1) provenance lookups.
 ///
-/// Built once per pass from `getAllEntries` + the handoff marks, so the rules and propagation query
-/// precomputed maps instead of re-scanning every entry. Keyed by each asset's stable identifier.
+/// Built once per pass from the ledger snapshot and the handoff marks, so the rules query precomputed
+/// maps instead of re-scanning every entry. Keyed by each asset's stable identifier.
 public struct CoinageEntryDag: Sendable {
     public let entries: [CoinageTxEntry]
     private let handedOff: Set<PublicKey>
+    private let byId: [CoinageTxId: CoinageTxEntry]
     private let minterByKey: [PublicKey: CoinageTxEntry]
     private let consumersByKey: [PublicKey: [CoinageTxEntry]]
 
@@ -14,9 +15,11 @@ public struct CoinageEntryDag: Sendable {
         self.entries = entries
         self.handedOff = handedOff
 
+        var ids: [CoinageTxId: CoinageTxEntry] = [:]
         var minters: [PublicKey: CoinageTxEntry] = [:]
         var consumers: [PublicKey: [CoinageTxEntry]] = [:]
         for entry in entries {
+            ids[entry.id] = entry
             for output in entry.outputs {
                 minters[output.publicKey] = entry
             }
@@ -24,8 +27,14 @@ public struct CoinageEntryDag: Sendable {
                 consumers[input.publicKey, default: []].append(entry)
             }
         }
+        byId = ids
         minterByKey = minters
         consumersByKey = consumers
+    }
+
+    /// The entry with this id, if the snapshot holds it.
+    public func entry(_ id: CoinageTxId) -> CoinageTxEntry? {
+        byId[id]
     }
 
     /// The entry that minted the asset with this identifier, if any.

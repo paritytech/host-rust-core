@@ -60,6 +60,7 @@ impl TrUApiCore {
             host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
+            host_config.asset_hub_chain_genesis_hash,
             spawner.clone(),
         );
         let pairing_host = PairingHostRole::new(services.clone(), host_config);
@@ -314,6 +315,46 @@ mod tests {
     }
 
     #[test]
+    fn the_core_constructor_hands_its_services_the_asset_hub_hash() {
+        // The third constructor path, and the only one nothing else pins. A
+        // transposition here compiles and dials People or Bulletin, where no
+        // dotNS contract is deployed, which is #660's failure mode one line
+        // over.
+        let platform = Arc::new(StubPlatform {
+            // Ends the follow rather than waiting out `OPERATION_TIMEOUT`; this
+            // asserts which chain was dialled, not that the lookup succeeded.
+            chain_responses_end: true,
+            ..StubPlatform::default()
+        });
+        // people [0; 32], bulletin [0xbb; 32], asset hub [0xcc; 32].
+        let (host_config, product) = runtime_config("dotli.dot");
+        let core = TrUApiCore::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+        );
+        // Nothing is cached for `wallet.dot`, so the read has to resolve a
+        // manifest, which is the only thing that reaches a chain with this hash.
+        let request = truapi::versioned::local_storage::HostLocalStorageReadRequest::V2(
+            truapi::v02::HostLocalStorageReadRequest {
+                product: Some("wallet.dot".to_string()),
+                key: "k".to_string(),
+            },
+        );
+        let _ = run_request(&core, "local_storage_read", request.encode());
+        assert_eq!(
+            platform
+                .chain_connects
+                .lock()
+                .expect("chain connect mutex poisoned")
+                .clone(),
+            vec![[0xcc; 32]],
+            "the core dials Asset Hub, not People ([0; 32]) or Bulletin ([0xbb; 32])"
+        );
+    }
+
+    #[test]
     fn local_storage_read_round_trips_none() {
         let core = make_core();
         let request = v01::HostLocalStorageReadRequest {
@@ -452,8 +493,8 @@ mod tests {
                 trait_id: sub_ids.trait_id,
                 method_id: sub_ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                // No request wrapper for this method: an empty Start payload.
-                value: Vec::new(),
+                value: truapi::versioned::account::HostAccountConnectionStatusSubscribeRequest::V1
+                    .encode(),
             },
         };
         futures::executor::block_on(core.dispatch(frame, dyn_transport));

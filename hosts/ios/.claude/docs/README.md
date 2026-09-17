@@ -22,13 +22,14 @@
 | Extrinsics, transfers, signing                 | architecture/transactions.md                               |
 | Storage queries, runtime calls, SCALE          | architecture/chain-integration.md                          |
 | Coinage, payments, coins                       | architecture/coinage.md                                    |
+| Durable transactions, recovery pass, completion oracle | architecture/durable-transactions.md                 |
 | Statement store, off-chain messaging           | architecture/statement-store-communication.md              |
 | Key derivation, product accounts, ring-VRF/ECDH keys | `Packages/KeyDerivation/` + architecture/sso.md (selector & wire pins) |
 | DIM2 game, game video, game P2P                | architecture/game.md                                        |
 | WebRTC, P2P transport, data channels           | architecture/data-transport.md                             |
 | Cross-cutting design questions                 | architecture/maintainability.md                            |
 | Error handling, Result types                   | code/error-handling.md                                     |
-| async/await, Operations, streams               | code/concurrency.md                                        |
+| async/await, Operations, streams, actor/lock state | code/concurrency.md                                    |
 | UIKit, SwiftUI, SnapKit, layout, @Observable    | code/ui-uikit.md                                           |
 | Naming, comments, logging, hygiene             | code/naming-and-hygiene.md                                 |
 | ServiceCoordinator, DI, service wiring         | code/di-and-services.md                                    |

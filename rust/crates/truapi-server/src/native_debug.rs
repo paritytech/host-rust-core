@@ -453,7 +453,7 @@ mod tests {
         // constant on both sides would agree with itself even if the value the
         // debugger expects changed.
         assert_eq!(value["v"], 1);
-        assert_eq!(value["codec"], 2);
+        assert_eq!(value["codec"], 3);
         assert_eq!(value["v"], WIRE_ENVELOPE_VERSION);
         assert_eq!(value["codec"], WIRE_CODEC_VERSION);
         assert_eq!(value["schema"], TRUAPI_WIRE_SCHEMA_HASH);

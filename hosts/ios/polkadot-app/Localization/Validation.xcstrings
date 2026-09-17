@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Amount too high"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Monto demasiado alto"
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Amount too low"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Monto demasiado bajo"
           }
         }
       }
@@ -43,12 +31,6 @@
             "state": "translated",
             "value": "Calculating fee"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Calculando comisión"
-          }
         }
       }
     },
@@ -59,12 +41,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Enter Amount"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ingresa el monto"
           }
         }
       }
@@ -77,12 +53,6 @@
             "state": "translated",
             "value": "Your balance is too low to pay the transaction fee"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu saldo es demasiado bajo para pagar la comisión de la transacción"
-          }
         }
       }
     },
@@ -93,12 +63,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Insufficient funds"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondos insuficientes"
           }
         }
       }
@@ -111,12 +75,6 @@
             "state": "translated",
             "value": "Invalid recipient"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Destinatario inválido"
-          }
         }
       }
     },
@@ -127,12 +85,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your remaining balance after paying the transaction fee must stay above the Existential Deposit."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu saldo restante después de pagar la comisión debe mantenerse por encima del Depósito Existencial."
           }
         }
       }
@@ -145,12 +97,6 @@
             "state": "translated",
             "value": "This transaction will cause %@ to be lost. If your balance falls below the minimum of %@, any remaining tokens will be forfeited"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Esta transacción provocará la pérdida de %@. Si tu saldo cae por debajo del mínimo de %@, los tokens restantes se perderán"
-          }
         }
       }
     },
@@ -162,12 +108,6 @@
             "state": "translated",
             "value": "Confirm forfeit"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Confirmar pérdida"
-          }
         }
       }
     },
@@ -178,12 +118,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "You don’t have enough funds"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No tienes fondos suficientes"
           }
         }
       }

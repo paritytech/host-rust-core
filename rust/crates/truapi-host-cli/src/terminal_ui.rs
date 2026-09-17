@@ -170,6 +170,7 @@ pub enum SystemEvent {
         url: String,
     },
     SigningHostReady,
+    SigningHostProvisioning,
     SigningHostNeedsSession,
     SigningHostAccountExhausted {
         name: String,
@@ -1602,6 +1603,14 @@ impl App {
                 "Signing host ready".to_string(),
                 None,
                 ActivityState::Succeeded,
+            ),
+            SystemEvent::SigningHostProvisioning => self.notice(
+                NoticeTone::Info,
+                "Provisioning a signer".to_string(),
+                Some(
+                    "Registering a username on chain. This takes minutes on a first run."
+                        .to_string(),
+                ),
             ),
             SystemEvent::SigningHostNeedsSession => self.notice(
                 NoticeTone::Warning,
@@ -3316,6 +3325,18 @@ mod tests {
         assert!(!transcript.contains("handshake=secret"));
         assert!(!transcript.contains("abandon"));
         assert!(!transcript.contains("SCRIPT ·"));
+    }
+
+    #[test]
+    fn provisioning_is_announced_so_a_supervised_host_is_not_mistaken_for_a_dead_one() {
+        let mut app = test_app();
+
+        app.handle_system_event(SystemEvent::SigningHostProvisioning);
+
+        assert_eq!(
+            app.transcript_text(),
+            "• Provisioning a signer\n  Registering a username on chain. This takes minutes on a first run."
+        );
     }
 
     #[test]

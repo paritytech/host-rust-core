@@ -50,6 +50,10 @@ let package = Package(
             url: "https://github.com/sideeffect-io/AsyncExtensions",
             exact: "0.5.4"
         ),
+        .package(
+            url: "https://github.com/pointfreeco/swift-clocks",
+            from: "1.0.6"
+        ),
         .package(path: "../KeyDerivation"),
         .package(path: "../StructuredConcurrency"),
         .package(path: "../CommonService"),
@@ -57,11 +61,13 @@ let package = Package(
         .package(path: "../ChainStore"),
         .package(path: "../FoundationExt"),
         .package(path: "../SubstrateSdkExt"),
+        .package(path: "../XcmDefinition"),
         .package(path: "../Individuality"),
         .package(path: "../StateMachine"),
         .package(path: "../SubstrateOperation"),
         .package(path: "../BackgroundExecution"),
-        .package(path: "../ExtrinsicServiceExt")
+        .package(path: "../ExtrinsicServiceExt"),
+        .package(path: "../DurableTransactions")
     ],
     targets: [
         .target(
@@ -84,16 +90,25 @@ let package = Package(
                 "ChainStore",
                 "FoundationExt",
                 "SubstrateSdkExt",
+                "XcmDefinition",
                 "Individuality",
                 "StateMachine",
                 "SubstrateOperation",
                 "BackgroundExecution",
-                "ExtrinsicServiceExt"
+                "ExtrinsicServiceExt",
+                "DurableTransactions"
             ],
         ),
         .testTarget(
             name: "CoinageTests",
-            dependencies: ["Coinage", "BackgroundExecution", "ExtrinsicServiceExt"],
+            dependencies: [
+                "Coinage",
+                "BackgroundExecution",
+                "ExtrinsicServiceExt",
+                "DurableTransactions",
+                .product(name: "DurableTransactionsTestSupport", package: "DurableTransactions"),
+                .product(name: "Clocks", package: "swift-clocks")
+            ],
             path: "Tests"
         )
     ]
