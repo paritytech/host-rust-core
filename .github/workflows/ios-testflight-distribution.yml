@@ -21,8 +21,12 @@ env:
 jobs:
   distribute_testflight:
     runs-on: macos-26
-    # The condition this replaces, to restore at cutover:
-    #   if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    # This workflow calls the distribute action directly rather than through
+    # ios-build-distribute.yml, so it does not inherit that workflow's
+    # github-actions[bot] check. The allowlist is the only thing standing
+    # between a hand-started run and a TestFlight build on the production
+    # record.
+    if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
     name: Distribute TestFlight Build
     steps:
       - name: Checkout repository
