@@ -1254,9 +1254,8 @@ fn bare_localhost_product_allows_dev_product_accounts() {
 }
 
 /// A product destination reaches the platform as a `polkadot://` URL, whatever
-/// the product spelled it as. The host routes on that scheme, so asserting only
-/// that the call succeeded would not notice it arriving as `https://` and being
-/// indistinguishable from an ordinary web address.
+/// the product spelled it as. Asserting only that the call succeeded would not
+/// notice it arriving as `https://`.
 #[test]
 fn navigate_to_hands_a_product_destination_over_as_a_polkadot_url() {
     for spelling in [
@@ -1282,8 +1281,7 @@ fn navigate_to_hands_a_product_destination_over_as_a_polkadot_url() {
     }
 }
 
-/// The other half of the same contract: an ordinary web address still arrives
-/// as `https://`, so the two remain distinguishable.
+/// A web address still arrives as `https://`, so the two stay distinguishable.
 #[test]
 fn navigate_to_hands_a_web_address_over_unchanged() {
     let platform = Arc::new(StubPlatform::default());

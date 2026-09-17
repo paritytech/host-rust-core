@@ -33,16 +33,9 @@ pub enum NavigateDecision {
         identifier: String,
         /// Path/query/hash suffix without a leading `/`.
         path: String,
-        /// Normalized `polkadot://` form of the product URL, which is what
-        /// `navigate_to` hands the host.
-        ///
-        /// The scheme is the whole point: a host routes a product destination
-        /// into its verified product surface and an `http(s)` one to the
-        /// browser, and it can only tell them apart if they do not look alike.
-        /// This is the form RFC Pocket already defines for a product URL, and
-        /// the one [`NavigateDecision::Pocket`] already hands over. An
-        /// `https://` string would not be loadable anyway: no dotNS TLD
-        /// resolves in public DNS.
+        /// Normalized `polkadot://` form, which is what `navigate_to` hands the
+        /// host. Hosts route on the scheme, and no dotNS TLD resolves in public
+        /// DNS, so an `https://` string would not load either.
         canonical_url: String,
     },
     /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
@@ -366,9 +359,8 @@ mod tests {
         })
     }
 
-    /// The scheme is the contract: a host tells a product destination from a
-    /// web one by looking at it. Pinned as literals so the expectation does not
-    /// borrow the production builder it is meant to check.
+    /// Pinned as literals so the expectation does not borrow the production
+    /// builder it checks.
     #[test]
     fn a_product_destination_is_handed_over_as_a_polkadot_url() {
         for (input, expected) in [
@@ -388,8 +380,7 @@ mod tests {
         }
     }
 
-    /// An ordinary web address keeps its scheme, so the two cannot be confused
-    /// at the platform boundary.
+    /// A web address keeps its scheme, so the two stay distinguishable.
     #[test]
     fn a_web_address_is_still_handed_over_as_https() {
         let NavigateDecision::External { url } = parse_navigate("https://example.com/x") else {
