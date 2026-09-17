@@ -10,12 +10,6 @@
             "state" : "translated",
             "value" : "You have unread messages"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tienes mensajes sin leer"
-          }
         }
       }
     },
@@ -27,12 +21,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Accepted your chat request"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aceptó tu solicitud de chat"
           }
         }
       }
@@ -46,12 +34,6 @@
             "state" : "translated",
             "value" : "Sent you a message"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Te envió un mensaje"
-          }
         }
       }
     },
@@ -60,12 +42,6 @@
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Polkadot"
-          }
-        },
-        "es-ES" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Polkadot"
@@ -81,12 +57,6 @@
             "state" : "translated",
             "value" : "%1$(username)@ added you"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ te agregó"
-          }
         }
       }
     },
@@ -97,12 +67,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$(username)@ sent you"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ te envió"
           }
         }
       }
@@ -115,12 +79,6 @@
             "state" : "translated",
             "value" : "Incoming audio call"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamada de audio entrante"
-          }
         }
       }
     },
@@ -131,12 +89,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Incoming video call"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Videollamada entrante"
           }
         }
       }
@@ -149,12 +101,6 @@
             "state" : "translated",
             "value" : "Sent you media file"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Te envió un archivo multimedia"
-          }
         }
       }
     },
@@ -165,12 +111,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edited: %1$(text)@"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Editado: %1$(text)@"
           }
         }
       }
@@ -183,12 +123,6 @@
             "state" : "translated",
             "value" : "%1$(username)@ left the chat"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ salió del chat"
-          }
         }
       }
     },
@@ -199,12 +133,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "reacted with %1$(emoji)@"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "reaccionó con %1$(emoji)@"
           }
         }
       }
@@ -217,12 +145,6 @@
             "state" : "translated",
             "value" : "removed reaction"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "quitó su reacción"
-          }
         }
       }
     },
@@ -233,12 +155,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "New message"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nuevo mensaje"
           }
         }
       }
@@ -251,12 +167,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Unsupported message"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mensaje no compatible"
           }
         }
       }

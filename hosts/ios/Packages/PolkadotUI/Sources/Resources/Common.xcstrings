@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Cancel"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancelar"
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Completed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Completado"
           }
         }
       }
@@ -43,12 +31,6 @@
             "state": "translated",
             "value": "Block:"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bloque:"
-          }
         }
       }
     },
@@ -59,12 +41,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Excellent"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "excelente"
           }
         }
       }
@@ -77,12 +53,6 @@
             "state": "translated",
             "value": "Fair"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "regular"
-          }
         }
       }
     },
@@ -93,12 +63,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Good"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "buena"
           }
         }
       }
@@ -111,12 +75,6 @@
             "state": "translated",
             "value": "Poor"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "mala"
-          }
         }
       }
     },
@@ -127,12 +85,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Network Status"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Estado de la red"
           }
         }
       }
@@ -145,12 +97,6 @@
             "state": "translated",
             "value": "Speed is %@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La velocidad es %@"
-          }
         }
       }
     },
@@ -161,12 +107,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Done"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Listo"
           }
         }
       }
@@ -179,12 +119,6 @@
             "state": "translated",
             "value": "Email Support"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escribir a soporte"
-          }
         }
       }
     },
@@ -195,12 +129,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hide"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ocultar"
           }
         }
       }
@@ -213,12 +141,6 @@
             "state": "translated",
             "value": "In progress"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "En curso"
-          }
         }
       }
     },
@@ -229,12 +151,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Transaction failed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La transacción falló"
           }
         }
       }

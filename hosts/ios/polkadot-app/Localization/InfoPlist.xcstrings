@@ -10,12 +10,6 @@
             "state": "new",
             "value": "Polkadot"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Polkadot"
-          }
         }
       }
     },
@@ -26,12 +20,6 @@
         "en": {
           "stringUnit": {
             "state": "new",
-            "value": "polkadot-app"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
             "value": "polkadot-app"
           }
         }
@@ -46,12 +34,6 @@
             "state": "translated",
             "value": "The app will add upcoming game to your calendar and remind you 5 minutes before the game starts."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La app agregará el próximo juego a tu calendario y te recordará 5 minutos antes de que comience."
-          }
         }
       }
     },
@@ -63,12 +45,6 @@
           "stringUnit": {
             "state": "new",
             "value": "The app will add upcoming game to your calendar and remind you 5 minutes before the game starts."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La app agregará el próximo juego a tu calendario y te recordará 5 minutos antes de que comience."
           }
         }
       }
@@ -82,12 +58,6 @@
             "state": "new",
             "value": "Please allow camera access to interact with features in the Polkadot app"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Permite el acceso a la cámara para usar las funciones de la app de Polkadot"
-          }
         }
       }
     },
@@ -99,12 +69,6 @@
           "stringUnit": {
             "state": "new",
             "value": "Face ID is used to authorize in Polkadot App"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Face ID se usa para autorizarte en la app de Polkadot"
           }
         }
       }
@@ -118,12 +82,6 @@
             "state": "translated",
             "value": "Polkadot uses your local network for peer-to-peer games and linked devices."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Polkadot usa tu red local para juegos entre dispositivos y dispositivos vinculados."
-          }
         }
       }
     },
@@ -136,12 +94,6 @@
             "state": "translated",
             "value": "Please allow microphone to be able to talk in the chat"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Permite el acceso al micrófono para poder hablar en el chat"
-          }
         }
       }
     },
@@ -153,12 +105,6 @@
           "stringUnit": {
             "state": "new",
             "value": "App needs access to save chat attachments to your photo library."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La app necesita acceso para guardar archivos adjuntos del chat en tu galería de fotos."
           }
         }
       }

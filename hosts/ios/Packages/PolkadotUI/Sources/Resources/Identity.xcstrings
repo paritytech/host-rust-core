@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Games until membership"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Juegos para ser miembro"
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Basic"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Básico"
           }
         }
       }
@@ -43,12 +31,6 @@
             "state": "translated",
             "value": "Member"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Miembro"
-          }
         }
       }
     },
@@ -59,12 +41,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Rank"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rango"
           }
         }
       }

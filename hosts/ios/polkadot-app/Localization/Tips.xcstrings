@@ -10,12 +10,6 @@
             "state": "translated",
             "value": "These rings track your connection to each chain."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Estos anillos muestran tu conexión con cada cadena."
-          }
         }
       }
     },
@@ -27,12 +21,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Network status"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Estado de la red"
           }
         }
       }
@@ -46,12 +34,6 @@
             "state": "translated",
             "value": "Scan to pay or add a contact."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanea para pagar o agregar un contacto."
-          }
         }
       }
     },
@@ -63,12 +45,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scan a QR code"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanear código QR"
           }
         }
       }

@@ -5,8 +5,11 @@ import UIKit
 final class ContactsListWireframe {
     let flowState: ChatFlowState
 
-    init(flowState: ChatFlowState) {
+    private let moduleNavigator: ModuleNavigating
+
+    init(flowState: ChatFlowState, moduleNavigator: ModuleNavigating = ModuleNavigator()) {
         self.flowState = flowState
+        self.moduleNavigator = moduleNavigator
     }
 }
 
@@ -21,18 +24,8 @@ private extension ContactsListWireframe {
 }
 
 extension ContactsListWireframe: ContactsListWireframeProtocol {
-    func showSearchContact(from view: ContactsListViewProtocol?) {
-        let searchModel = SearchContactModel { [weak self] openModel in
-            self?.performChatShow(from: view, for: openModel)
-        }
-
-        guard let search = SearchContactViewFactory.createView(with: searchModel) else {
-            return
-        }
-
-        search.controller.modalPresentationStyle = .fullScreen
-        search.controller.modalTransitionStyle = .crossDissolve
-        view?.controller.present(search.controller, animated: true)
+    func showScanPanel() {
+        moduleNavigator.openScanPanel()
     }
 
     func showChat(from view: ContactsListViewProtocol?, for model: ChatOpenModel) {
