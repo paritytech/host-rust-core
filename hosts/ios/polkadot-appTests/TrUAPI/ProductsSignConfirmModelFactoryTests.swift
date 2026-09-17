@@ -96,7 +96,10 @@ struct ProductsSignConfirmModelFactoryTests {
 
     @Test func signRawStringPayloadWrapsForDisplay() async throws {
         let input = ProductsSignConfirmInput.signRaw(
-            .legacyAccount(request: HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "hello")), watermarked: true)
+            .legacyAccount(
+                request: HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "hello")),
+                watermarked: true
+            )
         )
 
         let model = try await makeFactory().makeModel(from: input, requester: requester)
@@ -107,7 +110,10 @@ struct ProductsSignConfirmModelFactoryTests {
 
     @Test(arguments: [false, true]) func signRawInvalidHexPayloadThrows(watermarked: Bool) async {
         let input = ProductsSignConfirmInput.signRaw(
-            .legacyAccount(request: HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "0xZZ")), watermarked: watermarked)
+            .legacyAccount(
+                request: HostSignRawWithLegacyAccountRequest(signer: "5Fff", payload: .payload(payload: "0xZZ")),
+                watermarked: watermarked
+            )
         )
 
         await #expect(throws: (any Error).self) {

@@ -139,13 +139,13 @@ public extension MembersPallet {
             }
         }
 
-        public var includedRingPosition: UInt32? {
+        public var inclusion: Included? {
             switch self {
             case .onboarding,
                  .suspended:
                 nil
             case let .included(included):
-                included.ringPosition
+                included
             }
         }
 
@@ -227,16 +227,21 @@ public extension MembersPallet {
             _included = StringCodable(wrappedValue: included)
         }
 
-        public func includesKey(from ringPosition: RingPosition) -> Bool {
-            guard let includedRingPosition = ringPosition.includedRingPosition else {
+        /// Whether the key sitting at `ringPosition` is already baked into the ring root.
+        ///
+        /// `keysPerPage` comes from `fetchRingKeysPageSize()`: a member's position counts within its own
+        /// ring page, while `included` counts across the whole ring, so the pages before the member's own
+        /// have to be added back before the two can be compared.
+        public func includesKey(from ringPosition: RingPosition, keysPerPage: Int) -> Bool {
+            guard let inclusion = ringPosition.inclusion else {
                 return false
             }
 
-            return includesKeyByRawPosition(includedRingPosition)
+            return includesKey(at: inclusion, keysPerPage: keysPerPage)
         }
 
-        public func includesKeyByRawPosition(_ rawPosition: UInt32) -> Bool {
-            included > rawPosition
+        public func includesKey(at ringPosition: RingPosition.Included, keysPerPage: Int) -> Bool {
+            Int(included) > Int(ringPosition.ringPage) * keysPerPage + Int(ringPosition.ringPosition)
         }
     }
 }

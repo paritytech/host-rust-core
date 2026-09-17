@@ -72,6 +72,47 @@ When an endpoint is called in rapid succession (e.g., per-peer connection), add 
 // Review note: "This endpoint might be called quite frequently...WDYT if we add debounce here?"
 ```
 
+## Context Actor Pattern
+
+When a service needs several interrelated pieces of **mutable coordination state** — in-flight
+tasks keyed by id, per-key subjects, a pending queue, a lifecycle task, a concurrency limit — do
+**not** put that state (plus `@unchecked Sendable` and an `OSAllocatedUnfairLock`) in the service.
+Extract an `actor` — the *context* — that owns all of it. Actor isolation replaces the lock
+(non-reentrant, no `@unchecked Sendable`), the service keeps only immutable stored deps, and the
+context is small and unit-testable on its own.
+
+Keep business logic in the **service**; keep only scheduling/state in the **context**. The service
+routes each lock-dependent operation through a context method and passes its own work back in as a
+`@Sendable` callback the context invokes at the right moment. Results and streams flow back out.
+
+```swift
+// Context: owns the mutable state, exposes lock-free-at-the-call-site async methods.
+actor IncomingPaymentContext {
+    private var lifeCycleTask: Task<Void, Never>?
+    private var tasks: [GroupId: Task<Void, Never>] = [:]
+    private var subjects: [GroupId: AsyncCurrentValueSubject<Status>] = [:]
+
+    func setup(_ makeTask: () -> Task<Void, Never>?) {           // service supplies the work
+        lifeCycleTask?.cancel(); lifeCycleTask = makeTask()
+    }
+    func process(groupId: GroupId, run: @escaping @Sendable () -> Task<Void, Never>) { … } // dedup + schedule
+    func liveStatusStream(for groupId: GroupId,
+                          fallback: () async throws -> Status) async throws -> AnyAsyncSequence<Status> { … }
+}
+
+// Service: no lock, no mutable state — hands its logic to the context as callbacks.
+func setup(with ctx: Context) {
+    Task { [weak self, paymentContext] in
+        await paymentContext.setup { self?.runSetup(ctx) }       // drive logic lives here, state in the context
+    }
+}
+```
+
+Reach for this when there are **several** interrelated mutable pieces with their own lifecycle. For a
+single coalesced in-flight task use `CoalescingTask`; for one typed guarded value
+`OSAllocatedUnfairLock<State>` is enough. (Real example: `IncomingPaymentService` +
+`IncomingPaymentContext` in `Packages/Coinage`.)
+
 ## Key Rules
 
 0. **Check `StructuredConcurrency` and `AsyncExtensions` before writing any custom concurrency

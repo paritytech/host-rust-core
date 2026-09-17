@@ -1,21 +1,22 @@
 import Coinage
+import DurableTransactions
 import Foundation
 import Testing
 
 /// Ownership and status-write invariants the tracker relies on: one-shot ownership via
-/// ``CoinageTrackingTxSet``, and the repository's compare-and-set / field-write guards.
+/// ``DurableTxOwnershipSet``, and the repository's compare-and-set / field-write guards.
 @Suite("Submission Watcher")
 struct SubmissionWatcherTests {
     @Test("Ownership taken once and released exactly once")
     func ownershipOneShotRelease() async throws {
-        let watched = CoinageTrackingTxSet()
+        let watched = DurableTxOwnershipSet()
         let id = UUID()
 
         watched.take(id)
-        #expect(watched.isWatched(id))
+        #expect(watched.isOwned(id))
 
         #expect(watched.release(id))
-        #expect(!watched.isWatched(id))
+        #expect(!watched.isOwned(id))
 
         // Release is one-shot, so a caller can keep its release side effects one-shot too.
         #expect(!watched.release(id))
@@ -24,7 +25,7 @@ struct SubmissionWatcherTests {
     @Test("Releasing ownership does not itself change the entry")
     func releaseLeavesEntryUnchanged() async throws {
         let store = MockCoinageTxRepository()
-        let watched = CoinageTrackingTxSet()
+        let watched = DurableTxOwnershipSet()
         let id = UUID()
 
         try await store.register(.fixture(id: id, outputs: [.coin(1, testKey(1))]))

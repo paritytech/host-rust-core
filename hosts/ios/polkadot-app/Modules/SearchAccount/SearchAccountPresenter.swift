@@ -1,7 +1,5 @@
 import Foundation
 import Foundation_iOS
-import Operation_iOS
-import SubstrateSdk
 import ChainRegistry
 import SubstrateSdkExt
 
@@ -9,30 +7,22 @@ import SubstrateSdkExt
 final class SearchAccountPresenter {
     // MARK: Properties
 
-    static let maxRecentContactsDisplay = 5
-
     weak var view: SearchAccountViewProtocol?
     let wireframe: SearchAccountWireframeProtocol
     let interactor: SearchAccountInteractorInputProtocol
     private let chainAsset: ChainAsset
-    private let logger: LoggerProtocol
     private var addressInputViewModel = InputViewModel.createAccountInputViewModel(for: "")
     private let recipientViewModelFactory: RecipientViewModelFactoryProtocol
-    private var recentContactsMap = [String: RecentContactModelWithUsername]()
-    private var allContacts: [UsernameResponseModel] = []
-    private var currentQuery: String?
 
     init(
         interactor: SearchAccountInteractorInputProtocol,
         wireframe: SearchAccountWireframeProtocol,
         recipientViewModelFactory: RecipientViewModelFactoryProtocol,
-        logger: LoggerProtocol,
         chainAsset: ChainAsset
     ) {
         self.interactor = interactor
         self.wireframe = wireframe
         self.recipientViewModelFactory = recipientViewModelFactory
-        self.logger = logger
         self.chainAsset = chainAsset
     }
 
@@ -45,7 +35,7 @@ final class SearchAccountPresenter {
                     inputViewModel: addressInputViewModel,
                     selectedAccount: accountType
                 ),
-                dataType: view.viewModel.dataType
+                content: view.viewModel.content
             )
         )
     }
@@ -55,42 +45,23 @@ final class SearchAccountPresenter {
         provideAddressInputViewModel(accountType)
     }
 
-    private func mapToAccountType(from model: UsernameResponseModel) -> SearchAccountViewModel.AccountType {
-        .username(model.username.value, model.accountId)
-    }
-
-    private func mapToAccountType(from accountAddress: AccountAddress) -> SearchAccountViewModel.AccountType {
-        .accountAddress(accountAddress)
-    }
-
-    private func isAccountAddress(_ inputText: String) -> Bool {
-        guard (try? inputText.toAccountId(using: chainAsset.chain.chainFormat)) != nil else {
-            logger.debug("Invalid account address format")
-            return false
-        }
-        return true
-    }
-
-    private func updateViewModel(dataType: SearchAccountViewModel.DataType) {
+    private func updateViewModel(content: SearchAccountViewModel.Content) {
         let viewModel = SearchAccountViewModel(
             inputViewModel: SearchAccountViewModel.InputModel(
                 inputViewModel: addressInputViewModel
             ),
-            dataType: dataType
+            content: content
         )
         view?.applyData(viewModel)
     }
 
-    private func updateIdleViewModel() {
-        let recent = recipientViewModelFactory.createRecentContacts(from: recentContactsMap)
-            .prefix(Self.maxRecentContactsDisplay)
-        let contacts = allContacts.map { mapToAccountType(from: $0) }
-
-        let filtered = contacts.filter { contact in
-            !recent.contains(where: { $0.accountType == contact })
+    private static func mapToAccountType(
+        _ contact: SearchAccountResult.Contact
+    ) -> SearchAccountViewModel.AccountType {
+        guard let username = contact.username, !username.isEmpty else {
+            return .accountAddress(contact.address)
         }
-
-        updateViewModel(dataType: .idle(recent: Array(recent), contacts: filtered))
+        return .username(username, contact.address)
     }
 }
 
@@ -99,7 +70,6 @@ final class SearchAccountPresenter {
 extension SearchAccountPresenter: SearchAccountPresenterProtocol {
     func viewDidLoad() {
         interactor.setup()
-        interactor.subscribeToRecentContacts(for: chainAsset)
         provideAddressInputViewModel()
     }
 
@@ -108,32 +78,19 @@ extension SearchAccountPresenter: SearchAccountPresenterProtocol {
     }
 
     func searchAccount(_ account: String?) {
-        guard
-            let inputText = account?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !inputText.isEmpty
-        else {
-            currentQuery = nil
-            return updateIdleViewModel()
-        }
-
-        currentQuery = inputText
-
-        if isAccountAddress(inputText) {
-            updateViewModel(dataType: .searchResults([mapToAccountType(from: inputText)]))
-        } else if inputText.count <= .maximumPrefixCount {
-            interactor.searchAccount(for: inputText.trimmingDot())
-            view?.didStartLoading()
-        } else {
-            updateViewModel(dataType: .searchResults([]))
-        }
+        interactor.searchAccount(for: account)
     }
 
     func selectAccount(_ cellType: SearchAccountViewController.Cell) {
-        handleAccountSelection(cellType.accountType)
-        guard let recipient = try? RecipientModel(accountType: cellType.accountType) else { return }
-
-        wireframe.showTransfer(from: view, recipient: recipient, chainAsset: chainAsset)
+        switch cellType {
+        case let .globalContact(accountType):
+            interactor.resolveChat(for: accountType.accountAddress)
+        case .account,
+             .recentContact:
+            handleAccountSelection(cellType.accountType)
+            guard let recipient = try? RecipientModel(accountType: cellType.accountType) else { return }
+            wireframe.showTransfer(from: view, recipient: recipient, chainAsset: chainAsset)
+        }
     }
 
     func didEndEditingInput(_ input: String?) {
@@ -145,9 +102,11 @@ extension SearchAccountPresenter: SearchAccountPresenterProtocol {
             return
         }
 
-        let accountType: SearchAccountViewModel.AccountType = isAccountAddress(inputText) ?
-            mapToAccountType(from: inputText) :
-            .username(inputText, inputText)
+        let isValidAddress = (try? inputText.toAccountId(using: chainAsset.chain.chainFormat)) != nil
+
+        let accountType: SearchAccountViewModel.AccountType = isValidAddress
+            ? .accountAddress(inputText)
+            : .username(inputText, inputText)
 
         provideAddressInputViewModel(accountType)
     }
@@ -156,18 +115,27 @@ extension SearchAccountPresenter: SearchAccountPresenterProtocol {
 // MARK: - SearchAccountInteractorOutputProtocol
 
 extension SearchAccountPresenter: SearchAccountInteractorOutputProtocol {
-    func didFetchAllContacts(_ accounts: [UsernameResponseModel]) {
-        let sorted = accounts.sorted { $0.username < $1.username }
-        allContacts = sorted
-        guard currentQuery == nil else { return }
-        updateIdleViewModel()
+    func didReceive(searchState: SearchAccountSearchState) {
+        switch searchState {
+        case .started,
+             .waiting,
+             .waitingLong:
+            view?.didStartLoading()
+        case let .result(result):
+            view?.didStopLoading()
+
+            updateViewModel(
+                content: SearchAccountViewModel.Content(
+                    recent: recipientViewModelFactory.createRecentContacts(from: result.recent),
+                    contacts: result.contacts.map(Self.mapToAccountType),
+                    global: result.global.map(Self.mapToAccountType)
+                )
+            )
+        }
     }
 
-    func didFindSearchResults(_ accounts: [UsernameResponseModel]) {
-        view?.didStopLoading()
-        guard currentQuery != nil else { return }
-        let sorted = accounts.sorted { $0.username < $1.username }
-        updateViewModel(dataType: .searchResults(sorted.map { mapToAccountType(from: $0) }))
+    func didResolveChat(_ model: ChatOpenModel) {
+        wireframe.showChat(model)
     }
 
     func didReceiveSearchError(message: String?) {
@@ -178,17 +146,4 @@ extension SearchAccountPresenter: SearchAccountInteractorOutputProtocol {
             from: view
         )
     }
-
-    func didReceiveRecentContacts(_ contacts: [DataProviderChange<RecentContactModelWithUsername>]) {
-        guard !contacts.isEmpty else { return }
-        recentContactsMap = contacts.mergeToDict(recentContactsMap)
-        guard currentQuery == nil else { return }
-        updateIdleViewModel()
-    }
-}
-
-// MARK: - Constants
-
-private extension Int {
-    static let maximumPrefixCount = 32
 }

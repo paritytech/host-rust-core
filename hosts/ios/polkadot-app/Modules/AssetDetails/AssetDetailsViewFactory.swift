@@ -21,10 +21,6 @@ enum AssetDetailsViewFactory {
         context: WalletFlowContextProtocol,
         chainAsset: ChainAsset
     ) -> AssetDetailsScene {
-        let databaseFactory = CoinageDatabaseDependencyFactory(
-            storageFacade: UserDataStorageFacade.shared
-        )
-
         let interactor = AssetDetailsInteractor(
             priceLocalSubscriptionFactory: PriceProviderFactory.shared,
             fiatOnrampTrackingService: context.fiatOnrampTrackingService,
@@ -32,13 +28,18 @@ enum AssetDetailsViewFactory {
             coinageService: context.coinageService,
             coinageBackupSyncService: context.coinageBackupSyncService,
             balanceSyncStateStorage: context.balanceSyncStateStorage,
-            databaseFactory: databaseFactory,
-            voucherRepository: databaseFactory.makeVoucherRepository(),
-            backgroundExecutor: ConnectionRetainingExecutor(provider: ChainRegistryFacade.sharedRegistry),
-            hostProvider: context.flowState.hostProvider
+            fundingDomainProvider: FundingDomainProvider(hostProvider: context.flowState.hostProvider)
         )
 
         #if TESTNET_FEATURE
+            let databaseFactory = CoinageDatabaseDependencyFactory(
+                storageFacade: UserDataStorageFacade.shared
+            )
+
+            interactor.voucherRepository = databaseFactory.makeVoucherRepository()
+            interactor.backgroundExecutor = ConnectionRetainingExecutor(
+                provider: ChainRegistryFacade.sharedRegistry
+            )
             interactor.topupService = TopUpService.create(for: chainAsset.chainAssetId)
         #endif
 

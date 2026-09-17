@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "To continue funding, you will be redirected from the Polkadot App to %@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Para continuar con el fondeo, te redirigiremos de la app de Polkadot a %@"
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Continue In Browser?"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Continuar en el navegador?"
           }
         }
       }
@@ -43,12 +31,6 @@
             "state": "translated",
             "value": "Cancel"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancelar"
-          }
         }
       }
     },
@@ -59,12 +41,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Continue"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Continuar"
           }
         }
       }
@@ -77,12 +53,6 @@
             "state": "translated",
             "value": "Continue"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Continuar"
-          }
         }
       }
     },
@@ -93,12 +63,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "No providers available."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No hay proveedores disponibles."
           }
         }
       }
@@ -111,12 +75,6 @@
             "state": "translated",
             "value": "Refreshing..."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Actualizando..."
-          }
         }
       }
     },
@@ -127,12 +85,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Select Provider"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Selecciona un proveedor"
           }
         }
       }

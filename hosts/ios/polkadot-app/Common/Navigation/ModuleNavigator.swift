@@ -6,6 +6,7 @@ protocol ModuleNavigating: AnyObject {
     func openChat(_ model: ChatOpenModel)
     func presentModally(_ viewController: UIViewController)
     func openProduct(page: ProductPage)
+    func openScanPanel()
 }
 
 extension ModuleNavigating {
@@ -67,5 +68,9 @@ extension ModuleNavigator: ModuleNavigating {
         }
 
         tabBar.openProduct(page: page)
+    }
+
+    func openScanPanel() {
+        UIApplication.shared.mainTabBarController?.openScanPanel()
     }
 }

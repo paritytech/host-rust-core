@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Operation_iOS
 import SubstrateSdk
 import OperationExt
@@ -20,6 +21,7 @@ final class RecentContactsService: RecentContactsManaging {
     private let usernameChainId: ChainModel.Id
     private let operationQueue: OperationQueue
     private let logger: LoggerProtocol
+    private let stateLock = OSAllocatedUnfairLock()
 
     // MARK: Initial methods
 
@@ -42,11 +44,9 @@ final class RecentContactsService: RecentContactsManaging {
     // MARK: Public methods
 
     func setup(_ delegate: RecentContactsServiceDelegate?, chainAssetID: ChainAssetId?) {
-        self.delegate = delegate
-        if let chainAssetID {
+        stateLock.withLock {
+            self.delegate = delegate
             subscribeToRecentContacts(for: chainAssetID)
-        } else {
-            subscribeToRecentContacts()
         }
     }
 
@@ -63,14 +63,19 @@ final class RecentContactsService: RecentContactsManaging {
 
     // MARK: Private methods
 
-    private func subscribeToRecentContacts(for chainAssetID: ChainAssetId) {
-        clear(streamableProvider: &provider)
-        provider = subscribeAllRecentContacts(for: chainAssetID)
+    private var currentDelegate: RecentContactsServiceDelegate? {
+        stateLock.withLock { delegate }
     }
 
-    private func subscribeToRecentContacts() {
+    private func subscribeToRecentContacts(for chainAssetID: ChainAssetId?) {
         clear(streamableProvider: &provider)
-        provider = subscribeAllRecentContacts()
+
+        provider =
+            if let chainAssetID {
+                subscribeAllRecentContacts(for: chainAssetID)
+            } else {
+                subscribeAllRecentContacts()
+            }
     }
 
     private func processRecentContact(for result: Result<[DataProviderChange<RecentContactModel>], any Error>) {
@@ -128,16 +133,16 @@ final class RecentContactsService: RecentContactsManaging {
                 ) { [weak self] result in
                     switch result {
                     case let .success(recentContacts):
-                        self?.delegate?.recentContactsServiceDidUpdate(recentContacts: recentContacts)
+                        self?.currentDelegate?.recentContactsServiceDidUpdate(recentContacts: recentContacts)
                     case let .failure(error):
-                        self?.delegate?.recentContactServiceDidFail(error: error)
+                        self?.currentDelegate?.recentContactServiceDidFail(error: error)
                     }
                 }
             } catch {
-                delegate?.recentContactServiceDidFail(error: error)
+                currentDelegate?.recentContactServiceDidFail(error: error)
             }
         case let .failure(error):
-            delegate?.recentContactServiceDidFail(error: error)
+            currentDelegate?.recentContactServiceDidFail(error: error)
         }
     }
 }

@@ -17,7 +17,7 @@ Off-chain peer messaging via Substrate statement store. Statements carry encrypt
 
 All payload encryption uses X25519 key agreement plus IETF ChaCha20-Poly1305 (chat-spec
 RFC-0004) — the single primitive pair app-wide (chat, MDS fan-out, device sync, SSO
-handshake, W3S payments, HOP attachments):
+handshake, HOP attachments):
 
 - Public keys are raw 32-byte X25519 keys on the wire; the on-chain identity record keeps
   a 65-byte container (`0x00` type byte + key + zero padding, `Chat.OnChainEncryptionIdentifier`).

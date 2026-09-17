@@ -1,32 +1,39 @@
+import DurableTransactions
 import Foundation
 
-/// Turns one entry plus a pinned view into the ``ChainEvidence`` the rules read, built on the chain
-/// view's existing three-valued asset reads: a present voucher already carries its unload state,
-/// which is the alias signal the rules need.
+/// Turns one entry plus the pass's pinned heads into the ``ChainEvidence`` the rules read, built on the
+/// reader's three-valued asset reads: a present voucher already carries its unload state, which is the
+/// alias signal the rules need.
 public struct CoinageEvidenceCollector: Sendable {
     public init() {}
 
-    public func collect(entry: CoinageTxEntry, view: any CoinageChainViewProtocol) async -> ChainEvidence {
-        let finalized = view.finalizedHead
-        let best = view.bestHead
+    public func collect(
+        entry: CoinageTxEntry,
+        reader: any CoinageStateReading,
+        heads: ChainHeads
+    ) async -> ChainEvidence {
+        let finalized = heads.finalized
+        let best = heads.best
 
-        async let inputsAtFinalized = view.readInputs(entry.inputs, at: finalized)
-        async let inputsAtBest = view.readInputs(entry.inputs, at: best)
-        async let outputsAtFinalized = view.readOutputs(entry.outputs, at: finalized)
-        async let outputsAtBest = view.readOutputs(entry.outputs, at: best)
-
-        let recordedStillCanonical = await recordedBlockStillCanonical(entry, view)
+        async let inputsAtFinalized = reader.readInputs(entry.inputs, at: finalized)
+        async let inputsAtBest = reader.readInputs(entry.inputs, at: best)
+        async let outputsAtFinalized = reader.readOutputs(entry.outputs, at: finalized)
+        async let outputsAtBest = reader.readOutputs(entry.outputs, at: best)
 
         let inputKeys = entry.inputs.map(\.publicKey)
         let outputKeys = entry.outputs.map(\.publicKey)
 
         let (presenceF, aliasF) = await maps(
-            inputKeys: inputKeys, inputReads: inputsAtFinalized,
-            outputKeys: outputKeys, outputReads: outputsAtFinalized
+            inputKeys: inputKeys,
+            inputReads: inputsAtFinalized,
+            outputKeys: outputKeys,
+            outputReads: outputsAtFinalized
         )
         let (presenceB, aliasB) = await maps(
-            inputKeys: inputKeys, inputReads: inputsAtBest,
-            outputKeys: outputKeys, outputReads: outputsAtBest
+            inputKeys: inputKeys,
+            inputReads: inputsAtBest,
+            outputKeys: outputKeys,
+            outputReads: outputsAtBest
         )
 
         return ChainEvidence(
@@ -35,8 +42,7 @@ public struct CoinageEvidenceCollector: Sendable {
             presenceAtFinalized: presenceF,
             presenceAtBest: presenceB,
             aliasAtFinalized: aliasF,
-            aliasAtBest: aliasB,
-            recordedBlockStillCanonical: recordedStillCanonical
+            aliasAtBest: aliasB
         )
     }
 }
@@ -57,21 +63,6 @@ private extension CoinageEvidenceCollector {
         return (presence, alias)
     }
 
-    /// `nil` when no success block is recorded; otherwise whether the canonical hash at that number
-    /// still matches the recorded one. `nil` again when the read failed (the rule stays undecided).
-    func recordedBlockStillCanonical(
-        _ entry: CoinageTxEntry,
-        _ view: any CoinageChainViewProtocol
-    ) async -> Bool? {
-        guard let recorded = entry.successDetectedAt else { return nil }
-
-        switch await view.blockHash(at: recorded.number) {
-        case let .present(hash): return hash == recorded.hash
-        case .absent: return false
-        case .failedRead: return nil
-        }
-    }
-
     static func presence(_ read: ReadResult<AssetPresence>) -> ChainPresence {
         switch read {
         case .present: .present
@@ -80,15 +71,14 @@ private extension CoinageEvidenceCollector {
         }
     }
 
+    /// A coin has no alias to be marked, so a present coin reads not-unloaded; no rule consults it.
     static func alias(_ read: ReadResult<AssetPresence>) -> AliasRead {
         switch read {
-        case let .present(presence):
-            switch presence.alias {
-            case .unloaded: .unloaded
-            case .notUnloaded: .notUnloaded
-            case .unknown: .unknown
-            }
-        case .absent,
+        case .present(.coin),
+             .present(.voucher(.notUnloaded)): .notUnloaded
+        case .present(.voucher(.unloaded)): .unloaded
+        case .present(.voucher(.unknown)),
+             .absent,
              .failedRead: .unknown
         }
     }

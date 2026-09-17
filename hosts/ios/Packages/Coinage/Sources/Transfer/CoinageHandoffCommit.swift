@@ -13,13 +13,13 @@ public protocol CoinageHandoffCommit: Sendable {
     func commit() async throws
 }
 
-/// A ``CoinageHandoffCommit`` backed by the durability store: `commit()` promotes the provisional
-/// marks on `assets` to final.
+/// A ``CoinageHandoffCommit`` backed by the asset ledger: `commit()` promotes the provisional marks on
+/// `assets` to final.
 struct StoreHandoffCommit: CoinageHandoffCommit {
     let assets: [OwnAsset]
-    let store: any CoinageTxRepositoryProtocol
+    let ledger: any CoinageAssetLedgerProtocol
 
     func commit() async throws {
-        try await store.commitHandoffs(assets.map(\.publicKey))
+        try await ledger.commitHandoffs(assets.map(\.publicKey))
     }
 }

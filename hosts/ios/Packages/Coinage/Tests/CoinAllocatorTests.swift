@@ -35,11 +35,29 @@ struct CoinAllocatorTests {
 
         let exponent: Int16 = 5
 
-        let coin = try await allocator.allocate(exponent: exponent)
+        let provenance = CoinProvenance.unloaded(recyclerFungibility: 73)
+
+        let coin = try await allocator.allocate(exponent: exponent, provenance: provenance)
 
         #expect(coin.derivationIndex == expectedIndex)
         #expect(coin.exponent == exponent)
         #expect(coin.age == nil)
+        #expect(coin.recyclerFungibility == 73)
+        #expect(coin.hops.isEmpty)
+    }
+
+    @Test("Persists the provenance it was minted with")
+    func allocateCoinWithProvenance() async throws {
+        try keychain.saveKey(UInt64(0).scaleEncoded(), with: store.storageKey)
+
+        let hops: [Hop] = [.transfer(bundleSize: 3), .split(fanout: 4)]
+        let coin = try await allocator.allocate(
+            exponent: 2,
+            provenance: CoinProvenance(recyclerFungibility: nil, hops: hops)
+        )
+
+        #expect(coin.recyclerFungibility == nil)
+        #expect(coin.hops == hops)
     }
 
     @Test("Propagates errors from storage")
@@ -47,7 +65,7 @@ struct CoinAllocatorTests {
         try keychain.saveKey(Data("".utf8), with: store.storageKey)
 
         await #expect(throws: Error.self) {
-            try await allocator.allocate(exponent: 0)
+            try await allocator.allocate(exponent: 0, provenance: .unknown)
         }
     }
 }

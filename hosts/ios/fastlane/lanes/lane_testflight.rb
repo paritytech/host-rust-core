@@ -9,7 +9,14 @@ lane :upload_testflight do |options|
   # Only pass groups if distributing externally
   groups = distribute_external ? options[:groups] : nil
 
+  # Without this the Appfile default wins and every post-upload step (changelog, external
+  # group) runs against the production App Store Connect record. Safetynet is a separate
+  # app with its own build-number sequence, so those steps silently find no build.
+  app_identifier = ENV["IOS_BUNDLE_ID"]
+  app_identifier = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier) if app_identifier.to_s.empty?
+
   upload_to_testflight(
+    app_identifier: app_identifier,
     skip_waiting_for_build_processing: skip_waiting,
     changelog: changelog,
     distribute_external: distribute_external,

@@ -11,10 +11,20 @@ public func withTimeout<T: Sendable>(
     _ duration: Duration,
     operation: @Sendable @escaping () async throws -> T
 ) async throws -> T {
+    try await withTimeout(duration, clock: ContinuousClock(), operation: operation)
+}
+
+/// Like ``withTimeout(_:operation:)`` but paces the deadline on `clock`, so a caller that injects a
+/// test clock can drive the timeout without waiting on the wall clock.
+public func withTimeout<T: Sendable>(
+    _ duration: Duration,
+    clock: any Clock<Duration>,
+    operation: @Sendable @escaping () async throws -> T
+) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
         group.addTask(operation: operation)
         group.addTask {
-            try await Task.sleep(for: duration)
+            try await clock.sleep(for: duration)
             throw TimeoutError()
         }
 

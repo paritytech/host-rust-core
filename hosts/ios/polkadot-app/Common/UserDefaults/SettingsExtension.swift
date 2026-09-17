@@ -33,6 +33,9 @@ enum SettingsKey: String {
     case showTransferStrategyDebug
     case truApiRuntimeEnabled
     case coinageRecyclingStrategy
+    #if TESTNET_FEATURE
+        case tipsResetPending
+    #endif
 }
 
 extension SettingsManagerProtocol {

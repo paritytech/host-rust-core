@@ -8,11 +8,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@novasamatech/host-api": "0.10.1",
-    "@novasamatech/host-container": "0.10.1",
-    "@novasamatech/host-substrate-chain-connection": "0.10.1",
-    "@novasamatech/scale": "0.10.1",
-    "@novasamatech/storage-adapter": "0.10.1",
+    "@novasamatech/host-api": "0.12.0",
+    "@novasamatech/host-container": "0.12.0",
+    "@novasamatech/host-substrate-chain-connection": "0.12.0",
+    "@novasamatech/scale": "0.12.0",
+    "@novasamatech/storage-adapter": "0.12.0",
     "@polkadot-api/ws-provider": "latest"
   },
   "devDependencies": {

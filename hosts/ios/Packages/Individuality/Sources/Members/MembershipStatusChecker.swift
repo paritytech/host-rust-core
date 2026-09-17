@@ -25,8 +25,7 @@ public protocol MembershipStatusChecking {
 public class MembershipStatusChecker {
     struct Inclusion {
         let collection: MembersPallet.CollectionIdentifier
-        let ringIndex: MembersPallet.RingIndex
-        let ringPosition: UInt32
+        let ringPosition: MembersPallet.RingPosition.Included
     }
 
     struct RingStatusKey: Hashable {
@@ -68,14 +67,13 @@ private extension MembershipStatusChecker {
         .map(\.value)
 
         return zip(inputs, ringPositions).reduce(into: [:]) { accum, pair in
-            guard let ringIndex = pair.1?.ringIndex, let position = pair.1?.includedRingPosition else {
+            guard let inclusion = pair.1?.inclusion else {
                 return
             }
 
             accum[pair.0.memberKey] = Inclusion(
                 collection: pair.0.collection,
-                ringIndex: ringIndex,
-                ringPosition: position
+                ringPosition: inclusion
             )
         }
     }
@@ -115,7 +113,7 @@ extension MembershipStatusChecker: MembershipStatusChecking {
         )
 
         let ringStatusKeys = inclusions.values.map { value in
-            RingStatusKey(collection: value.collection, ringIndex: value.ringIndex)
+            RingStatusKey(collection: value.collection, ringIndex: value.ringPosition.ringIndex)
         }
         .distinct()
 
@@ -125,18 +123,24 @@ extension MembershipStatusChecker: MembershipStatusChecking {
             codingFactory: codingFactory
         )
 
+        let keysPerPage = try await runtimeCodingService.fetchRingKeysPageSize()
+
         return inputs.reduce(into: [:]) { accum, input in
             guard let inclusion = inclusions[input.memberKey] else {
                 return
             }
 
-            let ringStatusKey = RingStatusKey(collection: inclusion.collection, ringIndex: inclusion.ringIndex)
+            let ringIndex = inclusion.ringPosition.ringIndex
+            let ringStatusKey = RingStatusKey(collection: inclusion.collection, ringIndex: ringIndex)
 
-            guard let status = statuses[ringStatusKey], status.includesKeyByRawPosition(inclusion.ringPosition) else {
+            guard
+                let status = statuses[ringStatusKey],
+                status.includesKey(at: inclusion.ringPosition, keysPerPage: keysPerPage)
+            else {
                 return
             }
 
-            accum[input.memberKey] = inclusion.ringIndex
+            accum[input.memberKey] = ringIndex
         }
     }
 }

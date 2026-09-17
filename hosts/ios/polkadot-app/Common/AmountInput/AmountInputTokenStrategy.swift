@@ -45,8 +45,7 @@ extension AmountInputTokenStrategy: AmountInputStrategyProtocol {
     func createAssetViewModel() -> AssetAmountViewModel {
         AssetAmountViewModel(
             symbol: chainAsset.symbol,
-            isSymbolInFront: chainAsset.symbolPosition == .prefix,
-            assetViewModel: nil
+            isSymbolInFront: chainAsset.symbolPosition == .prefix
         )
     }
 }

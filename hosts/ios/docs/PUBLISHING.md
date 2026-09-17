@@ -15,10 +15,18 @@ This guide explains how to configure the app, sign it, and distribute it to
 
 ## 1. How configuration works
 
-A small number of build-time secrets are externalised into **environment
-variables** that are baked into the app at build time. Most backend endpoints
-come from Firebase Remote Config instead (see `RemoteAppConfig`). There are
-three pieces:
+Configuration comes from three places:
+
+- **Brand identity** — bundle id, display name, deep-link scheme, universal-link
+  domains, legal URLs — in `Configs/brand.xcconfig` (§4).
+- **Build-time secrets** (Sentry DSN, Meld token) — environment variables baked
+  into the app by `generate_secrets.sh` (§2).
+- **Runtime configuration** — the chain set, backend URLs, contract addresses —
+  fetched at launch from Firebase Remote Config (§3). Nothing in this group is
+  bundled with the app: without a Firebase project serving these keys the app
+  stays on its startup screen.
+
+The build-time secrets are wired through three files:
 
 | File | Committed? | Purpose |
 |------|-----------|---------|
@@ -43,8 +51,9 @@ note below), so you rarely need to run it by hand.
 
 This scaffolds `env-vars.sh` and the `GoogleService-Info` plists from their
 `*.template` files (without overwriting anything that already exists) and
-generates `Secrets.generated.swift`. The app then builds and runs; features that
-need a real secret stay disabled until you provide one.
+generates `Secrets.generated.swift`. The app then builds; features that need a
+real secret stay disabled until you provide one. Reaching the UI additionally
+needs the Remote Config parameters from §3.
 
 > **In CI:** set `RUN_IN_CI=true` (which skips the in-Xcode generation and the
 > Google-plist copy), export the variables directly into the job environment
@@ -107,10 +116,9 @@ Tester groups are a workflow variable rather than a secret: `FIREBASE_GROUPS` is
 set in `firebase_debug_distribution.yml` (default `polkadotapp-ios`) and can be
 overridden per run.
 
-Backend and on-chain endpoints (identity backend, IPFS gateway, DotNS resolver,
-Web3 Summit, game dashboard) are **not** build-time variables: the app fetches
-them at runtime via Firebase Remote Config (see `RemoteAppConfig` and
-`FirebaseApplicationService`).
+Backend and on-chain endpoints (identity backend, IPFS gateway, DotNS
+contracts, game dashboard) are **not** build-time variables: the app fetches
+them at runtime via Firebase Remote Config — see §3.
 
 ---
 
@@ -134,21 +142,86 @@ files are **not** committed.
 `setup-secrets.sh` copies them into the real filenames so a fresh checkout builds
 with an inert Firebase configuration until you drop in real plists.
 
+### Remote Config parameters
+
+At launch the app fetches Remote Config (`FirebaseApplicationService`) and waits
+for the chains below to come up before showing any UI. If the fetch fails or the
+chain set is missing, it stays on the startup screen with a "Configuring
+application…" notice.
+
+Required for the app to start:
+
+| Parameter | Type | Value |
+|-----------|------|-------|
+| `chains_v2` | JSON array | The chain set. Decoded as `[RemoteChainModel]` (`Packages/ChainRegistry/Sources/ChainRegistry/Model/RemoteChain/`): each entry carries `chainId`, `name`, `addressPrefix`, `assets` (`assetId`, `symbol`, `precision`, …), `nodes` (`url`, `name`) and optional `genesisHash`, `options`, `explorers`, `types`, `additional`. The `chainId` values and asset indices are fixed by the build configuration — see below. |
+| `identity_backend_url` | string | Base URL of the identity backend. The backend is open source: [device-uniqueness-backend-community](https://github.com/paritytech/device-uniqueness-backend-community). |
+| `ipfs_gateway_url` | string | IPFS gateway used to fetch DotNS-published dApp content. |
+| `dot_ns_config` | JSON object | `{"resolverContractAddress": "<hex>", "registryContractAddress": "<hex>"}` — DotNS contracts on the Asset Hub chain (`pallet-revive`). `registryContractAddress` may be omitted or empty, which disables manifest resolution. |
+| `coinage_instance_id` | string | Decimal `UInt32` — the Coinage instance the app pays through. |
+| `game_dashboard_url` | string | DIM2 game dashboard base URL. Required only in builds compiled with `TESTNET_FEATURE`; ignored otherwise. |
+
+Optional — an absent key disables or degrades the feature it drives:
+
+| Parameter | Type | Used for |
+|-----------|------|----------|
+| `latest_ios_version` | string | Latest published app version; logged only. |
+| `funding_config` | JSON object | `{"onrampUrl": "getcash.dot", "offrampUrl": "https://getcash.dot/offramp"}` — the dApp destinations the CASH card opens for top up and withdraw, each a dot-domain or a full URL. Without them the CASH card entry points report unavailable. |
+| `funding_domain` | string | Legacy DotNS label of the funding dApp; read only when `funding_config.onrampUrl` is absent. |
+| `cross_chain_transfers`, `xcm_general_config` | JSON | XCM transfer routes for the deposit flow (`XcmTransfersSyncService`). Deposits via XCM stay unavailable without them. |
+| `transaction_extension_versions` | JSON object | `{"<chainId>": <uint8>}` — transaction-extension version per chain; defaults to `0`. |
+| `collectibles_enabled` | bool | Shows the collectibles entry on the wallet screen. |
+| `collectibles_fallback_url` | string | Web URL used when the collectibles dApp cannot be resolved through DotNS. |
+| `game_results_fallback_url` | string | Web URL used when the game-results dApp cannot be resolved through DotNS. |
+
+**Chain ids per environment.** `KnownChainId` (`polkadot-app/AppConfig/KnownChains.swift`)
+hardcodes the `chainId` strings the app looks up in `chains_v2`, and
+`SupportedAssets` the `assetId` indices it expects inside those chains. Which
+set a build uses is decided by its environment compiler flag (§4 shows which
+configuration sets which flag). Your chain set must use the same identifiers:
+
+| Environment flag | People chain | Asset Hub | Bulletin |
+|------------------|--------------|-----------|----------|
+| `UNSTABLE` | `preview-people` | `preview-ah` | `preview-bulletin` |
+| `NIGHTLY` | `nightly-people` | `nightly-ah` | `nightly-bulletin` |
+| neither (release) | `release-people` | `release-ah` | `release-bulletin` |
+
+Asset Hub entries must expose the native asset at index `0`, USDT at `1`, USDC at
+`2`, the funded stable asset at `3` (not used in `UNSTABLE`) and PGAS at `4`; the
+People chain exposes the native asset at `0` and the app's main asset at `1`
+(`65` in `UNSTABLE`).
+
 ---
 
 ## 4. Build configurations
 
-| Configuration | Bundle id | Environment |
-|---------------|-----------|-------------|
-| `Debug` / `DevCI` | `…​.develop` | Unstable preview backend |
-| `Nightly` | production id | Stable testnet, full feature set — TestFlight internal testers |
-| `Release` | production id | Mainnet — TestFlight internal testers |
-| `Safetynet` | `…​.safety` | Nightly chains, Release feature set — the release build proven before release; separate app, installs alongside production |
+| Configuration | Bundle id | Environment flag | Environment |
+|---------------|-----------|------------------|-------------|
+| `Debug` / `DevCI` | `…​.develop` | `UNSTABLE` | Unstable preview backend |
+| `Nightly` | production id | `NIGHTLY` | Stable testnet, full feature set — TestFlight internal testers |
+| `Release` | production id | — | Mainnet — TestFlight internal testers |
+| `Safetynet` | `…​.safety` | `NIGHTLY` | Nightly chains, Release feature set — the release build proven before release; separate app, installs alongside production |
 
-Bundle ids, app name, icon and deep-link scheme live in
-`Configs/*.xcconfig`, `polkadot-app/Configs/*.xcconfig` and
-`NotificationServiceExtension/Configs/*.xcconfig`. Change them to your own
-identifiers before distributing.
+Brand identity lives in `Configs/brand.xcconfig`, included by every
+`Configs/base.*.xcconfig`. Change it to your own identifiers before signing or
+distributing — the bundle id, App Group, keychain access group and universal-link
+domains of every build derive from it. `Configs/brand.template.xcconfig`
+documents the key contract:
+
+| Key | Used for |
+|-----|----------|
+| `BRAND_DISPLAY_NAME` | App name; some configurations append a suffix (`Configs/base.*.xcconfig`) |
+| `BRAND_BUNDLE_ROOT` | Bundle id root; per-configuration suffixes and the `NotificationServiceExtension` id derive from it |
+| `BRAND_DEEPLINK` | Custom URL scheme base; per-configuration suffixes are appended |
+| `BRAND_SHARE_ROOT`, `BRAND_SHARE_ROOT_TEST` | Universal-link (`applinks:`) domains for production and test builds — host only, no scheme |
+| `BRAND_CASH_SYMBOL`, `BRAND_FIAT_SYMBOL` | Currency symbols shown in the UI |
+| `BRAND_TERMS_HOST`, `BRAND_PRIVACY_HOST` | Terms of use / privacy policy pages — host and path, no scheme |
+| `BRAND_CONTACT_EMAIL` | Support contact shown in the app |
+
+Every key must be present and non-empty: a missing one expands to an empty
+string and the app traps at launch naming the key (`AppConfig.Brand`). Per-
+configuration values (compiler flags, icon suffix, bundle suffix) stay in
+`Configs/base.*.xcconfig`, `polkadot-app/Configs/*.xcconfig` and
+`NotificationServiceExtension/Configs/*.xcconfig`.
 
 ---
 

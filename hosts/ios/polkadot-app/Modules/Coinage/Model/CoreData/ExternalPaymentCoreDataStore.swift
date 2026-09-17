@@ -67,18 +67,6 @@ final class ExternalPaymentCoreDataStore: ExternalPaymentStoring, @unchecked Sen
             )
         )
     }
-
-    func observeRescheduledPayments() -> AnyAsyncSequence<[ExternalPayment]> {
-        let rescheduledRaw = Int16(ExternalPayment.Stage.rescheduled.rawValue)
-
-        return makeSnapshotStream(
-            filter: NSPredicate(
-                format: "%K == %d",
-                #keyPath(CDExternalPayment.stage),
-                rescheduledRaw
-            )
-        )
-    }
 }
 
 // MARK: - Private

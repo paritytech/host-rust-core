@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -37,6 +38,10 @@ const compare = step(
   "Compare every published manifest against npm",
 );
 const report = step("registry-drift", "Report the drift");
+const iosFallback = step(
+  "registry-drift",
+  "Compare the iOS published fallback against its newest release",
+);
 const title =
   "Release drift: published versions do not match the default branch";
 const manifest = "js/packages/truapi/package.json";
@@ -471,4 +476,67 @@ test("issue listing errors do not create a duplicate", (t) => {
   );
   assert.equal(f.execute(report).status, 1);
   assert.equal(readFileSync(calls, "utf8"), "api\n");
+});
+
+
+const packageSwift = (version) =>
+  `let publishedBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-host%40${version}/truapi_server.xcframework.zip"\n`;
+
+// gh is invoked with --jq, so it emits one tag per line rather than JSON.
+const releases = (...tags) =>
+  `console.log(${JSON.stringify(tags.join("\n"))});`;
+
+test("the iOS fallback naming the newest release is not drift", (t) => {
+  const f = fixture(t);
+  f.write("Package.swift", packageSwift("0.16.0"));
+  f.stub("gh", releases("@parity/ios-host@0.16.0", "@parity/truapi@0.16.0"));
+  passed(f.execute(iosFallback));
+  assert.equal(existsSync(join(f.root, "ios-drift.txt")), false);
+});
+
+test("an older iOS fallback is recorded for the drift report", (t) => {
+  const f = fixture(t);
+  f.write("Package.swift", packageSwift("0.7.0"));
+  f.stub("gh", releases("@parity/ios-host@0.7.0", "@parity/ios-host@0.16.0"));
+  passed(f.execute(iosFallback));
+  assert.match(
+    readFileSync(join(f.root, "ios-drift.txt"), "utf8"),
+    /@parity\/ios-host@0\.16\.0 \(Package\.swift falls back to 0\.7\.0\)/,
+  );
+});
+
+test("a pre-release is never treated as the newest iOS release", (t) => {
+  const f = fixture(t);
+  f.write("Package.swift", packageSwift("0.16.0"));
+  f.stub("gh", releases("@parity/ios-host@0.16.0", "@parity/ios-host@0.17.0-beta.1"));
+  passed(f.execute(iosFallback));
+  assert.equal(existsSync(join(f.root, "ios-drift.txt")), false);
+});
+
+test("no published iOS release at all is not drift, and does not kill the step", (t) => {
+  const f = fixture(t);
+  f.write("Package.swift", packageSwift("0.16.0"));
+  f.stub("gh", releases("@parity/truapi@1.0.0"));
+  passed(f.execute(iosFallback));
+  assert.equal(existsSync(join(f.root, "ios-drift.txt")), false);
+});
+
+test("a manifest naming no iOS release fails rather than reporting no drift", (t) => {
+  const f = fixture(t);
+  f.write("Package.swift", "let publishedBinaryURL = \"https://example.com/nothing.zip\"\n");
+  f.stub("gh", releases("@parity/ios-host@0.16.0"));
+  assert.equal(f.execute(iosFallback).status, 1);
+});
+
+test("recorded iOS drift reaches the report through the npm comparison", (t) => {
+  const f = fixture(t);
+  writeFileSync(
+    join(f.root, "ios-drift.txt"),
+    "@parity/ios-host@0.16.0 (Package.swift falls back to 0.7.0)\n",
+  );
+  f.stub("npm", 'console.log(JSON.stringify("1.0.0"));');
+  const result = f.execute(compare);
+  assert.equal(result.status, 0);
+  assert.match(result.output, /drift=true/);
+  assert.match(result.output, /falls back to 0\.7\.0/);
 });

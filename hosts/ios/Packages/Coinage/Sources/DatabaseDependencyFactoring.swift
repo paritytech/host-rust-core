@@ -12,7 +12,11 @@ public protocol DatabaseDependencyFactoring: Sendable {
     /// mapper that touches only those fields — see ``CoinPresenceUpdate``.
     func makeCoinPresenceRepository() -> AnyDataProviderRepository<CoinPresenceUpdate>
     func makeVoucherRepository() -> AnyDataProviderRepository<Voucher>
+    /// A voucher repository scoped to the given public keys — a filtered query rather than the whole
+    /// set. Empty `publicKeys` still returns a repository (the caller guards the empty case).
+    func makeVoucherRepository(publicKeys: [PublicKey]) -> AnyDataProviderRepository<Voucher>
     func makeTrackedVoucherRepository() -> AnyDataProviderRepository<TrackedVoucher>
+    func makeTrackedVoucherRepository(derivationIndices: [DerivationIndex]) -> AnyDataProviderRepository<TrackedVoucher>
     /// A write-only repository for location-sync updates (`remoteState`, `privacy`), backed by a
     /// mapper that touches only those fields — see ``VoucherLocationUpdate``.
     func makeVoucherLocationRepository() -> AnyDataProviderRepository<VoucherLocationUpdate>

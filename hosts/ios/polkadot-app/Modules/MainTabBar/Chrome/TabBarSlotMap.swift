@@ -27,7 +27,11 @@ struct TabBarSlotMap: Equatable {
         return action
     }
 
+    func itemIndex(for slot: TabBarSlot) -> Int? {
+        slots.firstIndex(of: slot)
+    }
+
     func itemIndex(for action: TabBarAction) -> Int? {
-        slots.firstIndex(of: .action(action))
+        itemIndex(for: .action(action))
     }
 }

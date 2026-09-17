@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "daily"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "diario"
-          }
         }
       }
     },
@@ -38,24 +32,6 @@
               }
             }
           }
-        },
-        "es-ES": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld día"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld días"
-                }
-              }
-            }
-          }
         }
       }
     },
@@ -66,12 +42,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$(value)@ days"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(value)@ días"
           }
         }
       }
@@ -96,24 +66,6 @@
               }
             }
           }
-        },
-        "es-ES": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "todos los días"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "cada %1$(value)lld días"
-                }
-              }
-            }
-          }
         }
       }
     },
@@ -124,12 +76,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "everyday"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "todos los días"
           }
         }
       }
@@ -150,24 +96,6 @@
                 "stringUnit": {
                   "state": "translated",
                   "value": "%1$(value)lld hours"
-                }
-              }
-            }
-          }
-        },
-        "es-ES": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld hora"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld horas"
                 }
               }
             }
@@ -195,24 +123,6 @@
               }
             }
           }
-        },
-        "es-ES": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld minuto"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld minutos"
-                }
-              }
-            }
-          }
         }
       }
     },
@@ -236,24 +146,6 @@
               }
             }
           }
-        },
-        "es-ES": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld semana"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%1$(value)lld semanas"
-                }
-              }
-            }
-          }
         }
       }
     },
@@ -261,12 +153,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lldD"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "%lldD"
@@ -282,12 +168,6 @@
             "state": "translated",
             "value": "%lldH"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lldH"
-          }
         }
       }
     },
@@ -298,12 +178,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lldW"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lldS"
           }
         }
       }

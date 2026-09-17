@@ -21,6 +21,7 @@ import SubstrateSdkExt
 final class OffboardVouchersForPaymentService {
     private let instanceId: CoinageInstanceId
     private let voucherKeyFactory: any VoucherKeyDeriving
+    private let voucherService: VoucherServiceProtocol
     private let voucherMinter: any VoucherMinting
     private let recyclerLoader: RecyclerReadinessLoading
     private let txService: any CoinageTxServicing
@@ -33,6 +34,7 @@ final class OffboardVouchersForPaymentService {
     init(
         instanceId: CoinageInstanceId,
         voucherKeyFactory: any VoucherKeyDeriving,
+        voucherService: VoucherServiceProtocol,
         voucherMinter: any VoucherMinting,
         recyclerLoader: RecyclerReadinessLoading,
         txService: any CoinageTxServicing,
@@ -44,6 +46,7 @@ final class OffboardVouchersForPaymentService {
     ) {
         self.instanceId = instanceId
         self.voucherKeyFactory = voucherKeyFactory
+        self.voucherService = voucherService
         self.voucherMinter = voucherMinter
         self.recyclerLoader = recyclerLoader
         self.txService = txService
@@ -54,25 +57,22 @@ final class OffboardVouchersForPaymentService {
         self.logger = logger
     }
 
+    /// `surplus` is what `vouchers` exceed the payment by; it is folded back into fresh vouchers.
     func execute(
         payment: ExternalPayment,
-        vouchers: [Voucher]
+        vouchers: [Voucher],
+        surplus: Balance
     ) async throws -> OffboardOutcome {
-        try await executeSubmissions(payment: payment, vouchers: vouchers)
-    }
-
-    /// Whether this payment already has a registered durability group — i.e. a prior attempt got as
-    /// far as registration. Lets the state decide between re-joining and re-planning after a crash.
-    func hasPendingGroup(for payment: ExternalPayment) async throws -> Bool {
-        try await !txService.getOperationGroupStatuses(groupId(for: payment)).isEmpty
+        try await executeSubmissions(payment: payment, vouchers: vouchers, surplus: surplus)
     }
 }
 
 /// The unload's single verdict, folded from its per-group entries. `partialSuccess` is not a
-/// failure — money did move, just not all of it.
+/// failure — money did move, just not all of it: `settledInPlanks` is what the finalized groups
+/// delivered, and the payment ends there.
 enum OffboardOutcome: Equatable {
     case success
-    case partialSuccess(executed: Int, total: Int)
+    case partialSuccess(settledInPlanks: Balance, executed: Int, total: Int)
     case failed
 }
 
@@ -81,17 +81,18 @@ enum OffboardOutcome: Equatable {
 private extension OffboardVouchersForPaymentService {
     func executeSubmissions(
         payment: ExternalPayment,
-        vouchers: [Voucher]
+        vouchers: [Voucher],
+        surplus: Balance
     ) async throws -> OffboardOutcome {
         let groupId = groupId(for: payment)
 
-        try await registerOrRejoinGroup(payment: payment, vouchers: vouchers, groupId: groupId)
+        try await registerOrRejoinGroup(payment: payment, vouchers: vouchers, surplus: surplus, groupId: groupId)
 
         return try await awaitGroupOutcome(groupId: groupId)
     }
 
     func groupId(for payment: ExternalPayment) -> CoinageTxGroupId {
-        "external-payment:\(payment.id)"
+        payment.identifier
     }
 
     /// Registers the whole payment as one atomic durability group, or re-joins the group a prior
@@ -100,6 +101,7 @@ private extension OffboardVouchersForPaymentService {
     func registerOrRejoinGroup(
         payment: ExternalPayment,
         vouchers: [Voucher],
+        surplus: Balance,
         groupId: CoinageTxGroupId
     ) async throws {
         let existing = try await txService.getOperationGroupStatuses(groupId)
@@ -114,7 +116,7 @@ private extension OffboardVouchersForPaymentService {
             throw OffboardVouchersForPaymentError.missingRecyclerInfo
         }
 
-        let requests = try await buildGroupRequests(payment: payment, vouchers: vouchers)
+        let requests = try await buildGroupRequests(payment: payment, vouchers: vouchers, surplus: surplus)
         _ = try await txService.submitTransactions(requests, groupId: groupId)
         logger?.debug("Registered \(requests.count) offboard groups under \(groupId)")
 
@@ -130,13 +132,17 @@ private extension OffboardVouchersForPaymentService {
                 continue
             }
 
-            let executed = entries.filter { $0.status == .finalizedSuccess }.count
+            let finalized = entries.filter { $0.status == .finalizedSuccess }
             let total = entries.count
 
-            if executed == total {
+            if finalized.count == total {
                 return .success
-            } else if executed > 0 {
-                return .partialSuccess(executed: executed, total: total)
+            } else if !finalized.isEmpty {
+                return try await .partialSuccess(
+                    settledInPlanks: settledValue(of: finalized),
+                    executed: finalized.count,
+                    total: total
+                )
             } else {
                 return .failed
             }
@@ -147,12 +153,10 @@ private extension OffboardVouchersForPaymentService {
 
     func buildGroupRequests(
         payment: ExternalPayment,
-        vouchers: [Voucher]
+        vouchers: [Voucher],
+        surplus: Balance
     ) async throws -> [CoinageTxRequest] {
-        let details = try await buildGroupDetails(
-            groups: groupVouchers(vouchers),
-            paymentAmount: payment.amountInPlanks
-        )
+        let details = try await buildGroupDetails(groups: groupVouchers(vouchers), surplus: surplus)
 
         let blockHash = try await blockNumberProvider.fetchCurrentHash()
 
@@ -178,6 +182,47 @@ private extension OffboardVouchersForPaymentService {
                 destination: payment.destination,
                 origin: origin
             ))
+        }
+    }
+}
+
+// MARK: - Settled Value
+
+private extension OffboardVouchersForPaymentService {
+    /// What the finalized groups delivered to the destination: each group's voucher inputs minus the
+    /// surplus vouchers it minted back. Only the vouchers the entries name are read, by public key.
+    func settledValue(of entries: [CoinageTxEntry]) async throws -> Balance {
+        let inputKeys = entries.flatMap(\.inputs).compactMap { input -> (DerivationIndex, PublicKey)? in
+            guard case let .recyclerVoucher(index, key) = input else { return nil }
+            return (index, key)
+        }
+        let outputKeys = entries.flatMap(\.outputs).compactMap { output -> (DerivationIndex, PublicKey)? in
+            guard case let .recyclerVoucher(index, key) = output else { return nil }
+            return (index, key)
+        }
+        let vouchers = try await voucherService.fetchVouchers(publicKeys: Set((inputKeys + outputKeys).map(\.1)))
+        let exponents = Dictionary(
+            vouchers.map { ($0.derivationIndex, $0.exponent) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        func value(of index: DerivationIndex) throws -> Balance {
+            guard let exponent = exponents[index] else {
+                throw OffboardVouchersForPaymentError.unknownVoucher(index)
+            }
+            return denominationContext.valueInPlanks(for: exponent)
+        }
+
+        return try entries.reduce(Balance(0)) { partial, entry in
+            let inputs = try entry.inputs.reduce(Balance(0)) { sum, input in
+                guard case let .recyclerVoucher(index, _) = input else { return sum }
+                return try sum + value(of: index)
+            }
+            let outputs = try entry.outputs.reduce(Balance(0)) { sum, output in
+                guard case let .recyclerVoucher(index, _) = output else { return sum }
+                return try sum + value(of: index)
+            }
+            return partial + (inputs > outputs ? inputs - outputs : 0)
         }
     }
 }
@@ -215,11 +260,8 @@ private extension OffboardVouchersForPaymentService {
 private extension OffboardVouchersForPaymentService {
     func buildGroupDetails(
         groups: [VoucherGroup],
-        paymentAmount: Balance
+        surplus: Balance
     ) async throws -> [GroupDetails] {
-        let totalInput = groups.reduce(Balance(0)) { $0 + groupInput($1) }
-        let surplus = totalInput > paymentAmount ? totalInput - paymentAmount : Balance(0)
-
         let host = try await resolveSurplusHost(groups: groups, surplus: surplus)
 
         return groups.map { group in

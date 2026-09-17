@@ -1,7 +1,7 @@
 import SwiftUI
 import DesignSystem
 
-/// Per-chain status indicator. The arc length carries health (block age, finality stall, and ping
+/// Per-chain status indicator. The arc length carries health (block age and finality stall
 /// combined worst-of) and is colored by health score; the centre icon identifies the chain and is
 /// tinted by connection state, inverting against the disc once a fully healthy ring fills in.
 struct ChainStatusRingView: View, Hashable {
@@ -13,8 +13,8 @@ struct ChainStatusRingView: View, Hashable {
 
     var body: some View {
         let health = viewModel.health
-        let arcColor = ChainStatusRingStyle.arcColor(for: health)
-        let isFilled = ChainStatusRingStyle.isFilled(for: health)
+        let arcColor = ChainStatusRingStyle.arcColor(for: viewModel.healthGrade)
+        let isFilled = ChainStatusRingStyle.isFilled(for: viewModel.healthGrade)
 
         ZStack {
             Circle()
@@ -23,9 +23,10 @@ struct ChainStatusRingView: View, Hashable {
                 .animation(healthAnimation, value: health)
 
             Circle()
-                .stroke(Color.fgPrimary.opacity(0.2), lineWidth: lineWidth)
+                .strokeBorder(Color.fgPrimary.opacity(0.2), lineWidth: lineWidth)
 
             Circle()
+                .inset(by: lineWidth / 2)
                 .trim(from: 1 - health, to: 1)
                 .stroke(
                     arcColor,
