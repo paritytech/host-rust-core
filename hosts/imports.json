@@ -21,7 +21,7 @@
       "Packages/AppDependencies/Package.resolved",
       "polkadot-app.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
     ],
-    "ref": "844e1b99ca03959e37e8de74bfd212ec3ee73ec3",
+    "ref": "3669747020246aeed997664a5822bd50434c6770",
     "source": "https://github.com/paritytech/polkadot-ios-community.git"
   }
 }
