@@ -10,8 +10,9 @@ object FeatureFlags {
             FeatureOption.SHOW_MOB_RULE_CASE_FOR_DEVELOPMENT,
             FeatureOption.SHORT_WORKER_BACKOFF,
             FeatureOption.LOW_BATTERY_EVIDENCE_PROVISION,
-            FeatureOption.SKIP_MOBRULE_CASE,
-            FeatureOption.DEBUG_MENU -> BuildConfig.DEBUG
+            FeatureOption.SKIP_MOBRULE_CASE -> BuildConfig.DEBUG
+
+            FeatureOption.DEBUG_MENU -> BuildConfig.DEBUG_TOOLS_ENABLED
 
             FeatureOption.ARBITRARY_PRODUCTS,
             FeatureOption.BROWSE_TAB,

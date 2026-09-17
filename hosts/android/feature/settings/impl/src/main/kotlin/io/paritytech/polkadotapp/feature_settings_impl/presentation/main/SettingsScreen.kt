@@ -192,7 +192,7 @@ private fun SettingsScreenInternal(
                     VerticalSpacer { large }
                 }
 
-                AppDeviceInfoSection(state.isDebug)
+                AppDeviceInfoSection(state.debugMenuEnabled)
             }
         }
     }
@@ -204,7 +204,6 @@ private fun SettingsScreenPreview() {
     PolkadotTheme {
         SettingsScreenInternal(
             state = SettingsUiState(
-                isDebug = true,
                 debugMenuEnabled = true,
                 linkedDevicesEnabled = true,
                 productSettingsEnabled = true,

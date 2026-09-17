@@ -102,9 +102,11 @@ scripts/battery.sh         Run the generated battery against both headless CLI h
                            plus the Pocket phase a Worker execution serves
 ```
 
-Taking a screenshot opens **Report app issue** in mobile builds that enable
-the shake-opened Debug menu (`BuildConfig.DEBUG` on Android,
-`TESTNET_FEATURE` on iOS). Android screenshot detection requires Android 14+.
+Taking a screenshot opens **Report app issue** wherever the shake-opened Debug
+menu is, which is every build except the store submission: `DEBUG_TOOLS_ENABLED`
+on Android, false only for the `release` build type, and `TESTNET_FEATURE` on
+iOS, unset only for the `Release` configuration. Android screenshot detection
+requires Android 14+.
 The modal includes a snapshot of the app screen, a description, and ZIP logs.
 Send uploads the report through [issue-proxy](https://github.com/paritytech/issue-proxy).
 Configure these Firebase Remote Config string parameters for each mobile environment:

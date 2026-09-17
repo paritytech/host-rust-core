@@ -37,6 +37,8 @@ import io.paritytech.polkadotapp.common.presentation.notification.AppNotifier
 import io.paritytech.polkadotapp.common.presentation.notification.error
 import io.paritytech.polkadotapp.common.presentation.resources.ContextManager
 import io.paritytech.polkadotapp.common.presentation.screens.ObserveViewModelEvents
+import io.paritytech.polkadotapp.common.utils.FeatureOption
+import io.paritytech.polkadotapp.common.utils.isEnabled
 import io.paritytech.polkadotapp.common.utils.observe
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.ChainHealthBar
@@ -87,9 +89,9 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
         handleDeeplinkOutcome()
         if (BuildConfig.DEBUG) {
             setupDevResetOverlay()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                lifecycle.addObserver(DebugScreenshotObserver(this, navController, router, appNotifier))
-            }
+        }
+        if (FeatureOption.DEBUG_MENU.isEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            lifecycle.addObserver(DebugScreenshotObserver(this, navController, router, appNotifier))
         }
         setupRootNavBar()
         setupAppNotificationOverlay()
