@@ -127,6 +127,11 @@ impl SubscriptionState {
     /// `close_with_error`, which can drain and report on another thread between
     /// the sink being taken and the send: a subscriber can see one item behind
     /// the close error. That window is the same one the two-lock version had.
+    ///
+    /// Two deliveries for one subscription stay in order because there is a
+    /// single response loop calling this, not because of the lock. That is a
+    /// property of the call graph: `handle_notification` has one caller,
+    /// `handle_frame`, which runs only on the response-loop task.
     fn deliver_or_buffer(
         &mut self,
         subscription_id: String,
@@ -864,6 +869,72 @@ mod tests {
         let second = second.expect("a live notification").expect("decodes");
         assert_eq!(first, json!({ "event": "buffered" }));
         assert_eq!(second, json!({ "event": "live" }));
+    }
+
+    /// Replay order, pinned without a thread: two buffered items and one that
+    /// arrives after activation must come out in arrival order. The threaded
+    /// test below only observes this when the deliverer wins the lock race, so
+    /// the deterministic version is what actually guards it.
+    #[test]
+    fn buffered_events_replay_in_arrival_order() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
+        let (tx, mut rx) = mpsc::unbounded();
+
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), raw(r#"{"event":"first"}"#));
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), raw(r#"{"event":"second"}"#));
+
+        client
+            .inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .activate("sub-1".to_string(), tx);
+
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), raw(r#"{"event":"live"}"#));
+
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                r#"{"event":"first"}"#.to_string(),
+                r#"{"event":"second"}"#.to_string(),
+                r#"{"event":"live"}"#.to_string(),
+            ],
+            "buffered events must replay oldest first, ahead of anything later"
+        );
+    }
+
+    /// The lock is taken from `Drop`, so a poisoned one must not turn a failure
+    /// somewhere else into a second panic during unwinding, which aborts the
+    /// process rather than reporting anything.
+    #[test]
+    fn a_poisoned_subscription_lock_still_closes_cleanly() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
+        let inner = Arc::clone(&client.inner);
+
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = inner.subscriptions.lock().unwrap();
+            panic!("poisoning the subscription lock on purpose");
+        }));
+        assert!(
+            poisoned.is_err(),
+            "the helper panic should have been caught"
+        );
+        assert!(
+            client.inner.subscriptions.is_poisoned(),
+            "the lock should be poisoned for this test to mean anything"
+        );
+
+        // Would panic a second time under `unwrap`, aborting the test binary.
+        client
+            .inner
+            .close_with_error(client_error("peer went away"));
+        client.inner.unsubscribe("sub-1", "unsub");
     }
 
     /// A notification delivered while activation is mid-flight waits for the
