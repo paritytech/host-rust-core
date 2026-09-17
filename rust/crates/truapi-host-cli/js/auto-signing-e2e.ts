@@ -156,10 +156,7 @@ export async function runAutoSigningE2e(
           `${name} failed: ${JSON.stringify(result.error)}`,
         );
       }
-      const prompts = actionLines(
-        newLinesSince(before, readTranscript()),
-        action,
-      );
+      const prompts = promptsSince(before, action);
       return prompts.length > 0
         ? finish(
             "fail",

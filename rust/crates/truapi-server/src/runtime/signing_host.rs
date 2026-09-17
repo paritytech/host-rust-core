@@ -778,6 +778,7 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         request: SignPayloadAuthorityRequest,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         self.require_current_session(session)?;
@@ -797,6 +798,7 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         request: SignRawAuthorityRequest,
         watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
@@ -832,6 +834,7 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         request: CreateTransactionAuthorityRequest,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
         self.require_current_session(session)?;
@@ -1245,6 +1248,7 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         account: v01::ProductAccountId,
         payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError> {
@@ -3174,6 +3178,7 @@ mod tests {
         let product_response = futures::executor::block_on(authority.sign_payload(
             &cx,
             &session,
+            None,
             SignPayloadAuthorityRequest::Product(v01::HostSignPayloadRequest {
                 account: product_account(0),
                 payload: payload.clone(),
@@ -3214,6 +3219,7 @@ mod tests {
         let legacy_response = futures::executor::block_on(authority.sign_payload(
             &cx,
             &session,
+            None,
             SignPayloadAuthorityRequest::LegacyAccount {
                 product_account: product_account(0),
                 request: v01::HostSignPayloadWithLegacyAccountRequest {
@@ -3255,6 +3261,7 @@ mod tests {
         let response = futures::executor::block_on(authority.sign_raw(
             &cx,
             &session,
+            None,
             request(identity.public.to_bytes()),
             true,
         ))
@@ -3270,6 +3277,7 @@ mod tests {
         let error = futures::executor::block_on(authority.sign_raw(
             &cx,
             &session,
+            None,
             request([0xff; 32]),
             true,
         ))
@@ -3328,6 +3336,7 @@ mod tests {
         let response = futures::executor::block_on(activation.create_transaction(
             &cx,
             &session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(0)),
         ))
         .expect("create_transaction ok");
@@ -3361,6 +3370,7 @@ mod tests {
         let err = futures::executor::block_on(activation.create_transaction(
             &cx,
             &session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(1)),
         ))
         .expect_err("unknown transaction version is unsupported");
@@ -3384,6 +3394,7 @@ mod tests {
         let err = futures::executor::block_on(activation.create_transaction(
             &cx,
             &session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(5)),
         ))
         .expect_err("fixture cannot resolve metadata");
@@ -3412,9 +3423,10 @@ mod tests {
                 tx_ext_version: 0,
             },
         };
-        let err =
-            futures::executor::block_on(activation.create_transaction(&cx, &session, request))
-                .expect_err("mismatched legacy signer");
+        let err = futures::executor::block_on(
+            activation.create_transaction(&cx, &session, None, request),
+        )
+        .expect_err("mismatched legacy signer");
         assert!(
             matches!(err, AuthorityError::Unknown { reason } if reason.contains("does not match"))
         );
@@ -3445,9 +3457,10 @@ mod tests {
                 tx_ext_version: 0,
             },
         };
-        let response =
-            futures::executor::block_on(activation.create_transaction(&cx, &session, request))
-                .expect("legacy create_transaction ok");
+        let response = futures::executor::block_on(
+            activation.create_transaction(&cx, &session, None, request),
+        )
+        .expect("legacy create_transaction ok");
 
         let (account, signature, tail) = split_v4(&response.transaction);
         assert_eq!(account, keypair.public.to_bytes());
@@ -3475,6 +3488,7 @@ mod tests {
         let err = futures::executor::block_on(activation.create_transaction(
             &cx,
             &stale_session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(0)),
         ))
         .expect_err("no active session");
@@ -3592,6 +3606,7 @@ mod tests {
         let err = futures::executor::block_on(authority.sign_raw(
             &cx,
             &stale,
+            None,
             SignRawAuthorityRequest::Product(request),
             true,
         ))
@@ -3620,6 +3635,7 @@ mod tests {
         let err = futures::executor::block_on(authority.sign_raw(
             &cx,
             &session,
+            None,
             SignRawAuthorityRequest::Product(request),
             true,
         ))

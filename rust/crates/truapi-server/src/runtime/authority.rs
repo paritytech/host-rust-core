@@ -426,28 +426,42 @@ pub(crate) trait ProductAuthority: Send + Sync {
     ) -> Result<VrfSignature, AuthorityError>;
 
     /// Sign a SCALE transaction payload for a product account.
+    ///
+    /// `calling_product_id` is the product making the call, which is not always
+    /// the product the account belongs to; an authority that can serve the
+    /// account locally must bind the two before it does. `None` is a path that
+    /// carries no caller identity — the SSO relay — and an authority that
+    /// cannot identify the caller must not serve the account locally.
     async fn sign_payload(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: SignPayloadAuthorityRequest,
     ) -> Result<HostSignPayloadResponse, AuthorityError>;
 
     /// Sign arbitrary bytes for a product account.
+    ///
+    /// `calling_product_id` carries the same binding obligation as
+    /// [`ProductAuthority::sign_payload`].
     async fn sign_raw(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: SignRawAuthorityRequest,
         watermarked: bool,
     ) -> Result<HostSignPayloadResponse, AuthorityError>;
 
     /// Build a transaction for a product account, signed unless the request
     /// supplies its own V5 `VerifyMultiSignature` extension.
+    /// `calling_product_id` carries the same binding obligation as
+    /// [`ProductAuthority::sign_payload`].
     async fn create_transaction(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: CreateTransactionAuthorityRequest,
     ) -> Result<HostCreateTransactionResponse, AuthorityError>;
 
@@ -539,6 +553,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         account: ProductAccountId,
         payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError>;

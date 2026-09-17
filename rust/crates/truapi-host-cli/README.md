@@ -545,9 +545,10 @@ Scripts under `js/scripts/` include:
   On top of the generated examples it runs one hand-written
   `Resource Allocation/auto_signing_e2e` case: allocate `AutoSigning`, then
   prove through the hosts' consulted-approval transcript
-  (`TRUAPI_APPROVALS_LOG`, exported per phase by `scripts/battery.sh`) that
-  follow-up `sign_vrf` calls for the granting product run without a
-  confirmation prompt.
+  (`TRUAPI_APPROVALS_LOG`, exported per phase by `scripts/battery.sh`) that the
+  calls the grant covers — `sign_vrf`, `sign_raw`, `sign_payload` and
+  `create_transaction` — run for the granting product without a confirmation
+  prompt.
 
   `scripts/battery.sh` at the repo root is the supported entry point. It
   prepares the codegen output and playground dependencies the battery imports,

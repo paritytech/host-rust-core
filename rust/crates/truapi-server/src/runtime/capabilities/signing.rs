@@ -78,8 +78,12 @@ impl Signing for ProductRuntimeHost {
         let cx = remote_authority_context(cx);
         remote_authority_call(
             &cx,
-            self.authority
-                .sign_payload(&cx, &session, SignPayloadAuthorityRequest::Product(inner)),
+            self.authority.sign_payload(
+                &cx,
+                &session,
+                Some(self.product_id().as_str()),
+                SignPayloadAuthorityRequest::Product(inner),
+            ),
         )
         .await
         .map(HostSignPayloadResponse::V1)
@@ -160,6 +164,7 @@ impl Signing for ProductRuntimeHost {
             self.authority.create_transaction(
                 &cx,
                 &session,
+                Some(self.product_id().as_str()),
                 CreateTransactionAuthorityRequest::Product(inner),
             ),
         )
@@ -222,6 +227,7 @@ impl Signing for ProductRuntimeHost {
             self.authority.sign_payload(
                 &cx,
                 &session,
+                Some(self.product_id().as_str()),
                 SignPayloadAuthorityRequest::LegacyAccount {
                     product_account: v01::ProductAccountId {
                         dot_ns_identifier: self.product_id(),
@@ -321,8 +327,12 @@ impl Signing for ProductRuntimeHost {
         };
         remote_authority_call(
             &cx,
-            self.authority
-                .create_transaction(&cx, &session, authority_request),
+            self.authority.create_transaction(
+                &cx,
+                &session,
+                Some(self.product_id().as_str()),
+                authority_request,
+            ),
         )
         .await
         .map(|response| {
@@ -416,6 +426,7 @@ impl ProductRuntimeHost {
             self.authority.sign_raw(
                 &cx,
                 &session,
+                Some(self.product_id().as_str()),
                 SignRawAuthorityRequest::Product(inner),
                 watermarked,
             ),
@@ -483,8 +494,13 @@ impl ProductRuntimeHost {
         };
         remote_authority_call(
             &cx,
-            self.authority
-                .sign_raw(&cx, &session, authority_request, watermarked),
+            self.authority.sign_raw(
+                &cx,
+                &session,
+                Some(self.product_id().as_str()),
+                authority_request,
+                watermarked,
+            ),
         )
         .await
         .map(HostSignRawWithLegacyAccountResponse::V1)

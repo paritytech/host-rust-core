@@ -2051,11 +2051,23 @@ impl PairingHost {
     /// predicate and every local fast path call it, so a request can never be
     /// told "no prompt" and then relayed to a signing host that will prompt
     /// for it.
+    ///
+    /// A caller may name an account belonging to another product —
+    /// `is_product_account_valid_for_caller` admits that for a `localhost`
+    /// caller — and the grant covers the owning product's subtree, not the
+    /// caller's. Serving one locally would sign with a key the caller was
+    /// never granted and skip the confirmation the signing host raises for a
+    /// relayed request, so the binding is checked here rather than only at the
+    /// gate.
     async fn local_product_signing_key(
         &self,
         session: &SessionInfo,
+        calling_product_id: Option<&str>,
         account: &v01::ProductAccountId,
     ) -> Result<Option<schnorrkel::Keypair>, AuthorityError> {
+        if calling_product_id != Some(account.dot_ns_identifier.as_str()) {
+            return Ok(None);
+        }
         let Some(key) = self
             .auto_signing_key(session, &account.dot_ns_identifier)
             .await?
@@ -2084,12 +2096,12 @@ impl PairingHost {
         calling_product_id: &str,
         account: &v01::ProductAccountId,
     ) -> Result<AutoSigningGrant, AuthorityError> {
-        if calling_product_id != account.dot_ns_identifier {
-            return Ok(AutoSigningGrant::Absent);
-        }
         let session = self.current_private_session(session)?;
         Ok(
-            match self.local_product_signing_key(&session, account).await? {
+            match self
+                .local_product_signing_key(&session, Some(calling_product_id), account)
+                .await?
+            {
                 Some(_) => AutoSigningGrant::Active,
                 None => AutoSigningGrant::Absent,
             },
@@ -2147,12 +2159,13 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: SignPayloadAuthorityRequest,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         let session = self.current_private_session(session)?;
         if let SignPayloadAuthorityRequest::Product(payload) = &request
             && let Some(keypair) = self
-                .local_product_signing_key(&session, &payload.account)
+                .local_product_signing_key(&session, calling_product_id, &payload.account)
                 .await?
         {
             return Ok(sign_extrinsic_payload(&keypair, payload.payload.clone())?);
@@ -2164,6 +2177,7 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: SignRawAuthorityRequest,
         watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
@@ -2173,7 +2187,7 @@ impl PairingHost {
         if watermarked
             && let SignRawAuthorityRequest::Product(payload) = &request
             && let Some(keypair) = self
-                .local_product_signing_key(&session, &payload.account)
+                .local_product_signing_key(&session, calling_product_id, &payload.account)
                 .await?
         {
             let message = raw_payload_bytes(payload.payload.clone(), watermarked)?;
@@ -2194,18 +2208,30 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: CreateTransactionAuthorityRequest,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
         let session = self.current_private_session(session)?;
         if let CreateTransactionAuthorityRequest::Product(payload) = &request
             && let Some(keypair) = self
-                .local_product_signing_key(&session, &payload.signer)
+                .local_product_signing_key(&session, calling_product_id, &payload.signer)
                 .await?
         {
             // A V5 payload this host cannot assemble is an error, not a
             // fall-through to the relay: the gate already told the caller no
             // prompt was coming, and relaying would raise one on the signing
             // host after a chain timeout.
+            //
+            // A V5 payload needs runtime metadata, which a granted product
+            // moves from the signing host to this one. A pairing host is
+            // assumed to reach any genesis a product it has granted signs
+            // against; where it cannot, the call fails rather than producing
+            // the prompt-and-signature an ungranted product would have got.
+            //
+            // The failure is not prompt. An unreachable genesis leaves the
+            // metadata read waiting on the chain, so the caller can sit on the
+            // authority request timeout before it sees anything — the cost of
+            // assembling locally is paid before the grant can be found wanting.
             return Ok(build_local_transaction(
                 &self.chain,
                 &keypair,
@@ -2470,6 +2496,7 @@ impl PairingHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         account: v01::ProductAccountId,
         payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError> {
@@ -2478,7 +2505,10 @@ impl PairingHost {
         // payload, so the capability's own key is the only way this role signs
         // one. Statement proofs raise no confirmation on either role, so this
         // unlocks the operation rather than waiving a prompt.
-        let Some(keypair) = self.local_product_signing_key(&session, &account).await? else {
+        let Some(keypair) = self
+            .local_product_signing_key(&session, calling_product_id, &account)
+            .await?
+        else {
             return Err(AuthorityError::Unavailable {
                 reason: "pairing host: exact statement proof signing needs an AutoSigning \
                          capability; the current SSO raw-signing protocol cannot carry it"
@@ -2620,28 +2650,31 @@ impl ProductAuthority for PairingHost {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: SignPayloadAuthorityRequest,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
-        PairingHost::sign_payload(self, cx, session, request).await
+        PairingHost::sign_payload(self, cx, session, calling_product_id, request).await
     }
 
     async fn sign_raw(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: SignRawAuthorityRequest,
         watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
-        PairingHost::sign_raw(self, cx, session, request, watermarked).await
+        PairingHost::sign_raw(self, cx, session, calling_product_id, request, watermarked).await
     }
 
     async fn create_transaction(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         request: CreateTransactionAuthorityRequest,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
-        PairingHost::create_transaction(self, cx, session, request).await
+        PairingHost::create_transaction(self, cx, session, calling_product_id, request).await
     }
 
     async fn account_alias(
@@ -2730,10 +2763,19 @@ impl ProductAuthority for PairingHost {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
+        calling_product_id: Option<&str>,
         account: v01::ProductAccountId,
         payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError> {
-        PairingHost::sign_statement_store_product_payload(self, cx, session, account, payload).await
+        PairingHost::sign_statement_store_product_payload(
+            self,
+            cx,
+            session,
+            calling_product_id,
+            account,
+            payload,
+        )
+        .await
     }
 
     fn derive_entropy(
