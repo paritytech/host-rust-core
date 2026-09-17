@@ -1,3 +1,4 @@
+use alloc::{string::String, vec::Vec};
 use parity_scale_codec::{Decode, Encode};
 
 /// RFC 0017 CoinPayment purse identifier.

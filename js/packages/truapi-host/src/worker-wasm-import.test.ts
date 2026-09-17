@@ -20,6 +20,7 @@ const gluePath = join(packageRoot, "dist", GLUE_SPECIFIER);
 const GLUE_EXPORTS = [
   "default",
   "WasmPairingHostRuntime",
+  "WasmSigningHostRuntime",
   "WasmProductRuntime",
   "setLogLevel",
 ] as const;

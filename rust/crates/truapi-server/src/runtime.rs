@@ -33,8 +33,7 @@ pub(crate) mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
 pub(crate) mod sso_remote;
 pub(crate) mod sso_service;
-/// Native Statement Store and Bulletin allowance allocation.
-#[cfg(not(target_arch = "wasm32"))]
+/// Statement Store and Bulletin allowance allocation.
 pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
 pub(crate) mod statement_store;
@@ -60,6 +59,7 @@ pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, disconnect_paired_host,
     establish_pairing, respond_to_pairing, resume_pairing,
 };
+pub use signing_host::{LocalIdentity, LocalIdentityContext};
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
