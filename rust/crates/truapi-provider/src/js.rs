@@ -292,7 +292,8 @@ impl ChainProviderHandle {
 #[wasm_bindgen]
 impl ChainProviderHandle {
     /// Open a connection to the chain identified by the `0x`-prefixed genesis
-    /// hash. Rejects when the chain is not registered or the transport fails.
+    /// hash. Rejects when the chain is not registered, the transport fails, or
+    /// the light client already holds as many connections as it allows.
     pub async fn connect(&self, genesis_hash: &str) -> Result<Connection, JsError> {
         let genesis = parse_genesis(genesis_hash)?;
         // Stored state is an optimisation, so storage that cannot answer leaves

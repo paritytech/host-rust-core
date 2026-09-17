@@ -18,7 +18,7 @@ use futures::future::{AbortHandle, Abortable};
 use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::{Decode, Encode};
 use thiserror::Error;
-use tracing::instrument;
+use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
 use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
@@ -255,6 +255,7 @@ impl PairingHostRuntime {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             spawner.clone(),
             chat_platform,
         );
@@ -590,9 +591,19 @@ impl SigningHostRuntime {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             spawner,
             chat_platform,
         );
+        if services.asset_hub_chain_genesis_hash().is_none() {
+            // Said once at startup because the refusals themselves are
+            // indistinguishable from an ungranted read. Only as visible as the
+            // host's log level, which defaults to `ERROR`.
+            warn!(
+                "no Asset Hub configured: no product manifest will resolve, so \
+                 every cross-product grant not already cached is refused"
+            );
+        }
         let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
         Self {
             services,
@@ -1658,6 +1669,8 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            // Distinct from its siblings so a transposition stays visible.
+            [0xcc; 32],
             "testnet".to_string(),
         )
         .expect("signing host config is valid");
@@ -2811,6 +2824,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "paseo".to_string(),
         )
         .expect("signing host config is valid");
@@ -2858,6 +2872,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "paseo".to_string(),
         )
         .expect("signing host config is valid");
@@ -2973,6 +2988,203 @@ mod tests {
         assert_eq!(
             error.reason,
             r#"statement_submit not accepted: {"reason":"badProof","status":"rejected"}"#
+        );
+    }
+
+    /// Signing-host config carrying `asset_hub`, otherwise the shape every
+    /// other signing test here uses.
+    fn signing_config_with_asset_hub(asset_hub: [u8; 32]) -> truapi_platform::SigningHostConfig {
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            // Same-typed and positional, so a transposition only shows up if
+            // no two are equal.
+            [0xaa; 32],
+            [0xbb; 32],
+            asset_hub,
+            "paseo".to_string(),
+        )
+        .expect("signing host config is valid")
+    }
+
+    #[test]
+    fn a_signing_host_runtime_carries_its_asset_hub_for_manifest_resolution() {
+        // Without this the signing role resolves no manifest and refuses every
+        // uncached grant. A seeded cache entry is served before the hash is
+        // consulted, which is why a seeded CLI looked healthy.
+        let runtime = SigningHostRuntime::new(
+            Arc::new(StubPlatform::default()),
+            signing_config_with_asset_hub([0xcc; 32]),
+            test_spawner(),
+        );
+        assert_eq!(
+            runtime.services.asset_hub_chain_genesis_hash(),
+            Some([0xcc; 32]),
+            "the signing role resolves manifests against the Asset Hub it was configured with"
+        );
+    }
+
+    #[test]
+    fn a_pairing_host_runtime_carries_its_asset_hub_too() {
+        // The sibling half of the same invariant, so #660 cannot recur one role
+        // over.
+        use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
+
+        let config = PairingHostConfig::new(
+            HostInfo {
+                name: "Polkadot Web".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Web,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+            [0xdd; 32],
+            "polkadotapp".to_string(),
+        )
+        .expect("pairing host config is valid");
+        let runtime =
+            PairingHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner());
+        assert_eq!(
+            runtime.services.asset_hub_chain_genesis_hash(),
+            Some([0xdd; 32]),
+            "the pairing role resolves manifests against its configured Asset Hub"
+        );
+    }
+
+    #[test]
+    fn an_all_zero_asset_hub_is_how_a_signing_host_says_it_has_none() {
+        // One spelling of "no Asset Hub", so grants fail closed without a
+        // second sentinel crossing the boundary.
+        let runtime = SigningHostRuntime::new(
+            Arc::new(StubPlatform::default()),
+            signing_config_with_asset_hub([0; 32]),
+            test_spawner(),
+        );
+        // The hash is a constructor argument, so `None` here can only mean the
+        // configured zeros.
+        assert_eq!(runtime.services.asset_hub_chain_genesis_hash(), None);
+    }
+
+    #[test]
+    fn the_asset_hub_argument_reaches_the_asset_hub_slot() {
+        // Three adjacent `[u8; 32]` by position: a transposition compiles.
+        // People and Bulletin are not readable back, so pin the one slot that
+        // is.
+        let services = crate::runtime::services::RuntimeServices::new(
+            Arc::new(StubPlatform::default()),
+            truapi_platform::HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            [0xaa; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+            test_spawner(),
+        );
+        assert_eq!(
+            services.asset_hub_chain_genesis_hash(),
+            Some([0xcc; 32]),
+            "the third hash is Asset Hub, not People ([0xaa; 32]) or Bulletin ([0xbb; 32])"
+        );
+    }
+
+    /// What a manifest lookup did: the RPC the core sent, and the genesis
+    /// hashes it dialled. The second is what distinguishes "asked the chain"
+    /// from "asked the *right* chain".
+    struct ManifestLookup {
+        rpc: Vec<String>,
+        connects: Vec<[u8; 32]>,
+    }
+
+    /// A cross-product storage read for `owner`, uncached, on a signing-role
+    /// product runtime configured with `asset_hub`.
+    fn signing_manifest_lookup_rpc(asset_hub: [u8; 32]) -> ManifestLookup {
+        use truapi::api::LocalStorage;
+        use truapi::versioned::local_storage::HostLocalStorageReadRequest;
+
+        // The stub serves no dotNS either way, so end the follow rather than
+        // wait out `dotns_lookup::OPERATION_TIMEOUT` for the same refusal.
+        let platform = Arc::new(StubPlatform {
+            chain_responses_end: true,
+            ..StubPlatform::default()
+        });
+        let runtime = SigningHostRuntime::new(
+            platform.clone(),
+            signing_config_with_asset_hub(asset_hub),
+            test_spawner(),
+        );
+        let host = ProductRuntimeHost::from_services(
+            runtime.services.clone(),
+            ConnectionAdapters::from_services(&runtime.services),
+            runtime.signing_host.clone(),
+            ProductContext::new("unknown.dot".to_string()).expect("valid product id"),
+        );
+        // Nothing is cached for `wallet.dot`, so resolution reaches dotNS,
+        // the path the missing hash short-circuited.
+        let read = futures::executor::block_on(LocalStorage::read(
+            &host,
+            &truapi::CallContext::default(),
+            HostLocalStorageReadRequest::V2(truapi::v02::HostLocalStorageReadRequest {
+                product: Some("wallet.dot".to_string()),
+                key: "k".to_string(),
+            }),
+        ));
+        assert!(
+            read.is_err(),
+            "the stub serves no dotNS registry, so the read is refused either way"
+        );
+        ManifestLookup {
+            rpc: platform
+                .sent_rpc
+                .lock()
+                .expect("sent rpc mutex poisoned")
+                .clone(),
+            connects: platform
+                .chain_connects
+                .lock()
+                .expect("chain connect mutex poisoned")
+                .clone(),
+        }
+    }
+
+    #[test]
+    fn a_signing_host_takes_a_manifest_miss_to_the_chain() {
+        // The refusal is identical either way, so whether the core asked the
+        // chain is the only observable difference.
+        let configured = signing_manifest_lookup_rpc([0xcc; 32]);
+        assert!(
+            !configured.rpc.is_empty(),
+            "a configured signing role resolves an uncached manifest over dotNS"
+        );
+
+        // A lookup wired to People or Bulletin also produces RPC and also
+        // refuses, so pin the chain actually dialled.
+        assert_eq!(
+            configured.connects,
+            vec![[0xcc; 32]],
+            "the manifest lookup dials Asset Hub, not People ([0xaa; 32]) or \
+             Bulletin ([0xbb; 32])"
+        );
+
+        let unconfigured = signing_manifest_lookup_rpc([0; 32]);
+        assert!(
+            unconfigured.rpc.is_empty(),
+            "a signing role with no Asset Hub refuses without touching the chain"
+        );
+        assert!(
+            unconfigured.connects.is_empty(),
+            "and does not dial any chain at all"
         );
     }
 }

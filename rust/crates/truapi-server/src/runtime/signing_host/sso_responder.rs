@@ -1076,6 +1076,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             NETWORK_SUFFIX.to_string(),
         )
         .expect("signing host config is valid");
@@ -1084,6 +1085,7 @@ mod tests {
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
+            config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
         let signing_host = SigningHost::new(services.clone(), config.network_suffix);

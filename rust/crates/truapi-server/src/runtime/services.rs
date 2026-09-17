@@ -41,10 +41,9 @@ pub(crate) struct RuntimeServices {
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
-    /// Asset Hub the dotNS contracts are deployed on, installed once at startup
-    /// by the host that knows its chain configuration. Unset leaves every
-    /// manifest unresolvable, so no cross-product grant is honoured.
-    asset_hub_chain_genesis_hash: OnceLock<[u8; 32]>,
+    /// Asset Hub the dotNS contracts are deployed on. All-zero says this host
+    /// has none, which leaves every manifest unresolvable.
+    asset_hub_chain_genesis_hash: [u8; 32],
     /// Reference counts per product worker.
     pub(crate) worker_ledger: WorkerLedger,
     /// Shared chainHead-v1 runtime behind the Chain surface.
@@ -75,13 +74,18 @@ pub(crate) struct RuntimeServices {
 impl RuntimeServices {
     /// Build role-neutral runtime services from the platform, the host
     /// identity reported to products, the People-chain genesis hash used by
-    /// statement-store backed protocols, and the Bulletin-chain genesis hash
-    /// used for in-core preimage submission.
+    /// statement-store backed protocols, the Bulletin-chain genesis hash used
+    /// for in-core preimage submission, and the Asset Hub genesis hash product
+    /// manifests are resolved from.
+    ///
+    /// The three genesis hashes are adjacent and same-typed, so a transposition
+    /// compiles. Each call site is pinned by its own test.
     pub(crate) fn new(
         platform: Arc<dyn Platform>,
         host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
+        asset_hub_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
     ) -> Arc<Self> {
         let chain_provider = Arc::new(HostChainProvider {
@@ -97,7 +101,7 @@ impl RuntimeServices {
             chat_platform: None,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
-            asset_hub_chain_genesis_hash: OnceLock::new(),
+            asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
             chain,
             statement_store,
@@ -118,6 +122,7 @@ impl RuntimeServices {
         host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
+        asset_hub_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
         chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     ) -> Arc<Self> {
@@ -126,6 +131,7 @@ impl RuntimeServices {
             host_info,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             spawner,
         );
         let Some(chat_platform) = chat_platform else {
@@ -148,21 +154,20 @@ impl RuntimeServices {
         self.permission_status.set(host).is_ok()
     }
 
-    /// Records the Asset Hub the dotNS contracts live on. Returns false when a
-    /// hash is already installed.
-    pub(crate) fn install_asset_hub_genesis_hash(&self, genesis_hash: [u8; 32]) -> bool {
-        self.asset_hub_chain_genesis_hash.set(genesis_hash).is_ok()
-    }
-
     /// The Asset Hub dotNS reads run against, when one is configured.
     ///
-    /// An all-zero hash is how a host says it has no Asset Hub, so it reads the
-    /// same as never having installed one.
+    /// Taken by construction, so the chain a grant is adjudicated against
+    /// cannot move under a running product. It is deliberately not sourced from
+    /// `supported_chains()`, which is an uncached per-call host syscall
+    /// answering a different question, "which chains do I serve RPC for?", the
+    /// product-facing `get_chain_info` advertisement, rather than "which Asset
+    /// Hub is dotNS deployed on?". Taking it from there would let the anchor
+    /// change between two calls, at host discretion, with nothing recording it.
+    ///
+    /// An all-zero hash is how a host says it has no Asset Hub. `None` fails
+    /// every manifest lookup closed: grants are refused rather than assumed.
     pub(crate) fn asset_hub_chain_genesis_hash(&self) -> Option<[u8; 32]> {
-        self.asset_hub_chain_genesis_hash
-            .get()
-            .copied()
-            .filter(|hash| *hash != [0u8; 32])
+        Some(self.asset_hub_chain_genesis_hash).filter(|hash| *hash != [0u8; 32])
     }
 
     /// The host's live OS permission-status adapter, when one is installed.

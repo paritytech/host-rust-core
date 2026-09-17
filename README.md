@@ -139,7 +139,11 @@ a single package with tree-shakeable subpath entries:
 
 A host that serves chain traffic itself embeds the `truapi-provider` crate: an
 embedded smoldot light client plus a bundled chain-spec catalog, addressed by
-genesis hash, so the host ships no chain specs and never refreshes them. The crate
+genesis hash, so the host ships no chain specs and never refreshes them. The light
+client holds at most 32 connections at once and refuses a `connect` past that, so a
+consumer that leaks them fails instead of growing; closing one hands its slot back.
+Connections to a remote node, which only the WASM build compiles, are not counted
+against it. The crate
 compiles to one binary artifact per platform, each exposing the same
 `ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
 dependency on the crate:

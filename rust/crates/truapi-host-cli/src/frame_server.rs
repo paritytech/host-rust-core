@@ -764,6 +764,7 @@ mod tests {
             },
             network.people_genesis,
             network.bulletin_genesis,
+            network.asset_hub_genesis,
             network.network_suffix.to_string(),
         )?;
         let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
@@ -1157,7 +1158,19 @@ mod tests {
         }
 
         fn host() -> Result<(Arc<crate::platform::CliPlatform>, SigningHostRuntime)> {
-            let network = crate::network::Network::default().config();
+            // The override must land on `live_chain_endpoints`: that is the
+            // table `CliPlatform` resolves a genesis through. `asset_hub_ws`
+            // feeds the standalone `AssetHubReader` subcommands. Only Asset Hub
+            // is rerouted here.
+            static CLOSED_ASSET_HUB: &[crate::network::ChainEndpoint] =
+                &[crate::network::ChainEndpoint {
+                    genesis: crate::network::PASEO_ASSET_HUB.genesis,
+                    ws: "ws://127.0.0.1:1",
+                    required_for_host: true,
+                }];
+            let mut network = crate::network::Network::default().config();
+            network.live_chain_endpoints = CLOSED_ASSET_HUB;
+            let asset_hub_genesis = network.asset_hub_genesis;
             let platform = crate::platform::CliPlatform::new(
                 network,
                 None,
@@ -1177,8 +1190,16 @@ mod tests {
                 },
                 network.people_genesis,
                 network.bulletin_genesis,
+                network.asset_hub_genesis,
                 network.network_suffix.to_string(),
             )?;
+            // An override written to a field this path never reads compiles,
+            // changes nothing, and looks identical in timings. Assert it.
+            assert_eq!(
+                platform.routed_url(&asset_hub_genesis),
+                "ws://127.0.0.1:1",
+                "the Asset Hub genesis must route to the closed port, not to live Paseo"
+            );
             let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
             Ok((
                 platform.clone(),
@@ -1305,9 +1326,9 @@ mod tests {
 
         #[tokio::test]
         async fn a_product_with_no_config_is_refused_the_same_way() -> Result<()> {
-            // No config applied, and no Asset Hub on the signing role, so the
-            // lookup finds nothing. It must be the same refusal as a config
-            // that named someone else.
+            // An Asset Hub that never answers is refused identically to a
+            // config that named someone else: the caller cannot tell "not
+            // granted" from "could not look it up".
             let (_platform, runtime) = host()?;
             write_owner_value(&runtime).await;
             assert_eq!(

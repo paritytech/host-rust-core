@@ -123,12 +123,20 @@ extension TrUAPIHostRuntimeProvider {
     ) throws -> HostRuntimeConfig {
         let peopleChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.usernameChain)
         let bulletinChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.bulletInChain)
+        let assetHubChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.assethubChain)
 
         guard let peopleGenesisHex = peopleChain.explicitGenesisHash else {
             throw TrUAPIRuntimeConfigError.missingGenesisHash(chain: "people")
         }
         guard let bulletinGenesisHex = bulletinChain.explicitGenesisHash else {
             throw TrUAPIRuntimeConfigError.missingGenesisHash(chain: "bulletin")
+        }
+        // Product manifests are read from the dotNS contracts on Asset Hub, so
+        // a missing hash here refuses every cross-product `trustedProducts`
+        // grant indistinguishably from the other product granting nothing.
+        // Fail explicitly, like its siblings, rather than passing all-zero.
+        guard let assetHubGenesisHex = assetHubChain.explicitGenesisHash else {
+            throw TrUAPIRuntimeConfigError.missingGenesisHash(chain: "assetHub")
         }
 
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
@@ -140,6 +148,7 @@ extension TrUAPIHostRuntimeProvider {
             platformVersion: UIDevice.current.systemVersion,
             peopleChainGenesisHash: Data(hexString: peopleGenesisHex),
             bulletinChainGenesisHash: Data(hexString: bulletinGenesisHex),
+            assetHubChainGenesisHash: Data(hexString: assetHubGenesisHex),
             networkSuffix: networkSuffix,
             localSessionSecret: secret,
             localSessionLiteUsername: liteUsername

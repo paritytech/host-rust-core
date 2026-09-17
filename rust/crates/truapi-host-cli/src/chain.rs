@@ -71,6 +71,14 @@ impl WsChainProvider {
         self.by_genesis.contains_key(genesis_hash)
     }
 
+    /// The URL a genesis routes to. Test-only, so a routing override can be
+    /// asserted rather than assumed: an override written to the wrong field
+    /// compiles, changes nothing, and is invisible in timings.
+    #[cfg(test)]
+    pub(crate) fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
+        self.url_for(genesis_hash)
+    }
+
     fn url_for(&self, genesis_hash: &[u8; 32]) -> &str {
         self.by_genesis
             .get(genesis_hash)
