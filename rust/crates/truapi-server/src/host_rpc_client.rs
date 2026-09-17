@@ -90,6 +90,14 @@ impl SubscriptionState {
     /// it is released, so no later notification can overtake it. Returning the
     /// items instead would leave the invariant to a comment, which is what the
     /// two-lock version did.
+    ///
+    /// Sending under the lock here is safe, where it is not in
+    /// [`Self::deliver_or_buffer`], and the difference is the receiver rather
+    /// than the send. `subscribe` creates the channel and calls this before it
+    /// builds the `SubscriptionStream` that owns the receiving half, so nothing
+    /// is polling it yet and there is no waker to run. A send on the delivery
+    /// path reaches a receiver the subscriber is already polling, which is what
+    /// makes the waker reachable there.
     fn activate(&mut self, subscription_id: String, tx: SubscriptionSink) {
         let previous = self
             .entries
@@ -109,10 +117,16 @@ impl SubscriptionState {
     /// An active subscription's sink is returned rather than sent to here, so
     /// the caller sends with the lock released. `unbounded_send` wakes the
     /// receiving task, and a waker is embedder code: an executor that polls
-    /// inline would re-enter this module and deadlock on a lock it already
-    /// holds. Ordering survives the release because the only thing this races
-    /// is [`Self::activate`], which replays under the same lock, so seeing
-    /// `Active` at all means the replay is already done.
+    /// inline would re-enter this module, and `unsubscribe` on the resulting
+    /// stream drop takes this same non-reentrant lock. [`Self::activate`] sends
+    /// under the lock because its receiver has no waker yet; see there.
+    ///
+    /// Ordering survives the release because the only thing this races is
+    /// `activate`, which replays under the same lock, so seeing `Active` at all
+    /// means the replay is already done. It does not order against
+    /// `close_with_error`, which can drain and report on another thread between
+    /// the sink being taken and the send: a subscriber can see one item behind
+    /// the close error. That window is the same one the two-lock version had.
     fn deliver_or_buffer(
         &mut self,
         subscription_id: String,
