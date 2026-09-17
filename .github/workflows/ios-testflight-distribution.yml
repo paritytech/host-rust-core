@@ -26,7 +26,10 @@ jobs:
     # github-actions[bot] check. The allowlist is the only thing standing
     # between a hand-started run and a TestFlight build on the production
     # record.
-    if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    # fromJSON, so this is array membership. Against a plain string `contains`
+    # matches a substring, and any actor whose name appears anywhere inside the
+    # list, down to a single letter, would pass.
+    if: contains(fromJSON('["sergkononenko","ERussel","stepanLav","den-vasilev","piroznoe","kogeler"]'), github.actor)
     name: Distribute TestFlight Build
     steps:
       - name: Checkout repository
