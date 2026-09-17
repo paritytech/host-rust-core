@@ -18,10 +18,10 @@ on:
         required: false
         default: ""
   schedule:
-    # 18:00 UTC, two hours after the app repository builds Safetynet on the
+    # 20:00 UTC, four hours after the app repository builds Safetynet on the
     # same weekday schedule. Far enough apart that one finishes before the
     # other starts, and late enough to carry the day's merges.
-    - cron: "0 18 * * 1-5" # 18:00 UTC Monday-Friday
+    - cron: "0 20 * * 1-5" # 20:00 UTC Monday-Friday
 
 permissions:
   contents: write
