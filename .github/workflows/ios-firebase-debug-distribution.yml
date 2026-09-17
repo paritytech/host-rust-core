@@ -63,6 +63,13 @@ jobs:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
+      # Package.swift resolves targets at generated paths that are gitignored,
+      # so xcodebuild cannot resolve dependencies until the core is built from
+      # this tree. The app repository got the core as a published package and
+      # needed none of this; here it has to be generated before any build.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
+
       - name: Set Bundle ID and Profile if triggered by workflow_dispatch
         if: github.event_name == 'workflow_dispatch'
         run: |

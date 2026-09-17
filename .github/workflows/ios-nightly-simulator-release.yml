@@ -41,6 +41,13 @@ jobs:
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
 
+      # Package.swift resolves targets at generated paths that are gitignored,
+      # so xcodebuild cannot resolve dependencies until the core is built from
+      # this tree. The app repository got the core as a published package and
+      # needed none of this; here it has to be generated before any build.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
+
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
         with:
