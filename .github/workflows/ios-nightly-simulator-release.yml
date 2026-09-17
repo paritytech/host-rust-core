@@ -15,10 +15,10 @@ concurrency:
 
 on:
   schedule:
-    # 02:30 UTC — runs after the nightly Firebase distribution on main
+    # 03:30 UTC — runs after the nightly Firebase distribution on main
     # (typically completes by ~01:00 UTC after the day's last merge), so
     # the simulator artifact reflects the same code that Firebase shipped.
-    - cron: "30 2 * * *"
+    - cron: "30 3 * * *"
   workflow_dispatch:
 
 permissions:
