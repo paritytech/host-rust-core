@@ -49,9 +49,12 @@ jobs:
     name: Auto-merge nightly build PR
     runs-on: ubuntu-latest
     needs: [build_nightly]
+    # A build straight from the main branch carries no release branch and no
+    # pull request, so there is nothing here to merge.
     if: >-
       ${{ !cancelled() &&
-      needs.build_nightly.outputs.succeeded == 'true' }}
+      needs.build_nightly.outputs.succeeded == 'true' &&
+      inputs.release_pr_number != '' }}
     steps:
       - name: Merge PR and delete branch
         uses: actions/github-script@v8
