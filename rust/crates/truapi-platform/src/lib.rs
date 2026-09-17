@@ -337,6 +337,21 @@ pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
             .is_some_and(|(label, _tld)| REMOTE_PERMISSION_TRUSTED_LABELS.contains(&label))
 }
 
+/// Whether `product_id` in any accepted spelling holds every
+/// [`RemotePermission`] without prompting.
+///
+/// [`has_trusted_remote_permissions`] reads the normalized form, which is what
+/// the core always holds. A host holds whatever spelling it received, so this
+/// normalizes first and answers `false` for an id that does not normalize at
+/// all: an unrecognised spelling is never read as trusted.
+///
+/// Answers only whether the product is on the compiled-in list. A stored user
+/// decision is not consulted here and always wins over it.
+pub fn normalizes_to_trusted_remote_permissions(product_id: &str) -> bool {
+    normalize_product_identifier(product_id)
+        .is_ok_and(|normalized| has_trusted_remote_permissions(&normalized))
+}
+
 /// Largest accepted product identifier, in bytes.
 ///
 /// Bounds the size of one identifier, not how many exist: a manifest miss
@@ -2306,6 +2321,38 @@ mod tests {
             assert!(
                 !has_trusted_remote_permissions(product_id),
                 "{product_id} is a separate product and must prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_remote_permissions_normalize_the_spellings_a_host_holds() {
+        // Both the UniFFI and wasm exports answer through this, and a host
+        // holds an id in whatever spelling it received rather than the
+        // normalized form the core passes internally.
+        for product_id in [
+            "peopl.dot",
+            "PEOPL.DOT",
+            "  peopl.dot  ",
+            "dim2.paseo",
+            "stash.dot",
+        ] {
+            assert!(
+                normalizes_to_trusted_remote_permissions(product_id),
+                "{product_id} is a first-party product in any accepted spelling"
+            );
+        }
+        for product_id in [
+            "app.peopl.dot",
+            "peopl",
+            "notpeopl.dot",
+            "localhost:3000",
+            "",
+            "   ",
+        ] {
+            assert!(
+                !normalizes_to_trusted_remote_permissions(product_id),
+                "{product_id} must not be read as trusted"
             );
         }
     }

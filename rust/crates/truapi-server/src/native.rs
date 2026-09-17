@@ -415,6 +415,33 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
+/// Whether `product_id` is a first-party product the host grants every
+/// [`truapi::latest::RemotePermission`] without prompting.
+///
+/// Pure and stateless: it reads the compiled-in list and nothing else. **A
+/// stored user decision wins over the list**, so this is only the answer for
+/// the branch where the host's own store reads undetermined. Consulting it
+/// first would let a revoked grant keep working.
+///
+/// [`NativeProductExecution::permission_authorization_status`] is the stateful
+/// answer — it folds the list and the stored decision together — and a host
+/// holding an execution should ask that instead.
+///
+/// This exists for the path where a host mediates product network access in its
+/// own code — a webview interceptor, a `fetch` shim — and has already found
+/// nothing stored. Without it a first-party product is prompted by the host for
+/// access the core would have granted.
+///
+/// Covers remote permissions only. Device capabilities, identity disclosure and
+/// cross-product account access always prompt, whoever asks.
+///
+/// Normalizes before matching, and answers `false` for an id that does not
+/// normalize, so an unknown spelling is never read as trusted.
+#[uniffi::export]
+pub fn has_trusted_remote_permissions(product_id: String) -> bool {
+    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
+}
+
 /// OS status of a device capability, as a native host reports it.
 ///
 /// Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
@@ -2922,6 +2949,38 @@ mod tests {
             result,
             Err(crate::ProductRuntimeError::Unsupported)
         ));
+    }
+
+    /// Hosts mediate product network access in their own code and ask this to
+    /// decide whether to prompt, so it has to answer for the spellings a host
+    /// actually holds, not only the normalized one the core passes internally.
+    #[test]
+    fn the_trusted_export_normalizes_before_matching() {
+        for trusted in [
+            "peopl.dot",
+            "PEOPL.DOT",
+            "  peopl.dot  ",
+            "dim2.paseo",
+            "stash.dot",
+        ] {
+            assert!(
+                super::has_trusted_remote_permissions(trusted.to_string()),
+                "{trusted} is a first-party product",
+            );
+        }
+        for untrusted in [
+            "app.peopl.dot",
+            "peopl",
+            "notpeopl.dot",
+            "localhost:3000",
+            "",
+            "   ",
+        ] {
+            assert!(
+                !super::has_trusted_remote_permissions(untrusted.to_string()),
+                "{untrusted} is not",
+            );
+        }
     }
 
     #[test]
