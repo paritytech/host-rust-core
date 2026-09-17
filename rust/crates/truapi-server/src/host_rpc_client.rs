@@ -39,8 +39,96 @@ struct HostRpcClientInner {
     closed: AtomicBool,
     stop_response_loop: Mutex<Option<oneshot::Sender<()>>>,
     pending: Mutex<HashMap<String, PendingRequest>>,
-    subscriptions: Mutex<HashMap<String, SubscriptionSink>>,
-    buffered_subscription_items: Mutex<HashMap<String, Vec<Box<RawValue>>>>,
+    subscriptions: Mutex<SubscriptionState>,
+}
+
+/// One subscription id, in the only two states it can be in.
+///
+/// A notification can arrive before the task that issued the subscribe call has
+/// published its sink, so an id is born `Pending` and holds its own notifications
+/// until activation drains them.
+enum SubscriptionEntry {
+    /// Notifications received before a sink existed, oldest first.
+    Pending(Vec<Box<RawValue>>),
+    /// The sink the subscriber reads.
+    Active(mpsc::UnboundedSender<Result<Box<RawValue>, RpcError>>),
+}
+
+/// Every subscription this client routes, under one lock.
+///
+/// Both states live in one map so that activation, delivery, unsubscribe and
+/// connection close are each a single critical section. Ordering then follows
+/// from the lock alone: there is no second lock to acquire in the right order,
+/// and no window between publishing a sink and replaying what preceded it.
+#[derive(Default)]
+struct SubscriptionState {
+    entries: HashMap<String, SubscriptionEntry>,
+}
+
+impl SubscriptionState {
+    /// Publish `tx` for `subscription_id` and hand back whatever arrived before
+    /// it, oldest first. The caller replays those before releasing the lock, so
+    /// nothing delivered later can overtake them.
+    fn activate(
+        &mut self,
+        subscription_id: String,
+        tx: mpsc::UnboundedSender<Result<Box<RawValue>, RpcError>>,
+    ) -> Vec<Box<RawValue>> {
+        match self
+            .entries
+            .insert(subscription_id, SubscriptionEntry::Active(tx))
+        {
+            Some(SubscriptionEntry::Pending(items)) => items,
+            // Re-activating an id that is already active replaces the sink and
+            // has nothing buffered, which is also the never-seen case.
+            Some(SubscriptionEntry::Active(_)) | None => Vec::new(),
+        }
+    }
+
+    /// Route one notification: to the sink when the subscription is active,
+    /// into its buffer when it is not.
+    ///
+    /// Sending happens under the lock on purpose. `unbounded_send` is a
+    /// non-blocking queue push and runs no user code, and holding the lock
+    /// across it is what makes delivery order total rather than a race between
+    /// whoever reacquires first.
+    fn deliver_or_buffer(&mut self, subscription_id: String, item: Box<RawValue>) {
+        match self.entries.get_mut(&subscription_id) {
+            Some(SubscriptionEntry::Active(tx)) => {
+                let _ = tx.unbounded_send(Ok(item));
+            }
+            Some(SubscriptionEntry::Pending(items)) => {
+                if items.len() < MAX_BUFFERED_ITEMS_PER_SUBSCRIPTION {
+                    items.push(item);
+                }
+            }
+            // The cap counts subscriptions holding a buffer, not active ones:
+            // an active subscription costs nothing to remember here.
+            None => {
+                if self.pending_count() < MAX_BUFFERED_SUBSCRIPTIONS {
+                    self.entries
+                        .insert(subscription_id, SubscriptionEntry::Pending(vec![item]));
+                }
+            }
+        }
+    }
+
+    /// Forget a subscription, whichever state it is in.
+    fn remove(&mut self, subscription_id: &str) {
+        self.entries.remove(subscription_id);
+    }
+
+    /// Take every entry, leaving the state empty.
+    fn drain(&mut self) -> HashMap<String, SubscriptionEntry> {
+        mem::take(&mut self.entries)
+    }
+
+    fn pending_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| matches!(entry, SubscriptionEntry::Pending(_)))
+            .count()
+    }
 }
 
 struct HostRpcClientLease {
@@ -49,11 +137,6 @@ struct HostRpcClientLease {
 
 struct PendingRequest {
     tx: oneshot::Sender<Result<Box<RawValue>, RpcError>>,
-}
-
-#[derive(Clone)]
-struct SubscriptionSink {
-    tx: mpsc::UnboundedSender<Result<Box<RawValue>, RpcError>>,
 }
 
 #[derive(Debug, derive_more::Display, derive_more::Error)]
@@ -94,8 +177,7 @@ impl HostRpcClient {
                 closed: AtomicBool::new(false),
                 stop_response_loop: Mutex::new(Some(stop_response_tx)),
                 pending: Mutex::new(HashMap::new()),
-                subscriptions: Mutex::new(HashMap::new()),
-                buffered_subscription_items: Mutex::new(HashMap::new()),
+                subscriptions: Mutex::new(SubscriptionState::default()),
             }),
         };
         client.spawn_response_loop(spawner, stop_response_rx);
@@ -246,16 +328,13 @@ impl HostRpcClientInner {
         let subscription_id = subscription_id_from_raw(raw_id.as_ref())?;
         let (tx, rx) = mpsc::unbounded();
         {
-            // Notification delivery takes these locks in the same order. Keep
-            // the buffered-items lock across activation and replay so a new
-            // live notification cannot overtake an older buffered one.
-            let mut buffered = self.buffered_subscription_items.lock().unwrap();
-            let mut subscriptions = self.subscriptions.lock().unwrap();
+            // Activation and replay are one critical section, so a notification
+            // arriving now waits for the lock and lands behind what it follows.
+            let mut state = self.subscriptions.lock().unwrap();
             if self.closed.load(Ordering::Relaxed) {
                 return Err(client_error("json-rpc connection is closed"));
             }
-            subscriptions.insert(subscription_id.clone(), SubscriptionSink { tx: tx.clone() });
-            for item in buffered.remove(&subscription_id).unwrap_or_default() {
+            for item in state.activate(subscription_id.clone(), tx.clone()) {
                 let _ = tx.unbounded_send(Ok(item));
             }
         }
@@ -339,27 +418,10 @@ impl HostRpcClientInner {
     }
 
     fn deliver_or_buffer_subscription_item(&self, subscription_id: String, item: Box<RawValue>) {
-        let mut buffered = self.buffered_subscription_items.lock().unwrap();
-        let sink = self
-            .subscriptions
+        self.subscriptions
             .lock()
             .unwrap()
-            .get(&subscription_id)
-            .cloned();
-        if let Some(sink) = sink {
-            drop(buffered);
-            let _ = sink.tx.unbounded_send(Ok(item));
-            return;
-        }
-        let known = buffered.contains_key(&subscription_id);
-        if !known && buffered.len() >= MAX_BUFFERED_SUBSCRIPTIONS {
-            return;
-        }
-        let items = buffered.entry(subscription_id).or_default();
-        if items.len() >= MAX_BUFFERED_ITEMS_PER_SUBSCRIPTION {
-            return;
-        }
-        items.push(item);
+            .deliver_or_buffer(subscription_id, item);
     }
 
     fn close_with_error(&self, error: RpcError) {
@@ -381,13 +443,16 @@ impl HostRpcClientInner {
             ))));
         }
 
-        let subscriptions = mem::take(&mut *self.subscriptions.lock().unwrap());
-        for (_, sink) in subscriptions {
-            let _ = sink.tx.unbounded_send(Err(client_error(format!(
-                "json-rpc connection closed: {error}"
-            ))));
+        // Taken in one step, so a close error cannot land between an activation
+        // and the replay it owes. A buffer with no reader is dropped with it.
+        let subscriptions = self.subscriptions.lock().unwrap().drain();
+        for (_, entry) in subscriptions {
+            if let SubscriptionEntry::Active(tx) = entry {
+                let _ = tx.unbounded_send(Err(client_error(format!(
+                    "json-rpc connection closed: {error}"
+                ))));
+            }
         }
-        self.buffered_subscription_items.lock().unwrap().clear();
     }
 }
 
@@ -648,36 +713,218 @@ mod tests {
         assert_eq!(connection.close_count(), 1);
     }
 
+    fn raw(text: &str) -> Box<RawValue> {
+        RawValue::from_string(text.to_string()).expect("valid json")
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Result<Box<RawValue>, RpcError>>) -> Vec<String> {
+        let mut seen = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            seen.push(match item {
+                Ok(value) => value.get().to_string(),
+                Err(error) => format!("error: {error}"),
+            });
+        }
+        seen
+    }
+
+    /// The `Stop` before `Initialized` failure: a notification that arrives
+    /// before the subscribing task publishes its sink must still be delivered,
+    /// and must be delivered first.
     #[test]
-    fn notification_that_races_subscription_activation_is_delivered() {
-        let connection = TrackingConnection::new();
-        let spawner: Spawner = Arc::new(|_| {});
-        let client = HostRpcClient::new(connection, spawner);
+    fn buffered_events_precede_notifications_received_after_activation() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
         let (tx, mut rx) = mpsc::unbounded();
+
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), raw(r#"{"event":"first"}"#));
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), raw(r#"{"event":"second"}"#));
+
+        let replayed = client
+            .inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .activate("sub-1".to_string(), tx.clone());
+        for item in replayed {
+            tx.unbounded_send(Ok(item)).expect("receiver is alive");
+        }
+
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), raw(r#"{"event":"live"}"#));
+
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                r#"{"event":"first"}"#.to_string(),
+                r#"{"event":"second"}"#.to_string(),
+                r#"{"event":"live"}"#.to_string(),
+            ],
+            "a live notification overtook the buffer it should follow"
+        );
+    }
+
+    /// The race itself, with a real second thread: a notification is delivered
+    /// while activation is mid-flight. It cannot be observed out of order
+    /// because it needs the same lock activation holds across its replay, which
+    /// is the property the two-lock version had to arrange by convention.
+    #[test]
+    fn a_live_notification_cannot_overtake_replay_in_progress() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
+        let (tx, mut rx) = mpsc::unbounded();
+
+        client.inner.deliver_or_buffer_subscription_item(
+            "sub-1".to_string(),
+            raw(r#"{"event":"buffered"}"#),
+        );
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let deliverer = {
+            let inner = Arc::clone(&client.inner);
+            std::thread::spawn(move || {
+                ready_tx.send(()).expect("main thread is waiting");
+                inner.deliver_or_buffer_subscription_item(
+                    "sub-1".to_string(),
+                    raw(r#"{"event":"live"}"#),
+                );
+            })
+        };
+
+        {
+            let mut state = client.inner.subscriptions.lock().unwrap();
+            // The other thread is running and wants this lock. Replay happens
+            // before it is released, exactly as `subscribe` does it.
+            ready_rx.recv().expect("deliverer started");
+            for item in state.activate("sub-1".to_string(), tx.clone()) {
+                tx.unbounded_send(Ok(item)).expect("receiver is alive");
+            }
+        }
+
+        deliverer.join().expect("deliverer finished");
+
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                r#"{"event":"buffered"}"#.to_string(),
+                r#"{"event":"live"}"#.to_string(),
+            ],
+            "the live notification overtook the buffered one"
+        );
+    }
+
+    /// Closing reports the failure to whoever is reading, but never ahead of
+    /// events that were already queued for them.
+    #[test]
+    fn a_close_error_lands_behind_older_events() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
+        let (tx, mut rx) = mpsc::unbounded();
+
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), raw(r#"{"event":"first"}"#));
+        let replayed = client
+            .inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .activate("sub-1".to_string(), tx.clone());
+        for item in replayed {
+            tx.unbounded_send(Ok(item)).expect("receiver is alive");
+        }
+
+        client
+            .inner
+            .close_with_error(client_error("peer went away"));
+
+        let seen = drain(&mut rx);
+        assert_eq!(seen.len(), 2, "expected the event and then the close error");
+        assert_eq!(seen[0], r#"{"event":"first"}"#);
+        assert!(
+            seen[1].contains("json-rpc connection closed"),
+            "close error should arrive last, got {:?}",
+            seen[1]
+        );
+    }
+
+    /// A subscription nobody ever subscribed to is dropped on close rather than
+    /// kept, and an active one is told why it ended.
+    #[test]
+    fn closing_drops_buffers_that_have_no_reader() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("orphan".to_string(), raw(r#"{"event":"x"}"#));
+
+        client
+            .inner
+            .close_with_error(client_error("peer went away"));
+
+        let remaining = client.inner.subscriptions.lock().unwrap().entries.len();
+        assert_eq!(
+            remaining, 0,
+            "close should leave no subscription state behind"
+        );
+    }
+
+    /// The cap counts subscriptions that hold a buffer. An active subscription
+    /// costs nothing to remember, so it must not consume a slot.
+    #[test]
+    fn the_buffer_cap_counts_only_subscriptions_holding_items() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
+        let (tx, _rx) = mpsc::unbounded();
         client
             .inner
             .subscriptions
             .lock()
             .unwrap()
-            .insert("sub-1".to_string(), SubscriptionSink { tx });
-        let item = RawValue::from_string(r#"{"event":"initialized"}"#.to_string()).unwrap();
+            .activate("active".to_string(), tx);
 
+        for index in 0..MAX_BUFFERED_SUBSCRIPTIONS {
+            client
+                .inner
+                .deliver_or_buffer_subscription_item(format!("sub-{index}"), raw("1"));
+        }
         client
             .inner
-            .deliver_or_buffer_subscription_item("sub-1".to_string(), item);
+            .deliver_or_buffer_subscription_item("one-too-many".to_string(), raw("1"));
 
+        // Read the state out before asserting: a failed assertion while the
+        // guard is alive poisons the lock, and the client's own `Drop` then
+        // panics a second time and aborts instead of reporting.
+        let (pending, buffered_one_too_many) = {
+            let state = client.inner.subscriptions.lock().unwrap();
+            (
+                state.pending_count(),
+                state.entries.contains_key("one-too-many"),
+            )
+        };
+        assert_eq!(pending, MAX_BUFFERED_SUBSCRIPTIONS);
         assert!(
-            !client
-                .inner
-                .buffered_subscription_items
-                .lock()
-                .unwrap()
-                .contains_key("sub-1"),
-            "a notification observed before activation must not be stranded after activation"
+            !buffered_one_too_many,
+            "a subscription past the cap must not be buffered"
         );
-        let received = block_on(rx.next())
-            .expect("activated subscription should receive the raced notification")
-            .expect("raced notification should be successful");
-        assert_eq!(received.get(), r#"{"event":"initialized"}"#);
+    }
+
+    #[test]
+    fn a_buffer_stops_growing_at_its_item_cap() {
+        let client = HostRpcClient::new(TrackingConnection::new(), Arc::new(|_| {}));
+        for _ in 0..MAX_BUFFERED_ITEMS_PER_SUBSCRIPTION + 8 {
+            client
+                .inner
+                .deliver_or_buffer_subscription_item("sub-1".to_string(), raw("1"));
+        }
+
+        let buffered = {
+            let state = client.inner.subscriptions.lock().unwrap();
+            match state.entries.get("sub-1") {
+                Some(SubscriptionEntry::Pending(items)) => items.len(),
+                _ => usize::MAX,
+            }
+        };
+        assert_eq!(buffered, MAX_BUFFERED_ITEMS_PER_SUBSCRIPTION);
     }
 }
