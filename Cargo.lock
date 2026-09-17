@@ -5411,7 +5411,7 @@ dependencies = [
 
 [[package]]
 name = "truapi"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "derive_more 2.1.1",
@@ -5438,7 +5438,7 @@ dependencies = [
 
 [[package]]
 name = "truapi-host-cli"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "arboard",
