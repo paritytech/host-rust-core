@@ -452,8 +452,8 @@ mod tests {
                 trait_id: sub_ids.trait_id,
                 method_id: sub_ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                // No request wrapper for this method: an empty Start payload.
-                value: Vec::new(),
+                value: truapi::versioned::account::HostAccountConnectionStatusSubscribeRequest::V1
+                    .encode(),
             },
         };
         futures::executor::block_on(core.dispatch(frame, dyn_transport));

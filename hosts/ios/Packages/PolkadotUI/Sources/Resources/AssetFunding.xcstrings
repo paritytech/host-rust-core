@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Words here about what to do!"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aquí van instrucciones sobre qué hacer."
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Funding Digital Dollar"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondeo de Dólar Digital"
           }
         }
       }
@@ -43,12 +31,6 @@
             "state": "translated",
             "value": "Funding Digital Dollar from Card"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondeo de Dólar Digital con tarjeta"
-          }
         }
       }
     },
@@ -60,12 +42,6 @@
             "state": "translated",
             "value": "Funding via payment card can take between 5 minutes and several hours. Please check back later."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El fondeo con tarjeta de pago puede tardar entre 5 minutos y varias horas. Vuelve a consultar más tarde."
-          }
         }
       }
     },
@@ -76,12 +52,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Waiting for DOT on your account"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Esperando DOT en tu cuenta"
           }
         }
       }

@@ -7,6 +7,7 @@ import CommonService
 import ExtrinsicService
 import KeyDerivation
 import Coinage
+import DurableTransactions
 import Products
 import SubstrateSdk
 import FoundationExt
@@ -56,6 +57,7 @@ final class ServiceCoordinator {
     let attachmentUploadService: AttachmentUploadingServicing
     let attachmentDownloadService: AttachmentDownloadingServicing
     let coinageTransferMonitor: CoinageTransferMonitoring
+    let durableTransactionEngine: any DurableTxServicing
     let w3sPaymentTracking: W3sPaymentTracking
     let audioSessionManager: AudioSessionManaging
     let determineStateSyncService: DetermineStateSyncServicing
@@ -97,6 +99,7 @@ final class ServiceCoordinator {
         attachmentUploadService: AttachmentUploadingServicing,
         attachmentDownloadService: AttachmentDownloadingServicing,
         coinageTransferMonitor: CoinageTransferMonitoring,
+        durableTransactionEngine: any DurableTxServicing,
         w3sPaymentTracking: W3sPaymentTracking,
         audioSessionManager: AudioSessionManaging,
         determineStateSyncService: DetermineStateSyncServicing,
@@ -131,6 +134,7 @@ final class ServiceCoordinator {
         self.attachmentUploadService = attachmentUploadService
         self.attachmentDownloadService = attachmentDownloadService
         self.coinageTransferMonitor = coinageTransferMonitor
+        self.durableTransactionEngine = durableTransactionEngine
         self.w3sPaymentTracking = w3sPaymentTracking
         self.audioSessionManager = audioSessionManager
         self.determineStateSyncService = determineStateSyncService
@@ -196,6 +200,8 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
                 logger.error("Coinage service setup failed: \(error)")
                 return
             }
+            // After coinage setup, which releases uncommitted handoffs the first pass must not see.
+            durableTransactionEngine.start()
             // Recovering backup 1st
             await coinageBackupSyncService.setup()
             await coinageTransferMonitor.setup()
@@ -219,6 +225,7 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         allowanceRenewalService.throttle()
 
         messageExpansionService.stop()
+        durableTransactionEngine.stop()
 
         Task {
             await deviceSyncService.throttle()
@@ -403,11 +410,6 @@ extension ServiceCoordinator {
             pathMonitor: NetworkPathMonitor()
         )
 
-        let chainLatencyProvider = ChainLatencyProvider(
-            chainRegistry: ChainRegistryFacade.sharedRegistry,
-            logger: logger
-        )
-
         let chainBlockProvider = ChainBlockProvider(
             chainRegistry: ChainRegistryFacade.sharedRegistry,
             operationQueue: OperationManagerFacade.sharedDefaultQueue,
@@ -416,7 +418,6 @@ extension ServiceCoordinator {
 
         let chainStatusProvider = ChainStatusProvider(
             networkStatusService: networkStatusService,
-            latencyProvider: chainLatencyProvider,
             blockProvider: chainBlockProvider,
             statementTracker: statementDeliveryTracker,
             logger: logger
@@ -443,6 +444,7 @@ extension ServiceCoordinator {
             attachmentUploadService: attachmentUploadService,
             attachmentDownloadService: attachmentDownloadService,
             coinageTransferMonitor: coinageServices.transferMonitor,
+            durableTransactionEngine: coinageServices.durableTransactionEngine,
             w3sPaymentTracking: coinageServices.w3sPaymentTracking,
             audioSessionManager: audioSessionManager,
             determineStateSyncService: syncServiceResult.service,
@@ -479,8 +481,8 @@ private extension ServiceCoordinator {
         }
     }
 
-    /// - Note: The `truApiRuntimeEnabled` flag is read once at coordinator creation (app start).
-    ///   Toggling the flag takes effect on the next launch.
+    /// - Note: The runtime flag is read once at coordinator creation (app start), so toggling it
+    ///   takes effect on the next launch. An unset flag means TrUAPI — see `isTrUAPIRuntimeEnabled`.
     static func createSignInHostCoordinator(
         factory: MessageExchangeCoordinatorMaking,
         runtimeProvider: TrUAPIHostRuntimeProviding,
@@ -489,7 +491,7 @@ private extension ServiceCoordinator {
         logger: LoggerProtocol
     ) -> MessageExchangeSignInHostCoordinating? {
         do {
-            if SettingsManager.shared.value(for: .truApiRuntimeEnabled) {
+            if SettingsManager.shared.isTrUAPIRuntimeEnabled {
                 return try factory.makeTrUAPIHostCoordinator(runtimeProvider: runtimeProvider)
             }
 

@@ -136,6 +136,53 @@ struct CoinageBalanceTests {
 
     // MARK: - Combined
 
+    @Test(arguments: [RecyclingStrategyType.balanced, .maxPrivacy])
+    func maturityMovesVoucherBalanceToAvailable(_ type: RecyclingStrategyType) {
+        let minimumMembers: UInt32 = 32
+        let tenMinutes: TimeInterval = 10 * 60
+        let ringCapacity = 767
+        let exponent: Int16 = 1
+        let enteredAt = Date(timeIntervalSince1970: 1_000)
+        let trackedVoucher = tracked(voucher(
+            exponent: exponent,
+            state: .inRecycler(.init(index: 1, membersCount: minimumMembers, enteredAt: enteredAt))
+        ))
+        let strategy = ParametricRecyclingStrategy(
+            params: type.params(forcedRecyclingAge: CoinageConstants.recycleAtAge)
+        )
+        let preClassificator = CoinageAssetPreClassificator()
+        let balances = [tenMinutes - 1, tenMinutes].map { elapsed in
+            let usability = VoucherUsabilityContext(
+                ringCapacities: [exponent: ringCapacity],
+                now: enteredAt.addingTimeInterval(elapsed)
+            )
+            return CoinageBalanceService.calculateBalance(
+                coinBuckets: preClassificator.preClassifyCoins([]),
+                voucherBuckets: preClassificator.preClassifyVouchers(
+                    [trackedVoucher],
+                    strategy: strategy,
+                    context: usability
+                ),
+                verdicts: [:],
+                canSpendWithConfirmation: strategy.allowsConfirmedSpend(),
+                context: context
+            )
+        }
+
+        #expect(balances == [
+            CoinageBalance(
+                availablePrivate: 0,
+                gainingPrivacy: .init(amount: planks(exponent), canSpendWithConfirmation: type == .balanced),
+                pending: 0
+            ),
+            CoinageBalance(
+                availablePrivate: planks(exponent),
+                gainingPrivacy: .init(amount: 0, canSpendWithConfirmation: type == .balanced),
+                pending: 0
+            )
+        ])
+    }
+
     @Test("Buckets a mix of coins and vouchers correctly")
     func combined() {
         expect(

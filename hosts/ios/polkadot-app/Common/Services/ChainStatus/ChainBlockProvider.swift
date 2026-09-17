@@ -3,6 +3,7 @@ import AsyncExtensions
 import BigInt
 import ChainRegistry
 import Operation_iOS
+import StructuredConcurrency
 import SubstrateOperation
 import SubstrateSdk
 
@@ -34,6 +35,10 @@ actor ChainBlockProvider {
     private var headsStreamYielded: Set<ChainConnectionTarget> = []
     private var finalizedStreamYielded: Set<ChainConnectionTarget> = []
     private var isActive = false
+
+    private static let initialReconnectDelay: Duration = .seconds(1)
+    private static let maxReconnectDelay: Duration = .seconds(30)
+    private static let initialFetchAttempts = 5
 
     init(
         chainRegistry: ChainRegistryProtocol,
@@ -118,7 +123,13 @@ private extension ChainBlockProvider {
     ) -> Task<Void, Never> {
         Task { [weak self, logger] in
             do {
-                let number = try await fetch()
+                let number = try await withRetry(
+                    maxAttempts: Self.initialFetchAttempts,
+                    initialDelay: Self.initialReconnectDelay
+                ) {
+                    try await fetch()
+                }
+
                 await self?.record(number, for: target, kind: kind, isFromFetch: true)
             } catch {
                 logger.error("Fetch \(kind.title) failed for \(target.chainId): \(error)")
@@ -126,23 +137,47 @@ private extension ChainBlockProvider {
         }
     }
 
+    /// The subscription stream terminates for good on a socket drop, a subscribe-time registry
+    /// miss, or a decode failure, so it is reopened with backoff until the task is cancelled.
     func observeHeads(
         for target: ChainConnectionTarget,
         kind: BlockKind,
         headers: @escaping () -> AnyAsyncSequence<Block.Header>
     ) -> Task<Void, Never> {
         Task { [weak self, logger] in
-            do {
-                for try await header in headers() {
-                    guard let number = BigUInt.fromHexString(header.number) else {
-                        logger.warning("Unparsable \(kind.title) number for \(target.chainId): \(header.number)")
-                        continue
-                    }
+            var delay = Self.initialReconnectDelay
 
-                    await self?.record(BlockNumber(number), for: target, kind: kind)
+            while !Task.isCancelled {
+                var didReceiveHeader = false
+
+                do {
+                    for try await header in headers() {
+                        didReceiveHeader = true
+
+                        guard let number = BigUInt.fromHexString(header.number) else {
+                            logger.warning("Unparsable \(kind.title) number for \(target.chainId): \(header.number)")
+                            continue
+                        }
+
+                        await self?.record(BlockNumber(number), for: target, kind: kind)
+                    }
+                } catch {
+                    logger.error("Stream of \(kind.title) failed for \(target.chainId): \(error)")
                 }
-            } catch {
-                logger.error("Stream of \(kind.title) failed for \(target.chainId): \(error)")
+
+                guard self != nil else {
+                    return
+                }
+
+                if didReceiveHeader {
+                    delay = Self.initialReconnectDelay
+                }
+
+                guard await (try? Task.sleep(for: delay)) != nil else {
+                    return
+                }
+
+                delay = min(delay * 2, Self.maxReconnectDelay)
             }
         }
     }

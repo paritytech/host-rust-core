@@ -3,19 +3,20 @@ import UIKitExt
 
 protocol SearchContactViewProtocol: ControllerBackedProtocol {
     func didReceive(viewModel: SearchContactViewLayout.ViewModel)
+    func didReceive(status: SearchContactViewLayout.StatusViewModel)
 }
 
 @MainActor
 protocol SearchContactPresenterProtocol: AnyObject {
     func setup()
     func search(username: String)
-    func scanQRCode()
     func didSelectContact(identifier: String)
 }
 
 protocol SearchContactInteractorInputProtocol: AnyObject {
+    func setup()
     func search(username: String)
-    func decide(on contact: Chat.RemoteContact)
+    func decide(on payload: ContactSearchPayload)
 }
 
 @MainActor
@@ -26,7 +27,6 @@ protocol SearchContactInteractorOutputProtocol: AnyObject {
 }
 
 @MainActor
-protocol SearchContactWireframeProtocol: AnyObject, WalletQRScanPresentable, AlertPresentable, ErrorPresentable {
-    func showQRScan(from view: SearchContactViewProtocol?)
+protocol SearchContactWireframeProtocol: AnyObject, AlertPresentable, ErrorPresentable {
     func complete(from view: SearchContactViewProtocol?, with model: ChatOpenModel)
 }

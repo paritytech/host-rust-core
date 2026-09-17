@@ -3,14 +3,15 @@
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme};
-use truapi::latest::GenericError;
 use truapi::versioned::IntoLatest;
 use truapi::versioned::local_storage::{
     HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
-use truapi::versioned::locale::HostLocaleSubscribeItem;
+use truapi::versioned::locale::{
+    HostLocaleSubscribeError, HostLocaleSubscribeItem, HostLocaleSubscribeRequest,
+};
 use truapi::versioned::notifications::{
     HostPushNotificationCancelError, HostPushNotificationCancelRequest,
     HostPushNotificationCancelResponse, HostPushNotificationError, HostPushNotificationRequest,
@@ -26,7 +27,9 @@ use truapi::versioned::system::{
     HostInfoError, HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
 };
-use truapi::versioned::theme::HostThemeSubscribeItem;
+use truapi::versioned::theme::{
+    HostThemeSubscribeError, HostThemeSubscribeItem, HostThemeSubscribeRequest,
+};
 use truapi::{CallContext, CallError, Subscription, v01, v02};
 use truapi_platform::PermissionAuthorizationStatus;
 
@@ -78,11 +81,13 @@ impl System for ProductRuntimeHost {
                     v01::HostNavigateToError::Unknown { reason },
                 )));
             }
-            // dotNS and localhost resolve back into the host's own product
-            // surface, which is already gated by the product sandbox. Neither
-            // reaches an arbitrary internet host, so neither consumes a grant.
+            // dotNS, localhost and a host-handled Pocket target all resolve
+            // back into the host's own product surface, which is already gated
+            // by the product sandbox. None reaches an arbitrary internet host,
+            // so none consumes a grant.
             NavigateDecision::DotName { canonical_url, .. }
-            | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
+            | NavigateDecision::Localhost { canonical_url, .. }
+            | NavigateDecision::Pocket { canonical_url, .. } => canonical_url,
             // An `http(s)` URL hands an arbitrary host the referrer, the shape
             // of the URL, and whatever the product put in it, so it needs the
             // same per-domain grant that gates outbound access to that host.
@@ -250,7 +255,8 @@ impl Theme for ProductRuntimeHost {
     async fn subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostThemeSubscribeItem, CallError<GenericError>> {
+        _request: HostThemeSubscribeRequest,
+    ) -> Subscription<HostThemeSubscribeItem, CallError<HostThemeSubscribeError>> {
         let stream = self.platform.subscribe_theme().map(|item| match item {
             Ok(item) => Ok(HostThemeSubscribeItem::V1(item)),
             Err(error) => {
@@ -270,7 +276,8 @@ impl Locale for ProductRuntimeHost {
     async fn subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostLocaleSubscribeItem, CallError<GenericError>> {
+        _request: HostLocaleSubscribeRequest,
+    ) -> Subscription<HostLocaleSubscribeItem, CallError<HostLocaleSubscribeError>> {
         let stream = self.platform.subscribe_locale().map(|item| match item {
             Ok(item) => Ok(HostLocaleSubscribeItem::V1(item)),
             Err(error) => {

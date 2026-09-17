@@ -10,6 +10,7 @@ pub mod locale;
 pub mod notifications;
 pub mod payment;
 pub mod permissions;
+pub mod pocket;
 pub mod preimage;
 pub mod renderer;
 pub mod resource_allocation;
@@ -28,6 +29,7 @@ pub use locale::Locale;
 pub use notifications::Notifications;
 pub use payment::Payment;
 pub use permissions::Permissions;
+pub use pocket::Pocket;
 pub use preimage::Preimage;
 pub use renderer::Renderer;
 pub use resource_allocation::ResourceAllocation;
@@ -48,6 +50,7 @@ pub trait TrUApi:
     + Notifications
     + Payment
     + Permissions
+    + Pocket
     + Preimage
     + Renderer
     + ResourceAllocation
@@ -71,6 +74,7 @@ impl<T> TrUApi for T where
         + Notifications
         + Payment
         + Permissions
+        + Pocket
         + Preimage
         + Renderer
         + ResourceAllocation

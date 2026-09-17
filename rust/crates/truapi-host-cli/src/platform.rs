@@ -1235,14 +1235,12 @@ mod tests {
     }
 
     /// Battery examples that preflight `getChainInfo` resolve the genesis they
-    /// ask for through this set, so an error here fails every one of them. The
-    /// ring-VRF examples are chain-dependent but not among them: they use the
-    /// hardcoded `PASEO_NEXT_V2_INDIVIDUALITY.genesis` and passed even while
-    /// this returned an error.
+    /// ask for through this set, so an error here fails every one of them.
     ///
     /// Serving the preset's three roles unblocks the preflight in every example
-    /// that asks for one: `People` for account-alias, account-proof and both
-    /// create-transaction variants, and `AssetHub` for the other seventeen.
+    /// that asks for one: `People` for account-alias, account-proof, ring-VRF
+    /// registration and both create-transaction variants, and `AssetHub` for the
+    /// other seventeen.
     ///
     /// `feature_supported` answers from the same set `supported_chains` serves, so
     /// the two cannot disagree. The negatives are the malformed inputs, a well-formed

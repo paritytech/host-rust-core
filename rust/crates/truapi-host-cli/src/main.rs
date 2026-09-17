@@ -21,6 +21,7 @@ mod dotns_read;
 mod frame_server;
 mod network;
 mod platform;
+mod pocket;
 mod product_config;
 mod qr_scanner;
 mod register_name;
@@ -63,8 +64,8 @@ use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
 use crate::network::{Network, NetworkConfig};
 use crate::platform::{ApprovalPolicy, CliPlatform, CliStoragePaths};
 use crate::sessions::{
-    DEFAULT_SESSION_NAME, PairedHost, PairedHostMetadata, SessionCatalog, SessionClearTarget,
-    SessionProfile,
+    CurrentSession, DEFAULT_SESSION_NAME, PairedHost, PairedHostMetadata, SessionCatalog,
+    SessionClearTarget, SessionProfile,
 };
 use crate::signing_shell::{
     ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, PairCommand, ProductCommand,
@@ -306,7 +307,8 @@ enum ExecutionKind {
     /// on any host that does not serve chat.
     #[default]
     App,
-    /// Headless executable served by the CLI's in-memory chat host.
+    /// Headless executable served by the CLI's in-memory chat host, plus its
+    /// in-memory Pocket host when `TRUAPI_POCKET_CARDS` names a card set.
     Worker,
 }
 
@@ -322,12 +324,21 @@ impl ExecutionKind {
     fn chat_host(self) -> Option<Arc<chat::CliChatHost>> {
         matches!(self, Self::Worker).then(chat::CliChatHost::from_env)
     }
+
+    /// The Pocket host to install, if this kind serves Pocket and a card set
+    /// was configured.
+    fn pocket_host(self) -> Option<Arc<pocket::CliPocketHost>> {
+        matches!(self, Self::Worker)
+            .then(pocket::CliPocketHost::from_env)
+            .flatten()
+    }
 }
 
 #[derive(Args)]
 struct PairingHostArgs {
     /// Execution kind the served product runs as. `worker` installs the CLI's
-    /// in-memory chat host; `app` leaves Chat unserved.
+    /// in-memory chat host; `app` leaves Chat unserved. `worker` also installs
+    /// the Pocket host when `TRUAPI_POCKET_CARDS` is set.
     #[arg(long = "execution-kind", value_enum, default_value = "app")]
     execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start the terminal UI.
@@ -396,7 +407,8 @@ struct DevArgs {
 #[derive(Args, Default)]
 struct SigningHostArgs {
     /// Execution kind the served product runs as. `worker` installs the CLI's
-    /// in-memory chat host; `app` leaves Chat unserved.
+    /// in-memory chat host; `app` leaves Chat unserved. `worker` also installs
+    /// the Pocket host when `TRUAPI_POCKET_CARDS` is set.
     #[arg(long = "execution-kind", value_enum, default_value = "app")]
     execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start an interactive shell.
@@ -1074,6 +1086,7 @@ async fn run_pairing_host(
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
     let chat_host = args.execution_kind.chat_host();
+    let pocket_host = args.execution_kind.pocket_host();
     let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
     let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
         platform,
@@ -1082,6 +1095,9 @@ async fn run_pairing_host(
         chat_host.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
     pairing_runtime.set_permission_status_host(status_host);
+    if let Some(pocket) = pocket_host {
+        pairing_runtime.set_pocket_platform(pocket);
+    }
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -1158,7 +1174,7 @@ async fn run_signing_host(
     let network = args.network.config();
     let base_path = state_base_path(args.base_path.clone());
     let session_catalog = SessionCatalog::new(base_path.clone(), network.id)?;
-    let initial_session_name = initial_session_name(&args, &session_catalog);
+    let initial_session_name = initial_session_name(&args, &session_catalog)?;
     if normalized(args.mnemonic.clone()).is_none() {
         session_catalog.set_current(&initial_session_name)?;
     }
@@ -1328,6 +1344,9 @@ struct SigningHostSession {
     /// Set when this host serves a chat product. Held across runtime rebuilds
     /// so switching session keeps the rooms and messages already posted.
     chat: Option<Arc<chat::CliChatHost>>,
+    /// Set when this host serves a Pocket product. Held across runtime rebuilds
+    /// so switching session keeps the card set it was seeded with.
+    pocket: Option<Arc<pocket::CliPocketHost>>,
 }
 
 #[derive(Default)]
@@ -1363,13 +1382,38 @@ impl Drop for ResponderManager {
     }
 }
 
-fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> String {
+/// The session a signing host starts in.
+///
+/// A name the caller chose is resolved through the aliases promotion records,
+/// so a name that provisioned a session keeps selecting it instead of
+/// provisioning a second identity beside it. Without a name, the base path
+/// decides, and an ambiguous base path is refused rather than guessed.
+fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> Result<String> {
     if normalized(args.mnemonic.clone()).is_some() {
-        return "ephemeral".to_string();
+        return Ok("ephemeral".to_string());
     }
-    normalized(args.session.clone())
-        .or_else(|| normalized(args.account.clone()).map(|_| DEFAULT_SESSION_NAME.to_string()))
-        .unwrap_or_else(|| catalog.current_name())
+    if let Some(name) = normalized(args.session.clone()) {
+        return catalog.resolve_session_name(&name);
+    }
+    if normalized(args.account.clone()).is_some() {
+        return Ok(DEFAULT_SESSION_NAME.to_string());
+    }
+    match catalog.current_session()? {
+        CurrentSession::Pointed(name) => Ok(name),
+        CurrentSession::Recovered(name) => {
+            tracing::warn!(
+                session = %name,
+                "selected session from its account store; the current-session pointer was missing or stale"
+            );
+            Ok(name)
+        }
+        CurrentSession::Fresh => Ok(DEFAULT_SESSION_NAME.to_string()),
+        CurrentSession::Ambiguous { candidates } => Err(anyhow::anyhow!(
+            "this base path holds several provisioned sessions ({}) and no current-session \
+             pointer; name one with --session <name> rather than provisioning another identity",
+            candidates.join(", "),
+        )),
+    }
 }
 
 async fn start_signing_host(
@@ -1454,6 +1498,7 @@ async fn start_signing_host(
     }
     let approval = approval_policy(args.auto_accept);
     let chat = args.execution_kind.chat_host();
+    let pocket = args.execution_kind.pocket_host();
     let (runtime, platform) = build_signing_runtime(
         network,
         storage_profile.path,
@@ -1461,6 +1506,7 @@ async fn start_signing_host(
         approval,
         ui.clone(),
         chat.clone(),
+        pocket.clone(),
     )?;
     apply_local_product_grants(platform.as_ref(), &args.product_config).await?;
     let runtime_factory = frame_server::SwitchableSigningRuntime::new(runtime.clone());
@@ -1500,11 +1546,8 @@ async fn start_signing_host(
             ui.session(profile.name.clone(), catalog.list()?);
         }
     }
-    if profile.is_some()
-        && signer.is_none()
-        && let Some(ui) = &ui
-    {
-        ui.event(SystemEvent::SigningHostNeedsSession);
+    if profile.is_some() && signer.is_none() {
+        terminal_ui::output_event(SystemEvent::SigningHostNeedsSession);
     }
 
     Ok(SigningHostSession {
@@ -1524,6 +1567,7 @@ async fn start_signing_host(
         reserved_username: normalized(args.reserved_username.clone()),
         ui,
         chat,
+        pocket,
     })
 }
 
@@ -1534,6 +1578,7 @@ fn build_signing_runtime(
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
     chat: Option<Arc<chat::CliChatHost>>,
+    pocket: Option<Arc<pocket::CliPocketHost>>,
 ) -> Result<(Arc<SigningHostRuntime>, Arc<CliPlatform>)> {
     let platform = CliPlatform::new(
         network,
@@ -1557,6 +1602,9 @@ fn build_signing_runtime(
         chat.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
     runtime.set_permission_status_host(status_host);
+    if let Some(pocket) = pocket {
+        runtime.set_pocket_platform(pocket);
+    }
     runtime.start_statement_allowance_renewal();
     Ok((runtime, platform))
 }
@@ -2042,6 +2090,9 @@ async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
         .flatten();
     let lite_username_prefix =
         sessions::lite_username_prefix(&profile.name, session.lite_username_prefix.as_deref());
+    if !profile.is_provisioned() {
+        terminal_ui::output_event(SystemEvent::SigningHostProvisioning);
+    }
     session.signer = Some(
         accounts::resolve_signer(ResolveSignerConfig {
             base_path: &profile.account_base_path,
@@ -2087,6 +2138,7 @@ fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
         session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
+        session.pocket.clone(),
     )?;
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
@@ -2786,6 +2838,9 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         bail!("session switching is unavailable when launched with --mnemonic");
     }
     sessions::validate_selectable_name(&name).map_err(anyhow::Error::msg)?;
+    // A name that already provisioned a session was promoted to its Lite
+    // username, so it selects that session rather than creating another.
+    let name = session.catalog.resolve_session_name(&name)?;
     if session
         .profile
         .as_ref()
@@ -2843,6 +2898,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
+        session.pocket.clone(),
     )?;
     let available_sessions = session.catalog.list()?;
 
@@ -2932,6 +2988,7 @@ async fn import_mnemonic_session(
         session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
+        session.pocket.clone(),
     )?;
     runtime
         .activate_local_session_with_identity(imported.entropy().to_vec(), username.clone())
@@ -3906,6 +3963,56 @@ mod cli_tests {
             format_paired_device_list("alice.01", Vec::new()),
             "No paired devices for session alice.01"
         );
+    }
+
+    #[test]
+    fn a_session_name_promoted_away_still_selects_its_own_session() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let provisional = catalog.ensure_profile("worker-0")?;
+        catalog.promote_to_user(&provisional, "alice.01")?;
+        let args = SigningHostArgs {
+            session: Some("worker-0".to_string()),
+            ..SigningHostArgs::default()
+        };
+
+        assert_eq!(initial_session_name(&args, &catalog)?, "alice.01");
+        Ok(())
+    }
+
+    #[test]
+    fn a_base_path_with_several_provisioned_sessions_and_no_pointer_refuses_to_guess() -> Result<()>
+    {
+        let temporary = tempfile::tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        for name in ["alice.01", "bob.02"] {
+            let profile = catalog.ensure_profile(name)?;
+            std::fs::write(profile.path.join("accounts.json"), "{}")?;
+        }
+
+        let error = initial_session_name(&SigningHostArgs::default(), &catalog)
+            .expect_err("an ambiguous base path must not select an identity");
+
+        let message = error.to_string();
+        assert!(message.contains("alice.01"), "{message}");
+        assert!(message.contains("bob.02"), "{message}");
+        assert!(message.contains("--session"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_pointer_reselects_the_provisioned_session_instead_of_the_bootstrap_profile()
+    -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice.01")?;
+        std::fs::write(profile.path.join("accounts.json"), "{}")?;
+
+        assert_eq!(
+            initial_session_name(&SigningHostArgs::default(), &catalog)?,
+            "alice.01"
+        );
+        Ok(())
     }
 
     #[test]

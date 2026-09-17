@@ -222,13 +222,17 @@ final class MockProductsNativeApi: ProductsNativeApiProtocol, @unchecked Sendabl
         AsyncStream<PaymentBalance> { $0.finish() }.eraseToAnyAsyncSequence()
     }
 
-    func paymentTopUp(amount _: Balance, source _: PaymentTopUpSource) async throws {}
+    func paymentTopUp(amount _: Balance, source _: PaymentTopUpSource, id _: PaymentTopUpId) async throws {}
 
-    func requestPayment(amountInPlanks _: String, destination _: AccountId) async throws -> PaymentReceipt {
-        PaymentReceipt(paymentId: UUID().uuidString)
+    func subscribePaymentTopUpStatus(
+        id _: PaymentTopUpId
+    ) async throws -> AsyncExtensions.AnyAsyncSequence<HostPaymentTopUpStatus> {
+        AsyncStream<HostPaymentTopUpStatus> { $0.finish() }.eraseToAnyAsyncSequence()
     }
 
-    func subscribePaymentStatus(paymentId _: String) async throws -> AsyncExtensions
+    func requestPayment(amount _: Balance, destination _: AccountId, id _: PaymentRequestId) async throws {}
+
+    func subscribePaymentStatus(id _: PaymentRequestId) async throws -> AsyncExtensions
         .AnyAsyncSequence<HostPaymentStatus> {
         AsyncStream<HostPaymentStatus> { $0.finish() }.eraseToAnyAsyncSequence()
     }

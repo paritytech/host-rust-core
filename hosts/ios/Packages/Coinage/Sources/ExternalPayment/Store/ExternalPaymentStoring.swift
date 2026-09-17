@@ -10,8 +10,4 @@ public protocol ExternalPaymentStoring: Sendable {
     /// Streams snapshots of non-terminal payments (plan, onboardCoins, offboardVouchers).
     /// Emits a new snapshot whenever any matching payment changes.
     func observeNonTerminalPayments() -> AnyAsyncSequence<[ExternalPayment]>
-
-    /// Streams snapshots of rescheduled payments.
-    /// Emits a new snapshot whenever any rescheduled payment changes.
-    func observeRescheduledPayments() -> AnyAsyncSequence<[ExternalPayment]>
 }

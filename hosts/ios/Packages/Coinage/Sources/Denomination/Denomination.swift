@@ -14,6 +14,16 @@ public struct DenominationBreakdownContext: Equatable {
     let maxExponent: Int16
     let minExponent: Int16
 
+    /// The live context is loaded from chain state (`InstanceRecord.assetUnit` plus the
+    /// pallet's exponent constants). This initializer exists so callers that cannot reach
+    /// the chain — SwiftUI previews, debug fixtures — can still price holdings.
+    public init(unit: BigUInt, precision: Int16, maxExponent: Int16, minExponent: Int16) {
+        self.unit = unit
+        self.precision = precision
+        self.maxExponent = maxExponent
+        self.minExponent = minExponent
+    }
+
     func breakdown(amount: Decimal) -> [Denomination] {
         guard let planks = amount.toSubstrateAmount(precision: precision) else {
             return []
@@ -26,7 +36,8 @@ public struct DenominationBreakdownContext: Equatable {
         amount(forExponent: denomination.exponent)
     }
 
-    func amount(forExponent exponent: Int16) -> Decimal {
+    /// The decimal currency amount of a single holding at `exponent`.
+    public func amount(forExponent exponent: Int16) -> Decimal {
         let value = valueInPlanks(for: exponent)
         return .fromSubstrateAmount(value, precision: precision) ?? 0
     }

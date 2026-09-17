@@ -24,14 +24,15 @@ final class ExternalPaymentLifecycleReporter: TransferLifecycleReporting {
     }
 
     func start(with context: TransferTrackingContext) {
-        guard case let .externalPayment(paymentId, amountInPlanks) = context else {
+        guard case let .externalPayment(productId, paymentId, amountInPlanks) = context else {
             subject.send(Termination<Never>.finished)
             return
         }
 
         Task { [coinageService, subject, logger] in
             do {
-                let statuses = try await coinageService.subscribeExternalPaymentStatus(
+                let statuses = coinageService.subscribeExternalPaymentStatus(
+                    productId: productId,
                     paymentId: paymentId
                 )
 
@@ -41,6 +42,11 @@ final class ExternalPaymentLifecycleReporter: TransferLifecycleReporting {
                         subject.send(.detecting)
                     case .completed:
                         subject.send(.finished(claimedAmount: amountInPlanks))
+                        subject.send(Termination<Never>.finished)
+                        return
+                    case let .partiallyCompleted(settledInPlanks):
+                        logger?.error("External payment \(paymentId) short: \(settledInPlanks) of \(amountInPlanks)")
+                        subject.send(.finished(claimedAmount: settledInPlanks))
                         subject.send(Termination<Never>.finished)
                         return
                     case let .failed(reason):

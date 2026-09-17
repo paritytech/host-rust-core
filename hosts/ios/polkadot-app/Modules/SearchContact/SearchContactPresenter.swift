@@ -12,8 +12,10 @@ final class SearchContactPresenter {
 
     private var currentSearch = CurrentSearch(
         query: "",
-        state: .result(.contacts([]))
+        state: .result(.sections(AccountSearchSections(recent: [], contacts: [], global: [])))
     )
+
+    private var selection: [String: ContactSearchPayload] = [:]
 
     init(
         interactor: SearchContactInteractorInputProtocol,
@@ -26,19 +28,16 @@ final class SearchContactPresenter {
 
 extension SearchContactPresenter: SearchContactPresenterProtocol {
     func setup() {
-        provideViewModel()
+        interactor.setup()
+        provideViewModel(sections: AccountSearchSections(recent: [], contacts: [], global: []))
     }
 
     func search(username: String) {
         interactor.search(username: username)
     }
 
-    func scanQRCode() {
-        wireframe.showQRScan(from: view)
-    }
-
     func didSelectContact(identifier: String) {
-        guard let contact = currentSearch.contacts.first(where: { $0.username == identifier }) else {
+        guard let contact = findContact(by: identifier) else {
             return
         }
         interactor.decide(on: contact)
@@ -72,17 +71,32 @@ private extension SearchContactPresenter {
 
     func applySearchState(_ state: SearchContactSearchState, for query: String) {
         currentSearch = CurrentSearch(query: query, state: state)
-        provideViewModel()
+
+        switch state {
+        case let .result(.sections(sections)):
+            selection = Dictionary(
+                (sections.recent + sections.contacts + sections.global)
+                    .map { ($0.payload.accountId.toHex(), $0.payload) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            provideViewModel(sections: sections)
+        case .result(.error):
+            selection = [:]
+            provideViewModel(sections: AccountSearchSections(recent: [], contacts: [], global: []))
+        case .started,
+             .waiting,
+             .waitingLong:
+            provideStatus()
+        }
     }
 
-    func provideViewModel() {
+    func makeStatus() -> SearchContactViewLayout.StatusViewModel {
         let query = currentSearch.query
-        let contacts = currentSearch.contacts
-        let showHint = !currentSearch.isSearching && !currentSearch.queryFailed && contacts.isEmpty && query.isEmpty
+        let allEmpty = selection.isEmpty
+        let showHint = !currentSearch.isSearching && !currentSearch.queryFailed && allEmpty && query.isEmpty
 
-        // TODO: Add Highlight for username + move to factory OR move logic into ui level
         let searchFailReason: NSAttributedString?
-        if !currentSearch.isSearching, currentSearch.queryFailed || (!query.isEmpty && contacts.isEmpty) {
+        if !currentSearch.isSearching, currentSearch.queryFailed || (!query.isEmpty && allEmpty) {
             let searchFailedString = String(localized: .searchContactNoSuchUsername(username: query))
             var attributes = LabelStyle.title16SemiBold().attributes(for: .center)
             attributes[.foregroundColor] = UIColor.fgSecondary
@@ -94,37 +108,87 @@ private extension SearchContactPresenter {
             searchFailReason = nil
         }
 
-        let viewModel = SearchContactViewLayout.ViewModel(
-            contactsById: contacts.map { contact in
-                let prefix = String(contact.username.prefix(1))
-                let avatarViewModel = AvatarViewModel.colored(
-                    text: prefix,
-                    colorSeed: contact.accountId.toHex()
-                )
-                return SearchContactListConfiguration(
-                    userName: contact.username,
-                    avatarViewModel: avatarViewModel
-                )
-            }
-            .identified { $0.userName },
+        return SearchContactViewLayout.StatusViewModel(
             showHint: showHint,
             searchFailReason: searchFailReason,
             showsLoader: currentSearch.showsLoader,
             loaderText: currentSearch.loaderText
         )
+    }
+
+    func provideStatus() {
+        view?.didReceive(status: makeStatus())
+    }
+
+    func provideViewModel(sections: AccountSearchSections<ContactSearchPayload, ContactSearchPayload>) {
+        let viewModel = SearchContactViewLayout.ViewModel(
+            sections: buildViewSections(from: sections),
+            status: makeStatus()
+        )
+
         view?.didReceive(viewModel: viewModel)
+    }
+
+    func buildViewSections(
+        from sections: AccountSearchSections<ContactSearchPayload, ContactSearchPayload>
+    ) -> [SearchContactViewLayout.ViewModel.Section] {
+        [
+            makeViewSection(
+                id: "recent",
+                title: String(localized: .searchContactRecentChats),
+                rows: sections.recent
+            ),
+            makeViewSection(
+                id: "contacts",
+                title: String(localized: .transactionSearchMyContacts),
+                rows: sections.contacts
+            ),
+            makeViewSection(
+                id: "global",
+                title: String(localized: .transactionSearchAllUsers),
+                rows: sections.global
+            )
+        ].compactMap { $0 }
+    }
+
+    func makeViewSection(
+        id: String,
+        title: String,
+        rows: [SearchRow<ContactSearchPayload>]
+    ) -> SearchContactViewLayout.ViewModel.Section? {
+        guard !rows.isEmpty else { return nil }
+
+        return SearchContactViewLayout.ViewModel.Section(
+            id: id,
+            title: title,
+            rows: rows.map { row in
+                IdentifiableContentConfiguration(
+                    id: row.payload.accountId.toHex(),
+                    configuration: makeListConfiguration(for: row.payload)
+                )
+            }
+        )
+    }
+
+    func makeListConfiguration(for payload: ContactSearchPayload) -> SearchContactListConfiguration {
+        let prefix = String(payload.username.prefix(1))
+        let avatarViewModel = AvatarViewModel.colored(
+            text: prefix,
+            colorSeed: payload.accountId.toHex()
+        )
+        return SearchContactListConfiguration(
+            userName: payload.username,
+            avatarViewModel: avatarViewModel
+        )
+    }
+
+    func findContact(by identifier: String) -> ContactSearchPayload? {
+        selection[identifier]
     }
 
     struct CurrentSearch {
         let query: String
         let state: SearchContactSearchState
-
-        var contacts: [Chat.RemoteContact] {
-            guard case let .result(.contacts(contacts)) = state else {
-                return []
-            }
-            return contacts.sorted { Username(value: $0.username) < Username(value: $1.username) }
-        }
 
         var queryFailed: Bool {
             guard case .result(.error) = state else {

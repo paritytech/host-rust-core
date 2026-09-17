@@ -30,6 +30,14 @@ permissions:
 
 jobs:
   prepare:
+    # Held until the iOS cutover. This tree is behind the app repository.
+    # It drives the nightly distribution chain. The dispatch it creates carries
+    # GITHUB_TOKEN, so its triggering actor is github-actions[bot], which is what
+    # the check in ios-build-distribute.yml accepts. That check stops a human
+    # dispatching distribution directly, not this path.
+    #
+    # Removing this is part of the cutover, tracked on #764.
+    if: false
     uses: ./.github/workflows/ios-prepare-pipeline.yml
     with:
       is_nightly: true

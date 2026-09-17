@@ -44,6 +44,7 @@ pub mod locale;
 pub mod notifications;
 pub mod payment;
 pub mod permissions;
+pub mod pocket;
 pub mod preimage;
 pub mod renderer;
 pub mod resource_allocation;

@@ -2,13 +2,13 @@ import { getClientSync } from "@parity/truapi/sandbox";
 import { bytesToHex, hexToBytes } from "@parity/truapi/scale";
 import type {
   CallErrorValue,
-  GenericError,
   HostChatActionSubscribeItem,
   HostChatListSubscribeItem,
   HostRendererActionSubscribeItem,
   ObservableLike,
   ProductRendererRenderRequest,
   RendererNode,
+  VersionedProductRendererRenderError,
 } from "@parity/truapi";
 import { filter, firstValueFrom, from, timeout } from "rxjs";
 import {
@@ -16,6 +16,7 @@ import {
   CHAT_DIAGNOSIS_REFRESH_ACTION,
   ChatDiagnosis,
 } from "./diagnosis";
+import { servePocket } from "./pocket";
 
 const ROOM_ID = "truapi-playground";
 const ROOM_NAME = "TrUAPI Playground";
@@ -40,7 +41,7 @@ let finalReportPosted = false;
 type RenderInstance = {
   messageId: string;
   send: (node: RendererNode) => void;
-  interrupt: (reason?: CallErrorValue<GenericError>) => void;
+  interrupt: (reason?: CallErrorValue<VersionedProductRendererRenderError>) => void;
   disposed: boolean;
 };
 const activeRenderInstances = new Set<RenderInstance>();
@@ -58,6 +59,8 @@ const diagnosis = new ChatDiagnosis(() => {
 });
 
 renderer.onRender(handleRenderRequest);
+
+servePocket(client.pocket);
 
 chat.actionSubscribe().subscribe({
   next(action) {
@@ -213,7 +216,7 @@ async function ensureRoom(roomId: string, name: string): Promise<void> {
 function handleRenderRequest(
   request: ProductRendererRenderRequest,
   send: (node: RendererNode) => void,
-  interrupt: (reason?: CallErrorValue<GenericError>) => void,
+  interrupt: (reason?: CallErrorValue<VersionedProductRendererRenderError>) => void,
 ): () => void {
   if (request.context.tag !== "ChatMessage") {
     throw new Error(`unsupported renderer context: ${request.context.tag}`);

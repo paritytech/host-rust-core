@@ -107,7 +107,9 @@ final class FirebaseApplicationService: RemoteConfigManaging {
             dotNsResolver: dotNsResolverAddress(),
             dotNsNameRegistry: dotNsNameRegistryAddress(),
             coinageInstanceId: coinageInstanceId(),
-            fundingDomain: nonEmptyString(for: .fundingDomain)
+            fundingDomain: nonEmptyString(for: .fundingDomain),
+            fundingUrl: fundingConfigValue(.onrampUrl),
+            offrampUrl: fundingConfigValue(.offrampUrl)
         )
     }
 
@@ -165,6 +167,14 @@ private extension FirebaseApplicationService {
     func url(for key: String) -> URL? {
         guard let value = nonEmptyString(for: key) else { return nil }
         return URL(string: value)
+    }
+
+    /// One JSON object shared with Android, passed through as published:
+    /// `{ "onrampUrl": "getcash.dot", "offrampUrl": "https://getcash.dot/offramp" }`.
+    func fundingConfigValue(_ field: String) -> String? {
+        let json = remoteConfig[.fundingConfig].jsonValue as? [String: String]
+        guard let value = json?[field], !value.isEmpty else { return nil }
+        return value
     }
 
     func dotNsConfigEntry(_ field: String, treatingEmptyAsMissing: Bool = false) -> String? {
@@ -255,6 +265,9 @@ private extension String {
     static let dotNsResolver = "dot_ns_config"
     static let coinageInstanceId = "coinage_instance_id"
     static let fundingDomain = "funding_domain"
+    static let fundingConfig = "funding_config"
+    static let onrampUrl = "onrampUrl"
+    static let offrampUrl = "offrampUrl"
     static let issueProxyUrl = "issue_proxy_url"
     static let issueProxyApiKey = "issue_proxy_api_key"
 }

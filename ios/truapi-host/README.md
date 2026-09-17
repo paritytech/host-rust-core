@@ -172,6 +172,47 @@ carries back, so it must name that message for as long as the host stores it.
 Ids arriving _in_ a `Reaction` or `ReactionRemoved` are product-chosen and
 untrusted: they may name a message in another room, or one that never existed.
 
+## Pocket
+
+A host with a Pocket surface owns the card collection and implements
+`PocketHostBridge`, passed as `pocket:` to `openProductExecution`. Pocket is
+reachable only from a Worker execution with an active session, so a product
+on a signed-out host is denied before the bridge is consulted. Hosts without
+the bridge pass nothing and Pocket calls answer unsupported.
+
+```swift
+final class MyPocketBridge: PocketHostBridge, @unchecked Sendable {
+    private let store: PocketStore
+
+    init(store: PocketStore) { self.store = store }
+
+    // `privileged` marks a card this host pinned, which the product sees and
+    // cannot remove.
+    func listCards() throws -> [PocketCard] { store.cards() }
+
+    // Decide and remove together so a card cannot be pinned in between.
+    func removeCard(cardId: String) throws -> NativePocketRemoval {
+        store.removeIfRemovable(cardId)
+    }
+}
+
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(productId: "game.dot", executionKind: .worker),
+    pocket: MyPocketBridge(store: pocketStore)
+)
+
+// Pocket needs an active session too: without `activateLocalSession` every
+// Pocket call answers denied, whatever this bridge holds.
+
+// Republish after the host's own collection changes.
+execution.notifyPocketCardsChanged(cards: pocketStore.cards())
+```
+
+A card's face does not cross this bridge. The host keeps each card's newest
+face itself: that is what the card shows while the worker is down, and at cold
+start before the worker answers.
+
 On the execution: `publishChatAction` delivers a user's action back to the
 product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
 republishes the room list; `render` returns a stream of `RendererNode` trees
@@ -240,7 +281,13 @@ try runtime.trackStatementRenewalTargets([
 ])
 ```
 
-The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. There is still no reader and no untrack on this surface, so a host cannot list what is tracked or remove a wrong entry. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+The ledger persists across launches, and an entry is dropped when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+
+`statementRenewalTargets()` lists what the ledger holds, in the order it was tracked. It needs no active session, so a `BGTaskScheduler` wake can read it on a cold start before deciding whether the pass is worth running. Each entry carries an `owner`: a recipe has none and resolves under whichever identity is active, while a fixed account records the root key that promised it. `statementRenewalOwnerKey()` returns that key for the active identity, and needs a session. An entry whose owner is that key, or which has no owner, is one the next pass will renew; any other is one it will prune.
+
+`untrackStatementRenewalAccount(accountId:)` drops one fixed account and reports whether the ledger held it. It is scoped to the active identity and so needs a session, and it never removes an entry another identity promised. A stale entry does not deny you a slot forever, since registration replaces the oldest slot past its cooldown once a period is full, but it does cost an allocation attempt every period and keeps churning the slot table, which is what untracking it saves.
+
+Only `.account` can be untracked. `.walletSso` and `.productStatementAllowance` are recipes with no removal path, so a product you no longer run keeps being resolved and renewed until the promising identity changes.
 
 Then run a pass from a background task, off the main thread. It needs an active session too, which is the whole difficulty here: a `BGTaskScheduler` wake on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 

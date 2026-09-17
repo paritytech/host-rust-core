@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Disabling notifications may result in missing important updates, actions that need to be taken, and could overall prolong the evidence upload and review process."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desactivar las notificaciones puede hacer que te pierdas novedades importantes y acciones que debes realizar, y podría alargar el proceso de carga y revisión de la evidencia."
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Missing games will result in losing your Membership."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Perderte los juegos hará que pierdas tu Membresía."
           }
         }
       }
@@ -43,12 +31,6 @@
             "state": "translated",
             "value": "We strongly recommend enabling notifications to avoid missing games"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Te recomendamos activar las notificaciones para no perderte ningún juego"
-          }
         }
       }
     },
@@ -59,12 +41,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "We kindly recommend enabling notifications to avoid missing important updates about your evidence processing"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Te recomendamos activar las notificaciones para no perderte novedades importantes sobre el procesamiento de tu evidencia"
           }
         }
       }
@@ -77,12 +53,6 @@
             "state": "translated",
             "value": "Stay informed: Notifications are currently turned off. You can enable them in Settings to avoid missing games and losing your Membership."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mantente al tanto: las notificaciones están desactivadas. Puedes activarlas en Configuración para no perderte juegos ni tu Membresía."
-          }
         }
       }
     },
@@ -93,12 +63,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Stay informed:"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mantente al tanto:"
           }
         }
       }
@@ -111,12 +75,6 @@
             "state": "translated",
             "value": "Enable notifications"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activar notificaciones"
-          }
         }
       }
     },
@@ -127,12 +85,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Stay informed: Missing games will result in losing your Membership."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mantente al tanto: perderte los juegos hará que pierdas tu Membresía."
           }
         }
       }
@@ -145,12 +97,6 @@
             "state": "translated",
             "value": "Stay informed:"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mantente al tanto:"
-          }
         }
       }
     },
@@ -161,12 +107,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Don't enable"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No activar"
           }
         }
       }
@@ -179,12 +119,6 @@
             "state": "translated",
             "value": "When Evidence is Accepted"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cuando se acepte la evidencia"
-          }
         }
       }
     },
@@ -195,12 +129,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "When Membership is issued"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cuando se emita la Membresía"
           }
         }
       }
@@ -213,12 +141,6 @@
             "state": "translated",
             "value": "For Evidence Upload Status"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Estado de carga de la evidencia"
-          }
         }
       }
     },
@@ -229,12 +151,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Completed Game Results"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Resultados de juegos completados"
           }
         }
       }
@@ -247,12 +163,6 @@
             "state": "translated",
             "value": "Rewards updates"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Novedades de recompensas"
-          }
         }
       }
     },
@@ -263,12 +173,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Upcoming game reminders"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recordatorios de próximos juegos"
           }
         }
       }
@@ -281,12 +185,6 @@
             "state": "translated",
             "value": "Play game"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Jugar"
-          }
         }
       }
     },
@@ -297,12 +195,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "The game is starting! Jump in!"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¡El juego está por comenzar! ¡Entra!"
           }
         }
       }
@@ -315,12 +207,6 @@
             "state": "translated",
             "value": "Game Starts in %@ Seconds!"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¡El juego comienza en %@ segundos!"
-          }
         }
       }
     },
@@ -331,12 +217,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "The game starts in %ld min! Join for free to win amazing prizes!"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¡El juego comienza en %ld min! Únete gratis y gana premios increíbles."
           }
         }
       }
@@ -349,12 +229,6 @@
             "state": "translated",
             "value": "Join the %@ game"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Únete al juego de %@"
-          }
         }
       }
     },
@@ -365,12 +239,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Register now – prizes and collectibles await!"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Regístrate ahora: ¡te esperan premios y coleccionables!"
           }
         }
       }
@@ -383,12 +251,6 @@
             "state": "translated",
             "value": "Game starts in an hour"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El juego comienza en una hora"
-          }
         }
       }
     },
@@ -399,12 +261,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Prizes and other perks await!"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¡Te esperan premios y otros beneficios!"
           }
         }
       }
@@ -417,12 +273,6 @@
             "state": "translated",
             "value": "Register for the next game now"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Regístrate ya para el próximo juego"
-          }
         }
       }
     },
@@ -433,12 +283,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "The game is about to start! Join and get ready for fun and rewards!"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¡El juego está por comenzar! Únete y prepárate para divertirte y ganar recompensas."
           }
         }
       }
@@ -451,12 +295,6 @@
             "state": "translated",
             "value": "Game starting now!"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¡El juego comienza ahora!"
-          }
         }
       }
     },
@@ -467,12 +305,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open the app to check your evidence status."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abre la app para revisar el estado de tu evidencia."
           }
         }
       }
@@ -485,12 +317,6 @@
             "state": "translated",
             "value": "Check for updates"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Revisa las novedades"
-          }
         }
       }
     },
@@ -501,12 +327,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your photo has been successfully reviewed. Check more details."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu foto se revisó correctamente. Consulta más detalles."
           }
         }
       }
@@ -519,12 +339,6 @@
             "state": "translated",
             "value": "Status has changed"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El estado cambió"
-          }
         }
       }
     },
@@ -535,12 +349,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your video has been successfully reviewed. Check more details."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu video se revisó correctamente. Consulta más detalles."
           }
         }
       }
@@ -553,12 +361,6 @@
             "state": "translated",
             "value": "You've been added to a ring"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Te agregaron a un ring"
-          }
         }
       }
     },
@@ -569,12 +371,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Added to ring"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Te agregaron a un ring"
           }
         }
       }
@@ -587,12 +383,6 @@
             "state": "translated",
             "value": "Tap to check if your registration status has been updated"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Toca para ver si tu estado de registro se actualizó"
-          }
         }
       }
     },
@@ -603,12 +393,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Check registration status"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Revisa tu estado de registro"
           }
         }
       }

@@ -27,6 +27,7 @@ final class BlockInfoProvidingMock: BlockInfoProviding {
     func fetchFinalized() async throws -> BlockNumber { 1 }
     func fetchFinalizedHash() async throws -> BlockHashData { currentHash }
     func fetchBlockHash(_: BlockNumber) async throws -> BlockHashData { currentHash }
+    func fetchBlockNumber(byHash _: BlockHashData) async throws -> BlockNumber { 1 }
 
     func subscribeFinalizedHeads() -> AnyAsyncSequence<Block.Header> { makeHeads() }
     func subscribeNewHeads() -> AnyAsyncSequence<Block.Header> { makeHeads() }

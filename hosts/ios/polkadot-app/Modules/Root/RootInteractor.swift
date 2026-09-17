@@ -98,8 +98,12 @@ final class RootInteractor {
 
             // Cache the DotNs TLD once chains and remote config are ready. Resolving here covers
             // every onboarding path (username claim, iCloud recovery), so downstream built-in
-            // account derivation can read the TLD synchronously.
-            _ = try? await tldProvider.resolveTld()
+            // account derivation can read the TLD synchronously. A TLD persisted by a previous
+            // run is enough, so startup is not blocked offline; currentTld() kicks a background
+            // refresh on its own.
+            if tldProvider.currentTld() == nil {
+                _ = try? await tldProvider.resolveTld()
+            }
 
             self?.setupJWTManager()
 

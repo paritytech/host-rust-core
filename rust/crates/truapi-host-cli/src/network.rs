@@ -323,13 +323,11 @@ mod tests {
         }
     }
 
-    /// SPEC.md §14.1 is the fourth hand-maintained copy of these hashes, and the
-    /// only one that covers Bulletin: `well-known-chains.ts` exports People and
-    /// Asset Hub but no Bulletin constant, so without this row nothing outside
-    /// `network.rs` pins it at build time.
+    /// SPEC.md §14.1 is the second hand-maintained copy of these hashes, and the
+    /// only one outside this module that pins them at build time.
     ///
-    /// Compiled in with `include_str!` for the same reason as the TypeScript
-    /// guard: a moved table breaks the build rather than drifting quietly.
+    /// Compiled in with `include_str!` so a moved table breaks the build rather
+    /// than drifting quietly.
     #[test]
     fn the_spec_genesis_table_matches_the_preset() {
         const SPEC: &str = include_str!("../SPEC.md");
@@ -349,56 +347,6 @@ mod tests {
                     config.id
                 );
             }
-        }
-    }
-
-    /// The TypeScript constants products import must agree with the preset the
-    /// host advertises.
-    ///
-    /// This is the drift that actually reaches products: a product signs
-    /// `CheckGenesis` over what `@parity/truapi` exports, not over anything in
-    /// this crate, and the live test only covers the Rust side. The two are
-    /// maintained by hand in different languages, so nothing else would notice
-    /// them parting company.
-    ///
-    /// Compiled in with `include_str!`, so a moved or renamed constant breaks the
-    /// build here rather than drifting silently.
-    #[test]
-    fn the_typescript_chain_constants_match_the_preset() {
-        const WELL_KNOWN_CHAINS: &str =
-            include_str!("../../../../js/packages/truapi/src/well-known-chains.ts");
-
-        // Every preset needs its pair here: a product on previewnet signs
-        // `CheckGenesis` over the TypeScript constant just as one on nextv2 does.
-        let exports: Vec<(String, [u8; 32])> = Network::value_variants()
-            .iter()
-            .flat_map(|network| {
-                let config = network.config();
-                let prefix = match network {
-                    Network::PaseoNextV2 => "PASEO_NEXT_V2",
-                    Network::Previewnet => "PREVIEWNET",
-                };
-                [
-                    (format!("{prefix}_INDIVIDUALITY"), config.people_genesis),
-                    (format!("{prefix}_ASSET_HUB"), config.asset_hub_genesis),
-                ]
-            })
-            .collect();
-
-        for (export, expected) in &exports {
-            let declaration = WELL_KNOWN_CHAINS
-                .split_once(&format!("export const {export} ="))
-                .unwrap_or_else(|| panic!("{export} is no longer exported"))
-                .1;
-            let hex = format!("0x{}", hex::encode(expected));
-            assert!(
-                declaration
-                    .split_once("} as const")
-                    .map(|(body, _)| body.contains(&hex))
-                    .unwrap_or(false),
-                "{export} does not carry {hex}; the TS constant and the preset \
-                 have drifted, and products sign over the TS one"
-            );
         }
     }
 
@@ -534,9 +482,8 @@ mod tests {
                 // The chain's own name has to name the role, or a role pointed at
                 // the wrong preset chain passes every other assertion here.
                 // Both spellings the People role answers to: Paseo's chain calls
-                // itself "People", previewnet's calls itself "Individuality
-                // Local", and `PASEO_NEXT_V2_INDIVIDUALITY` shows the two names
-                // are one role.
+                // itself "People" and previewnet's calls itself "Individuality
+                // Local", so either name satisfies the role.
                 let expected_in_name: &[&str] = match entry.identifier {
                     ChainIdentifier::People => &["People", "Individuality"],
                     ChainIdentifier::Bulletin => &["Bulletin"],
@@ -577,8 +524,7 @@ mod tests {
         let mut failures = Vec::new();
         if !drifted.is_empty() {
             failures.push(format!(
-                "drifted, so refresh the preset, `well-known-chains.ts` and SPEC.md \
-                 together:\n{}",
+                "drifted, so refresh the preset and SPEC.md together:\n{}",
                 drifted.join("\n")
             ));
         }

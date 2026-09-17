@@ -30,21 +30,21 @@
         func fetchDebugInfo(for amount: BigUInt) async throws -> TransferStrategyDebugInfo? {
             let preview = try await coinageService.previewExternalPayment(for: amount)
 
-            guard let selection = preview.selection else {
+            guard preview != .notEnoughBalance else {
                 return nil
             }
 
-            let voucherInfos = selection.vouchers.map { voucher in
+            let voucherInfos = preview.vouchers.map { tracked in
                 TransferStrategyDebugInfo.VoucherInfo(
-                    derivationIndex: voucher.derivationIndex,
-                    exponent: voucher.exponent
+                    derivationIndex: tracked.voucher.derivationIndex,
+                    exponent: tracked.voucher.exponent
                 )
             }
 
-            let coinInfos = selection.coins.map { coin in
+            let coinInfos = preview.coins.map { tracked in
                 TransferStrategyDebugInfo.CoinInfo(
-                    derivationIndex: coin.derivationIndex,
-                    exponent: coin.exponent
+                    derivationIndex: tracked.coin.derivationIndex,
+                    exponent: tracked.coin.exponent
                 )
             }
 

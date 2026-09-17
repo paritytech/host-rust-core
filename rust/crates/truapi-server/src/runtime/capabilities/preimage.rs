@@ -6,10 +6,10 @@ use std::time::Instant;
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::Preimage;
-use truapi::latest::GenericError;
 use truapi::versioned::preimage::{
-    RemotePreimageLookupSubscribeItem, RemotePreimageLookupSubscribeRequest,
-    RemotePreimageSubmitError, RemotePreimageSubmitRequest, RemotePreimageSubmitResponse,
+    RemotePreimageLookupSubscribeError, RemotePreimageLookupSubscribeItem,
+    RemotePreimageLookupSubscribeRequest, RemotePreimageSubmitError, RemotePreimageSubmitRequest,
+    RemotePreimageSubmitResponse,
 };
 use truapi::{CallContext, CallError, Subscription, v01};
 use truapi_platform::{PreimageSubmitReview, UserConfirmationReview};
@@ -31,7 +31,10 @@ impl Preimage for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
         request: RemotePreimageLookupSubscribeRequest,
-    ) -> Subscription<RemotePreimageLookupSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<
+        RemotePreimageLookupSubscribeItem,
+        CallError<RemotePreimageLookupSubscribeError>,
+    > {
         let RemotePreimageLookupSubscribeRequest::V1(v01::RemotePreimageLookupSubscribeRequest {
             key,
         }) = request;

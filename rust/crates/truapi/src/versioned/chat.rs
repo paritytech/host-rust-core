@@ -12,8 +12,12 @@ truapi_macros::versioned_type! {
     pub enum HostChatPostMessageRequest { V1 => v01::HostChatPostMessageRequest }
     pub enum HostChatPostMessageResponse { V1 => v01::HostChatPostMessageResponse }
     pub enum HostChatPostMessageError { V1 => v01::HostChatPostMessageError }
+    pub enum HostChatListSubscribeRequest { V1 }
     pub enum HostChatListSubscribeItem { V1 => v01::HostChatListSubscribeItem }
+    pub enum HostChatListSubscribeError { V1 => v01::GenericError }
+    pub enum HostChatActionSubscribeRequest { V1 }
     pub enum HostChatActionSubscribeItem { V1 => v01::HostChatActionSubscribeItem }
+    pub enum HostChatActionSubscribeError { V1 => v01::GenericError }
 }
 
 #[cfg(test)]

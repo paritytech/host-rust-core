@@ -1,12 +1,12 @@
 import Foundation
 import SubstrateSdk
 
-/// Validates registration invariants for a whole batch directly against the store transaction,
-/// keyed by public key.
+/// Validates registration invariants for a whole batch directly against the store transaction, keyed by
+/// public key.
 ///
 /// Every asset already carries its on-chain public key, so the four checks compare one key space,
-/// matching the store's ``CoinageTxValidationContextProtocol``. Within-batch conflicts are caught here too,
-/// since the rows do not exist yet when the batch is validated. The offending key is reported.
+/// matching the store's ``CoinageTxValidationContextProtocol``. Within-batch conflicts are caught here
+/// too, since the rows do not exist yet when the batch is validated. The offending key is reported.
 public struct CoinageTxRegistrationValidator {
     public init() {}
 
@@ -16,10 +16,10 @@ public struct CoinageTxRegistrationValidator {
     /// 3. Blocked handoff — no input carrying a handoff mark
     /// 4. Unique consumer — no input already claimed by a non-failure entry, unique in batch
     public func validate(
-        _ registrations: [CoinageTxRegistration],
+        _ registrations: [CoinageAssetRegistration],
         transaction: CoinageTxValidationContextProtocol
     ) throws {
-        guard registrations.allSatisfy({ !$0.inputs.isEmpty || !$0.outputs.isEmpty }) else {
+        guard registrations.allSatisfy({ !$0.isEmpty }) else {
             throw CoinageTxError.emptyEntry
         }
 

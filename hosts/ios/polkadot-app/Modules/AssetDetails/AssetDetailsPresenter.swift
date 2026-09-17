@@ -1,3 +1,4 @@
+import BigInt
 import Foundation
 import Foundation_iOS
 import SubstrateSdk
@@ -23,8 +24,13 @@ final class AssetDetailsPresenter {
     private let chainAsset: ChainAsset
     private var balance: Decimal = 0
     private var lockedAmount: Decimal = 0
-    private var coins: [TrackedCoin] = []
-    private var vouchers: [TrackedVoucher] = []
+    /// Classified alongside the balance figures, so the rows and the bar always account for
+    /// exactly the total shown above them.
+    private var holdings: CoinageHoldings = .empty
+    /// The domain's three buckets for the real holdings, totalled by the balance service.
+    private var coinageAmounts: CoinageAmounts?
+    /// Loaded from chain state; needed to price individual holdings.
+    private var denominationContext: DenominationBreakdownContext?
     private var price: PriceData?
     let logger: LoggerProtocol
 
@@ -116,9 +122,11 @@ extension AssetDetailsPresenter: AssetDetailsPresenterProtocol {
     }
 
     func onTopUp() {
-        view?.didReceive(topUpLoading: true)
+        openRampProduct(.topUp)
+    }
 
-        interactor?.openTopUpProduct()
+    func onWithdraw() {
+        openRampProduct(.withdraw)
     }
 
     #if TESTNET_FEATURE
@@ -135,8 +143,8 @@ extension AssetDetailsPresenter: AssetDetailsPresenterProtocol {
 }
 
 extension AssetDetailsPresenter: AssetDetailsInteractorOutputProtocol {
-    func didResolveTopUpProduct(_ result: Result<ProductPage, Error>) {
-        view?.didReceive(topUpLoading: false)
+    func didResolveRampProduct(_ action: RampAction, result: Result<ProductPage, Error>) {
+        view?.didReceive(rampLoading: action, isLoading: false)
 
         switch result {
         case let .success(page):
@@ -144,6 +152,17 @@ extension AssetDetailsPresenter: AssetDetailsInteractorOutputProtocol {
         case let .failure(error):
             wireframe.present(error: error, from: view)
         }
+    }
+
+    func didReceive(denominationContext: DenominationBreakdownContext) {
+        self.denominationContext = denominationContext
+        provideCoinageBreakdown()
+    }
+
+    func didReceive(coinageAmounts: CoinageAmounts, holdings: CoinageHoldings) {
+        self.coinageAmounts = coinageAmounts
+        self.holdings = holdings
+        provideCoinageBreakdown()
     }
 
     #if TESTNET_FEATURE
@@ -155,12 +174,6 @@ extension AssetDetailsPresenter: AssetDetailsInteractorOutputProtocol {
             }
 
             wireframe.present(error: error, from: view)
-        }
-
-        func didReceive(coins: [TrackedCoin], vouchers: [TrackedVoucher]) {
-            self.coins = coins
-            self.vouchers = vouchers
-            provideCoinageBreakdown()
         }
     #endif
 
@@ -282,85 +295,61 @@ private extension AssetDetailsPresenter {
     }
 }
 
-#if TESTNET_FEATURE
-    private extension AssetDetailsPresenter {
-        func provideCoinageBreakdown() {
-            func formatted(from decimal: Decimal) -> String {
-                let balanceViewModelFactory = PrimitiveBalanceViewModelFactory(
-                    targetAssetInfo: chainAsset.asset.digitalDollarDisplayInfo,
-                    formatterFactory: balanceFormatterFactory
-                )
-                return balanceViewModelFactory.balanceFromPrice(
-                    decimal,
-                    priceData: price
-                )
-                .value(for: .current)
-                .amount
-            }
-
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateStyle = .short
-            dateFormatter.timeStyle = .short
-
-            // Only assets that make up the balance are counted and listed — the same inclusion rule
-            // the balance uses (`TrackedCoin/TrackedVoucher.isBalanceCounted`).
-            let countedCoins = coins.filter(\.isBalanceCounted)
-            let countedVouchers = vouchers.filter(\.isBalanceCounted)
-
-            let coinDetails = countedCoins
-                .sorted { $0.coin.derivationIndex < $1.coin.derivationIndex }
-                .map { tracked in
-                    let coin = tracked.coin
-                    let state = tracked.state
-                    let stateLabel: String = {
-                        if coin.handoffMark != .none { return "Handed off" }
-                        if state.isConsumed { return "Spent" }
-                        if state.isInUse { return "Reserved" }
-                        if state.isMintingFailed, !coin.isOnchain { return "Minting failed" }
-                        if !coin.isOnchain {
-                            return "Pending mint"
-                        }
-                        return "Available"
-                    }()
-                    return CoinDetailViewModel(
-                        id: coin.identifier,
-                        exponent: "2^\(coin.exponent)",
-                        state: stateLabel,
-                        age: coin.age.map { "\($0)" } ?? "Unknown"
-                    )
-                }
-
-            let voucherDetails = countedVouchers
-                .sorted { $0.voucher.derivationIndex < $1.voucher.derivationIndex }
-                .map { tracked in
-                    let voucher = tracked.voucher
-                    let stateString: String =
-                        switch voucher.remoteState {
-                        case .unlocated: "Unlocated"
-                        case .onboarding: "Pending"
-                        case .inRecycler: voucher.readyAt > .now ? "Locked" : "Ready"
-                        }
-
-                    return VoucherDetailViewModel(
-                        id: voucher.identifier,
-                        exponent: "2^\(voucher.exponent)",
-                        state: stateString,
-                        allocatedAt: dateFormatter.string(from: voucher.allocatedAt),
-                        readyAt: dateFormatter.string(from: voucher.readyAt)
-                    )
-                }
-
-            let spendable = balance - lockedAmount
-            let breakdown = CoinageBalanceBreakdownViewModel(
-                totalBalance: formatted(from: balance),
-                spendableBalance: formatted(from: spendable),
-                pendingBalance: formatted(from: lockedAmount),
-                coinCount: countedCoins.count,
-                voucherCount: countedVouchers.count,
-                coinDetails: coinDetails,
-                voucherDetails: voucherDetails
+private extension AssetDetailsPresenter {
+    func provideCoinageBreakdown() {
+        func formatted(from decimal: Decimal, includeSymbol: Bool = true) -> String {
+            let assetInfo = chainAsset.asset.digitalDollarDisplayInfo
+            let balanceViewModelFactory = PrimitiveBalanceViewModelFactory(
+                targetAssetInfo: includeSymbol ? assetInfo : assetInfo.withoutSymbol,
+                formatterFactory: balanceFormatterFactory
             )
-            view?.didReceive(coinageBreakdown: breakdown)
+            return balanceViewModelFactory.balanceFromPrice(
+                decimal,
+                priceData: price
+            )
+            .value(for: .current)
+            .amount
         }
+
+        let context = denominationContext
+        let holdings = holdings
+
+        // Pulled out of the map closure below: inlining it defeats the type checker.
+        func amount(forExponent exponent: Int16) -> String? {
+            guard let context else { return nil }
+
+            return formatted(from: context.amount(forExponent: exponent), includeSymbol: false)
+        }
+
+        let rows = CoinageBreakdownFactory.rows(from: holdings).map { row in
+            CoinageHoldingViewModel(
+                id: row.id,
+                amount: amount(forExponent: row.exponent),
+                status: row.status
+            )
+        }
+
+        let amounts = coinageAmounts ?? .zero
+
+        let breakdown = CoinageBalanceBreakdownViewModel(
+            totalBalance: formatted(from: amounts.total, includeSymbol: false),
+            availableNowBalance: formatted(from: amounts.availableNow, includeSymbol: false),
+            gainingPrivacyBalance: formatted(from: amounts.gainingPrivacy, includeSymbol: false),
+            pendingBalance: formatted(from: amounts.pending, includeSymbol: false),
+            symbol: chainAsset.asset.digitalDollarDisplayInfo.symbol,
+            composition: context.map {
+                CoinageBreakdownFactory.composition(of: holdings, context: $0)
+            } ?? .empty,
+            holdings: rows
+        )
+        view?.didReceive(coinageBreakdown: breakdown)
     }
-#endif
+}
+
+private extension AssetDetailsPresenter {
+    func openRampProduct(_ action: RampAction) {
+        view?.didReceive(rampLoading: action, isLoading: true)
+
+        interactor?.openRampProduct(action)
+    }
+}

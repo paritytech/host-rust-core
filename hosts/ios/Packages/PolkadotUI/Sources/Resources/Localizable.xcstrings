@@ -24,12 +24,6 @@
             "state" : "translated",
             "value" : "Approve"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aprobar"
-          }
         }
       }
     },
@@ -40,12 +34,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Close"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cerrar"
           }
         }
       }
@@ -58,12 +46,6 @@
             "state" : "translated",
             "value" : "Reject"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rechazar"
-          }
         }
       }
     },
@@ -74,12 +56,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sign"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Firmar"
           }
         }
       }
@@ -92,12 +68,6 @@
             "state" : "translated",
             "value" : "View details"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ver detalles"
-          }
         }
       }
     },
@@ -108,12 +78,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Add to Contacts"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agregar a contactos"
           }
         }
       }
@@ -126,12 +90,6 @@
             "state" : "translated",
             "value" : "After you enter the chat, make sure %1$(username)@ starts one with you as well, or your message may not be seen."
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Después de entrar al chat, asegúrate de que %1$(username)@ también inicie uno contigo, o tu mensaje podría no verse."
-          }
         }
       }
     },
@@ -142,12 +100,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Add a contact\nand start a chat with %1$(username)@"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agrega un contacto\ne inicia un chat con %1$(username)@"
           }
         }
       }
@@ -160,12 +112,6 @@
             "state" : "translated",
             "value" : "Permissions"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Permisos"
-          }
         }
       }
     },
@@ -176,12 +122,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Privacy & security"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Privacidad y seguridad"
           }
         }
       }
@@ -194,12 +134,6 @@
             "state" : "translated",
             "value" : "No active permissions"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No hay permisos activos"
-          }
         }
       }
     },
@@ -210,12 +144,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "No apps yet"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todavía no hay apps"
           }
         }
       }
@@ -228,12 +156,6 @@
             "state" : "translated",
             "value" : "Block"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bloquear"
-          }
         }
       }
     },
@@ -244,12 +166,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "They won't be able to send you a message request or call you."
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No podrá enviarte solicitudes de mensaje ni llamarte."
           }
         }
       }
@@ -262,12 +178,6 @@
             "state" : "translated",
             "value" : "Block %1$(username)@?"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¿Bloquear a %1$(username)@?"
-          }
         }
       }
     },
@@ -278,12 +188,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You won't receive any messages and requests until you unblock %1$(username)@"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No recibirás mensajes ni solicitudes hasta que desbloquees a %1$(username)@"
           }
         }
       }
@@ -296,12 +200,6 @@
             "state" : "translated",
             "value" : "Unblock"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Desbloquear"
-          }
         }
       }
     },
@@ -312,12 +210,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "No blocked users"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No hay usuarios bloqueados"
           }
         }
       }
@@ -330,12 +222,6 @@
             "state" : "translated",
             "value" : "Unblock"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Desbloquear"
-          }
         }
       }
     },
@@ -346,12 +232,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ongoing voice call"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamada de voz en curso"
           }
         }
       }
@@ -364,12 +244,6 @@
             "state" : "translated",
             "value" : "Ongoing video call"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Videollamada en curso"
-          }
         }
       }
     },
@@ -380,12 +254,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Canceled voice call"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamada de voz cancelada"
           }
         }
       }
@@ -398,12 +266,6 @@
             "state" : "translated",
             "value" : "Canceled video call"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Videollamada cancelada"
-          }
         }
       }
     },
@@ -414,12 +276,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Voice call"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamada de voz"
           }
         }
       }
@@ -432,12 +288,6 @@
             "state" : "translated",
             "value" : "Video call"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Videollamada"
-          }
         }
       }
     },
@@ -448,12 +298,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Incoming voice call"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamada de voz entrante"
           }
         }
       }
@@ -466,12 +310,6 @@
             "state" : "translated",
             "value" : "Incoming video call"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Videollamada entrante"
-          }
         }
       }
     },
@@ -482,12 +320,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Missing voice call"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamada de voz perdida"
           }
         }
       }
@@ -500,12 +332,6 @@
             "state" : "translated",
             "value" : "Missing video call"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Videollamada perdida"
-          }
         }
       }
     },
@@ -516,12 +342,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Outgoing voice call"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamada de voz saliente"
           }
         }
       }
@@ -534,12 +354,6 @@
             "state" : "translated",
             "value" : "Outgoing video sall"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Videollamada saliente"
-          }
         }
       }
     },
@@ -550,12 +364,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tap to return"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Toca para regresar"
           }
         }
       }
@@ -568,12 +376,6 @@
             "state" : "translated",
             "value" : "Calling…"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Llamando…"
-          }
         }
       }
     },
@@ -584,12 +386,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tap to call back"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Toca para devolver la llamada"
           }
         }
       }
@@ -602,12 +398,6 @@
             "state" : "translated",
             "value" : "%1$(username)@ added you"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ te agregó"
-          }
         }
       }
     },
@@ -618,12 +408,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$(amount)@ deposit added"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Depósito de %1$(amount)@ agregado"
           }
         }
       }
@@ -636,12 +420,6 @@
             "state" : "translated",
             "value" : "Edit history"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Historial de ediciones"
-          }
         }
       }
     },
@@ -652,12 +430,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edit message"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Editar mensaje"
           }
         }
       }
@@ -670,12 +442,6 @@
             "state" : "translated",
             "value" : "Approved"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aprobada"
-          }
         }
       }
     },
@@ -686,12 +452,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "In review"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "En revisión"
           }
         }
       }
@@ -704,12 +464,6 @@
             "state" : "translated",
             "value" : "Photo evidence"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Evidencia fotográfica"
-          }
         }
       }
     },
@@ -720,12 +474,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Documentation video"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Video de documentación"
           }
         }
       }
@@ -738,12 +486,6 @@
             "state" : "translated",
             "value" : "Retry"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reintentar"
-          }
         }
       }
     },
@@ -754,12 +496,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Upload failed"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La subida falló"
           }
         }
       }
@@ -772,12 +508,6 @@
             "state" : "translated",
             "value" : "Uploading"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Subiendo"
-          }
         }
       }
     },
@@ -788,12 +518,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Upload queued"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Subida en cola"
           }
         }
       }
@@ -806,12 +530,6 @@
             "state" : "translated",
             "value" : "Write a message..."
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Escribe un mensaje..."
-          }
         }
       }
     },
@@ -822,12 +540,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Download Failed"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La descarga falló"
           }
         }
       }
@@ -840,12 +552,6 @@
             "state" : "translated",
             "value" : "Downloading · %1$(percent)@％"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Descargando · %1$(percent)@％"
-          }
         }
       }
     },
@@ -856,12 +562,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This file is no longer available for download"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este archivo ya no está disponible para descargar"
           }
         }
       }
@@ -874,12 +574,6 @@
             "state" : "translated",
             "value" : "Uploading Failed"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La subida falló"
-          }
         }
       }
     },
@@ -890,12 +584,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uploading · %1$(percent)@％"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Subiendo · %1$(percent)@％"
           }
         }
       }
@@ -908,12 +596,6 @@
             "state" : "translated",
             "value" : "Upload queued"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Subida en cola"
-          }
         }
       }
     },
@@ -924,12 +606,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Unread messages"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mensajes sin leer"
           }
         }
       }
@@ -942,12 +618,6 @@
             "state" : "translated",
             "value" : "%1$(username)@ left the chat"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ salió del chat"
-          }
         }
       }
     },
@@ -955,12 +625,6 @@
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : ""
-          }
-        },
-        "es-ES" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : ""
@@ -976,12 +640,6 @@
             "state" : "translated",
             "value" : "You got Membership!"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¡Obtuviste la Membresía!"
-          }
         }
       }
     },
@@ -992,12 +650,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Link"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enlace"
           }
         }
       }
@@ -1010,12 +662,6 @@
             "state" : "translated",
             "value" : "Reply to %@"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Responder a %@"
-          }
         }
       }
     },
@@ -1026,12 +672,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tú"
           }
         }
       }
@@ -1045,12 +685,6 @@
             "state" : "translated",
             "value" : "%1$(username)@ accepted the request"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ aceptó la solicitud"
-          }
         }
       }
     },
@@ -1062,12 +696,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You accepted the request"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aceptaste la solicitud"
           }
         }
       }
@@ -1081,12 +709,6 @@
             "state" : "translated",
             "value" : "Add %1$(username)@ to your contacts to accept the chat request. They won’t know you’ve seen their message until you accept."
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agrega a %1$(username)@ a tus contactos para aceptar la solicitud de chat. No sabrá que viste su mensaje hasta que la aceptes."
-          }
         }
       }
     },
@@ -1098,12 +720,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Accept chat request from %1$(username)@"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aceptar la solicitud de chat de %1$(username)@"
           }
         }
       }
@@ -1117,12 +733,6 @@
             "state" : "translated",
             "value" : "You can only send one message in this invitation"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Solo puedes enviar un mensaje en esta invitación"
-          }
         }
       }
     },
@@ -1134,12 +744,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Invite %1$(username)@ to chat"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Invitar a %1$(username)@ al chat"
           }
         }
       }
@@ -1153,12 +757,6 @@
             "state" : "translated",
             "value" : "Request message sent"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mensaje de solicitud enviado"
-          }
         }
       }
     },
@@ -1169,12 +767,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You will be able to start chatting with this player once they also add you to their contacts."
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podrás empezar a chatear con este jugador cuando también te agregue a sus contactos."
           }
         }
       }
@@ -1188,12 +780,6 @@
             "state" : "translated",
             "value" : "Wait for %1$(username)@ to accept your request\nmessage before sending the next message."
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Espera a que %1$(username)@ acepte tu mensaje\nde solicitud antes de enviar el siguiente."
-          }
         }
       }
     },
@@ -1204,12 +790,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$(username)@ sent you"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ te envió"
           }
         }
       }
@@ -1222,12 +802,6 @@
             "state" : "translated",
             "value" : "%1$(username)@ is sending you"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(username)@ te está enviando"
-          }
         }
       }
     },
@@ -1238,12 +812,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You Sent"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enviaste"
           }
         }
       }
@@ -1256,12 +824,6 @@
             "state" : "translated",
             "value" : "You added %1$(username)@"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agregaste a %1$(username)@"
-          }
         }
       }
     },
@@ -1272,12 +834,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You left the chat"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Saliste del chat"
           }
         }
       }
@@ -1290,12 +846,6 @@
             "state" : "translated",
             "value" : "It's yours!"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¡Es tuyo!"
-          }
         }
       }
     },
@@ -1306,12 +856,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Try another"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Prueba con otro"
           }
         }
       }
@@ -1324,12 +868,6 @@
             "state" : "translated",
             "value" : "This username is already taken"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este nombre de usuario ya está ocupado"
-          }
         }
       }
     },
@@ -1340,12 +878,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "View Collectibles"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ver coleccionables"
           }
         }
       }
@@ -1359,12 +891,6 @@
             "state" : "translated",
             "value" : "Accept"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aceptar"
-          }
         }
       }
     },
@@ -1377,12 +903,6 @@
             "state" : "translated",
             "value" : "Decline"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rechazar"
-          }
         }
       }
     },
@@ -1393,12 +913,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "New requests"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Solicitudes nuevas"
           }
         }
       }
@@ -1411,12 +925,6 @@
             "state" : "translated",
             "value" : "Confirm"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Confirmar"
-          }
         }
       }
     },
@@ -1427,12 +935,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Funds will be hold from your digital dollar account"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Los fondos se retendrán de tu cuenta de dólares digitales"
           }
         }
       }
@@ -1445,12 +947,6 @@
             "state" : "translated",
             "value" : "Confirm deposit"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Confirmar depósito"
-          }
         }
       }
     },
@@ -1461,12 +957,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%d sec"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%d s"
           }
         }
       }
@@ -1479,12 +969,6 @@
             "state" : "translated",
             "value" : "Creating account"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Creando la cuenta"
-          }
         }
       }
     },
@@ -1495,12 +979,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Deposited funds will be held from you dollar account and sent back after tattoo evidence has been confirmed."
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Los fondos depositados se retendrán de tu cuenta en dólares y se devolverán cuando se confirme la evidencia del tatuaje."
           }
         }
       }
@@ -1513,12 +991,6 @@
             "state" : "translated",
             "value" : "Deposit %@ to Select\nand Reserve a Tattoo"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Deposita %@ para elegir\ny reservar un tatuaje"
-          }
         }
       }
     },
@@ -1529,12 +1001,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edit"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Editar"
           }
         }
       }
@@ -1547,12 +1013,6 @@
             "state" : "translated",
             "value" : "**Evidence Approved: Becoming a Peer.**\nIssuing Peer status can can take some time"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "**Evidencia aprobada: te estás volviendo Peer.**\nEmitir el estatus de Peer puede tardar un poco"
-          }
         }
       }
     },
@@ -1563,12 +1023,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Evidence has been provided, wait for the upload and review. This process can take anywhere from one day to a week."
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La evidencia ya se entregó, espera la subida y la revisión. Este proceso puede tardar de un día a una semana."
           }
         }
       }
@@ -1581,12 +1035,6 @@
             "state" : "translated",
             "value" : "You’re applying to become a Peer through the weekly game. To switch to the unique tattoo option, press “Edit”."
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Te estás postulando para volverte Peer con el juego semanal. Para cambiar a la opción del tatuaje único, presiona “Editar”."
-          }
         }
       }
     },
@@ -1597,12 +1045,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You're joining Peers through the Unique Tattoo. Press \"Edit\" to switch to the Weekly Game option."
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Te estás uniendo a los Peers con el Tatuaje Único. Presiona «Editar» para cambiar a la opción del Juego semanal."
           }
         }
       }
@@ -1615,12 +1057,6 @@
             "state" : "translated",
             "value" : "Share ID"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Compartir ID"
-          }
         }
       }
     },
@@ -1631,12 +1067,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Use your ID to start a chat or\nreceive digital dollars."
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Usa tu ID para iniciar un chat o\nrecibir dólares digitales."
           }
         }
       }
@@ -1649,12 +1079,6 @@
             "state" : "translated",
             "value" : "Added"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agregado"
-          }
         }
       }
     },
@@ -1665,12 +1089,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Device"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dispositivo"
           }
         }
       }
@@ -1683,12 +1101,6 @@
             "state" : "translated",
             "value" : "Host"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Anfitrión"
-          }
         }
       }
     },
@@ -1699,12 +1111,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Remove Device"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quitar dispositivo"
           }
         }
       }
@@ -1717,12 +1123,6 @@
             "state" : "translated",
             "value" : "Close"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cerrar"
-          }
         }
       }
     },
@@ -1733,12 +1133,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Limit Reached"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Límite alcanzado"
           }
         }
       }
@@ -1751,12 +1145,6 @@
             "state" : "translated",
             "value" : "Remove Device"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quitar dispositivo"
-          }
         }
       }
     },
@@ -1767,12 +1155,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$(device)@ will lose access to your chats."
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(device)@ perderá el acceso a tus chats."
           }
         }
       }
@@ -1785,12 +1167,6 @@
             "state" : "translated",
             "value" : "Remove device?"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¿Quitar el dispositivo?"
-          }
         }
       }
     },
@@ -1801,12 +1177,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Chats and messages will be available"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Los chats y los mensajes estarán disponibles"
           }
         }
       }
@@ -1819,12 +1189,6 @@
             "state" : "translated",
             "value" : "Remove this device at any time in Settings"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quita este dispositivo cuando quieras en Configuración"
-          }
         }
       }
     },
@@ -1835,12 +1199,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Send and receive messages from this device"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Envía y recibe mensajes desde este dispositivo"
           }
         }
       }
@@ -1853,12 +1211,6 @@
             "state" : "translated",
             "value" : "Connecting device..."
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Conectando el dispositivo..."
-          }
         }
       }
     },
@@ -1869,12 +1221,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This device will be connected to your account and synced securely:"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Este dispositivo se conectará a tu cuenta y se sincronizará de forma segura:"
           }
         }
       }
@@ -1887,12 +1233,6 @@
             "state" : "translated",
             "value" : "Link"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vincular"
-          }
         }
       }
     },
@@ -1903,12 +1243,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Link a new device?"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¿Vincular un dispositivo nuevo?"
           }
         }
       }
@@ -1921,12 +1255,6 @@
             "state" : "translated",
             "value" : "Tattoo committed"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tatuaje confirmado"
-          }
         }
       }
     },
@@ -1937,12 +1265,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "You’ve committed to **%1$(name)@** tattoo"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Te comprometiste con el tatuaje **%1$(name)@**"
           }
         }
       }
@@ -1955,12 +1277,6 @@
             "state" : "translated",
             "value" : "Edited"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Editado"
-          }
         }
       }
     },
@@ -1971,12 +1287,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Judge the case to unlock %1$(count)lld More"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Da tu veredicto para desbloquear %1$(count)lld más"
           }
         }
       }
@@ -1990,12 +1300,6 @@
             "state" : "translated",
             "value" : "Judged case has been archived"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El caso con veredicto se archivó"
-          }
         }
       }
     },
@@ -2007,12 +1311,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mob Rule Case #%1$(index)lld"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Caso de Mob Rule n.º %1$(index)lld"
           }
         }
       }
@@ -2026,12 +1324,6 @@
             "state" : "translated",
             "value" : "View Case"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ver caso"
-          }
         }
       }
     },
@@ -2043,12 +1335,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Show Less"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ver menos"
           }
         }
       }
@@ -2062,12 +1348,6 @@
             "state" : "translated",
             "value" : "Show More"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ver más"
-          }
         }
       }
     },
@@ -2079,12 +1359,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skip This Evidence"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Omitir esta evidencia"
           }
         }
       }
@@ -2098,12 +1372,6 @@
             "state" : "translated",
             "value" : "View & Judge"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ver y dar veredicto"
-          }
         }
       }
     },
@@ -2115,12 +1383,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "False"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Falso"
           }
         }
       }
@@ -2134,12 +1396,6 @@
             "state" : "translated",
             "value" : "True"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Verdadero"
-          }
         }
       }
     },
@@ -2150,12 +1406,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "your"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "tu cuenta"
           }
         }
       }
@@ -2168,12 +1418,6 @@
             "state" : "translated",
             "value" : "Do you want to share %1$(name)@ info with them?"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¿Quieres compartir la información de %1$(name)@ con ellos?"
-          }
         }
       }
     },
@@ -2184,12 +1428,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$(name)@ wants to connect"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(name)@ quiere conectarse"
           }
         }
       }
@@ -2202,12 +1440,6 @@
             "state" : "translated",
             "value" : "%1$(name)@ requires signature"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$(name)@ requiere una firma"
-          }
         }
       }
     },
@@ -2218,12 +1450,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Reactions"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reacciones"
           }
         }
       }
@@ -2236,12 +1462,6 @@
             "state" : "translated",
             "value" : "%lld total"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld en total"
-          }
         }
       }
     },
@@ -2252,12 +1472,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Type username"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Escribe el nombre de usuario"
           }
         }
       }
@@ -2270,12 +1484,6 @@
             "state" : "translated",
             "value" : "Start a conversation with someone using\ntheir username."
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Inicia una conversación con alguien usando\nsu nombre de usuario."
-          }
         }
       }
     },
@@ -2286,12 +1494,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Share"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Compartir"
           }
         }
       }
@@ -2304,12 +1506,6 @@
             "state" : "translated",
             "value" : "Cancel"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cancelar"
-          }
         }
       }
     },
@@ -2321,12 +1517,6 @@
             "state" : "translated",
             "value" : "Share with"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Compartir con"
-          }
         }
       }
     },
@@ -2335,12 +1525,6 @@
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "·"
-          }
-        },
-        "es-ES" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "·"
@@ -2356,12 +1540,6 @@
             "state" : "translated",
             "value" : "Amount received differs from amount sent"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El monto recibido difiere del monto enviado"
-          }
         }
       }
     },
@@ -2372,12 +1550,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Claiming"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reclamando"
           }
         }
       }
@@ -2390,12 +1562,6 @@
             "state" : "translated",
             "value" : "Detecting"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Detectando"
-          }
         }
       }
     },
@@ -2406,12 +1572,6 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "Transaction failed"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La transacción falló"
           }
         }
       }
@@ -2424,12 +1584,6 @@
             "state" : "translated",
             "value" : "Claimed"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reclamado"
-          }
         }
       }
     },
@@ -2440,12 +1594,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Partially claimed"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reclamado parcialmente"
           }
         }
       }
@@ -2458,12 +1606,6 @@
             "state" : "translated",
             "value" : "Sending"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enviando"
-          }
         }
       }
     },
@@ -2474,12 +1616,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sent, waiting to be claimed"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enviado, esperando a ser reclamado"
           }
         }
       }
@@ -2492,12 +1628,6 @@
             "state" : "translated",
             "value" : "Start upgrading"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Empezar la mejora"
-          }
         }
       }
     },
@@ -2508,12 +1638,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "As a Member, you are eligible for a clean username without a suffix. How cool!"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Como Miembro, puedes tener un nombre de usuario limpio, sin sufijo. ¡Qué bien!"
           }
         }
       }
@@ -2526,12 +1650,6 @@
             "state" : "translated",
             "value" : "or any other available name"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "o cualquier otro nombre disponible"
-          }
         }
       }
     },
@@ -2542,12 +1660,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Get your new username!"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¡Obtén tu nuevo nombre de usuario!"
           }
         }
       }
@@ -2560,12 +1672,6 @@
             "state" : "translated",
             "value" : "Keep playing to retain your Membership, win prizes, and get other perks!"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¡Sigue jugando para conservar tu Membresía, ganar premios y obtener otros beneficios!"
-          }
         }
       }
     },
@@ -2576,12 +1682,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Congrats on securing this name!"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "¡Felicidades por asegurar este nombre!"
           }
         }
       }
@@ -2594,12 +1694,6 @@
             "state" : "translated",
             "value" : "✅ Your new username is"
           }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "✅ Tu nuevo nombre de usuario es"
-          }
         }
       }
     },
@@ -2607,12 +1701,6 @@
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CASH"
-          }
-        },
-        "es-ES" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "CASH"
@@ -2627,12 +1715,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Updating balance"
-          }
-        },
-        "es-ES" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Actualizando el saldo"
           }
         }
       }

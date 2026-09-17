@@ -94,6 +94,17 @@ public final class DSTabBarContentPanelView: UIView {
             return DSTabBarMetrics.capsuleHeight
         }
 
+        // A SwiftUI backed configuration view still reports the size of the content it laid out
+        // last, so a measurement taken right after a configuration change returns the previous
+        // panel height — and layout passes stop once the open animation ends, so nothing corrects
+        // it. Settling the view at the width it is about to be measured at avoids that. Only the
+        // configuration view is frame driven; the hosted view keeps sizing itself from its own
+        // constraints.
+        if measuredView === contentView {
+            measuredView.frame.size.width = bounds.width
+        }
+        measuredView.layoutIfNeeded()
+
         let measuredSize = measuredView.systemLayoutSizeFitting(
             CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,

@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost};
+use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -275,6 +275,16 @@ impl PairingHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_permission_status_host"))]
     pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
         self.services.install_permission_status_host(host)
+    }
+
+    /// Install the host's [`PocketPlatform`], which owns the card collection.
+    ///
+    /// Set-once, so the collection cannot change hands under a running
+    /// product. Returns whether this call installed it. Call it before serving
+    /// any product runtime.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_pocket_platform"))]
+    pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
+        self.services.install_pocket_platform(platform)
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -601,6 +611,16 @@ impl SigningHostRuntime {
         self.services.install_permission_status_host(host)
     }
 
+    /// Install the host's [`PocketPlatform`], which owns the card collection.
+    ///
+    /// Set-once, so the collection cannot change hands under a running
+    /// product. Returns whether this call installed it. Call it before serving
+    /// any product runtime.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_pocket_platform"))]
+    pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
+        self.services.install_pocket_platform(platform)
+    }
+
     /// Build a product-facing runtime from this signing host.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_runtime"))]
     pub fn product_runtime(
@@ -830,6 +850,33 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Every statement account the renewal ledger currently tracks.
+    ///
+    /// Needs no active session, so a host can audit which entries are spending
+    /// its finite per-period slots before deciding to renew.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.statement_renewal_targets"))]
+    pub async fn statement_renewal_targets(
+        &self,
+    ) -> Result<Vec<crate::runtime::TrackedStatementRenewalTarget>, v01::GenericError> {
+        self.signing_host
+            .statement_renewal_targets()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Root public key the active identity records its fixed ledger entries
+    /// under.
+    ///
+    /// Needs an active session, and fails with `Disconnected` without one.
+    /// Compare it against each entry's owner to tell what a pass will renew
+    /// from what it will prune.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.statement_renewal_owner_key"))]
+    pub fn statement_renewal_owner_key(&self) -> Result<truapi::Bytes32, v01::GenericError> {
+        self.signing_host
+            .statement_renewal_owner_key()
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Stop renewing one fixed statement account.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.untrack_statement_renewal_account"))]
     pub async fn untrack_statement_renewal_account(
@@ -888,6 +935,9 @@ impl SigningHostRuntime {
 /// Adapters scoped to one product connection: the platform serving its
 /// syscalls, the optional native Chat adapter, and the connection's
 /// host-fed action streams. Non-native connections use [`Self::from_services`].
+///
+/// `pocket_platform` is the same kind of optional adapter for the card
+/// collection.
 #[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
@@ -900,6 +950,7 @@ pub(crate) struct ConnectionAdapters {
     pub(crate) chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
     pub(crate) renderer:
         Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
+    pub(crate) pocket_platform: Option<Arc<dyn PocketPlatform>>,
 }
 
 impl ConnectionAdapters {
@@ -911,6 +962,7 @@ impl ConnectionAdapters {
             permission_status: services.permission_status_host(),
             chat: Arc::new(ActionChannel::chat()),
             renderer: Arc::new(ActionChannel::renderer()),
+            pocket_platform: services.pocket_platform(),
         }
     }
 }
@@ -1207,7 +1259,10 @@ impl ProductRuntimeControl {
                     Ok(truapi::versioned::renderer::ProductRendererRenderItem::V1(node)) => {
                         Some((Ok(node), (stream, reference)))
                     }
-                    Err(interrupt) => Some((Err(interrupt), (stream, None))),
+                    Err(interrupt) => Some((
+                        Err(crate::subscription::interrupt_into_latest(interrupt)),
+                        (stream, None),
+                    )),
                 }
             },
         );
@@ -1743,7 +1798,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         let raw = frame.encode();
@@ -1897,7 +1952,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
@@ -2016,7 +2071,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         let encoded = frame.encode();
@@ -2073,7 +2128,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
@@ -2203,6 +2258,7 @@ mod tests {
         let mut actions = futures::executor::block_on(truapi::api::Renderer::action_subscribe(
             host.as_ref(),
             &CallContext::with_request_id("renderer:1".to_string()),
+            truapi::versioned::renderer::HostRendererActionSubscribeRequest::V1,
         ));
 
         let _render = runtime
@@ -2676,8 +2732,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                // No request wrapper for this method: an empty Start payload.
-                value: Vec::new(),
+                value: truapi::versioned::chat::HostChatActionSubscribeRequest::V1.encode(),
             },
         };
 
@@ -2722,7 +2777,7 @@ mod tests {
                 trait_id: ids.trait_id,
                 method_id: ids.method_id,
                 message_type: crate::frame::MESSAGE_TYPE_START,
-                value: Vec::new(),
+                value: truapi::versioned::theme::HostThemeSubscribeRequest::V1.encode(),
             },
         };
         futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();

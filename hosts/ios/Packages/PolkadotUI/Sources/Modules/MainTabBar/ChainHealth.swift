@@ -23,19 +23,37 @@ public struct ChainHealthCountBounds: Hashable {
 public struct ChainHealthThresholds: Hashable {
     public let blockAge: ChainHealthBounds
     public let finalityLag: ChainHealthCountBounds
-    public let ping: ChainHealthBounds
     public let missingTermGrace: Duration
 
     public init(
         blockAge: ChainHealthBounds,
         finalityLag: ChainHealthCountBounds,
-        ping: ChainHealthBounds,
         missingTermGrace: Duration
     ) {
         self.blockAge = blockAge
         self.finalityLag = finalityLag
-        self.ping = ping
         self.missingTermGrace = missingTermGrace
+    }
+}
+
+/// Named bands of the health score. Owns the thresholds; `ChainStatusRingStyle` draws them.
+public enum ChainHealthGrade: Hashable {
+    case excellent
+    case good
+    case fair
+    case poor
+
+    public init(health: Double) {
+        self =
+            if health > 0.75 {
+                .excellent
+            } else if health > 0.5 {
+                .good
+            } else if health > 0.25 {
+                .fair
+            } else {
+                .poor
+            }
     }
 }
 
@@ -49,7 +67,6 @@ public enum ChainHealth {
 
         let blockAgeTerm = elapsedScore(since: viewModel.lastBlockDate, at: date, bounds: thresholds.blockAge)
         let finalityLagTerm = viewModel.finalityLag.map { linearScore(Double($0), bounds: thresholds.finalityLag) }
-        let pingTerm = viewModel.latency.map { linearScore($0.timeInterval, within: thresholds.ping) }
 
         // Grace period: while within missingTermGrace of connection, omit nil terms.
         // After grace expires, nil terms become 0.
@@ -61,7 +78,7 @@ public enum ChainHealth {
                 false
             }
 
-        let terms: [Double?] = [blockAgeTerm, finalityLagTerm, pingTerm]
+        let terms: [Double?] = [blockAgeTerm, finalityLagTerm]
         let scoredTerms = inGrace
             ? terms.compactMap { $0 }
             : terms.map { $0 ?? 0 }

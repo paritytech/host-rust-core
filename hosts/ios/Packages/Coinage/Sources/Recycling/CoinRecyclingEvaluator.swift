@@ -176,7 +176,7 @@ private extension CoinRecyclingEvaluator {
         // `recycleCoins` skips coins whose ledger state is not free, so the 5s cadence is idempotent.
         let coinsToRecycle = coins.filter { gated.contains($0.coin.derivationIndex) }.map(\.coin)
         do {
-            try await recyclingService.recycleCoins(coinsToRecycle)
+            try await recyclingService.recycleCoins(coinsToRecycle, groupId: nil)
         } catch {
             logger?.error("Recycle trigger failed: \(error)")
         }

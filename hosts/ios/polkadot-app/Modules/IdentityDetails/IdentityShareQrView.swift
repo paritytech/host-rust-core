@@ -11,7 +11,7 @@ struct IdentityShareQrView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(.identityCardScanQrHint)
+            Text(.identityCardScanQrHint(AppConfig.Brand.cashSymbol))
                 .typography(.paragraphLarge)
                 .foregroundStyle(Color.fgPrimary)
                 .padding(.horizontal, DSSpacings.large)

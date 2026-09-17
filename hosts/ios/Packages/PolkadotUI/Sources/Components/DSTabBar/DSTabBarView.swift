@@ -52,6 +52,10 @@ public final class DSTabBarView: UIView {
 
     public var onFoldChangeRequested: ((_ folded: Bool, _ velocityX: CGFloat) -> Void)?
 
+    /// Fires once item frames are assigned, so callers anchoring to them can wait for real
+    /// geometry rather than guessing when layout has run.
+    public var onItemsLaidOut: (() -> Void)?
+
     private let content = UIView()
     private let lens = DSTabBarSelectionLens()
 
@@ -108,6 +112,17 @@ public final class DSTabBarView: UIView {
         itemViews[index].apply(itemsStorage[index])
         selectedItemViews[index].apply(itemsStorage[index])
         applyActiveAction()
+    }
+
+    /// Anchor view for a popover pointing at a bar item. Re-read it rather than caching:
+    /// item views are recreated whenever `items` changes. Nil until frames are assigned in
+    /// `layoutSubviews` — an empty source rect makes UIKit centre the popover on screen.
+    public func itemAnchor(at index: Int) -> UIView? {
+        guard itemViews.indices.contains(index), !itemViews[index].frame.isEmpty else {
+            return nil
+        }
+
+        return itemViews[index]
     }
 
     override public func layoutSubviews() {
@@ -195,6 +210,10 @@ private extension DSTabBarView {
             selectedItemViews[index].frame = frame
         }
         rebuildAccessibilityElements()
+
+        if !items.isEmpty, bounds.width > 0 {
+            onItemsLaidOut?()
+        }
     }
 
     func applyActiveAction() {

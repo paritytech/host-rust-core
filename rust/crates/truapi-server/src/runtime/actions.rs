@@ -5,7 +5,6 @@ use std::sync::Mutex;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
-use truapi::latest::GenericError;
 use truapi::{CallError, Subscription};
 
 use crate::host_core::ProductRuntimeError;
@@ -55,7 +54,7 @@ impl<Item: Send + 'static> ActionChannel<Item> {
     }
 
     /// Open the product's subscription and drain buffered items first.
-    pub(crate) fn subscribe(&self) -> Subscription<Item, CallError<GenericError>> {
+    pub(crate) fn subscribe<E: Send + 'static>(&self) -> Subscription<Item, CallError<E>> {
         let (sender, receiver) = mpsc::unbounded();
         let mut state = self.state.lock().expect("action channel mutex poisoned");
         if state.closed {
@@ -123,7 +122,7 @@ mod tests {
         channel.publish("first".to_string()).unwrap();
         channel.publish("second".to_string()).unwrap();
 
-        let mut items = channel.subscribe();
+        let mut items = channel.subscribe::<truapi::latest::GenericError>();
         assert_eq!(block_on(items.next()), Some(Ok("first".to_string())));
         assert_eq!(block_on(items.next()), Some(Ok("second".to_string())));
     }
@@ -144,7 +143,7 @@ mod tests {
     #[test]
     fn detach_keeps_buffered_actions_for_the_next_subscriber() {
         let channel = channel();
-        let mut first = channel.subscribe();
+        let mut first = channel.subscribe::<truapi::latest::GenericError>();
         channel.publish("live".to_string()).unwrap();
         assert_eq!(block_on(first.next()), Some(Ok("live".to_string())));
 
@@ -152,7 +151,7 @@ mod tests {
         assert_eq!(block_on(first.next()), None);
         channel.publish("buffered".to_string()).unwrap();
 
-        let mut second = channel.subscribe();
+        let mut second = channel.subscribe::<truapi::latest::GenericError>();
         assert_eq!(block_on(second.next()), Some(Ok("buffered".to_string())));
     }
 
@@ -164,7 +163,7 @@ mod tests {
 
         // Subscribing to a closed channel interrupts, so a product can
         // tell it from a stream that ran and finished.
-        let mut items = channel.subscribe();
+        let mut items = channel.subscribe::<truapi::latest::GenericError>();
         match block_on(items.next()) {
             Some(Err(CallError::HostFailure { reason })) => assert_eq!(reason, "closed"),
             other => panic!("a closed channel must interrupt, got {other:?}"),
@@ -179,8 +178,8 @@ mod tests {
     fn separate_connections_cannot_observe_each_others_actions() {
         let first = channel();
         let second = channel();
-        let mut first_items = first.subscribe();
-        let mut second_items = second.subscribe();
+        let mut first_items = first.subscribe::<truapi::latest::GenericError>();
+        let mut second_items = second.subscribe::<truapi::latest::GenericError>();
 
         first.publish("first only".to_string()).unwrap();
         second.publish("second only".to_string()).unwrap();

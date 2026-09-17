@@ -81,6 +81,7 @@ extension ChainLatencyProvider: ChainLatencyProviding {
         }
 
         self.isActive = isActive
+        logger.debug("Latency sampling \(isActive ? "started" : "stopped")")
 
         guard isActive else {
             // Samples are kept so reopening shows the last known latency instead of blanking;
@@ -123,6 +124,8 @@ private extension ChainLatencyProvider {
 
     func probe(_ target: ChainConnectionTarget) async -> Duration? {
         guard let connection = chainRegistry.getConnection(for: target.chainId) else {
+            logger.debug("No connection to probe latency for \(target.chainId)")
+
             return nil
         }
 
@@ -144,7 +147,11 @@ private extension ChainLatencyProvider {
             return nil
         }
 
-        return ContinuousClock.now - start
+        let sample = ContinuousClock.now - start
+
+        logger.debug("Latency probe for \(target.chainId): \(sample)")
+
+        return sample
     }
 
     func record(_ samples: [ChainConnectionTarget: Duration]) {

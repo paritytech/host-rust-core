@@ -1,157 +1,132 @@
 import BigInt
 import Foundation
+import SDKLogger
 import SubstrateSdk
 
-/// Plans how to fulfill an external payment from available coins and vouchers.
+/// Vouchers before coins, even ones still gaining privacy: a coin loaded only to be unloaded leaves
+/// its recycler as soon as such a voucher would, so it saves no privacy and adds a recycling round.
 ///
-/// Algorithm (greedy, largest-value-first):
-/// 1. Fetch vouchers, evaluate readiness, partition into ready/waiting
-/// 2. If ready vouchers cover the amount → `.ready`
-/// 3. If total vouchers (ready + waiting) cover it → `.needsReschedule`
-/// 4. Calculate deficit, check available coins
-/// 5. If coins cover deficit → `.loadCoins`
-/// 6. If total coins cover deficit → `.needsReschedule`
-/// 7. Otherwise → `.notEnoughBalance`
+/// 1. Private vouchers cover the amount → `.unloadVouchers`
+/// 2. Every on-chain voucher covers it → `.unloadVouchers`, private ones first, then the largest
+/// 3. Coins cover the shortfall → `.loadCoins` with the coins to recycle and all vouchers as they are
+/// 4. Otherwise → `.notEnoughBalance`
 struct ExternalPaymentPlanner: ExternalPaymentPlanning {
     private let coinService: CoinServiceProtocol
     private let voucherService: VoucherServiceProtocol
-
-    private let rescheduleDelay: TimeInterval = 6
+    private let classifier: ExternalPaymentAssetClassifier
 
     init(
         coinService: CoinServiceProtocol,
-        voucherService: VoucherServiceProtocol
+        voucherService: VoucherServiceProtocol,
+        classifier: ExternalPaymentAssetClassifier
     ) {
         self.coinService = coinService
         self.voucherService = voucherService
+        self.classifier = classifier
     }
 
-    func plan(
-        amount: Balance,
+    func plan(amount: Balance, context: DenominationBreakdownContext) async throws -> ExternalPaymentPreview {
+        let buckets = try await classifier.voucherBuckets(voucherService.fetchAllTracked())
+
+        let privateVouchers = buckets.usable
+        if total(of: privateVouchers, context: context) >= amount {
+            return .unloadVouchers(pick(from: privateVouchers, target: amount, preferred: [], context: context))
+        }
+
+        let onChainVouchers = buckets.usable + buckets.gainingPrivacy
+        let voucherTotal = total(of: onChainVouchers, context: context)
+        if voucherTotal >= amount {
+            return .unloadVouchers(pick(
+                from: onChainVouchers,
+                target: amount,
+                preferred: privateVouchers,
+                context: context
+            ))
+        }
+
+        let deficit = amount - voucherTotal
+        let coins = try await classifier.recyclableCoins(coinService.fetchAllTrackedCoins())
+        guard total(of: coins, context: context) >= deficit else {
+            return .notEnoughBalance
+        }
+
+        return .loadCoins(coins: pick(from: coins, target: deficit, context: context), exactVouchers: onChainVouchers)
+    }
+
+    func canPayPrivately(amount: Balance, context: DenominationBreakdownContext) async throws -> Bool {
+        let buckets = try await classifier.voucherBuckets(voucherService.fetchAllTracked())
+        return total(of: buckets.usable, context: context) >= amount
+    }
+
+    func pickOffboarding(
+        from vouchers: [TrackedVoucher],
+        target: Balance,
         context: DenominationBreakdownContext
-    ) async throws -> ExternalPaymentPreview {
-        let trackedVouchers = try await voucherService.fetchAllTracked()
-
-        let readyVouchers = trackedVouchers.filter(\.isSelectable).map(\.voucher)
-        let waitingVouchers = trackedVouchers
-            .filter { $0.isOnboarding || $0.isMinting }
-            .map(\.voucher)
-
-        // Try ready vouchers first
-        let readyTotal = totalValue(of: readyVouchers, context: context)
-        if readyTotal >= amount {
-            let selected = selectVouchers(from: readyVouchers, target: amount, context: context)
-            let selection = ExternalPaymentPreview.Selection(
-                vouchers: selected,
-                coins: [],
-                fullAmount: amount
-            )
-            return .ready(selection)
+    ) throws -> VoucherOffboarding {
+        let available = total(of: vouchers, context: context)
+        guard available >= target else {
+            throw ExternalPaymentPlannerError.insufficientVouchers(available: available, target: target)
         }
 
-        // Check if total vouchers (ready + waiting) would be enough
-        let totalVoucherValue = readyTotal + totalValue(of: waitingVouchers, context: context)
-        if totalVoucherValue >= amount {
-            let selection = ExternalPaymentPreview.Selection(
-                vouchers: readyVouchers,
-                coins: [],
-                fullAmount: amount
-            )
-            return .needsReschedule(
-                after: Date(timeIntervalSinceNow: rescheduleDelay),
-                selection
-            )
-        }
-
-        // Calculate deficit and check coins
-        let deficit = amount - totalVoucherValue
-
-        let trackedCoins = try await coinService.fetchAllTrackedCoins()
-        let spendableCoins = trackedCoins.filter(\.isSelectable).map(\.coin)
-        let spendableTotal = totalValue(of: spendableCoins, context: context)
-
-        if spendableTotal >= deficit {
-            let selectedCoins = selectCoins(from: spendableCoins, target: deficit, context: context)
-            let selection = ExternalPaymentPreview.Selection(
-                vouchers: readyVouchers,
-                coins: selectedCoins,
-                fullAmount: amount
-            )
-            return .loadCoins(selection)
-        }
-
-        // Coins not spendable yet but on their way — minting (will land) or aged past recycling
-        // (will be recycled into fresh spendable coins). If they would cover the deficit, wait for
-        // them rather than declaring insufficient funds.
-        let maturingCoins = trackedCoins
-            .filter { $0.isMinting || $0.isAwaitingRecycling() }
-            .map(\.coin)
-        let reachableTotal = spendableTotal + totalValue(of: maturingCoins, context: context)
-        if reachableTotal >= deficit {
-            let selection = ExternalPaymentPreview.Selection(
-                vouchers: readyVouchers,
-                coins: spendableCoins + maturingCoins,
-                fullAmount: amount
-            )
-            return .needsReschedule(
-                after: Date(timeIntervalSinceNow: rescheduleDelay),
-                selection
-            )
-        }
-
-        return .notEnoughBalance
+        return pick(from: vouchers, target: target, preferred: [], context: context)
     }
 }
 
-// MARK: - Selection Helpers
+// MARK: - Selection
 
 private extension ExternalPaymentPlanner {
-    func totalValue(of vouchers: [Voucher], context: DenominationBreakdownContext) -> Balance {
-        vouchers.reduce(Balance(0)) { $0 + context.valueInPlanks(for: $1.exponent) }
+    func total(of vouchers: [TrackedVoucher], context: DenominationBreakdownContext) -> Balance {
+        vouchers.reduce(Balance(0)) { $0 + context.valueInPlanks(for: $1.voucher.exponent) }
     }
 
-    func totalValue(of coins: [Coin], context: DenominationBreakdownContext) -> Balance {
-        coins.reduce(Balance(0)) { $0 + context.valueInPlanks(for: $1.exponent) }
+    func total(of coins: [TrackedCoin], context: DenominationBreakdownContext) -> Balance {
+        coins.reduce(Balance(0)) { $0 + context.valueInPlanks(for: $1.coin.exponent) }
     }
 
-    /// Greedy voucher selection: sort by value descending, accumulate until >= target.
-    func selectVouchers(
-        from vouchers: [Voucher],
+    /// `preferred` vouchers first, then the largest, until `target` is reached; the surplus is what
+    /// the picked vouchers exceed it by.
+    func pick(
+        from vouchers: [TrackedVoucher],
         target: Balance,
+        preferred: [TrackedVoucher],
         context: DenominationBreakdownContext
-    ) -> [Voucher] {
-        let sorted = vouchers
-            .sorted { context.valueInPlanks(for: $0.exponent) > context.valueInPlanks(for: $1.exponent) }
-
-        var selected: [Voucher] = []
-        var accumulated = Balance(0)
-
-        for voucher in sorted {
-            if accumulated >= target { break }
-            selected.append(voucher)
-            accumulated += context.valueInPlanks(for: voucher.exponent)
+    ) -> VoucherOffboarding {
+        let preferredIndices = Set(preferred.map(\.voucher.derivationIndex))
+        let sorted = vouchers.sorted { lhs, rhs in
+            let lhsPreferred = preferredIndices.contains(lhs.voucher.derivationIndex)
+            let rhsPreferred = preferredIndices.contains(rhs.voucher.derivationIndex)
+            guard lhsPreferred == rhsPreferred else { return lhsPreferred }
+            return context.valueInPlanks(for: lhs.voucher.exponent) > context.valueInPlanks(for: rhs.voucher.exponent)
         }
 
-        return selected
+        let (selected, accumulated) = accumulate(sorted, target: target) {
+            context.valueInPlanks(for: $0.voucher.exponent)
+        }
+        return VoucherOffboarding(vouchers: selected, surplus: accumulated > target ? accumulated - target : 0)
     }
 
-    /// Greedy coin selection: sort by value descending, accumulate until >= target.
-    func selectCoins(
-        from coins: [Coin],
-        target: Balance,
-        context: DenominationBreakdownContext
-    ) -> [Coin] {
-        let sorted = coins.sorted { context.valueInPlanks(for: $0.exponent) > context.valueInPlanks(for: $1.exponent) }
-
-        var selected: [Coin] = []
-        var accumulated = Balance(0)
-
-        for coin in sorted {
-            if accumulated >= target { break }
-            selected.append(coin)
-            accumulated += context.valueInPlanks(for: coin.exponent)
+    func pick(from coins: [TrackedCoin], target: Balance, context: DenominationBreakdownContext) -> [TrackedCoin] {
+        let sorted = coins.sorted {
+            context.valueInPlanks(for: $0.coin.exponent) > context.valueInPlanks(for: $1.coin.exponent)
         }
 
-        return selected
+        return accumulate(sorted, target: target) { context.valueInPlanks(for: $0.coin.exponent) }.selected
+    }
+
+    func accumulate<Asset>(
+        _ sorted: [Asset],
+        target: Balance,
+        value: (Asset) -> Balance
+    ) -> (selected: [Asset], accumulated: Balance) {
+        var selected: [Asset] = []
+        var accumulated = Balance(0)
+
+        for asset in sorted {
+            if accumulated >= target { break }
+            selected.append(asset)
+            accumulated += value(asset)
+        }
+
+        return (selected, accumulated)
     }
 }

@@ -737,7 +737,10 @@ mod tests {
             // `ReqWrapper` must be a real versioned wrapper here: otherwise the
             // request-parameter check fires first and this stops exercising the
             // response check it is named for.
-            types: vec![versioned_wrapper_def("ReqWrapper")],
+            types: vec![
+                versioned_wrapper_def("ReqWrapper"),
+                versioned_wrapper_def("ErrWrapper"),
+            ],
             framework_types: Vec::new(),
         };
         let err = generate_dispatcher(&api).expect_err("primitive response must error");

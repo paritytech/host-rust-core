@@ -31,7 +31,7 @@ use parity_scale_codec::Encode;
 use subxt::utils::{AccountId32, MultiSignature};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use allowance_renewal::StatementRenewalTarget;
+pub use allowance_renewal::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 pub(crate) use local_activation::LocalActivation;
 pub use sso_responder::{PairedSsoPeer, ResponderExit};
 pub(crate) use sso_responder::{
@@ -584,6 +584,18 @@ impl SigningHost {
         targets: Vec<StatementRenewalTarget>,
     ) -> Result<(), String> {
         allowance_renewal::track(self, targets).await
+    }
+
+    /// Every statement account the ledger currently tracks.
+    pub(crate) async fn statement_renewal_targets(
+        &self,
+    ) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
+        allowance_renewal::list(self).await
+    }
+
+    /// Root public key the active identity records its fixed entries under.
+    pub(crate) fn statement_renewal_owner_key(&self) -> Result<[u8; 32], String> {
+        allowance_renewal::active_owner_key(self)
     }
 
     /// Stop renewing one fixed statement account.

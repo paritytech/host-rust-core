@@ -1,5 +1,6 @@
 import Foundation
 @testable import Coinage
+import DurableTransactions
 
 /// Random walks over coins, vouchers and reorgs, checked against invariants rather than expected
 /// verdicts.

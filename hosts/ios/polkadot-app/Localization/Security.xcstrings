@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "This device has been jailbroken and is not safe to use. Please use this app on a non-jailbroken device."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este dispositivo tiene jailbreak y no es seguro para usarse. Usa esta app en un dispositivo sin jailbreak."
-          }
         }
       }
     },
@@ -25,12 +19,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Security warning"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Advertencia de seguridad"
           }
         }
       }
