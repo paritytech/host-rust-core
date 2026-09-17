@@ -2984,49 +2984,6 @@ mod tests {
     }
 
     #[test]
-    fn permission_authorization_request_mirror_round_trips() {
-        let device_cases = [
-            v01::HostDevicePermissionRequest::Notifications,
-            v01::HostDevicePermissionRequest::Camera,
-            v01::HostDevicePermissionRequest::Microphone,
-            v01::HostDevicePermissionRequest::Bluetooth,
-            v01::HostDevicePermissionRequest::NFC,
-            v01::HostDevicePermissionRequest::Location,
-            v01::HostDevicePermissionRequest::Clipboard,
-            v01::HostDevicePermissionRequest::OpenUrl,
-            v01::HostDevicePermissionRequest::Biometrics,
-        ];
-        let remote_cases = [
-            v01::RemotePermission::Remote {
-                domains: vec!["a.dot".to_string(), "b.dot".to_string()],
-            },
-            v01::RemotePermission::WebRtc,
-            v01::RemotePermission::ChainSubmit,
-            v01::RemotePermission::PreimageSubmit,
-            v01::RemotePermission::StatementSubmit,
-        ];
-
-        let mut cases: Vec<PermissionAuthorizationRequest> = Vec::new();
-        cases.extend(
-            device_cases
-                .into_iter()
-                .map(PermissionAuthorizationRequest::Device),
-        );
-        cases.extend(remote_cases.into_iter().map(|permission| {
-            PermissionAuthorizationRequest::Remote(v01::RemotePermissionRequest { permission })
-        }));
-        cases.push(PermissionAuthorizationRequest::IdentityDisclosure);
-        cases.push(PermissionAuthorizationRequest::AccountAccess {
-            target_product_id: "other.dot".to_string(),
-        });
-
-        for case in cases {
-            let native = case.clone();
-            assert_eq!(native, case);
-        }
-    }
-
-    #[test]
     fn native_auth_presenter_forwards_states_across_the_ffi_mirror() {
         let (callbacks, _events, platform) = event_platform();
 

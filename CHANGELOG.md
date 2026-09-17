@@ -19,6 +19,9 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Added
 
+- Add `account.productDeviceChat` for host-private Chat v2 identity binding and
+  identity-route sealing/opening through local or paired account authorities,
+  guarded by a dedicated, product-scoped Chat-authority permission.
 - report local-wallet registration stages and retryable chain-read errors through
   a request-scoped browser callback without resubmitting accepted claims
 - expose local signing-wallet username registration and chain-verified identity
@@ -31,6 +34,15 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Fixed
 
+- persist typed Statement Store allowance approvals and denials per product and
+  account selector for implicit, idempotent provisioning; explicit requests for
+  additional quota retain per-operation confirmation and increase semantics.
+  Stop unscoped product background renewal, including previously recorded
+  targets, so artifact-scoped revocation cannot be bypassed.
+- require separate Chat-authority consent on the local product API as well as
+  SSO; existing username-disclosure grants do not authorize Chat operations,
+  and denial or revocation blocks subsequent binding, sealing, and opening (#709)
+- move the secret-bearing SSO pairing result instead of cloning it (#709)
 - keep host-backed allowance helpers available on Wasm with browser-compatible
   polling clocks, while excluding the native-only renewal driver (#540)
 - report the immutable PolkaVM runtime revision actually pinned by the optional

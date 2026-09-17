@@ -25,9 +25,9 @@ use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningKey, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
-    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session,
-    require_current_session,
+    CreateTransactionAuthorityRequest, ProductAuthority, ProductDeviceChatAuthorityError,
+    ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    StatementStoreAllowanceKey, authority_session, require_current_session,
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
@@ -2447,6 +2447,19 @@ impl PairingHost {
             .await
     }
 
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        let private_session = self
+            .current_private_session(session)
+            .map_err(|_| ProductDeviceChatAuthorityError::Disconnected)?;
+        self.remote_product_device_chat(cx, &private_session, request)
+            .await
+    }
+
     async fn allocate_resources(
         &self,
         cx: &CallContext,
@@ -2720,6 +2733,15 @@ impl ProductAuthority for PairingHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         PairingHost::ring_vrf_sign(self, cx, session, request).await
+    }
+
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        PairingHost::product_device_chat(self, cx, session, request).await
     }
 
     async fn allocate_resources(

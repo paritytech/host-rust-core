@@ -52,26 +52,13 @@ private extension TrUAPIConfirmationPresenter {
             await confirmStatementSign(
                 promptMapper.makeStatementSignRequest(from: statementReview)
             )
-        case let .identityDisclosure(identityReview):
-            await confirmPermission(
-                promptMapper.makePermissionRequest(from: identityReview)
-            )
-        case let .preimageSubmit(preimageReview):
-            await confirmPermission(
-                promptMapper.makePermissionRequest(from: preimageReview)
-            )
-        case let .accountAccess(accessReview):
-            await confirmPermission(
-                promptMapper.makePermissionRequest(from: accessReview)
-            )
-        case let .productSubtree(subtreeReview):
-            await confirmPermission(
-                promptMapper.makePermissionRequest(from: subtreeReview)
-            )
-        case let .accountAlias(aliasReview):
-            await confirmPermission(
-                promptMapper.makePermissionRequest(from: aliasReview)
-            )
+        case .identityDisclosure,
+             .chatAuthority,
+             .preimageSubmit,
+             .accountAccess,
+             .productSubtree,
+             .accountAlias:
+            try await confirmPermissionReview(review)
         case let .createProof(proofReview):
             try await confirmCreateProof(
                 promptMapper.makeCreateProofRequest(from: proofReview)
@@ -120,6 +107,27 @@ private extension TrUAPIConfirmationPresenter {
             }
             return decision == .approved
         }
+    }
+
+    func confirmPermissionReview(_ review: UserConfirmationReview) async throws -> Bool {
+        let request: TrUAPIPermissionRequest
+        switch review {
+        case let .identityDisclosure(value):
+            request = promptMapper.makePermissionRequest(from: value)
+        case let .chatAuthority(value):
+            request = promptMapper.makePermissionRequest(from: value)
+        case let .preimageSubmit(value):
+            request = promptMapper.makePermissionRequest(from: value)
+        case let .accountAccess(value):
+            request = promptMapper.makePermissionRequest(from: value)
+        case let .productSubtree(value):
+            request = promptMapper.makePermissionRequest(from: value)
+        case let .accountAlias(value):
+            request = promptMapper.makePermissionRequest(from: value)
+        default:
+            throw TrUAPIReviewMappingError.notAPermissionReview
+        }
+        return await confirmPermission(request)
     }
 
     func confirmPermission(_ request: TrUAPIPermissionRequest) async -> Bool {

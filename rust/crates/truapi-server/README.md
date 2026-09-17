@@ -104,6 +104,31 @@ Remote permissions carry one exception. A product whose label is listed in
 surface revokes it. Device permissions, identity disclosure and account access
 always prompt.
 
+Statement Store allocation uses the durable
+`StatementStoreAllowance { derivation_index }` decision: `None` is the legacy
+allowance account; `Some(index)` is that exact product-account selector. Both
+approval and denial survive runtime restart through the same `CoreAdmin`
+permission APIs. The product connection's storage is authoritative, including
+any host-provided artifact namespace. A storage failure prevents provisioning.
+Chat, identity disclosure, other resources, and ordinary signing retain their
+separate authorization contracts.
+
+Implicit Statement Store provisioning ensures the current-period allowance
+without adding slots and reuses an authorized durable decision without another
+grant prompt. An explicit `ResourceAllocation.request` instead requests additional
+quota (`Increase`) and always requires per-operation confirmation. Its initial
+approval can establish a missing durable grant in that same review; cancelling
+an increase never revokes a previously authorized grant. Denied grants, storage
+failures, session changes, and changed administrative decisions block allocation.
+
+Revocation blocks subsequent provisioning but does not withdraw already issued
+on-chain quota. Product grants no longer create background renewal promises:
+the signing host's global storage cannot resolve an artifact-scoped decision.
+Old product-derived renewal entries are pruned; wallet and paired-device renewal
+remain enabled. Next-period provisioning happens on demand through the product's
+scoped runtime. A remote signing host retains its independent per-operation
+confirmation; the product grant does not silently authorize another host.
+
 ```text
 Product app
 (product_id = "my-product")
