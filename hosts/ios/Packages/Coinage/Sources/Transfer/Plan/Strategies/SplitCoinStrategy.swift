@@ -52,9 +52,23 @@ struct SplitCoinStrategy {
 
 extension SplitCoinStrategy: TransferStrategy {
     func prepare(groupId: CoinageTxGroupId?) async throws -> PreparedStrategy {
-        let recipientCoins = try await minter.mintCoins(targetDenominations.map(\.exponent))
+        // Every piece of the split shares one provenance: the overflow coin's chain, plus this
+        // split. Fanout counts all outputs, the recipient's and ours alike, since that is how many
+        // ways the input was divided.
+        let provenance = CoinProvenance.split(
+            from: overflowCoin,
+            fanout: targetDenominations.count + changeDenominations.count
+        )
+
+        let recipientCoins = try await minter.mintCoins(
+            targetDenominations.map(\.exponent),
+            provenance: provenance
+        )
         // Change coins stay ours — minted as outputs but not handed off.
-        let changeCoins = try await minter.mintCoins(changeDenominations.map(\.exponent))
+        let changeCoins = try await minter.mintCoins(
+            changeDenominations.map(\.exponent),
+            provenance: provenance
+        )
 
         var transaction = CoinageTransaction()
         transaction.mint(coins: recipientCoins + changeCoins)

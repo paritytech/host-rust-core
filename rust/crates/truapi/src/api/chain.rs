@@ -1,24 +1,23 @@
 //! Unified [`Chain`] trait.
 
-use crate::latest::GenericError;
 use crate::versioned::chain::{
     RemoteChainHeadBodyError, RemoteChainHeadBodyRequest, RemoteChainHeadBodyResponse,
     RemoteChainHeadCallError, RemoteChainHeadCallRequest, RemoteChainHeadCallResponse,
     RemoteChainHeadContinueError, RemoteChainHeadContinueRequest, RemoteChainHeadContinueResponse,
-    RemoteChainHeadFollowItem, RemoteChainHeadFollowRequest, RemoteChainHeadHeaderError,
-    RemoteChainHeadHeaderRequest, RemoteChainHeadHeaderResponse, RemoteChainHeadStopOperationError,
-    RemoteChainHeadStopOperationRequest, RemoteChainHeadStopOperationResponse,
-    RemoteChainHeadStorageError, RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse,
-    RemoteChainHeadUnpinError, RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse,
-    RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
-    RemoteChainSpecChainNameError, RemoteChainSpecChainNameRequest,
-    RemoteChainSpecChainNameResponse, RemoteChainSpecGenesisHashError,
-    RemoteChainSpecGenesisHashRequest, RemoteChainSpecGenesisHashResponse,
-    RemoteChainSpecPropertiesError, RemoteChainSpecPropertiesRequest,
-    RemoteChainSpecPropertiesResponse, RemoteChainTransactionBroadcastError,
-    RemoteChainTransactionBroadcastRequest, RemoteChainTransactionBroadcastResponse,
-    RemoteChainTransactionStopError, RemoteChainTransactionStopRequest,
-    RemoteChainTransactionStopResponse,
+    RemoteChainHeadFollowError, RemoteChainHeadFollowItem, RemoteChainHeadFollowRequest,
+    RemoteChainHeadHeaderError, RemoteChainHeadHeaderRequest, RemoteChainHeadHeaderResponse,
+    RemoteChainHeadStopOperationError, RemoteChainHeadStopOperationRequest,
+    RemoteChainHeadStopOperationResponse, RemoteChainHeadStorageError,
+    RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse, RemoteChainHeadUnpinError,
+    RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse, RemoteChainInfoError,
+    RemoteChainInfoRequest, RemoteChainInfoResponse, RemoteChainSpecChainNameError,
+    RemoteChainSpecChainNameRequest, RemoteChainSpecChainNameResponse,
+    RemoteChainSpecGenesisHashError, RemoteChainSpecGenesisHashRequest,
+    RemoteChainSpecGenesisHashResponse, RemoteChainSpecPropertiesError,
+    RemoteChainSpecPropertiesRequest, RemoteChainSpecPropertiesResponse,
+    RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
+    RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopError,
+    RemoteChainTransactionStopRequest, RemoteChainTransactionStopResponse,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -52,7 +51,7 @@ pub trait Chain: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: RemoteChainHeadFollowRequest,
-    ) -> Subscription<RemoteChainHeadFollowItem, CallError<GenericError>> {
+    ) -> Subscription<RemoteChainHeadFollowItem, CallError<RemoteChainHeadFollowError>> {
         Subscription::interrupted(CallError::unavailable())
     }
 

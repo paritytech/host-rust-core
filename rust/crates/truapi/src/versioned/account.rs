@@ -27,7 +27,9 @@ truapi_macros::versioned_type! {
     pub enum HostGetLegacyAccountsRequest { V1 }
     pub enum HostGetLegacyAccountsResponse { V1 => v01::HostGetLegacyAccountsResponse }
     pub enum HostGetLegacyAccountsError { V1 => v01::HostAccountGetError }
+    pub enum HostAccountConnectionStatusSubscribeRequest { V1 }
     pub enum HostAccountConnectionStatusSubscribeItem { V1 => v01::HostAccountConnectionStatusSubscribeItem }
+    pub enum HostAccountConnectionStatusSubscribeError { V1 => v01::GenericError }
     pub enum HostRequestLoginRequest { V1 => v01::HostRequestLoginRequest }
     pub enum HostRequestLoginResponse { V1 => v01::HostRequestLoginResponse }
     pub enum HostRequestLoginError { V1 => v01::HostRequestLoginError }

@@ -39,7 +39,9 @@ final class LogsEmailDraftFactory: LogsEmailDraftMaking {
         return EmailDraft(
             subject: "\(subjectDateFormatter.string(from: Date())) - iOS",
             message: "\n\n\n",
-            recipients: ["game@novasama.io"],
+            // No recipient: the log archive is a debug aid, and who receives it is the
+            // user's call — the mail composer opens with an empty To field for them to fill.
+            recipients: [],
             attachment: .init(
                 data: data,
                 mimeType: "application/octet-stream",

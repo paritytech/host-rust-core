@@ -32,6 +32,43 @@ jobs:
         with:
           node-version: "22"
 
+      # The iOS package falls back to a published xcframework when no local one
+      # is staged. Bindings are generated per commit and UniFFI checks the
+      # pairing at initialization, so a fallback naming an older release means
+      # anything resolving this package fails to initialize. Every CI job sets
+      # TRUAPI_USE_LOCAL_BINARY=1, so nothing else looks at it.
+      - name: Compare the iOS published fallback against its newest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          declared_url="$(sed -n -E 's/^let publishedBinaryURL = "(.*)"$/\1/p' Package.swift)"
+          declared="$(printf '%s' "${declared_url}" \
+            | sed -n -E 's|.*%40parity%2Fios-host%40([^/]+)/.*|\1|p')"
+          if [ -z "${declared}" ]; then
+            echo "::error::Cannot read an @parity/ios-host version from publishedBinaryURL."
+            exit 1
+          fi
+
+          # Pre-releases are cut by hand for app-side testing and are not what
+          # the default branch should fall back to.
+          # Paginated: a fixed limit silently reports no drift once that many
+          # other releases postdate the newest iOS one.
+          newest="$(gh api --paginate "repos/${GH_REPO}/releases" --jq '.[].tag_name' \
+            | sed -n 's|^@parity/ios-host@||p' \
+            | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true; } \
+            | sort -V | tail -1)"
+
+          if [ -n "${newest}" ] && [ "${declared}" != "${newest}" ]; then
+            echo "@parity/ios-host@${newest} is published but Package.swift falls back to ${declared}."
+            printf '%s\n' "@parity/ios-host@${newest} (Package.swift falls back to ${declared})" \
+              > "${RUNNER_TEMP}/ios-drift.txt"
+          else
+            echo "Package.swift falls back to @parity/ios-host@${declared}."
+          fi
+
       - name: Compare every published manifest against npm
         id: compare
         run: |
@@ -66,6 +103,14 @@ jobs:
             fi
           done
 
+          # Written by the step above when the iOS fallback has drifted, so
+          # both kinds of drift arrive in one report instead of two.
+          if [ -s "${RUNNER_TEMP}/ios-drift.txt" ]; then
+            while IFS= read -r entry; do
+              missing+=("${entry}")
+            done < "${RUNNER_TEMP}/ios-drift.txt"
+          fi
+
           if [ "${#missing[@]}" -eq 0 ]; then
             echo "drift=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -98,7 +143,7 @@ jobs:
           # The format string is deliberately single quoted: the backticks are
           # markdown and the values arrive as printf arguments, not expansions.
           # shellcheck disable=SC2016
-          printf 'The default branch declares package versions the registry does not serve.\n\n```\n%s\n```\n\nCheck the most recent `Release` run for a failed publish or an omitted target. Document deliberately unpublished versions in `.github/registry-drift-exceptions.json` with a reason.\n\n[Registry drift runs](%s)\n' "$REPORT" "$WORKFLOW_URL" > "$body_file"
+          printf 'The default branch declares versions that do not match what is published.\n\n```\n%s\n```\n\nCheck the most recent `Release` run for a failed publish or an omitted target. Document deliberately unpublished versions in `.github/registry-drift-exceptions.json` with a reason.\n\n[Registry drift runs](%s)\n' "$REPORT" "$WORKFLOW_URL" > "$body_file"
 
           if [ -n "${existing}" ]; then
             current_body="$(jq -sr --argjson number "$existing" 'add | .[] | select(.number == $number) | .body' <<<"$issues")"

@@ -1,5 +1,92 @@
 # @parity/truapi
 
+## 0.17.0
+
+### Major Changes
+
+- 75a9f2e: Remove the hard-coded well-known chain constants (`PASEO_NEXT_V2_ASSET_HUB`, `PASEO_NEXT_V2_INDIVIDUALITY`,
+  `PREVIEWNET_ASSET_HUB`, `PREVIEWNET_INDIVIDUALITY`) and the `WellKnownChain` type. Products resolve genesis hashes
+  through `chain.getChainInfo` (RFC 0026), which answers from the host's own configuration and therefore survives a
+  testnet wipe or an environment move without a new product bundle. It also covers Bulletin and Relay, which the
+  constants never did.
+
+  Replace `SOME_CHAIN.genesis` with the `genesisHash` from the matching role:
+
+  ```ts
+  const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+  if (assetHub.isErr()) return;
+  const genesisHash = assetHub.value.genesisHash;
+  ```
+
+  Genesis hashes are now only available asynchronously from a connected host, so code that needed one at module load has
+  to resolve it inside the call that uses it.
+- a9731b1: Every request, response and subscription item on the wire is an explicit versioned wrapper, empty payloads
+  included. `statementStore.submit` resolves a `RemoteStatementStoreSubmitResponse` whose V1 carries no payload, and the
+  six subscriptions that take no request data send a payload-less V1 request envelope on their start frame. Two frame
+  payloads therefore change size: a `submit` success is two bytes, and a start frame for those subscriptions is one.
+- a9731b1: Subscription interrupts carry a versioned error envelope. The nine subscriptions that reported a bare
+  `GenericError` now resolve a per-method wrapper whose V1 is that same payload, so an interrupt frame is one byte
+  longer and its domain error downgrades to the version the caller subscribed in.
+- a9731b1: The wire codec version is 3. Seven frame legs change shape, so a peer built against codec 2 is refused at the
+  handshake rather than failing per call when the first mismatched frame arrives. Hosts and products negotiate this at
+  connect time and need no coordinated deploy.
+
+### Minor Changes
+
+- 221d972: Make the `context` scope effective. A `trustedProducts` grant of `context` now admits a cross-product
+  ring-VRF proof or signature against the granting product's key, where before the runtime admitted the caller and the
+  authority holding the keys refused it again with the same error a product granting nothing would produce. Each
+  authority resolves the grant from the owner's published manifest itself rather than accepting a verdict relayed by the
+  caller, because on a paired host the calling product id arrives over the wire as a self-asserted field.
+
+  The authority derives the key from the identity it authorised rather than the spelling it was handed, so authorisation
+  and derivation cannot diverge. A granted call is held to the caller's own proof context: the contextual alias is a
+  function of the owner's key and the context, so an unconstrained context would let a grantee produce the alias the
+  owner presents to a third product that granted nothing and cannot consent.
+
+  The identity read `context` names is covered by the grant rather than prompted for again. The contextual alias and the
+  ring-VRF proof come out of one VRF evaluation, so a grantee that may `create_account_proof` already holds the alias
+  that proof attests; `get_account_alias` accepting the same grant makes the two calls agree about what the scope means.
+  A product without a grant still takes the prompt.
+
+  A stored account-access refusal still overrides a grant, and is now recorded against the product on both sides rather
+  than one spelling of it, matching the granularity a manifest grant uses: a refusal for `peopl.dot` also covers
+  `app.peopl.dot`. Decisions written by earlier releases under the full product id are still honoured, so upgrading does
+  not discard a refusal a user has already given.
+
+  `create_account_proof` with a foreign key handle and no active session now answers `Rejected` where it previously
+  answered `NotAllowlisted`. The session is consulted before the grant so that the pair of refusals cannot be used to
+  probe which product granted which; a product branching on the old tag for that case sees a different one.
+
+  Product identifiers are rejected when they carry no name: an empty label, control characters, invisible bidirectional
+  or zero-width formatting, whitespace, or path separators. Each of these reached the grant key, the manifest cache key,
+  the account-access prompt and the logs. Internationalised names are unaffected.
+
+  A granted cross-product access is logged. It raises no prompt and writes no stored decision, so previously only the
+  refusal was audible: a publisher's grant could let one product act with another's keys leaving no trace on the device.
+  This does not make the access revocable, which needs a surface for the user to record a decision about a pair they
+  were never asked about.
+
+  Resolving a grant can require reading a product manifest from dotNS, so the lookup is bounded by the caller's timeout
+  and cancellation rather than running outside both. A manifest is cached under the label it resolves by, so every
+  executable of one product shares one entry, and an entry stamped in the future is re-read rather than treated as fresh
+  forever. Entries written by earlier releases under the full product id are no longer read and nothing evicts them, so
+  they sit in core storage until the cache is cleared.
+- befde58: The unprefixed name for a versioned type belongs to the newest version any wrapper selects.
+  `HostLocalStorageReadError` is the v02 shape; the v01 one is `V01HostLocalStorageReadError`.
+- 0e86a3a: Add the `pocket` service: `listSubscribe` over the calling product's cards, and `removeCard`.
+
+### Patch Changes
+
+- 4034118: The chat key a host publishes on chain is the X25519 key it actually holds, so a peer that looks up that
+  identity can encrypt to it. It was previously derived from an unrelated key tree, which left chat unreachable for
+  every identity a host registered. Identities registered before this carry an unusable key and have to be
+  re-registered.
+- cc1823d: `truapi-host` keeps one base path on one signer identity. A `--session` name survives promotion and keeps
+  selecting the session it created, a lost or stale `current-session` pointer resolves against the provisioned sessions
+  instead of provisioning beside them, and `--serve` reports a missing signer and announces the minutes-long first
+  registration instead of staying silent.
+
 ## 0.16.0
 
 ### Minor Changes

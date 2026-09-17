@@ -9,7 +9,10 @@ You connect to a network by its genesis hash, and everything else is handled for
 you: the bundled catalog provides the spec and relay wiring, so clients never
 ship or refresh specs of their own. One light client is shared across all
 connections, and its synced state is kept between launches, so a launch resumes
-from finalized state instead of syncing from scratch.
+from finalized state instead of syncing from scratch. It holds at most 32 of them
+at once and rejects a `connect` past that, so a client that leaks connections
+fails instead of growing; closing one hands its slot back. Connections to a
+remote node you registered with `addRpcChain` are not counted against it.
 
 ## Usage
 

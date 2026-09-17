@@ -4,6 +4,7 @@ import Operation_iOS
 import AsyncExtensions
 import StructuredConcurrency
 import ChainStore
+import SubstrateSdkExt
 
 public protocol BlockInfoProviding {
     func fetchCurrent() async throws -> BlockNumber
@@ -12,9 +13,15 @@ public protocol BlockInfoProviding {
     func fetchFinalizedHash() async throws -> BlockHashData
 
     func fetchBlockHash(_ blockNumber: BlockNumber) async throws -> BlockHashData
+    func fetchBlockNumber(byHash blockHash: BlockHashData) async throws -> BlockNumber
 
     func subscribeFinalizedHeads() -> AnyAsyncSequence<Block.Header>
     func subscribeNewHeads() -> AnyAsyncSequence<Block.Header>
+}
+
+public enum BlockInfoProviderError: Error {
+    /// The header came back but its number is not a hex-encoded block number.
+    case invalidBlockNumber(String)
 }
 
 public final class BlockInfoProvider: BlockInfoProviding {
@@ -90,6 +97,25 @@ public final class BlockInfoProvider: BlockInfoProviding {
         )
 
         return try await wrapper.asyncExecute()
+    }
+
+    /// The block's number, read from its header via `chain_getHeader`.
+    public func fetchBlockNumber(byHash blockHash: BlockHashData) async throws -> BlockNumber {
+        let connection = try chainRegistry.getRpcConnectionOrError(for: chainId)
+
+        let operation = JSONRPCListOperation<Block.Header>(
+            engine: connection,
+            method: RPCMethod.getBlockHeader,
+            parameters: [blockHash.toHex(includePrefix: true)]
+        )
+
+        let header = try await operation.asyncExecute()
+
+        guard let number = BlockNumber(header.number.withoutHexPrefix(), radix: 16) else {
+            throw BlockInfoProviderError.invalidBlockNumber(header.number)
+        }
+
+        return number
     }
 
     public func subscribeFinalizedHeads() -> AnyAsyncSequence<Block.Header> {

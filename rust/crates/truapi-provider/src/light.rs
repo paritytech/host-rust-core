@@ -130,6 +130,19 @@ const MAX_SUBSCRIPTIONS: u32 = 1024;
 /// bounds the case this exists for, where nothing is drained at all.
 const MAX_UNDELIVERED_FRAMES: usize = 1024;
 
+/// How many connections the shared client may hold at once.
+///
+/// Every one of them costs an `add_chain` with its own request queue and
+/// response stream, a [`MAX_UNDELIVERED_FRAMES`] channel, and, on the FFI path,
+/// a pump thread's stack. smoldot shares the sync state behind chains that are
+/// identical, but each connect still pays its own copy of all of that, and none
+/// of it is visible to the consumer holding the connections.
+///
+/// This is a backstop against a consumer that leaks them, not a budget to
+/// tune. The bundled catalog resolves eight chains, so a consumer that keeps
+/// one connection per chain stays well under it.
+const MAX_CONNECTIONS: usize = 32;
+
 struct LightInner {
     client: Client<Platform, ()>,
     /// Every chain this client is running, refcounted by what holds it: one
@@ -138,6 +151,10 @@ struct LightInner {
     /// it, which decides whether a stored blob can still be consumed and whether
     /// there is anything to snapshot.
     added: HashMap<[u8; 32], AddedChain>,
+    /// Live connections, bounded by [`MAX_CONNECTIONS`]. Counted here rather
+    /// than summed over `added`, whose refcounts a parachain connection raises
+    /// twice: once on its own chain and once on the relay it borrows.
+    connections: usize,
 }
 
 /// A chain the client is running and how many things hold it.
@@ -167,6 +184,7 @@ impl LightState {
             Arc::new(Mutex::new(LightInner {
                 client: Client::new(new_platform()),
                 added: HashMap::new(),
+                connections: 0,
             }))
         })
     }
@@ -225,6 +243,14 @@ impl LightState {
         let inner = Arc::clone(self.inner());
         let mut guard = lock(&inner);
 
+        // Ahead of the relay add below, so a refusal takes no chain reference
+        // to unwind.
+        if guard.connections >= MAX_CONNECTIONS {
+            return Err(ProviderError::TooManyConnections {
+                limit: MAX_CONNECTIONS,
+            });
+        }
+
         let relay_genesis = relay.as_ref().map(|(genesis, _)| *genesis);
         let relay_id = match &relay {
             None => None,
@@ -272,6 +298,7 @@ impl LightState {
                 refcount: 0,
             })
             .refcount += 1;
+        guard.connections += 1;
 
         let responses = success
             .json_rpc_responses
@@ -510,6 +537,7 @@ impl JsonRpcConnection for LightConnection {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
+        guard.connections -= 1;
         // Removal makes JsonRpcResponses::next() return None; closing the error
         // channel ends its half of the merged stream, so `responses()`
         // terminates cleanly.
@@ -612,6 +640,84 @@ mod tests {
         assert!(!provider.is_connected(RELAY_GENESIS));
         second.close();
         assert!(!provider.is_connected(RELAY_GENESIS), "close is idempotent");
+    }
+
+    /// The ceiling is there for a consumer that never closes what it opens, so
+    /// what matters is both halves: that the connect over it is refused, and
+    /// that closing one hands the slot back instead of spending it for the
+    /// life of the process.
+    #[test]
+    fn connections_are_capped_and_closing_one_frees_a_slot() {
+        let provider = offline_provider();
+        let mut held = Vec::new();
+        for _ in 0..super::MAX_CONNECTIONS {
+            held.push(block_on(provider.connect(RELAY_GENESIS)).expect("connect under the cap"));
+        }
+
+        let error = block_on(provider.connect(RELAY_GENESIS))
+            .err()
+            .expect("a connect over the cap must fail");
+        assert_eq!(
+            error.reason,
+            format!(
+                "the light client already holds {} connections",
+                super::MAX_CONNECTIONS
+            )
+        );
+
+        held.pop().expect("one to close").close();
+        block_on(provider.connect(RELAY_GENESIS)).expect("the closed connection freed its slot");
+    }
+
+    /// Dropping a handle without closing it is exactly what the consumer the
+    /// ceiling exists for does, and `Drop` is the only thing that frees the
+    /// slot on that path. Without it the ceiling stops being a bound on live
+    /// connections and becomes a budget of [`MAX_CONNECTIONS`] for the life of
+    /// the process.
+    #[test]
+    fn dropping_a_handle_frees_its_slot() {
+        let provider = offline_provider();
+        let mut held = Vec::new();
+        for _ in 0..super::MAX_CONNECTIONS {
+            held.push(block_on(provider.connect(RELAY_GENESIS)).expect("connect under the cap"));
+        }
+
+        drop(held.pop().expect("one to drop"));
+        block_on(provider.connect(RELAY_GENESIS)).expect("the dropped handle freed its slot");
+    }
+
+    /// Why the count is its own field rather than a sum over the chain
+    /// refcounts: a parachain raises two of those, its own and the relay it
+    /// borrows, so summing them would spend the ceiling twice as fast as
+    /// connections are actually handed out.
+    #[test]
+    fn a_parachain_connection_spends_one_slot() {
+        let provider = EmbeddedChainProvider::builder()
+            .chain(RELAY_GENESIS, ChainSource::light_client(RELAY_SPEC).build())
+            .parachain(
+                PARACHAIN_GENESIS,
+                ChainSource::light_client(PARACHAIN_SPEC).build(),
+                RELAY_GENESIS,
+            )
+            .build();
+
+        let mut held = Vec::new();
+        for _ in 0..super::MAX_CONNECTIONS {
+            held.push(
+                block_on(provider.connect(PARACHAIN_GENESIS)).expect("connect under the cap"),
+            );
+        }
+
+        let error = block_on(provider.connect(PARACHAIN_GENESIS))
+            .err()
+            .expect("a connect over the cap must fail");
+        assert_eq!(
+            error.reason,
+            format!(
+                "the light client already holds {} connections",
+                super::MAX_CONNECTIONS
+            )
+        );
     }
 
     /// A chain that was never connected is not running, so there is nothing to

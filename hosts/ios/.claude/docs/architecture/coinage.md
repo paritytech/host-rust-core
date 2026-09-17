@@ -43,7 +43,7 @@ A coin (`Packages/Coinage/Sources/Models/Coin.swift`) has:
 
 Derived: `available` = `availablePrivate (+ gainingPrivacy.amount when canSpendWithConfirmation)`; `total` = all three. Amounts are planks — render via `CoinageBalanceServiceProtocol.denominationContext` (`decimal(fromPlanks:)`).
 
-**Consumer semantics** (mirrors Android): spend-sufficiency and the primary "spendable" figure use `availablePrivate`; the reachable-with-confirmation figure uses `available`. Products sufficiency → `availablePrivate`; TransferAmount `secured`/`lowPrivacy` → `availablePrivate`/`gainingPrivacy.amount` (the latter zeroed when `!canSpendWithConfirmation`); AssetDetails total → `total`, locked → `total − available`.
+**Consumer semantics**: spend-sufficiency and the primary "spendable" figure use `availablePrivate`; the reachable-with-confirmation figure uses `available`. Products sufficiency → `availablePrivate`; TransferAmount `secured`/`lowPrivacy` → `availablePrivate`/`gainingPrivacy.amount` (the latter zeroed when `!canSpendWithConfirmation`); AssetDetails total → `total`, locked → `total − available`.
 
 **`BalanceEvaluationMode` (immediate | complete).** The balance renders nothing until the first verdicts land, so `CoinRecyclingEvaluator` runs a two-pass: when it has no verdicts yet it first publishes an `immediate` pass (no chain read — `RingCapacityProviding.peekCapacities` returns only memoised capacities, and `RecyclingStrategyProviding.coinStrategy(for:mode:)` skips the quota read, treating quota as exhausted so only the chain age-ceiling gates), then a `complete` pass consults every limit and corrects. The correction is downward-only — a coin the policy would hold shows spendable until `complete` moves it, never the reverse. Recycling is triggered only off the `complete` pass. The balance service itself uses `immediate` (peek) capacities so it never blocks.
 
@@ -60,12 +60,41 @@ Transfer plans determine how coins are spent:
 - Integrates with chat for payment request/confirmation messages
 - See `architecture/chat-extension.md` for chat integration
 
+## External Payments (offramp)
+
+`Packages/Coinage/Sources/ExternalPayment/` moves coins to a destination account for a product
+ or the in-app pay flow (`ExternalPayment.nativeProductId`). Rows are
+`ExternalPayment` (`CDExternalPayment`) keyed `external-payment:<productId>:<paymentId>`.
+
+- **Planner** (`ExternalPaymentPlanner`): private vouchers alone, else every on-chain voucher
+  (private first, then largest) → `.unloadVouchers`; else coins for the shortfall with all vouchers
+  offboarded as they are → `.loadCoins(coins, exactVouchers)`; else `.notEnoughBalance`.
+   "Private" is what the balance calls usable (`ExternalPaymentAssetClassifier`).
+  `canPayPrivately` is the first step alone, so the warning and the plan cannot disagree. Callers
+  warn when it is false and the preset is not `minPrivacy`.
+- **Worker** (persist-per-transition, one run per payment, no retries): `Plan` → `OffboardVouchers`,
+  or `Plan` → `OnboardCoins` → `OffboardVouchers`. Onboarding recycles under `<id>:recycle`, awaits
+  `CoinageRecyclingServicing.observeRecycling` (`pending | allRecycled(vouchers:finalized:) | incomplete`;
+  best-block inclusion is enough), then `pickOffboarding` selects what to unload from exact + recycled
+  vouchers (largest first; a shortfall fails). The picked vouchers and their surplus are planner output
+  persisted with the offboarding stage (`plannedVoucherIndices`, `surplusInPlanks`) and handed to the
+  unload as they are. Offboarding submits under `<id>`: success completes, `partialSuccess` is terminal
+  (`partiallyCompleted` with `settledInPlanks`), everything else fails. Each stage persists its
+  vouchers (`plannedVoucherIndices`) and re-joins its durability group on relaunch; an onboarding row
+  whose recycling group cannot be found fails rather than re-plan (nothing may be spent twice).
+- **Status**: unknown id → the stream throws `notFound`; duplicates collapse; ends after the first
+  terminal status. 
+- **Tests**: `Packages/Coinage/Tests/ExternalPayment/`, sweep
+  `Packages/Coinage/Tools/external_payment_mutation_sweep.py`.
+
 ## Seams
 
 | Seam                    | Where                          | When to touch                    |
 |-------------------------|--------------------------------|----------------------------------|
 | Coin models             | `Packages/Coinage/`           | Coin structure changes           |
 | Transfer planning       | `Packages/Coinage/`           | New transfer strategies          |
+| External payments       | `Packages/Coinage/Sources/ExternalPayment/` | Offramp identity, retry, status, planner scope |
 | Coinage UI              | `Modules/Coinage/`            | Coinage screen changes           |
 | Backup sync             | ServiceCoordinator             | Backup/restore flow changes      |
+| Durability (oracle, asset ledger) | `Packages/Coinage/Sources/CoinageTx/` | Coin/voucher evidence or invariants; the engine itself is `Packages/DurableTransactions` (see architecture/durable-transactions.md) |
 | Instance ID config      | `AppConfig.Coinage.instanceId` | Remote config schema or app instance strategy changes |

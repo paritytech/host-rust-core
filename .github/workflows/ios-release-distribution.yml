@@ -54,7 +54,7 @@ jobs:
       needs.build.outputs.succeeded == 'true' }}
     steps:
       - name: Send release notification
-        uses: novasamatech/github-actions/send-release-notification@v5
+        uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           platform: iOS
           pr_list: ${{ needs.build.outputs.pr_list_markdown }}

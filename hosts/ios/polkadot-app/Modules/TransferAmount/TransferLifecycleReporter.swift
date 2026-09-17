@@ -6,7 +6,7 @@ import SubstrateSdk
 /// Context handed to a lifecycle reporter once the transfer has been submitted.
 enum TransferTrackingContext {
     case coinageMemo(TransferMemo)
-    case externalPayment(paymentId: String, amountInPlanks: Balance)
+    case externalPayment(productId: String, paymentId: String, amountInPlanks: Balance)
 }
 
 /// Streams post-submission transfer lifecycle updates to the UI.

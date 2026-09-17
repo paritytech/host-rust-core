@@ -3,14 +3,15 @@
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme};
-use truapi::latest::GenericError;
 use truapi::versioned::IntoLatest;
 use truapi::versioned::local_storage::{
     HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
-use truapi::versioned::locale::HostLocaleSubscribeItem;
+use truapi::versioned::locale::{
+    HostLocaleSubscribeError, HostLocaleSubscribeItem, HostLocaleSubscribeRequest,
+};
 use truapi::versioned::notifications::{
     HostPushNotificationCancelError, HostPushNotificationCancelRequest,
     HostPushNotificationCancelResponse, HostPushNotificationError, HostPushNotificationRequest,
@@ -26,7 +27,9 @@ use truapi::versioned::system::{
     HostInfoError, HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
 };
-use truapi::versioned::theme::HostThemeSubscribeItem;
+use truapi::versioned::theme::{
+    HostThemeSubscribeError, HostThemeSubscribeItem, HostThemeSubscribeRequest,
+};
 use truapi::{CallContext, CallError, Subscription, v01, v02};
 use truapi_platform::PermissionAuthorizationStatus;
 
@@ -252,7 +255,8 @@ impl Theme for ProductRuntimeHost {
     async fn subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostThemeSubscribeItem, CallError<GenericError>> {
+        _request: HostThemeSubscribeRequest,
+    ) -> Subscription<HostThemeSubscribeItem, CallError<HostThemeSubscribeError>> {
         let stream = self.platform.subscribe_theme().map(|item| match item {
             Ok(item) => Ok(HostThemeSubscribeItem::V1(item)),
             Err(error) => {
@@ -272,7 +276,8 @@ impl Locale for ProductRuntimeHost {
     async fn subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostLocaleSubscribeItem, CallError<GenericError>> {
+        _request: HostLocaleSubscribeRequest,
+    ) -> Subscription<HostLocaleSubscribeItem, CallError<HostLocaleSubscribeError>> {
         let stream = self.platform.subscribe_locale().map(|item| match item {
             Ok(item) => Ok(HostLocaleSubscribeItem::V1(item)),
             Err(error) => {

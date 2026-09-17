@@ -1,3 +1,5 @@
+import DurableTransactions
+import DurableTransactionsTestSupport
 import Foundation
 @testable import Coinage
 
@@ -58,8 +60,8 @@ extension DurabilityHarness {
     /// ``CoinageEvidenceCollector`` over the fake chain.
     func evidence(for id: CoinageTxId) async throws -> ChainEvidence {
         guard let entry = try await store.getEntry(id: id) else { throw FuzzHarnessError.noEntry(0) }
-        let view = try await chainFactory.pin()
-        return await CoinageEvidenceCollector().collect(entry: entry, view: view)
+        let view = try await chainFactory.pin(chainId: harnessChainId)
+        return await CoinageEvidenceCollector().collect(entry: entry, reader: stateReader, heads: view.heads)
     }
 }
 
@@ -146,7 +148,7 @@ extension DurabilityHarness {
     }
 
     func makeCoinsUnreadable(_ coins: DerivationIndex...) {
-        chainFactory.faults.unreadableCoins.formUnion(coins.map { HarnessKeys.coinKey($0) })
+        stateReader.faults.unreadableCoins.formUnion(coins.map { HarnessKeys.coinKey($0) })
     }
 
     func makeBlocksUnreadable(_ blockNumbers: UInt32...) {
@@ -158,17 +160,17 @@ extension DurabilityHarness {
     func makeVoucherAliasesUnreadable(_ vouchers: DerivationIndex...) {
         for voucher in vouchers {
             if let key = currentAliasKey(index: voucher) {
-                chainFactory.faults.unreadableAliases.insert(key)
+                stateReader.faults.unreadableAliases.insert(key)
             }
         }
     }
 
     func makeRecyclerMembershipsUnreadable() {
-        chainFactory.faults.membershipsUnreadable = true
+        stateReader.faults.membershipsUnreadable = true
     }
 
     func makeRingPositionsUnreadable() {
-        chainFactory.faults.ringPositionsUnreadable = true
+        stateReader.faults.ringPositionsUnreadable = true
     }
 
     func makeEveryBlockUnreadable() {
@@ -181,5 +183,6 @@ extension DurabilityHarness {
 
     func clearFaults() {
         chainFactory.faults = .none
+        stateReader.faults = .none
     }
 }

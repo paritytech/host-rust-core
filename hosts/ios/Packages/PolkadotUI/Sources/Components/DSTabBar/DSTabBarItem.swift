@@ -29,6 +29,7 @@ public struct DSTabBarItem: Equatable {
     public var badge: Badge?
     public var accessibilityLabel: String
     public var accessibilityIdentifier: String?
+    public var showsGlassBackground: Bool
 
     public init(
         content: Content,
@@ -36,7 +37,8 @@ public struct DSTabBarItem: Equatable {
         role: Role = .tab,
         badge: Badge? = nil,
         accessibilityLabel: String,
-        accessibilityIdentifier: String? = nil
+        accessibilityIdentifier: String? = nil,
+        showsGlassBackground: Bool = false
     ) {
         self.content = content
         self.title = title
@@ -44,6 +46,7 @@ public struct DSTabBarItem: Equatable {
         self.badge = badge
         self.accessibilityLabel = accessibilityLabel
         self.accessibilityIdentifier = accessibilityIdentifier
+        self.showsGlassBackground = showsGlassBackground
     }
 
     public init(
@@ -52,7 +55,8 @@ public struct DSTabBarItem: Equatable {
         role: Role = .tab,
         badge: Badge? = nil,
         accessibilityLabel: String,
-        accessibilityIdentifier: String? = nil
+        accessibilityIdentifier: String? = nil,
+        showsGlassBackground: Bool = false
     ) {
         self.init(
             content: .icon(icon),
@@ -60,7 +64,8 @@ public struct DSTabBarItem: Equatable {
             role: role,
             badge: badge,
             accessibilityLabel: accessibilityLabel,
-            accessibilityIdentifier: accessibilityIdentifier
+            accessibilityIdentifier: accessibilityIdentifier,
+            showsGlassBackground: showsGlassBackground
         )
     }
 }

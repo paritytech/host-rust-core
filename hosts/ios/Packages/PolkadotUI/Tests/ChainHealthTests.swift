@@ -6,7 +6,6 @@ struct ChainHealthTests {
     private let thresholds = ChainHealthThresholds(
         blockAge: ChainHealthBounds(healthy: .seconds(12), zero: .seconds(60)),
         finalityLag: ChainHealthCountBounds(healthy: 6, zero: 24),
-        ping: ChainHealthBounds(healthy: .milliseconds(200), zero: .milliseconds(2_000)),
         missingTermGrace: .seconds(20)
     )
 
@@ -83,11 +82,14 @@ struct ChainHealthTests {
     @Test("Score omits nil terms within grace period")
     func scoreGracePeriod() {
         let now = Date()
-        let row = makeConnectedRow(connectedSince: now.addingTimeInterval(-10))
+        let row = makeConnectedRow(
+            lastBlockDate: now.addingTimeInterval(-5),
+            connectedSince: now.addingTimeInterval(-10)
+        )
 
         let score = ChainHealth.score(for: row, at: now)
 
-        #expect(score == 1, "Ping alone should be 1 during grace period")
+        #expect(score == 1, "Block age alone should be 1 during grace period")
     }
 
     @Test("Score counts nil as 0 after grace period expires")
@@ -126,7 +128,6 @@ private extension ChainHealthTests {
     ) -> ChainConnectionStatusViewModel {
         makeRow(
             state: .connected,
-            latency: .milliseconds(100),
             lastBlockDate: lastBlockDate,
             finalityLag: finalityLag,
             connectedSince: connectedSince
@@ -135,7 +136,6 @@ private extension ChainHealthTests {
 
     func makeRow(
         state: ChainConnectionState,
-        latency: Duration? = nil,
         lastBlockDate: Date? = nil,
         finalityLag: Int? = nil,
         connectedSince: Date? = nil
@@ -155,7 +155,6 @@ private extension ChainHealthTests {
             title: "Test",
             state: state,
             stateTitle: stateTitle,
-            latency: latency,
             lastBlockDate: lastBlockDate,
             finalityLag: finalityLag,
             connectedSince: connectedSince,

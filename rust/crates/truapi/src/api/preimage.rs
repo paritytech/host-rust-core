@@ -1,9 +1,9 @@
 //! Unified [`Preimage`] trait.
 
-use crate::latest::GenericError;
 use crate::versioned::preimage::{
-    RemotePreimageLookupSubscribeItem, RemotePreimageLookupSubscribeRequest,
-    RemotePreimageSubmitError, RemotePreimageSubmitRequest, RemotePreimageSubmitResponse,
+    RemotePreimageLookupSubscribeError, RemotePreimageLookupSubscribeItem,
+    RemotePreimageLookupSubscribeRequest, RemotePreimageSubmitError, RemotePreimageSubmitRequest,
+    RemotePreimageSubmitResponse,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -33,7 +33,10 @@ pub trait Preimage: Send + Sync {
         &self,
         _cx: &CallContext,
         _request: RemotePreimageLookupSubscribeRequest,
-    ) -> Subscription<RemotePreimageLookupSubscribeItem, CallError<GenericError>> {
+    ) -> Subscription<
+        RemotePreimageLookupSubscribeItem,
+        CallError<RemotePreimageLookupSubscribeError>,
+    > {
         Subscription::interrupted(CallError::unavailable())
     }
 

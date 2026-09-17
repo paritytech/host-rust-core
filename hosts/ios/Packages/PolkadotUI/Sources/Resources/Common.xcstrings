@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Cancel"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancelar"
-          }
         }
       }
     },
@@ -26,11 +20,82 @@
             "state": "translated",
             "value": "Completed"
           }
-        },
-        "es-ES": {
+        }
+      }
+    },
+    "connectionStatusBlockLabel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Completado"
+            "value": "Block:"
+          }
+        }
+      }
+    },
+    "connectionStatusHealthExcellent": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Excellent"
+          }
+        }
+      }
+    },
+    "connectionStatusHealthFair": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fair"
+          }
+        }
+      }
+    },
+    "connectionStatusHealthGood": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Good"
+          }
+        }
+      }
+    },
+    "connectionStatusHealthPoor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poor"
+          }
+        }
+      }
+    },
+    "connectionStatusPanelTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network Status"
+          }
+        }
+      }
+    },
+    "connectionStatusSpeedValue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speed is %@"
           }
         }
       }
@@ -43,12 +108,6 @@
             "state": "translated",
             "value": "Done"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Listo"
-          }
         }
       }
     },
@@ -59,12 +118,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Email Support"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escribir a soporte"
           }
         }
       }
@@ -77,12 +130,6 @@
             "state": "translated",
             "value": "Hide"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ocultar"
-          }
         }
       }
     },
@@ -94,12 +141,6 @@
             "state": "translated",
             "value": "In progress"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "En curso"
-          }
         }
       }
     },
@@ -110,12 +151,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Transaction failed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La transacción falló"
           }
         }
       }

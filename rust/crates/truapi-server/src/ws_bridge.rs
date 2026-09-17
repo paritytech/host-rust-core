@@ -528,6 +528,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "paseo".to_string(),
         )
         .expect("test signing host config is valid");

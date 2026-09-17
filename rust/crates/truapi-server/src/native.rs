@@ -200,6 +200,18 @@ pub struct NativeHostRuntimeConfig {
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
     pub local_session_lite_username: Option<String>,
+    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Must be
+    /// exactly 32 bytes.
+    ///
+    /// Product manifests are read from dotNS, so this is what makes a
+    /// `trustedProducts` grant resolvable. 32 zero bytes says this host has no
+    /// Asset Hub; grants already in the manifest cache stay honoured until they
+    /// expire.
+    ///
+    /// Appended rather than placed with its sibling hashes: record fields are
+    /// positional over the FFI and the checksum does not cover their order, so
+    /// an insert shifts every field below it.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -275,6 +287,28 @@ pub enum NativeRuntimeConfigError {
         /// Activation failure reason.
         reason: String,
     },
+    /// Asset Hub genesis hash was not exactly 32 bytes.
+    ///
+    /// Appended, not grouped with the sibling genesis-hash variants: declaration
+    /// order is the FFI discriminant and the checksum does not cover it, so an
+    /// insert renumbers every variant below it.
+    #[error("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
+    InvalidAssetHubChainGenesisHash {
+        /// Supplied byte length.
+        actual: u64,
+    },
+    /// Product id was longer than `PRODUCT_ID_MAX_BYTES` after normalization.
+    ///
+    /// Appended for the same reason as the variant above. Carries lengths and
+    /// not the id: an id that trips this is unbounded in size, and this error
+    /// reaches the wire and the logs.
+    #[error("product_id must be at most {limit} bytes, got {actual}")]
+    ProductIdTooLong {
+        /// Accepted maximum, in bytes.
+        limit: u64,
+        /// Normalized length, in bytes.
+        actual: u64,
+    },
 }
 
 impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
@@ -293,6 +327,12 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                     actual: config.bulletin_chain_genesis_hash.len() as u64,
                 }
             })?;
+        let asset_hub_chain_genesis_hash =
+            <[u8; 32]>::try_from(config.asset_hub_chain_genesis_hash.as_slice()).map_err(|_| {
+                NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash {
+                    actual: config.asset_hub_chain_genesis_hash.len() as u64,
+                }
+            })?;
         let signing = SigningHostConfig::new(
             HostInfo {
                 name: config.host_name,
@@ -306,6 +346,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             },
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             config.network_suffix,
         )?;
         Ok(Self {
@@ -344,6 +385,12 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             }
             RuntimeConfigValidationError::InvalidProductId { product_id } => {
                 Self::InvalidProductId { product_id }
+            }
+            RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => {
+                Self::ProductIdTooLong {
+                    limit: limit as u64,
+                    actual: actual as u64,
+                }
             }
             RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
                 Self::InvalidNetworkSuffix { network_suffix }
@@ -778,7 +825,7 @@ pub enum NativeStatementRenewalTarget {
     },
 }
 
-/// Rejected renewal-target registration.
+/// A refused renewal-ledger call: tracking, untracking or reading it back.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum NativeRenewalTargetError {
     /// `account_id` was not exactly 32 bytes.
@@ -826,6 +873,42 @@ impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalT
                 Self::Account { account_id, label }
             }
         })
+    }
+}
+
+/// One entry the renewal ledger holds, as a host reads it back.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NativeTrackedStatementRenewalTarget {
+    /// The account, or the recipe for one, that the host promised to renew.
+    pub target: NativeStatementRenewalTarget,
+    /// Root public key that promised a raw account id. A recipe carries none
+    /// and resolves under whichever identity is active.
+    pub owner: Option<Bytes32>,
+}
+
+impl From<crate::runtime::StatementRenewalTarget> for NativeStatementRenewalTarget {
+    fn from(target: crate::runtime::StatementRenewalTarget) -> Self {
+        match target {
+            crate::runtime::StatementRenewalTarget::ProductStatementAllowance { product_id } => {
+                Self::ProductStatementAllowance { product_id }
+            }
+            crate::runtime::StatementRenewalTarget::WalletSso => Self::WalletSso,
+            crate::runtime::StatementRenewalTarget::Account { account_id, label } => {
+                Self::Account {
+                    account_id: account_id.to_vec(),
+                    label,
+                }
+            }
+        }
+    }
+}
+
+impl From<crate::runtime::TrackedStatementRenewalTarget> for NativeTrackedStatementRenewalTarget {
+    fn from(entry: crate::runtime::TrackedStatementRenewalTarget) -> Self {
+        Self {
+            target: entry.target.into(),
+            owner: entry.owner,
+        }
     }
 }
 
@@ -899,6 +982,49 @@ impl NativeTrUApiHostRuntime {
             .map(TryInto::try_into)
             .collect::<Result<Vec<_>, _>>()?;
         futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Every account the ledger tracks, in the order it was tracked.
+    ///
+    /// Needs no active session. Slots per period are finite, so a host that
+    /// tracked a wrong or stale account can see it here and drop it with
+    /// [`Self::untrack_statement_renewal_account`].
+    pub fn statement_renewal_targets(
+        &self,
+    ) -> Result<Vec<NativeTrackedStatementRenewalTarget>, NativeRenewalTargetError> {
+        futures::executor::block_on(self.runtime.statement_renewal_targets())
+            .map(|entries| entries.into_iter().map(Into::into).collect())
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Root public key the active identity records its fixed entries under.
+    ///
+    /// Needs an active session, and fails with `Disconnected` without one.
+    /// An entry from [`Self::statement_renewal_targets`] whose owner is this
+    /// key, or which has no owner at all, is one a pass will renew; any other
+    /// is one a pass will prune.
+    pub fn statement_renewal_owner_key(&self) -> Result<Bytes32, NativeRenewalTargetError> {
+        self.runtime
+            .statement_renewal_owner_key()
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Stop renewing one fixed statement account, returning whether the ledger
+    /// held it.
+    ///
+    /// Scoped to the active identity, so it never removes an entry another
+    /// identity promised. Needs an active session to resolve that identity.
+    pub fn untrack_statement_renewal_account(
+        &self,
+        account_id: Vec<u8>,
+    ) -> Result<bool, NativeRenewalTargetError> {
+        let account_id: [u8; 32] = account_id.as_slice().try_into().map_err(|_| {
+            NativeRenewalTargetError::InvalidAccountId {
+                actual: account_id.len() as u64,
+            }
+        })?;
+        futures::executor::block_on(self.runtime.untrack_statement_renewal_account(&account_id))
             .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
@@ -2223,6 +2349,45 @@ mod tests {
         ));
     }
 
+    // The read direction is the one a host audits its slots through, so a
+    // dropped account id or owner there is a silent wrong answer rather than a
+    // compile error.
+    #[test]
+    fn a_tracked_entry_survives_the_trip_out_to_the_native_boundary() {
+        let entry = crate::runtime::TrackedStatementRenewalTarget {
+            target: crate::runtime::StatementRenewalTarget::Account {
+                account_id: [7; 32],
+                label: "device".to_string(),
+            },
+            owner: Some([9; 32]),
+        };
+
+        let native = NativeTrackedStatementRenewalTarget::from(entry);
+
+        assert_eq!(native.owner, Some([9; 32]));
+        assert!(matches!(
+            native.target,
+            NativeStatementRenewalTarget::Account { account_id, label }
+                if account_id == vec![7; 32] && label == "device"
+        ));
+    }
+
+    #[test]
+    fn a_recipe_entry_reports_no_owner_across_the_boundary() {
+        let entry = crate::runtime::TrackedStatementRenewalTarget {
+            target: crate::runtime::StatementRenewalTarget::WalletSso,
+            owner: None,
+        };
+
+        let native = NativeTrackedStatementRenewalTarget::from(entry);
+
+        assert!(native.owner.is_none());
+        assert!(matches!(
+            native.target,
+            NativeStatementRenewalTarget::WalletSso
+        ));
+    }
+
     /// The other two variants carry no bytes to validate, so they must convert
     /// rather than share the `Account` arm's failure path.
     #[test]
@@ -2579,6 +2744,7 @@ mod tests {
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
+            asset_hub_chain_genesis_hash: vec![0xcc; 32],
             network_suffix: "paseo".to_string(),
             local_session_secret: Some(vec![7; 32]),
             local_session_lite_username: Some("alice".to_string()),
@@ -3130,7 +3296,7 @@ mod tests {
         ))
         .expect("an action set must reach the host");
 
-        let mut actions = connection.subscribe();
+        let mut actions = connection.subscribe::<truapi::latest::GenericError>();
         connection
             .publish(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
                 v01::HostChatActionSubscribeItem {
@@ -3197,6 +3363,7 @@ mod tests {
         let mut actions = futures::executor::block_on(truapi::api::Renderer::action_subscribe(
             admin.product_runtime().as_ref(),
             &truapi::CallContext::with_request_id("renderer-1".to_string()),
+            truapi::versioned::renderer::HostRendererActionSubscribeRequest::V1,
         ));
 
         let published = v01::HostRendererActionSubscribeItem {
@@ -3579,6 +3746,50 @@ mod tests {
             err,
             NativeRuntimeConfigError::InvalidPeopleChainGenesisHash { actual: 31 }
         ));
+    }
+
+    #[test]
+    fn each_configured_genesis_hash_reaches_its_own_field() {
+        // Three adjacent `Vec<u8>` feeding a positional constructor:
+        // transposing any two compiles and, without this, passes.
+        let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            people_chain_genesis_hash: vec![0xa1; 32],
+            bulletin_chain_genesis_hash: vec![0xb2; 32],
+            asset_hub_chain_genesis_hash: vec![0xc3; 32],
+            ..native_host_runtime_config()
+        })
+        .expect("config is valid");
+
+        assert_eq!(
+            (
+                resolved.signing.people_chain_genesis_hash,
+                resolved.signing.bulletin_chain_genesis_hash,
+                resolved.signing.asset_hub_chain_genesis_hash,
+            ),
+            ([0xa1; 32], [0xb2; 32], [0xc3; 32]),
+        );
+    }
+
+    #[test]
+    fn a_wrong_size_asset_hub_genesis_hash_is_rejected_as_its_own_field() {
+        // An empty vec must be an error, never a silent all-zero "no Asset
+        // Hub".
+        for len in [0usize, 31, 33] {
+            let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+                asset_hub_chain_genesis_hash: vec![0; len],
+                ..native_host_runtime_config()
+            })
+            .unwrap_err();
+
+            assert!(
+                matches!(
+                    err,
+                    NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash { actual }
+                        if actual == len as u64
+                ),
+                "{len}-byte Asset Hub hash reported as {err:?}"
+            );
+        }
     }
 
     #[test]

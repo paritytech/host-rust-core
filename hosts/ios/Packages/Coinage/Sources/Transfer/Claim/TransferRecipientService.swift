@@ -501,7 +501,14 @@ private extension TransferRecipientService {
             }
 
             do {
-                let newCoin = try await coinMinter.mintCoin(exponent: Int16(sourceCoin.value))
+                // The transfer we are about to submit ages the coin by one.
+                let newCoin = try await coinMinter.mintCoin(
+                    exponent: Int16(sourceCoin.value),
+                    provenance: .received(
+                        ageAfterTransfer: sourceCoin.age + 1,
+                        bundleSize: senderKeys.count
+                    )
+                )
                 prepared.append(PreparedEntry(
                     index: entry.index,
                     privateKey: entry.privateKey,

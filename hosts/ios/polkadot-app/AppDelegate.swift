@@ -1,4 +1,6 @@
 import UIKit
+import TipKit
+import Keystore_iOS
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -21,6 +23,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         else {
             return true
         }
+
+        configureTips()
 
         #if TESTNET_FEATURE
             issueMonitoringService.setup()
@@ -61,6 +65,40 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     ) {
         logger.error("DidFailToRegisterForRemoteNotificationsWithError \(error)")
     }
+}
+
+private extension AppDelegate {
+    func configureTips() {
+        #if TESTNET_FEATURE
+            resetTipsDatastoreIfRequested()
+        #endif
+
+        do {
+            try Tips.configure()
+        } catch {
+            logger.error("Failed to configure TipKit: \(error)")
+        }
+    }
+
+    #if TESTNET_FEATURE
+        /// `resetDatastore` only works before `configure`, so the Debug Settings action flags the
+        /// reset and restarts the app; the flag is consumed here on the next launch.
+        func resetTipsDatastoreIfRequested() {
+            let settings = SettingsManager.shared
+
+            guard settings.value(for: .tipsResetPending) else {
+                return
+            }
+
+            settings.removeValue(for: .tipsResetPending)
+
+            do {
+                try Tips.resetDatastore()
+            } catch {
+                logger.error("Failed to reset the tips datastore: \(error)")
+            }
+        }
+    #endif
 }
 
 var isUnitTesting: Bool {

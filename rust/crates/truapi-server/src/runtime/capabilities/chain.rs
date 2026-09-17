@@ -7,25 +7,24 @@
 use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::Chain;
-use truapi::latest::GenericError;
 use truapi::versioned::chain::{
     RemoteChainHeadBodyError, RemoteChainHeadBodyRequest, RemoteChainHeadBodyResponse,
     RemoteChainHeadCallError, RemoteChainHeadCallRequest, RemoteChainHeadCallResponse,
     RemoteChainHeadContinueError, RemoteChainHeadContinueRequest, RemoteChainHeadContinueResponse,
-    RemoteChainHeadFollowItem, RemoteChainHeadFollowRequest, RemoteChainHeadHeaderError,
-    RemoteChainHeadHeaderRequest, RemoteChainHeadHeaderResponse, RemoteChainHeadStopOperationError,
-    RemoteChainHeadStopOperationRequest, RemoteChainHeadStopOperationResponse,
-    RemoteChainHeadStorageError, RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse,
-    RemoteChainHeadUnpinError, RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse,
-    RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
-    RemoteChainSpecChainNameError, RemoteChainSpecChainNameRequest,
-    RemoteChainSpecChainNameResponse, RemoteChainSpecGenesisHashError,
-    RemoteChainSpecGenesisHashRequest, RemoteChainSpecGenesisHashResponse,
-    RemoteChainSpecPropertiesError, RemoteChainSpecPropertiesRequest,
-    RemoteChainSpecPropertiesResponse, RemoteChainTransactionBroadcastError,
-    RemoteChainTransactionBroadcastRequest, RemoteChainTransactionBroadcastResponse,
-    RemoteChainTransactionStopError, RemoteChainTransactionStopRequest,
-    RemoteChainTransactionStopResponse,
+    RemoteChainHeadFollowError, RemoteChainHeadFollowItem, RemoteChainHeadFollowRequest,
+    RemoteChainHeadHeaderError, RemoteChainHeadHeaderRequest, RemoteChainHeadHeaderResponse,
+    RemoteChainHeadStopOperationError, RemoteChainHeadStopOperationRequest,
+    RemoteChainHeadStopOperationResponse, RemoteChainHeadStorageError,
+    RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse, RemoteChainHeadUnpinError,
+    RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse, RemoteChainInfoError,
+    RemoteChainInfoRequest, RemoteChainInfoResponse, RemoteChainSpecChainNameError,
+    RemoteChainSpecChainNameRequest, RemoteChainSpecChainNameResponse,
+    RemoteChainSpecGenesisHashError, RemoteChainSpecGenesisHashRequest,
+    RemoteChainSpecGenesisHashResponse, RemoteChainSpecPropertiesError,
+    RemoteChainSpecPropertiesRequest, RemoteChainSpecPropertiesResponse,
+    RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
+    RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopError,
+    RemoteChainTransactionStopRequest, RemoteChainTransactionStopResponse,
 };
 use truapi::{CallContext, CallError, Subscription, v01};
 
@@ -41,7 +40,7 @@ impl Chain for ProductRuntimeHost {
         &self,
         cx: &CallContext,
         request: RemoteChainHeadFollowRequest,
-    ) -> Subscription<RemoteChainHeadFollowItem, CallError<GenericError>> {
+    ) -> Subscription<RemoteChainHeadFollowItem, CallError<RemoteChainHeadFollowError>> {
         let RemoteChainHeadFollowRequest::V1(inner) = request;
         let follow_subscription_id = self.follow_id(cx.request_id());
         let stream = self

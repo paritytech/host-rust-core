@@ -44,10 +44,6 @@ private extension SearchContactViewController {
             self?.dismiss(animated: true)
         }
 
-        rootView.scanHandler = { [weak self] in
-            self?.presenter.scanQRCode()
-        }
-
         rootView.selectionHandler = { [weak self] identifier in
             self?.presenter.didSelectContact(identifier: identifier)
         }
@@ -57,5 +53,9 @@ private extension SearchContactViewController {
 extension SearchContactViewController: SearchContactViewProtocol {
     func didReceive(viewModel: SearchContactViewLayout.ViewModel) {
         rootView.bind(viewModel: viewModel)
+    }
+
+    func didReceive(status: SearchContactViewLayout.StatusViewModel) {
+        rootView.bind(status: status)
     }
 }

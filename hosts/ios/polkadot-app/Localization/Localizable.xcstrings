@@ -9,22 +9,60 @@
             "state": "new",
             "value": "%1$@ ≈ %2$@"
           }
-        },
-        "es-ES": {
+        }
+      }
+    },
+    "action.send.cash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%1$@ ≈ %2$@"
+            "value": "Send CASH"
           }
         }
       }
     },
-    "≈ %@": {
-      "comment": "A label displaying the fee amount.",
+    "Chat.contactAddedYou": {
+      "extractionState": "manual",
       "localizations": {
-        "es-ES": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "≈ %@"
+            "value": "%1$(username)@ added you"
+          }
+        }
+      }
+    },
+    "Chat.peerLeft": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$(username)@ left the chat"
+          }
+        }
+      }
+    },
+    "Chat.youAddedContact": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You added %1$(username)@"
+          }
+        }
+      }
+    },
+    "Chat.youLeft": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You left the chat"
           }
         }
       }
@@ -37,12 +75,6 @@
             "state": "translated",
             "value": "CREATE NEW ACCOUNT"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CREAR CUENTA NUEVA"
-          }
         }
       }
     },
@@ -53,12 +85,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Write down your recovery phrase"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Anota tu frase de recuperación"
           }
         }
       }
@@ -71,12 +97,6 @@
             "state": "translated",
             "value": "Create Manually"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Crear manualmente"
-          }
         }
       }
     },
@@ -87,12 +107,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "RECOVER ACCOUNT"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "RECUPERAR CUENTA"
           }
         }
       }
@@ -105,12 +119,6 @@
             "state": "translated",
             "value": "Recover Polkadot ID"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recuperar Polkadot ID"
-          }
         }
       }
     },
@@ -121,12 +129,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Restore Polkadot ID from 12 or 24 word secret recovery phrase"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restaura tu Polkadot ID con la frase secreta de recuperación de 12 o 24 palabras"
           }
         }
       }
@@ -139,12 +141,6 @@
             "state": "translated",
             "value": "Please edit your secret recovery phrase and try again"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edita tu frase secreta de recuperación e inténtalo de nuevo"
-          }
         }
       }
     },
@@ -155,12 +151,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Please enter the correct\nSecret Recovery Phrase"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ingresa la frase secreta\nde recuperación correcta"
           }
         }
       }
@@ -173,12 +163,6 @@
             "state": "translated",
             "value": "Secret recovery phrase"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Frase secreta de recuperación"
-          }
         }
       }
     },
@@ -189,29 +173,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Recover Polkadot ID"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recuperar Polkadot ID"
-          }
-        }
-      }
-    },
-    "action.send.cash": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Send CASH"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviar CASH"
           }
         }
       }
@@ -224,12 +185,6 @@
             "state": "translated",
             "value": "Address copied"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dirección copiada"
-          }
         }
       }
     },
@@ -241,12 +196,6 @@
             "state": "translated",
             "value": "%@ Permissions"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Permisos de %@"
-          }
         }
       }
     },
@@ -254,12 +203,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apps"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "Apps"
@@ -275,12 +218,6 @@
             "state": "translated",
             "value": "Authenticate to access your Polkadot ID"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Autentícate para acceder a tu Polkadot ID"
-          }
         }
       }
     },
@@ -291,12 +228,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fund Digital Dollar"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondear Dólar Digital"
           }
         }
       }
@@ -309,12 +240,6 @@
             "state": "translated",
             "value": "Audio Call"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Llamada de audio"
-          }
         }
       }
     },
@@ -325,12 +250,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Authentication\nfailed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La autenticación\nfalló"
           }
         }
       }
@@ -343,12 +262,6 @@
             "state": "translated",
             "value": "Please, make sure you have enabled biometry or pincode in the settings and try again"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Asegúrate de tener activada la biometría o el código de acceso en la configuración e inténtalo de nuevo"
-          }
         }
       }
     },
@@ -359,12 +272,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Backup Your Account"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respalda tu cuenta"
           }
         }
       }
@@ -377,12 +284,6 @@
             "state": "translated",
             "value": "Backup Your Account"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respalda tu cuenta"
-          }
         }
       }
     },
@@ -393,12 +294,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "View Secret Recovery Phrase"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ver la frase secreta de recuperación"
           }
         }
       }
@@ -411,12 +306,6 @@
             "state": "translated",
             "value": "Your account is backed up to iCloud. If you lose your device or get a new one, you’ll be able to recover the account."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu cuenta está respaldada en iCloud. Si pierdes tu dispositivo o consigues uno nuevo, podrás recuperar la cuenta."
-          }
         }
       }
     },
@@ -427,12 +316,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Account is Backed Up"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La cuenta está respaldada"
           }
         }
       }
@@ -445,12 +328,6 @@
             "state": "translated",
             "value": "Securely back up your account to iCloud so you can restore it if you lose your device or get a new one."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respalda tu cuenta en iCloud de forma segura para poder restaurarla si pierdes tu dispositivo o consigues uno nuevo."
-          }
         }
       }
     },
@@ -461,12 +338,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Backup your account"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respalda tu cuenta"
           }
         }
       }
@@ -479,12 +350,6 @@
             "state": "translated",
             "value": "Error creating backup. Please try again later."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Error al crear el respaldo. Inténtalo de nuevo más tarde."
-          }
         }
       }
     },
@@ -495,12 +360,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Securely back up your account to iCloud so you can restore them if lose your device or get a new one."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respalda tu cuenta en iCloud de forma segura para poder restaurarla si pierdes tu dispositivo o consigues uno nuevo."
           }
         }
       }
@@ -513,12 +372,6 @@
             "state": "translated",
             "value": "Backup your account"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respalda tu cuenta"
-          }
         }
       }
     },
@@ -529,12 +382,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Backup"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respaldo"
           }
         }
       }
@@ -547,12 +394,6 @@
             "state": "translated",
             "value": "%1$(amount)@ on hold"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(amount)@ retenido"
-          }
         }
       }
     },
@@ -563,12 +404,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Block User"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bloquear usuario"
           }
         }
       }
@@ -581,12 +416,6 @@
             "state": "translated",
             "value": "Blocked Users"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Usuarios bloqueados"
-          }
         }
       }
     },
@@ -597,12 +426,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Busy"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ocupado"
           }
         }
       }
@@ -615,12 +438,6 @@
             "state": "translated",
             "value": "Incoming call"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Llamada entrante"
-          }
         }
       }
     },
@@ -632,12 +449,6 @@
             "state": "translated",
             "value": "Connecting..."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Conectando..."
-          }
         }
       }
     },
@@ -645,12 +456,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "iPhone"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "iPhone"
@@ -666,12 +471,6 @@
             "state": "translated",
             "value": "Speaker"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Altavoz"
-          }
         }
       }
     },
@@ -682,12 +481,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Allow microphone access in Settings to make and receive calls."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Permite el acceso al micrófono en Configuración para hacer y recibir llamadas."
           }
         }
       }
@@ -700,29 +493,6 @@
             "state": "translated",
             "value": "Microphone Access Required"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Se requiere acceso al micrófono"
-          }
-        }
-      }
-    },
-    "Chat.contactAddedYou": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ added you"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ te agregó"
-          }
         }
       }
     },
@@ -733,12 +503,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "reacted with %1$(emoji)@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "reaccionó con %1$(emoji)@"
           }
         }
       }
@@ -751,12 +515,6 @@
             "state": "translated",
             "value": "Copy"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Copiar"
-          }
         }
       }
     },
@@ -767,12 +525,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$(amount)@ Deposit Added"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Depósito de %1$(amount)@ agregado"
           }
         }
       }
@@ -785,12 +537,6 @@
             "state": "translated",
             "value": "Edit"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Editar"
-          }
         }
       }
     },
@@ -801,12 +547,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "View edit history"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ver historial de ediciones"
           }
         }
       }
@@ -819,12 +559,6 @@
             "state": "translated",
             "value": "Sent Today"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviado hoy"
-          }
         }
       }
     },
@@ -835,12 +569,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sent Yesterday"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviado ayer"
           }
         }
       }
@@ -853,12 +581,6 @@
             "state": "translated",
             "value": "Edit Message"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Editar mensaje"
-          }
         }
       }
     },
@@ -870,12 +592,6 @@
             "state": "translated",
             "value": "Edited: %1$(text)@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Editado: %1$(text)@"
-          }
         }
       }
     },
@@ -886,12 +602,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sent media file"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Envió un archivo multimedia"
           }
         }
       }
@@ -905,12 +615,6 @@
             "state": "translated",
             "value": "%1$(username)@ reacted with %2$(emoji)@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ reaccionó con %2$(emoji)@"
-          }
         }
       }
     },
@@ -922,12 +626,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "You: reacted with %1$(emoji)@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tú: reaccionaste con %1$(emoji)@"
           }
         }
       }
@@ -941,12 +639,6 @@
             "state": "translated",
             "value": "%1$(username)@ removed reaction"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ quitó su reacción"
-          }
         }
       }
     },
@@ -958,12 +650,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "You: removed reaction"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tú: quitaste tu reacción"
           }
         }
       }
@@ -977,12 +663,6 @@
             "state": "translated",
             "value": "Accepted your chat request"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aceptó tu solicitud de chat"
-          }
         }
       }
     },
@@ -995,12 +675,6 @@
             "state": "translated",
             "value": "You accepted a chat request"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aceptaste una solicitud de chat"
-          }
         }
       }
     },
@@ -1011,29 +685,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chats"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chats"
-          }
-        }
-      }
-    },
-    "Chat.peerLeft": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ left the chat"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(username)@ salió del chat"
           }
         }
       }
@@ -1046,12 +697,6 @@
             "state": "translated",
             "value": "Reply"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Responder"
-          }
         }
       }
     },
@@ -1062,12 +707,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Image"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Imagen"
           }
         }
       }
@@ -1080,12 +719,6 @@
             "state": "translated",
             "value": "Message"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mensaje"
-          }
         }
       }
     },
@@ -1096,12 +729,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Reply to %@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Responder a %@"
           }
         }
       }
@@ -1114,12 +741,6 @@
             "state": "translated",
             "value": "You"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tú"
-          }
         }
       }
     },
@@ -1130,12 +751,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Request message sent"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mensaje de solicitud enviado"
           }
         }
       }
@@ -1149,12 +764,6 @@
             "state": "translated",
             "value": "Chat Requests"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Solicitudes de chat"
-          }
         }
       }
     },
@@ -1165,12 +774,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Today"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hoy"
           }
         }
       }
@@ -1183,12 +786,6 @@
             "state": "translated",
             "value": "Yesterday"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ayer"
-          }
         }
       }
     },
@@ -1196,12 +793,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%dh"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "%dh"
@@ -1217,12 +808,6 @@
             "state": "translated",
             "value": "%dm"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%dm"
-          }
         }
       }
     },
@@ -1233,12 +818,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Now"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ahora"
           }
         }
       }
@@ -1251,12 +830,6 @@
             "state": "translated",
             "value": "Yesterday"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ayer"
-          }
         }
       }
     },
@@ -1268,12 +841,6 @@
             "state": "translated",
             "value": "%1$(contact)@ sent you %2$(amount)@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(contact)@ te envió %2$(amount)@"
-          }
         }
       }
     },
@@ -1284,12 +851,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "You sent %1$(amount)@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviaste %1$(amount)@"
           }
         }
       }
@@ -1303,46 +864,6 @@
             "state": "translated",
             "value": "Unsupported message content. Please, update the app"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Contenido de mensaje no compatible. Actualiza la app"
-          }
-        }
-      }
-    },
-    "Chat.youAddedContact": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You added %1$(username)@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agregaste a %1$(username)@"
-          }
-        }
-      }
-    },
-    "Chat.youLeft": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You left the chat"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Saliste del chat"
-          }
         }
       }
     },
@@ -1353,12 +874,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Requesting..."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Solicitando..."
           }
         }
       }
@@ -1371,12 +886,6 @@
             "state": "translated",
             "value": "Ended"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Finalizada"
-          }
         }
       }
     },
@@ -1387,12 +896,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Failed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Falló"
           }
         }
       }
@@ -1405,12 +908,6 @@
             "state": "translated",
             "value": "Ringing..."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Llamando..."
-          }
         }
       }
     },
@@ -1421,12 +918,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Start a conversation with someone \nby typing their username"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Inicia una conversación con alguien \nescribiendo su nombre de usuario"
           }
         }
       }
@@ -1439,12 +930,6 @@
             "state": "translated",
             "value": "No active chats"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No hay chats activos"
-          }
         }
       }
     },
@@ -1455,12 +940,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Continue"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Continuar"
           }
         }
       }
@@ -1473,12 +952,6 @@
             "state": "translated",
             "value": "We couldn't reigster your username, please try again."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No pudimos registrar tu nombre de usuario, inténtalo de nuevo."
-          }
         }
       }
     },
@@ -1489,12 +962,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Get Username"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Obtener nombre de usuario"
           }
         }
       }
@@ -1507,12 +974,6 @@
             "state": "translated",
             "value": "Claim other"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reclamar otro"
-          }
         }
       }
     },
@@ -1523,12 +984,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "You already have username: %@. Do you want to continue with it?"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ya tienes un nombre de usuario: %@. ¿Quieres continuar con él?"
           }
         }
       }
@@ -1541,12 +996,6 @@
             "state": "translated",
             "value": "Username exists"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El nombre de usuario ya existe"
-          }
         }
       }
     },
@@ -1557,12 +1006,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Choose a username to get started."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Elige un nombre de usuario para empezar."
           }
         }
       }
@@ -1575,12 +1018,6 @@
             "state": "translated",
             "value": "As a member, you're eligible for a clean username without a suffix. Claim it for free"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Como miembro, puedes tener un nombre de usuario limpio, sin sufijo. Reclámalo gratis"
-          }
         }
       }
     },
@@ -1591,12 +1028,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Claim a username - it's how people find, pay, and message you."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reclama un nombre de usuario: así es como te encuentran, te pagan y te escriben."
           }
         }
       }
@@ -1609,12 +1040,6 @@
             "state": "translated",
             "value": "Welcome to Polkadot"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bienvenido a Polkadot"
-          }
         }
       }
     },
@@ -1625,12 +1050,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Polkadot account recovered"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cuenta de Polkadot recuperada"
           }
         }
       }
@@ -1643,12 +1062,6 @@
             "state": "translated",
             "value": "Try another"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Prueba con otro"
-          }
         }
       }
     },
@@ -1659,12 +1072,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "This username is already taken"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este nombre de usuario ya está ocupado"
           }
         }
       }
@@ -1677,12 +1084,6 @@
             "state": "translated",
             "value": "Maximum %d characters"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Máximo %d caracteres"
-          }
         }
       }
     },
@@ -1693,12 +1094,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Minimum %d characters"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mínimo %d caracteres"
           }
         }
       }
@@ -1711,12 +1106,6 @@
             "state": "translated",
             "value": "Enter username"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ingresa un nombre de usuario"
-          }
         }
       }
     },
@@ -1727,12 +1116,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Privacy Policy"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Política de Privacidad"
           }
         }
       }
@@ -1745,12 +1128,6 @@
             "state": "translated",
             "value": "Already using Polkadot? %1$(highlightedItem)@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Ya usas Polkadot? %1$(highlightedItem)@"
-          }
         }
       }
     },
@@ -1761,12 +1138,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Recover here"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recupérala aquí"
           }
         }
       }
@@ -1779,12 +1150,6 @@
             "state": "translated",
             "value": "That didn't work, please try again later."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Eso no funcionó, inténtalo de nuevo más tarde."
-          }
         }
       }
     },
@@ -1795,12 +1160,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Terms & Conditions"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Términos y Condiciones"
           }
         }
       }
@@ -1813,12 +1172,6 @@
             "state": "translated",
             "value": "By continuing, you agree to our\n%@ and %@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Al continuar, aceptas nuestros\n%@ y %@"
-          }
         }
       }
     },
@@ -1829,12 +1182,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pick Your Username"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Elige tu nombre de usuario"
           }
         }
       }
@@ -1847,12 +1194,6 @@
             "state": "translated",
             "value": "Pick your new username"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Elige tu nuevo nombre de usuario"
-          }
         }
       }
     },
@@ -1863,12 +1204,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Backup failed with error %@. Please, contact support"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El respaldo falló con el error %@. Contacta a soporte"
           }
         }
       }
@@ -1881,12 +1216,6 @@
             "state": "translated",
             "value": "Open settings"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abrir configuración"
-          }
         }
       }
     },
@@ -1897,12 +1226,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Please sign in to iCloud to save an encrypted copy of your recovery phrase."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Inicia sesión en iCloud para guardar una copia encriptada de tu frase de recuperación."
           }
         }
       }
@@ -1915,12 +1238,6 @@
             "state": "translated",
             "value": "Open iOS settings"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abre la configuración de iOS"
-          }
         }
       }
     },
@@ -1931,12 +1248,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sign in to iCloud"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Inicia sesión en iCloud"
           }
         }
       }
@@ -1949,12 +1260,6 @@
             "state": "translated",
             "value": "Make sure iCloud Drive is turned on"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Asegúrate de que iCloud Drive esté activado"
-          }
         }
       }
     },
@@ -1966,11 +1271,137 @@
             "state": "translated",
             "value": "Enable iCloud backup"
           }
-        },
-        "es-ES": {
+        }
+      }
+    },
+    "coinageHideDetails": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Activar el respaldo en iCloud"
+            "value": "Hide Details"
+          }
+        }
+      }
+    },
+    "coinageHowToRead": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to read this"
+          }
+        }
+      }
+    },
+    "coinageKeyHops": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coins show one circle per past payment. Dots represent other coins that moved with the payment."
+          }
+        }
+      }
+    },
+    "coinageKeySolid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A single block means no past payments at all. The shorter it is, the more fungible the coin."
+          }
+        }
+      }
+    },
+    "coinageKeyUnknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A thin red and orange line means we have no record for that part of the coin's past."
+          }
+        }
+      }
+    },
+    "coinageKeyVoucher": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coins that gain privacy. The solid block is how fungible they will be at best; the striped part is the current level."
+          }
+        }
+      }
+    },
+    "coinageLoading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reloading"
+          }
+        }
+      }
+    },
+    "coinageShowDetails": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Details"
+          }
+        }
+      }
+    },
+    "coinageSpendable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spendable"
+          }
+        }
+      }
+    },
+    "coinageSummaryTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coinage Balance"
+          }
+        }
+      }
+    },
+    "coinageTotalBalance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total balance"
+          }
+        }
+      }
+    },
+    "coinageUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable"
           }
         }
       }
@@ -1983,12 +1414,6 @@
             "state": "translated",
             "value": "You both played %1$(ordinalDay)@ %2$(month)@ Game"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ambos jugaron el juego del %1$(ordinalDay)@ de %2$(month)@"
-          }
         }
       }
     },
@@ -1999,12 +1424,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "You both played the same game"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ambos jugaron el mismo juego"
           }
         }
       }
@@ -2017,12 +1436,6 @@
             "state": "translated",
             "value": "You can't add yourself as a contact."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No puedes agregarte a ti mismo como contacto."
-          }
         }
       }
     },
@@ -2033,12 +1446,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Can't add contact"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No se puede agregar el contacto"
           }
         }
       }
@@ -2051,12 +1458,6 @@
             "state": "translated",
             "value": "Copy to clipboard"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Copiar al portapapeles"
-          }
         }
       }
     },
@@ -2064,12 +1465,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%ds"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "%ds"
@@ -2085,12 +1480,6 @@
             "state": "translated",
             "value": "Please wait a moment and try again."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Espera un momento e inténtalo de nuevo."
-          }
         }
       }
     },
@@ -2098,12 +1487,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "OK"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "OK"
@@ -2119,12 +1502,6 @@
             "state": "translated",
             "value": "Please wait a moment and try again."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Espera un momento e inténtalo de nuevo."
-          }
         }
       }
     },
@@ -2135,12 +1512,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Copy Address"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Copiar dirección"
           }
         }
       }
@@ -2153,12 +1524,6 @@
             "state": "translated",
             "value": "Send %@ on the %@ to your wallet address below."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Envía %@ en la red %@ a la dirección de tu cartera que aparece abajo."
-          }
         }
       }
     },
@@ -2169,12 +1534,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "If you have pending funds, closing the screen may result in the loss of those funds"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Si tienes fondos pendientes, cerrar la pantalla podría provocar la pérdida de esos fondos"
           }
         }
       }
@@ -2187,12 +1546,6 @@
             "state": "translated",
             "value": "Are you finished?"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Ya terminaste?"
-          }
         }
       }
     },
@@ -2203,12 +1556,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fee"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comisión"
           }
         }
       }
@@ -2221,12 +1568,6 @@
             "state": "translated",
             "value": "Fund from"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondear desde"
-          }
         }
       }
     },
@@ -2237,12 +1578,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Send %@ or more"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Envía %@ o más"
           }
         }
       }
@@ -2255,12 +1590,6 @@
             "state": "translated",
             "value": "Network"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Red"
-          }
         }
       }
     },
@@ -2271,12 +1600,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Rate"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tipo de cambio"
           }
         }
       }
@@ -2289,12 +1612,6 @@
             "state": "translated",
             "value": "To"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A"
-          }
         }
       }
     },
@@ -2305,12 +1622,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Complete"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Completado"
           }
         }
       }
@@ -2323,12 +1634,6 @@
             "state": "translated",
             "value": "Funding complete"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondeo completado"
-          }
         }
       }
     },
@@ -2339,12 +1644,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Funding incomplete"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondeo incompleto"
           }
         }
       }
@@ -2357,12 +1656,6 @@
             "state": "translated",
             "value": "Funding in progress"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondeo en curso"
-          }
         }
       }
     },
@@ -2373,12 +1666,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Incomplete"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Incompleto"
           }
         }
       }
@@ -2391,12 +1678,6 @@
             "state": "translated",
             "value": "Pending"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pendiente"
-          }
         }
       }
     },
@@ -2407,12 +1688,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Do not close the app until the process is complete, or you may lose funds."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No cierres la app hasta que el proceso termine, o podrías perder fondos."
           }
         }
       }
@@ -2425,12 +1700,6 @@
             "state": "translated",
             "value": "Funding complete, check your balance, spend dollars in the Polkadot app."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondeo completado: revisa tu saldo y gasta dólares en la app de Polkadot."
-          }
         }
       }
     },
@@ -2441,12 +1710,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fee"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comisión"
           }
         }
       }
@@ -2459,12 +1722,6 @@
             "state": "translated",
             "value": "Maximum amount is %@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El monto máximo es %@"
-          }
         }
       }
     },
@@ -2475,12 +1732,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Minimum amount is %@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El monto mínimo es %@"
           }
         }
       }
@@ -2493,12 +1744,6 @@
             "state": "translated",
             "value": "Enter amount"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ingresa el monto"
-          }
         }
       }
     },
@@ -2509,12 +1754,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Go back"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Regresar"
           }
         }
       }
@@ -2527,12 +1766,6 @@
             "state": "translated",
             "value": "Continue"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Continuar"
-          }
         }
       }
     },
@@ -2543,12 +1776,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "To continue funding, you will be redirected from the Polkadot App to %@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Para continuar con el fondeo, te redirigiremos de la app de Polkadot a %@"
           }
         }
       }
@@ -2561,12 +1788,6 @@
             "state": "translated",
             "value": "Continue In browser?"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Continuar en el navegador?"
-          }
         }
       }
     },
@@ -2577,12 +1798,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Continue"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Continuar"
           }
         }
       }
@@ -2595,12 +1810,6 @@
             "state": "translated",
             "value": "Credit card"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tarjeta de crédito"
-          }
         }
       }
     },
@@ -2611,12 +1820,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "By continuing, you’ll purchase DOT on Mercuryo.com.\nAfter completing the purchase, your funds will be automatically converted to digital dollars"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Al continuar, comprarás DOT en Mercuryo.com.\nDespués de completar la compra, tus fondos se convertirán automáticamente a dólares digitales"
           }
         }
       }
@@ -2629,12 +1832,6 @@
             "state": "translated",
             "value": "No payment methods available."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No hay métodos de pago disponibles."
-          }
         }
       }
     },
@@ -2645,12 +1842,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pay with"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pagar con"
           }
         }
       }
@@ -2663,12 +1854,6 @@
             "state": "translated",
             "value": "No providers available."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No hay proveedores disponibles."
-          }
         }
       }
     },
@@ -2679,12 +1864,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "New quote: %@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nueva cotización: %@"
           }
         }
       }
@@ -2697,12 +1876,6 @@
             "state": "translated",
             "value": "Refreshing..."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Actualizando..."
-          }
         }
       }
     },
@@ -2713,12 +1886,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Select provider"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Selecciona un proveedor"
           }
         }
       }
@@ -2731,12 +1898,6 @@
             "state": "translated",
             "value": "To continue the purchase you will\nbe redirected from Polkadot App\nto %@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Para continuar con la compra\nte redirigiremos de la app de Polkadot\na %@"
-          }
         }
       }
     },
@@ -2748,12 +1909,6 @@
             "state": "translated",
             "value": "Continue\nin browser?"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Continuar\nen el navegador?"
-          }
         }
       }
     },
@@ -2763,13 +1918,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Show this QR to someone who wants to add you as a contact or send you money"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Muestra este QR a quien quiera agregarte como contacto o enviarte dinero"
+            "value": "Show this QR to someone who wants to add you as a contact or send you %@"
           }
         }
       }
@@ -2782,12 +1931,6 @@
             "state": "translated",
             "value": "Scan with a camera"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanea con una cámara"
-          }
         }
       }
     },
@@ -2798,12 +1941,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Leave chat"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Salir del chat"
           }
         }
       }
@@ -2816,12 +1953,6 @@
             "state": "translated",
             "value": "Delete"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Eliminar"
-          }
         }
       }
     },
@@ -2832,12 +1963,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Are you sure you want to leave the chat with %1$(username)@"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Seguro que quieres salir del chat con %1$(username)@?"
           }
         }
       }
@@ -2850,12 +1975,6 @@
             "state": "translated",
             "value": "Leave chat?"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Salir del chat?"
-          }
         }
       }
     },
@@ -2866,12 +1985,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Device Details"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Detalles del dispositivo"
           }
         }
       }
@@ -2884,12 +1997,6 @@
             "state": "translated",
             "value": "Today"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hoy"
-          }
         }
       }
     },
@@ -2900,12 +2007,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Unknown Device"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dispositivo desconocido"
           }
         }
       }
@@ -2918,12 +2019,6 @@
             "state": "translated",
             "value": "Yesterday"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ayer"
-          }
         }
       }
     },
@@ -2934,12 +2029,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your phone approves all devices.\nNo one can access your account\nwithout your permission"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu teléfono aprueba todos los dispositivos.\nNadie puede acceder a tu cuenta\nsin tu permiso"
           }
         }
       }
@@ -2952,12 +2041,6 @@
             "state": "translated",
             "value": "How it works"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cómo funciona"
-          }
         }
       }
     },
@@ -2968,12 +2051,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scan QR Code"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanear código QR"
           }
         }
       }
@@ -2986,12 +2063,6 @@
             "state": "translated",
             "value": "Scan the QR code on your computer or another device to sync"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanea el código QR en tu computadora u otro dispositivo para sincronizar"
-          }
         }
       }
     },
@@ -3003,12 +2074,6 @@
             "state": "translated",
             "value": "Link a new device"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vincular un dispositivo nuevo"
-          }
         }
       }
     },
@@ -3019,12 +2084,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Point your camera at the QR code on your computer"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apunta la cámara al código QR de tu computadora"
           }
         }
       }
@@ -3049,24 +2108,6 @@
               }
             }
           }
-        },
-        "es-ES": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld DISPOSITIVO"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld DISPOSITIVOS"
-                }
-              }
-            }
-          }
         }
       }
     },
@@ -3077,12 +2118,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "LAPTOP / DESKTOP"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "LAPTOP / ESCRITORIO"
           }
         }
       }
@@ -3095,12 +2130,6 @@
             "state": "translated",
             "value": "Device connected"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dispositivo conectado"
-          }
         }
       }
     },
@@ -3111,12 +2140,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Something went wrong. Please try again."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Algo salió mal. Inténtalo de nuevo."
           }
         }
       }
@@ -3129,12 +2152,6 @@
             "state": "translated",
             "value": "Linked Devices"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dispositivos vinculados"
-          }
         }
       }
     },
@@ -3145,12 +2162,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Message details"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Detalles del mensaje"
           }
         }
       }
@@ -3164,12 +2175,6 @@
             "state": "translated",
             "value": "Message is hidden"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El mensaje está oculto"
-          }
         }
       }
     },
@@ -3180,12 +2185,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Make sure no one can see your\nscreen and do not take screenshots"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Asegúrate de que nadie pueda ver tu\npantalla y no tomes capturas"
           }
         }
       }
@@ -3198,12 +2197,6 @@
             "state": "translated",
             "value": "Tap to reveal"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Toca para revelar"
-          }
         }
       }
     },
@@ -3215,12 +2208,6 @@
             "state": "translated",
             "value": "Connecting..."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Conectando..."
-          }
         }
       }
     },
@@ -3231,12 +2218,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Waiting for network"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Esperando la red"
           }
         }
       }
@@ -3250,12 +2231,6 @@
             "state": "translated",
             "value": "No message"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sin mensaje"
-          }
         }
       }
     },
@@ -3266,12 +2241,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Get started"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Empezar"
           }
         }
       }
@@ -3284,12 +2253,6 @@
             "state": "translated",
             "value": "Other options"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Otras opciones"
-          }
         }
       }
     },
@@ -3300,12 +2263,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Too large message: %1$(actualSize)@ maxSize: %2$(maxSize)@ "
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mensaje demasiado grande: %1$(actualSize)@ tamaño máx.: %2$(maxSize)@ "
           }
         }
       }
@@ -3318,12 +2275,6 @@
             "state": "translated",
             "value": "Result submission failed"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No se pudo enviar el resultado"
-          }
         }
       }
     },
@@ -3334,12 +2285,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Disconnect"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desconectar"
           }
         }
       }
@@ -3352,12 +2297,6 @@
             "state": "translated",
             "value": "Are you sure you want to disconnect %1$(name)@?"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Seguro que quieres desconectar %1$(name)@?"
-          }
         }
       }
     },
@@ -3368,12 +2307,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Disconnect app"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desconectar la app"
           }
         }
       }
@@ -3386,12 +2319,6 @@
             "state": "translated",
             "value": "Connected apps"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apps conectadas"
-          }
         }
       }
     },
@@ -3402,12 +2329,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "No more device slots available."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No hay más espacios disponibles para dispositivos."
           }
         }
       }
@@ -3420,12 +2341,6 @@
             "state": "translated",
             "value": "Please, try again in %1$(time)@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Inténtalo de nuevo en %1$(time)@"
-          }
         }
       }
     },
@@ -3436,12 +2351,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Something went wrong. Please try again."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Algo salió mal. Inténtalo de nuevo."
           }
         }
       }
@@ -3454,12 +2363,6 @@
             "state": "translated",
             "value": "Scan the QR code to continue"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanea el código QR para continuar"
-          }
         }
       }
     },
@@ -3470,12 +2373,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Type username or wallet address"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escribe el nombre de usuario o la dirección de la cartera"
           }
         }
       }
@@ -3488,12 +2385,6 @@
             "state": "translated",
             "value": "To:"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A:"
-          }
         }
       }
     },
@@ -3504,12 +2395,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "to"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "a"
           }
         }
       }
@@ -3522,12 +2407,6 @@
             "state": "translated",
             "value": "Recovering Polkadot account"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recuperando la cuenta de Polkadot"
-          }
         }
       }
     },
@@ -3539,12 +2418,6 @@
             "state": "translated",
             "value": "Turn off Airplane Mode or check your internet"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desactiva el modo avión o revisa tu conexión a internet"
-          }
         }
       }
     },
@@ -3554,30 +2427,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Waiting for network connection..."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Esperando la conexión a la red..."
-          }
-        }
-      }
-    },
-    "searchContact.loading.long": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Search is taking longer than usual"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La búsqueda está tardando más de lo normal"
+            "value": "Configuring application..."
           }
         }
       }
@@ -3590,11 +2440,27 @@
             "state": "translated",
             "value": "No results for\n“%1$(username)@”"
           }
-        },
-        "es-ES": {
+        }
+      }
+    },
+    "searchContact.loading.long": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sin resultados para\n“%1$(username)@”"
+            "value": "Search is taking longer than usual"
+          }
+        }
+      }
+    },
+    "searchContact.recent.chats": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent chats"
           }
         }
       }
@@ -3607,12 +2473,6 @@
             "state": "translated",
             "value": "Never share the recovery phrase. Anyone who has your recovery phrase can access your account."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nunca compartas la frase de recuperación. Cualquiera que la tenga puede acceder a tu cuenta."
-          }
         }
       }
     },
@@ -3623,12 +2483,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Recovery phrase"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Frase de recuperación"
           }
         }
       }
@@ -3641,12 +2495,6 @@
             "state": "translated",
             "value": "Make sure no one can see your screen and do not take a screenshot"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Asegúrate de que nadie pueda ver tu pantalla y no tomes capturas"
-          }
         }
       }
     },
@@ -3657,12 +2505,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tap to reveal"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Toca para revelar"
           }
         }
       }
@@ -3675,12 +2517,6 @@
             "state": "translated",
             "value": "Show recovery phrase"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostrar la frase de recuperación"
-          }
         }
       }
     },
@@ -3691,12 +2527,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Never share your recovery phrase or enter it into apps or websites."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nunca compartas tu frase de recuperación ni la ingreses en apps o sitios web."
           }
         }
       }
@@ -3709,12 +2539,6 @@
             "state": "translated",
             "value": "Anyone who has your recovery phrase can access your account."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cualquiera que tenga tu frase de recuperación puede acceder a tu cuenta."
-          }
         }
       }
     },
@@ -3725,12 +2549,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Make sure nobody can see your screen when viewing your recovery phrase."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Asegúrate de que nadie pueda ver tu pantalla cuando veas tu frase de recuperación."
           }
         }
       }
@@ -3743,12 +2561,6 @@
             "state": "translated",
             "value": "Fund Digital Dollar"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fondear Dólar Digital"
-          }
         }
       }
     },
@@ -3756,12 +2568,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apps"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "Apps"
@@ -3777,12 +2583,6 @@
             "state": "translated",
             "value": "App Version %@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Versión de la app %@"
-          }
         }
       }
     },
@@ -3793,12 +2593,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Backup"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Respaldo"
           }
         }
       }
@@ -3811,12 +2605,6 @@
             "state": "translated",
             "value": "Account is not backed up.\nComplete the backup to protect it."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La cuenta no está respaldada.\nCompleta el respaldo para protegerla."
-          }
         }
       }
     },
@@ -3827,12 +2615,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Blocked users"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Usuarios bloqueados"
           }
         }
       }
@@ -3845,12 +2627,6 @@
             "state": "translated",
             "value": "Contact us"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Contáctanos"
-          }
         }
       }
     },
@@ -3861,12 +2637,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Currency"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Moneda"
           }
         }
       }
@@ -3879,12 +2649,6 @@
             "state": "translated",
             "value": "Linked Devices"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dispositivos vinculados"
-          }
         }
       }
     },
@@ -3895,12 +2659,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Privacy policy"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Política de privacidad"
           }
         }
       }
@@ -3913,12 +2671,6 @@
             "state": "translated",
             "value": "Terms of use"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Términos de uso"
-          }
         }
       }
     },
@@ -3929,12 +2681,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Theme"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tema"
           }
         }
       }
@@ -3947,11 +2693,82 @@
             "state": "translated",
             "value": "Settings"
           }
-        },
-        "es-ES": {
+        }
+      }
+    },
+    "settings.privacymode.balanced.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Configuración"
+            "value": "Stronger privacy, moderate speed"
+          }
+        }
+      }
+    },
+    "settings.privacymode.balanced.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balanced"
+          }
+        }
+      }
+    },
+    "settings.privacymode.fastest.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fastest payments, lower privacy"
+          }
+        }
+      }
+    },
+    "settings.privacymode.fastest.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fastest"
+          }
+        }
+      }
+    },
+    "settings.privacymode.private.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum privacy, lowest speed"
+          }
+        }
+      }
+    },
+    "settings.privacymode.private.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Most Private"
+          }
+        }
+      }
+    },
+    "settings.privacymode.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Privacy Mode"
           }
         }
       }
@@ -3960,12 +2777,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "General"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "General"
@@ -3981,12 +2792,6 @@
             "state": "translated",
             "value": "Legal"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Legal"
-          }
         }
       }
     },
@@ -3997,12 +2802,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Security & privacy"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Seguridad y privacidad"
           }
         }
       }
@@ -4015,12 +2814,6 @@
             "state": "translated",
             "value": "Support"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Soporte"
-          }
         }
       }
     },
@@ -4031,12 +2824,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Close"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cerrar"
           }
         }
       }
@@ -4049,12 +2836,6 @@
             "state": "translated",
             "value": "Open chat"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Abrir el chat"
-          }
         }
       }
     },
@@ -4065,12 +2846,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pin as a widget"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fijar como widget"
           }
         }
       }
@@ -4083,12 +2858,6 @@
             "state": "translated",
             "value": "Refresh"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Actualizar"
-          }
         }
       }
     },
@@ -4099,12 +2868,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Share"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Compartir"
           }
         }
       }
@@ -4117,12 +2880,6 @@
             "state": "translated",
             "value": "Browse"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Explorar"
-          }
         }
       }
     },
@@ -4130,12 +2887,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chat"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "Chat"
@@ -4151,12 +2902,6 @@
             "state": "translated",
             "value": "More"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Más"
-          }
         }
       }
     },
@@ -4167,12 +2912,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scan"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanear"
           }
         }
       }
@@ -4185,12 +2924,6 @@
             "state": "translated",
             "value": "Settings"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Configuración"
-          }
         }
       }
     },
@@ -4201,12 +2934,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pocket"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bolsillo"
           }
         }
       }
@@ -4219,12 +2946,6 @@
             "state": "translated",
             "value": "Confirm"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Confirmar"
-          }
         }
       }
     },
@@ -4235,12 +2956,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Continue"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Continuar"
           }
         }
       }
@@ -4253,12 +2968,6 @@
             "state": "translated",
             "value": "Hey, are you going to Web3 Summit? 🎉"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Oye, ¿vas a ir al Web3 Summit? 🎉"
-          }
         }
       }
     },
@@ -4269,12 +2978,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Of course! You?"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¡Claro! ¿Y tú?"
           }
         }
       }
@@ -4287,12 +2990,6 @@
             "state": "translated",
             "value": "Wouldn't miss it 👋 See you there!"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No me lo perdería 👋 ¡Nos vemos allá!"
-          }
         }
       }
     },
@@ -4303,12 +3000,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "You"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tú"
           }
         }
       }
@@ -4321,12 +3012,6 @@
             "state": "translated",
             "value": "Pick a theme that feels like yours. You stay in control."
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Elige un tema que se sienta tuyo. Tú tienes el control."
-          }
         }
       }
     },
@@ -4338,12 +3023,6 @@
             "state": "translated",
             "value": "Claim your interface"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Personaliza tu interfaz"
-          }
         }
       }
     },
@@ -4351,12 +3030,6 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CASH"
-          }
-        },
-        "es-ES": {
           "stringUnit": {
             "state": "translated",
             "value": "CASH"
@@ -4372,12 +3045,6 @@
             "state": "translated",
             "value": "Transaction details"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Detalles de la transacción"
-          }
         }
       }
     },
@@ -4388,12 +3055,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Something went wrong. Please try again."
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Algo salió mal. Inténtalo de nuevo."
           }
         }
       }
@@ -4406,12 +3067,6 @@
             "state": "translated",
             "value": "Payment failed"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El pago falló"
-          }
         }
       }
     },
@@ -4423,11 +3078,27 @@
             "state": "translated",
             "value": "Previous payments"
           }
-        },
-        "es-ES": {
+        }
+      }
+    },
+    "transaction.search.all.users": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pagos anteriores"
+            "value": "All users"
+          }
+        }
+      }
+    },
+    "transaction.search.my.contacts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My contacts"
           }
         }
       }
@@ -4440,12 +3111,6 @@
             "state": "translated",
             "value": "Your transaction was sent successfully"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu transacción se envió correctamente"
-          }
         }
       }
     },
@@ -4456,12 +3121,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Send"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviar"
           }
         }
       }
@@ -4474,12 +3133,6 @@
             "state": "translated",
             "value": "Send %@"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviar %@"
-          }
         }
       }
     },
@@ -4490,12 +3143,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Available now"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Disponible ahora"
           }
         }
       }
@@ -4508,12 +3155,6 @@
             "state": "translated",
             "value": "Send payment"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviar pago"
-          }
         }
       }
     },
@@ -4524,12 +3165,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Send payment"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviar pago"
           }
         }
       }
@@ -4542,12 +3177,6 @@
             "state": "translated",
             "value": "Claiming"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reclamando"
-          }
         }
       }
     },
@@ -4558,12 +3187,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Transaction failed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La transacción falló"
           }
         }
       }
@@ -4576,12 +3199,6 @@
             "state": "translated",
             "value": "Claimed"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reclamado"
-          }
         }
       }
     },
@@ -4592,12 +3209,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sending"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviando"
           }
         }
       }
@@ -4610,12 +3221,6 @@
             "state": "translated",
             "value": "Sent, waiting to be claimed"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enviado, esperando a ser reclamado"
-          }
         }
       }
     },
@@ -4626,12 +3231,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Video Call"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Videollamada"
           }
         }
       }
@@ -4644,12 +3243,6 @@
             "state": "translated",
             "value": "Local currency"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Moneda local"
-          }
         }
       }
     },
@@ -4660,12 +3253,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wallet creation failed with error %@. Please, contact support"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La creación de la cartera falló con el error %@. Contacta a soporte"
           }
         }
       }
@@ -4678,12 +3265,6 @@
             "state": "translated",
             "value": "Balance card"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tarjeta de saldo"
-          }
         }
       }
     },
@@ -4694,12 +3275,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID card"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tarjeta de ID"
           }
         }
       }
@@ -4712,12 +3287,6 @@
             "state": "translated",
             "value": "Pocket"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bolsillo"
-          }
         }
       }
     },
@@ -4728,12 +3297,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Privacy policy"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Política de privacidad"
           }
         }
       }
@@ -4746,133 +3309,12 @@
             "state": "translated",
             "value": "Terms"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Términos"
-          }
         }
       }
     },
-    "settings.privacymode.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Payments Privacy Mode"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Modo de privacidad de pagos"
-          }
-        }
-      }
-    },
-    "settings.privacymode.fastest.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fastest"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Más rápido"
-          }
-        }
-      }
-    },
-    "settings.privacymode.fastest.details": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fastest payments, lower privacy"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pagos más rápidos, menor privacidad"
-          }
-        }
-      }
-    },
-    "settings.privacymode.balanced.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Balanced"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Equilibrado"
-          }
-        }
-      }
-    },
-    "settings.privacymode.balanced.details": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stronger privacy, moderate speed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mayor privacidad, velocidad moderada"
-          }
-        }
-      }
-    },
-    "settings.privacymode.private.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Most Private"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Más privado"
-          }
-        }
-      }
-    },
-    "settings.privacymode.private.details": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maximum privacy, lowest speed"
-          }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Privacidad máxima, menor velocidad"
-          }
-        }
-      }
+    "≈ %@": {
+      "comment": "A label displaying the fee amount.",
+      "localizations": {}
     }
   },
   "version": "1.1"

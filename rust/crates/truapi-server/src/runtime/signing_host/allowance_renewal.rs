@@ -70,6 +70,19 @@ struct LedgerEntry {
     owner: Option<[u8; 32]>,
 }
 
+/// One ledger entry as a host reads it back.
+///
+/// Mirrors the persisted entry rather than resolving it: resolution needs root
+/// entropy, and a host inspecting its slots may hold none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackedStatementRenewalTarget {
+    /// The account, or the recipe for one, that the host promised to renew.
+    pub target: StatementRenewalTarget,
+    /// Root public key that promised a raw account id. A recipe carries none
+    /// and resolves under whichever identity is active.
+    pub owner: Option<[u8; 32]>,
+}
+
 impl LedgerEntry {
     /// Record `target` under `owner`, which only raw account ids retain.
     fn new(target: StatementRenewalTarget, owner: [u8; 32]) -> Self {
@@ -183,6 +196,25 @@ async fn track_targets(
     write_entries(storage, &entries).await
 }
 
+/// Read the ledger without resolving anything.
+///
+/// Takes the ledger lock so a listing taken while a track or a prune is running
+/// reports the settled ledger rather than the state it is replacing.
+async fn list_entries(
+    storage: &(impl CoreStorage + ?Sized),
+    ledger_lock: &Mutex<()>,
+) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
+    let _guard = ledger_lock.lock().await;
+    Ok(read_entries(storage)
+        .await?
+        .into_iter()
+        .map(|entry| TrackedStatementRenewalTarget {
+            target: entry.target,
+            owner: entry.owner,
+        })
+        .collect())
+}
+
 async fn untrack_account(
     storage: &(impl CoreStorage + ?Sized),
     ledger_lock: &Mutex<()>,
@@ -288,6 +320,31 @@ pub(super) async fn track(
         targets,
     )
     .await
+}
+
+/// Every entry the ledger holds, in the order it was tracked.
+///
+/// Reads storage alone. A host that has not unlocked an identity still gets
+/// the list, which is the case a scheduled task runs in: it wakes, asks what
+/// its finite slots are spent on, and decides whether to renew at all.
+pub(super) async fn list(
+    signing_host: &SigningHost,
+) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
+    list_entries(
+        signing_host.platform.as_ref(),
+        signing_host.renewal.ledger_lock(),
+    )
+    .await
+}
+
+/// Root public key the active identity records its fixed entries under.
+///
+/// Pairs with [`list`], which reports each entry's owner as stored: comparing
+/// the two is how a host tells the entries it will actually renew from the ones
+/// a pass will prune.
+pub(super) fn active_owner_key(signing_host: &SigningHost) -> Result<[u8; 32], String> {
+    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
+    owner_key(&entropy)
 }
 
 /// Stop renewing one fixed statement account for the active identity.
@@ -916,6 +973,123 @@ mod tests {
                     },
                 ]
             );
+        });
+    }
+
+    #[test]
+    fn the_ledger_lists_back_every_entry_in_track_order() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(
+                &storage,
+                &lock(),
+                OWNER,
+                vec![StatementRenewalTarget::WalletSso, device.clone()],
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                list_entries(&storage, &lock()).await.unwrap(),
+                vec![
+                    TrackedStatementRenewalTarget {
+                        target: StatementRenewalTarget::WalletSso,
+                        owner: None,
+                    },
+                    TrackedStatementRenewalTarget {
+                        target: device,
+                        owner: Some(OWNER),
+                    },
+                ]
+            );
+        });
+    }
+
+    // The point of the reader is auditing finite slots, so it reports what is
+    // stored rather than what the active identity would resolve: an entry another
+    // identity promised is still occupying a row until a pass prunes it, and the
+    // owner is what lets a caller tell the two apart.
+    #[test]
+    fn a_listing_includes_a_foreign_entry_and_writes_nothing() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &lock(), OTHER_OWNER, vec![device.clone()])
+                .await
+                .unwrap();
+            track_targets(&storage, &lock(), OWNER, vec![product("a.dot")])
+                .await
+                .unwrap();
+            let writes_before = storage.writes();
+
+            let listed = list_entries(&storage, &lock()).await.unwrap();
+
+            assert_eq!(
+                listed,
+                vec![
+                    TrackedStatementRenewalTarget {
+                        target: device,
+                        owner: Some(OTHER_OWNER),
+                    },
+                    TrackedStatementRenewalTarget {
+                        target: product("a.dot"),
+                        owner: None,
+                    },
+                ]
+            );
+            // A read that rewrote the ledger could not be run without a session.
+            assert_eq!(storage.writes(), writes_before);
+        });
+    }
+
+    // The reader is the one ledger operation whose whole job is to run while a
+    // pass may be writing: a scheduled host wakes, lists, and decides. `track`
+    // is polled first so it holds the lock across its read, which is what makes
+    // the guarantee observable; without the lock the listing reads the ledger
+    // the track is in the middle of replacing.
+    #[test]
+    fn a_listing_during_a_track_reports_the_settled_ledger() {
+        let storage = YieldingStorage::default();
+        let ledger_lock = lock();
+
+        futures::executor::block_on(async {
+            let (tracked, listed) = futures::join!(
+                track_targets(&storage, &ledger_lock, OWNER, vec![product("a.dot")]),
+                list_entries(&storage, &ledger_lock),
+            );
+            tracked.unwrap();
+
+            assert_eq!(
+                listed.unwrap(),
+                vec![TrackedStatementRenewalTarget {
+                    target: product("a.dot"),
+                    owner: None,
+                }],
+                "the listing observed the ledger the track was replacing"
+            );
+        });
+    }
+
+    #[test]
+    fn an_undecodable_ledger_lists_as_empty() {
+        let storage = MemStorage::default();
+
+        futures::executor::block_on(async {
+            storage
+                .write_core_storage(CoreStorageKey::StatementRenewalTargets, vec![0xff; 8])
+                .await
+                .unwrap();
+
+            assert_eq!(list_entries(&storage, &lock()).await.unwrap(), Vec::new());
         });
     }
 
