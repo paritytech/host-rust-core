@@ -46,9 +46,15 @@ jobs:
     needs: build
     # Dispatch only. The pull_request trigger rebuilds on every push to a release PR, and
     # those intermediate builds are not a release worth announcing.
-    if: >-
-      ${{ !cancelled() && github.event_name == 'workflow_dispatch' &&
-      needs.build.outputs.succeeded == 'true' }}
+    # Held until the notification relay exists. The action exits non-zero when
+    # it is given neither a Matrix room nor a Telegram chat, and this repository
+    # has neither credential. Restore this with the relay.
+    #
+    # The condition this replaces:
+    # if: >-
+    # ${{ !cancelled() && github.event_name == 'workflow_dispatch' &&
+    # needs.build.outputs.succeeded == 'true' }}
+    if: false
     steps:
       - name: Send release notification
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
