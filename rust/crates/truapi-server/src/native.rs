@@ -418,21 +418,28 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
 /// Whether `product_id` is a first-party product the host grants every
 /// [`truapi::latest::RemotePermission`] without prompting.
 ///
-/// The core applies this to the permission requests a product makes through the
-/// protocol. A host that mediates product network access in its own code — a
-/// webview interceptor, a `fetch` shim — has to ask here too, or a blessed
-/// product is prompted by the host for access the core would have granted.
+/// Pure and stateless: it reads the compiled-in list and nothing else. **A
+/// stored user decision wins over the list**, so this is only the answer for
+/// the branch where the host's own store reads undetermined. Consulting it
+/// first would let a revoked grant keep working.
+///
+/// [`NativeProductExecution::permission_authorization_status`] is the stateful
+/// answer — it folds the list and the stored decision together — and a host
+/// holding an execution should ask that instead.
+///
+/// This exists for the path where a host mediates product network access in its
+/// own code — a webview interceptor, a `fetch` shim — and has already found
+/// nothing stored. Without it a first-party product is prompted by the host for
+/// access the core would have granted.
 ///
 /// Covers remote permissions only. Device capabilities, identity disclosure and
 /// cross-product account access always prompt, whoever asks.
 ///
 /// Normalizes before matching, and answers `false` for an id that does not
-/// normalize, so an unknown spelling is never read as trusted. Pure and
-/// stateless.
+/// normalize, so an unknown spelling is never read as trusted.
 #[uniffi::export]
 pub fn has_trusted_remote_permissions(product_id: String) -> bool {
-    truapi_platform::normalize_product_identifier(&product_id)
-        .is_ok_and(|normalized| truapi_platform::has_trusted_remote_permissions(&normalized))
+    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
 /// OS status of a device capability, as a native host reports it.

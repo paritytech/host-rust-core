@@ -1134,10 +1134,19 @@ impl WasmPairingHostRuntime {
 /// Whether `productId` is a first-party product the host grants every
 /// `RemotePermission` without prompting.
 ///
-/// The core applies this to the permission requests a product makes through the
-/// protocol. A host that mediates product network access in its own code — a
-/// service worker, a `fetch` shim — has to ask here too, or a blessed product
-/// is prompted by the host for access the core would have granted.
+/// Pure and stateless: it reads the compiled-in list and nothing else. **A
+/// stored user decision wins over the list**, so this is only the answer for
+/// the branch where the host's own store reads undetermined. Consulting it
+/// first would let a revoked grant keep working.
+///
+/// `permissionAuthorizationStatus` is the stateful answer — it folds the list
+/// and the stored decision together — and a host that can reach a runtime
+/// should ask that instead.
+///
+/// This exists for the path where a host mediates product network access in its
+/// own code — a service worker, a `fetch` shim — and has already found nothing
+/// stored. Without it a first-party product is prompted by the host for access
+/// the core would have granted.
 ///
 /// Covers remote permissions only. Device capabilities, identity disclosure and
 /// cross-product account access always prompt, whoever asks.
@@ -1146,8 +1155,7 @@ impl WasmPairingHostRuntime {
 /// normalize, so an unknown spelling is never read as trusted.
 #[wasm_bindgen(js_name = hasTrustedRemotePermissions)]
 pub fn has_trusted_remote_permissions_for_wasm(product_id: String) -> bool {
-    truapi_platform::normalize_product_identifier(&product_id)
-        .is_ok_and(|normalized| truapi_platform::has_trusted_remote_permissions(&normalized))
+    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
 /// Strictly decode a SCALE-encoded core-storage key for host storage policy.
