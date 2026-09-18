@@ -107,6 +107,70 @@ compare_against_source() {
   return $rc
 }
 
+# Paths that exist because the tree lives here rather than upstream. They are
+# wrong in the source repository by construction, so they are never owed back.
+manifest_infrastructure() {
+  local host=$1
+  python3 - "$host" <<'PY'
+import json, sys
+host = sys.argv[1]
+with open("hosts/imports.json") as fh:
+    data = json.load(fh)
+for entry in data[host].get("infrastructure", []):
+    print(entry)
+PY
+}
+
+cmd_backport() {
+  local host=$1; shift
+  local out=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --patch) out=$2; shift 2 ;;
+      *) die "unknown argument $1" ;;
+    esac
+  done
+
+  local source recorded
+  source="$(manifest_get "$host" source)"
+  recorded="$(manifest_get "$host" ref)"
+  fetch_source "$source" "$recorded"
+
+  local base_tree adapted infra
+  base_tree="$(upstream_tree_at_prefix "$host" "$recorded")"
+  adapted="$(mktemp)"; infra="$(mktemp)"
+  git diff -z --name-only "$base_tree" HEAD -- "hosts/${host}" > "$adapted"
+  manifest_infrastructure "$host" > "$infra"
+
+  note "hosts/${host} against ${recorded}"
+  echo
+
+  local owed
+  owed="$(mktemp)"
+  python3 scripts/lib/classify-host-adaptations.py "$adapted" "$infra" "hosts/${host}/" "$owed"
+  local rc=$?
+
+  if [ -n "$out" ] && [ -s "$owed" ]; then
+    # Rewritten to the source repository's paths, so it applies there with
+    # `git apply` from the root rather than needing -p juggling.
+    local owed_paths=()
+    while IFS= read -r owed_path; do
+      owed_paths+=("$owed_path")
+    done < "$owed"
+    git diff --binary "$base_tree" HEAD -- "${owed_paths[@]}" \
+      | sed -e "s|^diff --git a/hosts/${host}/|diff --git a/|" \
+            -e "s| b/hosts/${host}/| b/|" \
+            -e "s|^--- a/hosts/${host}/|--- a/|" \
+            -e "s|^+++ b/hosts/${host}/|+++ b/|" \
+      > "$out"
+    echo
+    note "patch written to ${out}, applies at the root of ${source}"
+  fi
+
+  rm -f "$adapted" "$infra" "$owed"
+  return $rc
+}
+
 cmd_status() {
   local host=$1 source ref branch
   source="$(manifest_get "$host" source)"
@@ -240,7 +304,8 @@ main() {
   case "$cmd" in
     status)  [ $# -ge 1 ] || die "usage: $0 status <host>"; cmd_status "$@" ;;
     refresh) [ $# -ge 1 ] || die "usage: $0 refresh <host> [--ref <rev>]"; cmd_refresh "$@" ;;
-    *) die "usage: $0 {status|refresh} <host> [options]" ;;
+    backport) [ $# -ge 1 ] || die "usage: $0 backport <host> [--patch <file>]"; cmd_backport "$@" ;;
+    *) die "usage: $0 {status|refresh|backport} <host> [options]" ;;
   esac
 }
 
