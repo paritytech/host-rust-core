@@ -33,8 +33,7 @@ pub(crate) mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
 pub(crate) mod sso_remote;
 pub(crate) mod sso_service;
-/// Native Statement Store and Bulletin allowance allocation.
-#[cfg(not(target_arch = "wasm32"))]
+/// Statement Store and Bulletin allowance allocation.
 pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
 pub(crate) mod statement_store;
@@ -62,8 +61,11 @@ pub(crate) use signing_host::{
     establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,
     respond_to_pairing, resume_pairing,
 };
+// `TrackedStatementRenewalTarget` is only read back by the native renewal
+// reporting, so re-exporting it on wasm leaves an unused import.
+pub use signing_host::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
-pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
+pub use signing_host::TrackedStatementRenewalTarget;
 use tracing::{instrument, warn};
 use truapi::api::{Chat, Pocket, Renderer};
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};

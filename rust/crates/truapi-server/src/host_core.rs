@@ -568,6 +568,14 @@ pub struct SigningHostRuntime {
 }
 
 impl SigningHostRuntime {
+    /// Answer resource allocation as granted without performing it.
+    ///
+    /// For test hosts only; see [`SigningHostRole::set_grant_allowances_unchecked`].
+    #[cfg(feature = "test-host")]
+    pub fn set_grant_allowances_unchecked(&self, granted: bool) {
+        self.signing_host.set_grant_allowances_unchecked(granted);
+    }
+
     /// Build a long-lived signing-host runtime around a platform implementation.
     /// Chat is answered `Unsupported`; [`Self::with_chat_platform`] serves it.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.new"))]

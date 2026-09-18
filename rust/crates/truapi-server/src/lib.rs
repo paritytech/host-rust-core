@@ -66,11 +66,9 @@ pub use host_logic::session::{
 pub use host_logic::worker::{WorkerLedger, WorkerTransition};
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
 pub use native_debug::{DebugSinkError, WsDebugSink};
-#[cfg(not(target_arch = "wasm32"))]
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;
 pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
-#[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;
 pub use runtime::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
 pub use truapi_platform::{

@@ -14,14 +14,24 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/web`            | Browser pairing host: `createIframeHost` (iframe MessageChannel handshake) and `createWebWorkerPairingHostRuntime`. |
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
+| `@parity/truapi-host/testing`        | `createMockHost`: the in-memory host seam a product is tested against.                                              |
+| `@parity/truapi-host/testing/playwright` | Playwright fixture that boots the test host and embeds the product in an iframe.                                |
+| `@parity/truapi-host/testing/server` | Node server that serves the host page and its bundle.                                                              |
+| `@parity/truapi-host/testing/client` | `createMockClient`: a product client over the mock with no iframe, for unit tests.                                  |
+| `@parity/truapi-host/testing/dev-accounts` | Named dev accounts derived from fixed BIP-39 entropy, which sign for real.                                    |
+| `@parity/truapi-host/testing/host-page` | The browser half the fixture drives, for a suite that boots its own page.                                        |
+| `@parity/truapi-host/wasm/testing`   | The raw glue for the signing-enabled bundle the test host runs on.                                                  |
 
-The shipped WASM is built by `scripts/build-wasm.mjs` with
-`--no-default-features`, so it excludes `WasmSigningHostRuntime`.
+`scripts/build-wasm.mjs` builds two WASM bundles, both `--no-default-features`.
+`wasm/web` is the production browser host and excludes
+`WasmSigningHostRuntime`; `wasm/testing` adds the Rust `wasm-signing-host` and
+`test-host` features, which is what lets the test host hold keys and answer
+resource allocation as granted without allocating anything.
 `ProductRuntimeConfig` configures the pairing host and requires no network
-suffix. A custom build enabling the Rust `wasm-signing-host` feature exposes
-the signing constructor, whose configuration requires `runtimeConfig.networkSuffix`
-in addition: the bare TLD (`dot`, `paseo`, or `testnet`) matching the People
-chain and the wallet's onboarding configuration.
+suffix. The signing constructor's configuration requires
+`runtimeConfig.networkSuffix` in addition: the bare TLD (`dot`, `paseo`, or
+`testnet`) matching the People chain and the wallet's onboarding
+configuration.
 
 `runtimeConfig.assetHub` is required by both configurations, pairing and
 signing. It is the Asset Hub genesis hash, in the same shape as
