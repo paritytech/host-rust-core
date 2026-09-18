@@ -1728,7 +1728,9 @@ mod tests {
     /// context unconstrained a `context` grant from `peopl.dot` let `dim2.dot`
     /// produce the alias `peopl.dot` presents to `bank.dot`, a third product
     /// that granted nothing, is not a party to the grant, and cannot consent
-    /// here. The grant is to act in the grantee's own context, not in anyone's.
+    /// here. The grant is to act in the grantee's own context or the granting
+    /// product's, not in anyone else's: a context naming the owner is the grant
+    /// read literally, and is the one a chain-wide proof context resolves to.
     ///
     /// The owner's own calls are untouched: minting your own aliases in any
     /// context is what the context parameter is for.
@@ -1770,7 +1772,11 @@ mod tests {
         );
         assert!(
             mint("dim2.dot", "dim2.dot").is_ok(),
-            "the grant still admits the grantee acting in its own context"
+            "the grant admits the grantee acting in its own context"
+        );
+        assert!(
+            mint("dim2.dot", "peopl.dot").is_ok(),
+            "the grant admits the grantee acting in the granting product's context"
         );
         assert!(
             mint("peopl.dot", "bank.dot").is_ok(),
@@ -2008,7 +2014,8 @@ mod tests {
     /// The alias and the proof come out of one VRF evaluation, so a guard on
     /// `create_proof` alone leaves the same bytes reachable through
     /// `account_alias`: a grantee could read the alias the owner presents to a
-    /// third product that granted nothing. Both calls now refuse it.
+    /// third product that granted nothing. Both calls refuse it, and both admit
+    /// the granting product's own context.
     #[test]
     fn a_grantee_cannot_read_the_owners_alias_in_a_third_partys_context() {
         let platform = Arc::new(StubPlatform::default());
@@ -2045,7 +2052,11 @@ mod tests {
         );
         assert!(
             alias("dim2.dot", "dim2.dot").is_ok(),
-            "the grant still covers the grantee's own context"
+            "the grant covers the grantee's own context"
+        );
+        assert!(
+            alias("dim2.dot", "peopl.dot").is_ok(),
+            "the grant covers the granting product's own context"
         );
         assert!(
             alias("peopl.dot", "bank.dot").is_ok(),

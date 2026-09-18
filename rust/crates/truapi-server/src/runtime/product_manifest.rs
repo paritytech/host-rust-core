@@ -423,13 +423,21 @@ async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> 
     }
 }
 
-/// A granted caller may act in its own proof context, not in anyone's.
+/// A granted caller may act in its own proof context or the granting product's,
+/// not in anyone else's.
 ///
 /// The contextual alias is a function of (owner key, context), so an
 /// unconstrained context lets a grantee produce the alias the owner presents to
 /// a third product, one that granted nothing, is not a party to the grant, and
-/// cannot consent here. The owner's own calls are unaffected: minting your own
-/// aliases in any context is what the parameter is for.
+/// cannot consent here. The owner's own context is not that case: the owner is
+/// the party that granted, and a context naming it is the grant read literally.
+/// It is also the only context a chain-wide proof context resolves to —
+/// `PeopleLite.set_alias_account` verifies against `Score.score_context`, which
+/// names the personhood product for every prover, so admitting the grantee's
+/// own context alone admits nothing such a chain accepts.
+///
+/// The owner's own calls are unaffected: minting your own aliases in any
+/// context is what the parameter is for.
 ///
 /// Both identities come from the gate, already normalized. Re-deriving the
 /// caller from the request instead would compare a peer's spelling against a
@@ -460,7 +468,8 @@ pub(crate) fn require_own_context(
     };
     // Compared by label, not by full id: the grant is to a product and a product
     // is all its executables, so `dim2.dot` may act in `app.dim2.dot`'s context.
-    if bare_product_label(&context_id) != bare_product_label(&access.caller) {
+    let label = bare_product_label(&context_id);
+    if label != bare_product_label(&access.caller) && label != bare_product_label(&access.owner) {
         return Err(RingVrfError::NotAllowlisted);
     }
     Ok(())
