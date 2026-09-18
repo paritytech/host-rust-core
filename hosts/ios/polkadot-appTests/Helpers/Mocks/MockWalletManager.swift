@@ -6,8 +6,8 @@ import Keystore_iOS
 enum MockWalletManager {
     static func mockedWallet(for derivationPath: String = "//wallet") throws -> WalletManaging {
         let keychain = InMemoryKeychain()
-        let store = MockEntropyIdStore()
-        let manager = RootEntropyManager(keychain: keychain, entropyIdStore: store)
+        let store = MockInstallationKeyIdStore()
+        let manager = RootEntropyManager(keychain: keychain, installationKeyIdStore: store)
         let entropy = try Data.randomOrError(of: 32)
         try manager.createRootEntropy(entropy)
 

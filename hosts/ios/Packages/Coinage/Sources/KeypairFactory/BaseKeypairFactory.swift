@@ -2,15 +2,15 @@ import KeyDerivation
 
 /// A protocol for models that can be derived using an index.
 public protocol CoinageDerivable {
-    var derivationIndex: DerivationIndex { get }
+    var derivationIndex: CoinageKeyIndex { get }
 }
 
 public protocol CoinKeypairFactoryProtocol {
     /// Derives the public key for a derivation index.
-    func derivePublicKey(index: DerivationIndex) throws -> PublicKey
+    func derivePublicKey(index: CoinageKeyIndex) throws -> PublicKey
 
     /// Derives the private key for a derivation index.
-    func derivePrivateKey(index: DerivationIndex) throws -> PrivateKey
+    func derivePrivateKey(index: CoinageKeyIndex) throws -> PrivateKey
 }
 
 public extension CoinKeypairFactoryProtocol {
@@ -22,5 +22,5 @@ public extension CoinKeypairFactoryProtocol {
 
 public protocol VoucherKeypairFactoryProtocol {
     /// Derives the public key for a derivation index.
-    func derivePublicKey(index: DerivationIndex) throws -> PublicKey
+    func derivePublicKey(index: CoinageKeyIndex) throws -> PublicKey
 }

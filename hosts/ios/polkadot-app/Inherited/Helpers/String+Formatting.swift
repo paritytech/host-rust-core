@@ -10,6 +10,6 @@ extension String {
     }
 
     func trimmingDot() -> String {
-        replacingOccurrences(of: ".dot", with: "")
+        hasSuffix(".dot") ? String(dropLast(4)) : self
     }
 }

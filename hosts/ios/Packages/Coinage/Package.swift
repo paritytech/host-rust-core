@@ -67,7 +67,8 @@ let package = Package(
         .package(path: "../SubstrateOperation"),
         .package(path: "../BackgroundExecution"),
         .package(path: "../ExtrinsicServiceExt"),
-        .package(path: "../DurableTransactions")
+        .package(path: "../DurableTransactions"),
+        .package(path: "../Revive")
     ],
     targets: [
         .target(
@@ -96,16 +97,20 @@ let package = Package(
                 "SubstrateOperation",
                 "BackgroundExecution",
                 "ExtrinsicServiceExt",
-                "DurableTransactions"
-            ],
+                "DurableTransactions",
+                "Revive"
+            ]
         ),
         .testTarget(
             name: "CoinageTests",
             dependencies: [
                 "Coinage",
+                .product(name: "Keystore-iOS", package: "keystore-ios"),
+                "FoundationExt",
                 "BackgroundExecution",
                 "ExtrinsicServiceExt",
                 "DurableTransactions",
+                "Revive",
                 .product(name: "DurableTransactionsTestSupport", package: "DurableTransactions"),
                 .product(name: "Clocks", package: "swift-clocks")
             ],

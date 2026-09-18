@@ -27,6 +27,7 @@ The project uses local SPM packages under `Packages/`, with `AppDependencies` as
 - **CarParser** — Transaction metadata parsing
 - **XcmDefinition** — Cross-consensus message definitions
 - **XcmTransfer** — XCM transfer operations
+- **Revive** — pallet-revive: the chain-bound contract API (`ReviveContractApi`), `Revive.call`, `EvmAddress` + H160 derivation, namehash, and the shared Solidity ABI encoder (the only web3swift link). Consumed by Coinage and Products; see architecture/revive.md
 
 ### Data & Storage
 - **ChainStore** — Blockchain metadata caching
@@ -45,7 +46,7 @@ The project uses local SPM packages under `Packages/`, with `AppDependencies` as
 - **AssetExchange** — Asset exchange protocols
 - **AssetHubSdk** — Asset Hub blockchain integration
 - **HydrationSdk** — Hydration DeFi integration
-- **Products** — Product account models and WebView JS bridge
+- **Products** — Product account models and WebView JS bridge; the DotNs resolver reads its contracts through `Revive`
 - **TrUAPIHost** *(remote SPM dependency, not a local package)* — TrUAPI Rust core
   (xcframework + uniffi bindings), the `TrUAPIHostCore` wrapper (`TrUAPIHostCoreProtocol`
   seam), and the bundled truapi lockdown container behind `ContainerScriptBundle.load()`.

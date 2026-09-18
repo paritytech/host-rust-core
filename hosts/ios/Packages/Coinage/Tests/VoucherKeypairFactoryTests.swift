@@ -11,7 +11,7 @@ struct VoucherEntropyDerivingTests {
 
     @Test("Derives entropy successfully for a valid all-hard voucher path")
     func derivesEntropyValidPath() throws {
-        let deriver = VoucherEntropyDeriving(path: "//coinage-ring-vrf//4294967295//0//1")
+        let deriver = VoucherEntropyDeriving(path: "//coinage-ring-vrf//4294967295//0x0101//1")
         let entropy = try deriver.deriveEntropy(from: seed)
 
         #expect(entropy.count == 32)
@@ -20,7 +20,7 @@ struct VoucherEntropyDerivingTests {
     @Test("Throws an error when path contains soft junctions")
     func derivesEntropyInvalidPath() throws {
         // Ring-VRF entropy derivation has no soft variant — every junction must be hard.
-        let deriver = VoucherEntropyDeriving(path: "//coinage-ring-vrf//4294967295//0/1")
+        let deriver = VoucherEntropyDeriving(path: "//coinage-ring-vrf//4294967295//0x0101/1")
 
         #expect(throws: VoucherEntropyDerivingError.invalidDerivationPath) {
             try deriver.deriveEntropy(from: seed)
@@ -95,8 +95,32 @@ struct VoucherKeypairFactoryTests {
         #expect(manager != nil)
     }
 
-    @Test("Base derivation path is correct")
+    @Test("The path names the installation as the page and the item as a hard junction")
     func derivationPathCorrectness() {
-        #expect(factory.voucherPath(for: 123) == "//coinage-ring-vrf//4294967295//0//123")
+        let page = CoinageInstallationId.test.pageSegment
+        #expect(factory.voucherPath(for: 123) == "//coinage-ring-vrf//4294967295//\(page)//123")
+    }
+
+    @Test("A voucher derives along its installation's page")
+    func derivesAlongPage() throws {
+        let seed = Data(repeating: 0x01, count: 32)
+        let path = "//coinage-ring-vrf//4294967295//\(CoinageInstallationId.test.pageSegment)//7"
+        let expected = try SubstrateJunctionFactory().parse(path: path).chaincodes.reduce(seed) { entropy, chaincode in
+            try entropy.blake2b32WithKey(chaincode.data)
+        }
+
+        let derived = try VoucherEntropyDeriving(path: factory.voucherPath(for: 7)).deriveEntropy(from: seed)
+
+        #expect(derived == expected)
+    }
+
+    @Test("The same item under two installations is two keys")
+    func installationsDiffer() throws {
+        try mockEntropyManager.createRootEntropy(Data(repeating: 0xAB, count: 32))
+
+        let current = try factory.derivePublicKey(index: CoinageKeyIndex(installation: .test, item: 7))
+        let other = try factory.derivePublicKey(index: CoinageKeyIndex(installation: .other, item: 7))
+
+        #expect(current != other)
     }
 }

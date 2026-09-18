@@ -5,7 +5,7 @@ import Individuality
 
 struct MemberStatusResult: BatchStorageSubscriptionResult {
     struct MemberUpdate {
-        let derivationIndex: DerivationIndex
+        let publicKey: PublicKey
         let ringPosition: MembersPallet.RingPosition?
     }
 
@@ -45,14 +45,14 @@ struct MemberStatusResult: BatchStorageSubscriptionResult {
             }
 
             switch subKey {
-            case let .member(derivationIndex):
+            case let .member(publicKey):
                 let ringPosition = try? item.value.map(
                     to: MembersPallet.RingPosition?.self,
                     with: context
                 )
 
                 updates.append(.init(
-                    derivationIndex: derivationIndex,
+                    publicKey: publicKey,
                     ringPosition: ringPosition
                 ))
 

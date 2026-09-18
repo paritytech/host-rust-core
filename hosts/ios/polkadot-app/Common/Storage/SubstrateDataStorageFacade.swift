@@ -2,7 +2,7 @@ import CoreData
 import Operation_iOS
 
 enum SubstrateStorageParams {
-    static let databaseName = "SubstrateDataModel_v2.sqlite"
+    static let databaseName = "SubstrateDataModel_v3.sqlite"
     static let modelDirectory: String = "SubstrateDataModel.momd"
     static let modelVersion: SubstrateStorageVersion = .version4
 

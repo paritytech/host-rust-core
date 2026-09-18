@@ -71,11 +71,6 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
             viewModel.onTestnetTopUp = { [weak presenter] in
                 presenter?.onTestnetTopUp()
             }
-
-            viewModel.onMakeAllVouchersReady = { [weak presenter] in
-                presenter?.onMakeAllVouchersReady()
-            }
-
         #endif
     }
 
@@ -122,6 +117,12 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
 
     func didReceive(isRecoveryInProgress: Bool) {
         viewModel.isUpdating = isRecoveryInProgress
+    }
+
+    func didReceive(isAccountBackupPending: Bool) {
+        withAnimation(.easeInOut) {
+            viewModel.showsAccountBackupPending = isAccountBackupPending
+        }
     }
 
     func didShowBackupNotification() {
