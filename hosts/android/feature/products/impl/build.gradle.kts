@@ -117,8 +117,12 @@ val truapiCodegenDir: String = run {
         val f = rootProject.file("local.properties")
         if (f.exists()) f.inputStream().use { load(it) }
     }
-    val configured = props.getProperty("truapi.dir") ?: System.getenv("TRUAPI_DIR") ?: ""
-    val dir = file(configured).takeIf { it.isAbsolute } ?: rootProject.file(configured)
+    val configured = props.getProperty("truapi.dir") ?: System.getenv("TRUAPI_DIR")
+    // Falls back to the core two levels up, the same rule the settings-gradle
+    // guard and :bindings:truapi-host use.
+    val dir = configured
+        ?.let { file(it).takeIf { f -> f.isAbsolute } ?: rootProject.file(it) }
+        ?: rootProject.file("../..")
     File(dir, "target/codegen").path
 }
 

@@ -39,13 +39,19 @@ run {
     }
     val truapiDir = (localProps.getProperty("truapi.dir") ?: System.getenv("TRUAPI_DIR"))
         ?.takeIf { it.isNotBlank() }
-    val resolved = truapiDir?.let {
+    val configuredDir = truapiDir?.let {
         val d = File(it).let { p -> if (p.isAbsolute) p else file(it) }
         if (File(d, "rust/crates/truapi-server").isDirectory) d else null
     }
+    // When this tree is vendored into the core's own repository the core is two
+    // levels up, so there is nothing to check out. An explicit truapi.dir or
+    // TRUAPI_DIR still wins, which keeps a separate checkout working for anyone
+    // building this tree on its own.
+    val inTreeDir = file("../..").takeIf { File(it, "rust/crates/truapi-server").isDirectory }
+    val resolved = configuredDir ?: inTreeDir
     if (resolved == null) {
         val configured = truapiDir?.let { "truapi.dir=$it does not contain rust/crates/truapi-server" }
-            ?: "truapi.dir is not set"
+            ?: "truapi.dir is not set and this tree is not inside the core repository"
         error(
             "A truapi checkout is required to build this project ($configured). " +
                 "Run scripts/setup-truapi.py, which clones " +

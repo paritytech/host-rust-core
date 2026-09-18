@@ -39,9 +39,17 @@ val truapiDir: String = run {
     }
     val configured = localProps.getProperty("truapi.dir")
         ?: System.getenv("TRUAPI_DIR")
-        ?: error("truapi.dir / TRUAPI_DIR must be set to build :bindings:truapi-host")
-    file(configured).takeIf { it.isAbsolute }?.path
-        ?: rootProject.file(configured).path
+    if (configured != null) {
+        file(configured).takeIf { it.isAbsolute }?.path
+            ?: rootProject.file(configured).path
+    } else {
+        // Vendored into the core's own repository, where it is two levels up.
+        // Same rule as the settings-gradle guard, which has already accepted it.
+        rootProject.file("../..").takeIf {
+            java.io.File(it, "rust/crates/truapi-server").isDirectory
+        }?.path
+            ?: error("truapi.dir / TRUAPI_DIR must be set to build :bindings:truapi-host")
+    }
 }
 
 // Generated source root that `syncHostShell` populates with truapi's canonical
