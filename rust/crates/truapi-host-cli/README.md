@@ -689,6 +689,36 @@ level when `RUST_LOG` is absent; otherwise it shows the exact `RUST_LOG` value.
 `--log-level` and `/log` apply to TrUAPI targets while other third-party
 dependencies remain at `warn`.
 
+## Wire debugger
+
+`--debugger <URL>` streams every product frame this host sends or receives to a
+[`@parity/truapi-debugger`](../../../js/packages/truapi-debugger) listening on a
+loopback `ws://` address. `TRUAPI_DEBUGGER_URL` sets the same value; an explicit
+flag wins over it.
+
+```bash
+# in one shell
+( cd js/packages/truapi-debugger && npm run serve )   # 127.0.0.1:9231
+
+# in another
+truapi-host dev --debugger ws://127.0.0.1:9231 -- yarn dev
+```
+
+The switch is meaningful only on the commands that serve frames — `pairing-host`,
+`dev` and `signing-host`. A URL that is not loopback fails startup rather than
+warning, since a host that runs on without the debugger it was asked for looks,
+from the debugger's side, exactly like a host nobody switched on. Starting the
+debugger after the host is fine: the sink dials lazily and reconnects.
+
+Every run says which way it went — `Streaming wire frames to a debugger`, naming
+the endpoint and the switch that supplied it, or `Wire debugger off`. That report
+is the reason the flag needs no build gate: a stale exported `TRUAPI_DEBUGGER_URL`
+cannot tap a session quietly.
+
+Frames are forwarded whole and the debugger decodes all of them, so a tapped
+signing host puts its payloads on that socket. Point it at a debugger you are
+running yourself.
+
 ## Statement-store allowance
 
 The real statement store enforces per-account allowance. Before pairing, the

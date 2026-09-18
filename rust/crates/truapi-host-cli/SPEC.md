@@ -258,7 +258,7 @@ when it points inside the version store.
 ## 4. Top-level command line
 
 ```text
-truapi-host [--log-level <level>] <command>
+truapi-host [--log-level <level>] [--debugger <url>] <command>
 ```
 
 Commands:
@@ -288,6 +288,25 @@ The option is global and is accepted before or after a subcommand.
 CLI restores the level saved by `/log` under `<base-path>/v2`, then falls
 back to `info`. Command-line and environment overrides do not rewrite the saved
 level.
+
+### 4.2 Global wire-debugger option
+
+`--debugger <url>` streams every product frame to a wire debugger at a loopback
+`ws://` address. `TRUAPI_DEBUGGER_URL` supplies the same value; clap resolves an
+explicit flag over it.
+
+The option is global, but only `pairing-host`, `dev` and `signing-host` resolve
+it: the remaining commands emit no frames and open no sink. Resolution happens
+before the frame listener binds, so a URL that is not `ws://` on `127.0.0.1`,
+`localhost` or `[::1]` fails startup. A reachable debugger is not required — the
+sink dials lazily and reconnects.
+
+Each of those three commands reports the outcome once, as a lifecycle event
+rather than a log line: `Streaming wire frames to a debugger` with the endpoint
+and the supplying switch, or `Wire debugger off`.
+
+Each accepted connection gets its own channel id, `<product-id>#<n>`, so
+concurrent peers under one host do not share a trace key.
 
 If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
 and the status bar shows its trimmed value. The interactive `/log` command
@@ -2003,6 +2022,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | Variable | Scope |
 | --- | --- |
 | `TRUAPI_HOST_LOG` | Per-process `--log-level` override. |
+| `TRUAPI_DEBUGGER_URL` | Default `--debugger` dial. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |

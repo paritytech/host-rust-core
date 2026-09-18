@@ -28,7 +28,8 @@ dwarf-debug-info = false
 [features]
 default = ["wasm-signing-host"]
 wasm-signing-host = []
-ws-bridge = ["dep:tokio", "dep:tokio-tungstenite", "dep:rand", "dep:base64"]
+debug-sink = ["dep:tokio", "dep:tokio-tungstenite", "dep:base64"]
+ws-bridge = ["debug-sink", "dep:rand"]
 
 [dependencies]
 truapi = { path = "../truapi" }

@@ -108,9 +108,9 @@ be omitted when zero, so the common envelope carries no extra field. It is how �
 producer that buffers **SHOULD** stamp it: the debugger's receive time is the flush
 instant for anything that waited in a queue, which collapses a backlog's durations
 to zero and pulls operations minutes apart into one retry-storm window. A producer
-that omits it accepts those artefacts. (The web link stamps it; the native sink
-does not yet, and buffers 4096 frames across reconnects, so native traces are
-subject to exactly that skew.)
+that omits it accepts those artefacts. (Both producers stamp it: the web link at
+emit, the native sink at enqueue, which is what keeps its 4096-frame buffer from
+collapsing a backlog's durations when a reconnect flushes it.)
 
 A producer **MUST** stamp a wire-contract identity: `v`, the envelope version;
 `codec`, the coarse codec version; and `schema`, a hash over every frame id, its
@@ -229,12 +229,33 @@ outright. That is the checkable half.
 
 The **tap** is not absent. `DebugSink`, both call sites, and `set_debug_sink`
 compile into every build of the core, including release and wasm32, and the
-native sink ships under the `ws-bridge` feature that the release and xcframework
+native sink ships under the `debug-sink` feature that the release and xcframework
 artifacts enable. What holds in production is that the tap is **inert**: no host
 installs a sink, so the frame path costs an unset-sink check. An
 implementation **MUST NOT** describe the tap as absent from a shipped host, and
 **MUST NOT** rely on its absence for any safety property - only on no sink being
 installed, which §9's enablement rules govern.
+
+"No host installs a sink" binds hosts that ship to end users. The headless CLI
+host is a deliberate exception and carries its dial in every build, including the
+prebuilt binaries the installer serves. It is a development tool a developer runs
+against their own host, and gating it behind a build flag would mean the one
+artifact most people have is the one that cannot debug - a Rust toolchain to chase
+a wire bug. Three conditions carry the weight the gate would have:
+
+- The dial **MUST** be asked for explicitly, by flag or environment variable. It
+  has no default and is never inferred.
+- The target **MUST** be a loopback `ws://` address (§6), rejected at the point it
+  is read rather than at first dial.
+- The host **MUST** announce the dial on startup, through the same surface as its
+  other lifecycle events so the alternate screen cannot swallow it, and **MUST**
+  announce its absence too (§9). This is what the gate would otherwise have bought:
+  a stale exported variable cannot tap a session quietly, because a tapped session
+  says so where the developer is already looking.
+
+A host that ships to end users **MUST NOT** read this as precedent. The web host's
+build-time gate stands, because a browser realm reaches people who asked for none
+of it.
 
 - The web host reads its debugger URL behind a build-time DEV condition, so a
   production bundle returns no URL and a stray `localStorage` key cannot turn the
@@ -335,14 +356,27 @@ The browser store is read in the realm that creates the host runtime — the she
 page in one embedding, an iframe realm in another — and is per-origin, so a value
 set on any other origin is invisible.
 
+A native host's injected value arrives however that host is configured, and the
+headless CLI takes it as a flag or an environment variable. More than one switch
+**MUST** resolve to one value and the report **MUST** name which supplied it, so a
+developer who forgot an exported variable can tell which switch is in play. A value
+that is not a loopback `ws://` target (§6) **MUST** fail the host at the point it is
+read, not at first dial - a host that starts without the debugger it was asked for
+presents, from the debugger's side, exactly as a host nobody switched on. Resolving
+it **MUST** be the business of the commands that serve frames: a command that emits
+none has no dial to report and **MUST NOT** open a sink for one.
+
 Reading whether the switch is set is distinct from reading what it holds (§7).
 The production message below depends on the first surviving into a production
 build; the dial depends on the second, which does not.
 
 A host with a dial path **MUST** report it: one that does not dial says so once,
-one that does says where, each naming the source it read. Today only the web host
-has such a path - the native sink has no host wiring it up - so this binds the web
-host now and every host as its dial path lands. The debugger's own viewer
+one that does says where, each naming the source it read. The web host and the
+headless CLI host both have such a path; a host that gains one is bound by this
+rule the moment it does. The report **MUST** go out on whatever surface the host
+already uses for its lifecycle events: a host that takes over the terminal writes
+its log lines somewhere the takeover then covers, so a report that is only logged
+is, in interactive use, no report at all. The debugger's own viewer
 holds a socket, so its socket count moves whether or not a host connected, and an
 empty board with a live socket is indistinguishable from a host nobody switched
 on. The message **MUST NOT** appear in a production build, with one exception: a
