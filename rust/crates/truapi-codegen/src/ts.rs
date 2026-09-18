@@ -1158,12 +1158,12 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         import * as S from '../scale.js';
         import type {{ HexString }} from '../scale.js';
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ HostInitiatedSubscriptionHandler, HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, Observer, Subscription, TrUApiTransport }} from '../transport.js';
+        import type {{ CallOptions, HostInitiatedSubscriptionHandler, HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, Observer, Subscription, TrUApiTransport }} from '../transport.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
         export {{ ResultAsync, SubscriptionError }};
-        export type {{ HostInitiatedSubscriptionHandler, ObservableLike, Observer, Result, Subscription, TrUApiTransport }};
+        export type {{ CallOptions, HostInitiatedSubscriptionHandler, ObservableLike, Observer, Result, Subscription, TrUApiTransport }};
         export const TRUAPI_VERSION = {target_version} as const;
         export const TRUAPI_CODEC_VERSION = {codec_version} as const;
         export const TRUAPI_WIRE_SCHEMA_HASH = "{schema_hash}" as const;
@@ -1844,10 +1844,12 @@ fn emit_method(
             let response_codec = leg_codec_expr(ok, wrappers)?;
             let error_codec = leg_error_codec_expr(err, wrappers, &ctx)?;
 
+            // Every request method takes the cancellation signal last, so a
+            // product can withdraw any call without the method opting in.
             let arg_decl = if is_handshake || payload.param_list.is_empty() {
-                String::new()
+                "options?: CallOptions".to_string()
             } else {
-                format!("request: {}", payload.inner_type_ts)
+                format!("request: {}, options?: CallOptions", payload.inner_type_ts)
             };
             let request_expr = if is_handshake {
                 "{ codecVersion: TRUAPI_CODEC_VERSION }".to_string()
@@ -1862,6 +1864,7 @@ fn emit_method(
                     return this.transport.request<{ok_type}, {err_type}>({{
                       ids: W.{wire_const},
                       payload: {request_codec}.enc({{ tag: \"V{version}\", value: {request_expr} }}),
+                      signal: options?.signal,
                       decodeResponse: (payload) => {{
                         const result = S.Result({response_codec}, {error_codec}).dec(payload);
                 ",

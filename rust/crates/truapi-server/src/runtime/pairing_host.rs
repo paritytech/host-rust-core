@@ -2565,6 +2565,7 @@ fn login_error_reason(err: &CallError<HostRequestLoginError>) -> String {
         CallError::Unsupported => "login unsupported".to_string(),
         CallError::Denied => "login denied".to_string(),
         CallError::MalformedFrame { reason } => reason.clone(),
+        CallError::Cancelled => "login cancelled".to_string(),
     }
 }
 

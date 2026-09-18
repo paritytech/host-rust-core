@@ -91,6 +91,7 @@ pub(crate) fn interrupt_reason(error: CallError<truapi::latest::GenericError>) -
         CallError::Denied => "denied".to_string(),
         CallError::Unsupported => "unsupported".to_string(),
         CallError::MalformedFrame { reason } | CallError::HostFailure { reason } => reason,
+        CallError::Cancelled => "cancelled".to_string(),
     }
 }
 
@@ -106,6 +107,7 @@ where
         CallError::Unsupported => CallError::Unsupported,
         CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
         CallError::HostFailure { reason } => CallError::HostFailure { reason },
+        CallError::Cancelled => CallError::Cancelled,
     }
 }
 

@@ -3,6 +3,7 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
+  MESSAGE_TYPE_CANCEL,
   MESSAGE_TYPE_INTERRUPT,
   MESSAGE_TYPE_RECEIVE,
   MESSAGE_TYPE_REQUEST,
@@ -94,6 +95,9 @@ export interface CreateTransportOptions {
 
 /** A subscription cancellation: `Stop` carries no payload at all. **/
 const STOP_FRAME = new Uint8Array();
+
+/** A `Cancel` leg carries no payload, exactly as `Stop` does. */
+const CANCEL_FRAME = new Uint8Array();
 
 /**
  * Report a frame the transport received but cannot act on.
@@ -216,6 +220,7 @@ export function createTransport(
     resolveUnsupported: () => void;
     reject: (error: Error) => void;
     cancelTimeout: () => void;
+    detachAbort: () => void;
   };
   const pending = new Map<string, PendingRequest>();
   const subscriptions = new Map<
@@ -256,7 +261,33 @@ export function createTransport(
     if (!entry) return undefined;
     pending.delete(requestId);
     entry.cancelTimeout();
+    entry.detachAbort();
     return entry;
+  }
+
+  /**
+   * Withdraw an in-flight call. The frame rides the method's own address and
+   * carries no payload; the host answers the request, never the cancel, so
+   * nothing here settles the pending entry.
+   *
+   * Failing to send is not worth surfacing: the transport is already closing,
+   * and `closeWithError` settles every pending call behind it.
+   */
+  function sendCancel(requestId: string, ids: MethodIds) {
+    if (closedError) return;
+    try {
+      send({
+        requestId,
+        payload: {
+          traitId: ids.trait,
+          methodId: ids.method,
+          messageType: MESSAGE_TYPE_CANCEL,
+          value: CANCEL_FRAME,
+        },
+      });
+    } catch {
+      // provider already closed
+    }
   }
 
   /**
@@ -699,12 +730,19 @@ export function createTransport(
       ids,
       payload,
       decodeResponse,
+      signal,
     }: RequestParams<Ok, Err>): ResultAsync<Ok, Err | UnsupportedCallError> {
       const promise = new Promise<
         ResultPayload<Ok, Err | UnsupportedCallError>
       >((resolve, reject) => {
         if (closedError) {
           reject(closedError);
+          return;
+        }
+        // Nothing to withdraw yet: sending a request only to cancel it in the
+        // same turn asks the host to start work no one wants.
+        if (signal?.aborted) {
+          reject(toError(signal.reason));
           return;
         }
 
@@ -722,6 +760,10 @@ export function createTransport(
           if (!takePending(requestId)) {
             return;
           }
+          // The host is told even though this side has stopped waiting: a
+          // deadline that only rejects locally is exactly the leak the
+          // `Cancel` leg exists to close.
+          sendCancel(requestId, ids);
           reject(
             isHandshake
               ? new Error(
@@ -736,6 +778,12 @@ export function createTransport(
           );
         }, timeoutMs);
 
+        // Abort leaves the entry pending on purpose: the call settles on the
+        // host's own response, which is what lets the product read back
+        // `Cancelled` rather than a local rejection the host never heard.
+        const onAbort = () => sendCancel(requestId, ids);
+        signal?.addEventListener("abort", onAbort, { once: true });
+
         pending.set(requestId, {
           ids,
           resolve: (response) => resolve(decodeResponse(response)),
@@ -748,6 +796,7 @@ export function createTransport(
           // `takePending` cancels this for every settlement path, so no
           // deadline outlives the call it bounds.
           cancelTimeout: () => clearTimeout(deadline),
+          detachAbort: () => signal?.removeEventListener("abort", onAbort),
         });
         try {
           send({
@@ -760,8 +809,9 @@ export function createTransport(
             },
           });
         } catch (error) {
-          // Settles through `takePending`, so the deadline is cancelled with
-          // the entry rather than firing later against a dead request.
+          // Settles through `takePending`, so the deadline and the abort
+          // listener are dropped with the entry rather than outliving a
+          // request that never left.
           takePending(requestId);
           reject(toError(error));
         }

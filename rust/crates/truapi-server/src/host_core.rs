@@ -533,6 +533,7 @@ fn pairing_login_error_reason(
         | truapi::CallError::MalformedFrame { reason } => reason,
         truapi::CallError::Denied => "login denied".to_string(),
         truapi::CallError::Unsupported => "login unsupported".to_string(),
+        truapi::CallError::Cancelled => "login cancelled".to_string(),
     }
 }
 

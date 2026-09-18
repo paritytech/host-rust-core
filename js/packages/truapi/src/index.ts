@@ -1,4 +1,5 @@
 export type {
+  CallOptions,
   HostInitiatedSubscriptionHandler,
   MethodIds,
   ObservableLike,
@@ -14,6 +15,7 @@ export type {
   WireProvider,
 } from "./transport.js";
 export {
+  MESSAGE_TYPE_CANCEL,
   MESSAGE_TYPE_INTERRUPT,
   MESSAGE_TYPE_RECEIVE,
   MESSAGE_TYPE_REQUEST,

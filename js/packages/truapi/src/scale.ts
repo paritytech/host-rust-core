@@ -138,7 +138,8 @@ export type CallErrorValue<D> =
   | { tag: "Denied"; value?: undefined }
   | { tag: "Unsupported"; value?: undefined }
   | { tag: "MalformedFrame"; value: { reason: string } }
-  | { tag: "HostFailure"; value: { reason: string } };
+  | { tag: "HostFailure"; value: { reason: string } }
+  | { tag: "Cancelled"; value?: undefined };
 
 /** SCALE codec for Rust's derived `CallError<D>` enum. */
 export function CallError<D>(domain: Codec<D>): Codec<CallErrorValue<D>> {
@@ -148,6 +149,9 @@ export function CallError<D>(domain: Codec<D>): Codec<CallErrorValue<D>> {
     Unsupported: _void,
     MalformedFrame: Struct({ reason: str }),
     HostFailure: Struct({ reason: str }),
+    // Appended last, mirroring the Rust enum: the variants above keep their
+    // SCALE indices.
+    Cancelled: _void,
   }) as Codec<CallErrorValue<D>>;
 }
 
