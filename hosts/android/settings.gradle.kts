@@ -27,6 +27,40 @@ include(":bindings:bandersnatch-crypto")
 include(":bindings:hydra-dx-math")
 include(":bindings:sr25519-vrf")
 
+// The :bindings:truapi-host module compiles the TrUAPI Rust core from an
+// out-of-repo checkout, located via `truapi.dir` in local.properties or the
+// TRUAPI_DIR env var. The module is required — :feature:products:impl depends
+// on it in every variant — so a missing or stale checkout fails configuration
+// here, with instructions, instead of later with a missing-project error.
+run {
+    val localProps = java.util.Properties().apply {
+        val f = file("local.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    val truapiDir = (localProps.getProperty("truapi.dir") ?: System.getenv("TRUAPI_DIR"))
+        ?.takeIf { it.isNotBlank() }
+    val resolved = truapiDir?.let {
+        val d = File(it).let { p -> if (p.isAbsolute) p else file(it) }
+        if (File(d, "rust/crates/truapi-server").isDirectory) d else null
+    }
+    if (resolved == null) {
+        val configured = truapiDir?.let { "truapi.dir=$it does not contain rust/crates/truapi-server" }
+            ?: "truapi.dir is not set"
+        error(
+            "A truapi checkout is required to build this project ($configured). " +
+                "Run scripts/setup-truapi.py, which clones " +
+                "https://github.com/paritytech/host-rust-core at the `truapi_ref` pin from " +
+                ".github/actions/install/action.yaml and sets truapi.dir in local.properties. " +
+                "Pass --dir to keep the checkout somewhere else, or set TRUAPI_DIR yourself.",
+        )
+    }
+    include(":bindings:truapi-host")
+    // Standalone demo app that loads a product through the TrUAPI core.
+    if (file("bindings/truapi-host-demo/build.gradle.kts").exists()) {
+        include(":bindings:truapi-host-demo")
+    }
+}
+
 include(":test-shared")
 
 include(":feature:account:api")
@@ -104,8 +138,6 @@ include(":feature:upgrade-username:api")
 include(":feature:upgrade-username:impl")
 include(":feature:connection-status:api")
 include(":feature:connection-status:impl")
-include(":feature:web3summit:api")
-include(":feature:web3summit:impl")
 include(":feature:revive:api")
 include(":feature:revive:impl")
 include(":feature:w3s-pay:impl")

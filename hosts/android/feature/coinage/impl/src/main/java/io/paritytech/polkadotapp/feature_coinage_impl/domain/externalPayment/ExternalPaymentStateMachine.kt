@@ -6,7 +6,7 @@ import dagger.assisted.AssistedInject
 import io.paritytech.polkadotapp.common.data.worker.stateMachine.BaseWorkerStateMachine
 import io.paritytech.polkadotapp.common.data.worker.stateMachine.WorkerStateFactory
 import io.paritytech.polkadotapp.common.data.worker.stateMachine.WorkerStateStore
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentId
+import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentKey
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.externalPayment.state.ExternalPaymentState
 
 /**
@@ -22,16 +22,16 @@ class ExternalPaymentStateFactory : WorkerStateFactory<ExternalPaymentState> {
 }
 
 class ExternalPaymentStateMachine @AssistedInject constructor(
-    @Assisted paymentId: PaymentId,
+    @Assisted key: ExternalPaymentKey,
     sessionFactory: ExternalPaymentLocalSession.Factory,
 ) : BaseWorkerStateMachine<ExternalPaymentState, Unit>(
-    localSession = sessionFactory.create(paymentId),
+    localSession = sessionFactory.create(key),
     stateFactory = ExternalPaymentStateFactory(),
 ) {
     override suspend fun createTransition() = Unit
 
     @AssistedFactory
     interface Factory {
-        fun create(paymentId: PaymentId): ExternalPaymentStateMachine
+        fun create(key: ExternalPaymentKey): ExternalPaymentStateMachine
     }
 }

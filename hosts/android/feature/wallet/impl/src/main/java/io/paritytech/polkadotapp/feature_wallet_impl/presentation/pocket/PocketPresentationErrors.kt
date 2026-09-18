@@ -15,6 +15,13 @@ class GetCashUnavailablePresentationError(cause: Throwable) : PresentationThrowa
     }
 }
 
+class WithdrawUnavailablePresentationError(cause: Throwable) : PresentationThrowable(cause) {
+    @Composable
+    override fun message(): String {
+        return stringResource(RCommon.string.pocket_error_withdraw_unavailable, CurrencyConfig.symbol)
+    }
+}
+
 class AutoFundFailedPresentationError(cause: Throwable) :
     PresentationThrowable(cause),
     PresentationError by StringResPresentationError(RCommon.string.pocket_error_auto_fund_failed)
@@ -22,7 +29,3 @@ class AutoFundFailedPresentationError(cause: Throwable) :
 class ShareCoinageLogsFailedPresentationError(cause: Throwable) :
     PresentationThrowable(cause),
     PresentationError by StringResPresentationError(RCommon.string.pocket_error_share_coinage_logs_failed)
-
-class ForceRecycleFailedPresentationError(cause: Throwable) :
-    PresentationThrowable(cause),
-    PresentationError by StringResPresentationError(RCommon.string.pocket_error_force_recycle_failed)

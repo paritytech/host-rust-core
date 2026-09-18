@@ -6,13 +6,10 @@ import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.Chai
 import io.paritytech.polkadotapp.feature_connection_status_impl.domain.health.RequestResponseTracker
 import io.paritytech.polkadotapp.feature_connection_status_impl.domain.health.scoring.ChainHealthThresholds
 import io.paritytech.polkadotapp.feature_connection_status_impl.domain.health.scoring.LatencyScorer
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import javax.inject.Inject
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.ExperimentalTime
 
@@ -32,7 +29,7 @@ class ResponseLatencyProbe @Inject constructor(
         val idealMillis = ChainHealthThresholds.RESPONSE_LATENCY_IDEAL.inWholeMilliseconds
         val outageMillis = ChainHealthThresholds.RESPONSE_LATENCY_OUTAGE.inWholeMilliseconds
 
-        return combine(context.pendingRequests, ticker(ChainHealthThresholds.LIVENESS_TICK)) { pending, _ ->
+        return combine(context.pendingRequests, context.ticks) { pending, _ ->
             val averageMillis = tracker.update(pending, now())
 
             ChainMetricReading.ResponseLatency(
@@ -42,15 +39,8 @@ class ResponseLatencyProbe @Inject constructor(
                     ?.let { scorer.score(it, idealMillis, outageMillis) }
                     ?: ChainHealthScore.Perfect,
             )
-        }.distinctUntilChanged()
+        }.distinctUntilChangedBy { it.score }
     }
 
     private fun now(): Long = timeProvider.now().toEpochMilliseconds()
-
-    private fun ticker(period: Duration): Flow<Unit> = flow {
-        while (true) {
-            emit(Unit)
-            delay(period)
-        }
-    }
 }

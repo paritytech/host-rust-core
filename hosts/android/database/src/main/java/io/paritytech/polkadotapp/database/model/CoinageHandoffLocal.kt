@@ -15,11 +15,12 @@ import androidx.room.PrimaryKey
  */
 @Entity(
     tableName = "coinage_handoff",
-    indices = [Index(value = ["assetKind", "derivationIndex"])],
+    indices = [Index(value = ["assetKind", "installationId", "derivationIndex"])],
 )
 class CoinageHandoffLocal(
     @PrimaryKey val onChainKey: ByteArray,
-    val assetKind: CoinageEntryLocal.AssetKind,
+    val assetKind: CoinageAssetKindLocal,
+    val installationId: ByteArray,
     val derivationIndex: Int,
     val committed: Boolean,
 )

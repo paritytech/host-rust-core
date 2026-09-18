@@ -1,5 +1,6 @@
 plugins {
     id("polkadotapp.android.library")
+    id("polkadotapp.android.compose")
     alias(libs.plugins.kotlin.serialization)
 }
 
@@ -15,4 +16,6 @@ dependencies {
     api(project(":feature:transactions:api"))
 
     api(project(":bindings:bandersnatch-crypto"))
+
+    implementation(project(":feature:tokens:api"))
 }

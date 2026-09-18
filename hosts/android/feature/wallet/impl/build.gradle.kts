@@ -35,4 +35,6 @@ dependencies {
     implementation(project(":feature:videogame:api"))
     implementation(project(":feature:dotns:api"))
     implementation(project(":feature:products:api"))
+
+    testImplementation(project(":test-shared"))
 }

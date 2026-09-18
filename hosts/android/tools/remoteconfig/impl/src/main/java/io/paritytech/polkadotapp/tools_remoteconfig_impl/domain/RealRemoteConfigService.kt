@@ -3,6 +3,8 @@ package io.paritytech.polkadotapp.tools_remoteconfig_impl.domain
 import com.google.gson.Gson
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.awaitTrue
+import io.paritytech.polkadotapp.common.utils.logFailure
+import io.paritytech.polkadotapp.common.utils.logSuccess
 import io.paritytech.polkadotapp.tools_remoteconfig_api.RemoteConfigService
 import io.paritytech.polkadotapp.tools_remoteconfig_impl.data.RemoteConfigDataSource
 import kotlinx.coroutines.flow.Flow
@@ -33,12 +35,14 @@ class RealRemoteConfigService @Inject constructor(
 
     override suspend fun sync(): Result<Unit> = withContext(coroutineDispatchers.io) {
         syncingMutex.withLock {
-            isSynced.value = false
+            // Activated values stay valid once fetched; re-syncing would only reopen the window in which every
+            // getSynced* caller is blocked, and a cancelled or failed re-sync would keep them blocked for good.
+            if (isSynced.value) return@withLock Result.success(Unit)
 
             dataSource.sync()
-                .onSuccess {
-                    isSynced.value = true
-                }
+                .onSuccess { isSynced.value = true }
+                .logSuccess("Remote config synced")
+                .logFailure("Failed to sync remote config")
         }
     }
 

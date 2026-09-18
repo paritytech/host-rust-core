@@ -24,8 +24,6 @@ import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.design.theme.AppThemeSelector
 import io.paritytech.polkadotapp.designsystem.themes.PolkadotAppTheme
 import io.paritytech.polkadotapp.feature_account_api.domain.derivation.DerivationIndex32
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentService
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TotalBalanceUseCase
 import io.paritytech.polkadotapp.feature_products_api.domain.ProductRequestAccountResolver
@@ -55,8 +53,9 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.AllowanceResourceKind
 import io.paritytech.polkadotapp.feature_products_impl.domain.notifications.NotificationId
 import io.paritytech.polkadotapp.feature_products_impl.domain.notifications.ProductNotificationScheduler
-import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.PaymentRequestContext
-import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.PaymentRequestContextHolder
+import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.ProductPaymentRequestId
+import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.RequestPaymentUseCase
+import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.spendableByProducts
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionGuard
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission
@@ -67,7 +66,6 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.Payme
 import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.PaymentTopUpSource
 import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.TopUpService
 import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.TopUpStatus
-import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
 import io.paritytech.polkadotapp.feature_statement_store_api.data.Statement
 import io.paritytech.polkadotapp.feature_statement_store_api.data.StatementStoreService
 import io.paritytech.polkadotapp.feature_statement_store_api.data.StatementsPage
@@ -100,10 +98,8 @@ class HostApiInteractor @Inject constructor(
     private val productNotificationPublisher: ProductNotificationPublisher,
     private val productNotificationScheduler: ProductNotificationScheduler,
     private val totalBalanceUseCase: TotalBalanceUseCase,
-    private val externalPaymentService: ExternalPaymentService,
-    private val paymentRequestContextHolder: PaymentRequestContextHolder,
+    private val requestPaymentUseCase: RequestPaymentUseCase,
     private val topUpService: TopUpService,
-    private val productsRouter: ProductsRouter,
     private val signedOrigins: SignedOrigins,
     private val accountsProtocol: AccountsProtocol,
     private val allowanceKeyUseCase: AllowanceKeyUseCase,
@@ -312,19 +308,11 @@ class HostApiInteractor @Inject constructor(
 
     suspend fun requestPayment(
         callingProductId: ProductId,
+        id: ProductPaymentRequestId,
         amount: Balance,
         destination: AccountId,
-    ): Result<PaymentId> {
-        checkSufficientBalance(callingProductId, amount).onFailure { return Result.failure(it) }
-
-        awaitUserAuthorization(callingProductId, amount, destination)
-            .onFailure { return Result.failure(it) }
-
-        return externalPaymentService.initiatePayment(
-            origin = callingProductId.value,
-            amount = amount,
-            destination = destination,
-        )
+    ): Result<Unit> {
+        return requestPaymentUseCase.requestPayment(callingProductId, id, amount, destination)
     }
 
     private suspend fun processNotification(
@@ -342,59 +330,8 @@ class HostApiInteractor @Inject constructor(
         }
     }
 
-    /**
-     * Balance is checked regardless of BalanceAccess — a product may request a payment without
-     * holding that permission. The permission only affects which typed error we surface when the
-     * balance is insufficient:
-     *  - granted → InsufficientBalance (product already knows balances)
-     *  - not granted → Rejected (don't leak that the balance is the problem)
-     *
-     * We use `check` (not `requestPermission`) so the user isn't prompted for BalanceAccess just
-     * to error out — the payment prompt is the only user-facing surface in this flow.
-     */
-    private suspend fun checkSufficientBalance(
-        callingProductId: ProductId,
-        amount: Balance,
-    ): Result<Unit> {
-        val balance = totalBalanceUseCase.getBalance().getOrElse { return Result.failure(it) }
-        if (balance.availablePrivate >= amount) return Result.success(Unit)
-
-        val hasBalanceAccess = permissionGuard.check(callingProductId, ProductPermission.BalanceAccess)
-        return if (hasBalanceAccess) {
-            Result.failure(InsufficientBalanceException)
-        } else {
-            Result.failure(PaymentRejectedException)
-        }
-    }
-
-    private suspend fun awaitUserAuthorization(
-        callingProductId: ProductId,
-        amount: Balance,
-        destination: AccountId,
-    ): Result<Unit> {
-        val context = PaymentRequestContext(
-            productId = callingProductId,
-            amount = amount,
-            destination = destination,
-        )
-        paymentRequestContextHolder.set(context)
-        productsRouter.openPaymentRequestPrompt()
-        val decision = context.awaitDecision()
-        return if (decision is PaymentRequestContext.Decision.Rejected) {
-            Result.failure(PaymentRejectedException)
-        } else {
-            Result.success(Unit)
-        }
-    }
-
-    fun subscribePaymentStatus(
-        callingProductId: ProductId,
-        paymentId: PaymentId,
-    ): Flow<PaymentStatus> {
-        return externalPaymentService.subscribePaymentStatus(
-            origin = callingProductId.value,
-            paymentId = paymentId,
-        )
+    fun subscribePaymentStatus(callingProductId: ProductId, id: ProductPaymentRequestId): Flow<PaymentStatus> {
+        return requestPaymentUseCase.subscribeStatus(callingProductId, id)
     }
 
     /**
@@ -426,9 +363,8 @@ class HostApiInteractor @Inject constructor(
 
         totalBalanceUseCase.subscribeTotalBalance()
             .mapNotNull { it.getOrNull() }
-            // Only what can actually be spent: a product that tops up against this number must not be
-            // told about balance still waiting on a transaction of ours.
-            .map { PaymentBalance(available = it.availablePrivate) }
+            // What a payment request may spend, so a product never sees an amount it cannot ask for.
+            .map { PaymentBalance(available = it.spendableByProducts()) }
     }
 
     suspend fun registerRingVrfKey(
@@ -495,10 +431,6 @@ private fun PolkadotAppTheme.toProductTheme(): ProductTheme = ProductTheme(
 // Perceived-brightness (Rec. 601 luma) of the surface color
 private val Color.isLight: Boolean
     get() = (0.299f * red + 0.587f * green + 0.114f * blue) > 0.5f
-
-object InsufficientBalanceException : RuntimeException("insufficient balance")
-
-object PaymentRejectedException : RuntimeException("payment rejected")
 
 class AllowanceDeniedException(val kind: AllowanceResourceKind) :
     RuntimeException("allowance allocation rejected by user for $kind")

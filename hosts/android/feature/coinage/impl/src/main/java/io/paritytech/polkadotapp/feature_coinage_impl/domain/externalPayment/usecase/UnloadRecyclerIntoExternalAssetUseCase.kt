@@ -19,6 +19,7 @@ import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.CoinageBalanceConversionContext
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.VoucherAllocator
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.balance
+import io.paritytech.polkadotapp.feature_coinage_api.domain.common.totalBalance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageInstanceId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerKey
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
@@ -30,7 +31,6 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.Co
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinAmountBreakdownUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageBalanceConverterUseCase
@@ -57,7 +57,10 @@ import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetPr
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
 import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableExtrinsic
 import io.paritytech.polkadotapp.feature_transactions.api.data.ExtrinsicService
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.serialization.Serializable
 import javax.inject.Inject
@@ -98,9 +101,10 @@ interface UnloadRecyclerIntoExternalAssetUseCase {
 sealed interface ExternalUnloadStatus {
     data object Submitted : ExternalUnloadStatus
 
-    data object Success : ExternalUnloadStatus
+    data object FinalizedSuccess : ExternalUnloadStatus
 
-    data class PartialSuccess(val executed: Int, val total: Int) : ExternalUnloadStatus
+    /** [claimed] is what reached the destination, net of any surplus folded back into new vouchers. */
+    data class PartialSuccess(val executed: Int, val total: Int, val claimed: Balance) : ExternalUnloadStatus
 
     data object Failed : ExternalUnloadStatus
 }
@@ -133,17 +137,19 @@ class RealUnloadRecyclerIntoExternalAssetUseCase @Inject constructor(
     ): Result<Unit> {
         coinageLogI("Unload starting group=${groupId.value} vouchers=${vouchers.size} surplus=$surplus")
 
-        validateInputs(vouchers)?.let {
-            coinageLogE("Unload rejected group=${groupId.value}: ${it.message}")
-            return Result.failure(it)
-        }
-
         val alreadySubmitted = transactionService.getOperationGroupStatuses(groupId)
             .getOrElse { return Result.failure(it) }
 
+        // Before validating: once registered, the vouchers are locked or spent, so a rejoining caller no longer
+        // sees them as unloadable.
         if (alreadySubmitted.isNotEmpty()) {
             coinageLogD("Unload already submitted group=${groupId.value} transactions=${alreadySubmitted.size}")
             return Result.success(Unit)
+        }
+
+        validateInputs(vouchers)?.let {
+            coinageLogE("Unload rejected group=${groupId.value}: ${it.message}")
+            return Result.failure(it)
         }
 
         val chain = chainRegistry.getChain(chainAssetProvider.chainId())
@@ -287,40 +293,60 @@ class RealUnloadRecyclerIntoExternalAssetUseCase @Inject constructor(
         quotaTracker.noteUnloadsHappened(prepared.groups.size)
     }
 
-    override fun subscribeUnloadStatus(groupId: CoinageOperationGroupId): Flow<ExternalUnloadStatus> =
-        transactionService.subscribeOperationGroupStatuses(groupId).transformWhile { states ->
-            val status = states.toUnloadStatus()
+    override fun subscribeUnloadStatus(groupId: CoinageOperationGroupId): Flow<ExternalUnloadStatus> = flow {
+        val balanceContext = coinageBalanceConverterUseCase.create().getOrElse { throw it }
+
+        val statuses = transactionService.subscribeOperationGroupStatuses(groupId).transformWhile { states ->
+            val status = with(balanceContext) { states.toUnloadStatus() }
             logUnloadStatus(groupId, status)
 
             emit(status)
             states.isEmpty() || states.any { it.status.isLive }
         }
 
+        emitAll(statuses)
+    }
+
     private fun logUnloadStatus(groupId: CoinageOperationGroupId, status: ExternalUnloadStatus) {
         val group = groupId.value
 
         when (status) {
             is ExternalUnloadStatus.Submitted -> coinageLogD("Unload submitted group=$group")
-            is ExternalUnloadStatus.Success -> coinageLogI("Unload succeeded group=$group")
+            is ExternalUnloadStatus.FinalizedSuccess -> coinageLogI("Unload succeeded group=$group")
             is ExternalUnloadStatus.PartialSuccess ->
-                coinageLogW("Unload partially succeeded group=$group executed=${status.executed} total=${status.total}")
+                coinageLogW("Unload partially succeeded group=$group executed=${status.executed} total=${status.total} claimed=${status.claimed}")
 
             is ExternalUnloadStatus.Failed -> coinageLogE("Unload failed group=$group")
         }
     }
 
-    private fun List<CoinageTransactionState>.toUnloadStatus(): ExternalUnloadStatus {
-        val executed = count { it.status == CoinageTransactionStatus.FINALIZED_SUCCESS }
+    context(balanceContext: CoinageBalanceConversionContext)
+    private suspend fun List<CoinageTransactionState>.toUnloadStatus(): ExternalUnloadStatus {
+        val executed = filter { it.status == DurableTxStatus.FINALIZED_SUCCESS }
 
         return when {
             any { it.status.isLive } || isEmpty() -> ExternalUnloadStatus.Submitted
 
-            executed == size -> ExternalUnloadStatus.Success
+            executed.size == size -> ExternalUnloadStatus.FinalizedSuccess
 
-            executed > 0 -> ExternalUnloadStatus.PartialSuccess(executed = executed, total = size)
+            executed.isNotEmpty() -> ExternalUnloadStatus.PartialSuccess(
+                executed = executed.size,
+                total = size,
+                claimed = executed.claimedAmount(),
+            )
 
             else -> ExternalUnloadStatus.Failed
         }
+    }
+
+    /** Read back from the ledger rather than kept from submission, so it is still known after a restart. */
+    context(balanceContext: CoinageBalanceConversionContext)
+    private suspend fun List<CoinageTransactionState>.claimedAmount(): Balance {
+        val unloaded = flatMap { it.inputs }.filterIsInstance<CoinageInput.Voucher>().map { it.ringVrfIndex }
+        val reloaded = flatMap { it.outputs }.filterIsInstance<OwnAsset.Voucher>().map { it.ringVrfIndex }
+
+        return voucherRepository.getByRingVrfKeyIndices(unloaded).totalBalance() -
+            voucherRepository.getByRingVrfKeyIndices(reloaded).totalBalance()
     }
 
     private suspend fun buildGroupExtrinsic(

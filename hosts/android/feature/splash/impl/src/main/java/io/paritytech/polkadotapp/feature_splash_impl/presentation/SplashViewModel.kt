@@ -4,7 +4,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.feature_splash_api.presentation.SplashPassedObserver
 import io.paritytech.polkadotapp.feature_splash_impl.domain.SplashInteractor
-import io.paritytech.polkadotapp.feature_web3summit_api.presentation.PostOnboardingFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +16,6 @@ import kotlin.time.Duration.Companion.seconds
 class SplashViewModel @Inject constructor(
     private val interactor: SplashInteractor,
     private val router: SplashRouter,
-    private val postOnboardingFlow: PostOnboardingFlow,
     private val splashPassedObserver: SplashPassedObserver,
 ) : BaseViewModel(), SplashContract {
     val waitingForNetworkVisible: StateFlow<Boolean>
@@ -36,7 +34,7 @@ class SplashViewModel @Inject constructor(
                 .first()
 
             when {
-                status.isOnboarded -> postOnboardingFlow.openPostOnboarding()
+                status.isOnboarded -> router.openMain()
                 status.isWaitingInQueue -> router.openRegistrationQueue()
                 status.accountCreated -> router.openClaimUsername()
                 else -> router.openThemeSelection()

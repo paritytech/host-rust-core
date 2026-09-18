@@ -12,4 +12,6 @@ dependencies {
     api(project(":chains"))
     api(project(":bindings:bandersnatch-crypto"))
     api(project(":feature:account:api"))
+
+    testImplementation(libs.junit)
 }

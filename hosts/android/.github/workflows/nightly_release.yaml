@@ -107,7 +107,6 @@ jobs:
           GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
           NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
         run: ./gradlew assembleGpNightly --no-daemon --stacktrace
 
       - name: Build vanilla nightly APK
@@ -121,7 +120,6 @@ jobs:
           GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
           NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
         run: ./gradlew assembleVanillaNightly --no-daemon --stacktrace
 
       - name: Build safetynet APK
@@ -135,7 +133,6 @@ jobs:
           GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
           NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
         run: ./gradlew assembleGpSafetynet --no-daemon --stacktrace
 
       - name: Build debug APK
@@ -149,7 +146,6 @@ jobs:
           GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
           NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
         run: ./gradlew assembleGpDebug --no-daemon --stacktrace
 
       - name: Build plain text release notes (for Firebase)

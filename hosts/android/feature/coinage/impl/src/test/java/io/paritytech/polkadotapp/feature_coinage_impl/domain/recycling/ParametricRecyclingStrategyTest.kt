@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.recycling
 import io.paritytech.polkadotapp.chains.network.binding.Balance
 import io.paritytech.polkadotapp.chains.network.binding.intoBalance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinRecyclingState
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclingVerdicts
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
@@ -11,6 +12,7 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingStrategyType
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.params
 import io.paritytech.polkadotapp.feature_coinage_impl.common.testConversionContext
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -106,11 +108,12 @@ class ParametricRecyclingStrategyTest {
     @Test
     fun `a coin of unknown age is never gated, under any preset`() {
         val unknown = Coin(
-            derivationIndex = 0,
+            derivationIndex = testKey(0),
             valueExponent = ValueExponent(1),
             age = Coin.Age.Unknown,
             isOnChain = true,
             accountId = mock(),
+            provenance = CoinProvenance.UNKNOWN,
         )
 
         RecyclingStrategyType.entries.forEach { type ->
@@ -150,10 +153,11 @@ class ParametricRecyclingStrategyTest {
     private fun List<Coin>.gatingAll() = associate { it.derivationIndex to CoinRecyclingState.TO_RECYCLE }
 
     private fun coinOf(age: Int, exponent: Int, derivationIndex: Int = 0) = Coin(
-        derivationIndex = derivationIndex,
+        derivationIndex = testKey(derivationIndex),
         valueExponent = ValueExponent(exponent),
         age = Coin.Age.Known(age),
         isOnChain = true,
         accountId = mock(),
+        provenance = CoinProvenance.UNKNOWN,
     )
 }

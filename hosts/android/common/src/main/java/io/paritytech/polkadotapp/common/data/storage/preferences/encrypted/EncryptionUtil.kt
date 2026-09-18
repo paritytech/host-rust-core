@@ -51,7 +51,14 @@ class EncryptionUtil @Inject constructor(
 
     private val oaepParam = OAEPParameterSpec(MD_NAME, MGF_NAME, MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)
 
-    fun getPrerenceAesKey(): Key {
+    // Every encrypt and decrypt resolved this, and each resolution ran an RSA
+    // private-key operation in the AndroidKeyStore to unwrap the AES key. The
+    // key is generated once per install and never rotated, so it is read once.
+    private val preferenceAesKey: Key by lazy { loadPreferenceAesKey() }
+
+    fun getPrerenceAesKey(): Key = preferenceAesKey
+
+    private fun loadPreferenceAesKey(): Key {
         val secretKey: SecretKey
         val encryptedKey =
             context.getSharedPreferences(KEY_ALIAS, Context.MODE_PRIVATE).getString(

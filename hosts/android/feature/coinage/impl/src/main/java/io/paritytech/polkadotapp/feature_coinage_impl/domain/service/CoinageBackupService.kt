@@ -1,376 +1,208 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.service
 
-import io.paritytech.polkadotapp.bandersnatch_crypto.BandersnatchPublicKey
-import io.paritytech.polkadotapp.bandersnatch_crypto.aliasInContext
-import io.paritytech.polkadotapp.chains.storage.source.query.api.StorageKey4
-import io.paritytech.polkadotapp.common.data.cache.CacheableDataConsistency
 import io.paritytech.polkadotapp.common.data.memory.ComputationalScope
-import io.paritytech.polkadotapp.common.domain.model.AccountId
-import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
-import io.paritytech.polkadotapp.common.utils.filterNotNull
 import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.common.utils.measureExecution
-import io.paritytech.polkadotapp.feature_account_api.data.storage.newaccount.NewAccountStorage
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.BackupProgress
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin.Age
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher.Location
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.toRingCollectionId
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageInstallationId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.service.CoinageBackupService
-import io.paritytech.polkadotapp.feature_coinage_impl.data.config.CoinageInstanceIdProvider
-import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.CoinKeypairDerivation
-import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.VoucherRingDerivation
-import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.getDerivedAccountIds
-import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.getDerivedMemberKeys
-import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainAliasState
-import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainCoinInfo
+import io.paritytech.polkadotapp.feature_coinage_impl.data.dataStore.AccountDataStoreConfigProvider
+import io.paritytech.polkadotapp.feature_coinage_impl.data.dataStore.AccountDataStoreRepository
+import io.paritytech.polkadotapp.feature_coinage_impl.data.installation.CoinageInstallationRepository
+import io.paritytech.polkadotapp.feature_coinage_impl.data.installation.PreviousInstallation
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.CoinRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
-import io.paritytech.polkadotapp.feature_coinage_impl.data.signer.context.CoinageSigningContextProvider
-import io.paritytech.polkadotapp.feature_coinage_impl.data.storage.CoinsBackupLastIndexStorage
-import io.paritytech.polkadotapp.feature_coinage_impl.data.storage.CoinsDeepBackupCompletedStorage
-import io.paritytech.polkadotapp.feature_coinage_impl.data.storage.CoinsInitialBackupCompletedStorage
-import io.paritytech.polkadotapp.feature_coinage_impl.data.storage.VouchersBackupLastIndexStorage
-import io.paritytech.polkadotapp.feature_coinage_impl.data.storage.VouchersDeepBackupCompletedStorage
-import io.paritytech.polkadotapp.feature_coinage_impl.data.storage.VouchersInitialBackupCompletedStorage
-import io.paritytech.polkadotapp.feature_members_api.data.model.RingPosition
-import io.paritytech.polkadotapp.feature_members_api.data.repository.MembersRepository
-import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
-import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_coinage_impl.data.storage.DeepRecoveryCompletedStorage
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogE
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogI
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogW
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.installation.logId
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import timber.log.Timber
 import javax.inject.Inject
 
+// Recovers balance held under the subtrees of this seed's previous installations.
+//
+// Only ever reads them: a coin found here is spendable, but new keys are allocated in the current installation
+// alone, so nothing found here can move the index this installation hands out next.
 class RealCoinageBackupService @Inject constructor(
-    @param:DigitalDollarChainAssetProvider private val chainAssetProvider: ChainAssetProvider,
-    private val coinsInitialBackupCompletedStorage: CoinsInitialBackupCompletedStorage,
-    private val vouchersInitialBackupCompletedStorage: VouchersInitialBackupCompletedStorage,
-    private val coinsDeepBackupCompletedStorage: CoinsDeepBackupCompletedStorage,
-    private val vouchersDeepBackupCompletedStorage: VouchersDeepBackupCompletedStorage,
-    private val coinsBackupLastIndexStorage: CoinsBackupLastIndexStorage,
-    private val vouchersBackupLastIndexStorage: VouchersBackupLastIndexStorage,
-    private val newAccountStorage: NewAccountStorage,
+    private val installationRepository: CoinageInstallationRepository,
+    private val dataStoreConfigProvider: AccountDataStoreConfigProvider,
+    private val dataStoreRepository: AccountDataStoreRepository,
+    private val assetScanner: InstallationAssetScanner,
     private val coinsRepository: CoinRepository,
     private val voucherRepository: VoucherRepository,
-    private val membersRepository: MembersRepository,
-    private val keypairDerivation: CoinKeypairDerivation,
-    private val voucherRingDerivation: VoucherRingDerivation,
-    private val coinageSigningContextProvider: CoinageSigningContextProvider,
-    private val coinageInstanceIdProvider: CoinageInstanceIdProvider,
+    private val deepRecoveryCompletedStorage: DeepRecoveryCompletedStorage,
 ) : CoinageBackupService {
-    companion object {
-        private const val BATCH_SIZE = 500
-        private const val EMPTY_BATCH_COUNT = 4
+    private val progress = MutableStateFlow<BackupProgress>(BackupProgress.Unknown)
 
-        private const val DEEP_SEARCH_BATCH_COUNT = 10
-    }
-
-    private val chainId = chainAssetProvider.chainId()
-
-    private val coinBackupProgress = MutableStateFlow<BackupProgress>(BackupProgress.Unknown)
-    private val voucherBackupProgress = MutableStateFlow<BackupProgress>(BackupProgress.Unknown)
-
-    private val _progress = combine(coinBackupProgress, voucherBackupProgress) { coinBackupProgress, voucherBackupProgress ->
-        when {
-            coinBackupProgress is BackupProgress.NotStarted && voucherBackupProgress is BackupProgress.NotStarted -> BackupProgress.NotStarted
-            coinBackupProgress is BackupProgress.Completed && voucherBackupProgress is BackupProgress.Completed -> BackupProgress.Completed
-            coinBackupProgress is BackupProgress.Initial.Completed && voucherBackupProgress is BackupProgress.Initial.Completed -> BackupProgress.Initial.Completed
-            coinBackupProgress is BackupProgress.Deep.Completed && voucherBackupProgress is BackupProgress.Deep.Completed -> BackupProgress.Deep.Completed
-            coinBackupProgress is BackupProgress.Initial || voucherBackupProgress is BackupProgress.Initial -> BackupProgress.Initial.Syncing
-            coinBackupProgress is BackupProgress.Deep || voucherBackupProgress is BackupProgress.Deep -> BackupProgress.Deep.Syncing
-            else -> BackupProgress.Unknown
-        }
-    }
-
-    override fun subscribeProgress() = _progress
+    override fun subscribeProgress(): Flow<BackupProgress> = progress
 
     context(scope: ComputationalScope)
     override fun start() {
-        scope.launch {
-            val isNewAccount = newAccountStorage.requireValue()
-            val coinsDeepCompleted = coinsDeepBackupCompletedStorage.requireValue()
-            val coinsInitialCompleted = coinsInitialBackupCompletedStorage.requireValue()
-
-            val vouchersInitialCompleted = vouchersInitialBackupCompletedStorage.requireValue()
-            val vouchersDeepCompleted = vouchersDeepBackupCompletedStorage.requireValue()
-
-            when {
-                coinsDeepCompleted -> coinBackupProgress.value = BackupProgress.Completed
-                coinsInitialCompleted -> coinBackupProgress.value = BackupProgress.Initial.Completed
-                !isNewAccount -> launch { backupCoins() }
-            }
-
-            when {
-                vouchersDeepCompleted -> voucherBackupProgress.value = BackupProgress.Completed
-                vouchersInitialCompleted -> voucherBackupProgress.value = BackupProgress.Initial.Completed
-                !isNewAccount -> launch { backupVouchers() }
-            }
-        }
+        scope.launch { recoverNewInstallations() }
     }
 
     context(scope: ComputationalScope)
     override fun deepSearch() {
         scope.launch {
-            if (_progress.first().isInProgress()) return@launch
-            launch { backupCoinsDeep() }
-            launch { backupVouchersDeep() }
+            if (progress.value.isInProgress()) return@launch
+
+            progress.value = BackupProgress.Deep.Syncing
+
+            val previous = installationRepository.getPrevious()
+            val recovered = previous.map { deepScan(it) }
+            coinageLogI("Deep recovery finished: ${recovered.describe()} across ${previous.size} installation(s)")
+
+            progress.value = BackupProgress.Deep.Completed
         }
     }
 
     context(scope: ComputationalScope)
     override fun markAsCompleted() {
         scope.launch {
-            if (_progress.first().isInProgress()) return@launch
+            if (progress.value.isInProgress()) return@launch
 
-            coinsDeepBackupCompletedStorage.saveValue(true)
-            vouchersDeepBackupCompletedStorage.saveValue(true)
-
-            coinBackupProgress.value = BackupProgress.Completed
-            voucherBackupProgress.value = BackupProgress.Completed
+            deepRecoveryCompletedStorage.saveValue(true)
+            progress.value = BackupProgress.Completed
         }
     }
 
-    private suspend fun backupCoins() = measureExecution("Restoring coins") {
-        var emptyCoinBatchesInARow = 0
-        var coinBackupError: Throwable? = null
-
-        var startIndex = coinsRepository.getNextDerivationIndex()
-        coinBackupProgress.value = BackupProgress.Initial.Syncing
-
-        while (emptyCoinBatchesInARow < EMPTY_BATCH_COUNT && coinBackupError == null) {
-            val coinAccountsToCheck = createCoinsAccountsToCheck(startIndex)
-
-            fetchCoinsOnChainData(coinAccountsToCheck)
-                .onSuccess {
-                    if (it.isEmpty()) emptyCoinBatchesInARow += 1
-                    startIndex += BATCH_SIZE
-                    coinsRepository.saveAll(it.toCoinsList(coinAccountsToCheck))
-                }
-                .onFailure {
-                    coinBackupError = it
-                }
-        }
-
-        coinBackupProgress.value = BackupProgress.Initial.Completed
-
-        if (coinBackupError == null) {
-            coinsBackupLastIndexStorage.saveValue(startIndex)
-            coinsInitialBackupCompletedStorage.saveValue(true)
-            Timber.d("Coin backup is done")
-        } else {
-            Timber.e(coinBackupError, "Failed to backup coins")
-        }
-    }
-
-    private suspend fun backupCoinsDeep() = measureExecution("Restoring coins") {
-        var exploredBatches = 0
-        var error: Throwable? = null
-
-        var startIndex = coinsBackupLastIndexStorage.requireValue()
-        coinBackupProgress.value = BackupProgress.Deep.Syncing
-
-        while (exploredBatches < DEEP_SEARCH_BATCH_COUNT && error == null) {
-            val coinAccountsToCheck = createCoinsAccountsToCheck(startIndex)
-
-            fetchCoinsOnChainData(coinAccountsToCheck)
-                .onSuccess {
-                    exploredBatches += 1
-                    startIndex += BATCH_SIZE
-                    coinsRepository.saveAll(it.toCoinsList(coinAccountsToCheck))
-                }
-                .onFailure {
-                    error = it
-                }
-        }
-
-        coinBackupProgress.value = BackupProgress.Deep.Completed
-
-        if (error == null) {
-            coinsBackupLastIndexStorage.saveValue(startIndex)
-            Timber.d("Coin deep backup is done")
-        } else {
-            Timber.e(error, "Failed to deep backup coins")
-        }
-    }
-
-    private fun Map<AccountId, OnChainCoinInfo>.toCoinsList(coinAccountsToCheck: Map<AccountId, Int>) = mapNotNull { (accountId, onChainInfo) ->
-        Coin(
-            derivationIndex = coinAccountsToCheck[accountId] ?: return@mapNotNull null,
-            valueExponent = ValueExponent(onChainInfo.value),
-            accountId = accountId,
-            // Recovered from a read that found it, so it is on chain by construction.
-            age = Age.Known(onChainInfo.age),
-            isOnChain = true
-        )
-    }
-
-    private suspend fun createCoinsAccountsToCheck(startIndex: Int) = measureExecution("deriving accounts for coins") {
-        val indices = (startIndex until startIndex + BATCH_SIZE).toList()
-        keypairDerivation.getDerivedAccountIds(indices)
-            .withIndex()
-            .associateBy(keySelector = { it.value }, valueTransform = { it.index })
-    }
-
-    private suspend fun fetchCoinsOnChainData(coinAccountsToCheck: Map<AccountId, Int>) = measureExecution("fetching on chain data for coins batch") {
-        coinsRepository.fetchCoinsInfoFor(chainId, coinAccountsToCheck.keys.toList())
-    }
-        .map { it.filterNotNull() }
-
-    private suspend fun backupVouchers() = measureExecution("Restoring vouchers") {
-        var emptyVoucherBatchesInARow = 0
-        var voucherBackupError: Throwable? = null
-
-        var startIndex = voucherRepository.getNextDerivationIndex()
-        voucherBackupProgress.value = BackupProgress.Initial.Syncing
-
-        while (emptyVoucherBatchesInARow < EMPTY_BATCH_COUNT && voucherBackupError == null) {
-            val voucherKeysToCheck = createVouchersKeysToCheck(startIndex)
-
-            fetchVouchersOnChainData(voucherKeysToCheck.keys.toList())
-                .filterNotUnloaded(voucherKeysToCheck)
-                .onSuccess { vouchers ->
-                    if (vouchers.isEmpty()) emptyVoucherBatchesInARow += 1
-                    startIndex += BATCH_SIZE
-
-                    voucherRepository.saveAll(vouchers)
-                }
-                .onFailure {
-                    voucherBackupError = it
-                }
-        }
-
-        voucherBackupProgress.value = BackupProgress.Initial.Completed
-
-        if (voucherBackupError == null) {
-            vouchersBackupLastIndexStorage.saveValue(startIndex)
-            vouchersInitialBackupCompletedStorage.saveValue(true)
-            Timber.d("Voucher backup is done")
-        } else {
-            Timber.e(voucherBackupError, "Failed to backup vouchers")
-        }
-    }
-
-    private suspend fun Result<Pair<Map<BandersnatchPublicKey, ValueExponent>, Map<BandersnatchPublicKey, RingPosition>>>.filterNotUnloaded(
-        voucherKeysToCheck: Map<BandersnatchPublicKey, Int>
-    ): Result<List<RecyclerVoucher>> = flatMap { (values, records) ->
-        val detectedVouchers = records.toVouchersList(voucherKeysToCheck, values)
-
-        val vouchersInRecycler = detectedVouchers.filter { it.location is Location.InRecycler }
-        fetchNotUnloadedVouchers(vouchersInRecycler)
-            .map {
-                val onboardingVouchers = detectedVouchers.filter { it.location is Location.Onboarding }
-                it + onboardingVouchers
+    private suspend fun recoverNewInstallations() = measureExecution("Recovering previous installations") {
+        // A failed read only delays discovery: installations found on an earlier launch are still scanned.
+        dataStoreConfigProvider.contractAddress()
+            .flatMap { contract -> dataStoreRepository.fetchRegisteredInstallations(contract, at = null) }
+            .onSuccess { registered ->
+                coinageLogI("Recovery: contract lists ${registered.size} installation(s) for this seed")
+                installationRepository.addPrevious(registered)
             }
-    }
+            .onFailure { coinageLogW("Recovery: could not read registered installations, scanning the ones already known: ${it.message}") }
 
-    private suspend fun fetchNotUnloadedVouchers(detected: List<RecyclerVoucher>): Result<List<RecyclerVoucher>> {
-        if (detected.isEmpty()) return Result.success(listOf())
-        return coinageInstanceIdProvider.instanceId().flatMap { instanceId ->
-            val keys = detected.mapNotNull {
-                val location = (it.location as? Location.InRecycler) ?: return@mapNotNull null
-                val aliasContext = coinageSigningContextProvider.recyclerVouchersContext()
-                val alias = voucherRingDerivation.deriveBandersnatch(it.ringVrfKeyIndex).aliasInContext(aliasContext)
+        val previous = installationRepository.getPrevious()
+        val pending = previous.filterNot { it.initialScanCompleted }
 
-                it to StorageKey4(
-                    instanceId.toLong().toBigInteger(),
-                    it.recyclerValue.value.toBigInteger(),
-                    location.recyclerIndex.value,
-                    alias.value
-                )
-            }.toMap()
-
-            voucherRepository.fetchRecyclerAliasStates(chainId, keys.values.toList())
-                .map { aliasStates ->
-                    keys
-                        .mapValues { (_, value) -> value.fourth.toDataByteArray().toString() }
-                        .mapNotNull { if (aliasStates[it.value] is OnChainAliasState.Unloaded) null else it.key }
-                }
-        }
-    }
-
-    private suspend fun backupVouchersDeep() = measureExecution("Restoring vouchers") {
-        var exploredBatches = 0
-        var error: Throwable? = null
-
-        var startIndex = vouchersBackupLastIndexStorage.requireValue()
-        voucherBackupProgress.value = BackupProgress.Deep.Syncing
-
-        while (exploredBatches < DEEP_SEARCH_BATCH_COUNT && error == null) {
-            val voucherKeysToCheck = createVouchersKeysToCheck(startIndex)
-
-            fetchVouchersOnChainData(voucherKeysToCheck.keys.toList())
-                .filterNotUnloaded(voucherKeysToCheck)
-                .onSuccess { vouchers ->
-                    exploredBatches += 1
-                    startIndex += BATCH_SIZE
-
-                    voucherRepository.saveAll(vouchers)
-                }
-                .onFailure {
-                    error = it
-                }
-        }
-
-        voucherBackupProgress.value = BackupProgress.Deep.Completed
-
-        if (error == null) {
-            vouchersBackupLastIndexStorage.saveValue(startIndex)
-            Timber.d("Voucher deep backup is done")
+        if (pending.isEmpty()) {
+            coinageLogI("Recovery: nothing new to scan, ${previous.size} previous installation(s) already scanned")
         } else {
-            Timber.e(error, "Failed to deep backup vouchers")
+            coinageLogI("Recovery: scanning ${pending.size} of ${previous.size} previous installation(s)")
+            progress.value = BackupProgress.Initial.Syncing
+
+            val recovered = pending.map { initialScan(it) }
+            coinageLogI("Recovery finished: ${recovered.describe()} across ${pending.size} installation(s)")
+
+            // Newly found balance is worth another look, even if the last one was acknowledged.
+            deepRecoveryCompletedStorage.saveValue(false)
+        }
+
+        progress.value = when {
+            deepRecoveryCompletedStorage.requireValue() -> BackupProgress.Completed
+            previous.isEmpty() -> BackupProgress.Completed
+            else -> BackupProgress.Initial.Completed
         }
     }
 
-    private fun Map<BandersnatchPublicKey, RingPosition>.toVouchersList(
-        voucherKeysToCheck: Map<BandersnatchPublicKey, Int>,
-        values: Map<BandersnatchPublicKey, ValueExponent>
-    ) = mapNotNull { (publicKey, onChainInfo) ->
-        RecyclerVoucher(
-            ringVrfKeyIndex = voucherKeysToCheck[publicKey] ?: return@mapNotNull null,
-            ringVrfPublicKey = publicKey,
-            recyclerValue = values[publicKey] ?: return@mapNotNull null,
-            location = onChainInfo.getVoucherLocation(),
-        )
+    private suspend fun initialScan(installation: PreviousInstallation): RecoveredAssets = coroutineScope {
+        val coins = async { gapScanCoins(installation.id, installation.coinScanNextIndex, ScanLimit.UntilGap) }
+        val vouchers = async { gapScanVouchers(installation.id, installation.voucherScanNextIndex, ScanLimit.UntilGap) }
+
+        val recovered = RecoveredAssets(coins = coins.await(), vouchers = vouchers.await())
+        coinageLogI("Recovery: installation=${installation.id.logId()} ${recovered.describe()}")
+
+        if (recovered.isComplete) installationRepository.markInitialScanCompleted(installation.id)
+
+        recovered
     }
 
-    private suspend fun createVouchersKeysToCheck(startIndex: Int) = measureExecution("Deriving accounts for vouchers") {
-        val indices = (startIndex until startIndex + BATCH_SIZE).toList()
-        voucherRingDerivation.getDerivedMemberKeys(indices)
-            .withIndex()
-            .associateBy(keySelector = { it.value }, valueTransform = { it.index })
+    private suspend fun deepScan(installation: PreviousInstallation): RecoveredAssets = coroutineScope {
+        val coins = async { gapScanCoins(installation.id, installation.coinScanNextIndex, ScanLimit.Batches(DEEP_SEARCH_BATCH_COUNT)) }
+        val vouchers = async { gapScanVouchers(installation.id, installation.voucherScanNextIndex, ScanLimit.Batches(DEEP_SEARCH_BATCH_COUNT)) }
+
+        RecoveredAssets(coins = coins.await(), vouchers = vouchers.await())
+            .also { coinageLogI("Deep recovery: installation=${installation.id.logId()} ${it.describe()}") }
     }
 
-    private suspend fun fetchVouchersOnChainData(keys: List<BandersnatchPublicKey>) = measureExecution("Fetching vouchers on chain info") {
-        coinageInstanceIdProvider.instanceId().flatMap { instanceId ->
-            voucherRepository.fetchValuesForKeys(chainId, instanceId, keys)
-                .map { it.filterNotNull() }
-                .flatMap { values ->
-                    val pairs = values.map { (key, exponent) -> exponent.toRingCollectionId(instanceId) to key }
+    private suspend fun gapScanCoins(installation: CoinageInstallationId, startIndex: Int, limit: ScanLimit): Result<Int> {
+        return gapScan(startIndex, limit) { batchStart ->
+            assetScanner.scanCoins(installation, batchStart, BATCH_SIZE)
+                .onSuccess { coinsRepository.saveAll(it) }
+                .map { it.size }
+        }
+            .onSuccess { installationRepository.updateCoinScanNextIndex(installation, it.nextIndex) }
+            .onFailure { coinageLogE("Recovery: coin scan of installation=${installation.logId()} failed", it) }
+            .map { it.found }
+    }
 
-                    membersRepository.fetchMembers(
-                        chainId = chainId,
-                        keys = pairs,
-                        consistency = CacheableDataConsistency.CONSISTENT_WITH_REMOTE,
-                    ).map { recordsByPair ->
-                        val recordsByKey = recordsByPair.filterNotNull()
-                            .mapKeys { (pair, _) -> pair.second }
+    private suspend fun gapScanVouchers(installation: CoinageInstallationId, startIndex: Int, limit: ScanLimit): Result<Int> {
+        return gapScan(startIndex, limit) { batchStart ->
+            assetScanner.scanVouchers(installation, batchStart, BATCH_SIZE)
+                .onSuccess { voucherRepository.saveAll(it) }
+                .map { it.size }
+        }
+            .onSuccess { installationRepository.updateVoucherScanNextIndex(installation, it.nextIndex) }
+            .onFailure { coinageLogE("Recovery: voucher scan of installation=${installation.logId()} failed", it) }
+            .map { it.found }
+    }
 
-                        values to recordsByKey
-                    }
-                }
+    private suspend fun gapScan(
+        startIndex: Int,
+        limit: ScanLimit,
+        scanBatch: suspend (batchStart: Int) -> Result<Int>,
+    ): Result<GapScanResult> {
+        var nextIndex = startIndex
+        var batches = 0
+        var emptyBatchesInARow = 0
+        var found = 0
+
+        while (!limit.isReached(batches, emptyBatchesInARow)) {
+            val foundInBatch = scanBatch(nextIndex).getOrElse { return Result.failure(it) }
+
+            found += foundInBatch
+            emptyBatchesInARow = if (foundInBatch > 0) 0 else emptyBatchesInARow + 1
+            batches += 1
+            nextIndex += BATCH_SIZE
+        }
+
+        return Result.success(GapScanResult(nextIndex = nextIndex, found = found))
+    }
+
+    private class GapScanResult(val nextIndex: Int, val found: Int)
+
+    // A failed scan counts nothing and leaves the installation for the next launch to finish.
+    private class RecoveredAssets(val coins: Result<Int>, val vouchers: Result<Int>) {
+        val isComplete: Boolean
+            get() = coins.isSuccess && vouchers.isSuccess
+
+        fun describe(): String = "coins=${coins.describeCount()} vouchers=${vouchers.describeCount()}"
+
+        private fun Result<Int>.describeCount(): String = getOrNull()?.toString() ?: "failed"
+    }
+
+    private fun List<RecoveredAssets>.describe(): String {
+        val coins = sumOf { it.coins.getOrDefault(0) }
+        val vouchers = sumOf { it.vouchers.getOrDefault(0) }
+        val failed = count { !it.isComplete }
+
+        return "$coins coin(s) and $vouchers voucher(s) recovered" + if (failed > 0) ", $failed installation(s) incomplete" else ""
+    }
+
+    private sealed interface ScanLimit {
+        fun isReached(batches: Int, emptyBatchesInARow: Int): Boolean
+
+        data object UntilGap : ScanLimit {
+            override fun isReached(batches: Int, emptyBatchesInARow: Int) = emptyBatchesInARow >= EMPTY_BATCH_COUNT
+        }
+
+        data class Batches(val count: Int) : ScanLimit {
+            override fun isReached(batches: Int, emptyBatchesInARow: Int) = batches >= count
         }
     }
 
-    private fun RingPosition.getVoucherLocation() = when (this) {
-        // Recovery knows where the voucher sits, not how full the ring is. Zero until the location service
-        // reads it, so nothing releases the voucher on an anonymity set we have not seen.
-        is RingPosition.Included -> Location.InRecycler(ringIndex, recyclerMembers = 0)
-        is RingPosition.Onboarding -> Location.Onboarding
-        is RingPosition.Suspended -> Location.Unknown
+    private companion object {
+        const val BATCH_SIZE = 500
+        const val EMPTY_BATCH_COUNT = 4
+        const val DEEP_SEARCH_BATCH_COUNT = 10
     }
 }

@@ -31,7 +31,7 @@ import io.paritytech.polkadotapp.design.components.error.DefaultErrorState
 import io.paritytech.polkadotapp.design.components.progress.NovaCircularProgressIndicator
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsLoadProgress
-import io.paritytech.polkadotapp.feature_products_impl.presentation.compose.ProductWebViewHost
+import io.paritytech.polkadotapp.feature_products_api.presentation.spaHost.ProductWebViewHost
 import io.paritytech.polkadotapp.feature_products_impl.presentation.spaSheet.SpaSheetUiState
 import io.paritytech.polkadotapp.feature_products_impl.presentation.spaSheet.SpaSheetViewModel
 import io.paritytech.polkadotapp.common.R as RCommon

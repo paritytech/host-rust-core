@@ -73,6 +73,19 @@ class CoinageAssetSelector @Inject constructor(
 
     suspend fun getVouchersGainingPrivacy(): List<RecyclerVoucher> = voucherBuckets().gainingPrivacy
 
+    /**
+     * Every coin that can still be loaded into a recycler, whatever the strategy thinks of it — including one past
+     * the age it may be spent at.
+     */
+    suspend fun getRecyclableCoins(): List<Coin> = coinageAssetsUseCase.getCoins().preClassifyCoins().minted
+
+    /** Every voucher the chain would accept, whatever the strategy is holding back. Should only be used for planning after making sure used has acknowledged the privacy risks */
+    suspend fun getOnChainSpendableVouchers(): List<RecyclerVoucher> {
+        val buckets = voucherBuckets()
+
+        return buckets.usable + buckets.gainingPrivacy
+    }
+
     private fun allowedStates(scope: SpendScope, offerAllowed: Boolean): Set<CoinRecyclingState> = when {
         scope.widens(offerAllowed) -> setOf(CoinRecyclingState.ALLOW_USE, CoinRecyclingState.TO_RECYCLE)
         else -> setOf(CoinRecyclingState.ALLOW_USE)

@@ -6,20 +6,25 @@ import io.mockk.mockk
 import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CheckpointBlock
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageAssetState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FAILURE
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING_SUCCESS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageAssetsUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinagePaymentStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TrackedCoin
 import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainCoinInfo
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageChainView
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageChainViewFactory
+import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageStateReader
+import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageStateReaderFactory
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
+import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainView
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainViewFactory
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -36,10 +41,21 @@ import org.junit.Test
  */
 class RealCoinagePaymentStatusUseCaseTest {
     private val coinageAssetsUseCase: CoinageAssetsUseCase = mockk()
-    private val chainViewFactory: CoinageChainViewFactory = mockk()
-    private val chainView: CoinageChainView = mockk()
+    private val chainViewFactory: PinnedChainViewFactory = mockk()
+    private val chainView: PinnedChainView = mockk()
+    private val stateReaderFactory: CoinageStateReaderFactory = mockk()
+    private val stateReader: CoinageStateReader = mockk()
 
-    private val useCase = RealCoinagePaymentStatusUseCase(coinageAssetsUseCase, chainViewFactory)
+    private val chainAssetProvider: ChainAssetProvider = mockk<ChainAssetProvider>().also {
+        every { it.chainId() } returns "test-chain"
+    }
+
+    private val useCase = RealCoinagePaymentStatusUseCase(
+        coinageAssetsUseCase,
+        chainViewFactory,
+        stateReaderFactory,
+        chainAssetProvider,
+    )
 
     @Test
     fun `a coin still on chain is waiting for the peer to take it`() = runTest {
@@ -153,16 +169,17 @@ class RealCoinagePaymentStatusUseCaseTest {
     private fun givenCoin(
         onChain: Boolean,
         everSeen: Boolean,
-        minter: CoinageTransactionStatus?,
+        minter: DurableTxStatus?,
         atFinalized: FinalizedRead,
     ) {
         val coin = Coin(
-            derivationIndex = 0,
+            derivationIndex = testKey(0),
             valueExponent = ValueExponent(3),
             // An age is kept once the chain has been seen to hold the coin, and never cleared after.
             age = if (everSeen) Coin.Age.Known(0) else Coin.Age.Unknown,
             isOnChain = onChain,
             accountId = ACCOUNT,
+            provenance = CoinProvenance.UNKNOWN,
         )
         val tracked = TrackedCoin(
             coin = coin,
@@ -172,12 +189,13 @@ class RealCoinagePaymentStatusUseCaseTest {
 
         every { coinageAssetsUseCase.subscribeCoinsBy(any()) } returns flowOf(listOf(tracked))
 
-        coEvery { chainViewFactory.pin() } returns when (atFinalized) {
+        coEvery { chainViewFactory.pin(any()) } returns when (atFinalized) {
             UNREADABLE -> Result.failure(IllegalStateException("no view"))
             else -> Result.success(chainView)
         }
         every { chainView.finalizedHead } returns CheckpointBlock(blockNumber = 100, blockHash = "0xfinal")
-        coEvery { chainView.coinsAt(any(), any()) } returns Result.success(
+        coEvery { stateReaderFactory.create(any()) } returns stateReader
+        coEvery { stateReader.coinsAt(any(), any()) } returns Result.success(
             mapOf(ACCOUNT to OnChainCoinInfo(instanceId = 0, value = 3, age = 0).takeIf { atFinalized == PRESENT })
         )
     }
