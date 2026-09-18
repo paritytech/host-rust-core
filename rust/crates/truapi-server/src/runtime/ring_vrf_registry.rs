@@ -7,6 +7,7 @@ use parity_scale_codec::{Decode, Encode};
 use truapi::v01::{ProductAccountId, RegisteredRingVrfKey, RingLocation};
 use truapi_platform::{CoreStorageKey, Platform, normalize_product_identifier};
 
+use crate::host_logic::product_account::PersonhoodCollection;
 use crate::host_logic::sso::messages::RingVrfError;
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
@@ -226,11 +227,17 @@ impl RingVrfRegistryStore {
     }
 
     /// Persist a user-selected provider after validating its registration.
+    ///
+    /// `reserved` says the handle is a reserved personhood key for this ring,
+    /// which needs no registration. The caller decides that, because naming a
+    /// reserved handle takes the network suffix and this store does not have
+    /// one.
     pub(super) async fn select_provider(
         &self,
         root_public_key: [u8; 32],
         ring: RingLocation,
         handle: ProductAccountId,
+        reserved: bool,
     ) -> Result<(), RingVrfError> {
         let _guard = self.storage_guard.lock().await;
         let mut snapshot = self.load_under_guard(root_public_key).await?;
@@ -238,7 +245,7 @@ impl RingVrfRegistryStore {
             .entries
             .iter()
             .any(|entry| entry.handle == handle && entry.rings.contains(&ring));
-        if !registered {
+        if !registered && !reserved {
             return Err(RingVrfError::KeyNotInRing);
         }
         snapshot
@@ -370,10 +377,14 @@ fn validate_snapshot(snapshot: &RegistrySnapshot) -> Result<(), RingVrfError> {
         if !provider_rings.insert(provider.ring.encode()) {
             return Err(invalid_registry("duplicate selected provider"));
         }
-        if !snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.handle == provider.handle && entry.rings.contains(&provider.ring))
+        // Network-agnostic on purpose: this validates bytes already persisted,
+        // and whether the handle was reserved was settled when it was written.
+        let reserved =
+            PersonhoodCollection::reserved_for_ring(&provider.handle, &provider.ring, None);
+        if !reserved
+            && !snapshot.entries.iter().any(|entry| {
+                entry.handle == provider.handle && entry.rings.contains(&provider.ring)
+            })
         {
             return Err(invalid_registry(
                 "selected provider is not registered for its ring",
@@ -452,6 +463,9 @@ fn invalid_registry_listing(reason: impl Into<String>) -> RingVrfError {
 
 #[cfg(test)]
 mod tests {
+    /// Reserved handles are network-scoped; these tests pin the Polkadot one.
+    const TEST_SUFFIX: &str = "dot";
+
     use super::*;
     use crate::test_support::StubPlatform;
 
@@ -460,6 +474,44 @@ mod tests {
             dot_ns_identifier: owner.to_string(),
             derivation_index: truapi::v01::DerivationIndex::Index(index),
         }
+    }
+
+    /// A paired host validates every remote owner listing, so the reserved
+    /// entries a signing host appends have to survive that validation.
+    #[test]
+    fn a_reserved_people_listing_survives_owner_validation() {
+        let people_chain = [0x22; 32];
+        let mut entries = vec![RegisteredRingVrfKey {
+            handle: handle("peopl.dot", 7),
+            rings: vec![ring(3)],
+            public_key: Some([0xaa; 32]),
+        }];
+        entries.extend(PersonhoodCollection::ALL.into_iter().map(|collection| {
+            RegisteredRingVrfKey {
+                handle: collection.handle(TEST_SUFFIX),
+                rings: vec![collection.ring_location(people_chain)],
+                public_key: Some([0xbb; 32]),
+            }
+        }));
+
+        validate_owner_listing("peopl.dot", &entries).expect("reserved entries validate");
+    }
+
+    /// A reserved provider is selectable without a registration, so a snapshot
+    /// naming one has to persist.
+    #[test]
+    fn a_snapshot_may_select_a_reserved_provider() {
+        let people_chain = [0x22; 32];
+        let snapshot = RegistrySnapshot {
+            entries: Vec::new(),
+            complete_owners: Vec::new(),
+            selected_providers: vec![SelectedProvider {
+                ring: PersonhoodCollection::People.ring_location(people_chain),
+                handle: PersonhoodCollection::People.handle(TEST_SUFFIX),
+            }],
+        };
+
+        validate_snapshot(&snapshot).expect("a reserved selection persists");
     }
 
     fn ring(byte: u8) -> RingLocation {
@@ -524,8 +576,13 @@ mod tests {
             futures::executor::block_on(store.providers(root, &location)).unwrap(),
             vec![first.clone(), second.clone()]
         );
-        futures::executor::block_on(store.select_provider(root, location.clone(), second.clone()))
-            .unwrap();
+        futures::executor::block_on(store.select_provider(
+            root,
+            location.clone(),
+            second.clone(),
+            false,
+        ))
+        .unwrap();
         assert_eq!(
             futures::executor::block_on(store.selected_provider(root, &location)).unwrap(),
             Some(second)

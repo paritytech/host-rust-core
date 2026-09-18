@@ -151,6 +151,201 @@ fn derive_person_ring_vrf_entropy(
     .expect("the reserved personhood product id is a valid junction")
 }
 
+/// Length of a ring collection identifier.
+const RING_COLLECTION_ID_LEN: usize = 32;
+/// Ring collection identifiers are space-padded to their full width.
+const RING_COLLECTION_ID_PAD: u8 = b' ';
+
+/// Reserved collection identifier for the full people ring.
+pub const PEOPLE_COLLECTION_ID: [u8; RING_COLLECTION_ID_LEN] =
+    padded_collection_id(b"pop:polkadot.network/people");
+
+/// Reserved collection identifier for the lite people ring.
+pub const PEOPLE_LITE_COLLECTION_ID: [u8; RING_COLLECTION_ID_LEN] =
+    padded_collection_id(b"pop:polkadot.network/people-lite");
+
+const fn padded_collection_id(prefix: &[u8]) -> [u8; RING_COLLECTION_ID_LEN] {
+    assert!(prefix.len() <= RING_COLLECTION_ID_LEN);
+    let mut bytes = [RING_COLLECTION_ID_PAD; RING_COLLECTION_ID_LEN];
+    let mut index = 0;
+    while index < prefix.len() {
+        bytes[index] = prefix[index];
+        index += 1;
+    }
+    bytes
+}
+
+/// A reserved personhood ring the wallet can always produce aliases for.
+///
+/// A person can hold membership in more than one collection, and each one is a
+/// separate alias space with its own slot budget, which is why the allowance
+/// path takes a collection rather than assuming one.
+///
+/// The wallet derives both member keys from its own root entropy, so neither
+/// needs an RFC-0024 registration before a product can use it. Full personhood
+/// keeps index 0 and lite personhood index 1, matching the reserved RFC-0022
+/// derivation paths pinned by [`derive_full_person_ring_vrf_entropy`] and
+/// [`derive_lite_person_ring_vrf_entropy`].
+///
+/// Lives here rather than beside the allowance code that also uses it: this
+/// module is compiled for wasm32 and `runtime::statement_allowance` is not,
+/// while the pairing host and the ring-VRF registry need the type on both
+/// targets. The allowance-facing methods stay in that module.
+///
+/// The native hosts key these rings off the account holding them rather than a
+/// derivation index, so the same mnemonic yields a different member key there.
+/// Only the collection identifiers are shared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display)]
+#[display("{}", self.metadata_variant())]
+pub enum PersonhoodCollection {
+    /// Full personhood, established by proof-of-personhood registration.
+    People,
+    /// Light personhood, backed by the wallet account.
+    LitePeople,
+}
+
+impl PersonhoodCollection {
+    /// Every collection, widest slot budget first, so a caller that stops at
+    /// the first success prefers the collection with the most capacity.
+    pub const ALL: [Self; 2] = [Self::People, Self::LitePeople];
+
+    /// The 32-byte collection identifier used as the first key in every
+    /// `Members` storage map, and as the ring location junction.
+    pub fn identifier(self) -> &'static [u8; RING_COLLECTION_ID_LEN] {
+        match self {
+            Self::People => &PEOPLE_COLLECTION_ID,
+            Self::LitePeople => &PEOPLE_LITE_COLLECTION_ID,
+        }
+    }
+
+    /// The `MembershipCollection` / `PgasCollection` variant naming this
+    /// collection inside a transaction extension, and its `Display` form.
+    pub fn metadata_variant(self) -> &'static str {
+        match self {
+            Self::People => "People",
+            Self::LitePeople => "LitePeople",
+        }
+    }
+
+    /// Index of this collection's member key within the `peopl.<suffix>` domain.
+    pub const fn derivation_index(self) -> u32 {
+        match self {
+            Self::People => 0,
+            Self::LitePeople => 1,
+        }
+    }
+
+    /// Derivation index selecting this collection's member key.
+    pub fn derivation(self) -> truapi::v01::DerivationIndex {
+        truapi::v01::DerivationIndex::Index(self.derivation_index())
+    }
+
+    /// Reserved registry handle naming this collection's member key on the
+    /// network with `network_suffix`.
+    pub fn handle(self, network_suffix: &str) -> truapi::v01::ProductAccountId {
+        truapi::v01::ProductAccountId {
+            dot_ns_identifier: personhood_product_id(network_suffix),
+            derivation_index: self.derivation(),
+        }
+    }
+
+    /// Ring-VRF entropy backing this collection's member key.
+    pub fn entropy(self, root_entropy: &[u8], network_suffix: &str) -> [u8; 32] {
+        derive_person_ring_vrf_entropy(root_entropy, network_suffix, self.derivation_index())
+    }
+
+    /// Ring location addressing this collection on the People chain.
+    pub fn ring_location(self, people_chain_genesis_hash: [u8; 32]) -> truapi::v01::RingLocation {
+        truapi::v01::RingLocation {
+            chain_id: people_chain_genesis_hash,
+            junctions: vec![truapi::v01::RingLocationJunction::CollectionId(
+                self.identifier().to_vec(),
+            )],
+        }
+    }
+
+    /// The collection a handle names, when it is a reserved one on the network
+    /// with `network_suffix`.
+    ///
+    /// `Raw` indices are compared on their derived bytes, because
+    /// [`derivation_index_bytes`] maps `Raw(index_bytes(n))` and `Index(n)` to
+    /// the same ring-VRF key.
+    pub fn from_handle(
+        handle: &truapi::v01::ProductAccountId,
+        network_suffix: &str,
+    ) -> Option<Self> {
+        if handle.dot_ns_identifier != personhood_product_id(network_suffix) {
+            return None;
+        }
+        let bytes = derivation_index_bytes(&handle.derivation_index);
+        Self::ALL
+            .into_iter()
+            .find(|collection| derivation_index_bytes(&collection.derivation()) == bytes)
+    }
+
+    /// The collection a handle names, ignoring which network it was written on.
+    ///
+    /// For validating persisted state, and for a host that holds no network
+    /// suffix of its own. Authorization uses [`Self::from_handle`], which pins
+    /// the network.
+    ///
+    /// The id must be exactly `peopl.<suffix>`. Matching on the first segment
+    /// alone would accept `peopl.evil.dot`, which is the product `evil` under
+    /// the rule that a name is the segment above its TLD, and so is a name
+    /// anyone can publish.
+    fn from_handle_on_any_network(handle: &truapi::v01::ProductAccountId) -> Option<Self> {
+        let (label, suffix) = handle.dot_ns_identifier.split_once('.')?;
+        if label != PERSONHOOD_LABEL || suffix.is_empty() || suffix.contains('.') {
+            return None;
+        }
+        let bytes = derivation_index_bytes(&handle.derivation_index);
+        Self::ALL
+            .into_iter()
+            .find(|collection| derivation_index_bytes(&collection.derivation()) == bytes)
+    }
+
+    /// Whether `handle` is the reserved key for the ring `ring` addresses.
+    ///
+    /// The one place this question is answered, because the three callers hold
+    /// different amounts of context and answering it separately let them drift:
+    /// a signing host pins its own `network_suffix`, while a paired host and
+    /// the snapshot validator have none and pass `None`. `None` still requires
+    /// a well-formed reserved name, and the signing host pins the exact suffix
+    /// again before it will resolve the key, so admitting one here cannot
+    /// produce a proof that the exact check would refuse.
+    pub fn reserved_for_ring(
+        handle: &truapi::v01::ProductAccountId,
+        ring: &truapi::v01::RingLocation,
+        network_suffix: Option<&str>,
+    ) -> bool {
+        let named = match network_suffix {
+            Some(suffix) => Self::from_handle(handle, suffix),
+            None => Self::from_handle_on_any_network(handle),
+        };
+        named.is_some_and(|collection| Self::from_ring_location(ring) == Some(collection))
+    }
+
+    /// The collection a ring location addresses, when it names a reserved one.
+    ///
+    /// Chain-agnostic: only the collection identifier is compared, so a caller
+    /// naming any chain still resolves to the same reserved ring.
+    pub fn from_ring_location(ring: &truapi::v01::RingLocation) -> Option<Self> {
+        ring.junctions.iter().find_map(|junction| match junction {
+            truapi::v01::RingLocationJunction::CollectionId(value) => {
+                Self::from_collection_id(value)
+            }
+            truapi::v01::RingLocationJunction::PalletInstance(_) => None,
+        })
+    }
+
+    /// The collection a ring collection identifier addresses, when reserved.
+    pub fn from_collection_id(collection_id: &[u8]) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|collection| collection.identifier().as_slice() == collection_id)
+    }
+}
+
 /// Derive arbitrary RFC-0022 ring-VRF entropy:
 /// `hash(root_entropy, "ring-vrf")//{product_id}//{derivation_index}`.
 pub fn derive_ring_vrf_entropy(
@@ -310,6 +505,9 @@ fn normalize_chain_code(encoded: Vec<u8>) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    /// Reserved handles are network-scoped; these tests pin the Polkadot one.
+    const TEST_SUFFIX: &str = "dot";
+
     use super::*;
 
     fn fixture_root() -> Keypair {
@@ -440,6 +638,160 @@ mod tests {
         assert_eq!(
             product_public_key_to_address(derived),
             "5ChZBnBw9eDQUMBhnXUKrGMdK5MTfGrca3T1xZZtBQhW8eis"
+        );
+    }
+
+    /// The identifier is a fixed-width storage key, so a padding slip would
+    /// silently read a neighbouring collection rather than fail.
+    #[test]
+    fn people_collection_ids_are_space_padded_to_the_ring_width() {
+        assert_eq!(
+            *PersonhoodCollection::People.identifier(),
+            *b"pop:polkadot.network/people     "
+        );
+        assert_eq!(
+            *PersonhoodCollection::LitePeople.identifier(),
+            *b"pop:polkadot.network/people-lite"
+        );
+        assert_ne!(
+            PersonhoodCollection::People.identifier(),
+            PersonhoodCollection::LitePeople.identifier(),
+        );
+        for collection in PersonhoodCollection::ALL {
+            assert_eq!(collection.identifier().len(), 32, "{collection}");
+            assert!(collection.identifier().is_ascii(), "{collection}");
+        }
+    }
+
+    #[test]
+    fn people_collections_round_trip_through_handles_and_collection_ids() {
+        for collection in PersonhoodCollection::ALL {
+            assert_eq!(
+                PersonhoodCollection::from_handle(&collection.handle(TEST_SUFFIX), TEST_SUFFIX),
+                Some(collection)
+            );
+            assert_eq!(
+                PersonhoodCollection::from_collection_id(collection.identifier()),
+                Some(collection)
+            );
+        }
+
+        let unreserved = truapi::v01::ProductAccountId {
+            dot_ns_identifier: personhood_product_id(TEST_SUFFIX),
+            derivation_index: truapi::v01::DerivationIndex::Index(2),
+        };
+        assert_eq!(
+            PersonhoodCollection::from_handle(&unreserved, TEST_SUFFIX),
+            None
+        );
+
+        let other_product = truapi::v01::ProductAccountId {
+            dot_ns_identifier: "myapp.dot".to_string(),
+            derivation_index: truapi::v01::DerivationIndex::Index(0),
+        };
+        assert_eq!(
+            PersonhoodCollection::from_handle(&other_product, TEST_SUFFIX),
+            None
+        );
+        assert_eq!(
+            PersonhoodCollection::from_collection_id(b"not a ring"),
+            None
+        );
+    }
+
+    /// The network-agnostic lookup is the one check that cannot pin a suffix,
+    /// so it has to pin the shape instead: a name is the segment above its
+    /// TLD, which makes `peopl.evil.dot` the product `evil` and publishable by
+    /// anyone.
+    #[test]
+    fn a_network_agnostic_handle_admits_only_a_real_reserved_name() {
+        let handle = |id: &str| truapi::v01::ProductAccountId {
+            dot_ns_identifier: id.to_string(),
+            derivation_index: truapi::v01::DerivationIndex::Index(0),
+        };
+
+        for id in ["peopl.dot", "peopl.paseo", "peopl.testnet"] {
+            assert_eq!(
+                PersonhoodCollection::from_handle_on_any_network(&handle(id)),
+                Some(PersonhoodCollection::People),
+                "{id} is the reserved product on its own network",
+            );
+        }
+        for id in [
+            "peopl.evil.dot",
+            "peopl.attacker.dot",
+            "peopl",
+            "peopl.",
+            "notpeopl.dot",
+            "peoplx.dot",
+        ] {
+            assert_eq!(
+                PersonhoodCollection::from_handle_on_any_network(&handle(id)),
+                None,
+                "{id} is not the reserved product",
+            );
+        }
+    }
+
+    /// Every host asks this through one function, so the pinned and unpinned
+    /// answers can only differ where they are meant to: on the suffix.
+    #[test]
+    fn reservedness_differs_between_hosts_only_on_the_network() {
+        let people = PersonhoodCollection::People;
+        let ring = people.ring_location([0x22; 32]);
+        let on_dot = people.handle("dot");
+        let on_paseo = people.handle("paseo");
+
+        for (handle, pinned, unpinned, why) in [
+            (&on_dot, true, true, "the reserved handle for this network"),
+            (
+                &on_paseo,
+                false,
+                true,
+                "reserved, but named on another network",
+            ),
+        ] {
+            assert_eq!(
+                PersonhoodCollection::reserved_for_ring(handle, &ring, Some("dot")),
+                pinned,
+                "pinned: {why}",
+            );
+            assert_eq!(
+                PersonhoodCollection::reserved_for_ring(handle, &ring, None),
+                unpinned,
+                "unpinned: {why}",
+            );
+        }
+
+        // Neither form admits a name anyone can publish, or a ring the handle
+        // does not belong to.
+        let forged = truapi::v01::ProductAccountId {
+            dot_ns_identifier: "peopl.evil.dot".to_string(),
+            derivation_index: truapi::v01::DerivationIndex::Index(0),
+        };
+        let other_ring = PersonhoodCollection::LitePeople.ring_location([0x22; 32]);
+        for suffix in [Some("dot"), None] {
+            assert!(!PersonhoodCollection::reserved_for_ring(
+                &forged, &ring, suffix
+            ));
+            assert!(!PersonhoodCollection::reserved_for_ring(
+                &on_dot,
+                &other_ring,
+                suffix
+            ));
+        }
+    }
+
+    #[test]
+    fn people_collection_entropy_matches_the_reserved_derivations() {
+        let root_entropy = [7u8; 32];
+        assert_eq!(
+            PersonhoodCollection::People.entropy(&root_entropy, TEST_SUFFIX),
+            derive_full_person_ring_vrf_entropy(&root_entropy, TEST_SUFFIX)
+        );
+        assert_eq!(
+            PersonhoodCollection::LitePeople.entropy(&root_entropy, TEST_SUFFIX),
+            derive_lite_person_ring_vrf_entropy(&root_entropy, TEST_SUFFIX)
         );
     }
 

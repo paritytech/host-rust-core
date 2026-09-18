@@ -46,9 +46,9 @@ use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript}
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::build_local_transaction;
 use crate::host_logic::product_account::{
-    ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
-    derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
-    derive_root_keypair_from_entropy,
+    PersonhoodCollection, ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes,
+    derive_identity_keypair, derive_product_keypair, derive_product_subtree_keypair,
+    derive_ring_vrf_entropy, derive_root_keypair_from_entropy, personhood_product_id,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::{
@@ -61,8 +61,6 @@ use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
     development_context_bytes, member_from_entropy, sign_from_entropy,
@@ -133,6 +131,10 @@ pub(crate) struct SigningHost {
     renewal: allowance_renewal::RenewalState,
 }
 
+/// People-chain genesis hash used by the signing-host tests.
+#[cfg(test)]
+const PEOPLE_CHAIN_GENESIS: [u8; 32] = [0x22; 32];
+
 impl SigningHost {
     /// Build a signing host with no active session, serving the network whose
     /// dotNS TLD is `network_suffix`.
@@ -184,7 +186,7 @@ impl SigningHost {
                 version: None,
                 platform: truapi::latest::HostPlatform::Unknown,
             },
-            [0; 32],
+            PEOPLE_CHAIN_GENESIS,
             [0xbb; 32],
             [0xcc; 32],
             crate::test_support::test_spawner(),
@@ -432,8 +434,9 @@ impl SigningHost {
     ///
     /// Wallet-internal allowance proofs use the reserved `peopl.<suffix>` keys
     /// the mobile hosts derive on the same network. Product-facing RFC-0024
-    /// operations are unrelated: those resolve only explicitly registered
-    /// handles.
+    /// operations reach the same keys through the reserved handles, which
+    /// resolve without a registration; any other handle resolves only when
+    /// explicitly registered.
     ///
     /// Both entropies are always returned; which collections the person is
     /// actually a member of is settled on chain by looking for a ring that
@@ -469,12 +472,40 @@ impl SigningHost {
             .await
     }
 
+    /// Reserved `peopl.dot` entry for a well-known people ring.
+    ///
+    /// The wallet derives both member keys, so these are usable without an
+    /// RFC-0024 registration. The declared ring pins the configured People
+    /// chain, which is what makes the entry selectable as a provider and
+    /// acceptable to the registry's owner-listing validation.
+    fn reserved_people_entry(
+        &self,
+        session: &AuthoritySession,
+        collection: PersonhoodCollection,
+    ) -> Result<v01::RegisteredRingVrfKey, RingVrfError> {
+        let handle = collection.handle(&self.network_suffix);
+        let entropy = self.ring_vrf_entropy(session, &handle)?;
+        Ok(v01::RegisteredRingVrfKey {
+            handle,
+            rings: vec![collection.ring_location(self.services.people_chain_genesis_hash)],
+            public_key: Some(member_from_entropy(&entropy)?),
+        })
+    }
+
     async fn resolve_ring_vrf_key_for_ring(
         &self,
         session: &AuthoritySession,
         handle: &v01::ProductAccountId,
         ring: &v01::RingLocation,
     ) -> Result<Zeroizing<[u8; 32]>, RingVrfError> {
+        // A reserved people key needs no registration for its own collection.
+        // Any other ring falls through, so an explicit registration still
+        // decides whether the handle covers it.
+        if let Some(collection) = PersonhoodCollection::from_handle(handle, &self.network_suffix)
+            && ring_vrf::collection_id(ring).ok() == Some(*collection.identifier())
+        {
+            return self.ring_vrf_entropy(session, handle);
+        }
         let entry = self
             .registered_ring_vrf_entry(session, handle)
             .await?
@@ -492,6 +523,9 @@ impl SigningHost {
         session: &AuthoritySession,
         handle: &v01::ProductAccountId,
     ) -> Result<Zeroizing<[u8; 32]>, RingVrfError> {
+        if PersonhoodCollection::from_handle(handle, &self.network_suffix).is_some() {
+            return self.ring_vrf_entropy(session, handle);
+        }
         let entry = self
             .registered_ring_vrf_entry(session, handle)
             .await?
@@ -562,9 +596,17 @@ impl SigningHost {
         let session = self.current_local_session().ok_or(RingVrfError::Unknown {
             reason: "no active session".to_string(),
         })?;
-        self.ring_vrf_registry
+        let mut providers = self
+            .ring_vrf_registry
             .providers(session.public_key, ring)
-            .await
+            .await?;
+        if let Some(collection) = PersonhoodCollection::from_ring_location(ring) {
+            let reserved = collection.handle(&self.network_suffix);
+            if !providers.contains(&reserved) {
+                providers.push(reserved);
+            }
+        }
+        Ok(providers)
     }
 
     pub(crate) async fn selected_ring_vrf_provider(
@@ -587,8 +629,12 @@ impl SigningHost {
         let session = self.current_local_session().ok_or(RingVrfError::Unknown {
             reason: "no active session".to_string(),
         })?;
+        // A reserved personhood key needs no registration, so it is selectable
+        // for its own collection on whatever chain the caller named.
+        let reserved =
+            PersonhoodCollection::reserved_for_ring(&handle, &ring, Some(&self.network_suffix));
         self.ring_vrf_registry
-            .select_provider(session.public_key, ring, handle)
+            .select_provider(session.public_key, ring, handle, reserved)
             .await
     }
 }
@@ -1102,6 +1148,21 @@ impl ProductAuthority for SigningHost {
             .ring_vrf_registry
             .owner_entries(session.public_key, &owner)
             .await?;
+        if owner == personhood_product_id(&self.network_suffix) {
+            // A reserved member key identifies which ring member the user is,
+            // so it is disclosed only to its owner. Other callers still see the
+            // handle and its ring, which is what provider selection needs.
+            let owns_reserved_keys = request.calling_product_id == owner;
+            for collection in PersonhoodCollection::ALL {
+                let mut reserved = self.reserved_people_entry(session, collection)?;
+                if !owns_reserved_keys {
+                    reserved.public_key = None;
+                }
+                if !entries.iter().any(|entry| entry.handle == reserved.handle) {
+                    entries.push(reserved);
+                }
+            }
+        }
         if request.payload.disclosure == v01::RingVrfKeyDisclosure::Anonymized {
             for entry in &mut entries {
                 entry.public_key = None;
@@ -1303,7 +1364,10 @@ mod tests {
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
     use super::TEST_NETWORK_SUFFIX;
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
-    use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
+    use super::{
+        LocalActivation, PEOPLE_CHAIN_GENESIS, PersonhoodCollection, RingVrfError,
+        SR25519_SIGNING_CONTEXT,
+    };
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
         derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
@@ -1313,9 +1377,9 @@ mod tests {
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
-    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
     use truapi::api::{Account, Entropy, ResourceAllocation, Signing};
+    use truapi::latest::HostAccountListRingVrfKeysRequest;
     use truapi::latest::{
         HostAccountCreateProofRequest, HostAccountGetAliasRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
@@ -1488,22 +1552,26 @@ mod tests {
     }
 
     fn full_person_ring_resolver() -> Arc<StubRingResolver> {
-        let full_entropy =
-            derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(0))
-                .expect("full-person entropy");
-        let full_member = member_from_entropy(&full_entropy).expect("full-person member");
+        people_ring_resolver(PersonhoodCollection::People)
+    }
+
+    fn people_ring_resolver(collection: PersonhoodCollection) -> Arc<StubRingResolver> {
+        let member = member_from_entropy(&collection.entropy(&ENTROPY, TEST_NETWORK_SUFFIX))
+            .expect("reserved member key");
         Arc::new(StubRingResolver {
-            collection: *b"pop:polkadot.network/people     ",
+            collection: *collection.identifier(),
             ring: ResolvedRing {
-                selected: MemberCandidate {
-                    member: full_member,
-                },
+                selected: MemberCandidate { member },
                 ring_index: 7,
                 ring_revision: 11,
                 domain_size: RingDomainSize::Domain11,
-                members: vec![full_member],
+                members: vec![member],
             },
         })
+    }
+
+    fn people_ring_location(collection: PersonhoodCollection) -> v01::RingLocation {
+        collection.ring_location(PEOPLE_CHAIN_GENESIS)
     }
 
     /// Seed `owner`'s cached manifest so a grant lookup resolves without a
@@ -2465,7 +2533,7 @@ mod tests {
 
     fn full_person_ring_location() -> v01::RingLocation {
         v01::RingLocation {
-            chain_id: [0x22; 32],
+            chain_id: PEOPLE_CHAIN_GENESIS,
             junctions: vec![
                 v01::RingLocationJunction::PalletInstance(42),
                 v01::RingLocationJunction::CollectionId(
@@ -2574,6 +2642,350 @@ mod tests {
                 .to_bytes(),
             identity
         );
+    }
+
+    #[test]
+    fn reserved_people_keys_prove_without_registration() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+
+        let proof = futures::executor::block_on(authority.create_proof(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.dot".to_string(),
+                payload: HostAccountCreateProofRequest {
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: "myapp.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location: full_person_ring_location(),
+                    message: b"prove me".to_vec(),
+                },
+            },
+        ))
+        .expect("reserved full-person key proves without registration");
+
+        assert!(!proof.proof.is_empty());
+        assert_eq!(proof.ring_index, 7);
+    }
+
+    #[test]
+    fn reserved_people_keys_reject_a_foreign_collection() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let foreign = v01::RingLocation {
+            chain_id: [0x22; 32],
+            junctions: vec![v01::RingLocationJunction::CollectionId(
+                b"pop:polkadot.network/somewhere  ".to_vec(),
+            )],
+        };
+
+        let error = futures::executor::block_on(authority.create_proof(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.dot".to_string(),
+                payload: HostAccountCreateProofRequest {
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: "myapp.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location: foreign,
+                    message: b"prove me".to_vec(),
+                },
+            },
+        ))
+        .expect_err("a reserved key is bound to its own collection");
+
+        assert_eq!(error, RingVrfError::KeyNotRegistered);
+    }
+
+    #[test]
+    fn a_reserved_key_still_honours_an_explicit_registration_elsewhere() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let foreign_collection = *b"pop:polkadot.network/somewhere  ";
+        let resolver = {
+            let member = member_from_entropy(
+                &PersonhoodCollection::People.entropy(&ENTROPY, TEST_NETWORK_SUFFIX),
+            )
+            .expect("reserved member key");
+            Arc::new(StubRingResolver {
+                collection: foreign_collection,
+                ring: ResolvedRing {
+                    selected: MemberCandidate { member },
+                    ring_index: 7,
+                    ring_revision: 11,
+                    domain_size: RingDomainSize::Domain11,
+                    members: vec![member],
+                },
+            })
+        };
+        let authority = SigningHostRole::new_with_ring_resolver(platform, resolver);
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let foreign = v01::RingLocation {
+            chain_id: PEOPLE_CHAIN_GENESIS,
+            junctions: vec![v01::RingLocationJunction::CollectionId(
+                foreign_collection.to_vec(),
+            )],
+        };
+        register_full_person_key(&authority, &session, &foreign);
+
+        let proof = futures::executor::block_on(authority.create_proof(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.dot".to_string(),
+                payload: HostAccountCreateProofRequest {
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: "myapp.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location: foreign,
+                    message: b"prove me".to_vec(),
+                },
+            },
+        ))
+        .expect("an explicit registration still covers a foreign ring");
+
+        assert!(!proof.proof.is_empty());
+    }
+
+    #[test]
+    fn the_lite_people_key_proves_in_its_own_collection() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority = SigningHostRole::new_with_ring_resolver(
+            platform,
+            people_ring_resolver(PersonhoodCollection::LitePeople),
+        );
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+
+        let proof = futures::executor::block_on(authority.create_proof(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.dot".to_string(),
+                payload: HostAccountCreateProofRequest {
+                    key_handle: PersonhoodCollection::LitePeople.handle(TEST_NETWORK_SUFFIX),
+                    context: v01::ProductProofContext {
+                        product_id: "myapp.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location: people_ring_location(PersonhoodCollection::LitePeople),
+                    message: b"prove me".to_vec(),
+                },
+            },
+        ))
+        .expect("the reserved lite key proves without registration");
+
+        assert!(!proof.proof.is_empty());
+    }
+
+    #[test]
+    fn a_reserved_people_key_signs_directly_without_registration() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+
+        let signature = futures::executor::block_on(authority.ring_vrf_sign(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.dot".to_string(),
+                payload: HostAccountRingVrfSignRequest {
+                    key_handle: full_person_key_handle(),
+                    message: b"sign me".to_vec(),
+                },
+            },
+        ))
+        .expect("the reserved key signs without registration");
+
+        assert!(!signature.is_empty());
+    }
+
+    #[test]
+    fn a_reserved_provider_can_be_selected_for_its_ring() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let ring = full_person_ring_location();
+
+        let providers = futures::executor::block_on(authority.ring_vrf_providers(&ring))
+            .expect("provider lookup succeeds");
+        let reserved = PersonhoodCollection::People.handle(TEST_NETWORK_SUFFIX);
+        assert!(providers.contains(&reserved));
+
+        futures::executor::block_on(
+            authority.select_ring_vrf_provider(ring.clone(), reserved.clone()),
+        )
+        .expect("a reserved provider is selectable");
+        let selected = futures::executor::block_on(authority.selected_ring_vrf_provider(&ring))
+            .expect("selection lookup succeeds");
+
+        assert_eq!(selected, Some(reserved));
+    }
+
+    #[test]
+    fn providers_for_a_non_reserved_ring_still_come_from_the_registry() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let junctionless = v01::RingLocation {
+            chain_id: PEOPLE_CHAIN_GENESIS,
+            junctions: vec![],
+        };
+
+        let providers = futures::executor::block_on(authority.ring_vrf_providers(&junctionless))
+            .expect("an unaddressable ring still enumerates");
+
+        assert!(providers.is_empty());
+    }
+
+    #[test]
+    fn a_foreign_caller_never_receives_a_reserved_member_key() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform {
+            account_access_confirmed: true,
+            ..StubPlatform::default()
+        });
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+
+        let entries = futures::executor::block_on(authority.list_ring_vrf_keys(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                payload: HostAccountListRingVrfKeysRequest {
+                    owner: "peopl.dot".to_string(),
+                    disclosure: v01::RingVrfKeyDisclosure::PublicKey,
+                },
+            },
+        ))
+        .expect("listing succeeds");
+
+        for collection in PersonhoodCollection::ALL {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.handle == collection.handle(TEST_NETWORK_SUFFIX))
+                .unwrap_or_else(|| panic!("{collection:?} is still listed"));
+            assert_eq!(
+                entry.public_key, None,
+                "member key withheld from {collection:?}"
+            );
+            assert_eq!(entry.rings, vec![people_ring_location(collection)]);
+        }
+    }
+
+    #[test]
+    fn reserved_people_keys_are_listed_without_registration() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+
+        let entries = futures::executor::block_on(authority.list_ring_vrf_keys(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.dot".to_string(),
+                payload: HostAccountListRingVrfKeysRequest {
+                    owner: "peopl.dot".to_string(),
+                    disclosure: v01::RingVrfKeyDisclosure::PublicKey,
+                },
+            },
+        ))
+        .expect("listing succeeds");
+
+        for collection in PersonhoodCollection::ALL {
+            let handle = collection.handle(TEST_NETWORK_SUFFIX);
+            let entry = entries
+                .iter()
+                .find(|entry| entry.handle == handle)
+                .unwrap_or_else(|| panic!("{collection:?} is listed"));
+            let expected = member_from_entropy(&collection.entropy(&ENTROPY, TEST_NETWORK_SUFFIX))
+                .expect("reserved member key derives");
+            assert_eq!(entry.public_key, Some(expected));
+            assert_eq!(entry.rings, vec![people_ring_location(collection)]);
+        }
+
+        // A paired host runs exactly this validation over the remote response,
+        // so the emitted listing has to pass it.
+        super::super::ring_vrf_registry::validate_owner_listing("peopl.dot", &entries)
+            .expect("the emitted listing survives paired-host validation");
+    }
+
+    #[test]
+    fn reserved_people_key_is_offered_as_a_provider_for_its_ring() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let providers =
+            futures::executor::block_on(authority.ring_vrf_providers(&full_person_ring_location()))
+                .expect("provider lookup succeeds");
+
+        assert!(providers.contains(&PersonhoodCollection::People.handle(TEST_NETWORK_SUFFIX)));
+    }
+
+    #[test]
+    fn a_registered_key_still_wins_its_own_listing_entry() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let ring = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring);
+
+        let entries = futures::executor::block_on(authority.list_ring_vrf_keys(
+            &CallContext::default(),
+            &session,
+            ProductRequest {
+                calling_product_id: "peopl.dot".to_string(),
+                payload: HostAccountListRingVrfKeysRequest {
+                    owner: "peopl.dot".to_string(),
+                    disclosure: v01::RingVrfKeyDisclosure::PublicKey,
+                },
+            },
+        ))
+        .expect("listing succeeds");
+
+        let registered: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.handle == full_person_key_handle())
+            .collect();
+        assert_eq!(registered.len(), 1, "the reserved entry does not duplicate");
+        assert_eq!(registered[0].rings, vec![ring]);
     }
 
     #[test]

@@ -41,6 +41,7 @@ use super::statement_store_rpc::StatementStoreRpc;
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::entropy::derive_product_entropy_from_source;
 use crate::host_logic::extrinsic::build_local_transaction;
+use crate::host_logic::product_account::PersonhoodCollection;
 use crate::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_product_keypair_from_subtree_secret,
     derive_ring_vrf_entropy_from_domain,
@@ -403,9 +404,16 @@ impl PairingHost {
         let session = self.session_state.current().ok_or(RingVrfError::Unknown {
             reason: "no active session".to_string(),
         })?;
-        self.ring_vrf_registry
+        let providers = self
+            .ring_vrf_registry
             .providers(session.public_key, ring)
-            .await
+            .await?;
+        // Reserved handles are not injected here: naming one takes the network
+        // suffix, and `PairingHostConfig` carries none. Listing delegates to
+        // the signing host, which has one, and `reconcile_owner` writes what it
+        // returns into this registry, so a reserved handle appears here once a
+        // listing has run rather than ahead of one.
+        Ok(providers)
     }
 
     pub(crate) async fn selected_ring_vrf_provider(
@@ -428,8 +436,12 @@ impl PairingHost {
         let session = self.session_state.current().ok_or(RingVrfError::Unknown {
             reason: "no active session".to_string(),
         })?;
+        // Network-agnostic: this host holds no suffix of its own, and the
+        // signing host pins the exact one before it will resolve the key, so a
+        // handle admitted here still cannot produce a proof it should not.
+        let reserved = PersonhoodCollection::reserved_for_ring(&handle, &ring, None);
         self.ring_vrf_registry
-            .select_provider(session.public_key, ring, handle)
+            .select_provider(session.public_key, ring, handle, reserved)
             .await
     }
 
