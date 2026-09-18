@@ -1371,6 +1371,12 @@ export interface ProductOperations {
   /**
    * Record a pending operation. `label` is a host log and UI hint, empty
    * when the product gave none.
+   *
+   * The returned id must be unique among this product's open operations.
+   * The core keys the worker reference an operation holds by that id, so an
+   * id already open for the product records nothing the second time, and
+   * ending it once drops the demand both were holding. Ids may repeat
+   * across products, and may be reused once an operation has ended.
    */
   beginOperation(
     product: ProductContext,
