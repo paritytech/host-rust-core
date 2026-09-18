@@ -1746,6 +1746,28 @@ mod tests {
         let ring = full_person_ring_location();
         register_full_person_key(&authority, &session, &ring);
 
+        // `raw:` reaches `development_context_bytes`, which uses the caller's own
+        // 32 bytes verbatim, so admitting it would let a grantee name any
+        // context at all, including a third product's.
+        let mint_raw = |caller: &str| {
+            futures::executor::block_on(authority.create_proof(
+                &CallContext::default(),
+                &session,
+                ProductRequest {
+                    calling_product_id: caller.to_string(),
+                    payload: v01::HostAccountCreateProofRequest {
+                        key_handle: full_person_key_handle(),
+                        context: v01::ProductProofContext {
+                            product_id: "raw:".to_string(),
+                            suffix: v01::DerivationIndex::Raw([0x11; 32]),
+                        },
+                        ring_location: ring.clone(),
+                        message: b"m".to_vec(),
+                    },
+                },
+            ))
+        };
+
         let mint = |caller: &str, context: &str| {
             futures::executor::block_on(authority.create_proof(
                 &CallContext::default(),
@@ -1785,6 +1807,18 @@ mod tests {
         assert!(
             mint("dim2.dot", "app.peopl.dot").is_ok(),
             "the granting product is all its executables, so its context is too"
+        );
+        assert_eq!(
+            mint_raw("dim2.dot").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "a grant must not reach the development context, which names no \
+             product and so binds the grantee to nothing"
+        );
+        assert_eq!(
+            mint("dim2.dot", "dim2.paseo").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "the grantee's own namesake on another network is a different \
+             product, so its context is not the grantee's"
         );
         assert_eq!(
             mint("dim2.dot", "peopl.paseo").err(),
@@ -2067,6 +2101,16 @@ mod tests {
         assert!(
             alias("dim2.dot", "peopl.dot").is_ok(),
             "the grant covers the granting product's own context"
+        );
+        assert!(
+            alias("dim2.dot", "app.peopl.dot").is_ok(),
+            "the granting product is all its executables here too"
+        );
+        assert_eq!(
+            alias("dim2.dot", "peopl.paseo").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "the network rule binds the read as well as the proof: the alias and \
+             the proof come out of one VRF evaluation"
         );
         assert!(
             alias("peopl.dot", "bank.dot").is_ok(),

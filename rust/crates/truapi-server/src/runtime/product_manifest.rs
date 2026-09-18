@@ -439,8 +439,9 @@ async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> 
 ///
 /// That admits more than it sounds. On a chain whose contexts are
 /// personhood-owned, the owner's context is the pseudonym the owner presents to
-/// every product in the score system, so a third-party-named context is the
-/// narrow remainder this still refuses.
+/// every product in the score system, so what stays refused is the narrow
+/// remainder: a context naming a third product, and the `raw:` development
+/// context, which names no product and whose bytes the caller chooses outright.
 ///
 /// The owner's own calls are unaffected: minting your own aliases in any
 /// context is what the parameter is for.
