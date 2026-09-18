@@ -16,6 +16,7 @@ import SubstrateSdk
 class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
     struct Dependencies {
         let productId: ProductId
+        let executionKind: ProductExecutionKind
         let permissionGuard: ProductPermissionGuarding
         let notificationScheduler: ProductNotificationScheduling
         let navigationRouter: ProductsNavigationRouting
@@ -49,6 +50,25 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
 
     func onCoreLog(marker: String, detail: String) {
         dependencies.logger.debug("[truapi:\(marker)] \(detail)")
+        writeSimulatorConnectionMarkerIfNeeded(marker: marker)
+    }
+
+    /// Drop a file the truapi E2E launcher polls for, so it knows the product
+    /// actually reached the core over the ws-bridge.
+    private func writeSimulatorConnectionMarkerIfNeeded(marker: String) {
+        #if targetEnvironment(simulator)
+            guard marker == "truapi.ws_bridge.connection_open" else { return }
+
+            // The harness still spells the worker kind "chat" in its file name.
+            let kind = switch dependencies.executionKind {
+            case .app: "spa"
+            case .widget: "widget"
+            case .worker: "chat"
+            }
+            let safeProductId = dependencies.productId.replacingOccurrences(of: "/", with: "_")
+
+            TrUAPIE2EMarkers.write("connected-\(kind)-\(safeProductId)", logger: dependencies.logger)
+        #endif
     }
 
     func navigateTo(url: String) async throws {

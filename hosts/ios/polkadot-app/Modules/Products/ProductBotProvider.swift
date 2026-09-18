@@ -1,5 +1,6 @@
 import AsyncExtensions
 import Foundation
+import FoundationExt
 import Operation_iOS
 import Products
 import StructuredConcurrency
@@ -35,10 +36,41 @@ final class ProductBotProvider: ProductBotProviding {
                 changes.mergeToDict(dict)
             }
             .map { [self] productDict in
-                await makeBots(for: Array(productDict.values))
+                var products = Array(productDict.values)
+
+                #if targetEnvironment(simulator)
+                    if let injected = Self.simulatorChatProduct(),
+                       !products.contains(where: { $0.identifier == injected.identifier }) {
+                        products.append(injected)
+                    }
+                #endif
+
+                return await makeBots(for: products)
             }
             .eraseToAnyAsyncSequence()
     }
+
+    #if targetEnvironment(simulator)
+        /// The product the truapi E2E launcher wants a chat bot for, named by environment
+        /// rather than installed through the UI so `make ios-chat-run` needs no taps.
+        /// It still goes through the normal resolve path, so a manifest product is served
+        /// from its own worker subname exactly as it would be in a real install.
+        private static func simulatorChatProduct() -> Product? {
+            let environment = ProcessInfo.processInfo.environment
+            guard let productId = environment["TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !productId.isEmpty
+            else {
+                return nil
+            }
+
+            let name = environment["TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = name?.nilIfEmpty ?? productId
+
+            return Product(id: productId, name: displayName)
+        }
+    #endif
 }
 
 private extension ProductBotProvider {

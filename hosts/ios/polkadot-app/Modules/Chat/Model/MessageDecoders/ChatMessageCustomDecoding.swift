@@ -3,6 +3,9 @@ import PolkadotUI
 
 struct ChatMessageDecodingContext {
     let messageId: String
+    /// Room the message lives in. Optional because a chat id only carries one
+    /// for extension rooms.
+    let roomId: String?
     let identifier: String
     let processAction: (Chat.Action) -> Void
 }

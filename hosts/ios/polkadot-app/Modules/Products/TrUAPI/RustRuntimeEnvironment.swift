@@ -49,10 +49,12 @@ struct RustRuntimeEnvironment {
     }
 
     /// Open a chat execution for `productId`. Mirrors ``makeSPAExecution``.
-    /// TODO(chat PR): open with ``RustChatExecutionBridge`` and pass it as
-    /// `chat:` to wire the native chat surface once the integration lands.
-    func makeChatExecution(productId: ProductId, routers: ProductRoutersFacadeProtocol) throws -> ExecutionModel {
-        try makeExecution(productId: productId, routers: routers, kind: .worker)
+    func makeChatExecution(
+        productId: ProductId,
+        routers: ProductRoutersFacadeProtocol,
+        chatMessaging: any ProductChatMessaging
+    ) throws -> ExecutionModel {
+        try makeExecution(productId: productId, routers: routers, kind: .worker, chatMessaging: chatMessaging)
     }
 }
 
@@ -60,7 +62,8 @@ private extension RustRuntimeEnvironment {
     func makeExecution(
         productId: ProductId,
         routers: ProductRoutersFacadeProtocol,
-        kind: ProductExecutionKind
+        kind: ProductExecutionKind,
+        chatMessaging: (any ProductChatMessaging)? = nil
     ) throws -> ExecutionModel {
         let chainConnections = TrUAPIChainConnectionPool(
             engineResolver: { [chainRegistry] genesisHash in
@@ -71,16 +74,22 @@ private extension RustRuntimeEnvironment {
             logger: logger
         )
 
-        let bridge = RustProductExecutionBridge(dependencies: makeBridgeDependencies(
+        let dependencies = makeBridgeDependencies(
             productId: productId,
             routers: routers,
+            executionKind: kind,
             chainConnections: chainConnections
-        ))
+        )
+
+        let chatBridge = chatMessaging.map {
+            RustChatExecutionBridge(dependencies: dependencies, chatMessaging: $0)
+        }
+        let bridge = chatBridge ?? RustProductExecutionBridge(dependencies: dependencies)
 
         let execution = try runtime.openProductExecution(
             bridge: bridge,
             configuration: ProductExecutionConfig(productId: productId, executionKind: kind),
-            chat: nil
+            chat: chatBridge
         )
 
         bridge.attach(execution)
@@ -91,10 +100,12 @@ private extension RustRuntimeEnvironment {
     func makeBridgeDependencies(
         productId: ProductId,
         routers: ProductRoutersFacadeProtocol,
+        executionKind: ProductExecutionKind,
         chainConnections: TrUAPIChainConnecting
     ) -> RustProductExecutionBridge.Dependencies {
         RustProductExecutionBridge.Dependencies(
             productId: productId,
+            executionKind: executionKind,
             permissionGuard: ProductPermissionGuard.create(router: routers.productsRouter),
             notificationScheduler: notificationScheduler,
             navigationRouter: routers.navigationRouter,

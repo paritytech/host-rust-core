@@ -11,3 +11,9 @@ typealias TrUAPIHostAllocatableResource = AllocatableResource
 typealias TrUAPIHostVrfTranscriptItem = VrfTranscriptItem
 typealias TrUAPIHostSignVrfRequest = HostAccountSignVrfRequest
 typealias TrUAPIHostRingLocation = RingLocation
+
+// Renderer leaves, named apart so SwiftUI-importing files can extend them
+// without colliding with SwiftUI's own types of the same name.
+typealias TrUAPIHostShape = Shape
+typealias TrUAPIHostHorizontalAlignment = HorizontalAlignment
+typealias TrUAPIHostVerticalAlignment = VerticalAlignment

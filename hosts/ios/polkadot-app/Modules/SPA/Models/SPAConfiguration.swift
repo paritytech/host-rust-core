@@ -37,6 +37,16 @@ struct SPAConfiguration {
 }
 
 extension SPAConfiguration {
+    /// Set by the truapi E2E launcher; drives the simulator straight to the
+    /// product under test instead of the wallet tab.
+    static var isSimulatorBrowseRequested: Bool {
+        #if targetEnvironment(simulator)
+            ProcessInfo.processInfo.environment["TRUAPI_IOS_E2E_BROWSE"] == "1"
+        #else
+            false
+        #endif
+    }
+
     static func browseRoot(host: ProductHost) -> SPAConfiguration {
         SPAConfiguration(
             title: nil,

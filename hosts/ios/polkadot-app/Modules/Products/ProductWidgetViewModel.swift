@@ -13,6 +13,7 @@ final class ProductWidgetViewModel: WidgetNodeProviding {
     private var renderTask: Task<Void, Never>?
 
     init(
+        roomId: String?,
         messageId: String,
         messageType: String,
         messageData: Data,
@@ -29,18 +30,27 @@ final class ProductWidgetViewModel: WidgetNodeProviding {
             guard let self else { return }
 
             let stream = await runtime.renderMessage(
+                roomId: roomId,
                 messageId: messageId,
                 messageType: messageType,
                 messageData: messageData
             )
 
             do {
-                for try await hexString in stream {
+                for try await output in stream {
                     guard !Task.isCancelled else { return }
 
-                    let widget = try ScaleWidget.decode(from: hexString)
-                    let resolved = widget.toWidgetNode(resolver: self.tokenResolver)
+                    let resolved: CustomMessageWidgetNode? = switch output {
+                    case let .scaleEncoded(hexString):
+                        try ScaleWidget.decode(from: hexString)
+                            .toWidgetNode(resolver: self.tokenResolver)
+                    case let .native(node):
+                        node.toWidgetNode(resolver: self.tokenResolver)
+                    }
                     await MainActor.run { self.node = resolved }
+                    #if targetEnvironment(simulator)
+                        TrUAPIE2EMarkers.write("custom-renderer-update", logger: logger)
+                    #endif
                 }
             } catch {
                 guard !Task.isCancelled else { return }
