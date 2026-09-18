@@ -8,7 +8,7 @@ import java.util.Properties
 // carries the UniFFI-generated Kotlin bindings + the `io.parity.truapi` host
 // adapter shell.
 //
-// The core crate lives outside this repo, so its path is read from `truapi.dir`
+// The core crate is read from `truapi.dir`
 // in root `local.properties` (or the `TRUAPI_DIR` env var). Point it at any
 // local truapi worktree to iterate on the core.
 //
@@ -25,8 +25,8 @@ plugins {
 
 // Resolve the truapi checkout that holds `rust/crates/truapi-server`, using the
 // same `truapi.dir` / `TRUAPI_DIR` resolution as the settings-gradle include
-// guard. No fallback: this module is only configured when the guard already
-// resolved the checkout, so the property is guaranteed to be set here.
+// guard, which has already run and accepted whatever this finds: a configured
+// checkout if there is one, otherwise the core in the enclosing repository.
 //
 // Declared above `android { }` because the source sets below interpolate it. A
 // `.kts` top-level val read before its initializer yields null, and Gradle
@@ -37,11 +37,23 @@ val truapiDir: String = run {
         val f = rootProject.file("local.properties")
         if (f.exists()) f.inputStream().use { load(it) }
     }
-    val configured = localProps.getProperty("truapi.dir")
-        ?: System.getenv("TRUAPI_DIR")
-        ?: error("truapi.dir / TRUAPI_DIR must be set to build :bindings:truapi-host")
-    file(configured).takeIf { it.isAbsolute }?.path
-        ?: rootProject.file(configured).path
+    val configured = (localProps.getProperty("truapi.dir") ?: System.getenv("TRUAPI_DIR"))
+        ?.takeIf { it.isNotBlank() }
+    if (configured != null) {
+        file(configured).takeIf { it.isAbsolute }?.path
+            ?: rootProject.file(configured).path
+    } else {
+        // Vendored into the core's own repository, where it is two levels up.
+        // Same rule as the settings-gradle guard, which has already accepted it.
+        //
+        // Bare File, not java.io.File: the Android plugin registers a `java`
+        // extension on the project, and its generated accessor shadows the root
+        // package, so the qualified name does not compile in a build script.
+        rootProject.file("../..").takeIf {
+            File(it, "rust/crates/truapi-server").isDirectory
+        }?.path
+            ?: error("truapi.dir / TRUAPI_DIR must be set to build :bindings:truapi-host")
+    }
 }
 
 // Generated source root that `syncHostShell` populates with truapi's canonical
