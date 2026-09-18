@@ -5,6 +5,8 @@ import io.paritytech.polkadotapp.common.domain.model.Timestamp
 import io.paritytech.polkadotapp.common.utils.emptySubstrateAccountId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.CoinAmountBreakdown
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerIndex
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher.Location
@@ -230,11 +232,12 @@ class TransferPlannerTest {
 
     private fun createCoin(exponent: Int, isSpent: Boolean = false, ageKnown: Int = 0): Coin {
         return Coin(
-            derivationIndex = coinIndexCounter++,
+            derivationIndex = testKey(coinIndexCounter++),
             valueExponent = ValueExponent(exponent),
             age = if (isSpent) Coin.Age.Unknown else Coin.Age.Known(ageKnown),
             isOnChain = true,
-            accountId = emptySubstrateAccountId()
+            accountId = emptySubstrateAccountId(),
+            provenance = CoinProvenance.UNKNOWN,
         )
     }
 
@@ -248,10 +251,12 @@ class TransferPlannerTest {
         val delayUnloadUntil = if (isReady) currentTimestamp - 100L else currentTimestamp + 1000L
 
         return RecyclerVoucher(
-            ringVrfKeyIndex = voucherIndexCounter++,
+            ringVrfKeyIndex = testKey(voucherIndexCounter++),
             ringVrfPublicKey = mock(),
             recyclerValue = ValueExponent(exponent),
-            location = Location.InRecycler(index, recyclerMembers = FULL_RING),
+            location = Location.InRecycler(index, recyclerMembers = FULL_RING, enteredAt = null),
+            recyclerFungibility = RecyclerFungibility.NONE,
+            maxRecyclerFungibility = RecyclerFungibility.NONE,
         )
     }
 

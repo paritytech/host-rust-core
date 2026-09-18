@@ -25,7 +25,10 @@ import io.paritytech.polkadotapp.common.utils.progressStallReport.StallReportCon
 import io.paritytech.polkadotapp.common.utils.progressStallReport.previewStallReportOperations
 import io.paritytech.polkadotapp.common.utils.progressStallReport.previewStallReportSteps
 import io.paritytech.polkadotapp.design.components.button.common.PolkadotButtonShape
+import io.paritytech.polkadotapp.design.components.button.default.PolkadotButtonSize
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextButton
+import io.paritytech.polkadotapp.design.components.icon.NovaIcons
+import io.paritytech.polkadotapp.design.components.icon.vectors.ArrowUpwards
 import io.paritytech.polkadotapp.design.components.progress.LoadingScreenState
 import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
@@ -175,16 +178,22 @@ private fun SendEnterAmountScreenInternal(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(PolkadotTheme.spacings.large),
-            text = stringResource(
-                when (progress) {
-                    is SendProgress.Idle -> RCommon.string.common_send
-                    is SendProgress.Submitting -> RCommon.string.send_enter_amount_submitting
-                    is SendProgress.Settling -> RCommon.string.send_enter_amount_settling
-                }
-            ),
+            text = when (progress) {
+                is SendProgress.Idle ->
+                    if (state.isAmountPositive) {
+                        stringResource(RCommon.string.send_enter_amount_send_button, state.input, symbol)
+                    } else {
+                        stringResource(RCommon.string.common_send)
+                    }
+
+                is SendProgress.Submitting -> stringResource(RCommon.string.send_enter_amount_submitting)
+                is SendProgress.Settling -> stringResource(RCommon.string.send_enter_amount_settling)
+            },
+            size = PolkadotButtonSize.large(),
             onClick = onConfirmClick,
             enabled = state.isSendEnabled && progress is SendProgress.Idle,
-            shape = PolkadotButtonShape.pill
+            shape = PolkadotButtonShape.pill,
+            iconStart = NovaIcons.ArrowUpwards
         )
     }
 }
@@ -244,6 +253,7 @@ private fun SendEnterAmountScreenAllWidgetPreview() {
                     gainingPrivacy = TokenAmountModel.mock(150),
                     sendProgress = SendProgress.Idle,
                     showBalanceError = true,
+                    isAmountPositive = true,
                     isSendEnabled = false,
                     isAmountLocked = false,
                     recipientAvatarColor = AvatarColorScheme.Garnet

@@ -1,6 +1,7 @@
 package io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket
 
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.Chain
 import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.withAmount
 import io.paritytech.polkadotapp.common.BuildConfig
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
@@ -8,15 +9,20 @@ import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.utils.disable
 import io.paritytech.polkadotapp.common.utils.enable
 import io.paritytech.polkadotapp.common.utils.launchUnit
+import io.paritytech.polkadotapp.common.utils.withLoading
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.BackupProgress
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.mapper.TokenAmountMapper
 import io.paritytech.polkadotapp.feature_wallet_impl.PocketRouter
 import io.paritytech.polkadotapp.feature_wallet_impl.domain.interactor.DigitalDollarCardDetailsInteractor
+import io.paritytech.polkadotapp.feature_wallet_impl.domain.model.CoinageHoldingsInfo
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.mapper.clearing
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.mapper.toCompositionUiModel
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.mapper.toUiModels
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.BalanceRestoreUiState
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.CoinageBalanceBreakdownUiModel
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.CoinageUiState
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.DigitalDollarCardDetailsUiState
-import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,39 +39,42 @@ class DigitalDollarCardDetailsViewModel @Inject constructor(
 ) : BaseViewModel() {
     private val fundInProgress = MutableStateFlow(false)
 
-    val coinageState: StateFlow<LoadingState<CoinageUiState>> = combine(
-        interactor.observeAssetInfo(),
-        fundInProgress,
-        interactor.observeCoins(),
-        interactor.observeVouchers(),
-        interactor.observeActionsEnabled()
-    ) { assetInfo, inProgress, coins, vouchers, actionsEnabled ->
-        val asset = assetInfo.asset
+    /**
+     * Owned here rather than remembered in the card, so an expanded key or details list outlives the
+     * holdings updating underneath it.
+     */
+    private val detailsVisible = MutableStateFlow(false)
+    private val keyVisible = MutableStateFlow(false)
 
-        LoadingState.Loaded(
+    private val holdingsFlow: Flow<Result<CoinageHoldingsInfo>> = interactor.observeHoldings()
+
+    private val cardToggles = combine(detailsVisible, keyVisible, ::Pair)
+
+    val coinageState: StateFlow<LoadingState<CoinageUiState>> = combine(
+        holdingsFlow,
+        fundInProgress,
+        interactor.observeActionsEnabled(),
+        cardToggles
+    ) { holdingsResult, inProgress, actionsEnabled, toggles ->
+        holdingsResult.map { holdings ->
             CoinageUiState(
-                tokensState = CoinageUiState.TokensState(
-                    totalBalance = tokenAmountMapper.mapFrom(asset.withAmount(assetInfo.totalBalance)),
-                    spendableBalance = tokenAmountMapper.mapFrom(asset.withAmount(assetInfo.spendableBalance)),
-                    gainingPrivacyBalance = tokenAmountMapper.mapFrom(
-                        asset.withAmount(assetInfo.gainingPrivacyBalance)
-                    ),
-                    pendingBalance = tokenAmountMapper.mapFrom(asset.withAmount(assetInfo.pendingBalance)),
-                    coinList = coins.toImmutableList(),
-                    voucherList = vouchers.toImmutableList()
-                ),
+                tokensState = holdings.toTokensState(interactor.asset()),
                 autoFundAvailable = interactor.autoFundAvailable(),
                 fundInProgress = inProgress,
                 actionsEnabled = actionsEnabled,
                 coinageWidgetsEnabled = BuildConfig.COINAGE_WIDGETS_ENABLED,
-                testnetFundEnabled = BuildConfig.TESTNET_FUND_ENABLED,
+                shareLogsEnabled = BuildConfig.TESTNET_FUND_ENABLED,
+                detailsVisible = toggles.first,
+                keyVisible = toggles.second
             )
+        }
+    }
+        .withLoading("CoinageCard")
+        .stateIn(
+            scope = this,
+            started = SharingStarted.Eagerly,
+            initialValue = LoadingState.Loading
         )
-    }.stateIn(
-        scope = this,
-        started = SharingStarted.Eagerly,
-        initialValue = LoadingState.Loading
-    )
 
     val state: StateFlow<DigitalDollarCardDetailsUiState> = interactor.observeBackupProgress()
         .map { DigitalDollarCardDetailsUiState(balanceRestore = it.toBalanceRestoreUiState()) }
@@ -78,9 +87,15 @@ class DigitalDollarCardDetailsViewModel @Inject constructor(
         )
 
     fun onGetCashClick() = launchUnit {
-        interactor.getCashProductId()
-            .onSuccess { router.openProduct(it) }
+        interactor.getFundingConfig()
+            .onSuccess { router.openSpaSheet(it.onrampUrl) }
             .onFailure { showPresentationError(GetCashUnavailablePresentationError(it)) }
+    }
+
+    fun onWithdrawClick() = launchUnit {
+        interactor.getFundingConfig()
+            .onSuccess { router.openSpaSheet(it.offrampUrl) }
+            .onFailure { showPresentationError(WithdrawUnavailablePresentationError(it)) }
     }
 
     fun onSendClick() {
@@ -95,16 +110,6 @@ class DigitalDollarCardDetailsViewModel @Inject constructor(
         fundInProgress.disable()
     }
 
-    fun onShareLogsClick() = launchUnit {
-        interactor.shareCoinageLogs()
-            .onFailure { showPresentationError(ShareCoinageLogsFailedPresentationError(it)) }
-    }
-
-    fun onForceRecycleClick(coin: Coin) = launchUnit {
-        interactor.forceRecycle(coin)
-            .onFailure { showPresentationError(ForceRecycleFailedPresentationError(it)) }
-    }
-
     fun onBackupUpdateClick() {
         interactor.startDeepSearch()
     }
@@ -112,6 +117,33 @@ class DigitalDollarCardDetailsViewModel @Inject constructor(
     fun onBackupCloseClick() {
         interactor.markBackupCompleted()
     }
+
+    fun onDetailsToggled() {
+        detailsVisible.value = !detailsVisible.value
+    }
+
+    fun onKeyToggled() {
+        keyVisible.value = !keyVisible.value
+    }
+
+    fun onShareLogsClick() = launchUnit {
+        interactor.shareCoinageLogs()
+            .onFailure { showPresentationError(ShareCoinageLogsFailedPresentationError(it)) }
+    }
+
+    private fun CoinageHoldingsInfo.toTokensState(asset: Chain.Asset) = CoinageUiState.TokensState(
+        totalBalance = tokenAmountMapper.mapFrom(asset.withAmount(balance.total)),
+        readyBalance = tokenAmountMapper.mapFrom(asset.withAmount(balance.availablePrivate)),
+        clearingBalance = tokenAmountMapper.mapFrom(asset.withAmount(balance.clearing)),
+        composition = balance.toCompositionUiModel(),
+        holdings = holdings.toUiModels(asset, tokenAmountMapper),
+        breakdown = CoinageBalanceBreakdownUiModel(
+            availablePrivate = tokenAmountMapper.mapFrom(asset.withAmount(balance.availablePrivate)),
+            gainingPrivacy = tokenAmountMapper.mapFrom(asset.withAmount(balance.gainingPrivacy.amount)),
+            pending = tokenAmountMapper.mapFrom(asset.withAmount(balance.pending)),
+            canSpendGainingPrivacy = balance.gainingPrivacy.canSpendWithConfirmation
+        )
+    )
 
     private fun BackupProgress.toBalanceRestoreUiState(): BalanceRestoreUiState {
         return when (this) {

@@ -15,4 +15,5 @@ dependencies {
     implementation(project(":chains"))
 
     testImplementation(project(":test-shared"))
+    testImplementation(libs.mockk)
 }

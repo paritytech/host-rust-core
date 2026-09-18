@@ -18,6 +18,8 @@ import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextBu
 import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
+import io.paritytech.polkadotapp.feature_coinage_api.presentation.privacy.ConfirmGainingPrivacySpendContent
+import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.PaymentRequestStep
 import io.paritytech.polkadotapp.feature_products_impl.presentation.paymentRequest.PaymentRequestContract
 import io.paritytech.polkadotapp.feature_products_impl.presentation.paymentRequest.PaymentRequestUiState
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.LocalTokenAmountFormatter
@@ -46,44 +48,61 @@ private fun PaymentRequestScreenInternal(
     onReject: () -> Unit,
 ) {
     NovaBottomSheetSurface {
-        Column(
-            modifier = Modifier.padding(
-                top = PolkadotTheme.spacings.large,
-                bottom = PolkadotTheme.spacings.mediumIncreased,
-                start = PolkadotTheme.spacings.mediumIncreased,
-                end = PolkadotTheme.spacings.mediumIncreased,
-            ),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            val formatter = LocalTokenAmountFormatter.current
-            NovaText(
-                text = stringResource(
-                    RCommon.string.product_payment_request_title,
-                    state.productId,
-                    formatter.formatTokenAmount(state.amount, precision = RoundPrecision.DEFAULT),
-                ),
-                style = PolkadotTheme.typography.title.large,
-                color = PolkadotTheme.colors.fg.primary,
-            )
+        when (state.step) {
+            PaymentRequestStep.Confirm -> PaymentRequestConfirmContent(state, onApprove, onReject)
 
-            VerticalSpacer { extraLarge }
-
-            PolkadotTextButton(
-                modifier = Modifier.fillMaxWidth(),
-                text = stringResource(RCommon.string.product_payment_request_approve),
-                style = PolkadotButtonStyle.secondary(),
-                onClick = onApprove,
-            )
-
-            VerticalSpacer { small }
-
-            PolkadotTextButton(
-                modifier = Modifier.fillMaxWidth(),
-                text = stringResource(RCommon.string.product_payment_request_reject),
-                style = PolkadotButtonStyle.ghost(),
-                onClick = onReject,
+            PaymentRequestStep.PrivacyWarning -> ConfirmGainingPrivacySpendContent(
+                totalTransfer = state.amount,
+                onSendAnyway = onApprove,
+                onCancel = onReject,
             )
         }
+    }
+}
+
+@Composable
+private fun PaymentRequestConfirmContent(
+    state: PaymentRequestUiState,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(
+            top = PolkadotTheme.spacings.large,
+            bottom = PolkadotTheme.spacings.mediumIncreased,
+            start = PolkadotTheme.spacings.mediumIncreased,
+            end = PolkadotTheme.spacings.mediumIncreased,
+        ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        val formatter = LocalTokenAmountFormatter.current
+        NovaText(
+            text = stringResource(
+                RCommon.string.product_payment_request_title,
+                state.productId,
+                formatter.formatTokenAmount(state.amount, precision = RoundPrecision.DEFAULT),
+            ),
+            style = PolkadotTheme.typography.title.large,
+            color = PolkadotTheme.colors.fg.primary,
+        )
+
+        VerticalSpacer { extraLarge }
+
+        PolkadotTextButton(
+            modifier = Modifier.fillMaxWidth(),
+            text = stringResource(RCommon.string.product_payment_request_approve),
+            style = PolkadotButtonStyle.secondary(),
+            onClick = onApprove,
+        )
+
+        VerticalSpacer { small }
+
+        PolkadotTextButton(
+            modifier = Modifier.fillMaxWidth(),
+            text = stringResource(RCommon.string.product_payment_request_reject),
+            style = PolkadotButtonStyle.ghost(),
+            onClick = onReject,
+        )
     }
 }
 
@@ -98,6 +117,7 @@ private fun PaymentRequestScreenPreview() {
                 state = PaymentRequestUiState(
                     productId = "alice.dot",
                     amount = TokenAmountModel.mock,
+                    step = PaymentRequestStep.Confirm,
                 ),
                 onApprove = {},
                 onReject = {},

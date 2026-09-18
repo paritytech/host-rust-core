@@ -7,7 +7,6 @@ import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.domain.model.DataByteArray
 import io.paritytech.polkadotapp.feature_account_api.domain.derivation.DerivationIndex32
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentStatus
 import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.AllocatableResource
 import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.AllocationOutcome
@@ -32,6 +31,7 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.PaymentBal
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.ProductAccountResult
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.ProductTheme
 import io.paritytech.polkadotapp.feature_products_impl.domain.notifications.NotificationId
+import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.ProductPaymentRequestId
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.RemotePermissionRequest
 import io.paritytech.polkadotapp.feature_products_impl.domain.topUpRequest.PaymentTopUpId
@@ -171,9 +171,10 @@ interface ProductsBotApi {
 
     suspend fun requestPayment(
         callingProductId: ProductId,
+        id: ProductPaymentRequestId,
         amount: Balance,
         destination: AccountId,
-    ): Result<PaymentId>
+    ): Result<Unit>
 
     suspend fun topUp(
         callingProductId: ProductId,
@@ -186,7 +187,7 @@ interface ProductsBotApi {
 
     fun subscribePaymentStatus(
         callingProductId: ProductId,
-        paymentId: PaymentId,
+        id: ProductPaymentRequestId,
     ): Flow<PaymentStatus>
 
     fun subscribeChatRooms(): Flow<List<ProductChatRoom>>

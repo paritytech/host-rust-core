@@ -10,7 +10,6 @@ interface SettingsRouter : ReturnableRouter {
     fun openBackupConflict(payload: BackupConflictPayload)
     fun openDebugMenu()
     fun openCurrency()
-    fun openLanguage()
     fun openProductSettings()
     fun openBlockedUsers()
     fun openLinkedDevices()

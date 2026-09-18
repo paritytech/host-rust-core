@@ -227,3 +227,9 @@ inline fun <T, reified E : Throwable> Result<T>.mapErrorNotInstance(
 ): Result<T> {
     return mapError { if (it is E) it else transform(it) }
 }
+
+inline fun <T, reified E : Throwable> Result<T>.mapErrorInstance(
+    transform: (throwable: E) -> Throwable,
+): Result<T> {
+    return mapError { if (it is E) transform(it) else it }
+}

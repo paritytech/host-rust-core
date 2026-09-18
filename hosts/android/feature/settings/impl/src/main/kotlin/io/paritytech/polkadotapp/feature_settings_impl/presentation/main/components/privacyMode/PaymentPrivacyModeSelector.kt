@@ -1,8 +1,6 @@
 package io.paritytech.polkadotapp.feature_settings_impl.presentation.main.components.privacyMode
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -23,11 +21,11 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -39,6 +37,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
+import io.paritytech.polkadotapp.common.utils.CurrencyConfig
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.ShieldOutlined
@@ -48,7 +47,6 @@ import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingStrategyType
-import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -60,8 +58,8 @@ import io.paritytech.polkadotapp.common.R as RCommon
  * The primary operating-mode control of the payment system: how much of what the user receives is held back
  * to gain privacy before it can be spent again.
  *
- * The selected mode is a raised circle on the track, moved either by tapping a mode or by dragging it, in
- * which case it snaps to the nearest one on release. The track carries intermediate units between the three
+ * The selected mode is marked by a ring on the track, moved either by tapping a mode or by dragging it, in
+ * which case it settles on the nearest one on release. The track carries intermediate units between the three
  * presets: the underlying model is continuous in two parameters, so the positions between presets are the
  * ones a later release opens up.
  *
@@ -86,7 +84,7 @@ fun PaymentPrivacyModeSelector(
         ) {
             Header()
 
-            VerticalSpacer { small }
+            VerticalSpacer { extraMedium }
 
             ModeSelector(
                 selectedMode = selectedMode,
@@ -108,7 +106,7 @@ private fun Header() {
         HorizontalSpacer { small }
 
         NovaText(
-            text = stringResource(RCommon.string.payment_privacy_mode_title),
+            text = stringResource(RCommon.string.payment_privacy_mode_title, CurrencyConfig.symbol),
             style = PolkadotTheme.typography.title.small,
             color = PolkadotTheme.colors.fg.primary
         )
@@ -123,6 +121,8 @@ private fun ModeSelector(
     val modes = RecyclingStrategyType.entries
     val appearances = modes.map { it.appearance() }.toImmutableList()
     val selectedIndex = modes.indexOf(selectedMode)
+    val currentSelectedIndex by rememberUpdatedState(selectedIndex)
+    val currentOnModeSelected by rememberUpdatedState(onModeSelected)
 
     val scope = rememberCoroutineScope()
     // Position is held as a fractional mode index rather than pixels, so it is already correct on the first
@@ -139,24 +139,23 @@ private fun ModeSelector(
     val dragFade = remember { DragFade() }
 
     val haptics = LocalHapticFeedback.current
-    // The mark the dragged circle was last over. Held across drag events so a tick fires on crossing one,
+    // The mark the ring was last over. Held across drag events so a tick fires on crossing one,
     // not on every pointer sample.
     var lastMarkIndex by remember { mutableIntStateOf(0) }
 
-    // A dragged circle spends most of the gesture between two modes; this is the one it is closest to.
     val nearestIndex by remember {
         derivedStateOf { position.value.roundToInt().coerceIn(modes.indices) }
     }
 
     // Outside a drag the selected mode is the truth; only while a finger is down does the nearest one lead,
-    // so the circles, markers and labels follow the dragged circle rather than the mode still committed.
+    // so the circles and the description follow the ring rather than the mode still committed.
     val highlightedIndex = if (isDragging) nearestIndex else selectedIndex
 
-    // A tap never slides the selection along the track: the position jumps, and the two circles animate
-    // their own size in place. Only a drag moves a circle, which is what keeps `position` continuous.
-    LaunchedEffect(selectedIndex) {
-        if (!isDragging) {
-            position.snapTo(selectedIndex.toFloat())
+    // A zero-distance tween still runs its full length and the glow waits on it, so the ring is only animated
+    // home when it is away.
+    LaunchedEffect(selectedIndex, isDragging) {
+        if (!isDragging && position.value != selectedIndex.toFloat()) {
+            position.animateTo(selectedIndex.toFloat(), SELECTION_ANIMATION)
         }
     }
 
@@ -164,7 +163,7 @@ private fun ModeSelector(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(CIRCLE_BOX_SIZE)
+                .height(MODE_BOX_SIZE)
                 .onSizeChanged { trackWidth = it.width }
         ) {
             // The visuals carry no semantics of their own; the touch targets below describe each mode in one
@@ -178,61 +177,27 @@ private fun ModeSelector(
                 )
 
                 modes.indices.forEach { index ->
-                    // While a drag is in flight the circle under the finger is the dragged one below, so the
-                    // mode it currently covers hands its place over: it dissolves under that circle and
-                    // fades back in as the circle leaves, rather than blinking out and back.
-                    // It stays grown the whole time it is covered, because the drag ends by removing the
-                    // circle above it: anything left to animate then plays out in plain sight.
-                    val isCovered = isDragging && index == highlightedIndex
-                    val reveal = remember { Animatable(1f) }
-
-                    LaunchedEffect(isCovered, isDragging) {
-                        when {
-                            // Going covered and coming out of a drag are both handovers with the dragged
-                            // circle: it appears or disappears in a single frame, so anything gradual here
-                            // would show through as a flicker beside it.
-                            !isDragging -> reveal.snapTo(1f)
-                            isCovered -> reveal.snapTo(0f)
-                            else -> reveal.animateTo(1f, tween(dragFade.millis, easing = LinearEasing))
-                        }
-                    }
-
                     ModeCircle(
                         modifier = Modifier
                             .align(Alignment.CenterStart)
-                            .offset(centreOffset({ index.toFloat() }, { trackWidth }, modes.lastIndex))
-                            // The animation above only reaches the value a frame after the composition that
-                            // asked for it, which is one frame too late for a handover; the two settled
-                            // cases are therefore stated here, where they hold from the first frame.
-                            .graphicsLayer {
-                                alpha = when {
-                                    !isDragging -> 1f
-                                    isCovered -> 0f
-                                    else -> reveal.value
-                                }
-                            },
+                            .offset(centreOffset({ index.toFloat() }, { trackWidth }, modes.lastIndex)),
                         appearance = appearances[index],
-                        isSelected = index == highlightedIndex,
-                        // A mode lights up once the selection has settled on it, so nothing glows while a
-                        // finger is still choosing.
-                        hasGlow = !isDragging && index == selectedIndex,
-                        fadeMillis = { dragFade.millis },
+                        state = when {
+                            !isDragging && !position.isRunning && index == selectedIndex -> CircleState.Settled
+                            index == highlightedIndex -> CircleState.Grown
+                            else -> CircleState.Resting
+                        },
                         interactionSource = interactionSources[index]
                     )
                 }
 
-                if (isDragging) {
-                    ModeCircle(
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .offset(centreOffset({ position.value }, { trackWidth }, modes.lastIndex)),
-                        appearance = appearances[nearestIndex],
-                        isSelected = true,
-                        hasGlow = false,
-                        fadeMillis = { dragFade.millis },
-                        interactionSource = interactionSources[nearestIndex]
-                    )
-                }
+                SelectionRing(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(centreOffset({ position.value }, { trackWidth }, modes.lastIndex)),
+                    colors = appearances[nearestIndex].colors.selected,
+                    fadeMillis = { if (isDragging) dragFade.millis else TAP_FADE_MILLIS }
+                )
             }
 
             // The drag lives on the parent of the touch targets: a tap never crosses the slop, so it reaches
@@ -250,19 +215,17 @@ private fun ModeSelector(
                             },
                             onDragCancel = {
                                 scope.launch {
-                                    position.animateTo(selectedIndex.toFloat(), SELECTION_ANIMATION)
+                                    position.animateTo(currentSelectedIndex.toFloat(), SELECTION_ANIMATION)
                                     isDragging = false
                                 }
                             },
                             onDragEnd = {
                                 val nearest = position.value.roundToInt().coerceIn(modes.indices)
-                                if (modes[nearest] != selectedMode) {
+                                if (nearest != currentSelectedIndex) {
                                     haptics.performHapticFeedback(HapticFeedbackType.Confirm)
                                 }
-                                onModeSelected(modes[nearest])
+                                currentOnModeSelected(modes[nearest])
 
-                                // The flag drops only after the circle has arrived, so the dragged circle
-                                // hands over to the static one exactly where it came to rest.
                                 scope.launch {
                                     position.animateTo(nearest.toFloat(), SELECTION_ANIMATION)
                                     isDragging = false
@@ -313,22 +276,13 @@ private fun ModeSelector(
             }
         }
 
-        ModeMarkers(
-            appearances = appearances,
-            nearestIndex = { highlightedIndex },
-            trackWidth = { trackWidth }
-        )
-
-        ModeLabels(appearances = appearances, highlightedIndex = highlightedIndex)
-
         VerticalSpacer { small }
 
         SelectedModeDescription(appearance = appearances[highlightedIndex])
     }
 }
 
-// Modes are pinned centre-to-centre: half a selected circle of inset at each end, then an equal step between
-// neighbours. [position] is a fractional mode index, so the selection tracks a finger continuously.
+// [position] is a fractional mode index, so the selection tracks a finger continuously.
 private fun centreOffset(
     position: () -> Float,
     trackWidth: () -> Int,
@@ -337,7 +291,7 @@ private fun centreOffset(
     val inset = TRACK_INSET.toPx()
     val centre = inset + position() * trackStep(trackWidth(), inset, lastIndex)
 
-    IntOffset(x = (centre - CIRCLE_BOX_SIZE.toPx() / 2f).roundToInt(), y = 0)
+    IntOffset(x = (centre - MODE_BOX_SIZE.toPx() / 2f).roundToInt(), y = 0)
 }
 
 private fun trackStep(trackWidth: Int, inset: Float, lastIndex: Int): Float {
@@ -346,7 +300,6 @@ private fun trackStep(trackWidth: Int, inset: Float, lastIndex: Int): Float {
     return if (span > 0f && lastIndex > 0) span / lastIndex else 0f
 }
 
-// Which scale mark the circle currently sits over, counted from the left end of the scale.
 private fun markIndexOf(
     position: Float,
     trackWidth: Int,
@@ -359,33 +312,6 @@ private fun markIndexOf(
     return if (markStep > 0f) floor(offsetFromScaleStart / markStep).toInt() else 0
 }
 
-@Composable
-private fun ModeMarkers(
-    appearances: ImmutableList<ModeAppearance>,
-    nearestIndex: () -> Int,
-    trackWidth: () -> Int
-) {
-    Box(modifier = Modifier.fillMaxWidth().height(MARKER_BOX_SIZE)) {
-        appearances.forEachIndexed { index, appearance ->
-            ModeMarker(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .offset {
-                        val inset = TRACK_INSET.toPx()
-                        val centre = inset + index * trackStep(trackWidth(), inset, appearances.lastIndex)
-
-                        IntOffset(x = (centre - MARKER_BOX_SIZE.toPx() / 2f).roundToInt(), y = 0)
-                    },
-                appearance = appearance,
-                isSelected = index == nearestIndex()
-            )
-        }
-    }
-}
-
-// The cross-fades a crossing starts run for as long as the gesture that triggered them warrants: a flick
-// must not leave the previous glyph hanging behind the finger, while a slow drag has room for a gentler
-// dissolve. Both ends stay well clear of the instant swap this replaces.
 private class DragFade {
     var millis: Int = SLOW_DRAG_FADE_MILLIS
 
@@ -400,6 +326,7 @@ private class DragFade {
 
 private const val SLOW_DRAG_FADE_MILLIS = 280
 private const val FAST_DRAG_FADE_MILLIS = 140
+private const val TAP_FADE_MILLIS = FAST_DRAG_FADE_MILLIS
 
 // Mode widths per second at which the fade reaches its shortest.
 private const val FAST_DRAG_SPEED = 3f
@@ -408,8 +335,6 @@ private const val FADE_SMOOTHING = 0.4f
 private const val MILLIS_IN_SECOND = 1000f
 
 private val HEADER_ICON_SIZE = 24.dp
-
-private val DESCRIPTION_RADIUS = 12.dp
 
 @Preview
 @Composable

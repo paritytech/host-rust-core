@@ -28,4 +28,4 @@ enum class CoinRecyclingState {
  * Verdicts for one evaluation. A coin absent from the map has not been judged yet — it is on its way, not
  * spendable, and must never be read as available.
  */
-typealias RecyclingVerdicts = Map<DerivationIndex, CoinRecyclingState>
+typealias RecyclingVerdicts = Map<CoinageKeyIndex, CoinRecyclingState>
