@@ -49,8 +49,8 @@ rest.
 - An inline comment is the exception, not the default. It earns its place only
   where the code cannot be made to speak for itself, and then it is brief and
   says why, never what.
-- Code meant to be read once and thrown away, or read mainly by other agents,
-  is exempt.
+- Code that is never committed is exempt: a throwaway probe, a scratch script,
+  a mutation run. Anything that lands is read by people.
 
 ## Code is read by people and only incidentally run
 
