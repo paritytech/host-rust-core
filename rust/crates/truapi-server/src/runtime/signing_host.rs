@@ -931,9 +931,9 @@ impl ProductAuthority for SigningHost {
             Err(err) => return Err(err),
         };
         // The grant admits the caller's own context and the granting product's,
-        // and no one else's, exactly as on `create_proof`. The alias this returns and the alias a proof
-        // attests are one VRF evaluation, so guarding only the proof would leave
-        // the same bytes reachable through this read.
+        // and no one else's, exactly as on `create_proof`. The alias this returns
+        // and the alias a proof attests are one VRF evaluation, so guarding only
+        // the proof would leave the same bytes reachable through this read.
         let key_handle = match granted {
             Some((key_handle, access)) => {
                 crate::runtime::product_manifest::require_own_context(
@@ -1782,11 +1782,15 @@ mod tests {
             mint("peopl.dot", "bank.dot").is_ok(),
             "the owner may still mint its own alias in any context"
         );
+        assert!(
+            mint("dim2.dot", "app.peopl.dot").is_ok(),
+            "the granting product is all its executables, so its context is too"
+        );
         assert_eq!(
             mint("dim2.dot", "peopl.paseo").err(),
             Some(RingVrfError::NotAllowlisted),
-            "a namesake on another network is a different product, so its context \
-             is not the granting product's"
+            "a grant published on one network must not reach the pseudonym a \
+             namesake presents on another"
         );
     }
 
