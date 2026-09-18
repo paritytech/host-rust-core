@@ -7,5 +7,5 @@ enum OffboardVouchersForPaymentError: Error {
     case unexpectedEmptyRevision(RecyclerKey)
     case noSurplusHost(Balance)
     case subscriptionEnded
-    case unknownVoucher(DerivationIndex)
+    case unknownVoucher(CoinageKeyIndex)
 }

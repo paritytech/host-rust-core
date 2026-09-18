@@ -145,13 +145,13 @@ private extension CoinageAssetSelectorTests {
         CoinageAssetState(handedOff: false, consumerStatus: nil, minterStatus: nil)
     }
 
-    func mintedCoin(index: DerivationIndex) -> TrackedCoin {
+    func mintedCoin(index: CoinageKeyIndex) -> TrackedCoin {
         let coin = Coin(
             exponent: 1,
             derivationIndex: index,
             age: 0,
             isOnchain: true,
-            publicKey: Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
+            publicKey: Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
         )
         return TrackedCoin(coin: coin, state: free)
     }
@@ -160,11 +160,11 @@ private extension CoinageAssetSelectorTests {
         ParametricRecyclingStrategy(params: type.params(forcedRecyclingAge: CoinageConstants.recycleAtAge))
     }
 
-    func indices(_ coins: [TrackedCoin]) -> [DerivationIndex] {
+    func indices(_ coins: [TrackedCoin]) -> [CoinageKeyIndex] {
         coins.map(\.coin.derivationIndex).sorted()
     }
 
-    func voucherIndices(_ vouchers: [TrackedVoucher]) -> [DerivationIndex] {
+    func voucherIndices(_ vouchers: [TrackedVoucher]) -> [CoinageKeyIndex] {
         vouchers.map(\.voucher.derivationIndex).sorted()
     }
 }

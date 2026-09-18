@@ -2,6 +2,8 @@ package io.paritytech.polkadotapp.common.utils.logging
 
 import android.annotation.SuppressLint
 import android.util.Log
+import io.paritytech.polkadotapp.common.utils.InformationSize.Companion.bytes
+import io.paritytech.polkadotapp.common.utils.InformationSize.Companion.megabytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
@@ -27,11 +29,17 @@ abstract class CoroutineFileDebugTree(
 ) : Timber.DebugTree() {
     companion object {
         private val LOG_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
+
+        private val MAX_LOG_FILE_SIZE = 4.megabytes
+        private const val ROTATED_FILE_SUFFIX = ".1"
+        private const val SIZE_CHECK_EVERY_N_MESSAGES = 200
     }
 
     private val logChannel = Channel<String>(Channel.UNLIMITED)
 
     private var logWriter: FileWriter? = null
+
+    private var messagesSinceSizeCheck = 0
 
     init {
         coroutineScope.launch {
@@ -63,6 +71,7 @@ abstract class CoroutineFileDebugTree(
                     val logTimestamp = LOG_TIMESTAMP_FORMAT.format(ZonedDateTime.now(ZoneOffset.UTC))
                     logWriter?.append("$logTimestamp $message\n")
                     logWriter?.flush()
+                    rotateIfNeeded()
                 } catch (e: IOException) {
                     Log.e("CoroutineFileDebugTree", "Failed to write to log file", e)
                 }
@@ -78,6 +87,25 @@ abstract class CoroutineFileDebugTree(
                 }
             }
         }
+    }
+
+    // The log is append-only, so without rotation it grows until a diagnostics export built from it is too
+    // large to share. Size is stat-ed in batches to keep the per-message cost off the hot path.
+    private fun rotateIfNeeded() {
+        if (++messagesSinceSizeCheck < SIZE_CHECK_EVERY_N_MESSAGES) return
+        messagesSinceSizeCheck = 0
+
+        if (logFile.length().bytes < MAX_LOG_FILE_SIZE) return
+
+        val rotatedFile = File(logFile.parentFile, logFile.name + ROTATED_FILE_SUFFIX)
+
+        logWriter?.close()
+        logWriter = null
+
+        rotatedFile.delete()
+        logFile.renameTo(rotatedFile)
+
+        logWriter = FileWriter(logFile, true)
     }
 
     private fun priorityToString(priority: Int): String = when (priority) {

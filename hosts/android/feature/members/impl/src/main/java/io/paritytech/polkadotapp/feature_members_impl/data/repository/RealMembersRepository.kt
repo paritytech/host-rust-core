@@ -21,6 +21,7 @@ import io.paritytech.polkadotapp.feature_members_api.data.model.RingRoot
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingStatus
 import io.paritytech.polkadotapp.feature_members_api.data.repository.MembersRepository
 import io.paritytech.polkadotapp.feature_members_impl.data.network.blockchain.api.collections
+import io.paritytech.polkadotapp.feature_members_impl.data.network.blockchain.api.maxFlexibleRingExponent
 import io.paritytech.polkadotapp.feature_members_impl.data.network.blockchain.api.members
 import io.paritytech.polkadotapp.feature_members_impl.data.network.blockchain.api.onboardingSize
 import io.paritytech.polkadotapp.feature_members_impl.data.network.blockchain.api.ringKeys
@@ -96,6 +97,12 @@ class RealMembersRepository @Inject constructor(
     ): Result<Int?> {
         return storageDataSources.pickForDataConsistencyRequirement(consistency).queryCatching(chainId) {
             metadata.members.onboardingSize.query(collectionId)
+        }
+    }
+
+    override suspend fun getRingKeysPageSize(chainId: ChainId): Result<Int> {
+        return storageDataSources.remote.queryCatching(chainId) {
+            metadata.members.maxFlexibleRingExponent.ringCapacity
         }
     }
 

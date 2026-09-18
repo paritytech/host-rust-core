@@ -6,6 +6,7 @@ import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
 import io.paritytech.polkadotapp.common.utils.coerceToUnit
 import io.paritytech.polkadotapp.common.utils.flattenResult
 import io.paritytech.polkadotapp.common.utils.mapAsync
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.CoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
@@ -54,11 +55,15 @@ class RealCoinageTransferSubmissionUseCase @Inject constructor(
         coinsInfo: Map<AccountId, OnChainCoinInfo>,
         groupId: CoinageOperationGroupId,
     ): Result<Unit> {
+        // The crowd the arriving coins hide in: every coin this operation actually moves, counted before any
+        // claim is built so all of them record the same bundle.
+        val bundleSize = keyPairs.count { coinsInfo.containsKey(it.publicKey.toDataByteArray()) }
+
         val claims = keyPairs.mapAsync { keyPair ->
             val accountId = keyPair.publicKey.toDataByteArray()
 
             coinsInfo[accountId]?.let { info ->
-                buildClaim(ValueExponent(info.value), keyPair, groupId)
+                buildClaim(ValueExponent(info.value), keyPair, groupId, bundleSize)
             } ?: run {
                 coinageLogW("Claim skipped, no coin on chain group=${groupId.value} coin=$accountId")
                 Result.success(null)
@@ -84,12 +89,18 @@ class RealCoinageTransferSubmissionUseCase @Inject constructor(
         valueExponent: ValueExponent,
         keypair: Keypair,
         groupId: CoinageOperationGroupId,
+        bundleSize: Int,
     ): Result<CoinageTransactionRequest> {
         val chain = chainAssetProvider.chain()
         val transaction = coinageTransactionFactory.newTransaction()
         val source = keypair.publicKey.toDataByteArray()
 
-        val destination = transaction.mintCoin(valueExponent).getOrElse { return Result.failure(it) }
+        // Nothing is known about where this coin has been: its age arrives later, from the ownership
+        // subscription, and only then can its history be written. See CoinPresenceSyncService.
+        val provenance = CoinProvenance.incoming(bundleSize)
+
+        val destination = transaction.mintCoin(valueExponent, provenance)
+            .getOrElse { return Result.failure(it) }
         transaction.consumeReceivedCoin(source)
         val assets = transaction.build()
 

@@ -116,7 +116,10 @@ private extension StatementStoreSlotAllocatorTests {
 
     func setupWallet() throws -> WalletSetup {
         let keychain = InMemoryKeychain()
-        let entropyManager = RootEntropyManager(keychain: keychain, userDefaults: UserDefaults.standard)
+        let entropyManager = RootEntropyManager(
+            keychain: keychain,
+            installationKeyIdStore: InstallationKeyIdStore(userDefaults: .standard)
+        )
         let manager = WalletSetupManager(
             mnemonicGenerator: IRMnemonicCreator(),
             mnemonicBackupHelper: MockMnemonicBackupHelper(),

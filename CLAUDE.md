@@ -165,6 +165,8 @@ scripts/truapi-host-installer.sh
 - Every `pub` Rust item (functions, methods, types, traits, modules, constants) carries a doc comment (`///` or `//!`).
   Keep it short and focused on intent or invariants, not on what the signature already says.
 - Do not add code comments or doc comments that narrate migrations, compatibility shims, or historical changes. Comments should describe only the current code.
+- Everything else about comments, including when an inline comment earns its place, is in [`AGENTS.md`](AGENTS.md). That file also covers shared-branch
+  hygiene, the scope of a change, tests, and editing existing Rust.
 - Remove legacy compatibility code by default. Keep or add it only when explicitly requested.
 - In Rust format strings, prefer inlined variables: `"log value: {value:?}"` over `"log value: {:?}", value`.
 - For Rust modules, prefer `foo.rs` plus an optional `foo/` directory for

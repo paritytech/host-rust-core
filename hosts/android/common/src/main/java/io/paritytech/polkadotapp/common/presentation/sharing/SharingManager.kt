@@ -22,7 +22,9 @@ class RealSharingManager @Inject constructor(
     override fun shareContent(sharing: ContentSharing) {
         val activity = contextManager.requireActivity()
 
-        val intent = ShareCompat.IntentBuilder(activity)
+        // startChooser rather than startActivity: a bare ACTION_SEND lets the system remember a default
+        // target, which silently routes later shares into an app that cannot open the attachment.
+        ShareCompat.IntentBuilder(activity)
             .setStream(sharing.file.uri)
             .setType(sharing.file.mimeType)
             .setSubject(sharing.subject)
@@ -30,9 +32,7 @@ class RealSharingManager @Inject constructor(
             .apply {
                 sharing.to?.let { addEmailTo(it) }
             }
-            .intent
-
-        activity.startActivity(intent)
+            .startChooser()
     }
 
     override fun shareText(text: String) {

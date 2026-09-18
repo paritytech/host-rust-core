@@ -41,8 +41,6 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
         Task { [weak self, mnemonicBackupHelper, keystore] in
             try? await ClosureOperation {
                 try? mnemonicBackupHelper.deleteMnemonic()
-                try? keystore.deleteKey(for: "coin-index")
-                try? keystore.deleteKey(for: "voucher-index")
                 JWTTokenStore(keychain: keystore, sessionIdStore: BackendSessionIdStore()).deleteAll()
             }
             .asyncExecute()

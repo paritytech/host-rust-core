@@ -34,46 +34,13 @@
         }
       }
     },
-    "connectionStatusHealthExcellent": {
+    "connectionStatusLivenessValue": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Excellent"
-          }
-        }
-      }
-    },
-    "connectionStatusHealthFair": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fair"
-          }
-        }
-      }
-    },
-    "connectionStatusHealthGood": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Good"
-          }
-        }
-      }
-    },
-    "connectionStatusHealthPoor": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Poor"
+            "value": "Live %@"
           }
         }
       }
@@ -85,17 +52,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Network Status"
-          }
-        }
-      }
-    },
-    "connectionStatusSpeedValue": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Speed is %@"
           }
         }
       }

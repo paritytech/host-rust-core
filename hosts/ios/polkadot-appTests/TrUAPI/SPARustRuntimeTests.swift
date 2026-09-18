@@ -89,7 +89,7 @@ struct SPARustRuntimeTests {
         #expect(resolver.resolvedNames == ["test.dot"])
         #expect(url.scheme == ProductScriptSchemeHandler.scheme)
         #expect(url.host == "test.dot")
-        #expect(url.path == "/\(ProductBundle.indexHTML)")
+        #expect(url.path == "/")
         #expect(engine.initializedScripts[0].content.contains("webRtcAllowed: false"))
 
         await runtime.dispose()

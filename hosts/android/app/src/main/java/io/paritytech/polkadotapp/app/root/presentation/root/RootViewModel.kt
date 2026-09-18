@@ -27,16 +27,11 @@ import io.paritytech.polkadotapp.feature_splash_api.presentation.SplashPassedObs
 import io.paritytech.polkadotapp.feature_sso_impl.domain.SsoService
 import io.paritytech.polkadotapp.feature_statement_store_api.domain.slotAllocator.StatementStoreSlotAllocator
 import io.paritytech.polkadotapp.feature_usernames_api.domain.usecase.ObserveAccountOnboardingStatusUseCase
-import io.paritytech.polkadotapp.feature_web3summit_api.domain.ObserveWeb3SummitEndedUseCase
-import io.paritytech.polkadotapp.feature_web3summit_api.presentation.PostOnboardingFlow
-import io.paritytech.polkadotapp.feature_web3summit_impl.domain.warmUp.Web3SummitWarmUpService
 import io.paritytech.polkadotapp.tools_jwt_auth_impl.domain.warmUp.JwtAuthWarmUpService
 import io.paritytech.polkadotapp.tools_remoteconfig_api.RemoteConfigService
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -56,9 +51,6 @@ class RootViewModel @Inject constructor(
     private val ssoService: SsoService,
     private val chatRequestServiceCoordinator: ChatRequestServiceCoordinator,
     private val exploreProductsService: ExploreProductsService,
-    private val web3SummitWarmUpService: Web3SummitWarmUpService,
-    private val observeWeb3SummitEnded: ObserveWeb3SummitEndedUseCase,
-    private val postOnboardingFlow: PostOnboardingFlow,
     private val jwtAuthWarmUpService: JwtAuthWarmUpService,
     chatBotStateController: ChatBotStateController,
     chatEngine: ChatEngine,
@@ -95,22 +87,12 @@ class RootViewModel @Inject constructor(
         launch { rootInteractor.printAccountAddresses() }
 
         launch { checkDevReset() }
-
-        watchWeb3SummitEnd()
     }
 
     private suspend fun warmUpWebProducts() {
-        web3SummitWarmUpService.warmUpWeb3SummitContent()
         if (FeatureOption.BROWSE_TAB.isEnabled) {
             exploreProductsService.warmUpExploreLoading()
         }
-    }
-
-    private fun watchWeb3SummitEnd() {
-        observeWeb3SummitEnded()
-            .filter { it }
-            .onEach { postOnboardingFlow.openPostOnboarding() }
-            .launchIn(this)
     }
 
     override val showDevResetPrompt = MutableStateFlow(false)

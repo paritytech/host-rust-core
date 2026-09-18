@@ -9,7 +9,6 @@ import io.paritytech.polkadotapp.common.utils.withLoading
 import io.paritytech.polkadotapp.feature_usernames_impl.domain.registrationQueue.RegistrationQueueInteractor
 import io.paritytech.polkadotapp.feature_usernames_impl.domain.registrationQueue.RegistrationQueueProgress
 import io.paritytech.polkadotapp.feature_usernames_impl.presentation.UsernamesRouter
-import io.paritytech.polkadotapp.feature_web3summit_api.presentation.PostOnboardingFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterIsInstance
@@ -23,7 +22,6 @@ import javax.inject.Inject
 class RegistrationQueueViewModel @Inject constructor(
     interactor: RegistrationQueueInteractor,
     private val router: UsernamesRouter,
-    private val postOnboardingFlow: PostOnboardingFlow
 ) : BaseViewModel() {
     private val queueProgress = interactor.observeQueueProgress()
         .shareInBackground()
@@ -45,7 +43,7 @@ class RegistrationQueueViewModel @Inject constructor(
 
     private fun observeQueueCompleted() = launch {
         queueProgress.first { it is RegistrationQueueProgress.Completed }
-        postOnboardingFlow.openPostOnboarding()
+        router.openMain()
     }
 }
 

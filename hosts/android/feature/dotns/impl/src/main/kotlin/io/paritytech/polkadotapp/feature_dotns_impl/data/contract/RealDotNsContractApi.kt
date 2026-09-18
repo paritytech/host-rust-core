@@ -5,10 +5,12 @@ import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.domain.model.intoAccountId
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
 import io.paritytech.polkadotapp.common.utils.flatMap
+import io.paritytech.polkadotapp.common.utils.flatRecover
 import io.paritytech.polkadotapp.feature_dotns_impl.data.config.DotNsConfigProvider
 import io.paritytech.polkadotapp.feature_dotns_impl.data.contract.abi.EvmContractCaller
 import io.paritytech.polkadotapp.feature_revive_api.NameHash
 import io.paritytech.polkadotapp.feature_revive_api.ReviveContractApi
+import io.paritytech.polkadotapp.feature_revive_api.ReviveContractReverted
 import javax.inject.Inject
 
 class RealDotNsContractApi @Inject constructor(
@@ -36,11 +38,11 @@ class RealDotNsContractApi @Inject constructor(
         callData: ByteArray,
     ): Result<ByteArray> {
         return contentResolverFor(config, dotNsName).flatMap { resolver ->
-            callContract(callData, resolver).flatMap { outputBytes ->
+            readRecord(callData, resolver).flatMap { outputBytes ->
                 if (outputBytes.isNotEmpty() || resolver == config.resolverContractAddress) {
                     Result.success(outputBytes)
                 } else {
-                    callContract(callData, config.resolverContractAddress)
+                    readRecord(callData, config.resolverContractAddress)
                 }
             }
         }
@@ -56,7 +58,7 @@ class RealDotNsContractApi @Inject constructor(
                 if (resolver == null) {
                     Result.success(null)
                 } else {
-                    callContract(callData, resolver).map { outputBytes ->
+                    readRecord(callData, resolver).map { outputBytes ->
                         if (outputBytes.isEmpty()) null else EvmContractCaller.decodeText(outputBytes)
                     }
                 }
@@ -80,6 +82,13 @@ class RealDotNsContractApi @Inject constructor(
 
         return callContract(callData, registry).map { outputBytes ->
             EvmContractCaller.decodeAddress(outputBytes)?.intoAccountId()
+        }
+    }
+
+    // A resolver without the record, or without the call at all, reverts rather than answering empty.
+    private suspend fun readRecord(inputData: ByteArray, resolver: AccountId): Result<ByteArray> {
+        return callContract(inputData, resolver).flatRecover { error ->
+            if (error is ReviveContractReverted) Result.success(ByteArray(0)) else Result.failure(error)
         }
     }
 

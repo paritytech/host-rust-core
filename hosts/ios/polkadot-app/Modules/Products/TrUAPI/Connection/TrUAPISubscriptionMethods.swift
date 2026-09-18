@@ -89,6 +89,11 @@ public enum TrUAPISubscriptionMethods {
                 ])
             )
         ),
+        "statement_subscribeStatement": Family(
+            unsubscribeMethod: "statement_unsubscribeStatement",
+            unsubscribeResult: .bool,
+            events: nil
+        ),
         "author_submitAndWatchExtrinsic": Family(
             unsubscribeMethod: "author_unwatchExtrinsic",
             unsubscribeResult: .bool,

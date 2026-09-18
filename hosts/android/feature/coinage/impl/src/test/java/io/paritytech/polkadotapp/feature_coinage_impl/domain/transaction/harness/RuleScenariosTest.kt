@@ -3,14 +3,15 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harnes
 import io.paritytech.polkadotapp.chains.extrinsic.ExtrinsicStatus
 import io.paritytech.polkadotapp.chains.multiNetwork.runtime.repository.ExtrinsicOutcome
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageRegistrationError
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FAILURE
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING_SUCCESS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.FINALIZED
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.IN_BEST
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUCCESS
 import kotlinx.coroutines.flow.MutableSharedFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -32,7 +33,7 @@ class RuleScenariosTest {
 
         // The peer takes and spends it: the output is gone and our input is consumed, but the recorded
         // block is still canonical, so the record is what holds the verdict up.
-        service.preCommitHandoff(listOf(OwnAsset.Coin(COIN_B))).getOrThrow().commit().getOrThrow()
+        service.preCommitHandoff(listOf(OwnAsset.Coin(testKey(COIN_B)))).getOrThrow().commit().getOrThrow()
         consumeCoinOnChain(COIN_B, finality = IN_BEST)
         consumeCoinOnChain(COIN_A, finality = IN_BEST)
         runPass()
@@ -84,10 +85,10 @@ class RuleScenariosTest {
         mintCoinsOnChain(COIN_A, COIN_C, finality = FINALIZED)
         givenUnwatchedEntry(inputCoin = COIN_A, outputCoin = COIN_B)
 
-        val handoffAfterClaim = service.preCommitHandoff(listOf(OwnAsset.Coin(COIN_A)))
+        val handoffAfterClaim = service.preCommitHandoff(listOf(OwnAsset.Coin(testKey(COIN_A))))
         assertTrue(handoffAfterClaim.exceptionOrNull() is CoinageRegistrationError.HandoffOfClaimedAsset)
 
-        service.preCommitHandoff(listOf(OwnAsset.Coin(COIN_C))).getOrThrow().commit().getOrThrow()
+        service.preCommitHandoff(listOf(OwnAsset.Coin(testKey(COIN_C)))).getOrThrow().commit().getOrThrow()
         val claimAfterHandoff = register(COIN_C, COIN_D)
         assertTrue(claimAfterHandoff.exceptionOrNull() is CoinageRegistrationError.InputHandedOff)
     }
@@ -341,8 +342,8 @@ class RuleScenariosTest {
     private fun statusEvents() = MutableSharedFlow<ExtrinsicStatus>(replay = 4, extraBufferCapacity = 8)
 
     private suspend fun DurabilityHarness.nonFailedClaimantsOf(coin: Int) = repository.getAllEntries().getOrThrow()
-        .filter { it.status != CoinageTransactionStatus.FAILURE }
-        .count { entry -> entry.inputs.any { it.asset == OwnAsset.Coin(coin) } }
+        .filter { it.status != DurableTxStatus.FAILURE }
+        .count { entry -> entry.inputs.any { it.asset == OwnAsset.Coin(testKey(coin)) } }
 }
 
 private const val COIN_A = 1

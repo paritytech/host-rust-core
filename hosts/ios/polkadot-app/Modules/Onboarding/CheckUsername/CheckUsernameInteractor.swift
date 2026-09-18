@@ -9,18 +9,15 @@ final class CheckUsernameInteractor {
     let selectedWallet: WalletManaging
     let usernameStorage: UsernameStoring
     let identityService: IdentityServiceProtocol
-    let settingsManager: SettingsManagerProtocol
 
     init(
         selectedWallet: WalletManaging,
         identityService: IdentityServiceProtocol,
-        usernameStorage: UsernameStoring = UsernameStorage(),
-        settingsManager: SettingsManagerProtocol
+        usernameStorage: UsernameStoring = UsernameStorage()
     ) {
         self.selectedWallet = selectedWallet
         self.usernameStorage = usernameStorage
         self.identityService = identityService
-        self.settingsManager = settingsManager
     }
 }
 
@@ -45,7 +42,6 @@ extension CheckUsernameInteractor: CheckUsernameInteractorInputProtocol {
     func save(username: Username) {
         usernameStorage.username = username
         usernameStorage.usernameClaimed = true
-        settingsManager.set(value: true, for: .coinageSyncNeeded)
         MainActor.assumeIsolated {
             presenter?.didSaveUsername()
         }

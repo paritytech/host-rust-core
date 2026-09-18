@@ -130,15 +130,18 @@ fun Modifier.pocketListCardSharedElement(
         with(sharedScope) {
             with(visibilityScope) {
                 val isBelowAnchor = index > anchorIndex
+                // Every card here is drawn in the shared overlay, which the screen's own fade does
+                // not reach, so each one carries its own: without it a card above the picked one
+                // stays fully opaque and sits under it the whole way up.
                 val enter = if (isBelowAnchor) {
                     pocketSlideIn { fullHeight -> fullHeight * 4 } + pocketFadeIn()
                 } else {
-                    pocketScaleIn()
+                    pocketScaleIn() + pocketFadeIn()
                 }
                 val exit = if (isBelowAnchor) {
                     pocketSlideOut { fullHeight -> fullHeight * 4 } + pocketFadeOut()
                 } else {
-                    pocketScaleOut()
+                    pocketScaleOut() + pocketFadeOut()
                 }
                 sharedElementModifier
                     .renderInSharedTransitionScopeOverlay(zIndexInOverlay = index.toFloat())

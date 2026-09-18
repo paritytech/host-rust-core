@@ -3,7 +3,10 @@ package io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.c
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -27,12 +30,24 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isUnspecified
+import io.paritytech.polkadotapp.design.components.icon.NovaIcon
+import io.paritytech.polkadotapp.design.components.spacer.HorizontalSpacer
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.design.utils.conditionalNotNull
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.compose.components.icons.DigitalDollarIcon
 import io.paritytech.polkadotapp.common.R as RCommon
+
+private val SymbolIconSize = DpSize(42.dp, 47.dp)
+private val AmountReferenceHeight = 64.dp
+
+private fun Density.symbolIconSizeFor(amountFontSize: TextUnit): DpSize =
+    SymbolIconSize * (amountFontSize.toDp() / AmountReferenceHeight)
 
 @Composable
 internal fun EnterAmountInput(
@@ -63,6 +78,9 @@ internal fun EnterAmountInput(
 
             val baseStyle = maxStyle.copy(fontSize = currentFontSize)
 
+            val symbolReservedWidth =
+                with(density) { symbolIconSizeFor(maxFontSize).width } + PolkadotTheme.spacings.small
+
             // This text view is needed to keep component height constant
             NovaText(
                 modifier = Modifier.alpha(0f),
@@ -71,40 +89,57 @@ internal fun EnterAmountInput(
             )
 
             // This text view is needed to cover autosize behaviour as native compose feature
-            BasicText(
-                text = measuredText,
-                modifier = Modifier
-                    .alpha(0f)
-                    .onSizeChanged { textWidth = it.width },
-                maxLines = 1,
-                overflow = TextOverflow.Clip,
-                style = baseStyle,
-                autoSize = TextAutoSize.StepBased(minFontSize, maxFontSize),
-                onTextLayout = { layout ->
-                    val resolved = layout.layoutInput.style.fontSize
-                    if (!resolved.isUnspecified) currentFontSize = resolved
-                    textWidth = layout.size.width
-                }
-            )
+            Box(modifier = Modifier.padding(end = symbolReservedWidth)) {
+                BasicText(
+                    text = measuredText,
+                    modifier = Modifier
+                        .alpha(0f)
+                        .onSizeChanged { textWidth = it.width },
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip,
+                    style = baseStyle,
+                    autoSize = TextAutoSize.StepBased(minFontSize, maxFontSize),
+                    onTextLayout = { layout ->
+                        val resolved = layout.layoutInput.style.fontSize
+                        if (!resolved.isUnspecified) currentFontSize = resolved
+                        textWidth = layout.size.width
+                    }
+                )
+            }
 
             Box(
-                modifier = Modifier.onSizeChanged { boxWidth = it.width },
-                contentAlignment = Alignment.Center
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { boxWidth = it.width }
             ) {
-                val offsetX = with(density) { ((boxWidth - textWidth) / 2).coerceAtLeast(0).toDp() }
+                val symbolIconSize = with(density) { symbolIconSizeFor(currentFontSize) }
+                val leadingWidth = symbolIconSize.width + PolkadotTheme.spacings.small
+
+                val offsetX = with(density) {
+                    ((boxWidth - textWidth - leadingWidth.roundToPx()) / 2).coerceAtLeast(0).toDp()
+                }
 
                 val baseStyle = PolkadotTheme.typography.display.extraLarge
                     .copy(fontSize = currentFontSize)
 
-                Row(
-                    modifier = Modifier.offset(x = offsetX),
-                ) {
+                Row(modifier = Modifier.offset(x = offsetX)) {
+                    NovaIcon(
+                        modifier = Modifier
+                            .size(symbolIconSize)
+                            .alignBy { it.measuredHeight },
+                        imageVector = DigitalDollarIcon,
+                        tint = PolkadotTheme.colors.fg.primary
+                    )
+
+                    HorizontalSpacer { small }
+
                     BasicTextField(
                         value = input,
                         onValueChange = onInputChange,
                         singleLine = true,
                         enabled = enabled,
                         modifier = Modifier
+                            .alignByBaseline()
                             .conditionalNotNull(focusRequester) { focusRequester(it) },
                         cursorBrush = SolidColor(PolkadotTheme.colors.fg.primary),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -155,6 +190,20 @@ private fun EnterAmountInputPreview() {
             input = "",
             symbol = "$",
             showError = true,
+            enabled = true,
+            onInputChange = {}
+        )
+    }
+}
+
+@Preview
+@Composable
+private fun EnterAmountInputLongAmountPreview() {
+    PolkadotTheme {
+        EnterAmountInput(
+            input = "1234567890.12",
+            symbol = "$",
+            showError = false,
             enabled = true,
             onInputChange = {}
         )

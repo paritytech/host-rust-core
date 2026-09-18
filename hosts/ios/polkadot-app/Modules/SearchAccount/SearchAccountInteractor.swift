@@ -1,4 +1,3 @@
-import UIKit
 import Operation_iOS
 import SubstrateSdk
 import SubstrateSdkExt
@@ -54,6 +53,7 @@ extension SearchAccountInteractor: SearchAccountInteractorInputProtocol {
     func setup() {
         accountSearching.setup()
         subscribeToSourcesChanged()
+        loadIdleState()
     }
 
     func searchAccount(for input: String?) {

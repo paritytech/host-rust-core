@@ -14,13 +14,13 @@ interface WhitelistedProductsProvider {
 class RealWhitelistedProductsProvider @Inject constructor(
     private val fundingDomainProvider: FundingDomainProvider,
 ) : WhitelistedProductsProvider {
-    // The funding product is whitelisted only while there is no product settings UI to grant it
+    // The funding products are whitelisted only while there is no product settings UI to grant them
     // permissions through.
     override suspend fun whitelistedProducts(): Set<ProductId> {
         if (FeatureOption.PRODUCT_SETTINGS.isEnabled) return emptySet()
 
-        return fundingDomainProvider.getFundingProductId()
-            .logFailure("Failed to resolve the funding product to whitelist")
-            .fold({ setOf(it) }, { emptySet() })
+        return fundingDomainProvider.getFundingProductIds()
+            .logFailure("Failed to resolve the funding products to whitelist")
+            .getOrDefault(emptySet())
     }
 }

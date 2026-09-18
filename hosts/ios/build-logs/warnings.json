@@ -1,5 +1,5 @@
 {
-  "count": 85,
+  "count": 78,
   "warnings": [
     {
       "path": "",
@@ -37,11 +37,6 @@
       "message": "'contentEdgeInsets' was deprecated in iOS 15.0: This property is ignored when using UIButtonConfiguration"
     },
     {
-      "path": "polkadot-app/Common/Analytics/IssueMonitoringService.swift",
-      "line": 15,
-      "message": "Todo Violation: TODOs should be resolved (Configure for production) (todo)"
-    },
-    {
       "path": "polkadot-app/Common/Bandersnatch/BandersnatchApiProtocol.swift",
       "line": 4,
       "message": "Todo Violation: TODOs should be resolved (Maybe change BandersnatchApi t...) (todo)"
@@ -57,29 +52,19 @@
       "message": "Extension declares a conformance of imported type 'RuntimeMetadataItem' to imported protocol 'RuntimeMetadataItemProtocol'; this will not behave correctly if the owners of 'ChainRegistry' introduce this conformance in the future"
     },
     {
-      "path": "polkadot-app/Common/Services/LitePersonParamsFactory.swift",
-      "line": 78,
-      "message": "Todo Violation: TODOs should be resolved (We might want reserve full use...) (todo)"
-    },
-    {
       "path": "polkadot-app/Common/Services/ServiceCoordinator.swift",
-      "line": 543,
+      "line": 647,
       "message": "Large Tuple Violation: Tuples should have at most 2 members (large_tuple)"
     },
     {
       "path": "polkadot-app/Common/Services/ServiceCoordinator.swift",
-      "line": 594,
-      "message": "File Length Violation: File should contain 500 lines or less: currently contains 594 (file_length)"
+      "line": 701,
+      "message": "File Length Violation: File should contain 500 lines or less: currently contains 701 (file_length)"
     },
     {
       "path": "polkadot-app/Common/Wallet/WalletCardViewModel.swift",
       "line": 3,
       "message": "Todo Violation: TODOs should be resolved (consider refactoring) (todo)"
-    },
-    {
-      "path": "polkadot-app/Modules/AssetDetails/AssetDetailsViewLayout.swift",
-      "line": 125,
-      "message": "Todo Violation: TODOs should be resolved (Debug purposes only) (todo)"
     },
     {
       "path": "polkadot-app/Modules/Chat/ChatExtension/Extensions/WeeklyGame/DIM2ChatExtension.swift",
@@ -88,8 +73,8 @@
     },
     {
       "path": "polkadot-app/Modules/Chat/ChatExtension/Extensions/WeeklyGame/Interactor/DIM2ChatInteractor.swift",
-      "line": 758,
-      "message": "File Length Violation: File should contain 500 lines or less: currently contains 758 (file_length)"
+      "line": 763,
+      "message": "File Length Violation: File should contain 500 lines or less: currently contains 763 (file_length)"
     },
     {
       "path": "polkadot-app/Modules/Chat/ChatInteractor.swift",
@@ -98,43 +83,43 @@
     },
     {
       "path": "polkadot-app/Modules/Chat/Helpers/ChatViewModelFactory.swift",
-      "line": 716,
+      "line": 719,
       "message": "Todo Violation: TODOs should be resolved (fetch info by content.assetId ...) (todo)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Model/ChatMessage.swift",
-      "line": 133,
+      "line": 158,
       "message": "Todo Violation: TODOs should be resolved (migrate to custom renderer) (todo)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Model/ChatMessage.swift",
-      "line": 137,
+      "line": 162,
       "message": "Todo Violation: TODOs should be resolved (shouldn't be content type but ...) (todo)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Model/ChatMessage.swift",
-      "line": 139,
+      "line": 164,
       "message": "Todo Violation: TODOs should be resolved (remove chatRequest case after ...) (todo)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Model/ChatMessage.swift",
-      "line": 153,
+      "line": 179,
       "message": "Todo Violation: TODOs should be resolved (We don't save candidates local...) (todo)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Model/ChatMessage.swift",
-      "line": 728,
-      "message": "File Length Violation: File should contain 500 lines or less: currently contains 728 (file_length)"
+      "line": 766,
+      "message": "File Length Violation: File should contain 500 lines or less: currently contains 766 (file_length)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Model/RemoteChatMessage.swift",
-      "line": 595,
-      "message": "File Length Violation: File should contain 500 lines or less: currently contains 595 (file_length)"
+      "line": 643,
+      "message": "File Length Violation: File should contain 500 lines or less: currently contains 643 (file_length)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Service/ChatOutboxService.swift",
-      "line": 601,
-      "message": "File Length Violation: File should contain 500 lines or less: currently contains 601 (file_length)"
+      "line": 704,
+      "message": "File Length Violation: File should contain 500 lines or less: currently contains 704 (file_length)"
     },
     {
       "path": "polkadot-app/Modules/Chat/Service/ChatPrivateKeyFactory.swift",
@@ -148,13 +133,8 @@
     },
     {
       "path": "polkadot-app/Modules/Chat/Service/MessageExchangeChatCoordinator.swift",
-      "line": 293,
+      "line": 299,
       "message": "Todo Violation: TODOs should be resolved (Move sender device activation ...) (todo)"
-    },
-    {
-      "path": "polkadot-app/Modules/Chat/Service/VoIPCall/VoIPCallManager.swift",
-      "line": 686,
-      "message": "File Length Violation: File should contain 500 lines or less: currently contains 686 (file_length)"
     },
     {
       "path": "polkadot-app/Modules/ChatCall/Connection/CallEngine.swift",
@@ -168,7 +148,7 @@
     },
     {
       "path": "polkadot-app/Modules/ContactsList/Helpers/ContactsListViewModelFactory.swift",
-      "line": 279,
+      "line": 280,
       "message": "Todo Violation: TODOs should be resolved (Design a user-facing represent...) (todo)"
     },
     {
@@ -208,7 +188,7 @@
     },
     {
       "path": "polkadot-app/Modules/DIMs/DIM1/ProofOfInk/TattooList/TattooListViewFactory.swift",
-      "line": 36,
+      "line": 37,
       "message": "Todo Violation: TODOs should be resolved (unclear) (todo)"
     },
     {
@@ -298,16 +278,6 @@
     },
     {
       "path": "polkadot-app/Modules/DIMs/DIM2/GameResults/GameResultsInteractor.swift",
-      "line": 204,
-      "message": "String interpolation produces a debug description for an optional value; did you mean to make this explicit?"
-    },
-    {
-      "path": "polkadot-app/Modules/DIMs/DIM2/GameResults/GameResultsInteractor.swift",
-      "line": 205,
-      "message": "String interpolation produces a debug description for an optional value; did you mean to make this explicit?"
-    },
-    {
-      "path": "polkadot-app/Modules/DIMs/DIM2/GameResults/GameResultsInteractor.swift",
       "line": 612,
       "message": "File Length Violation: File should contain 500 lines or less: currently contains 612 (file_length)"
     },
@@ -372,11 +342,6 @@
       "message": "Todo Violation: TODOs should be resolved (Implement alias signer when av...) (todo)"
     },
     {
-      "path": "polkadot-app/Modules/MainTabBar/Chrome/TabBarBottomChromeController.swift",
-      "line": 552,
-      "message": "File Length Violation: File should contain 500 lines or less: currently contains 552 (file_length)"
-    },
-    {
       "path": "polkadot-app/Modules/MobRule/Services/IPFSResourceLoaderDelegate.swift",
       "line": 43,
       "message": "Todo Violation: TODOs should be resolved (Detect codec type automaticall...) (todo)"
@@ -408,7 +373,7 @@
     },
     {
       "path": "polkadot-app/Modules/Products/ProductsNativeApiFactory.swift",
-      "line": 63,
+      "line": 65,
       "message": "Main actor-isolated class property 'shared' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode"
     },
     {
@@ -418,12 +383,12 @@
     },
     {
       "path": "polkadot-app/Modules/Products/TrUAPI/RustRuntimeEnvironment.swift",
-      "line": 48,
+      "line": 52,
       "message": "Todo Violation: TODOs should be resolved ((chat PR): open with ``RustCha...) (todo)"
     },
     {
       "path": "polkadot-app/Modules/SearchContact/SearchContactPresenter.swift",
-      "line": 83,
+      "line": 79,
       "message": "Todo Violation: TODOs should be resolved (Add Highlight for username + m...) (todo)"
     }
   ]

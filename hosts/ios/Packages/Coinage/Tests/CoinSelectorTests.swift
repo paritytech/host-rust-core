@@ -24,7 +24,7 @@ struct CoinSelectorTests {
     private func makeCoin(
         exponent: Int16,
         age: Int16 = 0,
-        derivationIndex: UInt64 = 0,
+        derivationIndex: CoinageKeyIndex = 0,
         selectable: Bool = true
     ) -> TrackedCoin {
         let coin = Coin(
@@ -32,7 +32,7 @@ struct CoinSelectorTests {
             derivationIndex: derivationIndex,
             age: age,
             isOnchain: true,
-            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex), count: 32)
+            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex.item), count: 32)
         )
         let state = selectable
             ? CoinageAssetState(handedOff: false, consumerStatus: nil, minterStatus: nil)
@@ -42,7 +42,7 @@ struct CoinSelectorTests {
 
     private func makeVoucher(
         exponent: Int16,
-        derivationIndex: UInt64 = 0,
+        derivationIndex: CoinageKeyIndex = 0,
         readyAt: Date = Date.distantPast
     ) -> TrackedVoucher {
         let voucher = Voucher(
@@ -51,7 +51,7 @@ struct CoinSelectorTests {
             allocatedAt: Date.distantPast,
             readyAt: readyAt,
             remoteState: .inRecycler(.init(index: 0, membersCount: 0)),
-            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex), count: 32)
+            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex.item), count: 32)
         )
         return TrackedVoucher(
             voucher: voucher,

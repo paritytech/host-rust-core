@@ -10,6 +10,9 @@ Coinage is the payment primitive: money is held as a set of power-of-2-denominat
 ## Glossary
 
 - **Coin** — `(derivationIndex, valueExponent, age, spentState, accountId)`. Power-of-2 denomination (`tokenAmount = 2^exponent`).
+- **`CoinageInstallationId`** — 32 random bytes per app installation; the RFC-0017 `page` every key this installation allocates lives under. `LEGACY_ZERO` is the pre-installation `//0` page.
+- **`CoinageKeyIndex`** — `(installation, item)`: what a coin's `derivationIndex` and a voucher's `ringVrfKeyIndex` are. Never a bare `Int`.
+- **Previous installation** — a subtree registered in the `AccountDataStore` contract by an earlier install of the same seed. Scanned for balance, never allocated into.
 - **`SpentState`** — `NOT_SPENT` | `SPENT_LOCALLY` (optimistically marked) | `SPENT_ON_CHAIN`.
 - **`ValueExponent`** — `@JvmInline value class` over `Int`.
 - **`RecyclerVoucher`** — token in a Bandersnatch ring; redeemable for coins via unload.
@@ -23,13 +26,15 @@ Coinage is the payment primitive: money is held as a set of power-of-2-denominat
 ## Rules
 
 1. **`blocking`** — A coinage transfer must mark selected coins `SPENT_LOCALLY` **before** the extrinsic submission. On failure, revert. Why: prevents balance flicker and double-spend race during in-flight tx.
-2. **`blocking`** — Keypair derivation goes through `CoinKeypairDerivation` only. Path is `//pps//coin//<n>`. Hand-rolling the derivation is forbidden.
+2. **`blocking`** — Keypair derivation goes through `CoinKeypairDerivation` / `VoucherRingDerivation` only. Paths are `//coinage//<purse>//0x<installationId>/<item>` (coins) and `//coinage-ring-vrf//<purse>//0x<installationId>//<item>` (vouchers). Hand-rolling the derivation is forbidden.
 3. **`blocking`** — Voucher batches submitted under `AsFreeUnloadToken` must have a proof count that matches the on-chain consolidation contract exactly. **Never truncate** the count to stay under a cap.
 4. **`major`** — A new on-chain origin used by coinage is built by adding a sealed branch to `AsCoinageInfo` and consuming via `CoinageTransactionOrigins`. Don't bypass the factory.
 5. **`major`** — A new transfer strategy is added as a `tryGet*Plan()` method on `TransferPlanner`. Don't fork the planner.
 6. **`major`** — On-chain coinage state is consumed via `subscribeCoinsInfoFor` / `subscribeAllNotSpentCoins`. Polling is forbidden.
 7. **`major`** — `ExternalPaymentService` is the only path host-API payment requests reach the chain. New host-API payment flows route through it; don't add a parallel implementation.
 8. **`major`** — Background workers that submit coinage extrinsics use `ChainConnectionRefCounter.withConnectionEnabled(...)`. The default chain connection isn't active off-screen. (`architecture/transactions.md § Background chain work`.)
+9. **`blocking`** — New coins and vouchers are allocated only in the current installation (`CoinageInstallationRepository.getOrCreateCurrent()`), and the next index is scoped to it. Assets recovered from previous installations never influence it. Why: a reinstall that re-derived an index handed off before would give a peer a key it already holds.
+10. **`major`** — The installation registration is a durable-engine domain (`coinage-installation`) decided by `CoinageInstallationRegistrationOracle`. Keep at most one live attempt per installation group — the monotone oracle credits every live attempt with the same record.
 
 ## Seams (composition points)
 
@@ -81,4 +86,7 @@ If a new feature crosses any of these, name the alignment in the architect plan.
 | Coinage worker | `feature/coinage/impl/.../data/worker/` (`code/workers-and-background-sync.md`) |
 | DB changes (CoinLocal, VoucherLocal) | follow `code/database-and-scale.md` |
 | Instance id config | `CoinageInstanceIdProvider` (remote config `coinage_instance_id`) |
+| Installation subtree / previous installations | `feature/coinage/impl/.../data/installation/` (`CoinageInstallationRepository`, Room `coinage_installations`) |
+| AccountDataStore contract access | `feature/coinage/impl/.../data/dataStore/` (remote config `account_data_store_config`) |
+| Installation registration (engine domain, oracle, registrar) | `feature/coinage/impl/.../domain/installation/` |
 | Instance asset unit | `CoinageInstanceUpdater` syncs `Coinage.Instances` into the storage cache; `CoinageInstanceRepository` reads it from the local source |

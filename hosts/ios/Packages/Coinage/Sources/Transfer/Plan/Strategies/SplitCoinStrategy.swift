@@ -1,4 +1,5 @@
 import Foundation
+import KeyDerivation
 import ExtrinsicService
 import StructuredConcurrency
 import SubstrateSdk
@@ -138,10 +139,8 @@ private extension SplitCoinStrategy {
     }
 
     func makeOrigin() throws -> ExtrinsicOriginDefining {
-        let coinAccount = try CoinDerivedWallet(
-            privateKey: coinKeyFactory.derivePrivateKey(for: overflowCoin),
-            publicKey: overflowCoin.publicKey
-        )
+        let coinPrivateKey = try coinKeyFactory.derivePrivateKey(for: overflowCoin)
+        let coinAccount = DynamicDerivedWallet(secretKeyProvider: { coinPrivateKey })
 
         return try originFactory.createAsCoinOrigin(for: coinAccount)
     }

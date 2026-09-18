@@ -17,24 +17,27 @@ import io.paritytech.polkadotapp.feature_balances_api.domain.model.AccountBalanc
 import io.paritytech.polkadotapp.feature_balances_api.domain.model.TokenBalance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.CoinAmountBreakdown
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.CoinageBalanceConversionContext
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageKeyIndex
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageTransferDetection
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.CoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FAILURE
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING_SUCCESS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinAmountBreakdownUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageAssetValueUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageBalanceConverterUseCase
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUCCESS
 import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionSignerSource
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
@@ -107,7 +110,7 @@ class RealOnboardingUseCaseTest {
         coEvery { submissionUseCase(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { balanceConverterUseCase.create() } returns Result.success(PowerOfTwoPricing)
         coEvery { voucherRepository.getByRingVrfKeyIndices(any()) } answers {
-            firstArg<List<Int>>().mapNotNull { index -> voucherDenominations[index]?.let { voucher(index, it) } }
+            firstArg<List<CoinageKeyIndex>>().mapNotNull { key -> voucherDenominations[key.item]?.let { voucher(key.item, it) } }
         }
         coEvery { assetValueUseCase.valueOf(any()) } answers {
             // One unit per minted output, so what an onboarding is said to be worth stays visible in assertions.
@@ -655,7 +658,7 @@ class RealOnboardingUseCaseTest {
 
     /** A ledger that records what it is handed, so a submission changes what the next pass reads. */
     private fun givenLedgerRegistersOnSubmit(
-        status: CoinageTransactionStatus,
+        status: DurableTxStatus,
         denomination: ValueExponent,
         signal: CompletableDeferred<Unit>,
     ) {
@@ -687,7 +690,7 @@ class RealOnboardingUseCaseTest {
     private fun noEntries() = emptyList<CoinageTransactionState>()
 
     /** One registered voucher, minted for [denomination] — the shape onboarding always registers. */
-    private fun entry(status: CoinageTransactionStatus, denomination: ValueExponent): CoinageTransactionState {
+    private fun entry(status: DurableTxStatus, denomination: ValueExponent): CoinageTransactionState {
         val index = nextVoucherIndex++
         voucherDenominations[index] = denomination
 
@@ -695,15 +698,17 @@ class RealOnboardingUseCaseTest {
             id = CoinageTransactionId(index.toLong()),
             status = status,
             inputs = emptyList(),
-            outputs = listOf(OwnAsset.Voucher(index)),
+            outputs = listOf(OwnAsset.Voucher(testKey(index))),
         )
     }
 
     private fun voucher(index: Int, denomination: ValueExponent) = RecyclerVoucher(
-        ringVrfKeyIndex = index,
+        ringVrfKeyIndex = testKey(index),
         ringVrfPublicKey = byteArrayOf(index.toByte()).toDataByteArray(),
         recyclerValue = denomination,
         location = RecyclerVoucher.Location.Unknown,
+        recyclerFungibility = RecyclerFungibility.NONE,
+        maxRecyclerFungibility = null,
     )
 
     private fun balanceUpdate(transferable: Balance): AccountBalanceUpdate {

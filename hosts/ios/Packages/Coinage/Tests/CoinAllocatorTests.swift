@@ -2,23 +2,16 @@ import Testing
 import Foundation
 import SubstrateSdk
 import NovaCrypto
-import Keystore_iOS
 import Operation_iOS
 @testable import Coinage
 
 struct CoinAllocatorTests {
-    private let keychain: InMemoryKeychain
-    private let store: CoinIndexstore
+    private let store = StubCurrentInstallationStore(current: .test)
     private let allocator: CoinAllocator
 
     init() {
-        let keychain = InMemoryKeychain()
-        let store = CoinIndexstore(storage: keychain)
-
-        self.keychain = keychain
-        self.store = store
         allocator = CoinAllocator(
-            storage: store,
+            installationStore: store,
             coinRepository: AnyDataProviderRepository(StubRepository<Coin>()),
             keyFactory: CoinKeypairFactory(entropyManager: MockEntropyManager(entropy: Data(
                 repeating: 0x01,
@@ -27,29 +20,32 @@ struct CoinAllocatorTests {
         )
     }
 
-    @Test("Successfully allocates a coin")
+    @Test("an allocated coin takes the next item of the current installation")
     func allocateCoin() async throws {
-        let expectedIndex: UInt64 = 42
-        let seedIndex: UInt64 = 41
-        try keychain.saveKey(seedIndex.scaleEncoded(), with: store.storageKey)
+        store.coinItem = 42
 
-        let exponent: Int16 = 5
+        let coin = try await allocator.allocate(exponent: 5, provenance: .unloaded(recyclerFungibility: 73))
 
-        let provenance = CoinProvenance.unloaded(recyclerFungibility: 73)
-
-        let coin = try await allocator.allocate(exponent: exponent, provenance: provenance)
-
-        #expect(coin.derivationIndex == expectedIndex)
-        #expect(coin.exponent == exponent)
+        #expect(coin.derivationIndex == CoinageKeyIndex(installation: .test, item: 42))
+        #expect(store.coinRequests == 1)
+        #expect(store.voucherRequests == 0)
+        #expect(coin.exponent == 5)
         #expect(coin.age == nil)
         #expect(coin.recyclerFungibility == 73)
         #expect(coin.hops.isEmpty)
     }
 
-    @Test("Persists the provenance it was minted with")
-    func allocateCoinWithProvenance() async throws {
-        try keychain.saveKey(UInt64(0).scaleEncoded(), with: store.storageKey)
+    @Test("an installation with no coins yet starts at item zero and never repeats an item")
+    func consecutiveItems() async throws {
+        let first = try await allocator.allocate(exponent: 2, provenance: .unknown)
+        let second = try await allocator.allocate(exponent: 2, provenance: .unknown)
 
+        #expect(first.derivationIndex == CoinageKeyIndex(installation: .test, item: 0))
+        #expect(second.derivationIndex == CoinageKeyIndex(installation: .test, item: 1))
+    }
+
+    @Test("persists the provenance it was minted with")
+    func allocateCoinWithProvenance() async throws {
         let hops: [Hop] = [.transfer(bundleSize: 3), .split(fanout: 4)]
         let coin = try await allocator.allocate(
             exponent: 2,
@@ -60,11 +56,11 @@ struct CoinAllocatorTests {
         #expect(coin.hops == hops)
     }
 
-    @Test("Propagates errors from storage")
-    func storageFailure() async throws {
-        try keychain.saveKey(Data("".utf8), with: store.storageKey)
+    @Test("propagates errors from the installation store")
+    func storeFailure() async throws {
+        store.error = InstallationStubError.unreachable
 
-        await #expect(throws: Error.self) {
+        await #expect(throws: InstallationStubError.unreachable) {
             try await allocator.allocate(exponent: 0, provenance: .unknown)
         }
     }

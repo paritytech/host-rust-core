@@ -3,53 +3,159 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase
 import io.paritytech.polkadotapp.common.data.storage.file.FileProvider
 import io.paritytech.polkadotapp.common.presentation.sharing.SharingManager
 import io.paritytech.polkadotapp.common.utils.ContentSharing
+import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.logging.LoggerConstants
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ageOrNull
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.tokenAmount
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.ShareCoinageLogsUseCase
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.CoinRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.COINAGE_LOG_TAG
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DURABILITY_LOG_TAG
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 
 class RealShareCoinageLogsUseCase @Inject constructor(
     private val fileProvider: FileProvider,
     private val sharingManager: SharingManager,
     private val coinRepository: CoinRepository,
-    private val voucherRepository: VoucherRepository
+    private val voucherRepository: VoucherRepository,
+    private val dispatchers: CoroutineDispatchers
 ) : ShareCoinageLogsUseCase {
+    private companion object {
+        const val EXPORT_FILE_PREFIX = "coinage_logs_"
+        const val EXPORT_MIME_TYPE = "application/zip"
+        const val EXPORT_SUBJECT = "Coinage Diagnostics"
+        const val REPORT_ENTRY_NAME = "coinage_report.txt"
+        const val LOG_SNAPSHOT_NAME = "coinage_log_snapshot.log"
+        const val MAX_LOG_LINES = 5_000
+        const val CENTS_PER_DOLLAR = 100.0
+
+        // Durability lines carry the engine's tag: the verdicts and the reads behind them live there now, and
+        // a coinage export without them shows a status changing for no reason.
+        val EXPORTED_LOG_TAGS = setOf(COINAGE_LOG_TAG, DURABILITY_LOG_TAG)
+
+        val FILE_NAME_TIMESTAMP_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+        val REPORT_TIMESTAMP_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+    }
+
     override suspend operator fun invoke(): Result<Unit> = runCatching {
-        val appLogFile = fileProvider.getFileInScopedStorage(
-            "${LoggerConstants.LOGS_DIR}/${LoggerConstants.LOGS_FILE_NAME}"
-        )
-        val outputFile = fileProvider.getFileInInternalCacheStorage("coinage_debug.txt")
-        outputFile.delete()
+        val exportFile = withContext(dispatchers.io) {
+            val coins = coinRepository.subscribeAllCoins().first()
+            val vouchers = voucherRepository.subscribeAllVouchers().first()
 
-        outputFile.bufferedWriter().use { writer ->
-            writer.appendLine("=== COINAGE TRANSACTION LOGS ===")
-            if (appLogFile.exists()) {
-                appLogFile.useLines { lines ->
-                    lines.filter { COINAGE_LOG_TAG in it }
-                        .forEach { writer.appendLine(it) }
-                }
-            }
-
-            writer.appendLine("\n=== ALL COINS ===")
-            coinRepository.subscribeAllCoins().first().forEach { coin ->
-                writer.appendLine("Coin[idx=${coin.derivationIndex}, exp=${coin.valueExponent.value}, age=${coin.age}]")
-            }
-
-            writer.appendLine("\n=== ALL VOUCHERS ===")
-            voucherRepository.subscribeAllVouchers().first().forEach { voucher ->
-                writer.appendLine("Voucher[ringIdx=${voucher.ringVrfKeyIndex}, exp=${voucher.recyclerValue.value}, loc=${voucher.location}]")
-            }
+            writeExport(coins, vouchers)
         }
 
         sharingManager.shareContent(
             ContentSharing.file(
-                subject = "Coinage Debug Logs",
-                uri = fileProvider.uriOf(outputFile),
-                mimeType = "text/plain"
+                subject = EXPORT_SUBJECT,
+                uri = fileProvider.uriOf(exportFile),
+                mimeType = EXPORT_MIME_TYPE
             )
         )
+    }
+
+    private fun writeExport(coins: List<Coin>, vouchers: List<RecyclerVoucher>): File {
+        val generatedAt = ZonedDateTime.now(ZoneOffset.UTC)
+        // A fresh name per export: receiving apps key their preview cache on the shared file name, so a fixed
+        // one makes them show the previous export instead of this one.
+        val exportFile = fileProvider.getFileInInternalCacheStorage(
+            "$EXPORT_FILE_PREFIX${FILE_NAME_TIMESTAMP_FORMAT.format(generatedAt)}.zip"
+        )
+        exportFile.delete()
+        deleteStaleExports(exportFile)
+
+        val logLines = readCoinageLogLines()
+
+        ZipOutputStream(FileOutputStream(exportFile)).use { zipStream ->
+            zipStream.putNextEntry(ZipEntry(REPORT_ENTRY_NAME))
+
+            zipStream.bufferedWriter().run {
+                appendLine("=== COINAGE DIAGNOSTICS ===")
+                appendLine("Generated (UTC): ${REPORT_TIMESTAMP_FORMAT.format(generatedAt)}")
+                appendLine("Log lines: ${logLines.size} (most recent, capped at $MAX_LOG_LINES)")
+
+                appendLine()
+                appendLine("=== COINS (${coins.size}) ===")
+                coins.forEach { appendLine(it.describe()) }
+
+                appendLine()
+                appendLine("=== VOUCHERS (${vouchers.size}) ===")
+                vouchers.forEach { appendLine(it.describe()) }
+
+                appendLine()
+                appendLine("=== COINAGE TRANSACTION LOGS ===")
+                logLines.forEach { appendLine(it) }
+
+                // Flushed rather than closed: closing the writer would close the zip stream with it.
+                flush()
+            }
+
+            zipStream.closeEntry()
+        }
+
+        return exportFile
+    }
+
+    private fun deleteStaleExports(currentExport: File) {
+        currentExport.parentFile
+            ?.listFiles { file -> file.name.startsWith(EXPORT_FILE_PREFIX) && file != currentExport }
+            ?.forEach { it.delete() }
+    }
+
+    // Copied before reading because the logger keeps appending to the live file, which otherwise ends the
+    // export on a half-written line.
+    private fun readCoinageLogLines(): List<String> {
+        val appLogFile = fileProvider.getFileInScopedStorage(
+            "${LoggerConstants.LOGS_DIR}/${LoggerConstants.LOGS_FILE_NAME}"
+        )
+        if (!appLogFile.exists()) return emptyList()
+
+        val snapshotFile = fileProvider.getFileInInternalCacheStorage(LOG_SNAPSHOT_NAME)
+
+        return try {
+            appLogFile.copyTo(snapshotFile, overwrite = true)
+            snapshotFile.useLines { it.filterLogEntries(EXPORTED_LOG_TAGS, MAX_LOG_LINES) }
+        } finally {
+            snapshotFile.delete()
+        }
+    }
+
+    private fun Coin.describe(): String {
+        val age = ageOrNull()?.toString() ?: "unknown"
+
+        return "Coin[idx=$derivationIndex, value=${valueExponent.formatValue()}, " +
+            "exp=2^${valueExponent.value}, age=$age, onChain=$isOnChain]"
+    }
+
+    private fun RecyclerVoucher.describe(): String {
+        val location = when (val location = location) {
+            RecyclerVoucher.Location.Unknown -> "unknown"
+            RecyclerVoucher.Location.Onboarding -> "onboarding"
+            is RecyclerVoucher.Location.InRecycler ->
+                "recycler=${location.recyclerIndex}, anonymitySet=${location.recyclerMembers}"
+        }
+
+        return "Voucher[ringIdx=$ringVrfKeyIndex, value=${recyclerValue.formatValue()}, " +
+            "exp=2^${recyclerValue.value}, $location]"
+    }
+
+    // Matches what the Coins and Vouchers debug sheets print, so a tester can line the export up against the
+    // screen they read it from. Kept private to the export rather than offered as a coinage-wide formatter.
+    private fun ValueExponent.formatValue(): String {
+        return "$" + String.format(Locale.US, "%.2f", tokenAmount().toDouble() / CENTS_PER_DOLLAR)
     }
 }

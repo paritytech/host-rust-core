@@ -15,10 +15,8 @@ class ProductSigningContext(
 ) : SigningContext {
     private val result = CompletableDeferred<Result<SignedTransaction>>()
 
-    override suspend fun deliverSignedResult(signedTransaction: SignedTransaction): Result<Unit> {
-        result.complete(Result.success(signedTransaction))
-        return Result.success(Unit)
-    }
+    override suspend fun approve(sign: suspend () -> Result<SignedTransaction>): Result<Unit> =
+        sign().map { signed -> result.complete(Result.success(signed)) }
 
     override suspend fun deliverRejection(): Result<Unit> {
         result.complete(Result.failure(CancellationException("User rejected")))

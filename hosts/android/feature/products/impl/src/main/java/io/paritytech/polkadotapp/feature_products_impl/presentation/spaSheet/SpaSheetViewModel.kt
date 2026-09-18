@@ -5,9 +5,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
+import io.paritytech.polkadotapp.common.utils.Urls
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsLoadProgress
-import io.paritytech.polkadotapp.feature_products_api.model.ProductId
-import io.paritytech.polkadotapp.feature_products_api.model.toUrl
 import io.paritytech.polkadotapp.feature_products_api.presentation.SpaSheetPayload
 import io.paritytech.polkadotapp.feature_products_api.presentation.spaHost.SpaHost
 import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
@@ -29,7 +28,7 @@ class SpaSheetViewModel @Inject constructor(
 ) : BaseViewModel(), SpaSheetContract {
     private val payload = savedStateHandle.getPayload<SpaSheetPayload>()
 
-    private val session = spaHost.createSession(ProductId.fromStoredValue(payload.productId).toUrl())
+    private val session = spaHost.createSession(Urls.ensureHasProtocolOrHttps(payload.url))
 
     val webView: StateFlow<WebView?> = session.webView
 

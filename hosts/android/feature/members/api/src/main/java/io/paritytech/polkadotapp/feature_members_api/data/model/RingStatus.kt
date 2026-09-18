@@ -11,8 +11,13 @@ class RingStatus(
     val immutableSince: Long? = null
 )
 
-fun RingStatus.includesKey(position: RingPosition): Boolean {
-    val ringPosition = position.ringPosition ?: return false
+/**
+ * [RingPosition.Included.ringPosition] counts within its page while [RingStatus.included] counts across the ring,
+ * so the pages before the key's own have to be added back. [keysPerPage] is the ring keys page size, see
+ * [io.paritytech.polkadotapp.feature_members_api.data.repository.MembersRepository.getRingKeysPageSize].
+ */
+fun RingStatus.includesKey(position: RingPosition, keysPerPage: Int): Boolean {
+    val included = position.includedOrNull() ?: return false
 
-    return included > ringPosition
+    return this.included > included.ringPage * keysPerPage + included.ringPosition
 }

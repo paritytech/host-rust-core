@@ -36,7 +36,7 @@ public struct ExternalPayment: Equatable {
     public var stage: Stage
     /// Vouchers the current stage carries: the exact vouchers while onboarding, the vouchers to unload
     /// while offboarding. Persisted so a relaunch resumes without re-planning.
-    public var plannedVoucherIndices: [DerivationIndex]
+    public var plannedVoucherIndices: [CoinageKeyIndex]
     /// Planner output carried by the offboarding stage: what the selected vouchers exceed the amount
     /// by, folded back into fresh vouchers by the unload.
     public var surplusInPlanks: Balance
@@ -51,7 +51,7 @@ public struct ExternalPayment: Equatable {
         destination: AccountId,
         settledInPlanks: Balance = 0,
         stage: Stage = .plan,
-        plannedVoucherIndices: [DerivationIndex] = [],
+        plannedVoucherIndices: [CoinageKeyIndex] = [],
         surplusInPlanks: Balance = 0,
         failureReason: String? = nil,
         createdAt: Date = .init(),

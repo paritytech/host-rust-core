@@ -2,6 +2,7 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.recycling
 
 import io.paritytech.polkadotapp.chains.network.binding.Balance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinRecyclingState
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclingVerdicts
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
@@ -11,6 +12,7 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingStrategyType
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.params
 import io.paritytech.polkadotapp.feature_coinage_impl.common.testConversionContext
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -48,11 +50,12 @@ class RecyclingStrategyLimitsTest {
     @Test
     fun `a coin of unknown age is never forced`() {
         val unknown = Coin(
-            derivationIndex = 0,
+            derivationIndex = testKey(0),
             valueExponent = ValueExponent(1),
             age = Coin.Age.Unknown,
             isOnChain = true,
             accountId = mock(),
+            provenance = CoinProvenance.UNKNOWN,
         )
 
         val verdicts = evaluate(chainLimited(RecyclingStrategyType.MAX_PRIVACY), listOf(unknown))
@@ -160,10 +163,11 @@ class RecyclingStrategyLimitsTest {
     }
 
     private fun coinOf(age: Int, derivationIndex: Int = 0) = Coin(
-        derivationIndex = derivationIndex,
+        derivationIndex = testKey(derivationIndex),
         valueExponent = ValueExponent(1),
         age = Coin.Age.Known(age),
         isOnChain = true,
         accountId = mock(),
+        provenance = CoinProvenance.UNKNOWN,
     )
 }
