@@ -4,7 +4,11 @@ import { describe, expect, it, jest } from "bun:test";
 import { createTransport, RequestTimeoutError } from "./client.js";
 import * as S from "./scale.js";
 import { str, type CallErrorValue } from "./scale.js";
-import { createClient, SubscriptionError } from "./generated/client.js";
+import {
+  createClient,
+  SubscriptionError,
+  TRUAPI_CODEC_VERSION,
+} from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 import {
@@ -262,7 +266,7 @@ describe("generated client transport", () => {
 
         const expectedPayload = T.VersionedHostHandshakeRequest.enc({
             tag: "V1",
-            value: { codecVersion: 2 },
+            value: { codecVersion: TRUAPI_CODEC_VERSION },
         });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 3 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
@@ -647,7 +651,7 @@ describe("generated client transport", () => {
 
         const requestPayload = T.VersionedHostHandshakeRequest.enc({
             tag: "V1",
-            value: { codecVersion: 2 },
+            value: { codecVersion: TRUAPI_CODEC_VERSION },
         });
         const requestFrame = wireFrame(
             "h:1",

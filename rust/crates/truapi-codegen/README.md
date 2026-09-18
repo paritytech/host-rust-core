@@ -59,9 +59,7 @@ Missing or duplicate wire ids fail generation. One id addresses a method whateve
 ```bash
 cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
-  --output js/packages/truapi/src/generated \
-  --version V2 \
-  --codec-version 2
+  --output js/packages/truapi/src/generated
 ```
 
 ## Typical workflow
@@ -70,9 +68,7 @@ cargo run -p truapi-codegen -- \
 cargo +nightly rustdoc -p truapi -- -Z unstable-options --output-format json
 cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
-  --output js/packages/truapi/src/generated \
-  --version V2 \
-  --codec-version 2
+  --output js/packages/truapi/src/generated
 ```
 
 The repo wraps both steps in [`scripts/codegen.sh`](../../../scripts/codegen.sh), which is what you should run from the repo root.
