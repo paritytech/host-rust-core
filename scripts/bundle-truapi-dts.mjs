@@ -191,6 +191,10 @@ ${hostClient}
 export interface HostContext {
   /** Product id served by the host. */
   productId: string;
+  /** Version of the TrUAPI client supplied by the runner. */
+  apiVersion: string;
+  /** Aborted when the host connection closes or script execution finishes. */
+  signal: AbortSignal;
   /** Product account for \`derivationIndex\`, which defaults to zero. */
   productAccount(index?: number): T.ProductAccountId;
 }

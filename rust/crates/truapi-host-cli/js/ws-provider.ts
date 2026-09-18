@@ -42,7 +42,7 @@ function unixWsProvider(socketPath: string): FrameProvider {
     .digest("base64");
   const socket = connect(socketPath);
   let handshakeBuffer = Buffer.alloc(0);
-  let frameBuffer = Buffer.alloc(0);
+  let frameBuffer: Buffer = Buffer.alloc(0);
   let fragmentedOpcode: number | undefined;
   let fragmentedPayloads: Buffer[] = [];
   let fragmentedLength = 0;

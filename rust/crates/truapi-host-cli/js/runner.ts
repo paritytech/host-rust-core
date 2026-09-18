@@ -21,6 +21,7 @@ import {
   type TrUApiClient,
 } from "../../../../js/packages/truapi/src/index.ts";
 import { wsProvider } from "./ws-provider.ts";
+import { version as apiVersion } from "../../../../js/packages/truapi/package.json";
 
 /// The host context injected alongside `truapi`. It only exposes what a script
 /// can't get from `truapi` alone: the product id the host serves, so product
@@ -29,6 +30,10 @@ import { wsProvider } from "./ws-provider.ts";
 export interface HostContext {
   /** The product id this host serves (its `--product-id`). */
   productId: string;
+  /** Version of the TrUAPI client supplied by the runner. */
+  apiVersion: string;
+  /** Aborted when the host connection closes or script execution finishes. */
+  signal: AbortSignal;
   /** A product account id for `derivationIndex` (default 0) under this product. */
   productAccount(index?: number): ProductAccountId;
 }
@@ -59,9 +64,15 @@ async function main() {
 
   const provider = wsProvider(frameUrl);
   const client = createClient(createTransport(provider));
+  const connection = new AbortController();
+  const unsubscribeClose = provider.subscribeClose?.((error) =>
+    connection.abort(error),
+  );
 
   const context: HostContext = {
     productId,
+    apiVersion,
+    signal: connection.signal,
     productAccount: (index = 0) => ({
       dotNsIdentifier: productId,
       derivationIndex: { tag: "Index", value: index },
@@ -85,15 +96,17 @@ async function main() {
     console.error(`[runner] timed out connecting to ${frameUrl}`);
     process.exit(2);
   }, OPEN_TIMEOUT_MS);
-  await provider.opened;
-  clearTimeout(timer);
-
   try {
+    await provider.opened;
+    clearTimeout(timer);
     const module = await import(pathToFileURL(scriptPath).href);
     if (typeof module.default === "function") {
       await module.default(context);
     }
   } finally {
+    clearTimeout(timer);
+    connection.abort(new Error("Script completed"));
+    unsubscribeClose?.();
     provider.dispose();
   }
 }
@@ -102,7 +115,7 @@ main().then(
   () => process.exit(0),
   (error) => {
     console.error(
-      `[script error] ${error instanceof Error ? error.stack : String(error)}`,
+      `[script error] ${inspect(error, { colors: false, depth: 5 })}`,
     );
     process.exit(1);
   },

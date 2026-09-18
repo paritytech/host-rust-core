@@ -8,6 +8,14 @@ declare const truapi: TrUApiClient;
 declare const host: HostContext;
 declare const assert: ScriptAssert;
 
+const apiVersion: string = host.apiVersion;
+const signal: AbortSignal = host.signal;
+assert(apiVersion.length > 0);
+assert(!signal.aborted);
+
+// @ts-expect-error The host connection signal cannot be aborted by a script.
+host.signal.abort();
+
 const productContext = await truapi.system.getProductContext();
 assert(productContext.isOk(), "getProductContext failed", productContext);
 const productId: string = productContext.value.productId;

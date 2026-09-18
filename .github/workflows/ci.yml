@@ -538,6 +538,9 @@ jobs:
       - name: Test
         run: npm test --prefix js/packages/truapi
 
+      - name: Test host script runner
+        run: bun test rust/crates/truapi-host-cli/js/runner.test.ts
+
   ts-host:
     name: "@parity/truapi-host"
     timeout-minutes: 10
