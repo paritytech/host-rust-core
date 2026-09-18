@@ -362,6 +362,20 @@ this CLI feature. During development, set `TRUAPI_SCRIPT_SDK` to a packed SDK
 tarball or package spec before creating a project. It changes only the new
 manifest. Existing project dependencies are never upgraded by a host update.
 
+To verify unpublished SDK changes against the packaged CLI, provide both the
+built umbrella and host package tarballs:
+
+```bash
+SDK_TARBALL=/path/to/parity-product-sdk.tgz \
+SDK_HOST_TARBALL=/path/to/parity-product-sdk-host.tgz \
+make e2e-cli-sdk
+```
+
+This requires Bun and Python 3. The test installs the CLI archive and creates
+isolated projects under `.agent/tools/`, with a dependency override so every SDK
+package uses the packed host binding. It checks setup recovery, editor types,
+real host calls, offline reopening, cancellation, and error output.
+
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
 and its files live under
@@ -565,8 +579,9 @@ update the project's SDK deliberately or run a compatible host. Await all
 work, including subscription completion: the script process exits when its
 module and optional default function finish.
 
-For product-account signing, add `getAccountsProvider` to the starter's SDK
-imports and replace the contents of its `try` block with:
+The generated starter relies on `host.signal` to release the SDK binding when
+execution finishes. For product-account signing, add `getAccountsProvider` to
+its SDK imports and replace the storage example with:
 
 ```ts
 const accounts = await getAccountsProvider();

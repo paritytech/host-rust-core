@@ -440,6 +440,10 @@ e2e-cross-product-ringvrf: ## One product signs with another's ring-VRF key on t
 e2e-cli-update: cli-dist ## Install the packaged truapi-host from a fake release and self-update it, with no network.
 	node scripts/e2e-cli-update.mjs
 
+.PHONY: e2e-cli-sdk
+e2e-cli-sdk: cli-dist ## Check packaged script authoring with SDK_TARBALL and SDK_HOST_TARBALL.
+	node scripts/e2e-cli-sdk.mjs
+
 matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-reports.
 	cd $(EXPLORER) && npm run generate-matrix
 

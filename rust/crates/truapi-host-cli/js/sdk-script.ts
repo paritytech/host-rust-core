@@ -11,17 +11,13 @@ declare const truapi: TruApi;
 declare const host: HostContext;
 declare const assert: ScriptAssert;
 
-const unbind = bindHost({
+bindHost({
   client: truapi,
   signal: host.signal,
   apiVersion: host.apiVersion,
 });
 
-try {
-  const storage = await getHostLocalStorage();
-  assert(storage, "Host storage API unavailable");
-  console.log("product", host.productId);
-  console.log("saved value", await storage.readString("example"));
-} finally {
-  unbind();
-}
+const storage = await getHostLocalStorage();
+assert(storage, "Host storage API unavailable");
+console.log("product", host.productId);
+console.log("saved value", await storage.readString("example"));
