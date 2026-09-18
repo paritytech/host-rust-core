@@ -5,6 +5,7 @@
 //! iOS, Android, and web hosts share one canonical implementation.
 
 pub mod attestation;
+pub mod backend;
 pub mod bulletin;
 pub mod device_key;
 pub mod dotns;

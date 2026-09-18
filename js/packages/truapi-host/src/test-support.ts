@@ -111,6 +111,21 @@ export function makeHostCallbacks(
           },
         }
       : {}),
+    // And for the backend tunnel: the default fixture registers no backend,
+    // so backend requests are answered `Unsupported`.
+    ...(overrides.backend
+      ? {
+          backend: {
+            backendRequest: async () => ({
+              status: 200,
+              headers: [],
+              body: new Uint8Array(),
+            }),
+            backendList: async () => [],
+            ...overrides.backend,
+          },
+        }
+      : {}),
   };
 }
 

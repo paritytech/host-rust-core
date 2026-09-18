@@ -243,7 +243,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       kind: "init",
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
-      capabilities: { chat: false, permissionStatus: false, pocket: false },
+      capabilities: { chat: false, permissionStatus: false, pocket: false, backend: false },
       debuggerUrl: null,
     });
 
@@ -278,6 +278,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       chat: true,
       permissionStatus: false,
       pocket: false,
+      backend: false,
     });
   });
 
@@ -299,6 +300,32 @@ describe("createWebWorkerPairingHostRuntime", () => {
       chat: false,
       permissionStatus: false,
       pocket: true,
+      backend: false,
+    });
+  });
+
+  it("reports the backend capability to the worker when the host serves it", async () => {
+    const worker = new FakeWorker();
+    void createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        backend: {
+          backendRequest: async () => ({ status: 200, headers: [], body: new Uint8Array() }),
+          backendList: async () => [],
+        },
+      }),
+      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+    );
+
+    worker.emit({ kind: "loaded" });
+
+    // Without this the worker never builds the backend callbacks, so a host
+    // that serves backends is answered `Unsupported` anyway.
+    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
+      chat: false,
+      permissionStatus: false,
+      pocket: false,
+      backend: true,
     });
   });
 

@@ -1,6 +1,7 @@
 //! TrUAPI Protocol v0.1 type definitions.
 
 mod account;
+mod backend;
 mod chain;
 mod chat;
 mod coin_payment;
@@ -22,6 +23,7 @@ mod theme;
 mod transaction;
 
 pub use account::*;
+pub use backend::*;
 pub use chain::*;
 pub use chat::*;
 pub use coin_payment::*;

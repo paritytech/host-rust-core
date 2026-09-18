@@ -36,6 +36,7 @@ import uniffi.truapi.ChatBotRegistrationStatus
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatRoom
 import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi.HostBackendRequest
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
@@ -57,6 +58,8 @@ import uniffi.truapi_platform.HostChainSet
 import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi_server.HostBackendRejection
+import uniffi.truapi_server.NativeBackendResponse
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatCallbacks
 import uniffi.truapi_server.NativePocketCallbacks
@@ -300,6 +303,28 @@ interface HostBridge {
     ): NativeDevicePermissionStatus = NativeDevicePermissionStatus.NOT_APPLICABLE
 
     /**
+     * Perform one request against a backend this host holds a credential for,
+     * on behalf of [productId]. The core has already screened the request;
+     * resolve the identifier, set the path on the parsed base rather than
+     * concatenating, do not follow redirects, cap the response, return only the
+     * allowlisted headers, and forward [productId] as `X-Polkadot-Product`.
+     *
+     * Defaults to [HostBackendRejection.UnknownBackend], so an app that
+     * registers no backends leaves these calls refused.
+     */
+    @Throws(HostBackendRejection::class)
+    suspend fun backendRequest(
+        productId: String,
+        request: HostBackendRequest,
+    ): NativeBackendResponse = throw HostBackendRejection.UnknownBackend()
+
+    /**
+     * Identifiers [backendRequest] accepts for [productId]. Defaults to none.
+     */
+    @Throws(HostBackendRejection::class)
+    suspend fun backendList(productId: String): List<String> = emptyList()
+
+    /**
      * Prompt for a remote (product-scoped) permission bundle. Invoked on a
      * blocking-pool thread; present the prompt on the main thread and block the
      * calling thread until the user decides. Blocking here does not stall other
@@ -510,6 +535,27 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override suspend fun remotePermission(request: RemotePermission): Boolean =
         withHostRejection { bridge.remotePermission(request) }
+
+    override suspend fun backendRequest(
+        productId: String,
+        request: HostBackendRequest,
+    ): NativeBackendResponse =
+        try {
+            bridge.backendRequest(productId, request)
+        } catch (error: HostBackendRejection) {
+            throw error
+        } catch (error: Throwable) {
+            throw HostBackendRejection.Unknown(hostRejectionReason(error))
+        }
+
+    override suspend fun backendList(productId: String): List<String> =
+        try {
+            bridge.backendList(productId)
+        } catch (error: HostBackendRejection) {
+            throw error
+        } catch (error: Throwable) {
+            throw HostBackendRejection.Unknown(hostRejectionReason(error))
+        }
 
     override fun authStateChanged(state: AuthState) {
         try {

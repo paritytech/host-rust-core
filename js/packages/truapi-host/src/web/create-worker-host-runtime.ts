@@ -1013,6 +1013,7 @@ export function createWebWorkerPairingHostRuntime(
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
             pocket: host.pocket !== undefined,
+            backend: host.backend !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
         } satisfies MainToWorker);

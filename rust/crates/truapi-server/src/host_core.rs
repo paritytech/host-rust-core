@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
+use truapi_platform::{BackendHost, ChatPlatform, PermissionStatusHost, PocketPlatform};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -286,6 +286,16 @@ impl PairingHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_pocket_platform"))]
     pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
         self.services.install_pocket_platform(platform)
+    }
+
+    /// Install the host's backend adapter.
+    ///
+    /// Set-once, so which origin a backend identifier resolves to cannot change
+    /// under a running product. Returns whether this call installed it. Call it
+    /// before serving any product runtime.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_backend_host"))]
+    pub fn set_backend_host(&self, host: Arc<dyn BackendHost>) -> bool {
+        self.services.install_backend_host(host)
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -632,6 +642,16 @@ impl SigningHostRuntime {
         self.services.install_pocket_platform(platform)
     }
 
+    /// Install the host's backend adapter.
+    ///
+    /// Set-once, so which origin a backend identifier resolves to cannot change
+    /// under a running product. Returns whether this call installed it. Call it
+    /// before serving any product runtime.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_backend_host"))]
+    pub fn set_backend_host(&self, host: Arc<dyn BackendHost>) -> bool {
+        self.services.install_backend_host(host)
+    }
+
     /// Build a product-facing runtime from this signing host.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_runtime"))]
     pub fn product_runtime(
@@ -962,6 +982,7 @@ pub(crate) struct ConnectionAdapters {
     pub(crate) renderer:
         Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
     pub(crate) pocket_platform: Option<Arc<dyn PocketPlatform>>,
+    pub(crate) backend_host: Option<Arc<dyn BackendHost>>,
 }
 
 impl ConnectionAdapters {
@@ -974,6 +995,7 @@ impl ConnectionAdapters {
             chat: Arc::new(ActionChannel::chat()),
             renderer: Arc::new(ActionChannel::renderer()),
             pocket_platform: services.pocket_platform(),
+            backend_host: services.backend_host(),
         }
     }
 }

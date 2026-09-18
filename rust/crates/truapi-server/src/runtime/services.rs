@@ -41,6 +41,10 @@ pub(crate) struct RuntimeServices {
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Host backend adapter, installed once at startup by a host that holds
+    /// credentials for one or more deployer backends. Unset leaves every
+    /// product backend call `Unsupported`.
+    backend_host: OnceLock<Arc<dyn truapi_platform::BackendHost>>,
     /// Asset Hub the dotNS contracts are deployed on. All-zero says this host
     /// has none, which leaves every manifest unresolvable.
     asset_hub_chain_genesis_hash: [u8; 32],
@@ -101,6 +105,7 @@ impl RuntimeServices {
             chat_platform: None,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
+            backend_host: OnceLock::new(),
             asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
             chain,
@@ -190,6 +195,20 @@ impl RuntimeServices {
     /// The host's Pocket adapter, when one is installed.
     pub(crate) fn pocket_platform(&self) -> Option<Arc<dyn truapi_platform::PocketPlatform>> {
         self.pocket_platform.get().cloned()
+    }
+
+    /// Install the host's backend adapter.
+    ///
+    /// Set-once, like every optional capability, so which origin a backend
+    /// identifier resolves to cannot change under a running product. Returns
+    /// whether this call installed it.
+    pub(crate) fn install_backend_host(&self, host: Arc<dyn truapi_platform::BackendHost>) -> bool {
+        self.backend_host.set(host).is_ok()
+    }
+
+    /// The host's backend adapter, when one is installed.
+    pub(crate) fn backend_host(&self) -> Option<Arc<dyn truapi_platform::BackendHost>> {
+        self.backend_host.get().cloned()
     }
 
     /// This device's persisted X25519 encryption secret, created on first use.

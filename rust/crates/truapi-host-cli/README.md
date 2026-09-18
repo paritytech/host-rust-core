@@ -582,6 +582,11 @@ Scripts under `js/scripts/` include:
   in `TRUAPI_POCKET_LOG`. The cases read that transcript, so a pass means the
   host and the product agree rather than resting on the product's word.
 
+  Backend requests resolve against a registry read from `TRUAPI_BACKENDS`,
+  as `id=base_url[,token]` entries separated by `;`. With nothing configured
+  the host starts a loopback echo backend and registers it as `echo`, so the
+  generated example has something to call without a network or a credential.
+
   The paired phase gives its pairing host a throwaway `--base-path` under
   `target/battery/pairing-host-state`, so it performs a real handshake on every
   run. A pairing host that restores an earlier session reports

@@ -260,6 +260,8 @@ pub struct ProductRuntimeHost {
     chat: Arc<ActionChannel<HostChatActionSubscribeItem>>,
     renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
     pocket_platform: Option<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Tunnel to the host's registered backends, when the host serves any.
+    backend_host: Option<Arc<dyn truapi_platform::BackendHost>>,
 }
 
 impl ProductRuntimeHost {
@@ -283,6 +285,7 @@ impl ProductRuntimeHost {
             chat: adapters.chat,
             renderer: adapters.renderer,
             pocket_platform: adapters.pocket_platform,
+            backend_host: adapters.backend_host,
         }
     }
 
@@ -330,6 +333,13 @@ impl ProductRuntimeHost {
     #[cfg(test)]
     fn new_compat(platform: Arc<dyn Platform>, spawner: Spawner) -> Self {
         Self::new_compat_with_pairing(platform, spawner).0
+    }
+
+    /// Install a backend tunnel on a test host.
+    #[cfg(test)]
+    fn with_backend_host(mut self, host: Arc<dyn truapi_platform::BackendHost>) -> Self {
+        self.backend_host = Some(host);
+        self
     }
 
     #[cfg(test)]
@@ -408,6 +418,7 @@ impl ProductRuntimeHost {
             chat,
             renderer,
             pocket_platform: None,
+            backend_host: None,
         };
         (host, pairing_host)
     }
@@ -1010,6 +1021,11 @@ impl ProductRuntimeHost {
             self.authority.session_state().current().is_some(),
             self.chat_platform.as_ref(),
         )
+    }
+
+    /// The host's backend tunnel, or `Unsupported` when it registers none.
+    fn backend_host<E>(&self) -> Result<Arc<dyn truapi_platform::BackendHost>, CallError<E>> {
+        self.backend_host.clone().ok_or(CallError::Unsupported)
     }
 
     fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {

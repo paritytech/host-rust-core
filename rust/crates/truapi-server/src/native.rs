@@ -116,6 +116,95 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for HostRejection {
     }
 }
 
+/// One response header a native host passes back.
+///
+/// The canonical [`v01::BackendHeader`] cannot cross here: UniFFI cannot lower a
+/// record defined in another crate out of an async callback return, so the
+/// response leg carries this boundary mirror and the adapter converts.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NativeBackendHeader {
+    /// Header name, lowercased.
+    pub name: String,
+    /// Header value.
+    pub value: String,
+}
+
+/// What a backend answered, as a native host reports it.
+///
+/// Mirrors [`v01::HostBackendResponse`] for the reason [`NativeBackendHeader`]
+/// gives.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NativeBackendResponse {
+    /// HTTP status the backend returned.
+    pub status: u16,
+    /// Allowlisted response headers, lowercased.
+    pub headers: Vec<NativeBackendHeader>,
+    /// Response body as received.
+    pub body: Vec<u8>,
+}
+
+impl From<NativeBackendResponse> for v01::HostBackendResponse {
+    fn from(response: NativeBackendResponse) -> Self {
+        Self {
+            status: response.status,
+            headers: response
+                .headers
+                .into_iter()
+                .map(|header| v01::BackendHeader {
+                    name: header.name,
+                    value: header.value,
+                })
+                .collect(),
+            body: response.body,
+        }
+    }
+}
+
+/// Backend failure reported by a native host: the subset of
+/// `HostBackendError` a host can raise, in the shape [`uniffi::Error`] requires.
+#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+pub enum HostBackendRejection {
+    /// This host serves no backend under the requested identifier.
+    #[error("unknown backend")]
+    UnknownBackend,
+    /// The response exceeded the host's cap and was not truncated to fit.
+    #[error("response too large")]
+    ResponseTooLarge,
+    /// The request was sent and did not complete.
+    #[error("{reason}")]
+    Transport {
+        /// Human-readable failure reason.
+        reason: String,
+    },
+    /// Catch-all.
+    #[error("{reason}")]
+    Unknown {
+        /// Human-readable failure reason.
+        reason: String,
+    },
+}
+
+impl From<HostBackendRejection> for v01::HostBackendError {
+    fn from(err: HostBackendRejection) -> Self {
+        match err {
+            HostBackendRejection::UnknownBackend => Self::UnknownBackend,
+            HostBackendRejection::ResponseTooLarge => Self::ResponseTooLarge,
+            HostBackendRejection::Transport { reason } => Self::Transport { reason },
+            HostBackendRejection::Unknown { reason } => Self::Unknown { reason },
+        }
+    }
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for HostBackendRejection {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "backend callback threw an undeclared error; reporting it as unknown"
+        );
+        HostBackendRejection::Unknown { reason: err.reason }
+    }
+}
+
 impl From<v01::GenericError> for HostRejection {
     fn from(err: v01::GenericError) -> Self {
         HostRejection::Rejected { reason: err.reason }
@@ -527,6 +616,18 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::HostDevicePermissionRequest,
     ) -> Result<NativeDevicePermissionStatus, HostRejection>;
 
+    /// Perform one request against a backend this host holds a credential for,
+    /// on behalf of `product_id`. The request is already screened; the
+    /// obligations are on [`truapi_platform::BackendHost`].
+    async fn backend_request(
+        &self,
+        product_id: String,
+        request: v01::HostBackendRequest,
+    ) -> Result<NativeBackendResponse, HostBackendRejection>;
+
+    /// Identifiers `backend_request` accepts for `product_id`.
+    async fn backend_list(&self, product_id: String) -> Result<Vec<String>, HostBackendRejection>;
+
     /// Prompt the user for a remote (product-scoped) permission.
     async fn remote_permission(
         &self,
@@ -757,6 +858,7 @@ impl NativeTrUApiHostRuntime {
         });
         let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
             callback_platform.clone();
+        let backend_host: Arc<dyn truapi_platform::BackendHost> = callback_platform.clone();
         let platform: Arc<dyn truapi_platform::Platform> = callback_platform;
         let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> =
             chat_callbacks.map(|chat| -> Arc<dyn truapi_platform::ChatPlatform> {
@@ -779,6 +881,7 @@ impl NativeTrUApiHostRuntime {
             chat,
             pocket,
             permission_status,
+            backend_host,
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -1161,6 +1264,8 @@ pub struct NativeProductExecution {
     /// The same `CallbackPlatform` as `platform`, kept separately because
     /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
     permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
+    /// The same `CallbackPlatform` again, for the backend tunnel.
+    backend_host: Arc<dyn truapi_platform::BackendHost>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -1192,6 +1297,7 @@ impl NativeProductExecution {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
             permission_status: Some(self.permission_status.clone()),
+            backend_host: Some(self.backend_host.clone()),
             chat: self.chat_connection.clone(),
             renderer: self.renderer_connection.clone(),
             pocket_platform: self.pocket.clone(),
@@ -1736,6 +1842,40 @@ impl truapi_platform::PermissionStatusHost for CallbackPlatform {
             .await
             .map(Into::into)
             .map_err(v01::GenericError::from)
+    }
+}
+
+#[async_trait]
+impl truapi_platform::BackendHost for CallbackPlatform {
+    async fn backend_request(
+        &self,
+        product: &truapi_platform::ProductContext,
+        request: v01::HostBackendRequest,
+    ) -> Result<v01::HostBackendResponse, v01::HostBackendError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.backend_request".to_string(),
+            // The path and query can carry user data; only the backend is logged.
+            request.backend.clone(),
+        );
+
+        self.callbacks
+            .backend_request(product.product_id.clone(), request)
+            .await
+            .map(v01::HostBackendResponse::from)
+            .map_err(v01::HostBackendError::from)
+    }
+
+    async fn backends(
+        &self,
+        product: &truapi_platform::ProductContext,
+    ) -> Result<v01::HostBackendListResponse, v01::GenericError> {
+        self.callbacks
+            .backend_list(product.product_id.clone())
+            .await
+            .map(|backends| v01::HostBackendListResponse { backends })
+            .map_err(|error| v01::GenericError {
+                reason: error.to_string(),
+            })
     }
 }
 
@@ -2537,6 +2677,19 @@ mod tests {
                 .lock()
                 .expect("auth state mutex poisoned")
                 .push(state);
+        }
+        async fn backend_request(
+            &self,
+            _product_id: String,
+            _request: v01::HostBackendRequest,
+        ) -> Result<NativeBackendResponse, HostBackendRejection> {
+            Err(HostBackendRejection::UnknownBackend)
+        }
+        async fn backend_list(
+            &self,
+            _product_id: String,
+        ) -> Result<Vec<String>, HostBackendRejection> {
+            Ok(Vec::new())
         }
         fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
             Ok(None)
@@ -3880,6 +4033,20 @@ mod tests {
             fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
+            async fn backend_request(
+                &self,
+                _product_id: String,
+                _request: v01::HostBackendRequest,
+            ) -> Result<NativeBackendResponse, HostBackendRejection> {
+                Err(HostBackendRejection::UnknownBackend)
+            }
+            async fn backend_list(
+                &self,
+                _product_id: String,
+            ) -> Result<Vec<String>, HostBackendRejection> {
+                Ok(Vec::new())
+            }
+
             async fn device_permission(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
@@ -4026,6 +4193,20 @@ mod tests {
             fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
+            async fn backend_request(
+                &self,
+                _product_id: String,
+                _request: v01::HostBackendRequest,
+            ) -> Result<NativeBackendResponse, HostBackendRejection> {
+                Err(HostBackendRejection::UnknownBackend)
+            }
+            async fn backend_list(
+                &self,
+                _product_id: String,
+            ) -> Result<Vec<String>, HostBackendRejection> {
+                Ok(Vec::new())
+            }
+
             async fn device_permission(
                 &self,
                 _request: v01::HostDevicePermissionRequest,

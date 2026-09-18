@@ -12,6 +12,8 @@ import type { ChainConnect } from "../runtime.js";
 
 export const CALLBACK_NAMES = [
   "authStateChanged",
+  "backendRequest",
+  "backends",
   "createChatRoom",
   "registerChatBot",
   "postChatMessage",
@@ -156,6 +158,22 @@ function subscriptionRawCallbacks(
   };
 }
 
+function backendRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "backendRequest" | "backends">> {
+  return {
+    backendRequest: (product, request) =>
+      bridge.callbackRequest("backendRequest", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["backendRequest"]>,
+    backends: (product) =>
+      bridge.callbackRequest("backends", [product]) as ReturnType<
+        Required<RawCallbacks>["backends"]
+      >,
+  };
+}
+
 function chatRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<
@@ -230,6 +248,8 @@ function pocketRawCallbacks(
  */
 export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
+  backend?: boolean;
+  /** Whether the host serves this capability. */
   chat?: boolean;
   /** Whether the host serves this capability. */
   permissionStatus?: boolean;
@@ -246,6 +266,8 @@ export function createWorkerRawCallbacks(
     ...subscriptionRawCallbacks(bridge),
     chainConnect: bridge.chainConnect,
   };
+  if (capabilities.backend)
+    Object.assign(callbacks, backendRawCallbacks(bridge));
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
   if (capabilities.permissionStatus)
     Object.assign(callbacks, permissionStatusRawCallbacks(bridge));

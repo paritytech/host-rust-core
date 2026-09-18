@@ -52,12 +52,13 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode,
-        BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction,
-        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
-        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
-        ColorToken, ColumnProps, ContentAlignment, ContextualAlias, DerivationIndex, Dimensions,
-        Effect, EffectProps, GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
+        AccountId, AllocatableResource, AllocationOutcome, Arrangement, BackendBody, BackendHeader,
+        BackendHttpMethod, BackendQueryItem, Background, BlendingMode, BorderStyle, BoxProps,
+        ButtonProps, ButtonVariant, ChainIdentifier, ChatAction, ChatActionLayout, ChatActions,
+        ChatBotRegistrationStatus, ChatCustomMessage, ChatFile, ChatMedia, ChatMessageContent,
+        ChatReaction, ChatRichText, ChatRoomRegistrationStatus, ColorToken, ColumnProps,
+        ContentAlignment, ContextualAlias, DerivationIndex, Dimensions, Effect, EffectProps,
+        GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
         HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
@@ -79,6 +80,14 @@ pub mod latest {
     /// Ring VRF proof creation result.
     pub type HostAccountCreateProofResponse =
         LatestOf<versioned::account::HostAccountCreateProofResponse>;
+    /// Backend request.
+    pub type HostBackendRequest = LatestOf<versioned::backend::HostBackendRequest>;
+    /// Backend response.
+    pub type HostBackendResponse = LatestOf<versioned::backend::HostBackendResponse>;
+    /// Backend request failure.
+    pub type HostBackendError = LatestOf<versioned::backend::HostBackendError>;
+    /// Backends a host serves for the calling product.
+    pub type HostBackendListResponse = LatestOf<versioned::backend::HostBackendListResponse>;
     /// Chat action delivered from the native host to a product worker.
     pub type HostChatActionSubscribeItem = LatestOf<versioned::chat::HostChatActionSubscribeItem>;
     /// Native chat room creation request.

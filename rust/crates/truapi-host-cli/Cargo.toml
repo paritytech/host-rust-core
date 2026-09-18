@@ -36,7 +36,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 parity-scale-codec = { version = "3", features = ["derive"] }
 qrcode = { version = "0.14.1", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rqrr = { version = "0.10.1", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }

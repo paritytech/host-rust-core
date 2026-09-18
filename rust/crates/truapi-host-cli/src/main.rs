@@ -14,6 +14,7 @@
 
 mod accounts;
 mod attestation;
+mod backend;
 mod bootstrap;
 mod chain;
 mod chat;
@@ -1098,6 +1099,7 @@ async fn run_pairing_host(
     if let Some(pocket) = pocket_host {
         pairing_runtime.set_pocket_platform(pocket);
     }
+    pairing_runtime.set_backend_host(backend::CliBackendHost::from_env());
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -1606,6 +1608,7 @@ fn build_signing_runtime(
     if let Some(pocket) = pocket {
         runtime.set_pocket_platform(pocket);
     }
+    runtime.set_backend_host(backend::CliBackendHost::from_env());
     runtime.start_statement_allowance_renewal();
     Ok((runtime, platform))
 }

@@ -31,15 +31,16 @@ uniffi::use_remote_type!(truapi::Bytes32);
 use truapi::Bytes32;
 use truapi::latest::{
     AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
-    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
-    HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
-    HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
-    HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
-    HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
-    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocaleSubscribeItem,
-    HostNavigateToError, HostPlatform, HostPocketListSubscribeItem, HostPocketRemoveCardError,
-    HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError, HostBackendError,
+    HostBackendListResponse, HostBackendRequest, HostBackendResponse, HostChatCreateRoomError,
+    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
+    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+    HostDevicePermissionRequest, HostDevicePermissionResponse, HostFeatureSupportedRequest,
+    HostFeatureSupportedResponse, HostLocaleSubscribeItem, HostNavigateToError, HostPlatform,
+    HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
+    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
     NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
     RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
@@ -3175,6 +3176,63 @@ pub trait PermissionStatusHost: Send + Sync {
     ) -> Result<DevicePermissionStatus, GenericError>;
 }
 
+/// Host-owned tunnel to the backends this host is registered for. Optional: a
+/// host that installs no adapter leaves backend requests answered
+/// `Unsupported`. See [`OptionalPlatform`]. A native host installs one for
+/// every execution, so it answers [`HostBackendError::UnknownBackend`] rather
+/// than `Unsupported` when it serves no backends.
+///
+/// The host alone resolves `backend` to a base URL and holds the credential
+/// that authenticates the call. It resolves per call, not at install time, so a
+/// host may add a backend or refresh a credential without the core knowing. A
+/// host that cannot keep a credential from its own users — anything running as
+/// script in a browser — registers no backends.
+///
+/// The core screens the request first: `path` is absolute within the backend
+/// and carries no dot segments, empty segments, percent escapes or
+/// protocol-relative prefix. Percent-encoding the query names and values when
+/// building the URL is the host's job.
+///
+/// A registered base must be a service the deployer runs, never a third-party
+/// API directly. The host authenticates itself to that backend; the backend
+/// holds the provider's key and makes the onward call. Pointing an entry at the
+/// provider would work mechanically and put that key in the host, which ships
+/// it in a binary or exposes it in devtools.
+///
+/// Obligations the core cannot enforce:
+///
+/// - **Set the path on the parsed base; never concatenate strings.** Refuse a
+///   base carrying a query or fragment — appended to
+///   `https://api.example.com/v1?key=abc`, a path lands inside the query.
+/// - **Do not follow redirects.** Return the `3xx`.
+/// - **Cap the response body** and answer [`HostBackendError::ResponseTooLarge`]
+///   rather than truncating.
+/// - **Filter response headers** to `content-type`, `retry-after`, `link` and
+///   the `x-ratelimit-*` trio, which the core re-screens. Keep no cookie jar.
+/// - **Forward the caller as `X-Polkadot-Product`**, overwriting any header of
+///   that name. It is host-attested, not cryptographic.
+/// - **Keep the credential out of anything the product can name.**
+#[async_trait]
+pub trait BackendHost: Send + Sync {
+    /// Perform one request against a registered backend, attaching the host's
+    /// own credential.
+    async fn backend_request(
+        &self,
+        product: &ProductContext,
+        request: HostBackendRequest,
+    ) -> Result<HostBackendResponse, HostBackendError>;
+
+    /// Identifiers [`Self::backend_request`] accepts for this product.
+    ///
+    /// Report only what this product may reach, so a registry that pins its
+    /// entries to product ids answers each product with its own set. Identifiers
+    /// only: where a backend lives stays host-side.
+    async fn backends(
+        &self,
+        product: &ProductContext,
+    ) -> Result<HostBackendListResponse, GenericError>;
+}
+
 /// Combined platform interface. A host must provide every capability trait
 /// listed here. Members marked optional may be omitted; the core answers their
 /// product calls with `Unsupported`. See [`OptionalPlatform`].
@@ -3214,6 +3272,12 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+pub trait OptionalPlatform:
+    BackendHost + ChatPlatform + PermissionStatusHost + PocketPlatform
+{
+}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+impl<T> OptionalPlatform for T where
+    T: BackendHost + ChatPlatform + PermissionStatusHost + PocketPlatform
+{
+}

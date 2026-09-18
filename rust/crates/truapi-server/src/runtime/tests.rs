@@ -4796,3 +4796,158 @@ fn subnames_of_one_product_share_one_cached_manifest() {
         );
     }
 }
+
+/// Records what the tunnel was handed, answering with a header a host should
+/// have filtered.
+#[derive(Default)]
+struct StubBackendHost {
+    calls: std::sync::Mutex<Vec<(String, v01::HostBackendRequest)>>,
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::BackendHost for StubBackendHost {
+    async fn backend_request(
+        &self,
+        product: &ProductContext,
+        request: v01::HostBackendRequest,
+    ) -> Result<v01::HostBackendResponse, v01::HostBackendError> {
+        self.calls
+            .lock()
+            .expect("backend call list mutex poisoned")
+            .push((product.product_id.clone(), request));
+        Ok(v01::HostBackendResponse {
+            status: 200,
+            headers: vec![
+                v01::BackendHeader {
+                    name: "content-type".to_string(),
+                    value: "application/json".to_string(),
+                },
+                v01::BackendHeader {
+                    name: "set-cookie".to_string(),
+                    value: "session=abc".to_string(),
+                },
+            ],
+            body: b"{}".to_vec(),
+        })
+    }
+
+    async fn backends(
+        &self,
+        _product: &ProductContext,
+    ) -> Result<v01::HostBackendListResponse, v01::GenericError> {
+        Ok(v01::HostBackendListResponse {
+            backends: vec!["fiat-onramp".to_string()],
+        })
+    }
+}
+
+fn backend_request(path: &str) -> truapi::versioned::backend::HostBackendRequest {
+    truapi::versioned::backend::HostBackendRequest::V1(v01::HostBackendRequest {
+        backend: "fiat-onramp".to_string(),
+        method: v01::BackendHttpMethod::Get,
+        path: path.to_string(),
+        query: Vec::new(),
+        body: None,
+    })
+}
+
+#[test]
+fn a_backend_request_is_unsupported_when_the_host_registers_none() {
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    let error = futures::executor::block_on(truapi::api::Backend::request(
+        &host,
+        &CallContext::default(),
+        backend_request("/a"),
+    ))
+    .expect_err("a host with no tunnel cannot serve this");
+    assert!(
+        matches!(error, CallError::Unsupported),
+        "expected Unsupported, got {error:?}"
+    );
+}
+
+#[test]
+fn a_backend_request_reaches_the_host_naming_the_calling_product() {
+    let backend = Arc::new(StubBackendHost::default());
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner())
+        .with_backend_host(backend.clone());
+
+    let response = futures::executor::block_on(truapi::api::Backend::request(
+        &host,
+        &CallContext::default(),
+        backend_request("/a"),
+    ))
+    .expect("the tunnel serves the request");
+
+    let calls = backend
+        .calls
+        .lock()
+        .expect("backend call list mutex poisoned")
+        .clone();
+    assert_eq!(calls.len(), 1);
+    // From the connection the host opened, not from the request.
+    assert_eq!(calls[0].0, "unknown.dot");
+    assert_eq!(calls[0].1.path, "/a");
+
+    let truapi::versioned::backend::HostBackendResponse::V1(response) = response;
+    assert_eq!(
+        response.headers,
+        vec![v01::BackendHeader {
+            name: "content-type".to_string(),
+            value: "application/json".to_string(),
+        }],
+        "a host that passes back a header outside the allowlist is filtered by the core"
+    );
+}
+
+#[test]
+fn a_backend_list_is_unsupported_without_a_host_and_names_the_backends_with_one() {
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    let error = futures::executor::block_on(truapi::api::Backend::list(
+        &host,
+        &CallContext::default(),
+        truapi::versioned::backend::HostBackendListRequest::V1,
+    ))
+    .expect_err("a host with no tunnel cannot serve this");
+    assert!(
+        matches!(error, CallError::Unsupported),
+        "expected Unsupported, got {error:?}"
+    );
+
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner())
+        .with_backend_host(Arc::new(StubBackendHost::default()));
+    let truapi::versioned::backend::HostBackendListResponse::V1(listed) =
+        futures::executor::block_on(truapi::api::Backend::list(
+            &host,
+            &CallContext::default(),
+            truapi::versioned::backend::HostBackendListRequest::V1,
+        ))
+        .expect("the tunnel serves the list");
+    assert_eq!(listed.backends, vec!["fiat-onramp".to_string()]);
+}
+
+#[test]
+fn a_refused_request_never_reaches_the_host() {
+    let backend = Arc::new(StubBackendHost::default());
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner())
+        .with_backend_host(backend.clone());
+
+    let error = futures::executor::block_on(truapi::api::Backend::request(
+        &host,
+        &CallContext::default(),
+        backend_request("/a/../../admin"),
+    ))
+    .expect_err("a path that escapes the origin is refused");
+    assert!(
+        matches!(error, CallError::Domain(_)),
+        "expected a domain error, got {error:?}"
+    );
+    assert!(
+        backend
+            .calls
+            .lock()
+            .expect("backend call list mutex poisoned")
+            .is_empty(),
+        "a refused request must not reach the tunnel"
+    );
+}

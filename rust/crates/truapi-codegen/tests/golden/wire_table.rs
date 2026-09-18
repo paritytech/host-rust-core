@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "dce7dbcb3598c981";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "26c715a0a72f4f88";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -506,6 +506,18 @@ pub const POCKET_REMOVE_CARD: MethodIds = MethodIds {
     method_id: 1,
 };
 
+/// Wire discriminants for `backend_request`.
+pub const BACKEND_REQUEST: MethodIds = MethodIds {
+    trait_id: 19,
+    method_id: 0,
+};
+
+/// Wire discriminants for `backend_list`.
+pub const BACKEND_LIST: MethodIds = MethodIds {
+    trait_id: 19,
+    method_id: 1,
+};
+
 /// The full wire table. Trait ids and per-trait method ordering are
 /// part of the wire protocol; only ever append within a trait.
 /// Removed methods leave their slot empty.
@@ -817,5 +829,13 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "pocket_remove_card",
         kind: WireKind::Request(POCKET_REMOVE_CARD),
+    },
+    WireEntry {
+        method: "backend_request",
+        kind: WireKind::Request(BACKEND_REQUEST),
+    },
+    WireEntry {
+        method: "backend_list",
+        kind: WireKind::Request(BACKEND_LIST),
     },
 ];

@@ -1,6 +1,7 @@
 //! Unified TrUAPI trait set.
 
 pub mod account;
+pub mod backend;
 pub mod chain;
 pub mod chat;
 pub mod coin_payment;
@@ -20,6 +21,7 @@ pub mod system;
 pub mod theme;
 
 pub use account::Account;
+pub use backend::Backend;
 pub use chain::Chain;
 pub use chat::Chat;
 pub use coin_payment::CoinPayment;
@@ -41,6 +43,7 @@ pub use theme::Theme;
 /// The unified TrUAPI contract.
 pub trait TrUApi:
     Account
+    + Backend
     + Chain
     + Chat
     + CoinPayment
@@ -65,6 +68,7 @@ pub trait TrUApi:
 
 impl<T> TrUApi for T where
     T: Account
+        + Backend
         + Chain
         + Chat
         + CoinPayment

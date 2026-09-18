@@ -6,6 +6,9 @@
 // primitives and byte blobs pass through unchanged.
 
 import {
+  HostBackendListResponse,
+  HostBackendRequest,
+  HostBackendResponse,
   HostChatCreateRoomRequest,
   HostChatCreateRoomResponse,
   HostChatListSubscribeItem,
@@ -47,6 +50,11 @@ import { chainConnectAdapter, driveResultStream } from "../adapter-support.js";
  */
 export interface RawCallbacks {
   authStateChanged(state: Uint8Array): void;
+  backendRequest?(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  backends?(product: Uint8Array): Promise<Uint8Array>;
   chainConnect: ChainConnect;
   createChatRoom?(
     product: Uint8Array,
@@ -105,12 +113,28 @@ export interface RawCallbacks {
 export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
+  const backend = callbacks.backend;
   const chat = callbacks.chat;
   const permissionStatus = callbacks.permissionStatus;
   const pocket = callbacks.pocket;
   return {
     authStateChanged: async (state) =>
       await callbacks.auth.authStateChanged(AuthState.dec(state)),
+    ...(backend
+      ? {
+          backendRequest: async (product, request) =>
+            HostBackendResponse.enc(
+              await backend.backendRequest(
+                ProductContext.dec(product),
+                HostBackendRequest.dec(request),
+              ),
+            ),
+          backends: async (product) =>
+            HostBackendListResponse.enc(
+              await backend.backends(ProductContext.dec(product)),
+            ),
+        }
+      : {}),
     chainConnect: chainConnectAdapter(callbacks.chain),
     ...(chat
       ? {
