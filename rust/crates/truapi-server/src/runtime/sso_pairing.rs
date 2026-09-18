@@ -49,6 +49,27 @@ const PAIRING_QUERY_TIMEOUT_TICKS: u8 = 15;
 #[cfg(test)]
 const PAIRING_QUERY_TIMEOUT_TICKS: u8 = 10;
 
+/// Longest one pairing attempt may take from request to paired session.
+///
+/// A peer that answers on a different SSO envelope publishes statements this
+/// host cannot open, which is indistinguishable from a peer that has not
+/// answered yet: both are silence on the topic. Without a bound the flow waits
+/// on that silence forever. Generous enough to outlast a QR scan and an
+/// on-device confirmation, so only a pairing that was never going to complete
+/// reaches it.
+#[cfg(not(test))]
+const PAIRING_DEADLINE: Duration = Duration::from_secs(300);
+#[cfg(test)]
+const PAIRING_DEADLINE: Duration = Duration::from_millis(200);
+
+/// Why a pairing attempt was abandoned, named the same way wherever it expires.
+fn pairing_deadline_reason() -> String {
+    let seconds = PAIRING_DEADLINE.as_secs();
+    format!(
+        "pairing did not complete within {seconds}s; the peer may be answering on a different SSO envelope"
+    )
+}
+
 /// Terminal outcome of [`SsoPairingFlow::request_session`].
 pub(super) enum SsoPairingOutcome {
     /// The login was cancelled (host `cancel_login`, `disconnect`, or a
@@ -185,12 +206,15 @@ impl<'a> SsoPairingFlow<'a> {
         last_processed_statement: Option<Vec<u8>>,
     ) -> Result<SsoPairingOutcome, String> {
         let mut cancel = cancel_rx.fuse();
+        let deadline = futures_timer::Delay::new(PAIRING_DEADLINE).fuse();
+        pin_mut!(deadline);
         let statement_store = self.host.statement_store.clone();
         let statement_store_connect = statement_store.client("pairing statement-store").fuse();
         pin_mut!(statement_store_connect);
 
         let rpc_client = futures::select! {
             _ = cancel => return Ok(SsoPairingOutcome::Cancelled),
+            _ = deadline => return Err(pairing_deadline_reason()),
             connect_result = statement_store_connect => connect_result.map_err(|err| err.to_string())?,
         };
         let subscribe_client = rpc_client.clone();
@@ -200,6 +224,7 @@ impl<'a> SsoPairingFlow<'a> {
         pin_mut!(live_subscription);
         let live_subscription = futures::select! {
             _ = cancel => return Ok(SsoPairingOutcome::Cancelled),
+            _ = deadline => return Err(pairing_deadline_reason()),
             subscribe_result = live_subscription => subscribe_result
                 .map_err(|err| format!("pairing statement-store subscribe failed: {err}"))?,
         };
@@ -221,6 +246,7 @@ impl<'a> SsoPairingFlow<'a> {
 
         let response = futures::select! {
             _ = cancel => return Ok(SsoPairingOutcome::Cancelled),
+            _ = deadline => return Err(pairing_deadline_reason()),
             response_result = pairing_response => response_result?,
         };
         write_last_processed_pairing_statement(self.host.platform.as_ref(), &response.statement)
@@ -607,6 +633,27 @@ mod tests {
                 66
             );
         }
+    }
+
+    /// A peer on a different SSO envelope publishes statements this host cannot
+    /// open, so the topic stays silent exactly as it would before the peer
+    /// answered at all. The flow has to give up on its own and say why.
+    #[test]
+    fn request_login_gives_up_when_nothing_decryptable_answers() {
+        let platform = stub_platform();
+        let (host, _pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let host = Arc::new(host);
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+        let outcome = futures::executor::block_on(host.request_login(&cx, request));
+
+        let error = outcome.expect_err("a pairing nothing answers must not wait forever");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("different SSO envelope"),
+            "the failure should name the likely cause, got {rendered}"
+        );
     }
 
     #[test]
