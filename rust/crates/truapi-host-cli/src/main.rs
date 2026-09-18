@@ -1021,10 +1021,21 @@ fn approval_policy(auto_accept: bool) -> ApprovalPolicy {
 
 /// Spawner that runs runtime futures on the tokio runtime, so their WebSocket
 /// connects and timers have a reactor.
+///
+/// The core spawns teardown work from `Drop`, which can run after the runtime
+/// has shut down; `tokio::spawn` panics there, so the handle is looked up
+/// rather than assumed.
 fn tokio_spawner() -> Spawner {
-    Arc::new(|fut: BoxFuture<'static, ()>| {
-        tokio::spawn(fut);
-    })
+    Arc::new(
+        |fut: BoxFuture<'static, ()>| match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(fut);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "dropping a runtime future: no tokio runtime is running");
+            }
+        },
+    )
 }
 
 fn host_info(name: &str) -> HostInfo {

@@ -269,6 +269,10 @@ pub struct ProductRuntimeHost {
     /// Scoped to the connection rather than the product, which holds because
     /// only a Worker execution reaches `begin_operation`/`end_operation` and a
     /// product has one of those at a time.
+    ///
+    /// The set is unbounded here. Whether a product may hold a thousand open
+    /// operations is the host's call, made in `begin_operation`, since the
+    /// host is what the operations keep running.
     open_operations: Mutex<HashSet<u32>>,
 }
 
@@ -1123,6 +1127,10 @@ impl ProductRuntimeHost {
     /// connection can outlive its last `Arc` holder, and a reference kept past
     /// dispose would leave the host running a worker for a connection that is
     /// gone.
+    ///
+    /// Telling the host runs on the spawner, so a spawner whose runtime is
+    /// already gone drops that work. The references are still released, and
+    /// the host is shutting down with its own records anyway.
     pub(crate) fn release_open_operations(&self) {
         let open = core::mem::take(
             &mut *self
@@ -1138,8 +1146,9 @@ impl ProductRuntimeHost {
         }
         // The host holds its own record of each operation, and nothing else
         // ever ends one for a connection that is gone: left alone they
-        // accumulate against the product's open-operation limit. Ending them
-        // reaches the host, so it runs off this thread.
+        // accumulate against whatever limit the host puts on a product's open
+        // operations. Ending them reaches the host, so it runs off this
+        // thread.
         let platform = self.platform.clone();
         let product = self.product.clone();
         (self.services.spawner)(Box::pin(async move {
