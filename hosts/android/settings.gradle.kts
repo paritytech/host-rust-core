@@ -48,7 +48,10 @@ run {
     // TRUAPI_DIR still wins, which keeps a separate checkout working for anyone
     // building this tree on its own.
     val inTreeDir = file("../..").takeIf { File(it, "rust/crates/truapi-server").isDirectory }
-    val resolved = configuredDir ?: inTreeDir
+    // Only an absent setting falls back. A configured one that does not resolve
+    // still fails here, with instructions, rather than being quietly replaced
+    // and dying later in cargo.
+    val resolved = if (truapiDir != null) configuredDir else inTreeDir
     if (resolved == null) {
         val configured = truapiDir?.let { "truapi.dir=$it does not contain rust/crates/truapi-server" }
             ?: "truapi.dir is not set and this tree is not inside the core repository"
