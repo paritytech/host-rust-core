@@ -76,6 +76,9 @@ impl SigningHostSsoService {
                     .sign_payload(
                         &cx.call,
                         &cx.session,
+                        // A relayed request carries no caller identity, and
+                        // this role confirms every one of them anyway.
+                        None,
                         SignPayloadAuthorityRequest::Product(request),
                     )
                     .await
@@ -107,6 +110,7 @@ impl SigningHostSsoService {
             .sign_raw(
                 &cx.call,
                 &cx.session,
+                None,
                 SignRawAuthorityRequest::Product(request),
                 watermarked,
             )
@@ -135,6 +139,7 @@ impl SigningHostSsoService {
             .sign_raw(
                 &cx.call,
                 &cx.session,
+                None,
                 SignRawAuthorityRequest::LegacyAccount {
                     account: request.account,
                     request: public_request,
@@ -154,7 +159,7 @@ impl SigningHostSsoService {
         self.confirm(UserConfirmationReview::CreateTransaction(review))
             .await?;
         self.signing_host
-            .create_transaction(&cx.call, &cx.session, request)
+            .create_transaction(&cx.call, &cx.session, None, request)
             .await
             .map(|response| response.transaction)
             .map_err(|err| err.to_string())

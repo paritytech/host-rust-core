@@ -1,15 +1,27 @@
 import Coinage
+import DurableTransactions
+import DurableTransactionsTestSupport
 import Foundation
 import SubstrateSdk
 import Testing
 
 @Suite("Registration Invariants")
 struct RegistrationInvariantTests {
-    private let watched = CoinageTrackingTxSet()
+    private let owned = DurableTxOwnershipSet()
 
-    /// The registrar requires a validator, but `MockCoinageTxRepository` enforces the invariants inline
-    /// and ignores the closure, so this is never invoked — it only satisfies the dependency.
-    private static let stubValidator = CoinageTxRegistrationValidator()
+    /// The production registration path: the engine's registrar with coinage's asset rows written inside
+    /// its transaction, over the in-memory stores.
+    private func register(
+        _ registrations: [CoinageTxRegistration],
+        in store: MockCoinageTxRepository
+    ) async throws -> [CoinageTxId] {
+        let ledger = store.ledger
+        let assets = registrations.map(\.assets)
+        return try await DurableTxRegistrar(store: store.durable, owned: owned)
+            .register(registrations.map(\.durable)) { scope, ids in
+                try ledger.registerAssets(assets, for: ids, in: scope)
+            }
+    }
 
     // MARK: - Non-Empty Entry
 
@@ -122,9 +134,7 @@ struct RegistrationInvariantTests {
         let store = MockCoinageTxRepository()
         let checkpoint = BlockRef.fixture(150)
 
-        let registrar = CoinageTxRegistrar(store: store, validator: Self.stubValidator, watched: watched)
-
-        let ids = try await registrar.register([.fixture(outputs: [.coin(0, testKey(0))], checkpoint: checkpoint)])
+        let ids = try await register([.fixture(outputs: [.coin(0, testKey(0))], checkpoint: checkpoint)], in: store)
         let entry = try await store.getEntry(id: #require(ids.first))
 
         #expect(entry?.checkpoint == checkpoint)
@@ -159,17 +169,15 @@ struct RegistrationInvariantTests {
 
         try await store.register(.fixture(inputs: [input]))
 
-        let registrar = CoinageTxRegistrar(store: store, validator: Self.stubValidator, watched: watched)
-
         do {
-            _ = try await registrar.register([.fixture(inputs: [input])])
+            _ = try await register([.fixture(inputs: [input])], in: store)
             Issue.record("Expected registration to fail")
         } catch CoinageTxError.inputAlreadyClaimed {
-            // Expected; a rejected registration takes no ownership, so nothing new is watched.
+            // Expected; a rejected registration takes no ownership, so nothing new is owned.
         }
 
-        let entries = await store.allEntries
-        #expect(entries.allSatisfy { !watched.isWatched($0.id) })
+        let entries = try await store.allEntries
+        #expect(entries.allSatisfy { !owned.isOwned($0.id) })
     }
 
     // MARK: - Sequence Monotonicity

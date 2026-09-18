@@ -22,6 +22,6 @@ extension CoinagePrivacyPresenting {
             onSendAnyway: onSendAnyway,
             onCancel: onCancel
         )
-        view?.controller.present(sheetView, animated: true)
+        view?.controller.present(sheetView.controller, animated: true)
     }
 }

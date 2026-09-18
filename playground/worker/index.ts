@@ -2,13 +2,13 @@ import { getClientSync } from "@parity/truapi/sandbox";
 import { bytesToHex, hexToBytes } from "@parity/truapi/scale";
 import type {
   CallErrorValue,
-  GenericError,
   HostChatActionSubscribeItem,
   HostChatListSubscribeItem,
   HostRendererActionSubscribeItem,
   ObservableLike,
   ProductRendererRenderRequest,
   RendererNode,
+  VersionedProductRendererRenderError,
 } from "@parity/truapi";
 import { filter, firstValueFrom, from, timeout } from "rxjs";
 import {
@@ -41,7 +41,7 @@ let finalReportPosted = false;
 type RenderInstance = {
   messageId: string;
   send: (node: RendererNode) => void;
-  interrupt: (reason?: CallErrorValue<GenericError>) => void;
+  interrupt: (reason?: CallErrorValue<VersionedProductRendererRenderError>) => void;
   disposed: boolean;
 };
 const activeRenderInstances = new Set<RenderInstance>();
@@ -216,7 +216,7 @@ async function ensureRoom(roomId: string, name: string): Promise<void> {
 function handleRenderRequest(
   request: ProductRendererRenderRequest,
   send: (node: RendererNode) => void,
-  interrupt: (reason?: CallErrorValue<GenericError>) => void,
+  interrupt: (reason?: CallErrorValue<VersionedProductRendererRenderError>) => void,
 ): () => void {
   if (request.context.tag !== "ChatMessage") {
     throw new Error(`unsupported renderer context: ${request.context.tag}`);

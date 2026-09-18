@@ -6,9 +6,9 @@
 use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::Account;
-use truapi::latest::GenericError;
 use truapi::versioned::account::{
-    HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
+    HostAccountConnectionStatusSubscribeError, HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
     HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
     HostAccountGetRequest, HostAccountGetResponse, HostAccountListRingVrfKeysError,
@@ -27,6 +27,7 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 
+use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::sso::messages::ProductRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
@@ -173,12 +174,11 @@ impl Account for ProductRuntimeHost {
                     },
                 ))
             })?;
-        if request.key_handle.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::NotAllowlisted,
-            )));
-        }
-
+        // The session is consulted before the grant, matching `ring_vrf_sign`.
+        // The other order makes the pair of refusals a probe for who granted
+        // whom: with no session a granting target answers `Rejected` and a
+        // non-granting one `NotAllowlisted`, which is exactly what the uniform
+        // cross-product refusal exists to prevent.
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::Rejected,
@@ -187,6 +187,43 @@ impl Account for ProductRuntimeHost {
 
         let calling_product_id = self.product_id();
         let cx = remote_authority_context(cx);
+        // The grant lookup runs *before* `remote_authority_call`, under a bound of
+        // its own. It can reach dotNS on the Asset Hub, several sequential chain
+        // operations each bounded only by `OPERATION_TIMEOUT`, so it needs a
+        // deadline either way. Running it inside would arm two timers on one
+        // budget, and whichever fired first would decide whether the caller sees
+        // the uniform refusal or a transport error naming a reason, making the
+        // refusal shape depend on scheduling. Decided here instead, a lookup that
+        // runs out of time answers `NotAllowlisted` like every other refusal on
+        // this path. The stages are bounded separately, so a caller asking for
+        // one second can wait up to two.
+        //
+        // The gate returns the normalized owner it decided about and the handle
+        // is rebuilt from it, so authorization and key derivation agree by
+        // construction rather than by a registry lookup happening to miss.
+        let Some(owner) = self
+            .bounded_cross_product_scope_target(
+                &request.key_handle.dot_ns_identifier,
+                Granted::Context,
+                &cx,
+            )
+            .await
+        else {
+            // Recorded here, because this door answers without reaching the
+            // authority. Without this line a product probing which handles
+            // exist on the device leaves no trace, while every success is
+            // logged. The wire answers one refusal for every
+            // reason; this is the operator's copy.
+            tracing::info!(
+                caller = %calling_product_id,
+                owner = %request.key_handle.dot_ns_identifier,
+                "cross-product ring-VRF access refused at the runtime frontend"
+            );
+            return Err(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::NotAllowlisted,
+            )));
+        };
+        request.key_handle.dot_ns_identifier = owner;
         remote_authority_call(
             &cx,
             self.authority.create_proof(
@@ -302,13 +339,34 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if request.key_handle.dot_ns_identifier != self.product_id() {
+        let calling_product_id = self.product_id();
+        let cx = remote_authority_context(cx);
+        // As in `create_account_proof`: the lookup is bounded before the authority
+        // call rather than inside it, and the handle carried on is the normalized
+        // owner the gate decided about rather than the spelling the caller sent.
+        let Some(owner) = self
+            .bounded_cross_product_scope_target(
+                &request.key_handle.dot_ns_identifier,
+                Granted::Context,
+                &cx,
+            )
+            .await
+        else {
+            // Recorded here, because this door answers without reaching the
+            // authority. Without this line a product probing which handles
+            // exist on the device leaves no trace, while every success is
+            // logged. The wire answers one refusal for every
+            // reason; this is the operator's copy.
+            tracing::info!(
+                caller = %calling_product_id,
+                owner = %request.key_handle.dot_ns_identifier,
+                "cross-product ring-VRF access refused at the runtime frontend"
+            );
             return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
                 v01::HostAccountRingVrfSignError::NotAllowlisted,
             )));
-        }
-        let calling_product_id = self.product_id();
-        let cx = remote_authority_context(cx);
+        };
+        request.key_handle.dot_ns_identifier = owner;
         remote_authority_call(
             &cx,
             self.authority.ring_vrf_sign(
@@ -421,7 +479,11 @@ impl Account for ProductRuntimeHost {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem, CallError<GenericError>> {
+        _request: HostAccountConnectionStatusSubscribeRequest,
+    ) -> Subscription<
+        HostAccountConnectionStatusSubscribeItem,
+        CallError<HostAccountConnectionStatusSubscribeError>,
+    > {
         Subscription::new(self.authority.session_state().subscribe().map(Ok))
     }
 

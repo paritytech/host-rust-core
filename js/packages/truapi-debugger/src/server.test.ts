@@ -349,8 +349,8 @@ test("/frame decodes a non-sensitive frame by default; decodeValues:false report
     await streamFrame(baseOn, on.port, frame);
     const detail = await (await fetch(`${baseOn}/frame?id=p:1&i=0`)).json();
     expect(detail.kind).toBe("decoded");
-    // No request wrapper for this method: a bare `undefined`, no tag to report.
-    expect(detail.value).toBeUndefined();
+    // The request wrapper carries no payload, so the tag is all there is to report.
+    expect(detail.value).toEqual({ tag: "V1" });
   } finally {
     on.stop();
   }

@@ -72,10 +72,16 @@ extension UnloadIntoCoinsStrategy: TransferStrategy {
 
         var realizedGroups: [RecyclerGroupCoins] = []
         for allocation in perGroupAllocations {
+            // Every voucher in an allocation sits in the same recycler, so they carry the same
+            // score; the minimum is a tie-break for readings taken a tick apart.
+            let provenance = CoinProvenance.unloaded(
+                recyclerFungibility: allocation.vouchers.map(\.recyclerFungibility).min()
+            )
+
             let recipientCoins = try await minter
-                .mintCoins(allocation.recipientDenominations.map(\.exponent))
+                .mintCoins(allocation.recipientDenominations.map(\.exponent), provenance: provenance)
             let changeCoins = try await minter
-                .mintCoins(allocation.changeDenominations.map(\.exponent))
+                .mintCoins(allocation.changeDenominations.map(\.exponent), provenance: provenance)
             realizedGroups.append(RecyclerGroupCoins(
                 recyclerKey: allocation.recyclerKey,
                 vouchers: allocation.vouchers,

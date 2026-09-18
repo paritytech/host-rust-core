@@ -8,9 +8,16 @@
 //!
 //! [manifest]: ../../../../docs/rfcs/product-manifest.md
 
+use core::future::Future;
+use core::time::Duration;
+
 use parity_scale_codec::{Decode, Encode};
-use tracing::{instrument, warn};
-use truapi_platform::{CoreStorageKey, Platform};
+use tracing::{info, instrument, warn};
+use truapi::v01;
+use truapi_platform::{
+    CoreStorageKey, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
+    normalize_product_identifier,
+};
 
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::dotns_gateway::{
@@ -18,7 +25,9 @@ use crate::host_logic::dotns_gateway::{
     decode_address, decode_string, discover_pop_controller, namehash_under, network_tld,
     protocol_component, tld_node,
 };
+use crate::host_logic::permissions::PermissionsService;
 use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
+use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::statement_store::current_unix_secs;
 use crate::runtime::dotns_lookup::DotnsLookup;
 use crate::runtime::services::RuntimeServices;
@@ -217,6 +226,39 @@ pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> 
     .encode()
 }
 
+/// Why a grant lookup did not admit the caller.
+///
+/// The wire answers one refusal for every reason, deliberately. This is the
+/// operator's copy: without it "the publisher granted nothing" is reported for
+/// a user's explicit denial, an unreadable keychain and a manifest that failed
+/// to parse alike, and whoever debugs it goes to fix a manifest that is already
+/// correct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusedBecause {
+    /// The published manifest does not name this caller for this scope.
+    NotGranted,
+    /// The user has already refused this pair.
+    UserDenied,
+    /// The stored decision could not be read, so the lookup failed closed.
+    DecisionUnreadable,
+    /// A manifest was fetched but did not parse.
+    ManifestMalformed,
+    /// No manifest could be resolved at all.
+    ManifestUnavailable,
+}
+
+impl RefusedBecause {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotGranted => "not granted",
+            Self::UserDenied => "user denied",
+            Self::DecisionUnreadable => "stored decision unreadable",
+            Self::ManifestMalformed => "manifest malformed",
+            Self::ManifestUnavailable => "manifest unavailable",
+        }
+    }
+}
+
 /// Scopes `target`'s published manifest grants `caller_id`.
 ///
 /// A grant that cannot be established answers `false` whatever the reason — the
@@ -224,7 +266,6 @@ pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> 
 /// manifest names this caller with a narrower scope. Callers turn that into one
 /// refusal, so the outcome never reveals which of those it was. Failing closed
 /// also means an unreachable chain withdraws grants rather than assuming them.
-///
 pub(crate) async fn grants_scope(
     services: &RuntimeServices,
     platform: &dyn Platform,
@@ -232,13 +273,321 @@ pub(crate) async fn grants_scope(
     target: &str,
     scope: Granted,
 ) -> bool {
-    let Some(json) = root_manifest(services, platform, target).await else {
-        return false;
+    scope_grant(services, platform, caller_id, target, scope)
+        .await
+        .is_ok()
+}
+
+/// `grants_scope`, keeping the reason for an operator.
+pub(crate) async fn scope_grant(
+    services: &RuntimeServices,
+    platform: &dyn Platform,
+    caller_id: &str,
+    target: &str,
+    scope: Granted,
+) -> Result<(), RefusedBecause> {
+    // Bounded here, not by the caller.
+    //
+    // The product-facing door runs this inside `remote_authority_call` and so
+    // carries the deadline its caller asked for. The wire door does not: the
+    // authority is the remote end, nothing races `cx.timeout()` there, and the
+    // peer sets no deadline of its own. The responder also dispatches serially,
+    // so one message naming enough uncached products would hold every other
+    // product's signing on this device behind it.
+    //
+    // A ceiling on the resolution itself covers both doors. Where a caller's
+    // deadline is shorter it still wins, because that race is applied outside.
+    let Some(json) = with_ceiling(
+        MANIFEST_RESOLUTION_CEILING,
+        root_manifest(services, platform, target),
+    )
+    .await
+    .flatten() else {
+        return Err(RefusedBecause::ManifestUnavailable);
     };
     let Ok(manifest) = RootManifest::parse(&json) else {
-        return false;
+        return Err(RefusedBecause::ManifestMalformed);
     };
-    manifest.grants(bare_product_label(caller_id), scope)
+    if !manifest.grants(bare_product_label(caller_id), scope) {
+        return Err(RefusedBecause::NotGranted);
+    }
+    // A publisher's grant waives the publisher's own prompt. It does not reach a
+    // refusal the user already gave, so a stored decision still overrides it,
+    // read-only: raising the prompt here would turn a grant into a way to ask
+    // again.
+    //
+    // Read after the manifest rather than before it. The read is the same either
+    // way, but taking it first let a denied pair refuse without the chain lookup
+    // every other refusal pays for, and that difference in cost enumerates the
+    // user's stored denials to anyone who can ask. On the wire path the caller
+    // id is supplied by the peer, so that is anyone it chooses to name.
+    //
+    // Scope-specific by design, and in this shared helper rather than in
+    // `ring_vrf_key_access_granted`: the stored decision is `AccountAccess`, so
+    // it answers about reaching another product's account and says nothing about
+    // its storage, and keeping it here means the frontend and the authority
+    // inherit one implementation. A later scope that also implies account access
+    // has to name itself here; it does not inherit this.
+    if scope == Granted::Context {
+        match stored_account_decision(platform, caller_id, target).await {
+            StoredDecision::Denied => return Err(RefusedBecause::UserDenied),
+            StoredDecision::Unreadable => return Err(RefusedBecause::DecisionUnreadable),
+            StoredDecision::Absent => {}
+        }
+    }
+    Ok(())
+}
+
+/// What the stored account-access decision says, keeping "unreadable" apart
+/// from "absent" so the caller can report which it was.
+enum StoredDecision {
+    /// The user refused this pair.
+    Denied,
+    /// No decision recorded.
+    Absent,
+    /// The store could not be read, so the lookup fails closed.
+    Unreadable,
+}
+
+/// Whether the user has already refused `caller_id` access to `target`'s account.
+///
+/// Reads the stored decision without raising a prompt: `NotDetermined` is not a
+/// refusal, and the prompt that would settle it belongs to the call the user
+/// actually made, not to a grant lookup.
+async fn stored_account_decision(
+    platform: &dyn Platform,
+    caller_id: &str,
+    target: &str,
+) -> StoredDecision {
+    // Checked under both the product-scoped key this release writes and the
+    // full-id key earlier releases wrote.
+    //
+    // Reading only the new shape would silently discard a decision a user has
+    // already made: on the ungranted path they are asked again, but on the
+    // granted path the lookup reads `NotDetermined`, admits the publisher's
+    // grant and never prompts. A stored "no" would become a "yes" on upgrade,
+    // which is the one case this override exists for.
+    //
+    // The product-scoped key uses the bare label on BOTH sides. The grant it
+    // overrides is resolved by `bare_product_label` for the target as well as
+    // the caller, so filing the refusal against the full target would let
+    // `app.peopl.dot` carry a grant the user refused for `peopl.dot`.
+    let candidates = [
+        (
+            bare_product_label(caller_id).to_string(),
+            bare_product_label(target).to_string(),
+        ),
+        (caller_id.to_string(), target.to_string()),
+    ];
+    for (caller, target) in candidates {
+        let request = PermissionAuthorizationRequest::AccountAccess {
+            target_product_id: target,
+        };
+        let service = PermissionsService::new(platform, platform, &caller);
+        match service.authorization_status(&request).await {
+            Ok(PermissionAuthorizationStatus::Denied) => return StoredDecision::Denied,
+            Ok(
+                PermissionAuthorizationStatus::NotDetermined
+                | PermissionAuthorizationStatus::Authorized,
+            ) => {}
+            // Fails closed: a storage fault must not let a publisher's manifest
+            // turn the user's "no" into a "yes".
+            Err(_) => return StoredDecision::Unreadable,
+        }
+    }
+    StoredDecision::Absent
+}
+
+/// Longest one grant lookup may spend resolving a manifest.
+///
+/// A cold-cache resolution is several sequential Asset Hub operations, each
+/// bounded only by its own operation timeout, so the walk's worst case is the
+/// sum of them. This caps the walk as a whole.
+const MANIFEST_RESOLUTION_CEILING: Duration = Duration::from_secs(30);
+
+/// Run `future`, giving up after `ceiling`.
+///
+/// `None` on expiry, which every caller here treats as "no manifest": the same
+/// answer an unreachable chain gives, and the same uniform refusal.
+async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> Option<T> {
+    use futures::FutureExt;
+    let future = future.fuse();
+    let timeout = futures_timer::Delay::new(ceiling).fuse();
+    futures::pin_mut!(future, timeout);
+    futures::select! {
+        value = future => Some(value),
+        () = timeout => {
+            warn!(ceiling_secs = ceiling.as_secs(), "manifest resolution gave up");
+            None
+        }
+    }
+}
+
+/// A granted caller may act in its own proof context, not in anyone's.
+///
+/// The contextual alias is a function of (owner key, context), so an
+/// unconstrained context lets a grantee produce the alias the owner presents to
+/// a third product, one that granted nothing, is not a party to the grant, and
+/// cannot consent here. The owner's own calls are unaffected: minting your own
+/// aliases in any context is what the parameter is for.
+///
+/// Both identities come from the gate, already normalized. Re-deriving the
+/// caller from the request instead would compare a peer's spelling against a
+/// normalized owner and refuse an owner naming itself in another case.
+///
+/// This binds every call that returns the alias, not only the ones that return
+/// a proof: the alias and the proof come out of one VRF evaluation, so guarding
+/// the proof alone leaves the same bytes reachable through the read.
+pub(crate) fn require_own_context(
+    access: &AuthorizedAccess,
+    context: &v01::ProductProofContext,
+) -> Result<(), RingVrfError> {
+    // The same ownership test the gate makes, on the same values. Comparing bare
+    // labels here instead would answer "is this the owner?" differently from
+    // `ring_vrf_key_access_granted`: a caller `peopl.paseo` against a handle `peopl.dot`
+    // would be told to bring a grant by one and waved through as the owner by
+    // the other, leaving its context unconstrained.
+    if access.caller == access.owner {
+        return Ok(());
+    }
+    // Normalized like every other identity the gate decided about. This is the
+    // one that arrives straight off the request payload, so leaving it raw would
+    // refuse a grantee for spelling its own context `DIM2.paseo`, the hazard
+    // the gate exists to remove, one layer down. A context that names no product
+    // cannot be the caller's own, so it fails closed.
+    let Ok(context_id) = normalize_product_identifier(&context.product_id) else {
+        return Err(RingVrfError::NotAllowlisted);
+    };
+    // Compared by label, not by full id: the grant is to a product and a product
+    // is all its executables, so `dim2.dot` may act in `app.dim2.dot`'s context.
+    if bare_product_label(&context_id) != bare_product_label(&access.caller) {
+        return Err(RingVrfError::NotAllowlisted);
+    }
+    Ok(())
+}
+
+/// The identities the gate decided about, both normalized.
+///
+/// Returned together because every consumer needs both and deriving either one
+/// again from the request re-introduces the raw-vs-normalized skew the gate
+/// exists to remove: `sso_responder` hands `calling_product_id` through
+/// untouched, so a caller that re-derives it compares a peer's spelling against
+/// a normalized owner.
+pub(crate) struct AuthorizedAccess {
+    /// The caller the gate authorized, normalized.
+    pub(crate) caller: String,
+    /// The owner of the key, normalized.
+    pub(crate) owner: String,
+}
+
+/// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
+/// by the component that holds the key.
+///
+/// The caller owns the key, or the owner's published manifest grants the caller
+/// `context` and the user has not already refused, resolved against the chain
+/// here rather than accepted from the request. On a paired host the request
+/// arrives over the wire, and a verdict relayed by the caller would take the
+/// manifest out of this decision entirely: the peer would reach every handle on
+/// the device by setting one field, instead of only the handles a publisher
+/// really granted.
+///
+/// Returns the **normalized** owner it decided about. Callers must derive from
+/// that value rather than from the handle they were given: otherwise access is
+/// authorized about `peopl.dot` while the key is derived from whatever spelling
+/// arrived, and only a registry lookup miss separates the two.
+///
+/// The owner check runs first and costs nothing, so a product proving with its
+/// own key never touches the network. Everything after it is a cross-product
+/// access, and every reason it is refused answers the same way.
+pub(crate) async fn ring_vrf_key_access_granted(
+    services: &RuntimeServices,
+    platform: &dyn Platform,
+    calling_product_id: &str,
+    handle: &v01::ProductAccountId,
+) -> Result<AuthorizedAccess, RingVrfError> {
+    // A caller id that does not normalize names no product, so it holds no key
+    // and no manifest can grant it. It takes the same refusal as a product that
+    // granted nothing rather than an error carrying the string back: on the wire
+    // path this field is peer-supplied, and one refusal for every reason is the
+    // whole design of this seam.
+    let Ok(caller) = normalize_product_identifier(calling_product_id) else {
+        return Err(RingVrfError::NotAllowlisted);
+    };
+    // The handle is normalized here, not only at the frontend. The frontend
+    // does it before delegating, but `sso_responder` hands a wire request
+    // straight to the authority unnormalized, so without this the two doors
+    // disagree: an owner naming its own key `PEOPL.DOT` over the wire is
+    // refused where the same request from a local product runtime succeeds.
+    //
+    // A handle that does not normalize names no product, so it owns no key and
+    // no manifest can grant it: it takes the same refusal as a product that
+    // granted nothing, rather than a distinguishable error.
+    let Ok(owner) = normalize_product_identifier(&handle.dot_ns_identifier) else {
+        return Err(RingVrfError::NotAllowlisted);
+    };
+    if caller == owner {
+        return Ok(AuthorizedAccess { caller, owner });
+    }
+    let decision = scope_grant(services, platform, &caller, &owner, Granted::Context).await;
+    if decision.is_ok() {
+        // Recorded, because nothing else records it. A granted cross-product
+        // access raises no prompt and writes no stored decision, so without this
+        // line the only audible half of the decision is the refusal below: a
+        // publisher's grant would let one product act with another's keys and
+        // leave no trace on the device that it happened. This does not make the
+        // access revocable, which needs a surface for the user to record a
+        // decision about a pair they were never asked about, but it is what any
+        // such surface would have to be built on.
+        info!(
+            caller = %caller,
+            owner = %owner,
+            "ring-VRF key access granted by the owner's manifest"
+        );
+        return Ok(AuthorizedAccess { caller, owner });
+    }
+    // The wire answer is one refusal for every reason, so the reason lives here
+    // or nowhere. Which door the request came through is not repeated: the
+    // enclosing span already says it (`account.*` for a local product runtime,
+    // `sso_responder.*` for a paired peer).
+    //
+    // That span is also what says how far to trust `caller`. Under `account.*`
+    // it is the product id the host bound to the connection. Under
+    // `sso_responder.*` it is `calling_product_id` as decoded from the peer's
+    // message: what the authenticated paired host said, not something this host
+    // verified. The refusal is sound either way, because the grant is resolved
+    // from the owner's manifest and never from this field, but an operator
+    // reading the line should not take it as proof of who asked.
+    // `info!`, not `debug!`: this is the only per-event record that a
+    // cross-product key access was refused, and the wire deliberately answers
+    // one error for every reason. `logging.rs` installs `LevelFilter::OFF` and
+    // the CLI defaults to `info`, so at `debug` this reaches nobody on any
+    // shipped host and the refusal is invisible everywhere.
+    info!(
+        caller = %caller,
+        owner = %owner,
+        because = decision.err().map_or("granted", RefusedBecause::as_str),
+        "ring-VRF key access refused"
+    );
+    Err(RingVrfError::NotAllowlisted)
+}
+
+/// Cache key for a product's root manifest.
+///
+/// Keyed by the bare label, which is what the document is actually resolved by:
+/// `fetch_root_manifest` walks `bare_product_label(product_id)` under the host's
+/// TLD, so `peopl.dot`, `app.peopl.dot` and `worker.peopl.dot` are one dotNS
+/// node holding one document. Keying by the full id instead gave each spelling
+/// its own entry, so a caller naming subnames drove a fresh chain resolution and
+/// a fresh durable write per spelling for a document already held, with nothing
+/// bounding how many. The host resolves only against its own network, so the
+/// label alone identifies the node.
+///
+/// Anything seeding this cache must key it the same way or the entry is written
+/// where nothing reads it.
+pub fn manifest_cache_key(product_id: &str) -> CoreStorageKey {
+    CoreStorageKey::ProductManifest {
+        product_id: bare_product_label(product_id).to_string(),
+    }
 }
 
 /// `target`'s root manifest JSON, from cache when it is younger than
@@ -252,18 +601,28 @@ pub(crate) async fn grants_scope(
 /// A failed lookup is not cached. It says nothing about the product, only that
 /// the chain could not be read, and holding that for a day would turn one blip
 /// into a day of withdrawn grants.
+///
+/// The cache dedupes misses only once one has finished, and nothing upstream
+/// caps in-flight dispatches, so a product can hold one follow per concurrent
+/// miss for up to `OPERATION_TIMEOUT` each. A single-flight keyed by target or
+/// a dispatch cap belongs with the request pipeline, not here.
 async fn root_manifest(
     services: &RuntimeServices,
     platform: &dyn Platform,
     target: &str,
 ) -> Option<String> {
-    let key = CoreStorageKey::ProductManifest {
-        product_id: target.to_string(),
-    };
+    let key = manifest_cache_key(target);
     let now = current_unix_secs();
+    // `fetched_at_secs <= now` is part of the freshness test, not an assumption.
+    // Without it a `saturating_sub` on a future stamp yields 0, which is below
+    // any TTL, so an entry written while the device clock ran ahead would be
+    // honoured forever. The TTL is documented as the revocation bound, so such
+    // an entry is one a publisher could never withdraw. Treating it as stale
+    // costs one lookup and cannot be worse than that.
     if let Ok(Some(bytes)) = platform.read_core_storage(key.clone()).await
         && let Ok(cached) = CachedManifest::decode(&mut bytes.as_slice())
-        && now.saturating_sub(cached.fetched_at_secs) < MANIFEST_TTL_SECS
+        && cached.fetched_at_secs <= now
+        && now - cached.fetched_at_secs < MANIFEST_TTL_SECS
     {
         return cached.json;
     }

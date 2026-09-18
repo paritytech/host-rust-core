@@ -5,13 +5,15 @@ import ChainRegistry
 @MainActor
 final class SearchAccountWireframe: SearchAccountWireframeProtocol {
     let coinageServicing: CoinageServicing
+    let moduleNavigator: ModuleNavigating
 
     private lazy var qrScanResultHandler = WalletQRScanResultHandler(
         dsfinvkRouter: W3sDsfinvkRouter.createDefault(coinageService: coinageServicing)
     )
 
-    init(coinageServicing: CoinageServicing) {
+    init(coinageServicing: CoinageServicing, moduleNavigator: ModuleNavigating = ModuleNavigator()) {
         self.coinageServicing = coinageServicing
+        self.moduleNavigator = moduleNavigator
     }
 
     func showQRScan(from view: SearchAccountViewProtocol?) {
@@ -34,5 +36,9 @@ final class SearchAccountWireframe: SearchAccountWireframeProtocol {
         }
 
         view?.controller.navigationController?.pushViewController(destination.controller, animated: true)
+    }
+
+    func showChat(_ model: ChatOpenModel) {
+        moduleNavigator.openChat(model)
     }
 }

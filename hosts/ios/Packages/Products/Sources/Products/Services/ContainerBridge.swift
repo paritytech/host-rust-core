@@ -173,13 +173,16 @@ public actor ContainerBridge {
                 } catch {
                     guard !Task.isCancelled else { return }
 
-                    self?.logger.debug("Subscription task failed: \(error)")
+                    self?.logger.error("Subscription \(id) failed mid-stream: \(error)")
+                    await self?.sendError(id: id, error: error)
+                    await self?.handleSubscriptionClear(id: id)
                 }
             }
 
             activeSubscriptions[id] = task
         } catch {
-            await sendError(id: id, message: error.localizedDescription)
+            await sendError(id: id, error: error)
+            logger.error("Subscribe error: \(error)")
         }
     }
 

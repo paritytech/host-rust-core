@@ -15,9 +15,9 @@ struct VoucherOnChainInfo {
     let ringMembersCount: UInt32?
     /// Three-valued: a Suspended member (no ring index to key an alias under) or a failed alias read
     /// leaves consumption `.unknown` rather than falsely reading not-unloaded.
-    let aliasEvidence: VoucherAliasEvidence
+    let aliasPresence: VoucherAliasPresence
 
-    var isUnloaded: Bool { aliasEvidence == .unloaded }
+    var isUnloaded: Bool { aliasPresence == .unloaded }
 
     /// The reconciled on-chain location: an unloaded read overrides everything, a ring-placed voucher
     /// becomes in-recycler carrying its real member count, otherwise it is still onboarding.
@@ -152,7 +152,7 @@ final class VoucherOnChainQueryService: VoucherOnChainQuerying, @unchecked Senda
                 exponent: member.exponent,
                 ringPosition: member.ringPosition,
                 ringMembersCount: ringMembersByIndex[member.index],
-                aliasEvidence: Self.aliasEvidence(
+                aliasPresence: Self.aliasPresence(
                     for: member.ringPosition,
                     aliasState: aliasByIndex[member.index] ?? nil,
                     aliasFetchSucceeded: aliasFetchSucceeded
@@ -167,11 +167,11 @@ final class VoucherOnChainQueryService: VoucherOnChainQuerying, @unchecked Senda
     /// was possible — provably not-unloaded without a read. Suspended once did but holds none now, so its
     /// alias key cannot be formed and nothing can be said. Included reads the alias, unless that read
     /// failed.
-    private static func aliasEvidence(
+    private static func aliasPresence(
         for position: MembersPallet.RingPosition,
         aliasState: CoinagePallet.AliasState?,
         aliasFetchSucceeded: Bool
-    ) -> VoucherAliasEvidence {
+    ) -> VoucherAliasPresence {
         if position.isOnboarding { return .notUnloaded }
         guard position.ringIndex != nil else { return .unknown }
         guard aliasFetchSucceeded else { return .unknown }

@@ -1,102 +1,52 @@
-import Foundation
-import CoreData
 import Coinage
+import CoreData
+import DurableTransactions
+import Foundation
 import Operation_iOS
 import SubstrateSdk
 
-/// Maps ``CoinageTxEntry`` to `CDCoinageTxEntry`.
+/// Maps a `CDDurableTx` row joined to its coinage input/output rows to ``CoinageTxEntry``.
 ///
-/// Inputs and outputs are immutable: they are written once when the entry is first inserted and
-/// never rewritten, so a status update only touches the entry's own fields. Each row references
-/// its asset through the `CDCoin` / `CDVoucher` relation — or `receivedPubKey` for a coin received
-/// from a peer — which must already exist at registration.
+/// Inputs and outputs are immutable: they are written once when the entry is registered (by
+/// ``CoinageAssetLedgerCoreData`` inside the engine's transaction) and never rewritten. Each row
+/// references its asset through the `CDCoin` / `CDVoucher` relation — or `receivedPubKey` for a coin
+/// received from a peer — which must already exist at registration. The mapper only reads.
 final class CoinageTxEntryMapper: CoreDataMapperProtocol {
     typealias DataProviderModel = CoinageTxEntry
-    typealias CoreDataEntity = CDCoinageTxEntry
+    typealias CoreDataEntity = CDDurableTx
 
-    var entityIdentifierFieldName: String { #keyPath(CDCoinageTxEntry.identifier) }
+    private let durableMapper = DurableTxMapper()
 
-    func transform(entity: CDCoinageTxEntry) throws -> CoinageTxEntry {
-        guard let identifier = entity.identifier, let id = UUID(uuidString: identifier) else {
-            throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxEntry.identifier))
-        }
-        guard let status = CoinageTxStatus(rawValue: Int(entity.status)) else {
-            throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxEntry.status))
-        }
+    var entityIdentifierFieldName: String { #keyPath(CDDurableTx.identifier) }
 
-        guard let checkpointHash = entity.checkpointHash, let checkpointNumber = entity.checkpointNumber else {
-            throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxEntry.checkpointHash))
-        }
-
-        let checkpoint = try BlockRef(
-            number: checkpointNumber.uint32Value,
-            hash: Data(hexString: checkpointHash)
-        )
-
-        guard let txHashString = entity.txHash else {
-            throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxEntry.txHash))
-        }
-        let txHash = try Data(hexString: txHashString)
-
-        let successDetectedAt: BlockRef? =
-            if let successHash = entity.successHash, let successNumber = entity.successNumber {
-                try BlockRef(number: successNumber.uint32Value, hash: Data(hexString: successHash))
-            } else {
-                nil
-            }
-
-        guard let createdAt = entity.createdAt else {
-            throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxEntry.createdAt))
-        }
-
-        return try CoinageTxEntry(
-            id: id,
-            sequence: entity.sequence,
-            inputs: transformInputs(from: entity.inputs),
-            outputs: transformOutputs(from: entity.outputs),
-            groupId: entity.groupId,
-            txHash: txHash,
-            checkpoint: checkpoint,
-            mortality: UInt32(bitPattern: entity.mortality),
-            successDetectedAt: successDetectedAt,
-            status: status,
-            createdAt: createdAt
+    func transform(entity: CDDurableTx) throws -> CoinageTxEntry {
+        try CoinageTxEntry(
+            entry: durableMapper.transform(entity: entity),
+            inputs: CoinageTxAssetRows.transformInputs(from: entity.inputs),
+            outputs: CoinageTxAssetRows.transformOutputs(from: entity.outputs)
         )
     }
 
-    func populate(
-        entity: CDCoinageTxEntry,
-        from model: CoinageTxEntry,
-        using context: NSManagedObjectContext
-    ) throws {
-        let isNew = entity.identifier == nil
-
-        entity.identifier = model.identifier
-        entity.sequence = model.sequence
-        entity.groupId = model.groupId
-        entity.status = Int16(model.status.rawValue)
-        entity.createdAt = model.createdAt
-        entity.mortality = Int32(bitPattern: model.mortality)
-        entity.checkpointHash = model.checkpoint.hash.toHex()
-        entity.checkpointNumber = NSNumber(value: model.checkpoint.number)
-        entity.txHash = model.txHash.toHex()
-        entity.successHash = model.successDetectedAt?.hash.toHex()
-        entity.successNumber = model.successDetectedAt.map { NSNumber(value: $0.number) }
-
-        // Inputs and outputs never change once the entry exists — write them only on first insert.
-        if isNew {
-            try populateInputs(entity: entity, inputs: model.inputs, using: context)
-            try populateOutputs(entity: entity, outputs: model.outputs, using: context)
-        }
-
-        touchRelatedAssets(of: entity, in: context)
+    /// Read-only by design: the engine row is written by `DurableTxCoreDataRepository` and the asset rows
+    /// by `CoinageAssetLedgerCoreData` inside its registration scope. A second write path here would
+    /// bypass the sequence assignment and the invariants.
+    func populate(entity _: CDDurableTx, from _: CoinageTxEntry, using _: NSManagedObjectContext) throws {
+        throw CoreDataMapperError.unsupported
     }
 }
 
-// MARK: - Transform
+/// Signals coinage's coin and voucher rows when an engine status write lands, so their CoreData
+/// snapshot subscribers re-emit — the durability overlay stays current without a separate change-merge.
+struct CoinageTxRowObserver: DurableTxRowObserving {
+    func didChangeStatus(of entity: CDDurableTx, in _: NSManagedObjectContext) {
+        CoinageTxAssetRows.touchRelatedAssets(of: entity)
+    }
+}
 
-private extension CoinageTxEntryMapper {
-    func transformInputs(from rows: NSSet?) throws -> [CoinageTxInput] {
+/// Coinage's input/output rows on a `CDDurableTx`: reading them back, writing them at registration,
+/// and signalling the assets they link to.
+enum CoinageTxAssetRows {
+    static func transformInputs(from rows: NSSet?) throws -> [CoinageTxInput] {
         guard let rows = rows as? Set<CDCoinageTxInput> else { return [] }
         return try rows.compactMap { row in
             if let hex = row.receivedPubKey {
@@ -115,7 +65,7 @@ private extension CoinageTxEntryMapper {
         }
     }
 
-    func transformOutputs(from rows: NSSet?) throws -> [OwnAsset] {
+    static func transformOutputs(from rows: NSSet?) throws -> [OwnAsset] {
         guard let rows = rows as? Set<CDCoinageTxOutput> else { return [] }
         return try rows.compactMap { row in
             if let coin = row.coin {
@@ -131,115 +81,104 @@ private extension CoinageTxEntryMapper {
         }
     }
 
-    /// The stored on-chain public key of a linked coin/voucher row. Persisted at mint (coinage.md
-    /// #1), so the entry never derives it on the fly.
-    func publicKey(_ hex: String?) throws -> PublicKey {
+    static func populate(
+        entity: CDDurableTx,
+        inputs: [CoinageTxInput],
+        outputs: [OwnAsset],
+        using context: NSManagedObjectContext
+    ) throws {
+        try populateInputs(entity: entity, inputs: inputs, using: context)
+        try populateOutputs(entity: entity, outputs: outputs, using: context)
+    }
+
+    /// Signals the linked coins/vouchers as changed so their CoreData snapshot subscribers re-emit when
+    /// this entry's status changes — the `willChange`/`didChange` TouchParent pattern.
+    static func touchRelatedAssets(of entity: CDDurableTx) {
+        for row in (entity.inputs as? Set<CDCoinageTxInput>) ?? [] {
+            if let coin = row.coin {
+                touch(coin, key: #keyPath(CDCoin.coinageTxInputs))
+            }
+            if let voucher = row.voucher {
+                touch(voucher, key: #keyPath(CDVoucher.coinageTxInputs))
+            }
+        }
+
+        for row in (entity.outputs as? Set<CDCoinageTxOutput>) ?? [] {
+            if let coin = row.coin {
+                touch(coin, key: #keyPath(CDCoin.coinageTxOutput))
+            }
+            if let voucher = row.voucher {
+                touch(voucher, key: #keyPath(CDVoucher.coinageTxOutput))
+            }
+        }
+    }
+}
+
+private extension CoinageTxAssetRows {
+    /// The stored on-chain public key of a linked coin/voucher row. Persisted at mint (coinage.md #1), so
+    /// the entry never derives it on the fly.
+    static func publicKey(_ hex: String?) throws -> PublicKey {
         guard let hex else {
             throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoin.publicKey))
         }
         return try Data(hexString: hex)
     }
-}
 
-// MARK: - Populate
-
-private extension CoinageTxEntryMapper {
-    func populateInputs(
-        entity: CDCoinageTxEntry,
+    static func populateInputs(
+        entity: CDDurableTx,
         inputs: [CoinageTxInput],
         using context: NSManagedObjectContext
     ) throws {
         for input in inputs {
-            guard let row = insert("CDCoinageTxInput", context) as CDCoinageTxInput? else {
-                throw CoreDataMapperError.unsupported
-            }
-
+            let row = try context.insertNew(CDCoinageTxInput.self)
             row.entry = entity
 
             switch input {
             case let .coin(coinInput):
                 switch coinInput {
                 case .own:
-                    if let coin = CoinageTxAssetLinker.coin(for: input, in: context) {
-                        row.coin = coin
-                    } else {
+                    guard let coin = CoinageTxAssetLinker.coin(for: input, in: context) else {
                         throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxInput.coin))
                     }
+                    row.coin = coin
                 case let .received(accountId):
                     row.receivedPubKey = accountId.toHex()
                 }
             case .recyclerVoucher:
-                if let voucher = CoinageTxAssetLinker.voucher(for: input, in: context) {
-                    row.voucher = voucher
-                } else {
+                guard let voucher = CoinageTxAssetLinker.voucher(for: input, in: context) else {
                     throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxInput.voucher))
                 }
+                row.voucher = voucher
             }
         }
     }
 
-    func populateOutputs(
-        entity: CDCoinageTxEntry,
+    static func populateOutputs(
+        entity: CDDurableTx,
         outputs: [OwnAsset],
         using context: NSManagedObjectContext
     ) throws {
         for output in outputs {
-            guard let row = insert("CDCoinageTxOutput", context) as CDCoinageTxOutput? else {
-                throw CoreDataMapperError.unsupported
-            }
-
+            let row = try context.insertNew(CDCoinageTxOutput.self)
             row.entry = entity
 
             switch output {
             case .coin:
-                if let coin = CoinageTxAssetLinker.coin(for: output, in: context) {
-                    row.coin = coin
-                } else {
+                guard let coin = CoinageTxAssetLinker.coin(for: output, in: context) else {
                     throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxOutput.coin))
                 }
+                row.coin = coin
             case .recyclerVoucher:
-                if let voucher = CoinageTxAssetLinker.voucher(for: output, in: context) {
-                    row.voucher = voucher
-                } else {
+                guard let voucher = CoinageTxAssetLinker.voucher(for: output, in: context) else {
                     throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDCoinageTxOutput.voucher))
                 }
+                row.voucher = voucher
             }
         }
     }
 
-    /// Signals the linked coins/vouchers as changed so their CoreData snapshot subscribers re-emit
-    /// when this entry's status changes — the `willChange`/`didChange` TouchParent pattern.
-    func touchRelatedAssets(of entity: CDCoinageTxEntry, in _: NSManagedObjectContext) {
-        for row in (entity.inputs as? Set<CDCoinageTxInput>) ?? [] {
-            if let coin = row.coin {
-                let key = #keyPath(CDCoin.coinageTxInputs)
-                coin.willChangeValue(forKey: key)
-                coin.didChangeValue(forKey: key)
-            }
-
-            if let voucher = row.voucher {
-                let key = #keyPath(CDVoucher.coinageTxInputs)
-                voucher.willChangeValue(forKey: key)
-                voucher.didChangeValue(forKey: key)
-            }
-        }
-
-        for row in (entity.outputs as? Set<CDCoinageTxOutput>) ?? [] {
-            if let coin = row.coin {
-                let key = #keyPath(CDCoin.coinageTxOutput)
-                coin.willChangeValue(forKey: key)
-                coin.didChangeValue(forKey: key)
-            }
-
-            if let voucher = row.voucher {
-                let key = #keyPath(CDVoucher.coinageTxOutput)
-                voucher.willChangeValue(forKey: key)
-                voucher.didChangeValue(forKey: key)
-            }
-        }
-    }
-
-    func insert<Entity: NSManagedObject>(_ entityName: String, _ context: NSManagedObjectContext) -> Entity? {
-        NSEntityDescription.insertNewObject(forEntityName: entityName, into: context) as? Entity
+    static func touch(_ object: NSManagedObject, key: String) {
+        object.willChangeValue(forKey: key)
+        object.didChangeValue(forKey: key)
     }
 }

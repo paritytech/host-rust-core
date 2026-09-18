@@ -7,6 +7,10 @@ final class PaymentsSupport {
         coinageService.externalPaymentService
     }
 
+    var incomingPaymentService: IncomingPaymentServicing {
+        coinageService.incomingPaymentService
+    }
+
     init(coinageService: CoinageServicing) {
         self.coinageService = coinageService
     }

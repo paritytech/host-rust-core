@@ -43,7 +43,6 @@ actor ChainStatusProvider {
     private static let connectDebounce: Duration = .milliseconds(300)
 
     private let networkStatusService: NetworkStatusProviding
-    private let latencyProvider: ChainLatencyProviding
     private let blockProvider: ChainBlockProviding
     private let statementTracker: StatementDeliveryTracking
     private let logger: LoggerProtocol
@@ -51,7 +50,6 @@ actor ChainStatusProvider {
     private nonisolated let rowsSubject: AsyncCurrentValueSubject<[ChainConnectionStatusViewModel]>
 
     private var statuses: [ChainConnectionTarget: NetworkStatus]
-    private var latencies: [ChainConnectionTarget: Duration] = [:]
     private var blocks: [ChainConnectionTarget: ChainBlockInfo] = [:]
     private var connectedSince: [ChainConnectionTarget: Date] = [:]
     private var statementState: StatementDeliveryState = .noSubscriptions
@@ -63,13 +61,11 @@ actor ChainStatusProvider {
 
     init(
         networkStatusService: NetworkStatusProviding,
-        latencyProvider: ChainLatencyProviding,
         blockProvider: ChainBlockProviding,
         statementTracker: StatementDeliveryTracking,
         logger: LoggerProtocol
     ) {
         self.networkStatusService = networkStatusService
-        self.latencyProvider = latencyProvider
         self.blockProvider = blockProvider
         self.statementTracker = statementTracker
         self.logger = logger
@@ -81,7 +77,6 @@ actor ChainStatusProvider {
         rowsSubject = AsyncCurrentValueSubject(
             Self.makeRows(
                 statuses: seededStatuses,
-                latencies: [:],
                 blocks: [:],
                 connectedSince: [:],
                 statementState: .noSubscriptions
@@ -109,14 +104,13 @@ extension ChainStatusProvider: ChainStatusProviding {
 
         // Sampling runs for the app's lifetime because the top status strip is permanent.
         // A host closing its subscription does not pause sampling.
-        Task { [latencyProvider, blockProvider] in
-            await latencyProvider.setActive(true)
+        Task { [blockProvider] in
             await blockProvider.setActive(true)
         }
 
         statusTasks = ChainConnectionTarget.allCases.map { target in
             observeStatus(for: target)
-        } + [observeLatencies(), observeBlocks(), observeStatementState()]
+        } + [observeBlocks(), observeStatementState()]
 
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -141,18 +135,6 @@ private extension ChainStatusProvider {
                 }
             } catch {
                 logger.error("Chain status stream failed for \(target.chainId): \(error)")
-            }
-        }
-    }
-
-    func observeLatencies() -> Task<Void, Never> {
-        Task { [weak self, latencyProvider, logger] in
-            do {
-                for try await latencies in latencyProvider.latencyStream() {
-                    await self?.handleLatenciesUpdate(latencies)
-                }
-            } catch {
-                logger.error("Chain latency stream failed: \(error)")
             }
         }
     }
@@ -194,23 +176,12 @@ private extension ChainStatusProvider {
             connectedSince[target] = Date()
         } else {
             connectedSince[target] = nil
-            latencies[target] = nil
             blocks[target] = nil
-            await latencyProvider.clearSamples(for: target)
             // Without this a drop-and-reconnect keeps captioning the row with its pre-drop data.
             await blockProvider.clear(for: target)
             healthWindows[target.chainId]?.clear()
         }
 
-        emitRows()
-    }
-
-    func handleLatenciesUpdate(_ updatedLatencies: [ChainConnectionTarget: Duration]) async {
-        guard updatedLatencies != latencies else {
-            return
-        }
-
-        latencies = updatedLatencies
         emitRows()
     }
 
@@ -235,7 +206,6 @@ private extension ChainStatusProvider {
     func emitRows() {
         let rawRows = Self.makeRows(
             statuses: statuses,
-            latencies: latencies,
             blocks: blocks,
             connectedSince: connectedSince,
             statementState: statementState
@@ -264,7 +234,6 @@ private extension ChainStatusProvider {
 
     static func makeRows(
         statuses: [ChainConnectionTarget: NetworkStatus],
-        latencies: [ChainConnectionTarget: Duration],
         blocks: [ChainConnectionTarget: ChainBlockInfo],
         connectedSince: [ChainConnectionTarget: Date],
         statementState: StatementDeliveryState
@@ -279,7 +248,6 @@ private extension ChainStatusProvider {
                 title: target.title,
                 state: state,
                 stateTitle: state.localizedTitle,
-                latency: state == .connected ? latencies[target] : nil,
                 lastBlockDate: block?.receivedAt,
                 finalityLag: finalityLag,
                 connectedSince: connectedSince[target],
@@ -291,7 +259,6 @@ private extension ChainStatusProvider {
         let statementStoreRow = makeStatementStoreRow(
             state: statementState.connectionState,
             blocks: blocks,
-            latencies: latencies,
             connectedSince: connectedSince
         )
 
@@ -307,7 +274,6 @@ private extension ChainStatusProvider {
     private static func makeStatementStoreRow(
         state: ChainConnectionState,
         blocks: [ChainConnectionTarget: ChainBlockInfo],
-        latencies: [ChainConnectionTarget: Duration],
         connectedSince: [ChainConnectionTarget: Date]
     ) -> ChainConnectionStatusViewModel {
         let block = state == .connected ? blocks[.chat] : nil
@@ -318,7 +284,6 @@ private extension ChainStatusProvider {
             title: "Statement Store",
             state: state,
             stateTitle: state.localizedTitle,
-            latency: state == .connected ? latencies[.chat] : nil,
             lastBlockDate: block?.receivedAt,
             finalityLag: finalityLag,
             connectedSince: connectedSince[.chat],

@@ -70,7 +70,12 @@ pub struct PairingHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
-    /// Asset Hub genesis hash used to resolve session usernames from dotNS.
+    /// Asset Hub genesis hash. Session usernames and product manifests are
+    /// both read from the dotNS contracts deployed there, so without a usable
+    /// value no manifest resolves and every cross-product `trustedProducts`
+    /// grant not already cached is refused, indistinguishably from the other
+    /// product having granted nothing. All-zero says this host has no Asset
+    /// Hub.
     pub asset_hub_chain_genesis_hash: [u8; 32],
     /// Deeplink URI scheme used in pairing QR payloads, without `://`.
     ///
@@ -92,6 +97,12 @@ pub struct SigningHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
+    /// Asset Hub genesis hash the dotNS contracts are deployed on, used to
+    /// resolve the product manifests that carry `trustedProducts` grants.
+    ///
+    /// All-zero says this host has no Asset Hub, which refuses every grant not
+    /// already in the manifest cache.
+    pub asset_hub_chain_genesis_hash: [u8; 32],
     /// The network's dotNS TLD without the leading dot: `dot`, `paseo`,
     /// `testnet`. Every reserved RFC-0022 identity the wallet derives ends in
     /// it: the `uid.<suffix>` identity account and the `peopl.<suffix>` person
@@ -223,6 +234,7 @@ impl SigningHostConfig {
         platform_info: PlatformInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
+        asset_hub_chain_genesis_hash: [u8; 32],
         network_suffix: String,
     ) -> Result<Self, RuntimeConfigValidationError> {
         validate_network_suffix(&network_suffix)?;
@@ -230,6 +242,7 @@ impl SigningHostConfig {
             host: HostRuntimeConfig::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             network_suffix,
         })
     }
@@ -324,6 +337,28 @@ pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
             .is_some_and(|(label, _tld)| REMOTE_PERMISSION_TRUSTED_LABELS.contains(&label))
 }
 
+/// Whether `product_id` in any accepted spelling holds every
+/// [`RemotePermission`] without prompting.
+///
+/// [`has_trusted_remote_permissions`] reads the normalized form, which is what
+/// the core always holds. A host holds whatever spelling it received, so this
+/// normalizes first and answers `false` for an id that does not normalize at
+/// all: an unrecognised spelling is never read as trusted.
+///
+/// Answers only whether the product is on the compiled-in list. A stored user
+/// decision is not consulted here and always wins over it.
+pub fn normalizes_to_trusted_remote_permissions(product_id: &str) -> bool {
+    normalize_product_identifier(product_id)
+        .is_ok_and(|normalized| has_trusted_remote_permissions(&normalized))
+}
+
+/// Largest accepted product identifier, in bytes.
+///
+/// Bounds the size of one identifier, not how many exist: a manifest miss
+/// caches its answer keyed by the target and nothing evicts those entries.
+/// Matches the cap on product-supplied chat identifiers.
+pub const PRODUCT_ID_MAX_BYTES: usize = 256;
+
 /// Normalize product identifiers before derivation and policy checks.
 pub fn normalize_product_identifier(
     product_id: &str,
@@ -331,6 +366,19 @@ pub fn normalize_product_identifier(
     let trimmed = product_id.trim();
     require_non_empty("product_id", trimmed)?;
     let normalized = trimmed.nfc().collect::<String>().to_lowercase();
+    // After normalizing, since NFC can change the length. Reported by length
+    // rather than by value: an id that trips this can be arbitrarily large.
+    if normalized.len() > PRODUCT_ID_MAX_BYTES {
+        return Err(RuntimeConfigValidationError::ProductIdTooLong {
+            limit: PRODUCT_ID_MAX_BYTES,
+            actual: normalized.len(),
+        });
+    }
+    if !has_well_formed_labels(&normalized) {
+        return Err(RuntimeConfigValidationError::InvalidProductId {
+            product_id: product_id.to_string(),
+        });
+    }
     if has_dotns_tld(&normalized)
         || normalized == "localhost"
         || normalized.starts_with("localhost:")
@@ -341,6 +389,53 @@ pub fn normalize_product_identifier(
             product_id: product_id.to_string(),
         })
     }
+}
+
+/// Whether every dot-separated label of a normalized id is well formed.
+///
+/// Only the suffix after the last `.` was ever inspected, so the rest of the id
+/// could be anything the transport carried. Three consequences, all reachable
+/// because a cross-product call takes this string from the wire where it is
+/// self-asserted:
+///
+/// - An empty label. `dim2..dot` and `.dot` both reduce to `""`, so distinct ids
+///   collapse onto one grant key and one manifest cache entry.
+/// - Control and format characters. A NUL or a right-to-left override survives
+///   into [`AccountAccessReview`], which renders the id verbatim in the only
+///   consent prompt this design has, and into every log line carrying it.
+/// - Whitespace and path separators, which let one product's id render like
+///   another's anywhere the comparison is not byte-exact.
+///
+/// Deliberately not an ASCII allowlist: dotNS names are internationalized, so
+/// `tést.dot` is a real id. What is rejected is the class of characters that
+/// carries no name and only confuses a reader or a key.
+fn has_well_formed_labels(normalized: &str) -> bool {
+    /// Zero-width and bidirectional formatting characters. Invisible in every
+    /// rendering, so they make two different ids look identical to a user.
+    fn is_invisible_format(c: char) -> bool {
+        matches!(c,
+            '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}')
+    }
+    let label_ok = |label: &str| {
+        !label.is_empty()
+            && !label.chars().any(|c| {
+                c.is_control()
+                    || c.is_whitespace()
+                    || is_invisible_format(c)
+                    || matches!(c, '/' | '\\')
+            })
+    };
+    if normalized == "localhost" {
+        return true;
+    }
+    if let Some(port) = normalized.strip_prefix("localhost:") {
+        return !port.is_empty() && port.chars().all(|c| c.is_ascii_digit());
+    }
+    normalized.split('.').all(label_ok)
 }
 
 /// Largest accepted length for a product-supplied chat identifier or display
@@ -880,6 +975,17 @@ pub enum RuntimeConfigValidationError {
     InvalidNetworkSuffix {
         /// Actual network suffix value.
         network_suffix: String,
+    },
+    /// Product id was longer than [`PRODUCT_ID_MAX_BYTES`] after normalization.
+    ///
+    /// Carries lengths rather than the id, which may be enormous. Appended
+    /// because the native mirror maps variants to FFI discriminants by order.
+    #[display("product_id must be at most {limit} bytes, got {actual}")]
+    ProductIdTooLong {
+        /// Accepted maximum, in bytes.
+        limit: usize,
+        /// Normalized length, in bytes.
+        actual: usize,
     },
 }
 
@@ -1541,6 +1647,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [1; 32],
+            [2; 32],
             network_suffix.to_string(),
         )
     }
@@ -2219,6 +2326,38 @@ mod tests {
     }
 
     #[test]
+    fn trusted_remote_permissions_normalize_the_spellings_a_host_holds() {
+        // Both the UniFFI and wasm exports answer through this, and a host
+        // holds an id in whatever spelling it received rather than the
+        // normalized form the core passes internally.
+        for product_id in [
+            "peopl.dot",
+            "PEOPL.DOT",
+            "  peopl.dot  ",
+            "dim2.paseo",
+            "stash.dot",
+        ] {
+            assert!(
+                normalizes_to_trusted_remote_permissions(product_id),
+                "{product_id} is a first-party product in any accepted spelling"
+            );
+        }
+        for product_id in [
+            "app.peopl.dot",
+            "peopl",
+            "notpeopl.dot",
+            "localhost:3000",
+            "",
+            "   ",
+        ] {
+            assert!(
+                !normalizes_to_trusted_remote_permissions(product_id),
+                "{product_id} must not be read as trusted"
+            );
+        }
+    }
+
+    #[test]
     fn every_trusted_remote_permission_label_is_a_product_identifier() {
         // A label that product-id validation rejects would never reach the
         // permission engine, so the whitelist entry would be silently inert.
@@ -2245,6 +2384,60 @@ mod tests {
             assert!(!label.contains('.'), "{label} must not carry a TLD");
             assert_eq!(*label, label.to_lowercase(), "{label} must be lowercase");
         }
+    }
+
+    #[test]
+    fn an_identifier_carrying_no_name_is_rejected() {
+        // Each of these reached the manifest grant key, the cache key, the only
+        // consent prompt in this design and every log line, because only the
+        // suffix after the last dot was ever inspected.
+        for id in [
+            "dim2\u{0}.dot",        // NUL, into a prompt rendered verbatim
+            "\u{202e}dim2.dot",     // right-to-left override
+            "dim2\u{200b}.dot",     // zero width space
+            "a b c.dot",            // whitespace
+            "../../etc/passwd.dot", // path separators
+            "dim2..dot",            // empty label: collapses onto other ids
+            ".dot",                 // same empty label
+        ] {
+            assert!(
+                normalize_product_identifier(id).is_err(),
+                "{id:?} carries no product name and must not normalize"
+            );
+        }
+    }
+
+    #[test]
+    fn an_internationalized_identifier_is_still_an_identifier() {
+        // The rejection above is a hazard list, not an ASCII allowlist: dotNS
+        // names are internationalized and these are real ids.
+        for id in ["Tést.DOT", "münchen.dot", "dim2-two.dot", "localhost:3000"] {
+            assert!(
+                normalize_product_identifier(id).is_ok(),
+                "{id:?} is a legitimate product id"
+            );
+        }
+    }
+
+    #[test]
+    fn an_overlong_product_id_is_not_an_identifier() {
+        // Only the suffix after the last `.` is checked, so every length of
+        // this is otherwise a valid, distinct, wire-supplied cache key.
+        let label = "a".repeat(PRODUCT_ID_MAX_BYTES);
+        let overlong = format!("{label}.dot");
+        assert!(overlong.len() > PRODUCT_ID_MAX_BYTES);
+        assert!(
+            !is_product_identifier(&overlong),
+            "a product id past the cap must be rejected, not stored"
+        );
+
+        // A huge id alone would pass with the cap off by any amount.
+        let at_cap = format!("{}.dot", "a".repeat(PRODUCT_ID_MAX_BYTES - 4));
+        assert_eq!(at_cap.len(), PRODUCT_ID_MAX_BYTES);
+        assert!(
+            is_product_identifier(&at_cap),
+            "an id exactly at the cap is still valid"
+        );
     }
 
     #[test]

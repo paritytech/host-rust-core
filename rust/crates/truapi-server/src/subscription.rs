@@ -94,6 +94,21 @@ pub(crate) fn interrupt_reason(error: CallError<truapi::latest::GenericError>) -
     }
 }
 
+/// Strip a subscription interrupt's versioned envelope, leaving the latest
+/// domain payload. Framework variants carry no version and pass through.
+pub(crate) fn interrupt_into_latest<E>(error: CallError<E>) -> CallError<E::Latest>
+where
+    E: truapi::versioned::IntoLatest,
+{
+    match error {
+        CallError::Domain(domain) => CallError::Domain(domain.into_latest()),
+        CallError::Denied => CallError::Denied,
+        CallError::Unsupported => CallError::Unsupported,
+        CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
+        CallError::HostFailure { reason } => CallError::HostFailure { reason },
+    }
+}
+
 /// Encode the `Interrupt` payload that ends a subscription with `interrupt`.
 ///
 /// The leg carries `Result<(), Interrupt>`, so a value rides in its `Err`

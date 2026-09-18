@@ -40,6 +40,7 @@ on:
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
       - ".github/actions/bootstrap-ios-core/**"
+      - ".github/actions/upsert-pr-comment/**"
   # Also on the default branch, which is the only way the SPM cache becomes
   # useful. A cache written during a pull request is scoped to that pull
   # request's ref, so nothing else can read it. Only a run on the default
@@ -72,6 +73,7 @@ on:
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
       - ".github/actions/bootstrap-ios-core/**"
+      - ".github/actions/upsert-pr-comment/**"
   # Kept alongside pull_request so a build can be reproduced on demand without
   # pushing a commit.
   workflow_dispatch:
@@ -364,12 +366,61 @@ jobs:
           echo "short=${COMMIT:0:9}" >> "$GITHUB_OUTPUT"
 
       - name: Upload the preview build
+        id: upload
         uses: actions/upload-artifact@v7
         with:
           name: simulator-preview-${{ steps.package.outputs.short }}
           path: ${{ steps.package.outputs.archive }}
           retention-days: 14
           if-no-files-found: error
+
+      # The stamp is inside the bundle, so the only way to read it before
+      # downloading is for the pull request to say which commit the build came
+      # from.
+      - name: Write the preview comment
+        if: github.event_name == 'pull_request'
+        env:
+          SHORT: ${{ steps.package.outputs.short }}
+          URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+
+          # No URL means the upload failed, and that is the upload step's to
+          # report. Writing no body leaves the link step with nothing to post,
+          # which the action treats as nothing to say, so a build that
+          # succeeded is never failed by a comment that could not be composed.
+          if [ -z "${URL}" ]; then
+            echo "::warning::The preview build produced no URL, so no comment will be posted"
+            exit 0
+          fi
+
+          cat > "$RUNNER_TEMP/preview.md" <<EOF
+          ### iOS simulator preview
+
+          Built from \`${SHORT}\`, stamped with it in \`TrUAPICommit\`.
+
+          \`\`\`bash
+          gh run download ${GITHUB_RUN_ID} --name simulator-preview-${SHORT}
+          unzip polkadot-app-*.app.zip
+          xcrun simctl install booted polkadot-app.app
+          xcrun simctl launch booted io.parity.polkadotapp.develop
+          \`\`\`
+
+          Or [download it](${URL}) in a browser, which arrives as a zip wrapping
+          the \`.app.zip\`, so it needs unzipping twice.
+
+          An arm64 simulator slice, so it needs an Apple Silicon Mac and does not
+          install on a device. Kept for 14 days, after which the link stops
+          resolving and a new push rebuilds it.
+          EOF
+
+      - name: Link the preview build from the pull request
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: ./.github/actions/upsert-pr-comment
+        with:
+          marker: "<!-- ios-preview-build -->"
+          body-file: ${{ runner.temp }}/preview.md
 
   test:
     needs: [check-skip-label, core]

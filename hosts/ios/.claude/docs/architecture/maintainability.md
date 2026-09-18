@@ -127,7 +127,7 @@ When temporarily disabling a feature, do it at the registration/factory level â€
 ```swift
 // GOOD: Don't create the extension if not needed
 // In ChatExtensionsRegistry.createDimExtensions:
-// simply skip creating mobRule for W3S
+// simply skip creating the extension
 
 // BAD: Early return inside the feature
 func someFeatureMethod() -> Result? {
@@ -135,7 +135,7 @@ func someFeatureMethod() -> Result? {
 }
 ```
 
-Use feature flags (`#if UNSTABLE`, `#if F_DEV`, `#if TESTNET_FEATURE`, W3S flags) for temporary behavior changes.
+Use feature flags (`#if UNSTABLE`, `#if F_DEV`, `#if TESTNET_FEATURE`) for temporary behavior changes.
 
 ### 12. Use Type Aliases for Domain Concepts
 
@@ -231,7 +231,6 @@ These areas have old and new patterns coexisting. New code follows the north-sta
 | `#if UNSTABLE`     | Preview/testnet chain configurations            |
 | `#if F_DEV`        | Development bundle identifier prefix            |
 | `#if TESTNET_FEATURE` | Gates testnet-only UI features               |
-| W3S flags          | Temporary event-specific behavior               |
 
 Gate temporary behavior changes behind feature flags rather than unconditional code changes.
 

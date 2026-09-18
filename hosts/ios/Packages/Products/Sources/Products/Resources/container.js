@@ -865,13 +865,10 @@
   // node_modules/@novasamatech/scale/dist/bytes.js
   function Bytes2(size) {
     const codec = size === void 0 ? Bytes() : enhanceCodec(Bytes(size), (value) => {
-      if (value.length > size)
-        throw new Error(`Bytes(${size}): value is too long (${value.length} bytes)`);
-      if (value.length === size)
-        return value;
-      const padded = new Uint8Array(size);
-      padded.set(value);
-      return padded;
+      if (value.length !== size) {
+        throw new Error(`Bytes(${size}): expected ${size} bytes, got ${value.length}`);
+      }
+      return value;
     }, (value) => {
       if (value.length !== size) {
         throw new Error(`Bytes(${size}): decoded ${value.length} bytes, expected ${size}`);
@@ -1814,7 +1811,8 @@
 
   // node_modules/@novasamatech/host-api/dist/protocol/v1/payments.js
   var Sr25519SecretKey = Bytes2(64);
-  var PaymentId = str;
+  var PaymentId = Bytes2(32);
+  var PaymentTopUpId = Bytes2(32);
   var CoinPaymentPurseId2 = u32;
   var PaymentTopUpSource = Enum2({
     // Account of the calling product, addressed by the RFC-0022 selector.
@@ -1825,28 +1823,49 @@
   var PaymentBalance = Struct({
     available: u128
   });
-  var PaymentReceipt = Struct({
-    id: PaymentId
-  });
   var PaymentStatus = Enum2({
     Processing: _void,
+    // Terminal: the full amount reached the destination.
     Completed: _void,
-    Failed: str
+    // Terminal: the payment did not go through; carries the reason.
+    Failed: str,
+    // Terminal: only this amount reached the destination, less than requested.
+    PartiallyClaimed: u128
+  });
+  var PaymentTopUpStatus = Enum2({
+    // Waiting for the requested amount to appear on the source.
+    Detecting: _void,
+    Claiming: _void,
+    // At least the requested amount was claimed. Terminal once `finalized`.
+    Claimed: Struct({ finalized: bool }),
+    // Terminal: the host could only claim `actualClaimed`, less than requested.
+    // Usually means the source never held enough balance to cover the request —
+    // e.g. a re-orged pre-funding transfer. Requesting an amount below the
+    // smallest coinage denomination lands here too: the host claims
+    // `amount - amount % 2^min_coinage_exponent`.
+    ClaimedPartially: Struct({ actualClaimed: u128 }),
+    // Terminal: nothing could be claimed, most likely because the host never
+    // observed any balance at the source.
+    NotClaimed: _void
   });
   var PaymentBalanceErr = ErrEnum("PaymentBalanceErr", {
     PermissionDenied: [_void, "permission denied"],
     Unknown: [GenericErr, "unknown error"]
   });
-  var PartialPaymentErr = Struct({
-    credited: u128
-  });
   var PaymentTopUpErr = ErrEnum("PaymentTopUpErr", {
-    InsufficientFunds: [_void, "insufficient funds"],
     InvalidSource: [_void, "invalid source"],
-    PartialPayment: [PartialPaymentErr, ({ credited }) => `partial payment: credited ${credited}`],
+    AlreadyExists: [_void, "a top up with this id already exists"],
+    // Only one top up can be live per source; the source frees up once the
+    // previous top up reaches a terminal status.
+    SourceBusy: [_void, "source already has a top up in progress"],
+    Unknown: [GenericErr, "unknown error"]
+  });
+  var PaymentTopUpStatusErr = ErrEnum("PaymentTopUpStatusErr", {
+    NotFound: [_void, "top up not found"],
     Unknown: [GenericErr, "unknown error"]
   });
   var PaymentRequestErr = ErrEnum("PaymentRequestErr", {
+    AlreadyExists: [_void, "a payment with this id already exists"],
     Rejected: [_void, "rejected"],
     InsufficientBalance: [_void, "insufficient balance"],
     Unknown: [GenericErr, "unknown error"]
@@ -1863,18 +1882,23 @@
   var PaymentTopUpV1_request = Struct({
     into: Option(CoinPaymentPurseId2),
     amount: u128,
-    source: PaymentTopUpSource
+    source: PaymentTopUpSource,
+    id: PaymentTopUpId
   });
   var PaymentTopUpV1_response = CallResult(_void, PaymentTopUpErr);
   var PaymentRequestV1_request = Struct({
     from: Option(CoinPaymentPurseId2),
     amount: u128,
-    destination: Bytes2(32)
+    destination: Bytes2(32),
+    id: PaymentId
   });
-  var PaymentRequestV1_response = CallResult(PaymentReceipt, PaymentRequestErr);
+  var PaymentRequestV1_response = CallResult(_void, PaymentRequestErr);
   var PaymentStatusSubscribeV1_start = PaymentId;
   var PaymentStatusSubscribeV1_receive = PaymentStatus;
   var PaymentStatusSubscribeV1_interrupt = PaymentStatusErr;
+  var PaymentTopUpStatusSubscribeV1_start = PaymentTopUpId;
+  var PaymentTopUpStatusSubscribeV1_receive = PaymentTopUpStatus;
+  var PaymentTopUpStatusSubscribeV1_interrupt = PaymentTopUpStatusErr;
 
   // node_modules/@novasamatech/host-api/dist/protocol/v1/preimage.js
   var PreimageKey = Hex();
@@ -2411,6 +2435,16 @@
     }),
     host_worker_end_operation: versionedRequest(indexer.request(), {
       v1: [WorkerEndOperationV1_request, WorkerEndOperationV1_response]
+    }),
+    // Appended rather than placed next to `host_payment_top_up`: the index is a
+    // single running counter, so slotting it into the payment block would shift
+    // every id after it.
+    host_payment_top_up_status_subscribe: versionedSubscription(indexer.subscription(), {
+      v1: [
+        PaymentTopUpStatusSubscribeV1_start,
+        PaymentTopUpStatusSubscribeV1_receive,
+        PaymentTopUpStatusSubscribeV1_interrupt
+      ]
     })
   };
 
@@ -2518,6 +2552,48 @@
     }
     const messageProvider = createMessageProvider(provider);
     const activeSubscriptions = /* @__PURE__ */ new Map();
+    function openSubscription(method, subscriptionKey, startPayload, listener) {
+      const requestId = createRequestId();
+      const stopAction = composeAction(method, "stop");
+      const interruptAction = composeAction(method, "interrupt");
+      const receiveAction = composeAction(method, "receive");
+      const unsubscribeReceive = transport.listenMessages(receiveAction, (receivedId, data) => {
+        if (receivedId === requestId) {
+          for (const listener2 of subscription.listeners) {
+            try {
+              listener2.call(data.value);
+            } catch (e) {
+              provider.logger.error(`subscription "${method}" listener threw`, e);
+            }
+          }
+        }
+      });
+      const unsubscribeInterrupt = transport.listenMessages(interruptAction, (receivedId, data) => {
+        if (receivedId === requestId) {
+          stopSubscription();
+          subscription.latchedInterrupt = { payload: data.value };
+          subscription.interruptEvents.emit("interrupt", data.value);
+        }
+      });
+      const stopSubscription = () => {
+        activeSubscriptions.delete(subscriptionKey);
+        unsubscribeReceive();
+        unsubscribeInterrupt();
+      };
+      const subscription = {
+        requestId,
+        listeners: [listener],
+        interruptEvents: createNanoEvents(),
+        kill: () => {
+          stopSubscription();
+          const stopPayload = enumValue(stopAction, void 0);
+          transport.postMessage(requestId, stopPayload);
+        }
+      };
+      activeSubscriptions.set(subscriptionKey, subscription);
+      transport.postMessage(requestId, startPayload);
+      return subscription;
+    }
     let debugListenerCount = 0;
     let debugProviderUnsubscribe = null;
     function ensureDebugProviderSubscription() {
@@ -2641,17 +2717,14 @@
       },
       subscribe(method, payload, callback) {
         checks();
-        const events2 = createNanoEvents();
         const startAction = composeAction(method, "start");
         const startPayload = enumValue(startAction, payload);
         const subscriptionKey = getSubscriptionKey(method, startPayload);
-        let subscription = activeSubscriptions.get(subscriptionKey);
         function unsubscribeListener() {
           const subscription2 = activeSubscriptions.get(subscriptionKey);
           if (subscription2) {
             const newListeners = subscription2.listeners.filter((listener2) => listener2.call !== callback);
             if (newListeners.length === 0) {
-              activeSubscriptions.delete(subscriptionKey);
               subscription2.kill();
             } else {
               subscription2.listeners = newListeners;
@@ -2662,57 +2735,20 @@
           call: callback,
           unsubscribe: unsubscribeListener
         };
-        const publicSubscription = {
+        const existing = activeSubscriptions.get(subscriptionKey);
+        existing?.listeners.push(listener);
+        const subscription = existing ?? openSubscription(method, subscriptionKey, startPayload, listener);
+        return {
           unsubscribe: unsubscribeListener,
           onInterrupt(callback2) {
-            return events2.on("interrupt", callback2);
+            if (subscription.latchedInterrupt) {
+              callback2(subscription.latchedInterrupt.payload);
+              return () => {
+              };
+            }
+            return subscription.interruptEvents.on("interrupt", callback2);
           }
         };
-        if (!subscription) {
-          const requestId = createRequestId();
-          const stopAction = composeAction(method, "stop");
-          const interruptAction = composeAction(method, "interrupt");
-          const receiveAction = composeAction(method, "receive");
-          const unsubscribeReceive = transport.listenMessages(receiveAction, (receivedId, data) => {
-            if (receivedId === requestId) {
-              const subscription2 = activeSubscriptions.get(subscriptionKey);
-              if (subscription2) {
-                for (const listener2 of subscription2.listeners) {
-                  try {
-                    listener2.call(data.value);
-                  } catch (e) {
-                    provider.logger.error(`subscription "${method}" listener threw`, e);
-                  }
-                }
-              }
-            }
-          });
-          const unsubscribeInterrupt = transport.listenMessages(interruptAction, (receivedId, data) => {
-            if (receivedId === requestId) {
-              events2.emit("interrupt", data.value);
-              stopSubscription();
-            }
-          });
-          const stopSubscription = () => {
-            unsubscribeReceive();
-            unsubscribeInterrupt();
-            events2.events = {};
-          };
-          subscription = {
-            requestId,
-            kill: () => {
-              stopSubscription();
-              const stopPayload = enumValue(stopAction, void 0);
-              transport.postMessage(requestId, stopPayload);
-            },
-            listeners: [listener]
-          };
-          activeSubscriptions.set(subscriptionKey, subscription);
-          transport.postMessage(requestId, startPayload);
-        } else {
-          subscription.listeners.push(listener);
-        }
-        return publicSubscription;
       },
       handleSubscription(method, handler) {
         checks();
@@ -2730,8 +2766,10 @@
             transport.postMessage(requestId, receivePayload);
           }, (value) => {
             interrupted = true;
+            const cleanup = subscriptions.get(requestId);
             subscriptions.delete(requestId);
             transport.postMessage(requestId, enumValue(interruptAction, value));
+            cleanup?.();
           });
           if (interrupted) {
             unsubscribe();
@@ -3983,7 +4021,7 @@
     }
     function makeInterruptSlot(method, makeDefaultInterrupt) {
       const defaultHandler = (_params, _send, interrupt) => {
-        queueMicrotask(() => interrupt(makeDefaultInterrupt()));
+        interrupt(makeDefaultInterrupt());
         return () => {
         };
       };
@@ -4124,6 +4162,7 @@
     const handlePreimageLookupSubscribeSlot = makeInterruptSlot("remote_preimage_lookup_subscribe", () => enumValue("v1", void 0));
     const handlePaymentBalanceSubscribeSlot = makeInterruptSlot("host_payment_balance_subscribe", () => enumValue("v1", new PaymentBalanceErr.Unknown({ reason: "Not implemented" })));
     const handlePaymentStatusSubscribeSlot = makeInterruptSlot("host_payment_status_subscribe", () => enumValue("v1", new PaymentStatusErr.Unknown({ reason: "Not implemented" })));
+    const handlePaymentTopUpStatusSubscribeSlot = makeInterruptSlot("host_payment_top_up_status_subscribe", () => enumValue("v1", new PaymentTopUpStatusErr.Unknown({ reason: "Not implemented" })));
     const handleCoinPaymentRebalancePurseSlot = makeInterruptSlot("host_coin_payment_rebalance_purse", () => enumValue("v1", new CoinPaymentErr.Internal()));
     const handleCoinPaymentDeletePurseSlot = makeInterruptSlot("host_coin_payment_delete_purse", () => enumValue("v1", new CoinPaymentErr.Internal()));
     const handleCoinPaymentDepositSlot = makeInterruptSlot("host_coin_payment_deposit", () => enumValue("v1", new CoinPaymentErr.Internal()));
@@ -4287,6 +4326,9 @@
       },
       handlePaymentStatusSubscribe(handler) {
         return handleV1Subscription(handlePaymentStatusSubscribeSlot, handler);
+      },
+      handlePaymentTopUpStatusSubscribe(handler) {
+        return handleV1Subscription(handlePaymentTopUpStatusSubscribeSlot, handler);
       },
       handleCoinPaymentCreatePurse(handler) {
         return handleV1Request(handleCoinPaymentCreatePurseSlot, handler);
@@ -5627,6 +5669,99 @@
   function noop5() {
   }
 
+  // node_modules/@novasamatech/host-substrate-chain-connection/dist/subscriptionReplayProvider.js
+  var isChainMethod = (method) => method.startsWith("chain_");
+  var isSubscribeMethod = (method) => {
+    if (isChainMethod(method))
+      return false;
+    const m = method.toLowerCase();
+    return m.includes("subscribe") && !m.includes("unsubscribe");
+  };
+  var isUnsubscribeMethod = (method) => !isChainMethod(method) && method.toLowerCase().includes("unsubscribe");
+  var withSubscriptionReplay = (provider, onReconnect) => (onMessage) => {
+    const pendingSubscriptions = /* @__PURE__ */ new Map();
+    const activeSubscriptions = /* @__PURE__ */ new Map();
+    const currentToConsumer = /* @__PURE__ */ new Map();
+    const removeSubscription = (consumerSubId) => {
+      const sub = activeSubscriptions.get(consumerSubId);
+      if (sub === void 0)
+        return void 0;
+      activeSubscriptions.delete(consumerSubId);
+      currentToConsumer.delete(sub.currentSubId);
+      const pending = pendingSubscriptions.get(sub.id);
+      if (pending?.reconnectFor === consumerSubId)
+        pendingSubscriptions.delete(sub.id);
+      return sub;
+    };
+    const conn = provider((message) => {
+      if (isResponse(message) && message.id != null && "result" in message && typeof message.result === "string") {
+        const pending = pendingSubscriptions.get(message.id);
+        if (pending !== void 0) {
+          pendingSubscriptions.delete(message.id);
+          const newSubId = message.result;
+          if (pending.reconnectFor !== null) {
+            const sub = activeSubscriptions.get(pending.reconnectFor);
+            if (sub !== void 0) {
+              currentToConsumer.delete(sub.currentSubId);
+              sub.currentSubId = newSubId;
+              currentToConsumer.set(newSubId, pending.reconnectFor);
+            }
+            return;
+          }
+          activeSubscriptions.set(newSubId, { id: message.id, payload: pending.payload, currentSubId: newSubId });
+          currentToConsumer.set(newSubId, newSubId);
+        }
+        onMessage(message);
+        return;
+      }
+      if (isRequest(message)) {
+        const params = message.params;
+        const incoming = params?.subscription;
+        if (typeof incoming === "string") {
+          const consumerSubId = currentToConsumer.get(incoming);
+          if (consumerSubId !== void 0 && consumerSubId !== incoming) {
+            onMessage({ ...message, params: { ...params, subscription: consumerSubId } });
+            return;
+          }
+        }
+      }
+      onMessage(message);
+    });
+    const unsubReconnect = onReconnect(() => {
+      for (const [consumerSubId, sub] of activeSubscriptions) {
+        pendingSubscriptions.set(sub.id, { payload: sub.payload, reconnectFor: consumerSubId });
+        conn.send(sub.payload);
+      }
+    });
+    return {
+      send(message) {
+        if (isRequest(message)) {
+          const { method, id: id2, params } = message;
+          if (isSubscribeMethod(method)) {
+            if (id2 != null)
+              pendingSubscriptions.set(id2, { payload: message, reconnectFor: null });
+          } else if (isUnsubscribeMethod(method)) {
+            const consumerSubId = params?.[0];
+            const sub = consumerSubId !== void 0 ? removeSubscription(consumerSubId) : void 0;
+            if (sub !== void 0 && sub.currentSubId !== consumerSubId) {
+              const rest = (params ?? []).slice(1);
+              conn.send({ ...message, params: [sub.currentSubId, ...rest] });
+              return;
+            }
+          }
+        }
+        conn.send(message);
+      },
+      disconnect() {
+        pendingSubscriptions.clear();
+        activeSubscriptions.clear();
+        currentToConsumer.clear();
+        unsubReconnect();
+        conn.disconnect();
+      }
+    };
+  };
+
   // node_modules/@polkadot-api/ws-provider/dist/types.js
   var WsEvent = /* @__PURE__ */ ((WsEvent2) => {
     WsEvent2["CONNECTING"] = "CONNECTING";
@@ -5937,103 +6072,6 @@
         connect();
     };
     return { middleware, pause, resume, isPaused: () => paused };
-  };
-
-  // node_modules/@novasamatech/host-substrate-chain-connection/dist/subscriptionReplayProvider.js
-  var isChainMethod = (method) => method.startsWith("chain_");
-  var isSubscribeMethod = (method) => {
-    if (isChainMethod(method))
-      return false;
-    const m = method.toLowerCase();
-    return m.includes("subscribe") && !m.includes("unsubscribe");
-  };
-  var isUnsubscribeMethod = (method) => !isChainMethod(method) && method.toLowerCase().includes("unsubscribe");
-  var withSubscriptionReplay = (provider, onReconnect) => (onMessage) => {
-    const pendingSubscriptions = /* @__PURE__ */ new Map();
-    const activeSubscriptions = /* @__PURE__ */ new Map();
-    const currentToConsumer = /* @__PURE__ */ new Map();
-    const removeSubscription = (consumerSubId) => {
-      const sub = activeSubscriptions.get(consumerSubId);
-      if (sub === void 0)
-        return void 0;
-      activeSubscriptions.delete(consumerSubId);
-      currentToConsumer.delete(sub.currentSubId);
-      const pending = pendingSubscriptions.get(sub.id);
-      if (pending?.reconnectFor === consumerSubId)
-        pendingSubscriptions.delete(sub.id);
-      return sub;
-    };
-    const conn = provider((message) => {
-      if (isResponse(message) && message.id != null && "result" in message && typeof message.result === "string") {
-        const pending = pendingSubscriptions.get(message.id);
-        if (pending !== void 0) {
-          pendingSubscriptions.delete(message.id);
-          const newSubId = message.result;
-          if (pending.reconnectFor !== null) {
-            const sub = activeSubscriptions.get(pending.reconnectFor);
-            if (sub !== void 0) {
-              currentToConsumer.delete(sub.currentSubId);
-              sub.currentSubId = newSubId;
-              currentToConsumer.set(newSubId, pending.reconnectFor);
-            }
-            return;
-          }
-          activeSubscriptions.set(newSubId, { id: message.id, payload: pending.payload, currentSubId: newSubId });
-          currentToConsumer.set(newSubId, newSubId);
-        }
-        onMessage(message);
-        return;
-      }
-      if (isRequest(message)) {
-        const params = message.params;
-        const incoming = params?.subscription;
-        if (typeof incoming === "string") {
-          const consumerSubId = currentToConsumer.get(incoming);
-          if (consumerSubId !== void 0 && consumerSubId !== incoming) {
-            onMessage({ ...message, params: { ...params, subscription: consumerSubId } });
-            return;
-          }
-        }
-      }
-      onMessage(message);
-    });
-    const unsubReconnect = onReconnect(() => {
-      for (const [, pending] of pendingSubscriptions) {
-        if (pending.reconnectFor === null)
-          conn.send(pending.payload);
-      }
-      for (const [consumerSubId, sub] of activeSubscriptions) {
-        pendingSubscriptions.set(sub.id, { payload: sub.payload, reconnectFor: consumerSubId });
-        conn.send(sub.payload);
-      }
-    });
-    return {
-      send(message) {
-        if (isRequest(message)) {
-          const { method, id: id2, params } = message;
-          if (isSubscribeMethod(method)) {
-            if (id2 != null)
-              pendingSubscriptions.set(id2, { payload: message, reconnectFor: null });
-          } else if (isUnsubscribeMethod(method)) {
-            const consumerSubId = params?.[0];
-            const sub = consumerSubId !== void 0 ? removeSubscription(consumerSubId) : void 0;
-            if (sub !== void 0 && sub.currentSubId !== consumerSubId) {
-              const rest = (params ?? []).slice(1);
-              conn.send({ ...message, params: [sub.currentSubId, ...rest] });
-              return;
-            }
-          }
-        }
-        conn.send(message);
-      },
-      disconnect() {
-        pendingSubscriptions.clear();
-        activeSubscriptions.clear();
-        currentToConsumer.clear();
-        unsubReconnect();
-        conn.disconnect();
-      }
-    };
   };
 
   // node_modules/@novasamatech/host-substrate-chain-connection/dist/wsProvider.js
@@ -6890,57 +6928,101 @@
   });
   container.handlePaymentRequest(async (params, { ok: ok2, err: err2 }) => {
     try {
-      const result = await callNative("paymentRequest", {
+      await callNative("paymentRequest", {
+        idHex: toHex2(params.id),
         amount: params.amount.toString(),
         destinationHex: toHex2(params.destination)
       });
-      return ok2({ id: result.id });
+      return ok2(void 0);
     } catch (e) {
-      const msg = String(e instanceof Error ? e.message : e);
-      if (msg.includes("payment rejected"))
-        return err2(new PaymentRequestErr.Rejected());
-      if (msg.includes("insufficient balance"))
-        return err2(new PaymentRequestErr.InsufficientBalance());
-      return err2(new PaymentRequestErr.Unknown({ reason: msg }));
+      switch (e?.code) {
+        case "AlreadyExists":
+          return err2(new PaymentRequestErr.AlreadyExists());
+        case "Rejected":
+          return err2(new PaymentRequestErr.Rejected());
+        case "InsufficientBalance":
+          return err2(new PaymentRequestErr.InsufficientBalance());
+        default:
+          return err2(new PaymentRequestErr.Unknown({ reason: String(e?.message ?? e) }));
+      }
     }
   });
   container.handlePaymentTopUp(async (params, { ok: ok2, err: err2 }) => {
     try {
       const nativeParams = {
+        id: toHex2(params.id),
         amount: params.amount.toString(),
         sourceTag: params.source.tag
       };
       if (params.source.tag === "ProductAccount") {
         nativeParams.sourceDerivationIndex = toNativeDerivationIndex(params.source.value);
-      } else if (params.source.tag === "PrivateKey") {
-        nativeParams.sourceKeyHex = toHex2(params.source.value);
       } else if (params.source.tag === "Coins") {
-        nativeParams.sourceKeyListHex = params.source.value.map((k) => toHex2(k));
+        nativeParams.sourceKeyListHex = params.source.value.map((key) => toHex2(key));
+      } else {
+        nativeParams.sourceKeyHex = toHex2(params.source.value);
       }
       await callNative("paymentTopUp", nativeParams);
       return ok2(void 0);
     } catch (e) {
-      const msg = String(e instanceof Error ? e.message : e);
-      const partial = msg.match(/PartialPayment:(\d+)/);
-      if (partial) {
-        return err2(new PaymentTopUpErr.PartialPayment({ credited: BigInt(partial[1]) }));
+      switch (e?.code) {
+        case "InvalidSource":
+          return err2(new PaymentTopUpErr.InvalidSource());
+        case "AlreadyExists":
+          return err2(new PaymentTopUpErr.AlreadyExists());
+        case "SourceBusy":
+          return err2(new PaymentTopUpErr.SourceBusy());
+        default:
+          return err2(new PaymentTopUpErr.Unknown({ reason: String(e?.message ?? e) }));
       }
-      return err2(new PaymentTopUpErr.Unknown({ reason: msg }));
     }
   });
-  container.handlePaymentStatusSubscribe((paymentId, send, interrupt) => {
+  container.handlePaymentTopUpStatusSubscribe((id2, send, interrupt) => {
+    return subscribeNative(
+      "paymentTopUpStatusSubscribe",
+      { id: toHex2(id2) },
+      (payload) => {
+        switch (payload.tag) {
+          case "Claimed":
+            return send({ tag: "Claimed", value: { finalized: payload.finalized ?? false } });
+          case "ClaimedPartially":
+            return send({
+              tag: "ClaimedPartially",
+              value: { actualClaimed: BigInt(payload.actualClaimed ?? "0") }
+            });
+          case "Claiming":
+            return send({ tag: "Claiming", value: void 0 });
+          case "NotClaimed":
+            return send({ tag: "NotClaimed", value: void 0 });
+          default:
+            return send({ tag: "Detecting", value: void 0 });
+        }
+      },
+      (e) => {
+        const failure = e?.code === "NotFound" ? new PaymentTopUpStatusErr.NotFound() : new PaymentTopUpStatusErr.Unknown({ reason: String(e?.message ?? e) });
+        queueMicrotask(() => interrupt(failure));
+      }
+    );
+  });
+  container.handlePaymentStatusSubscribe((id2, send, interrupt) => {
     return subscribeNative(
       "paymentStatusSubscribe",
-      { paymentId },
+      { idHex: toHex2(id2) },
       (payload) => {
-        if (payload.tag === "Processing")
-          send({ tag: "Processing", value: void 0 });
-        else if (payload.tag === "Completed")
-          send({ tag: "Completed", value: void 0 });
-        else
-          send({ tag: "Failed", value: payload.value ?? "" });
+        switch (payload.tag) {
+          case "Completed":
+            return send({ tag: "Completed", value: void 0 });
+          case "Failed":
+            return send({ tag: "Failed", value: payload.value ?? "" });
+          case "PartiallyClaimed":
+            return send({ tag: "PartiallyClaimed", value: BigInt(payload.value ?? "0") });
+          default:
+            return send({ tag: "Processing", value: void 0 });
+        }
       },
-      () => interrupt(new PaymentStatusErr.Unknown({ reason: "subscription interrupted" }))
+      (e) => {
+        const failure = e?.code === "NotFound" ? new PaymentStatusErr.PaymentNotFound() : new PaymentStatusErr.Unknown({ reason: String(e?.message ?? e) });
+        queueMicrotask(() => interrupt(failure));
+      }
     );
   });
   console.log("Host container initialized");

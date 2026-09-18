@@ -9,9 +9,12 @@ import SDKLogger
 import Operation_iOS
 
 public protocol VoucherLoaderProtocol {
+    /// Loads vouchers for `amount`. `groupId` labels the durability entries so a caller (e.g.
+    /// `ClaimAssetService`) can watch the whole load settle together; `nil` leaves them ungrouped.
     func load(
         amount: BigUInt,
-        breakdownContext: DenominationBreakdownContext
+        breakdownContext: DenominationBreakdownContext,
+        groupId: CoinageTxGroupId?
     ) async throws -> [Voucher]
 }
 
@@ -51,7 +54,8 @@ public final class VoucherLoader: VoucherLoaderProtocol {
     /// tracker and recovery pass resolve the on-chain outcome, so this does not await inclusion.
     public func load(
         amount: BigUInt,
-        breakdownContext: DenominationBreakdownContext
+        breakdownContext: DenominationBreakdownContext,
+        groupId: CoinageTxGroupId?
     ) async throws -> [Voucher] {
         let denominations = breakdownContext.breakdown(amountInPlanks: amount)
 
@@ -87,7 +91,7 @@ public final class VoucherLoader: VoucherLoaderProtocol {
             )
         }
 
-        _ = try await txService.submitTransactions(requests, groupId: nil)
+        _ = try await txService.submitTransactions(requests, groupId: groupId)
 
         logger?.debug("Registered \(requests.count) unpaid-load batches for \(pairs.count) vouchers")
 

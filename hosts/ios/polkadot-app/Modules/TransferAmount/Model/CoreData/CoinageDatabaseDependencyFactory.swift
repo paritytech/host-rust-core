@@ -69,12 +69,34 @@ struct CoinageDatabaseDependencyFactory: DatabaseDependencyFactoring, @unchecked
         return AnyDataProviderRepository(repository)
     }
 
-    func makeTrackedVoucherRepository() -> AnyDataProviderRepository<TrackedVoucher> {
-        let mapper = TrackedVoucherMapper()
+    func makeVoucherRepository(publicKeys: [PublicKey]) -> AnyDataProviderRepository<Voucher> {
         let repository = storageFacade.createRepository(
-            filter: nil,
+            filter: NSPredicate(format: "%K IN %@", #keyPath(CDVoucher.publicKey), publicKeys.map { $0.toHex() }),
             sortDescriptors: [],
-            mapper: AnyCoreDataMapper(mapper)
+            mapper: AnyCoreDataMapper(VoucherMapper())
+        )
+        return AnyDataProviderRepository(repository)
+    }
+
+    func makeTrackedVoucherRepository() -> AnyDataProviderRepository<TrackedVoucher> {
+        makeTrackedVoucherRepository(filter: nil)
+    }
+
+    func makeTrackedVoucherRepository(
+        derivationIndices: [DerivationIndex]
+    ) -> AnyDataProviderRepository<TrackedVoucher> {
+        makeTrackedVoucherRepository(filter: NSPredicate(
+            format: "%K IN %@",
+            #keyPath(CDVoucher.derivationIndex),
+            derivationIndices.map { $0.toCoreData() }
+        ))
+    }
+
+    private func makeTrackedVoucherRepository(filter: NSPredicate?) -> AnyDataProviderRepository<TrackedVoucher> {
+        let repository = storageFacade.createRepository(
+            filter: filter,
+            sortDescriptors: [],
+            mapper: AnyCoreDataMapper(TrackedVoucherMapper())
         )
         return AnyDataProviderRepository(repository)
     }

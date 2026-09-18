@@ -23,7 +23,7 @@ on:
           'main' builds directly from main without a release branch/PR (bump_level must be no-bump)
         type: string
         required: false
-        default: develop
+        default: main
       increment_step:
         description: "Build number increment step (1 if empty)"
         type: string
@@ -43,5 +43,5 @@ jobs:
       bump_level: ${{ inputs.bump_level }}
       source_ref: ${{ inputs.source_ref }}
       increment_step: ${{ inputs.increment_step }}
-      distribution_workflow: release_distribution.yml
+      distribution_workflow: ios-release-distribution.yml
     secrets: inherit

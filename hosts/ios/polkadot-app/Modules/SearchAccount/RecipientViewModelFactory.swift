@@ -7,20 +7,12 @@ struct RecipientViewModel: Hashable {
 }
 
 protocol RecipientViewModelFactoryProtocol {
-    func createRecentContacts(from recentContactsMap: [String: RecentContactModelWithUsername]) -> [RecipientViewModel]
+    func createRecentContacts(from contacts: [RecentContactModelWithUsername]) -> [RecipientViewModel]
 }
 
 final class RecipientViewModelFactory: RecipientViewModelFactoryProtocol {
-    func createRecentContacts(from recentContactsMap: [String: RecentContactModelWithUsername])
-        -> [RecipientViewModel] {
-        mapRecentContactsToRecentContactWithAccountType(recentContactsMap: recentContactsMap)
-    }
-
-    private func mapRecentContactsToRecentContactWithAccountType(
-        recentContactsMap: [String: RecentContactModelWithUsername]
-    ) -> [RecipientViewModel] {
-        let items = recentContactsMap.values.sorted(by: { $0.recentContact.lastUsed > $1.recentContact.lastUsed })
-        return items.compactMap { item in
+    func createRecentContacts(from contacts: [RecentContactModelWithUsername]) -> [RecipientViewModel] {
+        contacts.compactMap { item in
             guard
                 let chainFormat = item.chainAsset?.chain.chainFormat,
                 let accountAddress = try? item.recentContact.accountID.toAddress(using: chainFormat)

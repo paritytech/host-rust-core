@@ -5,7 +5,7 @@ import Keystore_iOS
 @MainActor
 protocol TabFactoryProtocol {
     func view(for item: TabBarItem) -> UIViewController?
-    func makeScanController() -> UIViewController?
+    func makeScanController(onSearchTap: @escaping () -> Void) -> UIViewController?
 }
 
 final class TabFactory: TabFactoryProtocol {
@@ -45,11 +45,15 @@ final class TabFactory: TabFactoryProtocol {
         return mainContentVC
     }
 
-    func makeScanController() -> UIViewController? {
-        WalletQRScanViewFactory.createView(
+    func makeScanController(onSearchTap: @escaping () -> Void) -> UIViewController? {
+        guard let scanner = WalletQRScanViewFactory.createView(
             for: scanResultHandler,
             presentation: .embedded
-        )?.controller
+        )?.controller else {
+            return nil
+        }
+
+        return ScanPanelViewController(scannerController: scanner, onSearchTap: onSearchTap)
     }
 }
 

@@ -5,6 +5,35 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.17.0] - 2026-09-17
+
+### Added
+
+- cap the light client's live connections (#817)
+- a label-gated signed build that installs on a phone (#815)
+- refresh a vendored host tree from its source repository (#811)
+- read the statement renewal ledger, and untrack from a native host (#786)
+- serve the Pocket card collection (#706)
+- Pocket modality RFC and protocol spec (#609)
+
+### Changed
+
+- require versioned wrappers for empty wire payloads (#785)
+- restorable Rust cache, wire-table gate in the rust job (#779)
+- remove genesis constants (#753)
+- publish the iOS host and subscribe the app to its bumps (#758)
+- parallel iOS slices, one rustdoc call, deterministic type names (#773)
+- cut the Rust test suite from 2m12s to 21s (#767)
+
+### Fixed
+
+- install the Asset Hub genesis hash on the signing role (#729)
+- move the published fallback forward and stop it rotting silently (#812)
+- advertise the X25519 chat identity key on chain (#814)
+- keep one base path on one signer identity (#810)
+- keep a later push from cancelling a release commit's CI (#809)
+- give the CLI build matrix the generated Rust it cannot compile without (#780)
+
 ## [0.16.0] - 2026-09-14
 
 ### RFCs
@@ -28,6 +57,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.16.0, @parity/truapi-host 0.16.0 (#744)
 - RFC: Scoped grants in trustedProducts (#454)
 - @parity/truapi 0.15.0, @parity/truapi-host 0.12.0 (#732)
 - serve inter-host requests through typed handlers (#628)

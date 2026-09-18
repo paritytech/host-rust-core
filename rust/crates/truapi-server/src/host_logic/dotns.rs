@@ -33,7 +33,9 @@ pub enum NavigateDecision {
         identifier: String,
         /// Path/query/hash suffix without a leading `/`.
         path: String,
-        /// Loadable `https://` URL for this decision.
+        /// Normalized `polkadot://` form, which is what `navigate_to` hands the
+        /// host. Hosts route on the scheme, and no dotNS TLD resolves in public
+        /// DNS, so an `https://` string would not load either.
         canonical_url: String,
     },
     /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
@@ -161,7 +163,7 @@ fn classify_dotns(input: &str) -> Option<NavigateDecision> {
     }
 
     let path = strip_leading_slash(parsed.path()) + &suffix(&parsed);
-    let canonical_url = join_url("https://", &identifier, &path);
+    let canonical_url = join_url("polkadot://", &identifier, &path);
     Some(NavigateDecision::DotName {
         identifier,
         path,
@@ -324,7 +326,7 @@ mod tests {
         Expected::Decision(NavigateDecision::DotName {
             identifier: identifier.to_string(),
             path: path.to_string(),
-            canonical_url: join_url("https://", identifier, path),
+            canonical_url: join_url("polkadot://", identifier, path),
         })
     }
 
@@ -355,6 +357,36 @@ mod tests {
         Expected::Decision(NavigateDecision::External {
             url: url.to_string(),
         })
+    }
+
+    /// Pinned as literals so the expectation does not borrow the production
+    /// builder it checks.
+    #[test]
+    fn a_product_destination_is_handed_over_as_a_polkadot_url() {
+        for (input, expected) in [
+            ("calculator.paseo", "polkadot://calculator.paseo"),
+            ("polkadot://calculator.paseo", "polkadot://calculator.paseo"),
+            ("https://calculator.paseo", "polkadot://calculator.paseo"),
+            (
+                "calculator.paseo/deep/path?q=1#frag",
+                "polkadot://calculator.paseo/deep/path?q=1#frag",
+            ),
+            ("MyTestApp.DOT", "polkadot://mytestapp.dot"),
+        ] {
+            let NavigateDecision::DotName { canonical_url, .. } = parse_navigate(input) else {
+                panic!("{input} should classify as a dotNS product destination");
+            };
+            assert_eq!(canonical_url, expected, "for {input}");
+        }
+    }
+
+    /// A web address keeps its scheme, so the two stay distinguishable.
+    #[test]
+    fn a_web_address_is_still_handed_over_as_https() {
+        let NavigateDecision::External { url } = parse_navigate("https://example.com/x") else {
+            panic!("example.com should classify as external");
+        };
+        assert_eq!(url, "https://example.com/x");
     }
 
     #[test]

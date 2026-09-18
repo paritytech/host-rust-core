@@ -6,7 +6,6 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingS
 
 @Immutable
 data class SettingsUiState(
-    val isDebug: Boolean,
     val debugMenuEnabled: Boolean,
     val linkedDevicesEnabled: Boolean,
     val productSettingsEnabled: Boolean,

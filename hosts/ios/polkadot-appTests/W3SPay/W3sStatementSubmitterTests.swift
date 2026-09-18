@@ -107,6 +107,7 @@ private struct BlockInfoProviderStub: BlockInfoProviding {
     func fetchFinalized() async throws -> BlockNumber { 0 }
     func fetchFinalizedHash() async throws -> BlockHashData { Data() }
     func fetchBlockHash(_: BlockNumber) async throws -> BlockHashData { Data() }
+    func fetchBlockNumber(byHash _: BlockHashData) async throws -> BlockNumber { 0 }
     func subscribeFinalizedHeads() -> AnyAsyncSequence<Block.Header> {
         fatalError("Not needed for this test")
     }

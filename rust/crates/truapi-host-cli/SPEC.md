@@ -1168,9 +1168,17 @@ Managed session names must:
 At startup the initial session is:
 
 1. `ephemeral` for explicit mnemonic mode;
-2. explicit `--session`;
+2. explicit `--session`, resolved through the name each promoted session
+   records itself as created under, so a name promoted away still selects the
+   session it created;
 3. `default` for explicit `--account`; or
 4. the network's remembered `current-session`.
+
+A missing or stale `current-session` resolves against the provisioned sessions
+rather than falling back to `default`: exactly one session holding an account
+store is selected, and several are refused with their names so `--session` can
+choose. A session directory without an account store is not provisioned and is
+never selected this way.
 
 `default` is a compatibility/bootstrap session. Once an auto-managed signer is
 known, the public and durable session name becomes its Lite username and its

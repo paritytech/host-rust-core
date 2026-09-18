@@ -12,7 +12,7 @@ private struct ScreenOverride {
 @MainActor
 final class TabBarFoldController {
     private unowned let barView: DSTabBarView
-    private unowned let glassContainer: DSGlassContainerView
+    private unowned let foldSurface: UIView
 
     /// Bounds of the chrome's own full-bleed view; every fold distance derives from it.
     private let chromeBounds: () -> CGRect
@@ -20,6 +20,8 @@ final class TabBarFoldController {
     private let grabZoneSink: (CGRect) -> Void
     /// A state other than `.shown` must dismiss any open panel.
     private let closePanel: () -> Void
+    /// Receives each committed visibility state; fires only when the state actually changes.
+    private let stateSink: (TabBarVisibilityState) -> Void
 
     private(set) var state: TabBarVisibilityState = .shown
     private(set) var isTabRoot = true
@@ -34,16 +36,18 @@ final class TabBarFoldController {
 
     init(
         barView: DSTabBarView,
-        glassContainer: DSGlassContainerView,
+        foldSurface: UIView,
         chromeBounds: @escaping () -> CGRect,
         grabZoneSink: @escaping (CGRect) -> Void,
-        closePanel: @escaping () -> Void
+        closePanel: @escaping () -> Void,
+        stateSink: @escaping (TabBarVisibilityState) -> Void
     ) {
         self.barView = barView
-        self.glassContainer = glassContainer
+        self.foldSurface = foldSurface
         self.chromeBounds = chromeBounds
         self.grabZoneSink = grabZoneSink
         self.closePanel = closePanel
+        self.stateSink = stateSink
     }
 
     deinit {
@@ -135,6 +139,7 @@ private extension TabBarFoldController {
             closePanel()
         }
         applyVisibility(newState, animated: true, initialVelocity: foldVelocity)
+        stateSink(newState)
     }
 
     func applyVisibility(_ state: TabBarVisibilityState, animated: Bool, initialVelocity: CGFloat) {
@@ -186,9 +191,10 @@ private extension TabBarFoldController {
         return distance > 0 ? distance : nil
     }
 
-    /// Glass cannot be moved by a transform on a nested view, so the whole container is translated.
+    /// The whole chrome surface is translated because the bar and both panels are siblings
+    /// of the glass, so translating the glass alone would leave them behind.
     func applyFoldOffset(_ offset: CGFloat) {
-        glassContainer.transform = CGAffineTransform(translationX: offset, y: 0)
+        foldSurface.transform = CGAffineTransform(translationX: offset, y: 0)
         updateFoldGrabZone()
     }
 

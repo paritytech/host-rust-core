@@ -582,6 +582,7 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+    let asset_hub = get_required_object(value, "assetHub", "runtimeConfig.assetHub")?;
     let network_suffix =
         get_required_string_at(value, "networkSuffix", "runtimeConfig.networkSuffix")?;
 
@@ -613,6 +614,11 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
             &bulletin,
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
+        )?,
+        get_required_bytes32_at(
+            &asset_hub,
+            "genesisHash",
+            "runtimeConfig.assetHub.genesisHash",
         )?,
         network_suffix,
     )
@@ -679,6 +685,11 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
                 "runtimeConfig.networkSuffix must be a supported dotNS TLD, got {network_suffix:?}"
             ))
         }
+        // By length, never by value: an id that trips this is unbounded in
+        // size, and this string reaches the product's console.
+        RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => JsValue::from_str(
+            &format!("runtimeConfig.productId must be at most {limit} bytes, got {actual}"),
+        ),
     }
 }
 
@@ -1118,6 +1129,33 @@ impl WasmPairingHostRuntime {
     pub fn release_worker(&self, product_id: String) {
         self.runtime.worker_ledger().release(&product_id);
     }
+}
+
+/// Whether `productId` is a first-party product the host grants every
+/// `RemotePermission` without prompting.
+///
+/// Pure and stateless: it reads the compiled-in list and nothing else. **A
+/// stored user decision wins over the list**, so this is only the answer for
+/// the branch where the host's own store reads undetermined. Consulting it
+/// first would let a revoked grant keep working.
+///
+/// `permissionAuthorizationStatus` is the stateful answer — it folds the list
+/// and the stored decision together — and a host that can reach a runtime
+/// should ask that instead.
+///
+/// This exists for the path where a host mediates product network access in its
+/// own code — a service worker, a `fetch` shim — and has already found nothing
+/// stored. Without it a first-party product is prompted by the host for access
+/// the core would have granted.
+///
+/// Covers remote permissions only. Device capabilities, identity disclosure and
+/// cross-product account access always prompt, whoever asks.
+///
+/// Normalizes before matching, and answers `false` for an id that does not
+/// normalize, so an unknown spelling is never read as trusted.
+#[wasm_bindgen(js_name = hasTrustedRemotePermissions)]
+pub fn has_trusted_remote_permissions_for_wasm(product_id: String) -> bool {
+    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
 /// Strictly decode a SCALE-encoded core-storage key for host storage policy.

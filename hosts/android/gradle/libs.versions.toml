@@ -144,6 +144,8 @@ firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging
 firebase-messaging-ktx = { group = "com.google.firebase", name = "firebase-messaging-ktx" }
 
 squareup-okhttp3-core = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp3" }
+squareup-okhttp3-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver3", version.ref = "okhttp3" }
+squareup-okhttp3-tls = { group = "com.squareup.okhttp3", name = "okhttp-tls", version.ref = "okhttp3" }
 squareup-okhttp3-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp3" }
 squareup-retrofit2-core = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit2" }
 squareup-retrofit2-converters-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit2" }

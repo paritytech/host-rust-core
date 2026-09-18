@@ -185,6 +185,10 @@ dependencies {
     "gpImplementation"(libs.google.play.services.mlkit)
     "vanillaImplementation"(libs.google.mlkit.barcode.scanning)
 
+    testImplementation(project(":test-shared"))
+    testImplementation(libs.squareup.okhttp3.mockwebserver)
+    testImplementation(libs.squareup.okhttp3.tls)
+
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)

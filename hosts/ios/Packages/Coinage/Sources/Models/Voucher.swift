@@ -10,6 +10,13 @@ public struct Voucher: Equatable, CoinageDerivable, Sendable {
     public let readyAt: Date
     public let remoteState: OnChainState
 
+    /// Fungibility of the recycler holding this voucher, as a percentage in `0...100`.
+    public let recyclerFungibility: UInt8
+
+    /// The best fungibility this voucher's recycler can still reach, as a percentage in
+    /// `0...100` — an upper bound on `recyclerFungibility` as the recycler keeps filling.
+    public let maxRecyclerFungibility: UInt8
+
     /// On-chain public key (member key) derived from `derivationIndex`, cached so the durability
     /// layer never re-derives it on the fly.
     public let publicKey: PublicKey
@@ -41,10 +48,14 @@ public struct Voucher: Equatable, CoinageDerivable, Sendable {
     public struct Recycler: Equatable, Sendable {
         public let index: UInt32
         public let membersCount: UInt32
+        /// First locally confirmed inclusion in this ring.
+        /// Nil until confirmed. Saved across restarts and reset on restore.
+        public let enteredAt: Date?
 
-        public init(index: UInt32, membersCount: UInt32) {
+        public init(index: UInt32, membersCount: UInt32, enteredAt: Date? = nil) {
             self.index = index
             self.membersCount = membersCount
+            self.enteredAt = enteredAt
         }
     }
 
@@ -54,6 +65,10 @@ public struct Voucher: Equatable, CoinageDerivable, Sendable {
         allocatedAt: Date,
         readyAt: Date,
         remoteState: OnChainState = .unlocated,
+        // Zero until the chain assigns a ring: the index is not known when the voucher is minted,
+        // so there is nothing to compute a score from, and zero reads as "no anonymity yet".
+        recyclerFungibility: UInt8 = 0,
+        maxRecyclerFungibility: UInt8 = 0,
         publicKey: PublicKey
     ) {
         self.exponent = exponent
@@ -61,6 +76,8 @@ public struct Voucher: Equatable, CoinageDerivable, Sendable {
         self.allocatedAt = allocatedAt
         self.readyAt = readyAt
         self.remoteState = remoteState
+        self.recyclerFungibility = recyclerFungibility
+        self.maxRecyclerFungibility = maxRecyclerFungibility
         self.publicKey = publicKey
     }
 
@@ -71,6 +88,8 @@ public struct Voucher: Equatable, CoinageDerivable, Sendable {
             allocatedAt: allocatedAt,
             readyAt: readyAt,
             remoteState: state,
+            recyclerFungibility: recyclerFungibility,
+            maxRecyclerFungibility: maxRecyclerFungibility,
             publicKey: publicKey
         )
     }
