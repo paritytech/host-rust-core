@@ -636,11 +636,15 @@ mod tests {
     }
 
     /// A peer on a different SSO envelope publishes statements this host cannot
-    /// open, so the topic stays silent exactly as it would before the peer
-    /// answered at all. The flow has to give up on its own and say why.
+    /// open, so the topic stays silent past the subscription exactly as it would
+    /// before the peer answered at all. The flow has to give up on its own and
+    /// say why.
     #[test]
     fn request_login_gives_up_when_nothing_decryptable_answers() {
-        let platform = stub_platform();
+        let platform = Arc::new(StubPlatform {
+            pairing_silent_after_subscribe: true,
+            ..Default::default()
+        });
         let (host, _pairing_host) =
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
@@ -653,6 +657,51 @@ mod tests {
         assert!(
             rendered.contains("different SSO envelope"),
             "the failure should name the likely cause, got {rendered}"
+        );
+    }
+
+    /// Nothing answers the subscription request itself, so the flow never gets
+    /// as far as watching the topic. The wait for a live subscription carries
+    /// the same deadline as the wait for a peer on it.
+    #[test]
+    fn request_login_gives_up_when_the_pairing_topic_never_acks() {
+        let platform = stub_platform();
+        let (host, _pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let host = Arc::new(host);
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+        let outcome = futures::executor::block_on(host.request_login(&cx, request));
+
+        let error = outcome.expect_err("a subscription nothing acknowledges must not wait forever");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("pairing did not complete within"),
+            "the failure should name the deadline, got {rendered}"
+        );
+    }
+
+    /// The statement-store connection never opens, so the flow parks before it
+    /// has a topic to watch at all. The deadline is armed ahead of that connect,
+    /// not after it.
+    #[test]
+    fn request_login_gives_up_when_the_statement_store_never_connects() {
+        let platform = Arc::new(StubPlatform {
+            chain_connect_pending: true,
+            ..Default::default()
+        });
+        let (host, _pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let host = Arc::new(host);
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+        let outcome = futures::executor::block_on(host.request_login(&cx, request));
+
+        let error = outcome.expect_err("a connect that never opens must not wait forever");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("pairing did not complete within"),
+            "the failure should name the deadline, got {rendered}"
         );
     }
 

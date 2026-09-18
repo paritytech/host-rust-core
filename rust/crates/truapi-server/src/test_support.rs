@@ -144,6 +144,10 @@ pub(crate) struct StubPlatform {
     /// Deliver the pairing success statement only through a snapshot
     /// query page; the live subscription stays silent.
     pub(crate) pairing_success_via_query: bool,
+    /// Acknowledge the pairing subscription and then publish nothing, the
+    /// shape a peer answering on a different SSO envelope presents: subscribed
+    /// to the topic, with no statement this host can open ever arriving.
+    pub(crate) pairing_silent_after_subscribe: bool,
     pub(crate) notification_id: v01::NotificationId,
     pub(crate) pushed_notifications: Arc<Mutex<Vec<v01::HostPushNotificationRequest>>>,
     pub(crate) cancelled_notifications: Arc<Mutex<Vec<v01::NotificationId>>>,
@@ -1050,6 +1054,7 @@ struct RecordingConnection {
     pairing_pending_response: bool,
     pairing_failure_response: bool,
     pairing_success_via_query: bool,
+    pairing_silent_after_subscribe: bool,
     chain_responses_end: bool,
 }
 
@@ -1192,6 +1197,21 @@ impl JsonRpcConnection for RecordingConnection {
             .push(request);
     }
     fn responses(&self) -> BoxStream<'static, String> {
+        if self.pairing_silent_after_subscribe {
+            let sent = self.sent.clone();
+            return Box::pin(stream::unfold(0, move |state| {
+                let sent = sent.clone();
+                async move {
+                    match state {
+                        0 => {
+                            let id = wait_for_statement_subscribe_id(sent.clone(), 0).await;
+                            Some((subscribe_ack_frame(&id, "pairing-sub"), 1))
+                        }
+                        _ => futures::future::pending().await,
+                    }
+                }
+            }));
+        }
         if self.pairing_success_via_query {
             let auth_states = self.auth_states.clone();
             let sent = self.sent.clone();
@@ -1536,6 +1556,7 @@ impl ChainProvider for StubPlatform {
             pairing_pending_response: self.pairing_pending_response,
             pairing_failure_response: self.pairing_failure_response,
             pairing_success_via_query: self.pairing_success_via_query,
+            pairing_silent_after_subscribe: self.pairing_silent_after_subscribe,
             chain_responses_end: self.chain_responses_end,
         }))
     }
