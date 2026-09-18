@@ -1256,15 +1256,50 @@ fn bare_localhost_product_allows_dev_product_accounts() {
     assert!(host.is_product_account_valid_for_caller("myapp.dot"));
 }
 
+/// A product destination reaches the platform as a `polkadot://` URL, whatever
+/// the product spelled it as. Asserting only that the call succeeded would not
+/// notice it arriving as `https://`.
 #[test]
-fn navigate_to_uses_dotns_decision_and_then_platform() {
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+fn navigate_to_hands_a_product_destination_over_as_a_polkadot_url() {
+    for spelling in [
+        "mytestapp.dot",
+        "polkadot://mytestapp.dot",
+        "https://mytestapp.dot",
+    ] {
+        let platform = Arc::new(StubPlatform::default());
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+            url: spelling.to_string(),
+        });
+
+        let response = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
+
+        assert_eq!(response, HostNavigateToResponse::V1);
+        assert_eq!(
+            platform.navigations.lock().unwrap().as_slice(),
+            ["polkadot://mytestapp.dot".to_string()],
+            "for {spelling}"
+        );
+    }
+}
+
+/// A web address still arrives as `https://`, so the two stay distinguishable.
+#[test]
+fn navigate_to_hands_a_web_address_over_unchanged() {
+    let platform = Arc::new(StubPlatform::default());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
     let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-        url: "mytestapp.dot".to_string(),
+        url: "https://example.com/path".to_string(),
     });
-    let response = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
-    assert_eq!(response, HostNavigateToResponse::V1);
+
+    futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
+
+    assert_eq!(
+        platform.navigations.lock().unwrap().as_slice(),
+        ["https://example.com/path".to_string()]
+    );
 }
 
 #[test]

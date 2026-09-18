@@ -6,9 +6,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.paritytech.polkadotapp.database.AppDatabase
 import io.paritytech.polkadotapp.database.model.BlockRefLocal
 import io.paritytech.polkadotapp.database.model.CoinageEntryInputLocal
-import io.paritytech.polkadotapp.database.model.CoinageEntryLocal
-import io.paritytech.polkadotapp.database.model.CoinageEntryLocal.AssetKind
-import io.paritytech.polkadotapp.database.model.CoinageEntryLocal.Status
+import io.paritytech.polkadotapp.database.model.CoinageAssetKindLocal as AssetKind
+import io.paritytech.polkadotapp.database.model.DurableTxLocal
+import io.paritytech.polkadotapp.database.model.DurableTxLocal.Status
 import io.paritytech.polkadotapp.database.model.CoinageEntryOutputLocal
 import io.paritytech.polkadotapp.database.model.CoinageHandoffLocal
 import kotlinx.coroutines.flow.first
@@ -32,6 +32,7 @@ class CoinageEntryDaoTest {
 
     private lateinit var database: AppDatabase
     private lateinit var dao: CoinageEntryDao
+    private lateinit var txDao: DurableTxDao
 
     @Before
     fun setUp() {
@@ -41,6 +42,7 @@ class CoinageEntryDaoTest {
         ).build()
 
         dao = database.coinageEntryDao()
+        txDao = database.durableTxDao()
     }
 
     @After
@@ -199,17 +201,26 @@ class CoinageEntryDaoTest {
         insertEntry(status = Status.PENDING_SUCCESS, outputs = listOf(coin(1), coin(2)))
 
         val subscribed = dao.subscribeAssetStates().first().single { it.derivationIndex == 2 }
-        val read = dao.getAssetState(AssetKind.COIN, 2)!!
+        val read = dao.getAssetState(AssetKind.COIN, INSTALLATION, 2)!!
 
         assertEquals(subscribed.minterStatus, read.minterStatus)
         assertEquals(subscribed.assetKind, read.assetKind)
     }
 
     @Test
+    fun theSameItemUnderTwoInstallationsIsTwoAssets() = runBlocking<Unit> {
+        insertEntry(status = Status.FINALIZED_SUCCESS, outputs = listOf(coin(1)))
+        insertEntry(status = Status.PENDING, inputs = listOf(coin(1, OTHER_INSTALLATION)))
+
+        assertNull(dao.getAssetState(AssetKind.COIN, INSTALLATION, 1)!!.consumerStatus)
+        assertEquals(Status.PENDING, dao.getAssetState(AssetKind.COIN, OTHER_INSTALLATION, 1)!!.consumerStatus)
+    }
+
+    @Test
     fun unknownAssetHasNoState() = runBlocking<Unit> {
         insertEntry(status = Status.PENDING, outputs = listOf(coin(1)))
 
-        assertNull(dao.getAssetState(AssetKind.COIN, 9))
+        assertNull(dao.getAssetState(AssetKind.COIN, INSTALLATION, 9))
     }
 
     // ---- operation groups ----
@@ -241,14 +252,14 @@ class CoinageEntryDaoTest {
 
     @Test
     fun onlyUndecidedEntriesCountAsLive() = runBlocking<Unit> {
-        assertFalse(dao.hasLiveEntries())
+        assertFalse(txDao.hasLiveTransactions())
 
         insertEntry(status = Status.FINALIZED_SUCCESS)
         insertEntry(status = Status.FAILURE)
-        assertFalse(dao.hasLiveEntries())
+        assertFalse(txDao.hasLiveTransactions())
 
         insertEntry(status = Status.PENDING_SUCCESS)
-        assertTrue(dao.hasLiveEntries())
+        assertTrue(txDao.hasLiveTransactions())
     }
 
     // ---- fixtures ----
@@ -266,47 +277,52 @@ class CoinageEntryDaoTest {
         outputs: List<Asset> = emptyList(),
         groupId: String? = null,
     ): Long {
-        val entry = CoinageEntryLocal(
-            id = CoinageEntryLocal.UNSAVED_ID,
-            operationGroupId = groupId,
-            txHash = "0x${nextTxHash++}",
-            checkpoint = BlockRefLocal(blockNumber = 100, blockHash = "0xcheckpoint"),
-            mortalityBlocks = 64,
-            successDetectedAt = null,
-            status = status,
+        val id = txDao.insert(
+            DurableTxLocal(
+                id = DurableTxLocal.UNSAVED_ID,
+                domainId = "coinage",
+                operationGroupId = groupId,
+                txHash = "0x${nextTxHash++}",
+                checkpoint = BlockRefLocal(blockNumber = 100, blockHash = "0xcheckpoint"),
+                mortalityBlocks = 64,
+                successDetectedAt = null,
+                status = status,
+            )
         )
 
-        return dao.insertEntry(
-            entry = entry,
-            inputs = { id ->
-                inputs.mapIndexed { position, asset ->
-                    CoinageEntryInputLocal(
-                        entryId = id,
-                        position = position,
-                        assetKind = asset.kind,
-                        derivationIndex = asset.derivationIndex,
-                        onChainKey = asset.onChainKey,
-                    )
-                }
-            },
-            outputs = { id ->
-                outputs.mapIndexed { position, asset ->
-                    CoinageEntryOutputLocal(
-                        entryId = id,
-                        position = position,
-                        assetKind = asset.kind,
-                        derivationIndex = asset.derivationIndex,
-                        onChainKey = asset.onChainKey,
-                    )
-                }
-            },
+        dao.insertInputs(
+            inputs.mapIndexed { position, asset ->
+                CoinageEntryInputLocal(
+                    entryId = id,
+                    position = position,
+                    assetKind = asset.kind,
+                    installationId = asset.installation,
+                    derivationIndex = asset.derivationIndex,
+                    onChainKey = asset.onChainKey,
+                )
+            }
         )
+        dao.insertOutputs(
+            outputs.mapIndexed { position, asset ->
+                CoinageEntryOutputLocal(
+                    entryId = id,
+                    position = position,
+                    assetKind = asset.kind,
+                    installationId = asset.installation,
+                    derivationIndex = asset.derivationIndex,
+                    onChainKey = asset.onChainKey,
+                )
+            }
+        )
+
+        return id
     }
 
     private fun peerSentInput(entryId: Long, key: ByteArray) = CoinageEntryInputLocal(
         entryId = entryId,
         position = 0,
         assetKind = AssetKind.COIN,
+        installationId = null,
         derivationIndex = null,
         onChainKey = key,
     )
@@ -314,15 +330,21 @@ class CoinageEntryDaoTest {
     private fun handoff(asset: Asset, committed: Boolean = true) = CoinageHandoffLocal(
         onChainKey = asset.onChainKey,
         assetKind = asset.kind,
+        installationId = asset.installation,
         derivationIndex = asset.derivationIndex,
         committed = committed,
     )
 
-    private class Asset(val kind: AssetKind, val derivationIndex: Int) {
-        val onChainKey = byteArrayOf(kind.ordinal.toByte(), derivationIndex.toByte())
+    private class Asset(val kind: AssetKind, val derivationIndex: Int, val installation: ByteArray) {
+        val onChainKey = byteArrayOf(kind.ordinal.toByte(), derivationIndex.toByte(), installation.first())
     }
 
-    private fun coin(derivationIndex: Int) = Asset(AssetKind.COIN, derivationIndex)
+    private fun coin(derivationIndex: Int, installation: ByteArray = INSTALLATION) = Asset(AssetKind.COIN, derivationIndex, installation)
 
-    private fun voucher(derivationIndex: Int) = Asset(AssetKind.VOUCHER, derivationIndex)
+    private fun voucher(derivationIndex: Int) = Asset(AssetKind.VOUCHER, derivationIndex, INSTALLATION)
+
+    private companion object {
+        val INSTALLATION = ByteArray(32) { 1 }
+        val OTHER_INSTALLATION = ByteArray(32) { 2 }
+    }
 }

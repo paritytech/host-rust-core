@@ -15,21 +15,40 @@ interface MessageEncryption {
     fun decrypt(encrypted: ByteArray): ByteArray
 }
 
+const val CHACHA20_POLY1305_NONCE_LENGTH_BYTES = 12
+
 fun MessageEncryption.Companion.chaCha20Poly1305(key: AeadKey): MessageEncryption {
-    return ChaCha20Poly1305MessageEncryption(key)
+    return ChaCha20Poly1305MessageEncryption(key) {
+        ByteArray(CHACHA20_POLY1305_NONCE_LENGTH_BYTES).apply { SecureRandom().nextBytes(this) }
+    }
 }
 
-private class ChaCha20Poly1305MessageEncryption(key: AeadKey) : MessageEncryption {
+// The same sealed layout, with the nonce chosen by [nonceOf] from the message being sealed.
+//
+// Sound only when the nonce is a function of the plaintext under this key: then a repeated nonce means a
+// repeated message and an identical ciphertext. A nonce reused for two different messages breaks both.
+fun MessageEncryption.Companion.chaCha20Poly1305WithDerivedNonce(
+    key: AeadKey,
+    nonceOf: (plainMessage: ByteArray) -> ByteArray,
+): MessageEncryption {
+    return ChaCha20Poly1305MessageEncryption(key, nonceOf)
+}
+
+private class ChaCha20Poly1305MessageEncryption(
+    key: AeadKey,
+    private val nonceOf: (plainMessage: ByteArray) -> ByteArray,
+) : MessageEncryption {
     companion object {
         private const val TRANSFORMATION = "CHACHA20-POLY1305"
-        private const val NONCE_LENGTH_BYTES = 12
+        private const val NONCE_LENGTH_BYTES = CHACHA20_POLY1305_NONCE_LENGTH_BYTES
     }
 
     private val keySpec = SecretKeySpec(key.bytes.value, "ChaCha20")
 
     override fun encrypt(plainMessage: ByteArray): ByteArray {
         val cipher = cipher()
-        val nonce = ByteArray(NONCE_LENGTH_BYTES).apply { SecureRandom().nextBytes(this) }
+        val nonce = nonceOf(plainMessage)
+        require(nonce.size == NONCE_LENGTH_BYTES) { "Nonce must be $NONCE_LENGTH_BYTES bytes, got ${nonce.size}" }
 
         cipher.init(Cipher.ENCRYPT_MODE, keySpec, IvParameterSpec(nonce))
         val cipherText = cipher.doFinal(plainMessage)

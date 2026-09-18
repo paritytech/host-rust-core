@@ -7,12 +7,12 @@ import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageTransferDetection
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.CoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.ClaimReceivedCoinsUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageAssetValueUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.OnboardingUseCase
 import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionSignerSource
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -100,7 +100,7 @@ class RealExecuteTopUpUseCase @Inject constructor(
 
         return when {
             credited >= operation.amount ->
-                TopUpStatus.Claimed(finalized = entries.all { it.status == CoinageTransactionStatus.FINALIZED_SUCCESS })
+                TopUpStatus.Claimed(finalized = entries.all { it.status == DurableTxStatus.FINALIZED_SUCCESS })
 
             credited.isPositive() -> TopUpStatus.ClaimedPartially(credited)
 

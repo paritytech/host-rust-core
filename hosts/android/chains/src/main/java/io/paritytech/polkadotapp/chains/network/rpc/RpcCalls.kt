@@ -7,10 +7,10 @@ import io.novasama.substrate_sdk_android.wsrpc.executeAsync
 import io.novasama.substrate_sdk_android.wsrpc.mappers.nonNull
 import io.novasama.substrate_sdk_android.wsrpc.mappers.pojo
 import io.novasama.substrate_sdk_android.wsrpc.request.DeliveryType
+import io.novasama.substrate_sdk_android.wsrpc.request.runtime.RuntimeRequest
 import io.novasama.substrate_sdk_android.wsrpc.request.runtime.author.SubmitAndWatchExtrinsicRequest
 import io.novasama.substrate_sdk_android.wsrpc.request.runtime.author.SubmitExtrinsicRequest
 import io.novasama.substrate_sdk_android.wsrpc.request.runtime.chain.RuntimeVersion
-import io.novasama.substrate_sdk_android.wsrpc.request.runtime.state.StateCallRequest
 import io.novasama.substrate_sdk_android.wsrpc.subscription.response.SubscriptionChange
 import io.novasama.substrate_sdk_android.wsrpc.subscriptionFlow
 import io.paritytech.polkadotapp.chains.call.MultiChainRuntimeCallsApi
@@ -170,11 +170,11 @@ data class RpcCalls(
     }
 }
 
-suspend fun SocketService.stateCall(request: StateCallRequest): String? {
+suspend fun SocketService.stateCall(request: RuntimeRequest): String? {
     return executeAsync(request, mapper = pojo<String>()).result
 }
 
-suspend fun <T> SocketService.stateCall(request: StateCallRequest, returnType: DataType<T>): T {
+suspend fun <T> SocketService.stateCall(request: RuntimeRequest, returnType: DataType<T>): T {
     val rawResult = stateCall(request)
     requireNotNull(rawResult) {
         "Unexpected state call null response"

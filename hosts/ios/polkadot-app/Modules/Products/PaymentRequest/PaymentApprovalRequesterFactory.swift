@@ -2,9 +2,9 @@ import Foundation
 import Products
 
 enum PaymentApprovalRequesterFactory {
-    static func create(router: ProductsRouting) -> PaymentApprovalRequesting {
+    static func create(router: ProductsRouting, fundingProvider: FundingDomainProviding) -> PaymentApprovalRequesting {
         AutoAllowPaymentApprovalRequester(
-            allowedLabels: ProductAutoAllowList.labels,
+            allowedLabels: ProductAutoAllowList.labels(fundingProvider: fundingProvider),
             wrapped: PaymentApprovalRequester(router: router)
         )
     }

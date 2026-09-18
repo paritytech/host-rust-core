@@ -95,7 +95,10 @@ private extension RustRuntimeEnvironment {
     ) -> RustProductExecutionBridge.Dependencies {
         RustProductExecutionBridge.Dependencies(
             productId: productId,
-            permissionGuard: ProductPermissionGuard.create(router: routers.productsRouter),
+            permissionGuard: ProductPermissionGuard.create(
+                router: routers.productsRouter,
+                fundingProvider: FundingDomainProvider(hostProvider: hostProvider)
+            ),
             notificationScheduler: notificationScheduler,
             navigationRouter: routers.navigationRouter,
             chainRegistry: chainRegistry,

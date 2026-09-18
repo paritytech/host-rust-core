@@ -11,12 +11,12 @@ import Testing
 /// with alias UNKNOWN, which a two-valued flag could not express.
 @Suite("Voucher Presence")
 struct VoucherPresenceTest {
-    private let voucher: DerivationIndex = 5
-    private let coinOut: DerivationIndex = 2
+    private let voucher: CoinageKeyIndex = 5
+    private let coinOut: CoinageKeyIndex = 2
     private let denomination = 3
     private let ring = 9
     private let otherRing = 7
-    private let onboardingVoucher: DerivationIndex = 6
+    private let onboardingVoucher: CoinageKeyIndex = 6
 
     @Test("a healthy voucher in a ring is present and not unloaded")
     func healthyVoucherPresent() async throws {

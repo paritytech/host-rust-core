@@ -2,15 +2,29 @@ package io.paritytech.polkadotapp.feature_coinage_api.domain.model
 
 import io.paritytech.polkadotapp.bandersnatch_crypto.BandersnatchPublicKey
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingIndex
+import kotlin.time.Instant
 
-typealias RingVrfIndex = Int
 typealias RecyclerIndex = RingIndex
 
 data class RecyclerVoucher(
-    val ringVrfKeyIndex: RingVrfIndex,
+    val ringVrfKeyIndex: CoinageKeyIndex,
     val ringVrfPublicKey: BandersnatchPublicKey,
     val recyclerValue: ValueExponent,
     val location: Location,
+    /** Kept current by `VoucherLocationService` for as long as the voucher sits in a ring. */
+    val recyclerFungibility: RecyclerFungibility,
+    /**
+     * Frozen on the voucher's first transition into a recycler, or null before that has happened — the
+     * unloaded count it is measured against cannot be read until the ring index exists.
+     *
+     * Null rather than [RecyclerFungibility.NONE] for "not frozen yet", because a ring that was already
+     * drained when the voucher landed in it has a genuine maximum of zero, and that value must never be
+     * overwritten afterwards.
+     *
+     * The runtime can later *decrement* the unloaded count when an alias is marked unloaded, so
+     * [recyclerFungibility] may legitimately overtake this. Consumers clamp rather than treat it as a bug.
+     */
+    val maxRecyclerFungibility: RecyclerFungibility?,
 ) {
     sealed interface Location {
         data object Unknown : Location
@@ -22,6 +36,11 @@ data class RecyclerVoucher(
              * the anonymity this voucher really has, not how many keys the ring has been offered.
              */
             val recyclerMembers: Int,
+            /**
+             * When the app first confirmed this voucher in the ring root.
+             * Null until confirmed. Saved across restarts and reset on restore.
+             */
+            val enteredAt: Instant?,
         ) : Location
     }
 }

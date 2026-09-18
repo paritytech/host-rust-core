@@ -5,7 +5,7 @@ import Operation_iOS
 /// dedicated write-only mapper so a location write only ever touches these fields, never
 /// reading-then-overwriting the rest of the voucher.
 public struct VoucherLocationUpdate: Equatable, Sendable {
-    public let derivationIndex: DerivationIndex
+    public let derivationIndex: CoinageKeyIndex
     public let remoteState: Voucher.OnChainState
 
     /// The ring's fungibility as of this reading. `nil` leaves the stored value alone — the voucher
@@ -17,7 +17,7 @@ public struct VoucherLocationUpdate: Equatable, Sendable {
     public let maxRecyclerFungibility: UInt8?
 
     public init(
-        derivationIndex: DerivationIndex,
+        derivationIndex: CoinageKeyIndex,
         remoteState: Voucher.OnChainState,
         recyclerFungibility: UInt8? = nil,
         maxRecyclerFungibility: UInt8? = nil

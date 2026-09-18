@@ -13,7 +13,11 @@ dependencies {
     api(project(":feature:coinage:api"))
     api(project(":feature:transactions:api"))
     implementation(project(":feature:account:api"))
+    implementation(project(":feature:balances:api"))
     implementation(project(":feature:members:api"))
+    implementation(project(":feature:people:api"))
+    implementation(project(":feature:pgas:api"))
+    implementation(project(":feature:revive:api"))
     implementation(project(":feature:tokens:api"))
     implementation(project(":feature:transfers:api"))
     implementation(project(":feature:usernames:api"))
@@ -26,9 +30,17 @@ dependencies {
     ksp(libs.hilt.androidx.compiler)
 
     implementation(libs.androidx.work.runtime)
+    implementation(libs.web3j.abi)
 
+    // Test-only: the harness builds the durability engine directly, and the rules shim calls its ladder.
+    // Production coinage depends on the api alone, so this adds no impl-to-impl edge to the app graph.
+    testImplementation(project(":feature:transactions:impl"))
     testImplementation(project(":test-shared"))
     testImplementation(libs.mockk)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     testImplementation(libs.kotlinx.coroutines.test)
 }
 

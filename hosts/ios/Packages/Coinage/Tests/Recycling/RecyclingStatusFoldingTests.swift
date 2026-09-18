@@ -6,12 +6,12 @@ import DurableTransactions
 struct RecyclingStatusFoldingTests {
     private typealias Factory = ExternalPaymentTestFactory
 
-    private func entry(status: CoinageTxStatus, mintedIndex: UInt64) -> CoinageTxEntry {
+    private func entry(status: CoinageTxStatus, mintedIndex: CoinageKeyIndex) -> CoinageTxEntry {
         CoinageTxEntry(
             inputs: [],
             outputs: [.recyclerVoucher(
                 mintedIndex,
-                Data(repeating: UInt8(truncatingIfNeeded: mintedIndex), count: 32)
+                Data(repeating: UInt8(truncatingIfNeeded: mintedIndex.item), count: 32)
             )],
             groupId: "g",
             txHash: Data(repeating: 0xAB, count: 32),

@@ -10,9 +10,9 @@ import okhttp3.Response
 import java.io.IOException
 
 /**
- * Rewrites the host of requests targeting the [placeholderUrlName] host to the URL produced by
- * [resolveUrl] (typically read from remote config). Requests with a different host pass through
- * untouched, so this can safely live on a shared client.
+ * Rewrites requests targeting the [placeholderUrlName] host onto the URL produced by [resolveUrl]
+ * (typically read from remote config), keeping its path as a prefix. Requests with a different host
+ * pass through untouched, so this can safely live on a shared client.
  *
  * Install it as the first interceptor so logging and other interceptors observe the final URL. It
  * runs on OkHttp's background dispatcher, so resolving via [runBlocking] is safe here. The resolved
@@ -42,6 +42,7 @@ class OverrideBaseUrlInterceptor(
             .scheme(baseUrl.scheme)
             .host(baseUrl.host)
             .port(baseUrl.port)
+            .encodedPath(baseUrl.encodedPath.removeSuffix("/") + request.url.encodedPath)
             .build()
 
         return chain.proceed(request.newBuilder().url(rewrittenUrl).build())

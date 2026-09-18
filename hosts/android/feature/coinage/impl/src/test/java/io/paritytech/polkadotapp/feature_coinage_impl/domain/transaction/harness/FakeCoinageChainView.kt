@@ -7,16 +7,18 @@ import io.paritytech.polkadotapp.chains.network.binding.BlockNumber
 import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.domain.model.DataByteArray
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CheckpointBlock
 import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainAliasState
 import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainCoinInfo
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageChainView
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageChainViewFactory
+import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageStateReader
+import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageStateReaderFactory
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.RecyclerAliasKey
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.TransactionSearchResult
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.searchRange
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingPosition
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.CheckpointBlock
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainView
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainViewFactory
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TransactionSearchResult
 import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionHash
+import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.searchRange
 import io.paritytech.polkadotapp.test_shared.chain.FakeBlock
 import io.paritytech.polkadotapp.test_shared.chain.FakeChain
 import kotlinx.coroutines.channels.BufferOverflow
@@ -27,15 +29,15 @@ import java.math.BigInteger
 /**
  * Drives a [FakeChain] and hands out views over it, standing in for the chain half of the subsystem.
  *
- * Every read honours the [CoinageChainView] contract: a successful result carries every requested key, with
- * a null value where the chain holds nothing.
+ * Every read honours the batched-read contract: a successful result carries every requested key, with a
+ * null value where the chain holds nothing.
  *
  * Head emissions are ticks: they carry a number, and every read goes back through a freshly pinned view.
  * Producing a block or finalizing announces both heads, which is what makes the recovery loop run.
  */
 class FakeCoinageChainViewFactory(
     val chain: FakeChain<CoinageChainState>,
-) : CoinageChainViewFactory {
+) : PinnedChainViewFactory, CoinageStateReaderFactory {
     var faults: ChainReadFaults = ChainReadFaults.NONE
 
     private val finalizedHeads = MutableSharedFlow<BlockNumber>(
@@ -54,7 +56,7 @@ class FakeCoinageChainViewFactory(
     var pins = 0
         private set
 
-    override suspend fun pin(): Result<CoinageChainView> {
+    override suspend fun pin(chainId: String): Result<PinnedChainView> {
         pins++
 
         return if (faults.pinFails) {
@@ -64,9 +66,16 @@ class FakeCoinageChainViewFactory(
         }
     }
 
-    override fun finalizedHeads(): Flow<BlockNumber> = finalizedHeads
+    /**
+     * The reader reads the same chain the view was pinned over, so a scenario's fault injection covers both
+     * halves without having to know they are separate objects.
+     */
+    override suspend fun create(view: PinnedChainView): CoinageStateReader =
+        FakeCoinageChainView(chain, faults, chain.finalizedHead, chain.bestHead)
 
-    override fun bestHeads(): Flow<BlockNumber> = bestHeads
+    override fun finalizedHeads(chainId: String): Flow<BlockNumber> = finalizedHeads
+
+    override fun bestHeads(chainId: String): Flow<BlockNumber> = bestHeads
 
     fun produceBlock(body: List<TransactionHash> = emptyList(), mutate: (CoinageChainState) -> CoinageChainState = { it }) =
         chain.produceBlock(body, mutate).also { announce() }
@@ -92,7 +101,7 @@ private class FakeCoinageChainView(
     private val faults: ChainReadFaults,
     finalized: FakeBlock<CoinageChainState>,
     best: FakeBlock<CoinageChainState>,
-) : CoinageChainView {
+) : PinnedChainView, CoinageStateReader {
     override val finalizedHead: CheckpointBlock = finalized.checkpoint()
 
     override val bestHead: CheckpointBlock = best.checkpoint()

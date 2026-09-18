@@ -7,6 +7,8 @@ import Products
 protocol FundingDomainProviding: Sendable {
     func fundingPage() async throws -> ProductPage
     func offrampPage() async throws -> ProductPage
+    /// Product labels of both entry pages, read synchronously from remote config.
+    func fundingLabels() -> Set<String>
 }
 
 enum FundingDomainError: Error {
@@ -32,6 +34,14 @@ final class FundingDomainProvider: FundingDomainProviding, @unchecked Sendable {
     func offrampPage() async throws -> ProductPage {
         try await page(for: remoteConfig()?.offrampUrl)
     }
+
+    func fundingLabels() -> Set<String> {
+        let config = remoteConfig()
+        let pages = [config?.fundingUrl, config?.offrampUrl].compactMap { destination in
+            destination.flatMap { hostProvider.page(navigationDestination: $0) }
+        }
+        return Set(pages.map(\.host.name))
+    }
 }
 
 private extension FundingDomainProvider {
@@ -41,10 +51,7 @@ private extension FundingDomainProvider {
             throw FundingDomainError.unavailable
         }
 
-        let host = URL(string: destination)?.host() ?? destination
-        guard try await hostProvider.resolveHost(rawString: host) != nil,
-              let page = hostProvider.page(navigationDestination: destination)
-        else {
+        guard let page = hostProvider.page(navigationDestination: destination) else {
             throw FundingDomainError.unavailable
         }
 

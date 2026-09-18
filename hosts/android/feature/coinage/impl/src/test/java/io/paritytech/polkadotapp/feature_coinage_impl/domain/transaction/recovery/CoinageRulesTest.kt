@@ -5,13 +5,17 @@ import io.paritytech.polkadotapp.common.domain.model.DataByteArray
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CheckpointBlock
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageAssetKind
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageChainView
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerEntry
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.TransactionSearchResult
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxEntry
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainView
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TransactionSearchResult
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.RuleOutcome
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.evaluateLadder
 import io.paritytech.polkadotapp.test_shared.anyLong
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.runBlocking
@@ -26,6 +30,13 @@ private const val CHECKPOINT_NUMBER = 100L
 private const val MORTALITY = 64L
 private const val MORTALITY_END = CHECKPOINT_NUMBER + MORTALITY
 
+/**
+ * The ladder as coinage drives it: the engine's rules over coinage's evidence.
+ *
+ * Production reaches this composition through the recovery pass; [evaluate] below is the same one, narrowed
+ * to a single transaction so a case can hand it evidence directly. The cases are unchanged from when the
+ * ladder lived in this module, which is what makes them evidence that moving it changed nothing.
+ */
 class CoinageRulesTest {
     // ---- Rule 0 — recorded inclusion ----
 
@@ -38,7 +49,7 @@ class CoinageRulesTest {
             evidence(finalizedNumber = 130, recordedBlockStillCanonical = true),
         )
 
-        assertDecided(CoinageTransactionStatus.FINALIZED_SUCCESS, outcome)
+        assertDecided(DurableTxStatus.FINALIZED_SUCCESS, outcome)
     }
 
     @Test
@@ -50,7 +61,7 @@ class CoinageRulesTest {
             evidence(finalizedNumber = 130, recordedBlockStillCanonical = true),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING_SUCCESS, outcome)
+        assertDecided(DurableTxStatus.PENDING_SUCCESS, outcome)
     }
 
     @Test
@@ -66,7 +77,7 @@ class CoinageRulesTest {
             ),
         )
 
-        val decided = assertDecided(CoinageTransactionStatus.PENDING_SUCCESS, outcome)
+        val decided = assertDecided(DurableTxStatus.PENDING_SUCCESS, outcome)
         assertEquals(BEST_BLOCK, decided.verdict.successDetectedAt)
     }
 
@@ -79,7 +90,7 @@ class CoinageRulesTest {
             evidence(finalizedNumber = 130, recordedBlockStillCanonical = false),
         )
 
-        val decided = assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        val decided = assertDecided(DurableTxStatus.PENDING, outcome)
         assertEquals(null, decided.verdict.successDetectedAt)
     }
 
@@ -103,7 +114,7 @@ class CoinageRulesTest {
             evidence(presentAtFinalized = setOf(coinOut), presentAtBest = setOf(coinOut)),
         )
 
-        assertDecided(CoinageTransactionStatus.FINALIZED_SUCCESS, outcome)
+        assertDecided(DurableTxStatus.FINALIZED_SUCCESS, outcome)
     }
 
     @Test
@@ -112,7 +123,7 @@ class CoinageRulesTest {
 
         val outcome = evaluate(entry, evidence(presentAtBest = setOf(coinOut)))
 
-        val decided = assertDecided(CoinageTransactionStatus.PENDING_SUCCESS, outcome)
+        val decided = assertDecided(DurableTxStatus.PENDING_SUCCESS, outcome)
         assertEquals(BEST_BLOCK, decided.verdict.successDetectedAt)
     }
 
@@ -122,7 +133,7 @@ class CoinageRulesTest {
 
         val outcome = evaluate(entry, evidence(unloadedAtFinalized = setOf(voucherIn)))
 
-        assertDecided(CoinageTransactionStatus.FINALIZED_SUCCESS, outcome)
+        assertDecided(DurableTxStatus.FINALIZED_SUCCESS, outcome)
     }
 
     // ---- Rules 3 and 4 — mortality expired ----
@@ -136,7 +147,7 @@ class CoinageRulesTest {
             evidence(finalizedNumber = MORTALITY_END + 1, absentAtFinalized = setOf(coinOut)),
         )
 
-        assertDecided(CoinageTransactionStatus.FAILURE, outcome)
+        assertDecided(DurableTxStatus.FAILURE, outcome)
     }
 
     @Test
@@ -148,7 +159,7 @@ class CoinageRulesTest {
             evidence(finalizedNumber = MORTALITY_END, absentAtFinalized = setOf(coinOut), absentAtBest = setOf(coinOut)),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
     }
 
     @Test
@@ -165,7 +176,7 @@ class CoinageRulesTest {
             ),
         )
 
-        assertDecided(CoinageTransactionStatus.FAILURE, outcome)
+        assertDecided(DurableTxStatus.FAILURE, outcome)
     }
 
     @Test
@@ -182,7 +193,7 @@ class CoinageRulesTest {
             ),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
     }
 
     // ---- Rules 5 and 6 — our own coins gone ----
@@ -198,7 +209,7 @@ class CoinageRulesTest {
             dag(minter, entry),
         )
 
-        assertDecided(CoinageTransactionStatus.FINALIZED_SUCCESS, outcome)
+        assertDecided(DurableTxStatus.FINALIZED_SUCCESS, outcome)
     }
 
     @Test
@@ -218,7 +229,7 @@ class CoinageRulesTest {
             dag(minter, entry),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
     }
 
     @Test
@@ -233,7 +244,7 @@ class CoinageRulesTest {
         )
 
         // Falls through to the search rather than reading absence as consumption.
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
         assertReachedSearch()
     }
 
@@ -248,7 +259,7 @@ class CoinageRulesTest {
             dag(minter, entry),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
         assertReachedSearch()
     }
 
@@ -263,7 +274,7 @@ class CoinageRulesTest {
             dag(minter, entry),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
         assertReachedSearch()
     }
 
@@ -282,7 +293,7 @@ class CoinageRulesTest {
             search = TransactionSearchResult.Found(block(120), ExtrinsicOutcome.SUCCESS),
         )
 
-        assertDecided(CoinageTransactionStatus.FINALIZED_SUCCESS, outcome)
+        assertDecided(DurableTxStatus.FINALIZED_SUCCESS, outcome)
     }
 
     @Test
@@ -298,7 +309,7 @@ class CoinageRulesTest {
             search = TransactionSearchResult.Found(block(120), ExtrinsicOutcome.FAILURE),
         )
 
-        assertDecided(CoinageTransactionStatus.FAILURE, outcome)
+        assertDecided(DurableTxStatus.FAILURE, outcome)
     }
 
     @Test
@@ -314,7 +325,7 @@ class CoinageRulesTest {
             search = TransactionSearchResult.Found(block(120), outcome = null),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
     }
 
     @Test
@@ -330,7 +341,7 @@ class CoinageRulesTest {
             search = TransactionSearchResult.NotFound(wholeRangeRead = true),
         )
 
-        assertDecided(CoinageTransactionStatus.FAILURE, outcome)
+        assertDecided(DurableTxStatus.FAILURE, outcome)
     }
 
     @Test
@@ -346,7 +357,7 @@ class CoinageRulesTest {
             search = TransactionSearchResult.NotFound(wholeRangeRead = false),
         )
 
-        assertDecided(CoinageTransactionStatus.PENDING, outcome)
+        assertDecided(DurableTxStatus.PENDING, outcome)
     }
 
     // ---- fixtures ----
@@ -357,16 +368,24 @@ class CoinageRulesTest {
     private val receivedIn = received(4)
 
     /** The ladder consults the view for one thing only: the body search of its last rule. */
-    private val chainView: CoinageChainView = mock()
+    private val chainView: PinnedChainView = mock()
 
     private suspend fun evaluate(
         entry: LedgerEntry,
-        evidence: ChainEvidence,
+        evidence: TestEvidence,
         dag: CoinageEntryDag = dag(entry),
         search: TransactionSearchResult = TransactionSearchResult.NotFound(wholeRangeRead = false),
     ): RuleOutcome {
         whenever(chainView.searchForTransaction(anyLong(), anyLong(), anyString())).thenReturn(search)
-        return evaluateRules(entry, dag, evidence, chainView)
+        whenever(chainView.finalizedHead).thenReturn(evidence.evidence.finalized)
+        whenever(chainView.bestHead).thenReturn(evidence.evidence.best)
+
+        return evaluateLadder(
+            tx = entry.entry,
+            scope = CoinagePassScope(dag, mapOf(entry.id to evidence.evidence)),
+            view = chainView,
+            recordedStillCanonical = evidence.recordedStillCanonical,
+        )
     }
 
     /** The ladder reached the last rule instead of deciding on state alone. */
@@ -375,7 +394,7 @@ class CoinageRulesTest {
     }
 
     private fun assertDecided(
-        expectedStatus: CoinageTransactionStatus,
+        expectedStatus: DurableTxStatus,
         outcome: RuleOutcome,
     ): RuleOutcome.Decided {
         assertTrue("expected a decision but was $outcome", outcome is RuleOutcome.Decided)
@@ -393,7 +412,7 @@ class CoinageRulesTest {
     private fun finalizedMinter(asset: LedgerAsset, checkpointNumber: Long = 0) = entry(
         id = MINTER_ID,
         outputs = listOf(asset),
-        status = CoinageTransactionStatus.FINALIZED_SUCCESS,
+        status = DurableTxStatus.FINALIZED_SUCCESS,
         checkpointNumber = checkpointNumber,
     )
 
@@ -401,17 +420,20 @@ class CoinageRulesTest {
         id: Long = ENTRY_ID,
         inputs: List<LedgerAsset> = emptyList(),
         outputs: List<LedgerAsset> = emptyList(),
-        status: CoinageTransactionStatus = CoinageTransactionStatus.PENDING,
+        status: DurableTxStatus = DurableTxStatus.PENDING,
         successDetectedAt: CheckpointBlock? = null,
         checkpointNumber: Long = CHECKPOINT_NUMBER,
     ) = LedgerEntry(
-        id = CoinageTransactionId(id),
-        groupId = null,
-        txHash = "0xtx$id",
-        checkpoint = CheckpointBlock(checkpointNumber, "0xcheckpoint"),
-        mortalityBlocks = MORTALITY,
-        successDetectedAt = successDetectedAt,
-        status = status,
+        entry = DurableTxEntry(
+            id = CoinageTransactionId(id),
+            domainId = io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.COINAGE_DOMAIN,
+            groupId = null,
+            txHash = "0xtx$id",
+            checkpoint = CheckpointBlock(checkpointNumber, "0xcheckpoint"),
+            mortalityBlocks = MORTALITY,
+            successDetectedAt = successDetectedAt,
+            status = status,
+        ),
         inputs = inputs,
         outputs = outputs,
     )
@@ -426,9 +448,9 @@ private fun block(number: Long) = CheckpointBlock(number, "0xblock$number")
 
 private fun key(tag: Int) = byteArrayOf(tag.toByte()).toDataByteArray()
 
-private fun coin(tag: Int) = LedgerAsset(CoinageAssetKind.COIN, OwnAsset.Coin(tag), key(tag))
+private fun coin(tag: Int) = LedgerAsset(CoinageAssetKind.COIN, OwnAsset.Coin(testKey(tag)), key(tag))
 
-private fun voucher(tag: Int) = LedgerAsset(CoinageAssetKind.VOUCHER, OwnAsset.Voucher(tag), key(tag))
+private fun voucher(tag: Int) = LedgerAsset(CoinageAssetKind.VOUCHER, OwnAsset.Voucher(testKey(tag)), key(tag))
 
 /** A coin whose key a peer sent us: no local identity, only an on-chain one. */
 private fun received(tag: Int) = LedgerAsset(CoinageAssetKind.COIN, null, key(tag))
@@ -446,7 +468,7 @@ private fun evidence(
     unloadedAtFinalized: Set<LedgerAsset> = emptySet(),
     unreadable: Set<LedgerAsset> = emptySet(),
     recordedBlockStillCanonical: Boolean? = null,
-): ChainEvidence {
+): TestEvidence {
     fun presence(present: Set<LedgerAsset>, absent: Set<LedgerAsset>) =
         (present.map { it.publicKey to ChainPresence.PRESENT } + absent.map { it.publicKey to ChainPresence.ABSENT })
             .filterNot { (key, _) -> key in unreadable.map { it.publicKey } }
@@ -454,13 +476,26 @@ private fun evidence(
 
     val aliases = unloadedAtFinalized.associate { it.publicKey to AliasRead.UNLOADED }
 
-    return ChainEvidence(
-        finalized = CheckpointBlock(finalizedNumber, "0xfinalized"),
-        best = BEST_BLOCK,
-        presenceAtFinalized = presence(presentAtFinalized, absentAtFinalized),
-        presenceAtBest = presence(presentAtBest, absentAtBest),
-        aliasAtFinalized = aliases,
-        aliasAtBest = aliases,
-        recordedBlockStillCanonical = recordedBlockStillCanonical,
+    return TestEvidence(
+        evidence = ChainEvidence(
+            finalized = CheckpointBlock(finalizedNumber, "0xfinalized"),
+            best = BEST_BLOCK,
+            presenceAtFinalized = presence(presentAtFinalized, absentAtFinalized),
+            presenceAtBest = presence(presentAtBest, absentAtBest),
+            aliasAtFinalized = aliases,
+            aliasAtBest = aliases,
+        ),
+        recordedStillCanonical = recordedBlockStillCanonical,
     )
 }
+
+/**
+ * What the rules read, plus the one fact that left [ChainEvidence] when the pass took over resolving it.
+ *
+ * Bundled so the cases still write `evaluate(entry, evidence(...))` and still name
+ * `recordedBlockStillCanonical` where they set it.
+ */
+private class TestEvidence(
+    val evidence: ChainEvidence,
+    val recordedStillCanonical: Boolean?,
+)

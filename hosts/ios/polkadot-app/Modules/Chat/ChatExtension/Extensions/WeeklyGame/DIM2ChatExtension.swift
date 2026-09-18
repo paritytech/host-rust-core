@@ -94,8 +94,8 @@ final class DIM2ChatExtension: ChatExtensionBot, ChatExtensionDelegateProvidable
 
 extension DIM2ChatExtension {
     static let welcomeInterMessagePause: Duration = .seconds(2)
-    static let welcome1MarkerKey = "welcome1:\(DIM2ChatExtension.identifier)"
-    static let welcomeIndexKey = "welcomeIndex:\(DIM2ChatExtension.identifier)"
+    static let welcome1MarkerKey = "welcome1.v3:\(DIM2ChatExtension.identifier)"
+    static let welcomeIndexKey = "welcomeIndex.v3:\(DIM2ChatExtension.identifier)"
 
     static var welcome1Content: Chat.LocalMessage.Content {
         #if FEATURE_PRIZES

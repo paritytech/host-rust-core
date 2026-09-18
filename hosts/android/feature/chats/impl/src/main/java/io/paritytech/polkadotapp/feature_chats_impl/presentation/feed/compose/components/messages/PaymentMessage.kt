@@ -74,7 +74,12 @@ fun PaymentMessage(
     ) {
         val isIncoming = message.direction == ChatMessageUiModel.Direction.INCOMING
         val headerText = if (isIncoming) {
-            stringResource(RCommon.string.chat_message_payment_incoming, username)
+            val incomingRes = if (message.paymentStatus.isClaimInFlight) {
+                RCommon.string.chat_message_payment_incoming_sending
+            } else {
+                RCommon.string.chat_message_payment_incoming
+            }
+            stringResource(incomingRes, username)
         } else {
             stringResource(RCommon.string.chat_message_payment_outgoing)
         }

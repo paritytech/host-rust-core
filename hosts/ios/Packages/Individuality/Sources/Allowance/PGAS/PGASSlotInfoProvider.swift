@@ -74,10 +74,8 @@ private extension PGASSlotInfoProvider {
             liteCollectionId: PeopleLitePallet.membersIdentifier,
             fullVrfManager: keyResolver.fullKeyManager,
             fullCollectionId: PeoplePallet.membersIdentifier,
-            memberStatusChecker: MembershipStatusChecker(
-                connection: peopleConnection,
-                runtimeCodingService: peopleRuntimeProvider
-            )
+            connection: peopleConnection,
+            runtimeCodingService: peopleRuntimeProvider
         ).pickPersonOrigin()
 
         let codingFactory = try await runtimeProvider.fetchCoderFactoryOperation().asyncExecute()

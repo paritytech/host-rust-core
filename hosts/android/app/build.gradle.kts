@@ -158,8 +158,6 @@ dependencies {
     implementation(project(":feature:connection-status:api"))
     implementation(project(":feature:connection-status:impl"))
     implementation(project(":feature:revive:impl"))
-    implementation(project(":feature:web3summit:api"))
-    implementation(project(":feature:web3summit:impl"))
     implementation(project(":feature:w3s-pay:impl"))
     // Endregion features
 

@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_coinage_api.domain.recycling
 import io.paritytech.polkadotapp.common.utils.Fraction
 import io.paritytech.polkadotapp.common.utils.Fraction.Companion.percents
 import kotlin.math.max
+import kotlin.time.Duration.Companion.minutes
 
 /** The privacy strategies offered to the user. */
 enum class RecyclingStrategyType {
@@ -21,7 +22,7 @@ val RecyclingStrategyType.params: RecyclingParams
         RecyclingStrategyType.MIN_PRIVACY -> RecyclingParams(
             maxUnavailableBalance = Fraction.ZERO,
             minRecyclingAge = MinRecyclingAge.UseChainLimit(divisor = 1),
-            requiredRingFill = Fraction.ZERO,
+            voucherReadiness = VoucherReadiness(requiredRingFill = Fraction.ZERO, memberAndAgeRequirements = null),
             // Nothing is ever held back under this strategy, so the offer has nothing to apply to.
             allowsConfirmedSpend = true,
         )
@@ -29,14 +30,14 @@ val RecyclingStrategyType.params: RecyclingParams
         RecyclingStrategyType.BALANCED -> RecyclingParams(
             maxUnavailableBalance = BALANCED_UNAVAILABLE_BALANCE,
             minRecyclingAge = MinRecyclingAge.UseChainLimit(divisor = BALANCED_AGE_DIVISOR),
-            requiredRingFill = BALANCED_RING_FILL,
+            voucherReadiness = VoucherReadiness(requiredRingFill = BALANCED_RING_FILL, memberAndAgeRequirements = MEMBER_AND_AGE_REQUIREMENTS),
             allowsConfirmedSpend = true,
         )
 
         RecyclingStrategyType.MAX_PRIVACY -> RecyclingParams(
             maxUnavailableBalance = Fraction.FULL,
             minRecyclingAge = MinRecyclingAge.Override(MIN_RECYCLABLE_AGE),
-            requiredRingFill = Fraction.FULL,
+            voucherReadiness = VoucherReadiness(requiredRingFill = MAX_PRIVACY_RING_FILL, memberAndAgeRequirements = MEMBER_AND_AGE_REQUIREMENTS),
             allowsConfirmedSpend = false,
         )
     }
@@ -57,4 +58,8 @@ private const val BALANCED_AGE_DIVISOR = 3
 
 private val BALANCED_UNAVAILABLE_BALANCE = 20.percents
 
-private val BALANCED_RING_FILL = 50.percents
+private val BALANCED_RING_FILL = 20.percents
+
+private val MAX_PRIVACY_RING_FILL = 90.percents
+
+private val MEMBER_AND_AGE_REQUIREMENTS = MemberAndAgeRequirements(minimumMembers = 32, delay = 10.minutes)

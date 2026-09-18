@@ -11,6 +11,9 @@ public protocol OriginCreating {
     /// Transaction must be signed by the coin's keypair.
     func createAsCoinOrigin(for wallet: WalletManaging) throws -> ExtrinsicOriginDefining
 
+    /// A plain signed origin for `wallet` on `chainId` — the data store account paying its own fee.
+    func createSignedOrigin(for wallet: WalletManaging, chainId: ChainId) async throws -> ExtrinsicOriginDefining
+
     /// Creates an InfallibleUnpaidSigned origin.
     ///
     /// Used for operations that require no fee payment and no ring proof —

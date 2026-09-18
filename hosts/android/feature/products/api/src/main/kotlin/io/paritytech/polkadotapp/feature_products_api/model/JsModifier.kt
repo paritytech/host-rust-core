@@ -72,4 +72,17 @@ sealed interface JsModifier {
     data class Clip(
         val shape: JsShape,
     ) : JsModifier
+
+    /** 0 is transparent, 255 is opaque. */
+    @Serializable
+    @SerialName("opacity")
+    data class Opacity(
+        val alpha: Int,
+    ) : JsModifier
+
+    @Serializable
+    @SerialName("blendingMode")
+    data class BlendingMode(
+        val mode: JsBlendingMode,
+    ) : JsModifier
 }

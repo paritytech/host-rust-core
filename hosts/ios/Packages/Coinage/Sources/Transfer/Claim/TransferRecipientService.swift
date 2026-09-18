@@ -434,7 +434,6 @@ private extension TransferRecipientService {
     struct PreparedEntry {
         let index: Int
         let privateKey: Data
-        let senderPublicKey: Data
         let sourceCoin: OnChainCoin
         let destinationCoin: Coin
     }
@@ -512,7 +511,6 @@ private extension TransferRecipientService {
                 prepared.append(PreparedEntry(
                     index: entry.index,
                     privateKey: entry.privateKey,
-                    senderPublicKey: entry.publicKey,
                     sourceCoin: sourceCoin,
                     destinationCoin: newCoin
                 ))
@@ -536,7 +534,6 @@ private extension TransferRecipientService {
                     do {
                         let coin = try await transferSubmitter.submitTransfer(
                             senderPrivateKey: entry.privateKey,
-                            senderPublicKey: entry.senderPublicKey,
                             destinationCoin: entry.destinationCoin
                         )
                         logger?.debug("Transfer extrinsic succeeded for entry \(entry.index)")

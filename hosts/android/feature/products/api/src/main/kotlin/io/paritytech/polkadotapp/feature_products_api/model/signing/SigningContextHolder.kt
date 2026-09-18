@@ -13,7 +13,15 @@ class SigningContextHolder @Inject constructor() {
 
     fun get(): SigningContext? = context
 
-    fun clear() {
-        context = null
+    /**
+     * Clears the holder only while it still belongs to [owner]. A signing
+     * screen's ViewModel is cleared after its dismiss animation, by which time
+     * the holder may already carry the next request's context; an
+     * unconditional clear would wipe it and crash that screen on recreation.
+     */
+    fun clear(owner: SigningContext) {
+        if (context === owner) {
+            context = null
+        }
     }
 }

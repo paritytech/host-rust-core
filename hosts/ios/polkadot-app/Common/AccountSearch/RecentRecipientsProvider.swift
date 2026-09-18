@@ -17,7 +17,7 @@ final class RecentRecipientsProvider: @unchecked Sendable {
         service: RecentContactsManaging,
         chainFormat: ChainFormat,
         chainAssetId: ChainAssetId,
-        logger: LoggerProtocol = Logger.shared
+        logger: LoggerProtocol
     ) {
         self.service = service
         self.chainFormat = chainFormat

@@ -25,7 +25,7 @@ struct ExternalPaymentPlannerTests {
         )
     }
 
-    private func indices(_ vouchers: [TrackedVoucher]) -> [DerivationIndex] {
+    private func indices(_ vouchers: [TrackedVoucher]) -> [CoinageKeyIndex] {
         vouchers.map(\.voucher.derivationIndex)
     }
 

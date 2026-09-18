@@ -4,7 +4,8 @@ sealed interface PocketScreenState {
     val contentKey: String
 
     data class List(
-        val collectiblesAvailable: Boolean
+        val collectiblesAvailable: Boolean,
+        val removalCandidate: PocketCardUiModel.ProductCard?
     ) : PocketScreenState {
         override val contentKey: String get() = "list"
     }

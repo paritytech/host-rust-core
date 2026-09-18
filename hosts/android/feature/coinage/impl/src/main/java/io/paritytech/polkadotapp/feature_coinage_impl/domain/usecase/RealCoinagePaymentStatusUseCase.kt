@@ -2,14 +2,17 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase
 
 import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.hasEverBeenOnChain
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageAssetsUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinagePaymentState
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinagePaymentStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinagePaymentStatusUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TrackedCoin
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageChainViewFactory
+import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageStateReaderFactory
+import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
+import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainViewFactory
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -27,7 +30,9 @@ import javax.inject.Inject
  */
 class RealCoinagePaymentStatusUseCase @Inject constructor(
     private val coinageAssetsUseCase: CoinageAssetsUseCase,
-    private val chainViewFactory: CoinageChainViewFactory,
+    private val chainViewFactory: PinnedChainViewFactory,
+    private val stateReaderFactory: CoinageStateReaderFactory,
+    @param:DigitalDollarChainAssetProvider private val chainAssetProvider: ChainAssetProvider,
 ) : CoinagePaymentStatusUseCase {
     override fun subscribeStatuses(coins: List<AccountId>): Flow<Map<AccountId, CoinagePaymentState>> {
         return coinageAssetsUseCase.subscribeCoinsBy(coins).map { tracked ->
@@ -50,8 +55,9 @@ class RealCoinagePaymentStatusUseCase @Inject constructor(
 
         if (minted.isEmpty()) return emptyMap()
 
-        val view = chainViewFactory.pin().getOrNull() ?: return emptyMap()
-        val coins = view.coinsAt(view.finalizedHead.blockHash, minted).getOrNull() ?: return emptyMap()
+        val view = chainViewFactory.pin(chainAssetProvider.chainId()).getOrNull() ?: return emptyMap()
+        val reader = runCatching { stateReaderFactory.create(view) }.getOrNull() ?: return emptyMap()
+        val coins = reader.coinsAt(view.finalizedHead.blockHash, minted).getOrNull() ?: return emptyMap()
 
         return minted.associateWith { coins[it] != null }
     }
@@ -63,7 +69,7 @@ private fun TrackedCoin.paymentStatus(atFinalized: Map<AccountId, Boolean>): Coi
     -> CoinagePaymentStatus.Claimed(finalized = true)
 
     // Never minted: the key the peer holds controls nothing, and nothing will change that.
-    state.minterStatus == CoinageTransactionStatus.FAILURE -> CoinagePaymentStatus.Failed
+    state.minterStatus == DurableTxStatus.FAILURE -> CoinagePaymentStatus.Failed
 
     coin.isOnChain -> CoinagePaymentStatus.AwaitingClaim
 

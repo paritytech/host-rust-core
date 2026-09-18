@@ -101,7 +101,7 @@ extension CoreDataMapperTests {
             let result = try await roundTrip(
                 Coin(
                     exponent: 4,
-                    derivationIndex: DerivationIndex(600 + UInt64(payload)),
+                    derivationIndex: CoinageKeyIndex(installation: .test, item: 600 + UInt64(payload)),
                     age: nil,
                     hops: hops,
                     publicKey: key(0x14)
@@ -128,7 +128,7 @@ extension CoreDataMapperTests {
             let result = try await roundTrip(
                 Coin(
                     exponent: 4,
-                    derivationIndex: DerivationIndex(800 + UInt64(value)),
+                    derivationIndex: CoinageKeyIndex(installation: .test, item: 800 + UInt64(value)),
                     age: nil,
                     recyclerFungibility: value,
                     publicKey: key(0x16)

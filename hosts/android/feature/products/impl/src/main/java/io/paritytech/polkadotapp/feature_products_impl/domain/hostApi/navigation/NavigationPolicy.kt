@@ -13,6 +13,12 @@ enum class NavigationResult { INTERCEPTED_BY_POLICY, DELEGATE_TO_WEBVIEW }
  *
  * Receives a pre-classified [DotNsNavigationType] from the WebViewClient caller.
  * Each implementation only handles the dispatch logic, not the classification.
+ *
+ * [InlineNavigation] and [HostApiNavigation] look alike but cover different
+ * sources. Inline is WebView-initiated, so a same-domain hop can be handed back
+ * to the WebView that raised it. Host API is the product calling `navigateTo`,
+ * where there is no navigation event to delegate to and the load has to be
+ * issued manually. Both runtimes install the same pair.
  */
 sealed interface NavigationPolicy {
     fun handleNavigation(type: DotNsNavigationType, destination: Uri): NavigationResult

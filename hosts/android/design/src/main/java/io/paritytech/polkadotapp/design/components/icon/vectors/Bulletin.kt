@@ -16,19 +16,19 @@ import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 val NovaIcons.Bulletin: ImageVector by lazy(LazyThreadSafetyMode.NONE) {
     ImageVector.Builder(
         name = "Bulletin",
-        defaultWidth = 9.dp,
-        defaultHeight = 8.dp,
-        viewportWidth = 9f,
-        viewportHeight = 8f
+        defaultWidth = 10.dp,
+        defaultHeight = 10.dp,
+        viewportWidth = 10f,
+        viewportHeight = 10f
     ).apply {
         path(fill = SolidColor(Color(0xFF000000))) {
-            moveTo(0f, 0f)
-            horizontalLineTo(2.5896f)
-            lineTo(3.6409f, 1.2846f)
-            horizontalLineTo(8.1387f)
-            verticalLineTo(7.0488f)
-            horizontalLineTo(0f)
-            verticalLineTo(0f)
+            moveTo(0.931f, 1.476f)
+            horizontalLineTo(3.52f)
+            lineTo(4.572f, 2.76f)
+            horizontalLineTo(9.069f)
+            verticalLineTo(8.524f)
+            horizontalLineTo(0.931f)
+            verticalLineTo(1.476f)
             close()
         }
     }.build()

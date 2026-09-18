@@ -101,11 +101,11 @@ final class DurabilityRegistrationConcurrencyTests {
         for _ in 0 ..< 50 {
             let facade = UserDataStorageTestFacade()
             let store = CoinageCoreDataLedger(storageFacade: facade)
-            try await persistCoins((0 ..< 10).map(UInt64.init) + (100 ..< 110).map(UInt64.init), facade: facade)
+            try await persistCoins((0 ..< 10).map(keyIndex) + (100 ..< 110).map(keyIndex), facade: facade)
 
             let entries = (0 ..< 10).map { i -> CoinageTxEntry in
-                let inputIndex = UInt64(i)
-                let outputIndex = UInt64(100 + i)
+                let inputIndex = keyIndex(i)
+                let outputIndex = keyIndex(100 + i)
                 return CoinageTxEntry(
                     id: CoinageTxId(),
                     inputs: [.coin(.own(inputIndex, testKey(inputIndex)))],
@@ -315,7 +315,7 @@ final class DurabilityRegistrationConcurrencyTests {
 
     /// Coins must exist before a transaction registers against them, so persist the input and
     /// output coins a test references before it registers any entry.
-    private func persistCoins(_ indices: [DerivationIndex], facade: UserDataStorageTestFacade) async throws {
+    private func persistCoins(_ indices: [CoinageKeyIndex], facade: UserDataStorageTestFacade) async throws {
         let repo = facade.makeRepo(mapper: CoinMapper())
         let coins = indices.map { Coin(exponent: 0, derivationIndex: $0, age: nil, publicKey: testKey($0)) }
         try await repo.saveOperation({ coins }, { [] }).asyncExecute()
@@ -324,6 +324,10 @@ final class DurabilityRegistrationConcurrencyTests {
 
 /// A deterministic public key from a derivation index — distinct per index and stable, so the
 /// persisted coins' keys match the entries the tests register against them.
-private func testKey(_ index: DerivationIndex) -> PublicKey {
-    withUnsafeBytes(of: index.bigEndian) { Data($0) }
+private func testKey(_ index: CoinageKeyIndex) -> PublicKey {
+    withUnsafeBytes(of: index.item.bigEndian) { Data($0) }
+}
+
+private func keyIndex(_ item: Int) -> CoinageKeyIndex {
+    CoinageKeyIndex(installation: .test, item: UInt64(item))
 }

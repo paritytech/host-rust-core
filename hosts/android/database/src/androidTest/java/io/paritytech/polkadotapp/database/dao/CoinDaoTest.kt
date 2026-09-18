@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -83,20 +84,78 @@ class CoinDaoTest {
         assertEquals(1, dao().getOnChainCoins().size)
     }
 
+    @Test
+    fun nextIndexIsScopedToOneInstallation() = runBlocking<Unit> {
+        dao().insertAll(
+            listOf(
+                coinAt(installation = INSTALLATION, derivationIndex = 3),
+                coinAt(installation = OTHER_INSTALLATION, derivationIndex = 40),
+            )
+        )
+
+        assertEquals(3, dao().getMaxDerivationIndex(INSTALLATION))
+        assertEquals(40, dao().getMaxDerivationIndex(OTHER_INSTALLATION))
+        assertNull(dao().getMaxDerivationIndex(ByteArray(32)))
+    }
+
+    @Test
+    fun aNewlyAllocatedCoinNeverOverwritesAnExistingRow() = runBlocking<Unit> {
+        val existing = coinAt(installation = INSTALLATION, derivationIndex = 3)
+        dao().insertAll(listOf(existing))
+
+        val clash = runCatching { dao().insertNew(listOf(existing.copyWithValueExponent(9))) }
+
+        assertTrue("an allocation onto a taken index must fail", clash.isFailure)
+        assertEquals(3, dao().getAll().single().valueExponent)
+    }
+
     private fun dao() = database.coinDao()
+
+    private fun CoinLocal.copyWithValueExponent(valueExponent: Int) = CoinLocal(
+        installationId = installationId,
+        derivationIndex = derivationIndex,
+        accountId = accountId,
+        valueExponent = valueExponent,
+        ageValue = ageValue,
+        onChain = onChain,
+        recyclerFungibility = recyclerFungibility,
+        hops = hops,
+        incomingBundleSize = incomingBundleSize,
+    )
+
+    private fun coinAt(installation: ByteArray, derivationIndex: Int) = CoinLocal(
+        installationId = installation,
+        derivationIndex = derivationIndex,
+        accountId = byteArrayOf(installation.first(), derivationIndex.toByte()),
+        valueExponent = 3,
+        ageValue = null,
+        onChain = false,
+        recyclerFungibility = null,
+        hops = null,
+        incomingBundleSize = null,
+    )
 
     private suspend fun givenCoin(ageValue: Int?, onChain: Boolean) {
         dao().insert(
             CoinLocal(
+                installationId = INSTALLATION,
                 derivationIndex = 0,
                 accountId = accountId,
                 valueExponent = 3,
                 ageValue = ageValue,
                 onChain = onChain,
+                recyclerFungibility = null,
+                hops = null,
+                incomingBundleSize = null,
             )
         )
     }
 
     private suspend fun storedCoin(): CoinLocal =
         dao().getAll().single { it.accountId.toDataByteArray() == accountId.toDataByteArray() }
+
+    private companion object {
+        val INSTALLATION = ByteArray(32) { 1 }
+        val OTHER_INSTALLATION = ByteArray(32) { 2 }
+    }
 }

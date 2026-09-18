@@ -11,23 +11,21 @@ sealed interface ExternalPaymentPlan {
         }
     }
 
-    class LoadCoins(val coinsToLoad: List<Coin>) : ExternalPaymentPlan {
+    /** [exactVouchers] are offboarded as they are, next to what [coinsToLoad] turn into once recycled. */
+    class LoadCoins(
+        val coinsToLoad: List<Coin>,
+        val exactVouchers: List<RecyclerVoucher>,
+    ) : ExternalPaymentPlan {
         override fun toString(): String {
-            return "LoadCoins(coins=${coinsToLoad.size})"
+            return "LoadCoins(coins=${coinsToLoad.size}, exactVouchers=${exactVouchers.size})"
         }
     }
-
-    data class NeedsDelayedRetry(val reason: DelayReason) : ExternalPaymentPlan
 
     data class NotEnoughAmount(
         val activeVouchers: Balance,
         val activeCoins: Balance,
         val deficitToCoverWithCoins: Balance,
     ) : ExternalPaymentPlan
-
-    enum class DelayReason {
-        VOUCHERS_NOT_READY, COINS_NOT_READY,
-    }
 }
 
 class VoucherOffboarding(

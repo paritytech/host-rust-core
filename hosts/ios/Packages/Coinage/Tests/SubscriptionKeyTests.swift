@@ -1,3 +1,5 @@
+import Foundation
+import SubstrateSdk
 import Testing
 @testable import Coinage
 
@@ -5,10 +7,11 @@ import Testing
 struct SubscriptionKeyTests {
     @Test("Test member key mapping")
     func memberKeyMapping() {
-        let key = SubscriptionKey.member(derivationIndex: 123)
+        let publicKey = Data(repeating: 0xAB, count: 32)
+        let key = SubscriptionKey.member(publicKey: publicKey)
         let mapping = key.mappingKey
 
-        #expect(mapping == "m:123")
+        #expect(mapping == "m:\(publicKey.toHex())")
         #expect(SubscriptionKey(mappingKey: mapping) == key)
     }
 
@@ -48,7 +51,7 @@ struct SubscriptionKeyTests {
     func invalidMappingKeys() {
         #expect(SubscriptionKey(mappingKey: "x:123") == nil)
         #expect(SubscriptionKey(mappingKey: "m") == nil)
-        #expect(SubscriptionKey(mappingKey: "m:abc") == nil)
+        #expect(SubscriptionKey(mappingKey: "m:zz") == nil)
         #expect(SubscriptionKey(mappingKey: "rs:7") == nil)
         #expect(SubscriptionKey(mappingKey: "rs:0:abc") == nil)
         #expect(SubscriptionKey(mappingKey: "uc:0") == nil)
