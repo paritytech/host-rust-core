@@ -223,6 +223,7 @@ jobs:
       sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
       sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
       sdk_provider_kotlin: ${{ steps.filter.outputs.sdk_provider_kotlin }}
+      host_android: ${{ steps.filter.outputs.host_android }}
       cli_package: ${{ steps.filter.outputs.cli_package }}
       workflows: ${{ steps.filter.outputs.workflows }}
       needs_changeset: ${{ steps.filter.outputs.needs_changeset }}
@@ -284,6 +285,10 @@ jobs:
           # shell: the crate, the two it depends on, the bindings generator and
           # the Gradle wiring that compiles the result.
           gate sdk_provider_kotlin '^(android/truapi-provider/|rust/crates/truapi-provider/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/uniffi-bindgen-cli/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|\.github/workflows/ci\.yml$)'
+          # The vendored Android host, plus the crates its bindings are
+          # generated from. Nothing gated on this tree before, so a core change
+          # that broke it reached a release with no gate in between.
+          gate host_android '^(hosts/android/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -460,6 +465,65 @@ jobs:
   # would otherwise pass without compiling anything, then assembles the AAR so
   # the Gradle wiring this exists to cover is exercised rather than only the
   # Kotlin.
+  # The app tree vendored at hosts/android compiles its TrUAPI adapter against
+  # the core in this repository rather than a published package, so a core
+  # change that breaks it fails here instead of at the next version bump. The
+  # module builds the core, generates the Kotlin bindings and compiles the
+  # adapter against them, which is the pairing worth guarding.
+  #
+  # Scoped to that module on purpose. Configuring the app itself needs values
+  # this repository does not hold yet, so a wider gate would be red for a
+  # reason that has nothing to do with the core.
+  host-android-bindings:
+    name: Android host app (kotlin compile)
+    needs: changes
+    if: needs.changes.outputs.host_android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+        with:
+          shared-key: host-android-bindings
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # JDK 21 and NDK 29, which is what the app tree's own install action uses.
+      # The SDK modules here build on 17; these are different trees.
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+
+      - name: Install the NDK
+        run: sdkmanager --install "ndk;29.0.14206865"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # The module runs codegen against the core, which needs the workspace
+      # dependencies present.
+      - name: Install the core's node dependencies
+        run: npm ci --ignore-scripts
+
+      # No truapi.dir: the fallback added in #837 resolves the core two levels
+      # up, which is the property this job exists to keep true.
+      - name: Compile the host adapter against the core
+        working-directory: hosts/android
+        run: ./gradlew --configure-on-demand :bindings:truapi-host:compileReleaseKotlin
+
   provider-android-bindings:
     name: Android provider (kotlin compile)
     needs: changes
@@ -957,6 +1021,7 @@ jobs:
         ios-swift,
         android-bindings,
         provider-android-bindings,
+        host-android-bindings,
         cli-package,
         ts-client,
         ts-host,
@@ -1003,7 +1068,8 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
-            android-bindings provider-android-bindings cli-package ts-client
+            android-bindings provider-android-bindings host-android-bindings
+            cli-package ts-client
             ts-host ts-debugger playground explorer e2e workflow-lint
             release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
