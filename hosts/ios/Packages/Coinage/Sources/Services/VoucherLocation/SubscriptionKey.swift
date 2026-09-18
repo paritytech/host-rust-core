@@ -1,12 +1,15 @@
 import Foundation
+import SubstrateSdk
 
 /// Identifies one storage key in the location pipeline's batch subscription.
 ///
-/// Member rows are per voucher, but ring state is per *ring*: several vouchers commonly share one,
-/// and subscribing per voucher would ask the node for the same key repeatedly. The ring cases are
-/// therefore keyed by ``RecyclerKey`` so one request serves every voucher in that ring.
+/// Member rows are per voucher and keyed by the voucher's public key, which is what the storage key
+/// itself is built from; the service maps it back to the voucher. Ring state is per *ring*: several
+/// vouchers commonly share one, and subscribing per voucher would ask the node for the same key
+/// repeatedly. The ring cases are therefore keyed by ``RecyclerKey`` so one request serves every
+/// voucher in that ring.
 enum SubscriptionKey: Hashable {
-    case member(derivationIndex: DerivationIndex)
+    case member(publicKey: PublicKey)
     case ringStatus(recycler: RecyclerKey)
     case unloadedCount(recycler: RecyclerKey)
 
@@ -19,8 +22,10 @@ enum SubscriptionKey: Hashable {
 
         switch type {
         case "m":
-            guard components.count == 2, let index = DerivationIndex(components[1]) else { return nil }
-            self = .member(derivationIndex: index)
+            guard components.count == 2, let publicKey = try? Data(hexString: String(components[1])) else {
+                return nil
+            }
+            self = .member(publicKey: publicKey)
         case "rs":
             guard let recycler = Self.recycler(from: components.dropFirst()) else { return nil }
             self = .ringStatus(recycler: recycler)
@@ -34,8 +39,8 @@ enum SubscriptionKey: Hashable {
 
     var mappingKey: String {
         switch self {
-        case let .member(index):
-            ["m", "\(index)"].joined(separator: Self.separator)
+        case let .member(publicKey):
+            ["m", publicKey.toHex()].joined(separator: Self.separator)
         case let .ringStatus(recycler):
             (["rs"] + Self.components(of: recycler)).joined(separator: Self.separator)
         case let .unloadedCount(recycler):

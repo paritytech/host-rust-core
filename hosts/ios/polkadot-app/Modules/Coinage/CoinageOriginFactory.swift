@@ -64,10 +64,8 @@ final class CoinageOriginFactory: ExtrinsicOriginFactory, OriginCreating {
             liteCollectionId: PeopleLitePallet.membersIdentifier,
             fullVrfManager: fullPersonKeyManager,
             fullCollectionId: PeoplePallet.membersIdentifier,
-            memberStatusChecker: MembershipStatusChecker(
-                connection: connection,
-                runtimeCodingService: runtimeCodingService
-            )
+            connection: connection,
+            runtimeCodingService: runtimeCodingService
         )
 
         super.init(
@@ -91,6 +89,10 @@ final class CoinageOriginFactory: ExtrinsicOriginFactory, OriginCreating {
                 signedOrigin
             ]
         )
+    }
+
+    func createSignedOrigin(for wallet: WalletManaging, chainId: ChainId) async throws -> ExtrinsicOriginDefining {
+        try createSignedOrigin(for: wallet, chain: chainRegistry.getChainOrError(for: chainId))
     }
 
     func createInfallibleUnpaidSignedOrigin(for wallet: WalletManaging) throws -> ExtrinsicOriginDefining {

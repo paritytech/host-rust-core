@@ -10,7 +10,7 @@ public protocol ContentHashCacheProtocol {
 public final class ContentHashCache: ContentHashCacheProtocol {
     public static let shared = ContentHashCache()
 
-    private static let suiteName = "io.products.dotns.cache"
+    public static let suiteName = "io.products.dotns.cache"
     private let defaults: UserDefaults
 
     public init() {

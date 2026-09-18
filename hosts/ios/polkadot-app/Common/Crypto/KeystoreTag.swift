@@ -51,4 +51,20 @@ extension KeystoreTag {
             "jwt.refresh.token"
         ].joined(with: .colon)
     }
+
+    static func coinageCoinIndexTag(forInstallation installationId: String) -> String {
+        [
+            domain,
+            installationId,
+            "coinage.coin.index"
+        ].joined(with: .colon)
+    }
+
+    static func coinageVoucherIndexTag(forInstallation installationId: String) -> String {
+        [
+            domain,
+            installationId,
+            "coinage.voucher.index"
+        ].joined(with: .colon)
+    }
 }

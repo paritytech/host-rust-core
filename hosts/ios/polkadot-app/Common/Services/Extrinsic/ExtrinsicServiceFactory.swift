@@ -16,9 +16,22 @@ protocol ExtrinsicServiceCreating: ExtrinsicServiceFactoryProtocol {
 
     func createOperationFactory(chain: ChainProtocol) throws -> ExtrinsicOperationFactoryProtocol
 
+    /// An operation factory pinned to `extrinsicVersion` instead of the factory's default format — for
+    /// callers that resolve the format from the runtime (see `ExtrinsicVersionProvider`).
+    func createOperationFactory(
+        chain: ChainProtocol,
+        extrinsicVersion: Extrinsic.Version
+    ) throws -> ExtrinsicOperationFactoryProtocol
+
     func makeForkProtectedSubmitter(
         chain: ChainProtocol,
         trackingTill: ExtrinsicTrackingTill
+    ) throws -> ExtrinsicSubmitting
+
+    func makeForkProtectedSubmitter(
+        chain: ChainProtocol,
+        trackingTill: ExtrinsicTrackingTill,
+        extrinsicVersion: Extrinsic.Version
     ) throws -> ExtrinsicSubmitting
 }
 
@@ -109,10 +122,16 @@ extension ExtrinsicServiceFactory: ExtrinsicServiceCreating {
     }
 
     func createOperationFactory(chain: ChainProtocol) throws -> ExtrinsicOperationFactoryProtocol {
+        try createOperationFactory(chain: chain, extrinsicVersion: resolveExtrinsicVersion(for: chain))
+    }
+
+    func createOperationFactory(
+        chain: ChainProtocol,
+        extrinsicVersion: Extrinsic.Version
+    ) throws -> ExtrinsicOperationFactoryProtocol {
         let connection = try chainRegistry.getConnectionOrError(for: chain.chainId)
         let runtimeProvider = try chainRegistry.getRuntimeProviderOrError(for: chain.chainId)
         let chainModel = try chainRegistry.getChainOrError(for: chain.chainId)
-        let extrinsicVersion = resolveExtrinsicVersion(for: chain)
 
         let host = ExtrinsicFeeEstimatorHost(
             chain: chain,
@@ -158,8 +177,20 @@ extension ExtrinsicServiceFactory {
         chain: ChainProtocol,
         trackingTill: ExtrinsicTrackingTill = .inBlock
     ) throws -> ExtrinsicSubmitting {
+        try makeForkProtectedSubmitter(
+            chain: chain,
+            trackingTill: trackingTill,
+            extrinsicVersion: resolveExtrinsicVersion(for: chain)
+        )
+    }
+
+    func makeForkProtectedSubmitter(
+        chain: ChainProtocol,
+        trackingTill: ExtrinsicTrackingTill,
+        extrinsicVersion: Extrinsic.Version
+    ) throws -> ExtrinsicSubmitting {
         let base = try DefaultExtrinsicSubmitter(
-            operationFactory: createOperationFactory(chain: chain),
+            operationFactory: createOperationFactory(chain: chain, extrinsicVersion: extrinsicVersion),
             operationQueue: operationQueue,
             timeout: JSONRPCTimeout.hour
         )

@@ -14,7 +14,7 @@ struct OffboardVouchersPaymentState: StateMachineState {
     typealias PersistentValue = ExternalPayment
 
     let payment: ExternalPayment
-    let voucherIndices: [DerivationIndex]
+    let voucherIndices: [CoinageKeyIndex]
     /// Planner output: what the vouchers exceed the amount by. Persisted with the stage, never
     /// recomputed, so a relaunch submits exactly what was planned.
     let surplus: Balance

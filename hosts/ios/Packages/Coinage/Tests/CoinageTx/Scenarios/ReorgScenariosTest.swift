@@ -10,9 +10,9 @@ import Testing
 /// real block tree, where a retracted block also takes its state and its dispatch outcome with it.
 @Suite("Reorg Scenarios")
 struct ReorgScenariosTest {
-    private let coinA: DerivationIndex = 1
-    private let coinB: DerivationIndex = 2
-    private let coinC: DerivationIndex = 3
+    private let coinA: CoinageKeyIndex = 1
+    private let coinB: CoinageKeyIndex = 2
+    private let coinC: CoinageKeyIndex = 3
 
     @Test("Rule 0 clause 1 clears the record and demotes when the recorded block is gone")
     func rule0ClearsRecordWhenBlockGone() async throws {

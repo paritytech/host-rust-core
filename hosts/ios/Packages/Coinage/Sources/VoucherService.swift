@@ -29,7 +29,7 @@ public protocol VoucherServiceProtocol: Sendable {
 
     /// Fetch only the tracked vouchers with the given derivation indices — a filtered query, not the
     /// whole set. Empty `derivationIndices` returns an empty array without touching the store.
-    func fetchTracked(derivationIndices: Set<DerivationIndex>) async throws -> [TrackedVoucher]
+    func fetchTracked(derivationIndices: Set<CoinageKeyIndex>) async throws -> [TrackedVoucher]
 }
 
 public final class VoucherService: @unchecked Sendable {
@@ -72,7 +72,7 @@ extension VoucherService: VoucherServiceProtocol {
             .asyncExecute()
     }
 
-    public func fetchTracked(derivationIndices: Set<DerivationIndex>) async throws -> [TrackedVoucher] {
+    public func fetchTracked(derivationIndices: Set<CoinageKeyIndex>) async throws -> [TrackedVoucher] {
         guard !derivationIndices.isEmpty else { return [] }
         return try await databaseFactory.makeTrackedVoucherRepository(derivationIndices: Array(derivationIndices))
             .fetchAllOperation(with: RepositoryFetchOptions())

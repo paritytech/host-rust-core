@@ -121,7 +121,11 @@ private extension DepositTest {
         let mnemonic = try IRMnemonicCreator().mnemonic(fromList: mainWallet)
         let entropy = mnemonic.entropy()
 
-        let entropyManager = RootEntropyManager(keychain: keystore, userDefaults: UserDefaults.standard)
+        let entropyManager = RootEntropyManager(
+            keychain: keystore,
+
+            installationKeyIdStore: InstallationKeyIdStore(userDefaults: .standard)
+        )
         try entropyManager.createRootEntropy(entropy)
 
         let wallet = DynamicDerivedWallet(derivationPath: "//deposit", entropyManager: entropyManager)

@@ -238,7 +238,7 @@ final class DurabilityHarness: @unchecked Sendable {
 
     /// The alias storage key the collector would ask for this voucher, derived from the chain exactly
     /// as it derives it — `nil` when the voucher is in no ring, so it has no alias key.
-    func currentAliasKey(index: DerivationIndex) -> FakeAliasKey? {
+    func currentAliasKey(index: CoinageKeyIndex) -> FakeAliasKey? {
         let member = HarnessKeys.voucherMemberKey(index)
         let state = chain.bestHead.state
         guard let exponent = state.recyclerMembers[member],
@@ -273,12 +273,12 @@ final class DurabilityHarness: @unchecked Sendable {
     /// reads a pass would actually make.
     private func allCurrentAliasKeys() async -> Set<FakeAliasKey> {
         let entries = await (try? store.getAllEntries()) ?? []
-        let indices = entries.flatMap { entry -> [DerivationIndex] in
-            let fromInputs = entry.inputs.compactMap { input -> DerivationIndex? in
+        let indices = entries.flatMap { entry -> [CoinageKeyIndex] in
+            let fromInputs = entry.inputs.compactMap { input -> CoinageKeyIndex? in
                 if case let .recyclerVoucher(index, _) = input { return index }
                 return nil
             }
-            let fromOutputs = entry.outputs.compactMap { output -> DerivationIndex? in
+            let fromOutputs = entry.outputs.compactMap { output -> CoinageKeyIndex? in
                 if case let .recyclerVoucher(index, _) = output { return index }
                 return nil
             }

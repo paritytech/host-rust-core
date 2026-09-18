@@ -1,4 +1,4 @@
-import UIKit
+import Foundation
 import AsyncExtensions
 import StructuredConcurrency
 import os
@@ -38,6 +38,8 @@ extension SearchContactInteractor: SearchContactInteractorInputProtocol {
             loadIdleState()
             return
         }
+
+        stateLock.withLock { $0.currentQuery = username }
 
         let task = Task { [weak self, weak presenter, searchRunner] in
             let stateStream = searchRunner.run {
@@ -122,9 +124,10 @@ private extension SearchContactInteractor {
     }
 
     func loadIdleState() {
+        stateLock.withLock { $0.currentQuery = "" }
+
         let task = Task { [weak self, weak presenter] in
             guard let self else { return }
-            stateLock.withLock { $0.currentQuery = "" }
             do {
                 let sections = try await accountSearching.search(query: nil)
                 guard !Task.isCancelled else { return }
@@ -140,7 +143,6 @@ private extension SearchContactInteractor {
 
     func makeSearchResult(for query: String) async -> SearchContactSearchResult? {
         do {
-            stateLock.withLock { $0.currentQuery = query }
             let sections = try await accountSearching.search(query: query)
             try Task.checkCancellation()
             return .sections(sections)

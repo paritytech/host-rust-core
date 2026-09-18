@@ -10,7 +10,7 @@ final class StubVoucherService: VoucherServiceProtocol, @unchecked Sendable {
     struct NotSupported: Error {}
 
     private let vouchers = OSAllocatedUnfairLock(initialState: [Voucher]())
-    private let states = OSAllocatedUnfairLock(initialState: [DerivationIndex: CoinageAssetState]())
+    private let states = OSAllocatedUnfairLock(initialState: [CoinageKeyIndex: CoinageAssetState]())
 
     /// `states` overrides the free default for the listed vouchers (consumed, reserved, …).
     init(vouchers: [Voucher] = [], states: [TrackedVoucher] = []) {
@@ -39,7 +39,7 @@ final class StubVoucherService: VoucherServiceProtocol, @unchecked Sendable {
         vouchers.withLock { $0 }.filter { publicKeys.contains($0.publicKey) }
     }
 
-    func fetchTracked(derivationIndices: Set<DerivationIndex>) async throws -> [TrackedVoucher] {
+    func fetchTracked(derivationIndices: Set<CoinageKeyIndex>) async throws -> [TrackedVoucher] {
         try await fetchAllTracked().filter { derivationIndices.contains($0.voucher.derivationIndex) }
     }
 

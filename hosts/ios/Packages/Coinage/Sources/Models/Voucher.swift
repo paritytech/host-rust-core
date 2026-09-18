@@ -5,7 +5,7 @@ import Operation_iOS
 /// A coin currently residing in the Recycler, waiting for anonymity.
 public struct Voucher: Equatable, CoinageDerivable, Sendable {
     public let exponent: Int16 // 2^n
-    public let derivationIndex: DerivationIndex
+    public let derivationIndex: CoinageKeyIndex
     public let allocatedAt: Date
     public let readyAt: Date
     public let remoteState: OnChainState
@@ -61,7 +61,7 @@ public struct Voucher: Equatable, CoinageDerivable, Sendable {
 
     public init(
         exponent: Int16,
-        derivationIndex: DerivationIndex,
+        derivationIndex: CoinageKeyIndex,
         allocatedAt: Date,
         readyAt: Date,
         remoteState: OnChainState = .unlocated,
@@ -108,7 +108,7 @@ extension Voucher: Operation_iOS.Identifiable {
 public extension Voucher {
     /// The storage identifier for a voucher at `derivationIndex`. Single source of truth so no
     /// call site hand-writes the string form.
-    static func identifier(for derivationIndex: DerivationIndex) -> String {
-        "\(derivationIndex)"
+    static func identifier(for derivationIndex: CoinageKeyIndex) -> String {
+        derivationIndex.toString()
     }
 }

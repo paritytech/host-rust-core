@@ -10,11 +10,11 @@ import Testing
 /// through evidence collection, the DAG and the compare-and-set write, which the pure tests cannot.
 @Suite("Rule Scenarios")
 struct RuleScenariosTest {
-    private let coinA: DerivationIndex = 1
-    private let coinB: DerivationIndex = 2
-    private let coinC: DerivationIndex = 3
-    private let coinD: DerivationIndex = 4
-    private let coinSeed: DerivationIndex = 9
+    private let coinA: CoinageKeyIndex = 1
+    private let coinB: CoinageKeyIndex = 2
+    private let coinC: CoinageKeyIndex = 3
+    private let coinD: CoinageKeyIndex = 4
+    private let coinSeed: CoinageKeyIndex = 9
 
     @Test("an entry whose output a peer claims before finality does not fall back to pending")
     func peerClaimBeforeFinalityKeepsRecord() async throws {
@@ -359,13 +359,13 @@ private extension RuleScenariosTest {
     }
 
     /// A coin in and nothing trackable out — the offboard shape, with its watcher released.
-    func givenUnwatchedOffboard(_ harness: DurabilityHarness, inputCoin: DerivationIndex) async throws -> CoinageTxId {
+    func givenUnwatchedOffboard(_ harness: DurabilityHarness, inputCoin: CoinageKeyIndex) async throws -> CoinageTxId {
         let id = try await harness.registerOffboard(inputCoin: inputCoin)
         await harness.releaseSubmissions()
         return id
     }
 
-    func nonFailedClaimants(_ harness: DurabilityHarness, of coin: DerivationIndex) async throws -> Int {
+    func nonFailedClaimants(_ harness: DurabilityHarness, of coin: CoinageKeyIndex) async throws -> Int {
         let key = HarnessKeys.coinKey(coin)
         return try await harness.store.getAllEntries()
             .filter { $0.status != .failure }

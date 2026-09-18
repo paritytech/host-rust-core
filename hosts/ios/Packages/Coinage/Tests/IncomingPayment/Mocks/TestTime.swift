@@ -1,5 +1,6 @@
 import Clocks
 import Foundation
+import FoundationExt
 
 /// One virtual time for a service that paces itself on a `Clock` and checks deadlines against `Date`:
 /// the date is derived from the test clock, so advancing the clock moves both together and nothing in
@@ -46,11 +47,5 @@ final class TestTime: @unchecked Sendable {
             await clock.advance(by: step)
             advanced += step
         }
-    }
-}
-
-extension Duration {
-    var timeInterval: TimeInterval {
-        Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 }

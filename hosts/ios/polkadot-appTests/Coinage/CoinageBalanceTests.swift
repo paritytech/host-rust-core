@@ -213,15 +213,15 @@ private extension CoinageBalanceTests {
         CoinageAssetState(handedOff: false, consumerStatus: status, minterStatus: nil)
     }
 
-    func key(_ index: DerivationIndex) -> Data {
-        Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
+    func key(_ index: CoinageKeyIndex) -> Data {
+        Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
     }
 
-    func coin(exponent: Int16, index: DerivationIndex, age: Int16?, onChain: Bool) -> Coin {
+    func coin(exponent: Int16, index: CoinageKeyIndex, age: Int16?, onChain: Bool) -> Coin {
         Coin(exponent: exponent, derivationIndex: index, age: age, isOnchain: onChain, publicKey: key(index))
     }
 
-    func minted(exponent: Int16, index: DerivationIndex) -> TrackedCoin {
+    func minted(exponent: Int16, index: CoinageKeyIndex) -> TrackedCoin {
         tracked(coin(exponent: exponent, index: index, age: 0, onChain: true), state: free)
     }
 
@@ -229,7 +229,7 @@ private extension CoinageBalanceTests {
         TrackedCoin(coin: coin, state: state)
     }
 
-    func voucher(exponent: Int16, state: Voucher.OnChainState, index: DerivationIndex = 0) -> Voucher {
+    func voucher(exponent: Int16, state: Voucher.OnChainState, index: CoinageKeyIndex = 0) -> Voucher {
         Voucher(
             exponent: exponent,
             derivationIndex: index,
@@ -240,7 +240,7 @@ private extension CoinageBalanceTests {
         )
     }
 
-    func inRecycler(exponent: Int16, members: UInt32, index: DerivationIndex = 0) -> Voucher {
+    func inRecycler(exponent: Int16, members: UInt32, index: CoinageKeyIndex = 0) -> Voucher {
         voucher(exponent: exponent, state: .inRecycler(.init(index: 1, membersCount: members)), index: index)
     }
 
