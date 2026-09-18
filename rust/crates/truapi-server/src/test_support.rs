@@ -176,6 +176,9 @@ pub(crate) struct StubPlatform {
     /// asserts a lookup failed and a test that spends ten seconds proving it.
     pub(crate) chain_responses_end: bool,
     /// When true, `connect` stays pending forever.
+    /// Hold every core-storage read pending forever, standing in for a host
+    /// callback that is never answered.
+    pub(crate) core_storage_pending: bool,
     pub(crate) chain_connect_pending: bool,
     /// Set when a `chain_connect_pending` connect future is dropped.
     pub(crate) pending_connect_dropped: Arc<AtomicBool>,
@@ -880,6 +883,9 @@ impl PlatformCoreStorage for StubPlatform {
         &self,
         key: CoreStorageKey,
     ) -> Result<Option<Vec<u8>>, v01::GenericError> {
+        if self.core_storage_pending {
+            futures::future::pending::<()>().await;
+        }
         if let CoreStorageKey::AuthSession = key {
             if let Some(reason) = self.session_error {
                 return Err(v01::GenericError {
