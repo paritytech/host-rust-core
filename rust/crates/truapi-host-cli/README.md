@@ -99,13 +99,15 @@ updates it. Nothing contacts GitHub.
 
 Reserved identities derive under `uid.paseo` / `peopl.paseo` on
 `paseo-next-v2`, and `uid.testnet` / `peopl.testnet` on `previewnet`.
-All managed CLI state lives under `<base-path>/v2`, including accounts,
-sessions, pairings, core and product storage, managed scripts, and log
+Managed host state lives under `<base-path>/v2`, including accounts,
+sessions, pairings, core and product storage, and log
 preferences. The CLI appends `v2` to both the default base path and a path set
 through `--base-path` or `TRUAPI_HOST_BASE_PATH`. For example,
 `--base-path ./truapi-host-paseo` uses `./truapi-host-paseo/v2`.
+New script projects live separately under `<base-path>/scripts` so clearing
+host sessions does not delete them.
 
-The CLI leaves previous state outside `v2` untouched and unused, and starts
+The CLI leaves previous host state outside `v2` untouched and unused, and starts
 normal onboarding automatically. There is no state migration. Pair devices
 again; sign out first on any paired host that still uses an old identity.
 Existing `.dot` personhood membership does not transfer to the new keys.
@@ -233,8 +235,11 @@ Commands always start with `/`:
 | `/approval` | Show whether signing-host confirmations are manual or automatic. |
 | `/approval manual` | Prompt for every future signing-host confirmation. |
 | `/approval automatic` | Approve every future signing-host confirmation automatically. |
-| `/script` | Reopen the session's last TypeScript scratch script (or create one), then run it. |
+| `/script` | Edit and run the remembered script, creating a Product SDK project when needed. |
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
+| `/script --run` | Rerun the remembered script without opening the editor. |
+| `/script --edit` | Edit the remembered script without running it. |
+| `/script --new [directory]` | Create a project in a new directory, then edit and run it. |
 | `/login` | Start pairing for the selected product, show its QR code, and copy its deeplink to the clipboard. |
 | `/logout` | Disconnect the pairing host and discard its old pairing keypair. |
 | `/log <level>` | Save tracing as `error`, `warn`, `info`, `debug`, or `trace`, and apply it now. |
@@ -321,17 +326,41 @@ as bold is therefore not rendered in the full-screen UI.
 
 Bare `/script` reopens the last script recorded for the active session,
 including a path previously selected with `/script <path>`. If that file is
-missing or the session has no script yet, it creates a durable Bun TypeScript
-file under the active host state's `scripts/` directory. The dependency-free
-starter calls `truapi.account.getUserId()` and prints the returned user id.
-The generated file references an adjacent declaration bundle, so the editor
-provides completion and type checking for `truapi`, `host`, and `assert`
-without requiring `@parity/truapi` in a parent npm project. Scripts opened
-from an npm project can still import packages installed by that project.
+missing or the session has no script yet, it creates a Bun TypeScript project
+under `<base-path>/scripts/`, outside the versioned session data. Projects
+survive session clearing, including projects created with `--mnemonic`.
+Each contains `script.ts`, host declarations, `package.json`, and `tsconfig.json`.
+The starter reads product-local storage through Product SDK using the host's
+existing connection. The first open installs pinned SDK and editor dependencies
+with Bun. Successful setup saves a lockfile; later opens reuse the installation
+without a network request. Setup errors or cancellation keep the project so
+you can fix the problem and retry `/script`.
+
+`/script --new my examples` creates another project at that relative path;
+the directory must not already exist. `/script --edit` only edits, while
+`/script --run` reruns without opening an editor. Paths may contain spaces.
+Use `/script -- --run` to select a file literally named `--run`.
+
+Add packages in a managed project's directory with `bun add`, and check types
+with `bun run typecheck`. Its `package.json` entry
+`"truapiHost": { "script": "script.ts" }` identifies its root, which is also
+its execution directory. This remains true when copied or selected through
+an explicit path. Update that entry when renaming the main script. Ordinary
+existing npm/pnpm/Bun projects keep their dependencies, lockfiles, and the
+CLI's original working directory; the host does not install into them.
+
 The TUI temporarily yields the terminal to `$VISUAL`, then `$EDITOR`, or
 `vi` when neither is set. After the editor exits successfully, the TUI is
 restored and the saved script runs through the public frame endpoint. Editor
 settings containing arguments, such as `EDITOR='code --wait'`, are supported.
+Configure a waiting editor command: an editor process that returns immediately
+also lets execution start immediately. Editor failure preserves the script
+without running it.
+
+New projects pin Product SDK 0.30.0, whose release must precede deployment of
+this CLI feature. During development, set `TRUAPI_SCRIPT_SDK` to a packed SDK
+tarball or package spec before creating a project. It changes only the new
+manifest. Existing project dependencies are never upgraded by a host update.
 
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
@@ -378,8 +407,8 @@ numerical alias; session names with fewer than six letters use `session`.
 full-person base name on dotNS for a newly created account, to be claimed later
 with `register-name`; the CLI refuses labels the registrar has already minted.
 The selected username and last script reference are cached in `session.json`
-inside the displayed session path. Scratch scripts use a portable filename;
-explicit scripts use an absolute path. On restart, an
+inside the displayed session path. Legacy session-local scripts use a portable
+filename; managed projects and explicit scripts use an absolute path. On restart, an
 already-provisioned local signer is activated from disk without an
 identity-backend or ring-membership round trip, and bare `/script` restores that
 session's editor context. A session with no signer yet reports
@@ -419,7 +448,8 @@ host may continue to show stale connected state, but it cannot reach a responder
 on this signing host.
 
 `/session --clear <name>` permanently deletes that session's local signer
-keys, scripts, core/product storage, and permissions. `/session --clear-all`
+keys, session-local scripts, core/product storage, and permissions. Persistent
+script projects under `<base-path>/scripts` are preserved. `/session --clear-all`
 does the same for every signing-host session on the current network, including
 the network's signing-host bootstrap state, while preserving other networks and
 pairing-host state. Neither command deregisters an on-chain username. The interactive UI
@@ -482,10 +512,10 @@ project. The runner injects three globals before running it:
 - **`truapi`** — the `@parity/truapi` client connected to the pairing host and
   scoped to the host's `--product-id`. Call `truapi.account.requestLogin(...)`,
   `truapi.signing.signRaw(...)`, `truapi.localStorage.write(...)`, etc.
-- **`host`** — just `host.productId` and `host.productAccount(index?)`. That is
-  all it does: it keeps product accounts in sync with the host's `--product-id`
-  (hardcoding a mismatched id fails signing with `PermissionDenied`). Use
-  `console.log` and `throw` for everything else.
+- **`host`** provides `host.productId`, `host.productAccount(index?)`, the
+  bundled `host.apiVersion`, and a `host.signal` aborted when the connection
+  closes. Product accounts use the host's `--product-id`; a mismatched id
+  fails signing with `PermissionDenied`.
 - **`assert`** — throw when its condition is false, using any following values
   as the error message.
 
@@ -509,6 +539,70 @@ res.match(
     throw new Error(JSON.stringify(e));
   },
 );
+```
+
+Existing projects can use the same Product SDK connection as generated projects:
+
+```ts
+import { bindHost } from "@parity/product-sdk/host";
+
+const unbind = bindHost({
+  client: truapi,
+  signal: host.signal,
+  apiVersion: host.apiVersion,
+});
+try {
+  // Await SDK operations here.
+} finally {
+  unbind();
+}
+```
+
+Use the installed SDK's exported `TruApi` type for a TypeScript declaration of
+the injected `truapi`, as the generated starter does. Binding checks that the
+host API version is supported before a call is made. On a version mismatch,
+update the project's SDK deliberately or run a compatible host. Await all
+work, including subscription completion: the script process exits when its
+module and optional default function finish.
+
+For product-account signing, add `getAccountsProvider` to the starter's SDK
+imports and replace the contents of its `try` block with:
+
+```ts
+const accounts = await getAccountsProvider();
+assert(accounts, "Host accounts API unavailable");
+const account = await accounts.getProductAccount(host.productId);
+if (account.isErr()) {
+  throw new Error("Product account unavailable", { cause: account.error });
+}
+const signer = accounts.getProductAccountSigner(account.value);
+const signature = await signer.signBytes(new TextEncoder().encode("hello"));
+console.log("signature", signature);
+```
+
+For a subscription, add `getLocaleProvider` and `type HostSubscription` to
+those imports. This example awaits the first locale value and unsubscribes
+before the script exits:
+
+```ts
+const locales = await getLocaleProvider();
+assert(locales, "Host locale API unavailable");
+let subscription: HostSubscription | undefined;
+let removeInterrupt: (() => void) | undefined;
+try {
+  await new Promise<void>((resolve, reject) => {
+    subscription = locales.subscribeLocale((locale) => {
+      console.log("language", locale.languageTag);
+      resolve();
+    });
+    removeInterrupt = subscription.onInterrupt((reason) => {
+      reject(new Error("Locale subscription interrupted", { cause: reason }));
+    });
+  });
+} finally {
+  removeInterrupt?.();
+  subscription?.unsubscribe();
+}
 ```
 
 `--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.testnet`, or a

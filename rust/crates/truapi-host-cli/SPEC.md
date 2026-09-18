@@ -206,14 +206,15 @@ next to the running binary, then `js/runner.ts` in the source checkout
 A release archive ships `runner.js` and `script-types.d.ts` beside the binary.
 The runner has `@parity/truapi` bundled in, and the declaration file contains
 the matching generated client and injected-global types, so an installed copy
-runs and edits product scripts with no source tree or npm package. A source
+runs product scripts with no source tree. New SDK projects install their own
+pinned npm dependencies. A source
 build has no runner bundle and falls back to the checkout copies, whose
 relative `@parity/truapi` import means the runner only works from a built
 tree.
 
 A `TRUAPI_HOST_RUNNER` override must provide a compatible
 `script-types.d.ts` beside the selected runner when bare `/script` needs to
-create an editor scratch file.
+create an editor project.
 
 `bun` is required either way, since the runner and user scripts are executed by
 it.
@@ -539,8 +540,11 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 
 | Command | Pairing host | Signing host | Behavior |
 | --- | :---: | :---: | --- |
-| `/script` | yes | yes | Edit and run the remembered script, creating a scratch script when needed. |
+| `/script` | yes | yes | Edit and run the remembered script, creating an SDK project when needed. |
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
+| `/script --run` | yes | yes | Run the remembered script without editing. |
+| `/script --edit` | yes | yes | Edit without running. |
+| `/script --new [directory]` | yes | yes | Create a project in a new directory, then edit and run. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
 | `/pair` | no | yes | Wait for a pairing QR image from Ctrl-V, terminal paste, or drag-and-drop. TUI only. |
@@ -704,7 +708,7 @@ from link generation through authentication to its final state.
 - Up/Down navigates process-local command history when completion is closed.
 - Tab accepts the selected completion.
 - Enter first accepts a differing selected completion; a later Enter submits.
-- `/script` followed by a space completes filesystem entries.
+- `/script` followed by a space completes actions and filesystem entries.
 - `/devices` followed by a space completes `--list` and `--remove` for the
   signing host.
 - `/approval` followed by a space completes `manual` and `automatic` for the
@@ -819,6 +823,8 @@ declare const truapi: TrUApiClient;
 declare const host: {
   productId: string;
   productAccount(index?: number): ProductAccountId;
+  apiVersion: string;
+  signal: AbortSignal;
 };
 
 declare function assert(
@@ -829,6 +835,12 @@ declare function assert(
 
 `host.productAccount()` defaults to derivation index `0` and uses the exact
 active product id.
+
+`host.apiVersion` is the bundled TrUAPI package version. `host.signal` aborts
+when the runner's host connection closes. Product SDK's production `bindHost`
+borrows the injected client and observes that signal, without opening another
+connection or taking ownership of its transport. The binding rejects an
+unsupported API version before exposing the client to SDK operations.
 
 `assert` joins string arguments directly and formats other values with
 `node:util.inspect` without color. A false condition throws either the joined
@@ -873,10 +885,10 @@ session, and runs it.
 A later bare `/script`:
 
 1. reuses the remembered file when it still exists;
-2. otherwise creates a unique `script-<time>-<pid>-<sequence>.ts` under the
-   current state directory's `scripts/`;
+2. otherwise creates a unique project under `<base-path>/scripts/`, where
+   base-path is the configured/default base before the `v2` suffix;
 3. stores that selection;
-4. leaves the TUI;
+4. installs missing managed dependencies with visible progress, then leaves the TUI;
 5. opens the file in the configured editor;
 6. restores the TUI; and
 7. runs the script when the editor exits successfully.
@@ -893,25 +905,43 @@ directly, without a shell. Values such as `EDITOR='code --wait'` work.
 
 An editor failure retains the script and does not run it.
 
-Scratch scripts store only their filename in `session.json`, so they remain
-valid if a session directory is promoted. Explicit scripts outside the session
-store their absolute path. A missing remembered file is ignored and replaced
-by a new scratch file.
+Legacy session-local scripts still store their filename in `session.json`.
+Managed projects and other external scripts store absolute paths. Projects
+survive both session promotion and clearing. Mnemonic sessions also create
+durable projects, but remember their selection only for the current process.
+A missing managed entrypoint can be recovered through the project's
+`truapiHost.script` metadata after an intentional rename. Otherwise bare
+`/script` creates a new project; `--run` reports a missing selection instead.
 
-The default scratch file is a dependency-free Bun script that calls
-`truapi.account.getUserId()` and prints `user id` followed by the returned
-value. A matching `.types.d.ts` file is copied beside it from the selected
-runner's `script-types.d.ts`. The script imports its types and declares the
-injected names within its own module, so multiple scripts can be checked
-together. Editors therefore resolve the matching generated types for
-`truapi`, `host`, and `assert` without a checkout or npm package. Keeping the
-declaration beside the scratch file preserves its types across session
-promotion and removal of older installed binary versions. The script does not
-emit terminal styling.
+A new project contains `script.ts`, `script.types.d.ts` copied from the
+selected runner, `package.json`, and `tsconfig.json`. The manifest marks the
+project with `"truapiHost": { "script": "script.ts" }`. This entry must name
+a relative path inside the project. When the nearest package.json carries
+this metadata, its directory is the execution cwd, whether invoked explicitly
+or through remembered state.
+Ordinary package directories without this metadata retain the inherited cwd
+and are never installed or modified by the CLI.
 
-Mnemonic-backed ephemeral signing sessions remember a path only for the
-current process and create scratch files under the system temporary
-`truapi-host/scripts` directory.
+The starter binds Product SDK to the injected client and reads local storage.
+It uses the installed SDK's `TruApi` type and the adjacent host context types;
+declarations remain module-local so multiple scripts compile together.
+The template pins Product SDK 0.30.0, TypeScript, and Bun editor types.
+That SDK version must be released before a registry-based CLI rollout.
+`TRUAPI_SCRIPT_SDK` overrides the SDK dependency only when creating a new
+project, allowing local packed packages during development.
+
+Dependency setup runs `bun install`, with `--frozen-lockfile` when a Bun
+lockfile exists. Only a successful installation records its manifest and
+lockfile fingerprint under `node_modules`; missing packages, a changed
+manifest/lockfile, or an interrupted install triggers setup again. Reopening
+a complete installation does not invoke the package manager. Failed or
+cancelled setup preserves source files and remains retryable. Host updates
+never rewrite existing manifests, lockfiles, scripts, or declaration files.
+
+`--edit` stops after the editor closes. `--new [directory]` creates another
+project and refuses to overwrite an existing destination. Recognized flags
+are reserved; `/script -- <path>` selects a path that begins with one.
+Path arguments retain spaces without shell tokenization.
 
 The top-level `--script` option does not update remembered `/script` state.
 

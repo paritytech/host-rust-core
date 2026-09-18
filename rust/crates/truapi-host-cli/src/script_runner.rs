@@ -8,17 +8,16 @@
 //! separate bun orchestrator.
 
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::script_project;
 use crate::terminal_ui::{self, SystemEvent, UiHandle};
 
 /// Host topology serving the product script.
@@ -37,8 +36,6 @@ impl ScriptHostRole {
     }
 }
 
-const SCRATCH_TEMPLATE: &str = include_str!("../js/scratch.ts");
-
 /// Runner bundle shipped next to the binary in a release archive. It has
 /// `@parity/truapi` compiled in, so a downloaded install runs product scripts
 /// without a source checkout.
@@ -50,6 +47,12 @@ const PACKAGED_SCRIPT_TYPES: &str = "script-types.d.ts";
 /// Declaration bundle matching the selected host-script runner.
 fn runner_types_path(runner: &Path) -> PathBuf {
     runner.with_file_name(PACKAGED_SCRIPT_TYPES)
+}
+
+/// Read declarations matching the selected installed or checkout runner.
+pub fn script_types() -> Result<Vec<u8>> {
+    let path = runner_types_path(&runner_path());
+    fs::read(&path).with_context(|| format!("read host-script types {}", path.display()))
 }
 
 /// Locate the host-script runner.
@@ -91,65 +94,6 @@ fn packaged_runner(executable: &Path) -> Option<PathBuf> {
         );
     }
     Some(directory.join(PACKAGED_RUNNER))
-}
-
-/// Create a durable, uniquely-named TypeScript scratch file seeded with the
-/// public TrUAPI example.
-pub fn create_scratch_script(directory: &Path) -> Result<PathBuf> {
-    create_scratch_script_for_runner(directory, &runner_path())
-}
-
-fn create_scratch_script_for_runner(directory: &Path, runner: &Path) -> Result<PathBuf> {
-    fs::create_dir_all(directory)
-        .with_context(|| format!("create script directory {}", directory.display()))?;
-    let runner_types = runner_types_path(runner);
-    let runner_types = fs::read(&runner_types)
-        .with_context(|| format!("read host-script types {}", runner_types.display()))?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    for sequence in 0..100 {
-        let name = format!("script-{timestamp}-{}-{sequence}", std::process::id());
-        let path = directory.join(format!("{name}.ts"));
-        let types_name = format!("{name}.types.d.ts");
-        let types_path = directory.join(&types_name);
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("create scratch script {}", path.display()));
-            }
-        };
-        let mut types_file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&types_path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                drop(file);
-                let _ = fs::remove_file(&path);
-                continue;
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("create script types {}", types_path.display()));
-            }
-        };
-        types_file
-            .write_all(&runner_types)
-            .with_context(|| format!("write script types {}", types_path.display()))?;
-        let contents = SCRATCH_TEMPLATE.replace("__TRUAPI_TYPES__", &types_name);
-        file.write_all(contents.as_bytes())
-            .with_context(|| format!("write scratch script {}", path.display()))?;
-        return Ok(path);
-    }
-    anyhow::bail!(
-        "could not allocate a unique scratch script in {}",
-        directory.display()
-    );
 }
 
 /// Open the script in the configured terminal editor and wait for it to exit.
@@ -206,6 +150,8 @@ pub async fn run(
     script: &Path,
     host_role: ScriptHostRole,
 ) -> Result<ExitStatus> {
+    script_project::prepare(script, None).await?;
+    eprintln!("Running {} for {product_id}", script.display());
     let mut command = command(frame_url, product_id, script, host_role)?;
     terminal_ui::output_event(SystemEvent::ScriptStarted);
     command
@@ -222,15 +168,22 @@ pub async fn run_captured(
     ui: UiHandle,
     host_role: ScriptHostRole,
 ) -> Result<ExitStatus> {
-    let mut command = command(frame_url, product_id, script, host_role)?;
+    script_project::prepare(script, Some(ui.clone())).await?;
+    ui.script_stdout(format!("Running {} for {product_id}", script.display()));
+    let command = command(frame_url, product_id, script, host_role)?;
     terminal_ui::output_event(SystemEvent::ScriptStarted);
+    capture(command, ui).await
+}
+
+/// Stream a child process into the terminal UI and stop it on cancellation.
+pub async fn capture(mut command: Command, ui: UiHandle) -> Result<ExitStatus> {
     command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = command
         .spawn()
-        .context("failed to spawn `bun` for the host script (is bun installed?)")?;
+        .context("failed to spawn bun (is bun installed?)")?;
     let stdout = child.stdout.take().context("capture script stdout")?;
     let stderr = child.stderr.take().context("capture script stderr")?;
     let stdout_ui = ui.clone();
@@ -267,11 +220,17 @@ fn command(
             runner.display()
         );
     }
+    let runner = runner
+        .canonicalize()
+        .with_context(|| format!("resolve host-script runner {}", runner.display()))?;
     let script = script
         .canonicalize()
         .with_context(|| format!("script not found: {}", script.display()))?;
 
     let mut command = Command::new("bun");
+    if let Some(directory) = script_project::directory(&script)? {
+        command.current_dir(directory);
+    }
     command
         .arg("run")
         .arg(&runner)
@@ -373,48 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn scratch_script_starts_as_a_bun_script_with_dependency_free_example() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-
-        let script = create_scratch_script(temporary.path())?;
-        let contents = fs::read_to_string(&script)?;
-        let script_types = script.with_extension("types.d.ts");
-        let script_types_name = script_types.file_name().unwrap().to_string_lossy();
-
-        assert_eq!(
-            contents,
-            format!(
-                r#"#!/usr/bin/env bun
-
-import type {{
-  TrUApiClient,
-  HostContext,
-  ScriptAssert,
-}} from "./{script_types_name}";
-
-declare const truapi: TrUApiClient;
-declare const host: HostContext;
-declare const assert: ScriptAssert;
-
-// Scripts can use packages installed next to the script or in a parent project.
-
-const result = await truapi.account.getUserId();
-if (!result.isOk()) {{
-  throw new Error(`getUserId failed: ${{JSON.stringify(result.error)}}`);
-}}
-
-console.log("user id", result.value);
-"#
-            )
-        );
-        assert_eq!(
-            fs::read(script_types)?,
-            fs::read(runner_types_path(&runner_path()))?
-        );
-        Ok(())
-    }
-
-    #[test]
     fn runner_types_follow_the_selected_runner() {
         assert_eq!(
             [
@@ -425,48 +342,6 @@ console.log("user id", result.value);
                 PathBuf::from("/checkout/js/script-types.d.ts"),
                 PathBuf::from("/release/script-types.d.ts"),
             ]
-        );
-    }
-
-    /// A downloaded binary has no checkout or npm package to supply editor
-    /// declarations, so the scratch file has to retain the shipped bundle.
-    #[test]
-    fn packaged_runner_types_are_copied_beside_the_scratch_script() -> Result<()> {
-        let install = tempfile::tempdir()?;
-        let runner = install.path().join(PACKAGED_RUNNER);
-        fs::write(&runner, "packaged runner")?;
-        fs::write(
-            install.path().join(PACKAGED_SCRIPT_TYPES),
-            "declare const packaged: true;\n",
-        )?;
-        let scripts = tempfile::tempdir()?;
-
-        let script = create_scratch_script_for_runner(scripts.path(), &runner)?;
-
-        assert_eq!(
-            fs::read_to_string(script.with_extension("types.d.ts"))?,
-            "declare const packaged: true;\n"
-        );
-        Ok(())
-    }
-
-    /// Opening an untyped scratch file recreates the original failure, so a
-    /// broken install must fail before launching the editor.
-    #[test]
-    fn scratch_creation_rejects_a_runner_without_types() {
-        let install = tempfile::tempdir().unwrap();
-        let runner = install.path().join(PACKAGED_RUNNER);
-        fs::write(&runner, "packaged runner").unwrap();
-        let scripts = tempfile::tempdir().unwrap();
-
-        let error = create_scratch_script_for_runner(scripts.path(), &runner).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "read host-script types {}",
-                install.path().join(PACKAGED_SCRIPT_TYPES).display()
-            )
         );
     }
 
@@ -494,6 +369,67 @@ console.log("user id", result.value);
                 .find_map(|(key, value)| { (key == "TRUAPI_CLI_HOST_ROLE").then_some(value) }),
             Some(Some(std::ffi::OsStr::new("signing-host")))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn relative_runner_overrides_work_in_managed_projects() -> Result<()> {
+        if let Some(script) = std::env::var_os("TRUAPI_TEST_SCRIPT") {
+            let command = command(
+                "ws://127.0.0.1:1234",
+                "example.dot",
+                Path::new(&script),
+                ScriptHostRole::PairingHost,
+            )?;
+            let runner = command.as_std().get_args().nth(1).unwrap();
+            assert_eq!(Path::new(runner), fs::canonicalize("runner.js")?);
+            return Ok(());
+        }
+        let temporary = tempfile::tempdir()?;
+        fs::write(temporary.path().join("runner.js"), "runner")?;
+        let project = temporary.path().join("project");
+        fs::create_dir(&project)?;
+        fs::write(
+            project.join("package.json"),
+            r#"{"truapiHost":{"script":"script.ts"}}"#,
+        )?;
+        let script = project.join("script.ts");
+        fs::write(&script, "script")?;
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "script_runner::tests::relative_runner_overrides_work_in_managed_projects",
+            ])
+            .current_dir(temporary.path())
+            .env("TRUAPI_HOST_RUNNER", "runner.js")
+            .env("TRUAPI_TEST_SCRIPT", script)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn managed_scripts_use_their_project_directory_when_selected_explicitly() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        fs::write(
+            project.path().join("package.json"),
+            r#"{"truapiHost":{"script":"script.ts"}}"#,
+        )?;
+        let script = project.path().join("script.ts");
+        fs::write(&script, "console.log('hello');\n")?;
+
+        let command = command(
+            "ws://127.0.0.1:1234",
+            "example.dot",
+            &script,
+            ScriptHostRole::SigningHost,
+        )?;
+
+        assert_eq!(command.as_std().get_current_dir(), Some(project.path()));
         Ok(())
     }
 
