@@ -30,9 +30,10 @@ use truapi::latest::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use allowance_renewal::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 pub(crate) use local_activation::LocalActivation;
-pub use sso_responder::{PairedSsoPeer, ResponderExit};
+pub use sso_responder::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
 pub(crate) use sso_responder::{
-    disconnect_paired_host, establish_pairing, respond_to_pairing, resume_pairing,
+    disconnect_paired_host, establish_pairing, notify_pairing_allowance_allocation,
+    notify_pairing_failed, respond_to_pairing, resume_pairing,
 };
 pub(crate) use sso_service::SigningHostSsoService;
 

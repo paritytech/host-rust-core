@@ -37,7 +37,7 @@ use crate::runtime::{
     ActionChannel, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
     PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
     SigningHostRole, SigningHostSsoService, disconnect_paired_host, establish_pairing,
-    respond_to_pairing, resume_pairing,
+    notify_pairing_allowance_allocation, notify_pairing_failed, respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -391,6 +391,13 @@ impl PairingHostRuntime {
             .session_state()
             .current()?
             .identity_chat_private_key
+    }
+
+    /// Read the active session's sr25519 statement-store secret, for hosts
+    /// running their own statement-store traffic against the advertised account.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.device_statement_key"))]
+    pub fn device_statement_key(&self) -> Option<[u8; 64]> {
+        Some(self.pairing_host.session_state().current()?.sso?.ss_secret)
     }
 
     /// Read this device's X25519 encryption secret, for hosts running device
@@ -795,6 +802,44 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Tell a pairing host that allowance allocation is under way, so it leaves
+    /// its QR screen while the allocation runs.
+    ///
+    /// Answering needs this host's own statement-store allowance, so register
+    /// the `WalletSso` renewal target before calling.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.notify_pairing_allowance_allocation"))]
+    pub async fn notify_pairing_allowance_allocation(
+        &self,
+        deeplink: &str,
+    ) -> Result<crate::runtime::AnnouncedPairing, v01::GenericError> {
+        notify_pairing_allowance_allocation(
+            self.services.clone(),
+            self.signing_host.clone(),
+            deeplink,
+        )
+        .await
+        .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Tell a pairing host that pairing failed, so it reports `reason` and
+    /// offers a retry.
+    ///
+    /// Owed to any host that was sent
+    /// [`Self::notify_pairing_allowance_allocation`]: it has dropped its QR and
+    /// waits without a deadline. Takes that call's handle, so the notice is
+    /// signed by the account that already reached this host even if the signer
+    /// has rotated since.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.notify_pairing_failed"))]
+    pub async fn notify_pairing_failed(
+        &self,
+        announced: &crate::runtime::AnnouncedPairing,
+        reason: String,
+    ) -> Result<(), v01::GenericError> {
+        notify_pairing_failed(self.services.clone(), announced, reason)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Answer a pairing host's handshake without entering its long-lived serve loop.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.establish_pairing"))]
     pub async fn establish_pairing(&self, deeplink: &str) -> Result<(), v01::GenericError> {
@@ -1110,6 +1155,15 @@ impl CoreAdmin for HostAdmin {
             .session_state()
             .current()
             .and_then(|session| session.identity_chat_private_key))
+    }
+
+    async fn get_device_statement_key(&self) -> Result<Option<Vec<u8>>, v01::GenericError> {
+        Ok(self
+            .authority
+            .session_state()
+            .current()
+            .and_then(|session| session.sso)
+            .map(|sso| sso.ss_secret.to_vec()))
     }
 
     async fn get_device_encryption_key(&self) -> Result<[u8; 32], v01::GenericError> {

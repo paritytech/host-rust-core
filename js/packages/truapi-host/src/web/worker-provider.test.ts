@@ -552,6 +552,37 @@ describe("createWebWorkerPairingHostRuntime", () => {
     provider.dispose();
   });
 
+  it("returns the device statement key, and undefined when absent", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker, {
+      runtimeConfig: runtimeConfig(),
+    });
+
+    const keyBytes = new Uint8Array(64).fill(0x5a);
+    const pending = provider.getDeviceStatementKey();
+    const msg = lastMessageOfKind(worker, "getDeviceStatementKey");
+
+    worker.emit({
+      kind: "deviceStatementKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toEqual(keyBytes);
+
+    // No active session means no advertised account, so absence is not an error.
+    const missing = provider.getDeviceStatementKey();
+    worker.emit({
+      kind: "deviceStatementKeyResponse",
+      requestId: lastMessageOfKind(worker, "getDeviceStatementKey").requestId,
+      ok: true,
+      key: undefined,
+    });
+    expect(await missing).toBeUndefined();
+
+    provider.dispose();
+  });
+
   it("returns a product subtree key as hex and surfaces a wallet deadline", async () => {
     const worker = new FakeWorker();
     const providerPromise = createProviderFromRuntime(

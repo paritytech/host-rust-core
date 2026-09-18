@@ -102,6 +102,7 @@ export type MainToWorker =
       status: PermissionAuthorizationStatus;
     }
   | { kind: "getSessionChatIdentityKey"; requestId: number }
+  | { kind: "getDeviceStatementKey"; requestId: number }
   | { kind: "getDeviceEncryptionKey"; requestId: number }
   | {
       kind: "getProductSubtreePublicKey";
@@ -224,6 +225,18 @@ export type WorkerToMain =
     }
   | {
       kind: "sessionChatIdentityKeyResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "deviceStatementKeyResponse";
+      requestId: number;
+      ok: true;
+      key: Uint8Array | undefined;
+    }
+  | {
+      kind: "deviceStatementKeyResponse";
       requestId: number;
       ok: false;
       error: string;

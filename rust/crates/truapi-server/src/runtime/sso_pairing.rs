@@ -842,6 +842,10 @@ mod tests {
             ui_info.peer_statement_account_id,
             Some(peer_statement_keypair().1)
         );
+        assert_eq!(
+            ui_info.device_statement_account_id,
+            session.sso.as_ref().map(|sso| sso.ss_public_key)
+        );
 
         let writes = session_writes
             .lock()

@@ -444,6 +444,14 @@ export interface SessionUiInfo {
   peerStatementAccountId?: Bytes32;
 
   /**
+   * Statement-store account id this device advertises in the pairing
+   * proposal; the paired wallet registers the statement-store allowance for
+   * it, and peers address this host on topics derived from it. Rotated per
+   * login. Secret at `CoreAdmin::get_device_statement_key`.
+   */
+  deviceStatementAccountId?: Bytes32;
+
+  /**
    * Short username from the dotNS identity record on Asset Hub.
    */
   liteUsername?: string;
@@ -846,6 +854,7 @@ export const SessionUiInfo: S.Codec<SessionUiInfo> = S.lazy(
       chatPublicKey: S.Option(Bytes32),
       deviceEncPublicKey: S.Option(Bytes32),
       peerStatementAccountId: S.Option(Bytes32),
+      deviceStatementAccountId: S.Option(Bytes32),
       liteUsername: S.Option(S.str),
       fullUsername: S.Option(S.str),
     }) as S.Codec<SessionUiInfo>,
@@ -1083,6 +1092,20 @@ export interface CoreAdmin {
    * secret placed there would reach hosts that never asked for it.
    */
   getSessionChatIdentityKey(): Promise<Bytes32 | undefined>;
+
+  /**
+   * Read the active session's expanded sr25519 statement-store secret, for
+   * hosts that run their own statement-store traffic. 64 bytes.
+   *
+   * The key behind `SessionUiInfo::device_statement_account_id`: signing
+   * with anything else produces statements no allowance covers. ``undefined``
+   * without an active pairing-host session; a signing host has no pairing
+   * proposal of its own.
+   *
+   * Deliberately not on `SessionUiInfo`, for the reason given on
+   * `Self::get_session_chat_identity_key`.
+   */
+  getDeviceStatementKey(): Promise<Uint8Array | undefined>;
 
   /**
    * Read this device's X25519 encryption secret, for hosts that run device
