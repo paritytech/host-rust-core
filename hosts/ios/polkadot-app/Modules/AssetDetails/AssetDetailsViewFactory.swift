@@ -27,16 +27,10 @@ enum AssetDetailsViewFactory {
             chainAsset: chainAsset,
             coinageService: context.coinageService,
             coinageBackupSyncService: context.coinageBackupSyncService,
-            balanceSyncStateStorage: context.balanceSyncStateStorage,
             fundingDomainProvider: FundingDomainProvider(hostProvider: context.flowState.hostProvider)
         )
 
         #if TESTNET_FEATURE
-            let databaseFactory = CoinageDatabaseDependencyFactory(
-                storageFacade: UserDataStorageFacade.shared
-            )
-
-            interactor.voucherRepository = databaseFactory.makeVoucherRepository()
             interactor.backgroundExecutor = ConnectionRetainingExecutor(
                 provider: ChainRegistryFacade.sharedRegistry
             )

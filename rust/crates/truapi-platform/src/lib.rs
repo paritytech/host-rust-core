@@ -1227,6 +1227,18 @@ pub trait CoreAdmin: Send + Sync {
     /// secret placed there would reach hosts that never asked for it.
     async fn get_session_chat_identity_key(&self) -> Result<Option<Bytes32>, GenericError>;
 
+    /// Read the active session's expanded sr25519 statement-store secret, for
+    /// hosts that run their own statement-store traffic. 64 bytes.
+    ///
+    /// The key behind [`SessionUiInfo::device_statement_account_id`]: signing
+    /// with anything else produces statements no allowance covers. `None`
+    /// without an active pairing-host session; a signing host has no pairing
+    /// proposal of its own.
+    ///
+    /// Deliberately not on [`SessionUiInfo`], for the reason given on
+    /// [`Self::get_session_chat_identity_key`].
+    async fn get_device_statement_key(&self) -> Result<Option<Vec<u8>>, GenericError>;
+
     /// Read this device's X25519 encryption secret, for hosts that run device
     /// sync against the peer's [`SessionUiInfo::device_enc_public_key`].
     ///
@@ -2778,6 +2790,11 @@ pub struct SessionUiInfo {
     /// wallet identity is the wallet's choice, so hosts must not treat it as a
     /// device discriminator; use [`Self::device_enc_public_key`] for that.
     pub peer_statement_account_id: Option<Bytes32>,
+    /// Statement-store account id this device advertises in the pairing
+    /// proposal; the paired wallet registers the statement-store allowance for
+    /// it, and peers address this host on topics derived from it. Rotated per
+    /// login. Secret at [`CoreAdmin::get_device_statement_key`].
+    pub device_statement_account_id: Option<Bytes32>,
     /// Short username from the dotNS identity record on Asset Hub.
     pub lite_username: Option<String>,
     /// Fully qualified username from the dotNS identity record on Asset Hub.
@@ -2787,6 +2804,8 @@ pub struct SessionUiInfo {
 /// Auth/session lifecycle state the core projects for host UI. The core owns
 /// every transition and emits states in order; hosts render the current state
 /// and never derive auth UI from any other signal.
+// A uniffi `Enum` cannot box a variant.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum AuthState {

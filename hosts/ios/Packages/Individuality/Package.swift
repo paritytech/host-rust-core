@@ -22,6 +22,10 @@ let package = Package(
             from: "1.11.0"
         ),
         .package(path: "../StructuredConcurrency"),
+        .package(
+            url: "https://github.com/pointfreeco/swift-clocks",
+            from: "1.0.6"
+        ),
         .package(path: "../KeyDerivation"),
         .package(path: "../SubstrateSdkExt"),
         .package(path: "../ChainStore"),
@@ -49,7 +53,11 @@ let package = Package(
         ),
         .testTarget(
             name: "IndividualityTests",
-            dependencies: ["Individuality", "BackgroundExecution"],
+            dependencies: [
+                "Individuality",
+                "BackgroundExecution",
+                .product(name: "Clocks", package: "swift-clocks")
+            ],
             path: "Tests"
         )
     ]

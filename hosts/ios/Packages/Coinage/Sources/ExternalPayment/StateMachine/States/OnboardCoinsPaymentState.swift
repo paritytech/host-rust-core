@@ -16,7 +16,7 @@ struct OnboardCoinsPaymentState: StateMachineState {
 
     let payment: ExternalPayment
     let coins: [Coin]
-    let exactVoucherIndices: [DerivationIndex]
+    let exactVoucherIndices: [CoinageKeyIndex]
     let isTerminal = false
 
     static func recyclingGroupId(for payment: ExternalPayment) -> CoinageTxGroupId {

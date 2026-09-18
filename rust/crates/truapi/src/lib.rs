@@ -246,6 +246,10 @@ pub enum CallError<D> {
         /// Diagnostic reason for the failure.
         reason: String,
     },
+    /// The caller withdrew the request before it produced a result.
+    ///
+    /// Appended last so the preceding variants keep their SCALE indices.
+    Cancelled,
 }
 
 impl<D> CallError<D> {
@@ -262,8 +266,8 @@ pub type FrameworkOnlyError = CallError<Infallible>;
 
 /// Cooperative cancellation token exposed to handlers.
 ///
-/// Current one-shot request frames have no cancel control message, so request
-/// tokens fire when a runtime explicitly cancels them or attaches a timeout.
+/// A request token fires when the peer sends a `Cancel` frame for the call,
+/// when a runtime explicitly cancels it, or when an attached timeout elapses.
 /// Subscription runtimes can cancel this token when the peer sends `_stop` or
 /// disconnects.
 #[derive(Clone, Default)]

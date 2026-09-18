@@ -56,11 +56,12 @@ use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use renderer::renderer_access_for;
 pub(crate) use services::RuntimeServices;
+pub use signing_host::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
 pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, disconnect_paired_host,
-    establish_pairing, respond_to_pairing, resume_pairing,
+    establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,
+    respond_to_pairing, resume_pairing,
 };
-pub use signing_host::{PairedSsoPeer, ResponderExit};
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 use tracing::{instrument, warn};
@@ -842,6 +843,7 @@ fn connected_session_ui_info(session: &SessionInfo) -> SessionUiInfo {
         chat_public_key: session.identity_chat_private_key.map(x25519_public_key),
         device_enc_public_key: session.device_enc_public_key,
         peer_statement_account_id: session.sso.as_ref().map(|sso| sso.identity_account_id),
+        device_statement_account_id: session.sso.as_ref().map(|sso| sso.ss_public_key),
         lite_username: session.lite_username.clone(),
         full_username: session.full_username.clone(),
     }

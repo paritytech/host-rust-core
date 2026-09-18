@@ -35,7 +35,8 @@ private extension ChainOriginPersonProvider {
             liteCollectionId: PeopleLitePallet.membersIdentifier,
             fullVrfManager: keyResolver.fullKeyManager,
             fullCollectionId: PeoplePallet.membersIdentifier,
-            memberStatusChecker: MembershipStatusChecker(connection: connection, runtimeCodingService: runtimeProvider)
+            connection: connection,
+            runtimeCodingService: runtimeProvider
         )
     }
 }

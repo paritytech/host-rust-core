@@ -4796,3 +4796,65 @@ fn subnames_of_one_product_share_one_cached_manifest() {
         );
     }
 }
+
+/// A cancellation the host raised itself must never reach the wire as
+/// `CallError::Cancelled`.
+///
+/// That variant is appended last in `CallError`, so a product built before it
+/// existed cannot decode it. It is reserved for a call the peer withdrew with
+/// a `Cancel` frame, because a peer that never sends one never has to decode
+/// the answer. An internal timeout is not that: it has always reported through
+/// the method's own error type and has to keep doing so.
+///
+/// Every mapper that turns an [`AuthorityError`] into a `CallError` is checked
+/// here, because the tempting simplification is to map `Cancelled` to the new
+/// variant in one of them and leave the rest alone.
+#[test]
+fn an_internal_cancellation_never_becomes_the_cancelled_variant() {
+    use super::{
+        account_get_authority_error, signing_call_error, transaction_call_error, vrf_call_error,
+    };
+    use crate::runtime::authority::{AuthorityCancelError, AuthorityError};
+    use truapi::CancellationReason;
+    use truapi::versioned::signing::{HostCreateTransactionError, HostSignRawError};
+
+    fn assert_domain<E: core::fmt::Debug>(mapper: &str, reason: &str, err: CallError<E>) {
+        assert!(
+            matches!(err, CallError::Domain(_)),
+            "{mapper} must report an internal cancellation ({reason}) through its own \
+             domain error, got {err:?}"
+        );
+    }
+
+    let reasons = [
+        ("explicit", CancellationReason::Cancelled),
+        (
+            "timeout",
+            CancellationReason::TimedOut {
+                timeout: core::time::Duration::from_secs(30),
+            },
+        ),
+    ];
+
+    for (reason_name, reason) in reasons {
+        let cancelled =
+            || AuthorityError::Cancelled(AuthorityCancelError::new("p:1", reason.clone()));
+
+        assert_domain("vrf_call_error", reason_name, vrf_call_error(cancelled()));
+        assert_domain(
+            "account_get_authority_error",
+            reason_name,
+            account_get_authority_error(cancelled()),
+        );
+        assert_domain(
+            "signing_call_error",
+            reason_name,
+            signing_call_error(HostSignRawError::V1, cancelled()),
+        );
+        assert_domain(
+            "transaction_call_error",
+            reason_name,
+            transaction_call_error(HostCreateTransactionError::V1, cancelled()),
+        );
+    }
+}

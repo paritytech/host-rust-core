@@ -47,14 +47,17 @@ final class AccountSearchProvider<RecentPayload: Sendable>: AccountSearching {
 
     func search(query: String?) async throws -> AccountSearchSections<RecentPayload, MatchPayload> {
         let recent = stateLock.withLock { $0.recentRows }
+
+        async let blockedIds = fetchBlockedAccountIds()
         let matches = try await fetchMatches(for: query)
 
+        let excluded = try await blockedIds.union([ownAccountId])
         return AccountSearchComposer.compose(
             query: query,
             recent: recent,
             contacts: matches.contacts,
             global: matches.global,
-            excluding: [ownAccountId]
+            excluding: excluded
         )
     }
 }
@@ -114,6 +117,18 @@ private extension AccountSearchProvider {
         previous?.cancel()
     }
 
+    /// Blocked contacts are excluded from every section, including remote results
+    /// that the local lookup never returns.
+    func fetchBlockedAccountIds() async throws -> Set<AccountId> {
+        let repository = localContactSearch.blockedContacts()
+
+        let contacts = try await repository
+            .fetchAllOperation(with: RepositoryFetchOptions())
+            .asyncExecute()
+
+        return Set(contacts.map(\.accountId))
+    }
+
     /// An account id takes precedence over a username prefix, since an exact address match
     /// is never also a username. A nil prefix with no account id fetches every stored contact.
     func fetchLocalContacts(
@@ -134,7 +149,6 @@ private extension AccountSearchProvider {
             .asyncExecute()
 
         return contacts
-            .filter { !$0.isBlocked }
             .map { contact in
                 SearchRow(
                     accountId: contact.accountId,
@@ -147,9 +161,11 @@ private extension AccountSearchProvider {
 
     func fetchGlobalContacts(query: String, accountId: AccountId?) async throws -> [SearchRow<MatchPayload>] {
         do {
-            if let accountId, let account = try? await remoteContactSearch.fetch(by: accountId) {
+            if let accountId {
+                let account = try await remoteContactSearch.fetch(by: accountId)
                 try Task.checkCancellation()
-                return [makeRemoteRow(contact: account)]
+
+                return account.map { [makeRemoteRow(contact: $0)] } ?? []
             }
 
             let contacts = try await remoteContactSearch.search(by: query).asyncExecute()

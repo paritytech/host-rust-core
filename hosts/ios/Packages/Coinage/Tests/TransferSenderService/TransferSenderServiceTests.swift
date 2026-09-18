@@ -168,7 +168,7 @@ struct TransferSenderServiceTests {
 
         // All three vouchers registered as inputs across entries
         let allInputs = await mockDurability.submittedInputs.flatMap { $0 }
-        let voucherIndices = Set(allInputs.compactMap { input -> UInt64? in
+        let voucherIndices = Set(allInputs.compactMap { input -> CoinageKeyIndex? in
             guard case let .recyclerVoucher(index, _) = input else { return nil }
             return index
         })
@@ -222,7 +222,7 @@ struct TransferSenderServiceTests {
 
         // All five vouchers registered as inputs across entries
         let allInputs = await mockDurability.submittedInputs.flatMap { $0 }
-        let voucherIndices = Set(allInputs.compactMap { input -> UInt64? in
+        let voucherIndices = Set(allInputs.compactMap { input -> CoinageKeyIndex? in
             guard case let .recyclerVoucher(index, _) = input else { return nil }
             return index
         })
@@ -676,7 +676,7 @@ extension TransferSenderServiceTests {
     // MARK: - Helpers
 
     /// Derivation indices of the coins the strategy reserved for the peer via `preCommitHandoff`.
-    private func handedOffIndices() async -> Set<DerivationIndex> {
+    private func handedOffIndices() async -> Set<CoinageKeyIndex> {
         await Set(mockDurability.handoffAssets.map(\.derivationIndex))
     }
 
@@ -687,18 +687,18 @@ extension TransferSenderServiceTests {
     }
 
     /// Derivation indices of own coins consumed as durability entry inputs.
-    private func consumedCoinIndices() async -> Set<DerivationIndex> {
+    private func consumedCoinIndices() async -> Set<CoinageKeyIndex> {
         let inputs = await mockDurability.submittedInputs.flatMap { $0 }
-        return Set(inputs.compactMap { input -> DerivationIndex? in
+        return Set(inputs.compactMap { input -> CoinageKeyIndex? in
             guard case let .coin(.own(index, _)) = input else { return nil }
             return index
         })
     }
 
     /// Derivation indices of vouchers consumed as durability entry inputs.
-    private func consumedVoucherIndices() async -> Set<DerivationIndex> {
+    private func consumedVoucherIndices() async -> Set<CoinageKeyIndex> {
         let inputs = await mockDurability.submittedInputs.flatMap { $0 }
-        return Set(inputs.compactMap { input -> DerivationIndex? in
+        return Set(inputs.compactMap { input -> CoinageKeyIndex? in
             guard case let .recyclerVoucher(index, _) = input else { return nil }
             return index
         })
@@ -746,7 +746,7 @@ extension TransferSenderServiceTests {
 
     private func makeCoin(
         exponent: Int16,
-        derivationIndex: UInt64 = 0,
+        derivationIndex: CoinageKeyIndex = 0,
         age: Int16 = 0
     ) -> TrackedCoin {
         let coin = Coin(
@@ -754,7 +754,7 @@ extension TransferSenderServiceTests {
             derivationIndex: derivationIndex,
             age: age,
             isOnchain: true,
-            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex), count: 32)
+            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex.item), count: 32)
         )
         return TrackedCoin(
             coin: coin,
@@ -764,7 +764,7 @@ extension TransferSenderServiceTests {
 
     private func makeVoucher(
         exponent: Int16,
-        derivationIndex: UInt64,
+        derivationIndex: CoinageKeyIndex,
         recyclerIndex: UInt32 = 0,
         readyAt: Date = Date.distantPast
     ) -> TrackedVoucher {
@@ -774,7 +774,7 @@ extension TransferSenderServiceTests {
             allocatedAt: Date.distantPast,
             readyAt: readyAt,
             remoteState: .inRecycler(.init(index: recyclerIndex, membersCount: 0)),
-            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex), count: 32)
+            publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex.item), count: 32)
         )
         return TrackedVoucher(
             voucher: voucher,

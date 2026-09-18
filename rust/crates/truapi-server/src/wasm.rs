@@ -988,6 +988,13 @@ impl WasmPairingHostRuntime {
             .map(|key| key.to_vec())
     }
 
+    /// Read the active session's sr25519 statement-store secret, or
+    /// `undefined` when no session is active.
+    #[wasm_bindgen(js_name = deviceStatementKey)]
+    pub fn device_statement_key(&self) -> Option<Vec<u8>> {
+        self.runtime.device_statement_key().map(|key| key.to_vec())
+    }
+
     /// Read this device's X25519 encryption secret, generating and persisting
     /// it on first read.
     #[wasm_bindgen(js_name = deviceEncryptionKey)]

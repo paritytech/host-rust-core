@@ -4,11 +4,16 @@ import { describe, expect, it, jest } from "bun:test";
 import { createTransport, RequestTimeoutError } from "./client.js";
 import * as S from "./scale.js";
 import { str, type CallErrorValue } from "./scale.js";
-import { createClient, SubscriptionError } from "./generated/client.js";
+import {
+  createClient,
+  SubscriptionError,
+  TRUAPI_CODEC_VERSION,
+} from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 import {
   encodeWireMessage,
+  MESSAGE_TYPE_CANCEL,
   MESSAGE_TYPE_INTERRUPT,
   MESSAGE_TYPE_RECEIVE,
   MESSAGE_TYPE_REQUEST,
@@ -262,7 +267,7 @@ describe("generated client transport", () => {
 
         const expectedPayload = T.VersionedHostHandshakeRequest.enc({
             tag: "V1",
-            value: { codecVersion: 2 },
+            value: { codecVersion: TRUAPI_CODEC_VERSION },
         });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 3 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
@@ -647,7 +652,7 @@ describe("generated client transport", () => {
 
         const requestPayload = T.VersionedHostHandshakeRequest.enc({
             tag: "V1",
-            value: { codecVersion: 2 },
+            value: { codecVersion: TRUAPI_CODEC_VERSION },
         });
         const requestFrame = wireFrame(
             "h:1",
@@ -700,6 +705,133 @@ describe("generated client transport", () => {
         } finally {
             jest.useRealTimers();
         }
+    });
+
+    it("sends a cancel frame when an in-flight call is aborted", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const controller = new AbortController();
+
+        const response = transport.request<undefined, CallErrorValue<never>>({
+            ids: { trait: 200, method: 194, kind: "request" },
+            payload: new Uint8Array(),
+            decodeResponse: () => ({
+                success: false,
+                value: { tag: "Cancelled" },
+            }),
+            signal: controller.signal,
+        });
+        controller.abort();
+
+        expect(fixture.sent).toHaveLength(2);
+        expect(toHex(fixture.sent[1]!)).toBe(
+            toHex(
+                wireFrame(
+                    "p:1",
+                    { trait: 200, method: 194 },
+                    MESSAGE_TYPE_CANCEL,
+                ),
+            ),
+        );
+
+        // The call is still pending: aborting asks, the response answers.
+        fixture.receive(
+            wireFrame("p:1", { trait: 200, method: 194 }, MESSAGE_TYPE_RESPONSE),
+        );
+        const outcome = await response;
+        expect(outcome.isErr() && outcome.error).toEqual({ tag: "Cancelled" });
+    });
+
+    it("decodes a withdrawn call's response as Cancelled", async () => {
+        // End to end through a real generated method, against the exact bytes
+        // `encode_cancelled_response` puts on the wire: `Err` (1) then
+        // `CallError::Cancelled` (5). The payload names neither of the
+        // method's own types, which is what lets one host-side encoder answer
+        // any method.
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const controller = new AbortController();
+
+        const pending = client.account.getAccount(
+            {
+                productAccountId: {
+                    dotNsIdentifier: "foo",
+                    derivationIndex: { tag: "Index", value: 0 },
+                },
+            },
+            { signal: controller.signal },
+        );
+        controller.abort();
+
+        expect(fixture.sent).toHaveLength(2);
+        expect(toHex(fixture.sent[1]!)).toBe(
+            toHex(wireFrame("p:1", W.ACCOUNT_GET_ACCOUNT, MESSAGE_TYPE_CANCEL)),
+        );
+
+        fixture.receive(
+            wireFrame(
+                "p:1",
+                W.ACCOUNT_GET_ACCOUNT,
+                MESSAGE_TYPE_RESPONSE,
+                new Uint8Array([1, 5]),
+            ),
+        );
+
+        // Raced against a macrotask rather than awaited outright: a client
+        // that stops settling on the response should redden here, not time the
+        // whole suite out two minutes later.
+        const STILL_PENDING = Symbol("still pending");
+        const outcome = await Promise.race([
+            Promise.resolve(pending),
+            new Promise((resolve) => setTimeout(() => resolve(STILL_PENDING), 0)),
+        ]);
+        expect(outcome).not.toBe(STILL_PENDING);
+        expect(
+            outcome instanceof Object && "isErr" in outcome && outcome.isErr()
+                ? outcome.error
+                : outcome,
+        ).toEqual({ tag: "Cancelled" });
+    });
+
+    it("tells the host before it gives up on its own deadline", async () => {
+        jest.useFakeTimers();
+        try {
+            const fixture = providerFixture();
+            const transport = createTransport(fixture.provider, {
+                requestTimeoutMs: 25,
+            });
+            const response = transport.request<undefined, CallErrorValue<never>>({
+                ids: { trait: 200, method: 194, kind: "request" },
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true, value: undefined }),
+            });
+            const outcome = Promise.resolve(response);
+            jest.advanceTimersByTime(26);
+            await expect(outcome).rejects.toBeInstanceOf(RequestTimeoutError);
+
+            expect(fixture.sent).toHaveLength(2);
+            expect(fixture.sent[1]![str.enc("p:1").length + 2]).toBe(
+                MESSAGE_TYPE_CANCEL,
+            );
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it("never sends a request its signal has already withdrawn", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+
+        const response = transport.request<undefined, CallErrorValue<never>>({
+            ids: { trait: 200, method: 194, kind: "request" },
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: true, value: undefined }),
+            signal: AbortSignal.abort(),
+        });
+
+        await expect(Promise.resolve(response)).rejects.toBeDefined();
+        expect(fixture.sent).toHaveLength(0);
     });
 
     it("refuses a non-positive request deadline", () => {

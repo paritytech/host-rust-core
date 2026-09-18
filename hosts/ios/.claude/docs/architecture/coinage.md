@@ -14,17 +14,68 @@ Coinage is the payment primitive for the Polkadot app — managing digital coins
 
 ### Services (in ServiceCoordinator)
 - `coinageService` — coinage state management
-- `coinageBackupSyncService` — iCloud backup synchronization
+- `coinageBackupSyncService` — the wallet's "balance restored" card: visibility from the installation rows, spinner from `BackupProgress`
 
 ## Coin Model
 
 A coin (`Packages/Coinage/Sources/Models/Coin.swift`) has:
 - `exponent` — coin value as a power of two (`2^n`)
-- `derivationIndex` — unique derivation path
+- `derivationIndex` — a `CoinageKeyIndex`: the installation it was allocated in and its item there
 - `age` — on-chain age; `nil` = never seen on chain, `0` = fresh from unload/split
 - `isOnchain` — on-chain presence, written only by chain sync (`age != nil ∧ ¬isOnchain` = seen then vanished)
 - `handoffMark` — whether the coin has been handed off to a peer, and how far along
 - `publicKey` — on-chain account id derived from `derivationIndex`, cached so the durability layer never re-derives it
+
+## Installations (per-installation derivation page)
+
+Every installation draws a random 32-byte `CoinageInstallationId` (`Packages/Coinage/Sources/Installation/`)
+and allocates coins and vouchers under it: `//coinage//4294967295//0x{id}/{item}` for coins,
+`//coinage-ring-vrf//4294967295//0x{id}//{item}` for vouchers. A `CoinageKeyIndex(installation, item)`
+addresses one key; its string form `"{idHex}/{item}"` (`toString()` / `fromString(_:)`) is the CoreData
+`identifier`, written but never parsed back — rows carry the split `installationId` / `derivationIndex` columns
+(`CDCoin.keyIndex()`), and the location pipeline keys member subscriptions by voucher public key. `item` is a
+`DerivationIndex` (`UInt64`); CoreData holds it as `Int64(bitPattern:)` and reads it back with
+`UInt64(bitPattern:)`, the same for the scan cursors.
+
+The *current* installation is one database row (`CDCurrentInstallation`, behind
+`CoinageCurrentInstallationRepositoryProtocol`) in the same store as the coins and vouchers allocated in it,
+read once per process by `CoinageCurrentInstallationStore` (`CoinageCurrentInstallationStoring`) since it
+never changes once created; the read and the insert share one context block so concurrent first callers
+get one id. Its two allocation counters live in the Keychain, scoped by the installation itself:
+`io.polkadotapp:<installationIdHex>:coinage.coin.index` and `…:coinage.voucher.index` (SCALE `UInt64`, the
+next unissued item; `CoinageInstallationKeychainTags` supplies the layout). Each `next…Item` call reserves
+an item for good, so a crash before the coin is saved costs one unused key, never a reused one; previous
+installations' rows never move the counters. Putting the identity in the database is what makes a
+same-device restore safe: the Keychain (`ThisDeviceOnly`) comes back but the backup-excluded store does
+not, so a new installation starts, its counters begin at zero under its own tags, and the old one is
+recovered through the contract like any previous installation instead of keeping its counters while its
+items are never scanned. The database (`CDCoinageInstallation`) holds *previous* installations only, with
+their scan cursors. The `coinageSyncNeeded` / scan-horizon settings are gone. Android keeps the current
+installation in the same Room table under an `isCurrent` flag; iOS keeps a separate entity and the
+counters in the Keychain.
+
+Backup: the seed's `//datastore` sr25519 account (public key, 64-byte secret and encryption key pinned
+against polkadot-js and Android in `DataStoreKeyParityTests`; the encryption key is keyed by the secret in
+schnorrkel's ed25519 form via `DataStoreAccountKeys.ed25519Form(of:)` over NovaCrypto's `SNPrivateKey.toEd25519Data()`,
+since the iOS SDK holds the canonical scalar) registers each installation in the `AccountDataStore`
+contract on Asset Hub (record = ChaCha20-Poly1305 of the id under `"encryption".blake2b32WithKey(secret64)`,
+deterministic nonce). Contract reads and the `Revive.call` extrinsic go through the `Revive` package
+(`ReviveContractApiProtocol`, `RevivePallet.Call`; see architecture/revive.md); the contract ABI table is
+`AccountDataStoreAbi` over `EvmAbi`, and the address is an `EvmAddress`. Registration is a durable-transaction domain (`coinage-installation`, see
+architecture/durable-transactions.md); `CoinageInstallationRegistrar` runs it once per process and
+reports `CoinageAccountBackupStatus` (`registering / delayed / completed`) — Asset Details shows a warning
+row while `delayed`. Recovery (`CoinageBackupRecoveryService`) lists the contract on every launch (three attempts through
+`withRetry`; a listing that still fails with no previous installation known ends the launch pass as `.failed`
+rather than "nothing to recover", while a missing contract address only skips discovery), records
+the other installations as previous ones (`CDCoinageInstallation`) and gap-scans them (batches of 500,
+stop after 4 empty in a row, cursors persisted); "Update" deep-searches 10 more batches, "Close" confirms
+every installation known (`CDCoinageInstallation.isUserConfirmedCompletion`, `markAllUserConfirmed()`). The
+wallet card is shown while any previous installation has `initialScanCompleted && !isUserConfirmedCompletion`
+(`CoinageBackupSyncService` watches the rows through `subscribeSnapshot`), so a running or failed deep search
+never hides an offered balance; progress only drives the card's "Update" spinner. An installation recorded
+after a confirmation is unconfirmed by default, so it is shown again. A scan that could not read the chain ends the phase as `.failed`: no balance is
+offered for acceptance, the app's recovery state is `failed`, and the next launch scans again. Recovered
+coins keep their absolute index; rows the store already holds are never overwritten. The contract address comes from remote config `account_data_store_config`.
 
 ## Key Rules
 
@@ -96,5 +147,10 @@ Transfer plans determine how coins are spent:
 | External payments       | `Packages/Coinage/Sources/ExternalPayment/` | Offramp identity, retry, status, planner scope |
 | Coinage UI              | `Modules/Coinage/`            | Coinage screen changes           |
 | Backup sync             | ServiceCoordinator             | Backup/restore flow changes      |
+| Installation identity   | `Packages/Coinage/Sources/Installation/`, `CoinageCurrentInstallationStore` (current row + Keychain counters), `CoinageCurrentInstallationCoreDataRepository`, `CoinageInstallationCoreDataRepository` (previous) | Key index / page format, allocator counters |
+| Installation Keychain tags | `Common/Crypto/KeystoreTag.swift`, `Modules/Coinage/Model/Keychain/CoinageInstallationKeychainTags.swift` | Tag layout, installation scoping |
+| Installation registration | `.../Installation/Registration/`, `ServiceCoordinator.createInstallationDependency` | Contract ABI, PGAS provisioning, registrar timing |
+| Contract calls          | `Packages/Revive/` (see architecture/revive.md) | Runtime API encoding, revert handling, `EvmAddress` |
+| Backup recovery         | `Packages/Coinage/Sources/Backup/`, `CoinageBackupSyncService` | Scan rules, progress model, restored-balance card |
 | Durability (oracle, asset ledger) | `Packages/Coinage/Sources/CoinageTx/` | Coin/voucher evidence or invariants; the engine itself is `Packages/DurableTransactions` (see architecture/durable-transactions.md) |
 | Instance ID config      | `AppConfig.Coinage.instanceId` | Remote config schema or app instance strategy changes |

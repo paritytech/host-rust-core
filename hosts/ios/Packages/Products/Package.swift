@@ -30,10 +30,6 @@ let package = Package(
             from: "0.0.1"
         ),
         .package(
-            url: "https://github.com/novasamatech/web3swift.git",
-            from: "3.3.0"
-        ),
-        .package(
             url: "https://github.com/novasamatech/Keystore-iOS",
             from: "1.0.1"
         ),
@@ -55,7 +51,8 @@ let package = Package(
         .package(path: "../AssetsManagement"),
         .package(path: "../ChainStore"),
         .package(path: "../SubstrateOperation"),
-        .package(path: "../SubstrateSdkExt")
+        .package(path: "../SubstrateSdkExt"),
+        .package(path: "../Revive")
     ],
     targets: [
         .target(
@@ -70,7 +67,6 @@ let package = Package(
                 .product(name: "Keystore-iOS", package: "keystore-ios"),
                 .product(name: "KeyDerivation", package: "KeyDerivation"),
                 .product(name: "CID", package: "swift-cid"),
-                .product(name: "web3swift", package: "web3swift"),
                 .product(name: "StructuredConcurrency", package: "StructuredConcurrency"),
                 .product(name: "AsyncExtensions", package: "AsyncExtensions"),
                 .product(name: "StatementStore", package: "StatementStore"),
@@ -79,7 +75,8 @@ let package = Package(
                 .product(name: "AssetsManagement", package: "AssetsManagement"),
                 .product(name: "ChainStore", package: "ChainStore"),
                 "SubstrateOperation",
-                "SubstrateSdkExt"
+                "SubstrateSdkExt",
+                "Revive"
             ],
             resources: [.process("Resources")]
         ),
@@ -88,8 +85,8 @@ let package = Package(
             dependencies: [
                 "Products",
                 .product(name: "SubstrateSdk", package: "substrate-sdk-ios"),
-                .product(name: "web3swift", package: "web3swift"),
                 .product(name: "KeyDerivation", package: "KeyDerivation"),
+                "Revive",
                 .product(name: "SDKLogger", package: "logger-ios"),
                 .product(name: "AsyncExtensions", package: "AsyncExtensions"),
             ]

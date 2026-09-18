@@ -1,4 +1,5 @@
 import Foundation
+import KeyDerivation
 import ExtrinsicService
 import SDKLogger
 
@@ -95,7 +96,8 @@ private extension CoinageClaimSubmitter {
             provenance: .received(ageAfterTransfer: coin.age + 1, bundleSize: bundleSize)
         )
 
-        let wallet = try CoinDerivedWallet(privateKey: coin.privateKey, publicKey: coin.publicKey)
+        let coinPrivateKey = coin.privateKey
+        let wallet = DynamicDerivedWallet(secretKeyProvider: { coinPrivateKey })
         let origin = try originFactory.createAsCoinOrigin(for: wallet)
 
         let call = CoinagePallet.Calls.Transfer(to: destination.publicKey)

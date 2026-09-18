@@ -164,7 +164,7 @@ final class FakeChainTimeProvider: ChainTimeProviding {
         nowSecondsValue = UInt64(period) * UInt64(TimeInterval.secondsInDay)
     }
 
-    func nowSeconds() async throws -> UInt64 {
+    func nowSeconds(at _: Data?) async throws -> UInt64 {
         if !scriptedSeconds.isEmpty { return scriptedSeconds.removeFirst() }
         return nowSecondsValue
     }

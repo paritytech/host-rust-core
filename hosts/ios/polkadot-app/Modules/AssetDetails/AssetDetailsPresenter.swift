@@ -135,10 +135,6 @@ extension AssetDetailsPresenter: AssetDetailsPresenterProtocol {
 
             interactor?.topUp()
         }
-
-        func onMakeAllVouchersReady() {
-            interactor?.makeAllVouchersReady()
-        }
     #endif
 }
 
@@ -202,20 +198,20 @@ extension AssetDetailsPresenter: AssetDetailsInteractorOutputProtocol {
         provideAssetBalance()
     }
 
-    func didFail(recovery error: Error) {
-        wireframe.present(error: error, from: view)
-    }
-
     func didReceive(isRecoveryInProgress: Bool) {
         view?.didReceive(isRecoveryInProgress: isRecoveryInProgress)
     }
 
-    func didCompleteRecovery() {
-        view?.didShowBackupNotification()
+    func didReceive(isAccountBackupPending: Bool) {
+        view?.didReceive(isAccountBackupPending: isAccountBackupPending)
     }
 
-    func didClearBackupNotification() {
-        view?.didHideBackupNotification()
+    func didReceive(showsRecoveredBalance: Bool) {
+        if showsRecoveredBalance {
+            view?.didShowBackupNotification()
+        } else {
+            view?.didHideBackupNotification()
+        }
     }
 }
 

@@ -192,11 +192,11 @@ private extension OffboardVouchersForPaymentService {
     /// What the finalized groups delivered to the destination: each group's voucher inputs minus the
     /// surplus vouchers it minted back. Only the vouchers the entries name are read, by public key.
     func settledValue(of entries: [CoinageTxEntry]) async throws -> Balance {
-        let inputKeys = entries.flatMap(\.inputs).compactMap { input -> (DerivationIndex, PublicKey)? in
+        let inputKeys = entries.flatMap(\.inputs).compactMap { input -> (CoinageKeyIndex, PublicKey)? in
             guard case let .recyclerVoucher(index, key) = input else { return nil }
             return (index, key)
         }
-        let outputKeys = entries.flatMap(\.outputs).compactMap { output -> (DerivationIndex, PublicKey)? in
+        let outputKeys = entries.flatMap(\.outputs).compactMap { output -> (CoinageKeyIndex, PublicKey)? in
             guard case let .recyclerVoucher(index, key) = output else { return nil }
             return (index, key)
         }
@@ -206,7 +206,7 @@ private extension OffboardVouchersForPaymentService {
             uniquingKeysWith: { first, _ in first }
         )
 
-        func value(of index: DerivationIndex) throws -> Balance {
+        func value(of index: CoinageKeyIndex) throws -> Balance {
             guard let exponent = exponents[index] else {
                 throw OffboardVouchersForPaymentError.unknownVoucher(index)
             }

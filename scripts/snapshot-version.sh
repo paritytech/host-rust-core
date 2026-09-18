@@ -77,7 +77,6 @@ codegen_args=(
   --playground-output "$TMP_DIR/playground"
   --explorer-output "$TMP_DIR/explorer"
   --strip-examples
-  --codec-version 2
 )
 if [ -n "$WIRE_VERSION" ]; then
   codegen_args+=(--client-version "$WIRE_VERSION")

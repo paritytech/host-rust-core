@@ -6,10 +6,14 @@ import ChainStore
 import FoundationExt
 
 public protocol ChainTimeProviding {
-    func nowSeconds() async throws -> UInt64
+    func nowSeconds(at blockHash: Data?) async throws -> UInt64
 }
 
 public extension ChainTimeProviding {
+    func nowSeconds() async throws -> UInt64 {
+        try await nowSeconds(at: nil)
+    }
+
     func currentPeriod() async throws -> UInt32 {
         try await UInt32(TimeInterval(nowSeconds()) / .secondsInDay)
     }
@@ -34,7 +38,7 @@ public final class ChainTimeProvider: ChainTimeProviding {
         self.storageRequestFactory = storageRequestFactory
     }
 
-    public func nowSeconds() async throws -> UInt64 {
+    public func nowSeconds(at blockHash: Data?) async throws -> UInt64 {
         let connection = try chainRegistry.getRpcConnectionOrError(for: chainId)
         let runtimeProvider = try chainRegistry.getRuntimeCodingServiceOrError(for: chainId)
         let codingFactory = try await runtimeProvider.fetchCoderFactoryOperation().asyncExecute()
@@ -42,7 +46,8 @@ public final class ChainTimeProvider: ChainTimeProviding {
         let response: StorageResponse<StringScaleMapper<UInt64>> = try await storageRequestFactory.queryItem(
             engine: connection,
             factory: { codingFactory },
-            storagePath: TimestampPallet.Storage.now()
+            storagePath: TimestampPallet.Storage.now(),
+            at: blockHash
         )
         .asyncExecute()
 

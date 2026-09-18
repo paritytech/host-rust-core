@@ -7,21 +7,22 @@ protocol VoucherAllocating: Actor {
     func allocate(exponent: Int16) async throws -> Voucher
 }
 
-/// Actor isolation serialises the index counter's read-modify-write, so a single shared instance is
-/// the only safe configuration — do not create more than one against the same index store.
+/// Hands out the next voucher item in the current installation from the Keychain-backed counter, so a
+/// previous installation's vouchers never move this installation's counter. The store reserves each
+/// item atomically, so concurrent mints never collide.
 actor VoucherAllocator: VoucherAllocating {
-    private let storage: CoinageIndexstoreProtocol
+    private let installationStore: any CoinageCurrentInstallationStoring
     private let delayProvider: VoucherDelayProviderProtocol
     private let voucherRepository: AnyDataProviderRepository<Voucher>
     private let keyFactory: any VoucherKeyDeriving
 
     init(
-        storage: CoinageIndexstoreProtocol,
+        installationStore: any CoinageCurrentInstallationStoring,
         delayProvider: VoucherDelayProviderProtocol,
         voucherRepository: AnyDataProviderRepository<Voucher>,
         keyFactory: any VoucherKeyDeriving
     ) {
-        self.storage = storage
+        self.installationStore = installationStore
         self.delayProvider = delayProvider
         self.voucherRepository = voucherRepository
         self.keyFactory = keyFactory
@@ -30,7 +31,7 @@ actor VoucherAllocator: VoucherAllocating {
     /// Allocates a new voucher index and persists the voucher — with its on-chain public key cached
     /// so the durability layer never re-derives it — from the moment it is minted.
     func allocate(exponent: Int16) async throws -> Voucher {
-        let index = try storage.getNextIndex()
+        let index = try await nextIndex()
         let delay = delayProvider.timeInterval()
         let allocatedAt = Date.now
 
@@ -43,6 +44,13 @@ actor VoucherAllocator: VoucherAllocating {
         )
         try await voucherRepository.saveOperation({ [voucher] }, { [] }).asyncExecute()
         return voucher
+    }
+}
+
+private extension VoucherAllocator {
+    func nextIndex() async throws -> CoinageKeyIndex {
+        let installation = try await installationStore.getOrCreateCurrent()
+        return try await CoinageKeyIndex(installation: installation, item: installationStore.nextVoucherItem())
     }
 }
 
