@@ -125,6 +125,7 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
     private suspend fun buildRuntimeConfig(): HostRuntimeConfig {
         val peopleGenesis = chainRegistry.getChain(knownChains.people).genesisHash.value
         val bulletinGenesis = chainRegistry.getChain(knownChains.bulletIn).genesisHash.value
+        val assetHubGenesis = chainRegistry.getChain(knownChains.assetHub).genesisHash.value
         // Booting without a session is the pre-session behaviour: products load
         // and every signing call fails. Worth degrading to rather than refusing
         // every product outright.
@@ -144,6 +145,7 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
             hostName = HOST_NAME,
             peopleChainGenesisHash = peopleGenesis,
             bulletinChainGenesisHash = bulletinGenesis,
+            assetHubChainGenesisHash = assetHubGenesis,
             networkSuffix = networkSuffix,
             localSessionSecret = localSession?.secret,
             localSessionLiteUsername = localSession?.liteUsername,

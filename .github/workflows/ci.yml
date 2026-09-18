@@ -460,15 +460,16 @@ jobs:
       - name: Compile the shell against the bindings
         run: gradle :truapi-host:assembleRelease
 
-  # The app tree vendored at hosts/android compiles its TrUAPI adapter against
-  # the core in this repository rather than a published package, so a core
-  # change that breaks it fails here instead of at the next version bump. The
-  # module builds the core, generates the Kotlin bindings and compiles the
-  # adapter against them, which is the pairing worth guarding.
+  # The app tree vendored at hosts/android consumes the core in this repository
+  # rather than a published package, so a core change that breaks it fails here
+  # instead of at the next version bump. The job builds the core, generates the
+  # Kotlin bindings, and compiles the app code that pattern matches over the
+  # generated types, which is where a removed or renamed variant surfaces.
   #
-  # Scoped to that module on purpose. Configuring the app itself needs values
-  # this repository does not hold yet, so a wider gate would be red for a
-  # reason that has nothing to do with the core.
+  # Scoped to :feature:products:impl and what it depends on. That is where every
+  # consumer of the generated types lives, and it configures from environment
+  # placeholders, where the app module would need values this repository does
+  # not hold.
   host-android-bindings:
     name: Android host app (kotlin compile)
     needs: changes
@@ -532,11 +533,36 @@ jobs:
         with:
           node-version: "22"
 
-      # No truapi.dir: the fallback added in #837 resolves the core two levels
-      # up, which is the property this job exists to keep true.
-      - name: Compile the host adapter against the core
+      # No truapi.dir: the core resolves two levels up, which is one of the
+      # properties this job keeps true.
+      #
+      # The target is the module that consumes the bindings, not the module that
+      # produces them. Generated bindings cannot disagree with the library they
+      # were generated from, so compiling them proves nothing; the signal is in
+      # the app code that pattern matches over core types. Compiling this module
+      # builds :bindings:truapi-host on the way, so both are covered.
+      #
+      # These values are configuration rather than credentials, and the app tree
+      # reads each of them from the environment when it is absent from
+      # local.properties. Placeholders are enough to configure the module, and
+      # keep the gate independent of secrets this repository does not hold.
+      - name: Compile the core's Android consumers
         working-directory: hosts/android
-        run: ./gradlew --configure-on-demand :bindings:truapi-host:compileReleaseKotlin
+        env:
+          APPLICATION_ID: io.paritytech.polkadotapp
+          APPLICATION_NAME: Polkadot
+          CURRENCY_SYMBOL: DOT
+          FIRESTORE_DATABASE_ID: ci
+          GOOGLE_OAUTH_ID: ci
+          # Typed as a long, so a non-numeric placeholder is a compile error.
+          GOOGLE_PROJECT_ID: "0"
+          LOG_COLLECTION_EMAIL: ci@example.invalid
+          NIGHTLY_FUNDING_MNEMONIC: ci
+          PRIVACY_POLICY_URL: https://example.invalid/privacy
+          SENTRY_ORG: ci
+          SENTRY_PROJECT: ci
+          TERMS_OF_USE_URL: https://example.invalid/terms
+        run: ./gradlew --configure-on-demand :feature:products:impl:compileReleaseKotlin
 
   # The provider ships as its own AAR, so its bindings compile on a path the
   # host gate never touches. `make provider-android-check` generates first and
