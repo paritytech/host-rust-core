@@ -261,6 +261,7 @@ jobs:
               echo "sdk_swift=true"
               echo "sdk_kotlin=true"
               echo "sdk_provider_kotlin=true"
+              echo "host_android=true"
               echo "cli_package=true"
               echo "workflows=true"
             } >> "$GITHUB_OUTPUT"
@@ -288,7 +289,7 @@ jobs:
           # The vendored Android host, plus the crates its bindings are
           # generated from. Nothing gated on this tree before, so a core change
           # that broke it reached a release with no gate in between.
-          gate host_android '^(hosts/android/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'
+          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -459,12 +460,6 @@ jobs:
       - name: Compile the shell against the bindings
         run: gradle :truapi-host:assembleRelease
 
-  # The provider ships as its own AAR, so its bindings compile on a path the
-  # host gate never touches. `make provider-android-check` generates first and
-  # refuses to run against an empty source set, which is the way this gate
-  # would otherwise pass without compiling anything, then assembles the AAR so
-  # the Gradle wiring this exists to cover is exercised rather than only the
-  # Kotlin.
   # The app tree vendored at hosts/android compiles its TrUAPI adapter against
   # the core in this repository rather than a published package, so a core
   # change that breaks it fails here instead of at the next version bump. The
@@ -494,11 +489,16 @@ jobs:
         id: nightly
         run: |
           set -euo pipefail
-          toolchain="$(sed -n 's/^truapi\.rustNightly=//p' hosts/android/gradle.properties)"
-          [ -n "${toolchain}" ] || {
-            echo "truapi.rustNightly is not set in hosts/android/gradle.properties" >&2
-            exit 1
-          }
+          toolchain="$(sed -n 's/^truapi\.rustNightly=//p' hosts/android/gradle.properties | head -n1)"
+          # The value reaches an action input that is interpolated into a shell
+          # command, so accept only the dated-nightly shape.
+          case "${toolchain}" in
+            nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *)
+              echo "::error::truapi.rustNightly must be a dated nightly, got '${toolchain}'"
+              exit 1
+              ;;
+          esac
           echo "toolchain=${toolchain}" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # pinned nightly
@@ -512,7 +512,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
         with:
-          shared-key: host-android-bindings
+          shared-key: host-android-bindings-gate
           save-if: ${{ github.event_name == 'push' }}
 
       - name: Install cargo-ndk
@@ -525,19 +525,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # No setup-android and no NDK install. The runner image ships both, and
-      # release-android.yml already cross-compiles to every Android ABI on that
-      # basis alone. Adding setup-android here failed on SDK licence
-      # acceptance, and nothing in this tree pins an NDK version.
+      # The runner image ships the SDK, and the NDK that
+      # AndroidRustConventionPlugin pins, so neither is installed here.
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-
-      # The module runs codegen against the core, which needs the workspace
-      # dependencies present.
-      - name: Install the core's node dependencies
-        run: npm ci --ignore-scripts
 
       # No truapi.dir: the fallback added in #837 resolves the core two levels
       # up, which is the property this job exists to keep true.
@@ -545,6 +538,12 @@ jobs:
         working-directory: hosts/android
         run: ./gradlew --configure-on-demand :bindings:truapi-host:compileReleaseKotlin
 
+  # The provider ships as its own AAR, so its bindings compile on a path the
+  # host gate never touches. `make provider-android-check` generates first and
+  # refuses to run against an empty source set, which is the way this gate
+  # would otherwise pass without compiling anything, then assembles the AAR so
+  # the Gradle wiring this exists to cover is exercised rather than only the
+  # Kotlin.
   provider-android-bindings:
     name: Android provider (kotlin compile)
     needs: changes
