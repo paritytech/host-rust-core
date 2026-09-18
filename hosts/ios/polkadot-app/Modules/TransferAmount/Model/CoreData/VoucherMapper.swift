@@ -31,7 +31,8 @@ extension VoucherMapper: CoreDataMapperProtocol {
             if entity.recyclerIndex >= 0 {
                 Voucher.Recycler(
                     index: UInt32(entity.recyclerIndex),
-                    membersCount: UInt32(max(0, entity.recyclerMembers))
+                    membersCount: UInt32(max(0, entity.recyclerMembers)),
+                    enteredAt: entity.enteredAt
                 )
             } else {
                 nil
@@ -52,10 +53,12 @@ extension VoucherMapper: CoreDataMapperProtocol {
 
         return try Voucher(
             exponent: entity.exponent,
-            derivationIndex: DerivationIndex.fromCoreData(entity.derivationIndex),
+            derivationIndex: entity.keyIndex(),
             allocatedAt: allocatedAt,
             readyAt: readyAt,
             remoteState: state,
+            recyclerFungibility: Self.fungibility(from: entity.recyclerFungibility),
+            maxRecyclerFungibility: Self.fungibility(from: entity.maxRecyclerFungibility),
             publicKey: Data(hexString: publicKeyHex)
         )
     }
@@ -66,13 +69,17 @@ extension VoucherMapper: CoreDataMapperProtocol {
         using _: NSManagedObjectContext
     ) throws {
         entity.identifier = model.identifier
-        entity.derivationIndex = model.derivationIndex.toCoreData()
+        entity.installationId = model.derivationIndex.installation.hex
+        entity.derivationIndex = Int64(bitPattern: model.derivationIndex.item)
         entity.exponent = model.exponent
         entity.readyAt = model.readyAt
         entity.allocatedAt = model.allocatedAt
         entity.recyclerIndex = model.recycler.flatMap { Int64($0.index) } ?? -1
         entity.recyclerMembers = model.recycler.map { Int64($0.membersCount) } ?? 0
+        entity.enteredAt = model.recycler?.enteredAt
         entity.publicKey = model.publicKey.toHex()
+        entity.recyclerFungibility = Int16(model.recyclerFungibility)
+        entity.maxRecyclerFungibility = Int16(model.maxRecyclerFungibility)
 
         entity.onChainState =
             switch model.remoteState {
@@ -80,5 +87,12 @@ extension VoucherMapper: CoreDataMapperProtocol {
             case .onboarding: 1
             case .inRecycler: 2
             }
+    }
+}
+
+private extension VoucherMapper {
+    /// Clamped so an out-of-range row can never trap on `UInt8` conversion.
+    static func fungibility(from stored: Int16) -> UInt8 {
+        UInt8(clamping: max(0, min(Int(CoinageConstants.fullFungibility), Int(stored))))
     }
 }

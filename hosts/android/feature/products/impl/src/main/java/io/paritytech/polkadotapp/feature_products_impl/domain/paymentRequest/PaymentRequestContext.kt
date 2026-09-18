@@ -1,16 +1,21 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest
 
 import io.paritytech.polkadotapp.chains.network.binding.Balance
-import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import kotlinx.coroutines.CompletableDeferred
 import javax.inject.Inject
 import javax.inject.Singleton
 
+sealed interface PaymentRequestStep {
+    data object Confirm : PaymentRequestStep
+
+    data object PrivacyWarning : PaymentRequestStep
+}
+
 class PaymentRequestContext(
     val productId: ProductId,
     val amount: Balance,
-    val destination: AccountId,
+    val steps: List<PaymentRequestStep>,
 ) {
     sealed interface Decision {
         data object Approved : Decision

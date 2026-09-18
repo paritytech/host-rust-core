@@ -36,4 +36,10 @@ interface DebugMenuContract {
     fun onSimulateGameResultsClick()
 
     fun onCoinageDebugWidgetsToggled(enabled: Boolean)
+
+    fun onTruapiRuntimeToggled(enabled: Boolean)
+
+    fun onRuntimeRestartConfirmed()
+
+    fun onRuntimeRestartCancelled()
 }

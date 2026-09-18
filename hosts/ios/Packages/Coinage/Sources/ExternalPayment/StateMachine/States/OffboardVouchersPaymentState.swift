@@ -1,16 +1,23 @@
 import Foundation
 import SDKLogger
 import StateMachine
+import SubstrateSdk
 
-/// Unloads vouchers to external asset and transfers to destination.
+/// Unloads the planned vouchers to external asset at the destination.
 ///
-/// Delegates to ``OffboardVouchersForPaymentService``; durability tracks the resulting asset state.
+/// Submits straight to ``OffboardVouchersForPaymentService``, which re-joins an already registered
+/// group on its own (the relaunch path). Every outcome is a verdict: `.success` completes,
+/// `.partialSuccess` persists what settled as `partiallyCompleted`, `.failed`, a submission failure
+/// and any thrown error persist `failed`.
 struct OffboardVouchersPaymentState: StateMachineState {
     typealias StateFactory = ExternalPaymentStateFactory
     typealias PersistentValue = ExternalPayment
 
     let payment: ExternalPayment
-    let vouchers: [Voucher]
+    let voucherIndices: [CoinageKeyIndex]
+    /// Planner output: what the vouchers exceed the amount by. Persisted with the stage, never
+    /// recomputed, so a relaunch submits exactly what was planned.
+    let surplus: Balance
     let isTerminal = false
 
     func transit(
@@ -19,6 +26,7 @@ struct OffboardVouchersPaymentState: StateMachineState {
         let service = OffboardVouchersForPaymentService(
             instanceId: factory.instanceId,
             voucherKeyFactory: factory.voucherKeyFactory,
+            voucherService: factory.voucherService,
             voucherMinter: factory.voucherMinter,
             recyclerLoader: factory.recyclerLoader,
             txService: factory.durability,
@@ -30,62 +38,36 @@ struct OffboardVouchersPaymentState: StateMachineState {
         )
 
         do {
-            // Before committing, pick the path:
-            // - a group is already registered (crash re-entry): re-join and await it; the
-            //   plan-carried vouchers are irrelevant since the inputs are already claimed.
-            // - nothing registered yet: we must register, so the plan must still be valid — every
-            //   selected voucher still selectable. A stale or crash-lost plan re-plans instead of
-            //   failing, because the funds are still there.
-            if try await !service.hasPendingGroup(for: payment) {
-                guard !vouchers.isEmpty, try await allSelectable(vouchers, factory: factory) else {
-                    return factory.makePlanState(payment: payment)
-                }
-            }
+            let vouchers = try await factory.voucherService
+                .fetchTracked(derivationIndices: Set(voucherIndices))
+                .map(\.voucher)
 
-            let outcome = try await service.execute(
-                payment: payment,
-                vouchers: vouchers
-            )
-            switch outcome {
+            switch try await service.execute(payment: payment, vouchers: vouchers, surplus: surplus) {
             case .success:
-                return factory.makeCompletedState(payment: payment)
-            case let .partialSuccess(executed, total):
+                var settled = payment
+                settled.settledInPlanks = payment.amountInPlanks
+                return factory.makeCompletedState(payment: settled)
+            case let .partialSuccess(settledInPlanks, executed, total):
+                var settled = payment
+                settled.settledInPlanks = settledInPlanks
                 return factory.makePartiallyCompletedState(
-                    payment: payment,
+                    payment: settled,
                     reason: "\(executed) of \(total) unload transactions executed"
                 )
             case .failed:
-                return factory.makeFailedState(
-                    payment: payment,
-                    reason: "no unload transaction executed"
-                )
+                return factory.makeFailedState(payment: payment, reason: "no unload transaction executed")
             }
         } catch {
-            return factory.makeFailedState(
-                payment: payment,
-                reason: error.localizedDescription
-            )
+            return factory.makeFailedState(payment: payment, reason: error.localizedDescription)
         }
     }
 
     func memo() async -> ExternalPayment {
         var currentPayment = payment
         currentPayment.stage = .offboardVouchers
+        currentPayment.plannedVoucherIndices = voucherIndices
+        currentPayment.surplusInPlanks = surplus
         currentPayment.updatedAt = Date()
         return currentPayment
-    }
-
-    /// Whether every planned voucher is still selectable right now — the plan may have gone stale
-    /// (a voucher spent or recycled) since it was picked.
-    private func allSelectable(
-        _ vouchers: [Voucher],
-        factory: ExternalPaymentStateFactory
-    ) async throws -> Bool {
-        let selectable = try await Set(
-            factory.voucherService.fetchAllTracked()
-                .filter(\.isSelectable)
-                .map(\.voucher.derivationIndex)
-        )
-        return vouchers.allSatisfy { selectable.contains($0.derivationIndex) }
     }
 }

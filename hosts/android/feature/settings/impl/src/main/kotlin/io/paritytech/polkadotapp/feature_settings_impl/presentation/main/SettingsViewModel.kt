@@ -10,7 +10,6 @@ import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.design.theme.AppThemeSelector
 import io.paritytech.polkadotapp.designsystem.themes.PolkadotAppTheme
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingStrategyType
-import io.paritytech.polkadotapp.feature_settings_impl.BuildConfig
 import io.paritytech.polkadotapp.feature_settings_impl.SettingsRouter
 import io.paritytech.polkadotapp.feature_settings_impl.domain.settings.SettingsInteractor
 import kotlinx.coroutines.flow.SharingStarted
@@ -34,7 +33,6 @@ class SettingsViewModel @Inject constructor(
         appThemeSelector.selectedTheme
     ) { backupExists, hasBlockedUsers, privacyMode, selectedTheme ->
         SettingsUiState(
-            isDebug = BuildConfig.DEBUG,
             debugMenuEnabled = FeatureOption.DEBUG_MENU.isEnabled,
             linkedDevicesEnabled = FeatureOption.LINKED_DEVICES.isEnabled,
             productSettingsEnabled = FeatureOption.PRODUCT_SETTINGS.isEnabled,
@@ -49,7 +47,6 @@ class SettingsViewModel @Inject constructor(
             scope = this,
             started = SharingStarted.Eagerly,
             initialValue = SettingsUiState(
-                isDebug = BuildConfig.DEBUG,
                 debugMenuEnabled = FeatureOption.DEBUG_MENU.isEnabled,
                 linkedDevicesEnabled = FeatureOption.LINKED_DEVICES.isEnabled,
                 productSettingsEnabled = FeatureOption.PRODUCT_SETTINGS.isEnabled,

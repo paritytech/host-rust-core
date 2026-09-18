@@ -11,10 +11,10 @@ import Testing
 /// entry the way a coin's absence would.
 @Suite("Voucher Scenarios")
 struct VoucherScenariosTest {
-    private let coinA: DerivationIndex = 1
-    private let coinB: DerivationIndex = 2
-    private let voucher: DerivationIndex = 5
-    private let newVoucher: DerivationIndex = 11
+    private let coinA: CoinageKeyIndex = 1
+    private let coinB: CoinageKeyIndex = 2
+    private let voucher: CoinageKeyIndex = 5
+    private let newVoucher: CoinageKeyIndex = 11
 
     @Test("a voucher still in its recycler after mortality fails the entry")
     func voucherStillInRecyclerFails() async throws {

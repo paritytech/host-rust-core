@@ -1,3 +1,4 @@
+import DurableTransactionsTestSupport
 import ExtrinsicServiceExt
 import Foundation
 import Testing
@@ -10,10 +11,10 @@ import Testing
 /// status the node reports, so the stream is driven directly rather than through the chain.
 @Suite("Watcher Scenarios")
 struct WatcherScenariosTest {
-    private let coinA: DerivationIndex = 1
-    private let coinB: DerivationIndex = 2
-    private let coinC: DerivationIndex = 3
-    private let coinD: DerivationIndex = 4
+    private let coinA: CoinageKeyIndex = 1
+    private let coinB: CoinageKeyIndex = 2
+    private let coinC: CoinageKeyIndex = 3
+    private let coinD: CoinageKeyIndex = 4
 
     @Test("an inclusion with a successful dispatch records the block it was seen in")
     func inBlockRecordsBlock() async throws {

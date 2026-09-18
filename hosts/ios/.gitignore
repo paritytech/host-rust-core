@@ -85,6 +85,11 @@ xcuserdata
 
 .lavish/
 
+# Claude
+
+.claude/PLAN.md
+.claude/worktrees
+
 # Secrets
 polkadot-app/env-vars.sh
 polkadot-app/GoogleService-Info.plist
@@ -102,3 +107,8 @@ __pycache__
 
 # temp
 tmp/
+
+.scratch/
+
+# Merge leftovers
+*.orig

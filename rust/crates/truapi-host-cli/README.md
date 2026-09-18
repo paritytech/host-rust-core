@@ -228,7 +228,8 @@ Commands always start with `/`:
 | `/pair <image-path>` | Decode a pairing QR from a PNG, JPEG, or WebP image (signing host). |
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
 | `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
-| `/devices --remove <statement-account-id>` | Remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id>` | Disconnect and remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id> --force` | Attempt to disconnect one paired device, then remove its local pairing even if notification fails. |
 | `/approval` | Show whether signing-host confirmations are manual or automatic. |
 | `/approval manual` | Prompt for every future signing-host confirmation. |
 | `/approval automatic` | Approve every future signing-host confirmation automatically. |
@@ -337,8 +338,12 @@ Once a signer identity is known, its public session name is the Lite username
 and its files live under
 `<base-path>/v2/<network>/<username>_signing_host`. Provisional named sessions
 are promoted to that user-owned root, so an old name such as `pgtest` does not
-remain the durable namespace. The selected username is remembered per
-network but is not repeated in the status bar as a separate session field.
+remain the durable namespace. That name keeps selecting the session it created:
+the promoted session records the name it was created under, so `--session
+pgtest` and `/session --clear pgtest` both act on it instead of provisioning a
+second identity beside it. Once that session is cleared the name is free again. The selected username is
+remembered per network but is not repeated in the status bar as a separate
+session field.
 `default` remains only as a compatibility/bootstrap location until a username
 is resolved. It is hidden from session completion and listing and cannot be
 selected with `/session default`. User session names contain lowercase ASCII
@@ -402,8 +407,16 @@ statement lifetime.
 order with available host and platform metadata. Interactive
 `/devices --remove <statement-account-id>` asks for confirmation. The same
 command through `exec` is an explicit one-shot removal and runs without another
-prompt. Removing one device stops only its responder and allowance renewal. The
-other saved pairings and the signing identity are unchanged.
+prompt. Removal first submits `Disconnected` to the selected remote host. Only
+after the statement store accepts it does it stop that responder, remove the
+saved pairing, and stop its allowance renewal. A submission failure preserves all
+local pairing state. The other saved pairings and the signing identity are
+unchanged. For recovery when notification cannot be submitted, append
+`--force`. The command still attempts notification first, but warns and
+continues with local cleanup if that attempt fails or times out after 30 seconds.
+Submission does not wait for the remote host to acknowledge receipt. The remote
+host may continue to show stale connected state, but it cannot reach a responder
+on this signing host.
 
 `/session --clear <name>` permanently deletes that session's local signer
 keys, scripts, core/product storage, and permissions. `/session --clear-all`
@@ -414,6 +427,15 @@ asks for `[y/N]` confirmation. `exec` treats the explicit one-shot command as
 confirmation and runs it immediately. Clearing an inactive named session keeps
 the host running; clearing the active session or all sessions stops the signing
 host after its runtime and product connections have shut down.
+
+Without `--session`, the session is the one the network's `current-session`
+pointer names. When that pointer is missing or names a session that no longer
+exists, the provisioned sessions decide instead: a base path holding exactly one
+session with an account store reselects it, and a base path holding several is
+refused with their names so `--session` can choose, rather than provisioning
+another identity. A session directory without an account store is not an
+identity and is never reselected. This makes one `--base-path` per caller the
+supported way to hold a reusable signer.
 
 Select or create a session at startup with:
 
@@ -438,6 +460,7 @@ truapi-host signing-host exec '/pair polkadotapp://pair?handshake=...'
 truapi-host signing-host --session alice.01 exec '/devices'
 truapi-host signing-host --session alice.01 exec '/devices --list'
 truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --force'
 ```
 
 `exec` does not enable raw mode or emit terminal controls. Command results go
@@ -510,7 +533,7 @@ Product-local KV is persisted independently under each identity root as
 product id and raw product keys. Product and core JSON writes use a flushed
 temporary file and atomic rename.
 
-Six scripts ship under `js/scripts/`:
+Scripts under `js/scripts/` include:
 
 - `battery.ts` — the generated full-surface gate. It discovers every method
   from the same code-generated example manifest as the playground Diagnosis,
@@ -525,9 +548,10 @@ Six scripts ship under `js/scripts/`:
   On top of the generated examples it runs one hand-written
   `Resource Allocation/auto_signing_e2e` case: allocate `AutoSigning`, then
   prove through the hosts' consulted-approval transcript
-  (`TRUAPI_APPROVALS_LOG`, exported per phase by `scripts/battery.sh`) that
-  follow-up `sign_vrf` calls for the granting product run without a
-  confirmation prompt.
+  (`TRUAPI_APPROVALS_LOG`, exported per phase by `scripts/battery.sh`) that the
+  calls the grant covers — `sign_vrf`, `sign_raw`, `sign_payload` and
+  `create_transaction` — run for the granting product without a confirmation
+  prompt.
 
   `scripts/battery.sh` at the repo root is the supported entry point. It
   prepares the codegen output and playground dependencies the battery imports,
@@ -544,6 +568,8 @@ Six scripts ship under `js/scripts/`:
   make e2e-signing-cli                  # direct phase only
   make e2e-pairing-cli                  # paired phase only
   make e2e-chat-cli                     # chat phase only
+  scripts/battery.sh --pocket-host      # Pocket phase only
+  make e2e-pocket-cli                   # Pocket phase only
   scripts/battery.sh --release          # release binary
   scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
   ```
@@ -551,6 +577,13 @@ Six scripts ship under `js/scripts/`:
   `BATTERY_PHASE_TIMEOUT` (default 900s) bounds each phase and
   `BATTERY_PAIRING_TIMEOUT` (default 120s) bounds the wait for the pairing link.
   Per-phase host transcripts land in `target/battery/`.
+
+  The Pocket phase runs its product as a Worker execution, because that is the
+  only execution Pocket is served to. It seeds the in-memory Pocket host from
+  `TRUAPI_POCKET_CARDS` (`loyalty,humanity:privileged`), so one card is
+  removable and one privileged, and records every removal the host is asked for
+  in `TRUAPI_POCKET_LOG`. The cases read that transcript, so a pass means the
+  host and the product agree rather than resting on the product's word.
 
   The paired phase gives its pairing host a throwaway `--base-path` under
   `target/battery/pairing-host-state`, so it performs a real handshake on every
@@ -574,6 +607,12 @@ Six scripts ship under `js/scripts/`:
     --deeplink '<pairing link>' \
     --auto-accept
   ```
+
+- `device-removal-disconnect.ts`: verifies `Connected` followed by `Disconnected`.
+  Run it through `e2e/device-removal-disconnect.sh`, which pairs isolated hosts,
+  removes the device interactively, and checks cleared pairing auth storage and
+  an empty signing-host device list. Run `make codegen` once in a fresh checkout,
+  build `truapi-host-cli`, then run the shell script.
 
 - `whoami.ts` — calls `getUserId` and prints `WHOAMI <primary username>`; this
   remains available as an explicit `/script <path>` example.
@@ -771,7 +810,9 @@ both halves are up: the frame socket accepts connections well before a signer
 exists, and `Signing host ready` can arrive either side of it depending on
 whether the session was cached or is being registered. A first run registers a
 lite username and the statement-store allowance on-chain, which can take
-minutes.
+minutes; it announces `Provisioning a signer` when it starts, so a supervisor
+can tell that work from a stalled process. A session with no signer at all
+reports `No connected user` here as it does in the terminal.
 
 Stopping it: Ctrl-C is handled, so the host logs its own shutdown. `SIGTERM`
 ends the process, which is what a supervising dev server sends.

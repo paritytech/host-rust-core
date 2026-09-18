@@ -13,7 +13,6 @@ import io.paritytech.polkadotapp.feature_usernames_impl.domain.interactor.Userna
 import io.paritytech.polkadotapp.feature_usernames_impl.domain.model.ClaimUsernameOutcome
 import io.paritytech.polkadotapp.feature_usernames_impl.domain.model.UsernameAvailabilityState
 import io.paritytech.polkadotapp.feature_usernames_impl.presentation.UsernamesRouter
-import io.paritytech.polkadotapp.feature_web3summit_api.presentation.PostOnboardingFlow
 import io.paritytech.polkadotapp.tools_backup_api.domain.model.BackupOutcome
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
@@ -41,7 +40,6 @@ private const val MAX_DIGITS_LENGTH = 2
 class ClaimUsernameViewModel @Inject constructor(
     private val router: UsernamesRouter,
     private val interactor: UsernamesClaimInteractor,
-    private val postOnboardingFlow: PostOnboardingFlow,
 ) : BaseViewModel(), ClaimUsernameContract {
     override val state = MutableStateFlow(ClaimUsernameState())
 
@@ -64,7 +62,7 @@ class ClaimUsernameViewModel @Inject constructor(
 
     private suspend fun handleOnboardingStatus(status: AccountOnboardingStatus) {
         when {
-            status.isOnboarded -> postOnboardingFlow.openPostOnboarding()
+            status.isOnboarded -> router.openMain()
             status.isWaitingInQueue -> router.openRegistrationQueue()
             status.accountCreated -> {
                 state.update { it.copy(showRecoverOption = false) }

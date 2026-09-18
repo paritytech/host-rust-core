@@ -1,3 +1,4 @@
+import java.util.Properties
 plugins {
     id("jacoco")
     id("polkadotapp.android.library")
@@ -69,8 +70,10 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.nova.substrate.serialization)
 
-    implementation(project(":common"))
+    implementation(project(":bindings:truapi-host"))
     implementation(project(":bindings:sr25519-vrf"))
+
+    implementation(project(":common"))
     implementation(project(":tools:ipfs:api"))
     implementation(project(":tools:remoteconfig:api"))
     implementation(project(":design"))
@@ -85,6 +88,7 @@ dependencies {
     implementation(project(":feature:pgas:api"))
     implementation(project(":feature:balances:api"))
     implementation(project(":feature:people:api"))
+    implementation(project(":feature:scan:api"))
     implementation(project(":feature:usernames:api"))
     implementation(project(":feature:dotns:api"))
     implementation(project(":feature:coinage:api"))
@@ -93,6 +97,11 @@ dependencies {
 
     testImplementation(project(":test-shared"))
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.mockk)
+    // :bindings:truapi-host ships JNA as an @aar, which carries only the Android
+    // dispatch libraries. JVM unit tests that cross the FFI boundary need the
+    // desktop jar's libjnidispatch too.
+    testImplementation("net.java.dev.jna:jna:5.14.0")
 
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
@@ -100,8 +109,30 @@ dependencies {
     androidTestImplementation(libs.google.gson)
 }
 
-// Instrument only when the coverage report is actually being built, so an ordinary test run is unaffected.
+// CoreNavigateClassifier calls the core's `parse_navigate` over JNA, so JVM unit
+// tests need the host-native cdylib on the library path. It is the same artifact
+// uniffi-bindgen reads, produced by :bindings:truapi-host:buildHostCdylib.
+val truapiCodegenDir: String = run {
+    val props = Properties().apply {
+        val f = rootProject.file("local.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    val configured = (props.getProperty("truapi.dir") ?: System.getenv("TRUAPI_DIR"))
+        ?.takeIf { it.isNotBlank() }
+    // Falls back to the core two levels up when nothing is configured, which is
+    // what the settings-gradle guard has already accepted. A configured path is
+    // taken as given; the guard validated it.
+    val dir = configured
+        ?.let { file(it).takeIf { f -> f.isAbsolute } ?: rootProject.file(it) }
+        ?: rootProject.file("../..")
+    File(dir, "target/codegen").path
+}
+
 tasks.withType<Test>().configureEach {
+    dependsOn(":bindings:truapi-host:buildHostCdylib")
+    systemProperty("jna.library.path", truapiCodegenDir)
+
+    // Instrument only when the coverage report is actually being built, so an ordinary test run is unaffected.
     extensions.configure<JacocoTaskExtension> {
         isEnabled = gradle.startParameter.taskNames.any { "topUpCoverage" in it }
     }

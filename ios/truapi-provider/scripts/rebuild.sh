@@ -26,11 +26,12 @@ SLICES=(aarch64-apple-ios-sim aarch64-apple-ios)
 CARGO_FLAGS=(-p truapi-provider --lib --no-default-features --features uniffi)
 [ "$PROFILE" = release ] && CARGO_FLAGS+=(--release)
 
-for target in "${SLICES[@]}"; do
-    rustup target add "$target" >/dev/null 2>&1 || true
-    echo "==> building $target ($PROFILE)"
-    cargo build "${CARGO_FLAGS[@]}" --target "$target"
-done
+rustup target add "${SLICES[@]}" >/dev/null 2>&1 || true
+
+# One invocation carrying every slice, so the target graphs are scheduled
+# together rather than one draining before the next starts.
+echo "==> building ${SLICES[*]} ($PROFILE)"
+cargo build "${CARGO_FLAGS[@]}" "${SLICES[@]/#/--target=}"
 
 # Bindings come from the workspace bindgen so every package in this repo
 # generates them the same way.

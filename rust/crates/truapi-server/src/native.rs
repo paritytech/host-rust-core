@@ -31,18 +31,19 @@ use truapi_platform::{
 
 use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
-pub use crate::host_logic::dotns::NavigateDecision;
+pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
 use crate::host_logic::sso::messages::{
     RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
     decode_remote_message, v1,
 };
+use crate::host_logic::worker::WorkerTransition;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
-use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererSubscription};
+use crate::native_renderer::{NativeRendererObserver, NativeRendererSubscription};
 use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
-use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
+use crate::ws_bridge::{BridgeLogger, SharedWsBridge, WsBridgeEndpoint, WsBridgeStartError};
 
 /// Host-thrown storage failure wrapping the canonical error payload, so its
 /// variants remain defined once in `truapi`.
@@ -199,6 +200,18 @@ pub struct NativeHostRuntimeConfig {
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
     pub local_session_lite_username: Option<String>,
+    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Must be
+    /// exactly 32 bytes.
+    ///
+    /// Product manifests are read from dotNS, so this is what makes a
+    /// `trustedProducts` grant resolvable. 32 zero bytes says this host has no
+    /// Asset Hub; grants already in the manifest cache stay honoured until they
+    /// expire.
+    ///
+    /// Appended rather than placed with its sibling hashes: record fields are
+    /// positional over the FFI and the checksum does not cover their order, so
+    /// an insert shifts every field below it.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -274,6 +287,28 @@ pub enum NativeRuntimeConfigError {
         /// Activation failure reason.
         reason: String,
     },
+    /// Asset Hub genesis hash was not exactly 32 bytes.
+    ///
+    /// Appended, not grouped with the sibling genesis-hash variants: declaration
+    /// order is the FFI discriminant and the checksum does not cover it, so an
+    /// insert renumbers every variant below it.
+    #[error("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
+    InvalidAssetHubChainGenesisHash {
+        /// Supplied byte length.
+        actual: u64,
+    },
+    /// Product id was longer than `PRODUCT_ID_MAX_BYTES` after normalization.
+    ///
+    /// Appended for the same reason as the variant above. Carries lengths and
+    /// not the id: an id that trips this is unbounded in size, and this error
+    /// reaches the wire and the logs.
+    #[error("product_id must be at most {limit} bytes, got {actual}")]
+    ProductIdTooLong {
+        /// Accepted maximum, in bytes.
+        limit: u64,
+        /// Normalized length, in bytes.
+        actual: u64,
+    },
 }
 
 impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
@@ -292,6 +327,12 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                     actual: config.bulletin_chain_genesis_hash.len() as u64,
                 }
             })?;
+        let asset_hub_chain_genesis_hash =
+            <[u8; 32]>::try_from(config.asset_hub_chain_genesis_hash.as_slice()).map_err(|_| {
+                NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash {
+                    actual: config.asset_hub_chain_genesis_hash.len() as u64,
+                }
+            })?;
         let signing = SigningHostConfig::new(
             HostInfo {
                 name: config.host_name,
@@ -305,6 +346,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             },
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             config.network_suffix,
         )?;
         Ok(Self {
@@ -344,6 +386,12 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             RuntimeConfigValidationError::InvalidProductId { product_id } => {
                 Self::InvalidProductId { product_id }
             }
+            RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => {
+                Self::ProductIdTooLong {
+                    limit: limit as u64,
+                    actual: actual as u64,
+                }
+            }
             RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
                 Self::InvalidNetworkSuffix { network_suffix }
             }
@@ -365,6 +413,33 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 #[uniffi::export]
 pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
+}
+
+/// Whether `product_id` is a first-party product the host grants every
+/// [`truapi::latest::RemotePermission`] without prompting.
+///
+/// Pure and stateless: it reads the compiled-in list and nothing else. **A
+/// stored user decision wins over the list**, so this is only the answer for
+/// the branch where the host's own store reads undetermined. Consulting it
+/// first would let a revoked grant keep working.
+///
+/// [`NativeProductExecution::permission_authorization_status`] is the stateful
+/// answer — it folds the list and the stored decision together — and a host
+/// holding an execution should ask that instead.
+///
+/// This exists for the path where a host mediates product network access in its
+/// own code — a webview interceptor, a `fetch` shim — and has already found
+/// nothing stored. Without it a first-party product is prompted by the host for
+/// access the core would have granted.
+///
+/// Covers remote permissions only. Device capabilities, identity disclosure and
+/// cross-product account access always prompt, whoever asks.
+///
+/// Normalizes before matching, and answers `false` for an id that does not
+/// normalize, so an unknown spelling is never read as trusted.
+#[uniffi::export]
+pub fn has_trusted_remote_permissions(product_id: String) -> bool {
+    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
 /// OS status of a device capability, as a native host reports it.
@@ -519,6 +594,23 @@ pub trait HostCallbacks: Send + Sync {
     /// promptly.
     fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection>;
 
+    /// Observe demand on a product's worker crossing zero. `Start` means the
+    /// host runs the worker now, `Stop` that nothing wants it any more. Every
+    /// transition arrives here, in ledger order: the ones the host asks for
+    /// through [`NativeTrUApiHostRuntime::acquire_worker`] and
+    /// [`NativeTrUApiHostRuntime::release_worker`], and the ones the core
+    /// causes on a product's behalf, such as an open render stream.
+    ///
+    /// Demand is runtime-wide, so this is invoked only on the callbacks the
+    /// runtime was built with, never on the per-execution callbacks passed to
+    /// [`NativeTrUApiHostRuntime::open_product_execution`]. Can arrive on any
+    /// thread, including synchronously on the calling thread during
+    /// [`NativeTrUApiHostRuntime::acquire_worker`] and
+    /// [`NativeTrUApiHostRuntime::release_worker`], often the caller's own
+    /// thread and re-entrantly: hand the transition off rather than blocking
+    /// on another thread from inside it.
+    fn worker_demand_changed(&self, product_id: String, transition: WorkerTransition);
+
     /// Read a value from the host's scoped key-value store.
     fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
     /// Write a value to the host's scoped key-value store.
@@ -567,6 +659,37 @@ pub trait NativeChatCallbacks: Send + Sync {
     fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
 }
 
+/// Native Pocket collection adapter. Hosts with a Pocket surface pass an
+/// implementation to [`NativeTrUApiHostRuntime::open_product_execution`]; hosts
+/// without one pass `None`. Callbacks run inline on the process-wide dispatch
+/// pool shared by every product execution, so one that blocks stalls the
+/// others.
+///
+/// The host decides a removal and reports what it did, so the check and the
+/// removal happen together under whatever lock it holds. A card cannot be
+/// pinned between the two.
+#[uniffi::export(rust, foreign)]
+pub trait NativePocketCallbacks: Send + Sync {
+    /// Return the product's cards as this host currently holds them, each with
+    /// the flag saying whether the host pinned it.
+    fn list_cards(&self) -> Result<Vec<v01::PocketCard>, HostRejection>;
+
+    /// Remove one of the product's cards, reporting whether the card was
+    /// taken out, was already gone, or is pinned and stays.
+    fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection>;
+}
+
+/// What a host did with a removal request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativePocketRemoval {
+    /// The card was present and not pinned, and the host took it out.
+    Removed,
+    /// The host does not hold the card, so it is already gone.
+    Absent,
+    /// The host pins the card and keeps it.
+    Privileged,
+}
+
 /// Process-owned native TrUAPI runtime shared by all executable connections.
 #[derive(uniffi::Object)]
 pub struct NativeTrUApiHostRuntime {
@@ -574,7 +697,10 @@ pub struct NativeTrUApiHostRuntime {
     events: Arc<NativeEventBus>,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
-    chat_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
+    #[cfg(feature = "ws-bridge")]
+    ws_bridge: Arc<SharedWsBridge>,
+    /// The one Worker execution per product; opening another replaces it.
+    worker_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
 }
 
 impl NativeTrUApiHostRuntime {
@@ -593,10 +719,14 @@ impl NativeTrUApiHostRuntime {
         });
         let spawner = native_thread_pool_spawner(&callbacks);
         let runtime = Arc::new(SigningHostRuntime::new(
-            platform,
+            platform.clone(),
             runtime_config.signing,
             spawner.clone(),
         ));
+        assert!(
+            runtime.worker_ledger().install_demand_observer(platform),
+            "a freshly built runtime installs its worker demand observer once"
+        );
         if let Some(secret) = runtime_config.local_session_secret {
             futures::executor::block_on(runtime.activate_local_session_with_identity(
                 secret,
@@ -611,7 +741,11 @@ impl NativeTrUApiHostRuntime {
             events,
             #[cfg(feature = "ws-bridge")]
             spawner,
-            chat_executions: Mutex::new(HashMap::new()),
+            #[cfg(feature = "ws-bridge")]
+            ws_bridge: Arc::new(SharedWsBridge::new(Arc::new(move |marker, detail| {
+                callbacks.on_core_log(marker.to_string(), detail.to_string());
+            }))),
+            worker_executions: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -619,6 +753,7 @@ impl NativeTrUApiHostRuntime {
         &self,
         callbacks: Arc<dyn HostCallbacks>,
         chat_callbacks: Option<Arc<dyn NativeChatCallbacks>>,
+        pocket_callbacks: Option<Arc<dyn NativePocketCallbacks>>,
         product: ProductContext,
     ) -> Arc<NativeProductExecution> {
         let events = Arc::new(NativeEventBus::default());
@@ -636,11 +771,19 @@ impl NativeTrUApiHostRuntime {
                     events: events.clone(),
                 })
             });
+        let pocket: Option<Arc<dyn truapi_platform::PocketPlatform>> =
+            pocket_callbacks.map(|pocket| -> Arc<dyn truapi_platform::PocketPlatform> {
+                Arc::new(PocketCallbackPlatform {
+                    pocket,
+                    events: events.clone(),
+                })
+            });
         let execution = Arc::new(NativeProductExecution {
             runtime: self.runtime.clone(),
             product: product.clone(),
             platform,
             chat,
+            pocket,
             permission_status,
             events,
             shared_events: self.events.clone(),
@@ -649,18 +792,21 @@ impl NativeTrUApiHostRuntime {
             #[cfg(feature = "ws-bridge")]
             callbacks,
             closed: AtomicBool::new(false),
-            chat_connection: Arc::new(crate::runtime::ChatConnection::new()),
+            chat_connection: Arc::new(crate::runtime::ActionChannel::chat()),
+            renderer_connection: Arc::new(crate::runtime::ActionChannel::renderer()),
             #[cfg(feature = "ws-bridge")]
-            bridge: Mutex::new(None),
+            ws_bridge: self.ws_bridge.clone(),
+            #[cfg(feature = "ws-bridge")]
+            bridge_token: Mutex::new(None),
             #[cfg(feature = "ws-bridge")]
             product_control: Arc::new(Mutex::new(None)),
         });
 
         if product.execution_kind == ProductExecutionKind::Worker {
             let previous = self
-                .chat_executions
+                .worker_executions
                 .lock()
-                .expect("native Chat execution registry mutex poisoned")
+                .expect("native worker execution registry mutex poisoned")
                 .insert(product.product_id, Arc::downgrade(&execution))
                 .and_then(|previous| previous.upgrade());
             if let Some(previous) = previous {
@@ -694,7 +840,7 @@ pub enum NativeStatementRenewalTarget {
     },
 }
 
-/// Rejected renewal-target registration.
+/// A refused renewal-ledger call: tracking, untracking or reading it back.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum NativeRenewalTargetError {
     /// `account_id` was not exactly 32 bytes.
@@ -745,6 +891,42 @@ impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalT
     }
 }
 
+/// One entry the renewal ledger holds, as a host reads it back.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NativeTrackedStatementRenewalTarget {
+    /// The account, or the recipe for one, that the host promised to renew.
+    pub target: NativeStatementRenewalTarget,
+    /// Root public key that promised a raw account id. A recipe carries none
+    /// and resolves under whichever identity is active.
+    pub owner: Option<Bytes32>,
+}
+
+impl From<crate::runtime::StatementRenewalTarget> for NativeStatementRenewalTarget {
+    fn from(target: crate::runtime::StatementRenewalTarget) -> Self {
+        match target {
+            crate::runtime::StatementRenewalTarget::ProductStatementAllowance { product_id } => {
+                Self::ProductStatementAllowance { product_id }
+            }
+            crate::runtime::StatementRenewalTarget::WalletSso => Self::WalletSso,
+            crate::runtime::StatementRenewalTarget::Account { account_id, label } => {
+                Self::Account {
+                    account_id: account_id.to_vec(),
+                    label,
+                }
+            }
+        }
+    }
+}
+
+impl From<crate::runtime::TrackedStatementRenewalTarget> for NativeTrackedStatementRenewalTarget {
+    fn from(entry: crate::runtime::TrackedStatementRenewalTarget) -> Self {
+        Self {
+            target: entry.target.into(),
+            owner: entry.owner,
+        }
+    }
+}
+
 #[uniffi::export]
 impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
@@ -764,15 +946,37 @@ impl NativeTrUApiHostRuntime {
 
     /// Open a connection-scoped execution with immutable trusted context.
     /// `chat_callbacks` installs the host's Chat adapter; hosts without the
-    /// Chat modality pass `None`.
+    /// Chat modality pass `None`. `pocket_callbacks` does the same for the
+    /// card collection.
     pub fn open_product_execution(
         &self,
         callbacks: Arc<dyn HostCallbacks>,
         chat_callbacks: Option<Arc<dyn NativeChatCallbacks>>,
+        pocket_callbacks: Option<Arc<dyn NativePocketCallbacks>>,
         execution_config: NativeProductExecutionConfig,
     ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
         let product: ProductContext = execution_config.try_into()?;
-        Ok(self.open_product_execution_with_callbacks(callbacks, chat_callbacks, product))
+        Ok(self.open_product_execution_with_callbacks(
+            callbacks,
+            chat_callbacks,
+            pocket_callbacks,
+            product,
+        ))
+    }
+
+    /// Take one reference on the product's worker for a modality holder. The
+    /// first one reports [`WorkerTransition::Start`] to the runtime's
+    /// [`HostCallbacks::worker_demand_changed`]; pair every call with one
+    /// [`Self::release_worker`].
+    pub fn acquire_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().acquire(&product_id);
+    }
+
+    /// Release one reference. The last one reports
+    /// [`WorkerTransition::Stop`], after which the host may stop the worker;
+    /// releasing with none held is a no-op.
+    pub fn release_worker(&self, product_id: String) {
+        self.runtime.worker_ledger().release(&product_id);
     }
 
     /// Core-owned logout for the process-wide authentication session.
@@ -793,6 +997,49 @@ impl NativeTrUApiHostRuntime {
             .map(TryInto::try_into)
             .collect::<Result<Vec<_>, _>>()?;
         futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Every account the ledger tracks, in the order it was tracked.
+    ///
+    /// Needs no active session. Slots per period are finite, so a host that
+    /// tracked a wrong or stale account can see it here and drop it with
+    /// [`Self::untrack_statement_renewal_account`].
+    pub fn statement_renewal_targets(
+        &self,
+    ) -> Result<Vec<NativeTrackedStatementRenewalTarget>, NativeRenewalTargetError> {
+        futures::executor::block_on(self.runtime.statement_renewal_targets())
+            .map(|entries| entries.into_iter().map(Into::into).collect())
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Root public key the active identity records its fixed entries under.
+    ///
+    /// Needs an active session, and fails with `Disconnected` without one.
+    /// An entry from [`Self::statement_renewal_targets`] whose owner is this
+    /// key, or which has no owner at all, is one a pass will renew; any other
+    /// is one a pass will prune.
+    pub fn statement_renewal_owner_key(&self) -> Result<Bytes32, NativeRenewalTargetError> {
+        self.runtime
+            .statement_renewal_owner_key()
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Stop renewing one fixed statement account, returning whether the ledger
+    /// held it.
+    ///
+    /// Scoped to the active identity, so it never removes an entry another
+    /// identity promised. Needs an active session to resolve that identity.
+    pub fn untrack_statement_renewal_account(
+        &self,
+        account_id: Vec<u8>,
+    ) -> Result<bool, NativeRenewalTargetError> {
+        let account_id: [u8; 32] = account_id.as_slice().try_into().map_err(|_| {
+            NativeRenewalTargetError::InvalidAccountId {
+                actual: account_id.len() as u64,
+            }
+        })?;
+        futures::executor::block_on(self.runtime.untrack_statement_renewal_account(&account_id))
             .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
@@ -918,6 +1165,7 @@ pub struct NativeProductExecution {
     product: ProductContext,
     platform: Arc<dyn truapi_platform::Platform>,
     chat: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    pocket: Option<Arc<dyn truapi_platform::PocketPlatform>>,
     /// The same `CallbackPlatform` as `platform`, kept separately because
     /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
     permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
@@ -932,10 +1180,18 @@ pub struct NativeProductExecution {
     callbacks: Arc<dyn HostCallbacks>,
     /// Single Chat action buffer shared with every product connection this
     /// execution opens; survives bridge restarts until [`Self::shutdown`].
-    chat_connection: Arc<crate::runtime::ChatConnection>,
+    chat_connection:
+        Arc<crate::runtime::ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
+    /// Single renderer action buffer shared with every product connection this
+    /// execution opens; survives bridge restarts until [`Self::shutdown`].
+    renderer_connection: Arc<
+        crate::runtime::ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>,
+    >,
     closed: AtomicBool,
     #[cfg(feature = "ws-bridge")]
-    bridge: Mutex<Option<WsBridge>>,
+    ws_bridge: Arc<SharedWsBridge>,
+    #[cfg(feature = "ws-bridge")]
+    bridge_token: Mutex<Option<String>>,
     #[cfg(feature = "ws-bridge")]
     product_control: Arc<Mutex<Option<crate::ProductRuntimeControl>>>,
 }
@@ -947,6 +1203,8 @@ impl NativeProductExecution {
             chat_platform: self.chat.clone(),
             permission_status: Some(self.permission_status.clone()),
             chat: self.chat_connection.clone(),
+            renderer: self.renderer_connection.clone(),
+            pocket_platform: self.pocket.clone(),
         }
     }
 
@@ -967,15 +1225,23 @@ impl NativeProductExecution {
         .map(drop)
     }
 
+    fn require_renderer(&self) -> Result<(), crate::ProductRuntimeError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(crate::ProductRuntimeError::Closed);
+        }
+        crate::runtime::renderer_access_for(self.product.execution_kind)
+    }
+
     #[cfg(feature = "ws-bridge")]
     fn stop_bridge(&self) {
-        if let Some(mut bridge) = self
-            .bridge
+        // Release the token lock before waiting for connection cancellation.
+        let token = self
+            .bridge_token
             .lock()
             .expect("native product bridge mutex poisoned")
-            .take()
-        {
-            bridge.stop();
+            .take();
+        if let Some(token) = token {
+            self.ws_bridge.revoke(&token);
         }
         *self
             .product_control
@@ -1086,20 +1352,20 @@ impl NativeProductExecution {
         action: v01::HostChatActionSubscribeItem,
     ) -> Result<(), crate::ProductRuntimeError> {
         self.require_chat()?;
-        self.chat_connection.publish_action(
-            truapi::versioned::chat::HostChatActionSubscribeItem::V1(action),
-        )
+        self.chat_connection
+            .publish(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
+                action,
+            ))
     }
 
-    /// Request typed native UI for one stored custom Chat message.
-    pub fn render_custom_message(
+    /// Ask the product to draw one body, delivering each replacement tree to
+    /// `observer` until the returned subscription is cancelled.
+    pub fn render(
         &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
-        observer: Box<dyn NativeCustomRendererObserver>,
-    ) -> Result<Arc<NativeCustomRendererSubscription>, crate::ProductRuntimeError> {
-        self.require_chat()?;
+        request: v01::ProductRendererRenderRequest,
+        observer: Box<dyn NativeRendererObserver>,
+    ) -> Result<Arc<NativeRendererSubscription>, crate::ProductRuntimeError> {
+        self.require_renderer()?;
         #[cfg(feature = "ws-bridge")]
         {
             let control = self
@@ -1108,15 +1374,31 @@ impl NativeProductExecution {
                 .expect("native product control mutex poisoned")
                 .clone()
                 .ok_or(crate::ProductRuntimeError::NotConnected)?;
-            let stream = control.render_custom_message(message_id, message_type, payload)?;
-            let observer: Arc<dyn NativeCustomRendererObserver> = observer.into();
+            let stream = control.render(request)?;
+            let observer: Arc<dyn NativeRendererObserver> = observer.into();
             Ok(observe_renderer(stream, observer, self.spawner.clone()))
         }
         #[cfg(not(feature = "ws-bridge"))]
         {
-            let _ = (message_id, message_type, payload, observer);
+            let _ = (request, observer);
             Err(crate::ProductRuntimeError::NotConnected)
         }
+    }
+
+    /// Publish one action triggered inside a product-rendered body, buffering
+    /// it until the product connection subscribes.
+    pub fn publish_renderer_action(
+        &self,
+        item: v01::HostRendererActionSubscribeItem,
+    ) -> Result<(), crate::ProductRuntimeError> {
+        self.require_renderer()?;
+        self.renderer_connection
+            .publish(truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(item))
+    }
+
+    /// Push a complete native Pocket card-list replacement to this execution.
+    pub fn notify_pocket_cards_changed(&self, cards: Vec<v01::PocketCard>) {
+        self.events.notify_pocket_cards_changed(cards);
     }
 
     /// Permanently shut down this executable and all of its connection state.
@@ -1131,13 +1413,15 @@ impl NativeProductExecution {
         #[cfg(feature = "ws-bridge")]
         self.stop_bridge();
         self.chat_connection.close();
+        self.renderer_connection.close();
     }
 }
 
 #[cfg(feature = "ws-bridge")]
 #[uniffi::export]
 impl NativeProductExecution {
-    /// Start this execution's independently authenticated localhost bridge.
+    /// Register this execution with its own token on the host's shared listener.
+    /// `bind_port` applies only when the listener first starts.
     pub fn start_ws_bridge(&self, bind_port: u16) -> Result<WsBridgeEndpoint, WsBridgeStartError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(WsBridgeStartError::Io(
@@ -1145,7 +1429,7 @@ impl NativeProductExecution {
             ));
         }
         let mut guard = self
-            .bridge
+            .bridge_token
             .lock()
             .expect("native product bridge mutex poisoned");
         if guard.is_some() {
@@ -1169,12 +1453,14 @@ impl NativeProductExecution {
                 .expect("native product control mutex poisoned") = Some(product_runtime.control());
             product_runtime
         });
-        let (bridge, endpoint) = WsBridge::start(bind_port, runtime_factory, logger)?;
-        *guard = Some(bridge);
+        let endpoint = self
+            .ws_bridge
+            .register(bind_port, runtime_factory, logger)?;
+        *guard = Some(endpoint.token.clone());
         Ok(endpoint)
     }
 
-    /// Stop the active bridge while leaving the execution reusable.
+    /// Revoke this execution's bridge registration while leaving it reusable.
     pub fn stop_ws_bridge(&self) {
         self.stop_bridge();
     }
@@ -1227,6 +1513,13 @@ struct CallbackPlatform {
     events: Arc<NativeEventBus>,
 }
 
+impl crate::host_logic::worker::WorkerDemandObserver for CallbackPlatform {
+    fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
+        self.callbacks
+            .worker_demand_changed(product_id.to_string(), transition);
+    }
+}
+
 #[derive(Default)]
 struct NativeEventBus {
     theme_changes:
@@ -1236,6 +1529,9 @@ struct NativeEventBus {
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
     chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
+    pocket_card_changes: Mutex<
+        Vec<mpsc::UnboundedSender<Result<v01::HostPocketListSubscribeItem, v01::GenericError>>>,
+    >,
 }
 
 struct PreimageSubscription {
@@ -1352,6 +1648,47 @@ impl NativeEventBus {
         self.chat_room_changes
             .lock()
             .expect("native Chat room subscribers mutex poisoned")
+            .retain(|tx| tx.unbounded_send(item.clone()).is_ok());
+    }
+
+    /// Subscribe to the host's card collection. `snapshot` reads the host's
+    /// cards while the subscriber mutex is held, so a replacement cannot land
+    /// between the read and the registration: the snapshot is always the first
+    /// item and every later change follows it in order. `snapshot` must not
+    /// call back into [`NativeProductExecution::notify_pocket_cards_changed`],
+    /// which takes the same mutex.
+    fn subscribe_pocket_cards(
+        &self,
+        snapshot: impl FnOnce() -> Result<v01::HostPocketListSubscribeItem, v01::GenericError>,
+    ) -> BoxStream<'static, Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
+        let (tx, rx) = mpsc::unbounded();
+        let mut subscribers = self
+            .pocket_card_changes
+            .lock()
+            .expect("native Pocket card subscribers mutex poisoned");
+        let current = snapshot();
+        // Subscribers are dropped when their product stops listening, and
+        // nothing else prunes them between notifications.
+        subscribers.retain(|tx| !tx.is_closed());
+        subscribers.push(tx);
+        drop(subscribers);
+        stream::once(async move { current }).chain(rx).boxed()
+    }
+
+    fn notify_pocket_cards_changed(&self, cards: Vec<v01::PocketCard>) {
+        self.send_pocket_cards(Ok(v01::HostPocketListSubscribeItem { cards }));
+    }
+
+    /// Report that the host can no longer say what the collection holds. The
+    /// product reads it as a failed stream rather than as an empty collection.
+    fn notify_pocket_cards_failed(&self, error: v01::GenericError) {
+        self.send_pocket_cards(Err(error));
+    }
+
+    fn send_pocket_cards(&self, item: Result<v01::HostPocketListSubscribeItem, v01::GenericError>) {
+        self.pocket_card_changes
+            .lock()
+            .expect("native Pocket card subscribers mutex poisoned")
             .retain(|tx| tx.unbounded_send(item.clone()).is_ok());
     }
 }
@@ -1756,14 +2093,179 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
     }
 }
 
+/// [`truapi_platform::PocketPlatform`] served by host-provided
+/// [`NativePocketCallbacks`]; constructed only when the host passed one.
+struct PocketCallbackPlatform {
+    pocket: Arc<dyn NativePocketCallbacks>,
+    events: Arc<NativeEventBus>,
+}
+
+#[async_trait]
+impl truapi_platform::PocketPlatform for PocketCallbackPlatform {
+    fn subscribe_pocket_cards(
+        &self,
+        _product: &ProductContext,
+    ) -> BoxStream<'static, Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
+        let pocket = self.pocket.clone();
+        Box::pin(self.events.subscribe_pocket_cards(move || {
+            pocket
+                .list_cards()
+                .map(|cards| v01::HostPocketListSubscribeItem { cards })
+                .map_err(|error| v01::GenericError {
+                    reason: error.to_string(),
+                })
+        }))
+    }
+
+    async fn remove_pocket_card(
+        &self,
+        _product: &ProductContext,
+        request: v01::HostPocketRemoveCardRequest,
+    ) -> Result<(), v01::HostPocketRemoveCardError> {
+        let unknown = |error: HostRejection| v01::HostPocketRemoveCardError::Unknown {
+            reason: error.to_string(),
+        };
+        match self.pocket.remove_card(request.card_id).map_err(unknown)? {
+            NativePocketRemoval::Privileged => Err(v01::HostPocketRemoveCardError::Privileged),
+            // A card this host does not hold is already removed.
+            NativePocketRemoval::Absent => Ok(()),
+            NativePocketRemoval::Removed => {
+                // The removal stands either way. A host that can no longer
+                // list its cards says so on the stream rather than leaving the
+                // product on a list that still holds the removed card.
+                match self.pocket.list_cards() {
+                    Ok(cards) => self.events.notify_pocket_cards_changed(cards),
+                    Err(error) => self.events.notify_pocket_cards_failed(v01::GenericError {
+                        reason: error.to_string(),
+                    }),
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
     use truapi::Bytes32;
     use truapi::v01::LegacyAccountTxPayload;
     use truapi_platform::CreateTransactionReview;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
+
+    fn pocket_card(card_id: &str, privileged: bool) -> v01::PocketCard {
+        v01::PocketCard {
+            card_id: card_id.to_string(),
+            privileged,
+        }
+    }
+
+    /// Everything a Pocket stream has already queued, so a missing item reads
+    /// as pending here rather than hanging the test.
+    fn drain_pocket(
+        stream: &mut BoxStream<
+            'static,
+            Result<v01::HostPocketListSubscribeItem, v01::GenericError>,
+        >,
+    ) -> Vec<Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
+        let mut seen = Vec::new();
+        while let Some(Some(item)) = stream.next().now_or_never() {
+            seen.push(item);
+        }
+        seen
+    }
+
+    /// The snapshot is read while the subscriber mutex is held, so it is the
+    /// first item and every later change follows it in order. Delivering a
+    /// queued change first would leave the product on the older list, with the
+    /// snapshot overwriting it.
+    #[test]
+    fn a_pocket_subscriber_sees_its_snapshot_before_later_changes() {
+        let bus = NativeEventBus::default();
+        let mut stream = bus.subscribe_pocket_cards(|| {
+            Ok(v01::HostPocketListSubscribeItem {
+                cards: vec![pocket_card("loyalty", false)],
+            })
+        });
+        bus.notify_pocket_cards_changed(vec![
+            pocket_card("loyalty", false),
+            pocket_card("humanity", true),
+        ]);
+
+        assert_eq!(
+            drain_pocket(&mut stream),
+            vec![
+                Ok(v01::HostPocketListSubscribeItem {
+                    cards: vec![pocket_card("loyalty", false)],
+                }),
+                Ok(v01::HostPocketListSubscribeItem {
+                    cards: vec![pocket_card("loyalty", false), pocket_card("humanity", true)],
+                }),
+            ]
+        );
+    }
+
+    /// A host that cannot say what it holds reaches the product as a failed
+    /// stream. Reporting an empty list instead would read as "you own no
+    /// cards" and wipe the product's view of its own collection.
+    #[test]
+    fn a_pocket_host_failure_reaches_the_product_instead_of_an_empty_list() {
+        let bus = NativeEventBus::default();
+        let mut opening = bus.subscribe_pocket_cards(|| {
+            Err(v01::GenericError {
+                reason: "card store unavailable".to_string(),
+            })
+        });
+        assert_eq!(
+            drain_pocket(&mut opening),
+            vec![Err(v01::GenericError {
+                reason: "card store unavailable".to_string(),
+            })]
+        );
+
+        let mut live = bus.subscribe_pocket_cards(|| {
+            Ok(v01::HostPocketListSubscribeItem {
+                cards: vec![pocket_card("loyalty", false)],
+            })
+        });
+        bus.notify_pocket_cards_failed(v01::GenericError {
+            reason: "card store went away".to_string(),
+        });
+        assert_eq!(
+            drain_pocket(&mut live),
+            vec![
+                Ok(v01::HostPocketListSubscribeItem {
+                    cards: vec![pocket_card("loyalty", false)],
+                }),
+                Err(v01::GenericError {
+                    reason: "card store went away".to_string(),
+                }),
+            ]
+        );
+    }
+
+    /// A cancelled subscriber is pruned when the next one registers, so a
+    /// product that subscribes and drops repeatedly cannot grow the list
+    /// without bound between host notifications.
+    #[test]
+    fn a_cancelled_pocket_subscriber_is_pruned_on_the_next_registration() {
+        let bus = NativeEventBus::default();
+        let snapshot = || Ok(v01::HostPocketListSubscribeItem { cards: Vec::new() });
+        for _ in 0..5 {
+            drop(bus.subscribe_pocket_cards(snapshot));
+        }
+        let _live = bus.subscribe_pocket_cards(snapshot);
+
+        assert_eq!(
+            bus.pocket_card_changes
+                .lock()
+                .expect("native Pocket card subscribers mutex poisoned")
+                .len(),
+            1
+        );
+    }
 
     /// UniFFI hands `account_id` over as a length-free `Vec<u8>`, so the width
     /// the ledger depends on is only enforced here. A short id that converted
@@ -1868,6 +2370,45 @@ mod tests {
         ));
     }
 
+    // The read direction is the one a host audits its slots through, so a
+    // dropped account id or owner there is a silent wrong answer rather than a
+    // compile error.
+    #[test]
+    fn a_tracked_entry_survives_the_trip_out_to_the_native_boundary() {
+        let entry = crate::runtime::TrackedStatementRenewalTarget {
+            target: crate::runtime::StatementRenewalTarget::Account {
+                account_id: [7; 32],
+                label: "device".to_string(),
+            },
+            owner: Some([9; 32]),
+        };
+
+        let native = NativeTrackedStatementRenewalTarget::from(entry);
+
+        assert_eq!(native.owner, Some([9; 32]));
+        assert!(matches!(
+            native.target,
+            NativeStatementRenewalTarget::Account { account_id, label }
+                if account_id == vec![7; 32] && label == "device"
+        ));
+    }
+
+    #[test]
+    fn a_recipe_entry_reports_no_owner_across_the_boundary() {
+        let entry = crate::runtime::TrackedStatementRenewalTarget {
+            target: crate::runtime::StatementRenewalTarget::WalletSso,
+            owner: None,
+        };
+
+        let native = NativeTrackedStatementRenewalTarget::from(entry);
+
+        assert!(native.owner.is_none());
+        assert!(matches!(
+            native.target,
+            NativeStatementRenewalTarget::WalletSso
+        ));
+    }
+
     /// The other two variants carry no bytes to validate, so they must convert
     /// rather than share the `Account` arm's failure path.
     #[test]
@@ -1900,6 +2441,7 @@ mod tests {
     }
 
     struct EventCallbacks {
+        logs: Mutex<Vec<String>>,
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<(String, String, String)>>,
         chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
@@ -1907,6 +2449,8 @@ mod tests {
         chat_bot_rejection: Mutex<Option<String>>,
         chat_post_rejection: Mutex<Option<String>>,
         chat_posted: Mutex<Vec<(String, v01::ChatMessageContent)>>,
+        pocket_cards: Mutex<Vec<v01::PocketCard>>,
+        pocket_removed: Mutex<Vec<String>>,
         theme: Mutex<v01::HostThemeSubscribeItem>,
         locale: Mutex<v01::HostLocaleSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
@@ -1915,6 +2459,8 @@ mod tests {
         chain_connects: Mutex<Vec<Vec<u8>>>,
         chain_sends: Mutex<Vec<(u32, String)>>,
         chain_closes: Mutex<Vec<u32>>,
+        /// Worker demand transitions, in arrival order.
+        worker_demand: Mutex<Vec<(String, WorkerTransition)>>,
         /// Capability this host reports as refused by the OS, if any.
         os_refused: Option<v01::HostDevicePermissionRequest>,
     }
@@ -1930,6 +2476,7 @@ mod tests {
 
         fn new() -> Self {
             Self {
+                logs: Mutex::new(Vec::new()),
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
                 chat_bot_status: Mutex::new(v01::ChatBotRegistrationStatus::New),
@@ -1937,6 +2484,8 @@ mod tests {
                 chat_bot_rejection: Mutex::new(None),
                 chat_post_rejection: Mutex::new(None),
                 chat_posted: Mutex::new(Vec::new()),
+                pocket_cards: Mutex::new(Vec::new()),
+                pocket_removed: Mutex::new(Vec::new()),
                 theme: Mutex::new(v01::HostThemeSubscribeItem {
                     name: v01::ThemeName::Default,
                     variant: v01::ThemeVariant::Light,
@@ -1950,6 +2499,7 @@ mod tests {
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
+                worker_demand: Mutex::new(Vec::new()),
                 os_refused: None,
             }
         }
@@ -1957,7 +2507,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl HostCallbacks for EventCallbacks {
-        fn on_core_log(&self, _marker: String, _detail: String) {}
+        fn on_core_log(&self, marker: String, _detail: String) {
+            self.logs.lock().expect("logs mutex poisoned").push(marker);
+        }
+        fn worker_demand_changed(&self, product_id: String, transition: WorkerTransition) {
+            self.worker_demand
+                .lock()
+                .expect("worker demand mutex poisoned")
+                .push((product_id, transition));
+        }
         async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
             Ok(())
         }
@@ -2076,6 +2634,37 @@ mod tests {
         }
     }
 
+    impl NativePocketCallbacks for EventCallbacks {
+        fn list_cards(&self) -> Result<Vec<v01::PocketCard>, HostRejection> {
+            Ok(self
+                .pocket_cards
+                .lock()
+                .expect("pocket cards mutex poisoned")
+                .clone())
+        }
+
+        fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection> {
+            let mut cards = self
+                .pocket_cards
+                .lock()
+                .expect("pocket cards mutex poisoned");
+            let outcome = match cards.iter().find(|card| card.card_id == card_id) {
+                None => NativePocketRemoval::Absent,
+                Some(card) if card.privileged => NativePocketRemoval::Privileged,
+                Some(_) => {
+                    cards.retain(|card| card.card_id != card_id);
+                    NativePocketRemoval::Removed
+                }
+            };
+            drop(cards);
+            self.pocket_removed
+                .lock()
+                .expect("pocket removed mutex poisoned")
+                .push(card_id);
+            Ok(outcome)
+        }
+    }
+
     impl NativeChatCallbacks for EventCallbacks {
         fn create_room(
             &self,
@@ -2180,6 +2769,7 @@ mod tests {
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
+            asset_hub_chain_genesis_hash: vec![0xcc; 32],
             network_suffix: "paseo".to_string(),
             local_session_secret: Some(vec![7; 32]),
             local_session_lite_username: Some("alice".to_string()),
@@ -2209,9 +2799,37 @@ mod tests {
         host.open_product_execution(
             callbacks,
             None,
+            None,
             native_execution_config(product_id, ProductExecutionKind::App),
         )
         .expect("product execution config should be valid")
+    }
+
+    #[test]
+    fn process_runtime_counts_worker_references_per_product() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let product = || "shared.dot".to_string();
+
+        host.acquire_worker(product());
+        host.acquire_worker(product());
+        host.release_worker(product());
+        host.release_worker(product());
+
+        assert_eq!(
+            *callbacks
+                .worker_demand
+                .lock()
+                .expect("worker demand mutex poisoned"),
+            vec![
+                (product(), WorkerTransition::Start),
+                (product(), WorkerTransition::Stop),
+            ]
+        );
     }
 
     #[test]
@@ -2225,6 +2843,7 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
+                None,
                 native_execution_config("shared.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
@@ -2233,6 +2852,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
+                None,
                 native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
             .expect("Chat execution should open");
@@ -2249,6 +2869,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
+                None,
                 native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
             .expect("replacement Chat execution should open");
@@ -2263,6 +2884,68 @@ mod tests {
     }
 
     #[test]
+    fn native_pocket_removal_outcomes_are_decided_by_the_host() {
+        let pocket_host = Arc::new(EventCallbacks::new());
+        *pocket_host
+            .pocket_cards
+            .lock()
+            .expect("pocket cards mutex poisoned") =
+            vec![pocket_card("loyalty", false), pocket_card("humanity", true)];
+        let events = Arc::new(NativeEventBus::default());
+        let platform = PocketCallbackPlatform {
+            pocket: pocket_host.clone(),
+            events,
+        };
+        let product = ProductContext::new("pocket.dot".to_string()).expect("valid product id");
+        let remove = |card_id: &str| {
+            futures::executor::block_on(truapi_platform::PocketPlatform::remove_pocket_card(
+                &platform,
+                &product,
+                v01::HostPocketRemoveCardRequest {
+                    card_id: card_id.to_string(),
+                },
+            ))
+        };
+        let mut cards =
+            truapi_platform::PocketPlatform::subscribe_pocket_cards(&platform, &product);
+        let first = futures::executor::block_on(cards.next())
+            .expect("the current list arrives on subscribe")
+            .expect("no stream error");
+        assert_eq!(
+            first.cards,
+            vec![pocket_card("loyalty", false), pocket_card("humanity", true)]
+        );
+
+        assert!(matches!(
+            remove("humanity"),
+            Err(v01::HostPocketRemoveCardError::Privileged)
+        ));
+        assert!(
+            remove("absent").is_ok(),
+            "an absent card is already removed"
+        );
+        assert!(remove("loyalty").is_ok());
+        assert_eq!(
+            pocket_host
+                .pocket_removed
+                .lock()
+                .expect("pocket removed mutex poisoned")
+                .as_slice(),
+            ["humanity", "absent", "loyalty"],
+            "the host decides every removal, so every request reaches it"
+        );
+
+        let republished = futures::executor::block_on(cards.next())
+            .expect("a removal republishes the list")
+            .expect("no stream error");
+        assert_eq!(
+            republished.cards,
+            vec![pocket_card("humanity", true)],
+            "the pinned card stays and the removed one is gone"
+        );
+    }
+
+    #[test]
     fn native_chat_entrypoint_is_unsupported_without_an_adapter() {
         let mut config = native_host_runtime_config();
         config.local_session_secret = Some(vec![7; 32]);
@@ -2272,6 +2955,7 @@ mod tests {
         let execution = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
+                None,
                 None,
                 native_execution_config("chat-product.dot", ProductExecutionKind::Worker),
             )
@@ -2283,6 +2967,38 @@ mod tests {
             result,
             Err(crate::ProductRuntimeError::Unsupported)
         ));
+    }
+
+    /// Hosts mediate product network access in their own code and ask this to
+    /// decide whether to prompt, so it has to answer for the spellings a host
+    /// actually holds, not only the normalized one the core passes internally.
+    #[test]
+    fn the_trusted_export_normalizes_before_matching() {
+        for trusted in [
+            "peopl.dot",
+            "PEOPL.DOT",
+            "  peopl.dot  ",
+            "dim2.paseo",
+            "stash.dot",
+        ] {
+            assert!(
+                super::has_trusted_remote_permissions(trusted.to_string()),
+                "{trusted} is a first-party product",
+            );
+        }
+        for untrusted in [
+            "app.peopl.dot",
+            "peopl",
+            "notpeopl.dot",
+            "localhost:3000",
+            "",
+            "   ",
+        ] {
+            assert!(
+                !super::has_trusted_remote_permissions(untrusted.to_string()),
+                "{untrusted} is not",
+            );
+        }
     }
 
     #[test]
@@ -2586,7 +3302,7 @@ mod tests {
             ProductExecutionKind::Worker,
         )
         .unwrap();
-        let connection = crate::runtime::ChatConnection::new();
+        let connection = crate::runtime::ActionChannel::chat();
 
         let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
             &platform,
@@ -2605,9 +3321,9 @@ mod tests {
         ))
         .expect("an action set must reach the host");
 
-        let mut actions = connection.subscribe_actions();
+        let mut actions = connection.subscribe::<truapi::latest::GenericError>();
         connection
-            .publish_action(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
+            .publish(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
                 v01::HostChatActionSubscribeItem {
                     room_id: "support".to_string(),
                     peer: "alice".to_string(),
@@ -2625,7 +3341,10 @@ mod tests {
             core::task::Poll::Ready(Some(item)) => item,
             other => panic!("a published trigger must be ready, got {other:?}"),
         };
-        let truapi::versioned::chat::HostChatActionSubscribeItem::V1(delivered) = delivered;
+        let Ok(truapi::versioned::chat::HostChatActionSubscribeItem::V1(delivered)) = delivered
+        else {
+            panic!("expected a chat action item")
+        };
         let v01::ChatActionPayload::ActionTriggered(trigger) = delivered.payload else {
             panic!(
                 "expected an ActionTriggered payload, got {:?}",
@@ -2645,6 +3364,57 @@ mod tests {
         // The id the product must match on to find the message it posted.
         assert_eq!(trigger.message_id, posted.message_id);
         assert_eq!(trigger.action_id, "approve");
+    }
+
+    #[test]
+    fn a_renderer_action_reaches_the_product_that_rendered_it() {
+        // The channel is execution-scoped, so the admin handle built from this
+        // execution reads what the execution published.
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::new()),
+                None,
+                None,
+                native_execution_config("chat.dot", ProductExecutionKind::Worker),
+            )
+            .expect("Worker execution should open");
+
+        let admin = execution.admin();
+        let mut actions = futures::executor::block_on(truapi::api::Renderer::action_subscribe(
+            admin.product_runtime().as_ref(),
+            &truapi::CallContext::with_request_id("renderer-1".to_string()),
+            truapi::versioned::renderer::HostRendererActionSubscribeRequest::V1,
+        ));
+
+        let published = v01::HostRendererActionSubscribeItem {
+            context: v01::RenderContext::ChatMessage {
+                room_id: "support".to_string(),
+                message_id: "message-1".to_string(),
+                message_type: "vote".to_string(),
+            },
+            action_id: "approve".to_string(),
+            payload: Vec::new(),
+        };
+        execution
+            .publish_renderer_action(published.clone())
+            .expect("a Worker execution may publish renderer actions");
+
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        let delivered = match actions.poll_next_unpin(&mut cx) {
+            core::task::Poll::Ready(Some(item)) => item,
+            other => panic!("a published renderer action must be ready, got {other:?}"),
+        };
+        let Ok(truapi::versioned::renderer::HostRendererActionSubscribeItem::V1(delivered)) =
+            delivered
+        else {
+            panic!("expected a renderer action item")
+        };
+        assert_eq!(delivered, published);
     }
 
     #[test]
@@ -2954,6 +3724,7 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
+                None,
                 native_execution_config("chain.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
@@ -3000,6 +3771,50 @@ mod tests {
             err,
             NativeRuntimeConfigError::InvalidPeopleChainGenesisHash { actual: 31 }
         ));
+    }
+
+    #[test]
+    fn each_configured_genesis_hash_reaches_its_own_field() {
+        // Three adjacent `Vec<u8>` feeding a positional constructor:
+        // transposing any two compiles and, without this, passes.
+        let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            people_chain_genesis_hash: vec![0xa1; 32],
+            bulletin_chain_genesis_hash: vec![0xb2; 32],
+            asset_hub_chain_genesis_hash: vec![0xc3; 32],
+            ..native_host_runtime_config()
+        })
+        .expect("config is valid");
+
+        assert_eq!(
+            (
+                resolved.signing.people_chain_genesis_hash,
+                resolved.signing.bulletin_chain_genesis_hash,
+                resolved.signing.asset_hub_chain_genesis_hash,
+            ),
+            ([0xa1; 32], [0xb2; 32], [0xc3; 32]),
+        );
+    }
+
+    #[test]
+    fn a_wrong_size_asset_hub_genesis_hash_is_rejected_as_its_own_field() {
+        // An empty vec must be an error, never a silent all-zero "no Asset
+        // Hub".
+        for len in [0usize, 31, 33] {
+            let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+                asset_hub_chain_genesis_hash: vec![0; len],
+                ..native_host_runtime_config()
+            })
+            .unwrap_err();
+
+            assert!(
+                matches!(
+                    err,
+                    NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash { actual }
+                        if actual == len as u64
+                ),
+                "{len}-byte Asset Hub hash reported as {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -3070,6 +3885,7 @@ mod tests {
         #[async_trait::async_trait]
         impl HostCallbacks for Noop {
             fn on_core_log(&self, _marker: String, _detail: String) {}
+            fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
@@ -3215,6 +4031,7 @@ mod tests {
         #[async_trait::async_trait]
         impl HostCallbacks for GatedPermissionCallbacks {
             fn on_core_log(&self, _marker: String, _detail: String) {}
+            fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
@@ -3477,6 +4294,247 @@ mod tests {
         execution.stop_ws_bridge();
     }
 
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn closing_an_execution_releases_its_callbacks_while_the_host_lives() {
+        let host = native_host_runtime_no_session();
+        let callbacks = Arc::new(EventCallbacks::new());
+        let weak_callbacks = Arc::downgrade(&callbacks);
+        let execution = host
+            .open_product_execution(
+                callbacks,
+                None,
+                None,
+                native_execution_config("first.dot", ProductExecutionKind::App),
+            )
+            .expect("open execution");
+        execution.start_ws_bridge(0).expect("start bridge");
+
+        execution.shutdown();
+        drop(execution);
+
+        assert!(
+            weak_callbacks.upgrade().is_none(),
+            "the listener must not retain a closed execution's callbacks"
+        );
+        drop(host);
+    }
+
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn bridge_logs_follow_the_host_and_authenticated_execution() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let callbacks = [
+            Arc::new(EventCallbacks::new()),
+            Arc::new(EventCallbacks::new()),
+            Arc::new(EventCallbacks::new()),
+        ];
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks[0].clone(),
+            native_host_runtime_config(),
+        )
+        .expect("create host");
+        let executions = [(1, "first.dot"), (2, "second.dot")].map(|(index, product_id)| {
+            host.open_product_execution(
+                callbacks[index].clone(),
+                None,
+                None,
+                native_execution_config(product_id, ProductExecutionKind::App),
+            )
+            .expect("open execution")
+        });
+        executions[0].start_ws_bridge(0).expect("start first");
+        let endpoint = executions[1].start_ws_bridge(0).expect("start second");
+        let client = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        let socket = client.block_on(async {
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+                "ws://127.0.0.1:{}/?t={}",
+                endpoint.port, endpoint.token
+            ))
+            .await
+            .expect("connect second");
+            socket
+                .send(WsMessage::Text("ignored".into()))
+                .await
+                .expect("send text");
+            socket
+        });
+        crate::test_support::wait_until(
+            || {
+                callbacks.iter().any(|callbacks| {
+                    callbacks
+                        .logs
+                        .lock()
+                        .expect("logs mutex poisoned")
+                        .iter()
+                        .any(|marker| marker == "truapi.ws_bridge.text_frame_ignored")
+                })
+            },
+            "connection did not process the text frame",
+        );
+        let logs = callbacks.map(|callbacks| {
+            callbacks
+                .logs
+                .lock()
+                .expect("logs mutex poisoned")
+                .iter()
+                .filter(|marker| marker.starts_with("truapi.ws_bridge."))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            logs,
+            [
+                vec!["truapi.ws_bridge.started"],
+                vec![],
+                vec![
+                    "truapi.ws_bridge.connection_open",
+                    "truapi.ws_bridge.text_frame_ignored"
+                ],
+            ]
+        );
+        drop(socket);
+    }
+
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn two_executions_share_one_bridge_through_the_native_api() {
+        use futures::SinkExt;
+        use parity_scale_codec::Decode;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        use truapi::versioned::system::HostFeatureSupportedRequest;
+
+        use crate::frame::{Payload, ProtocolMessage, request_ids};
+
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let app = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::new()),
+                None,
+                None,
+                native_execution_config("shared.dot", ProductExecutionKind::App),
+            )
+            .expect("App execution should open");
+        let chat_host = Arc::new(EventCallbacks::new());
+        let chat = host
+            .open_product_execution(
+                chat_host.clone(),
+                Some(chat_host),
+                None,
+                native_execution_config("shared.dot", ProductExecutionKind::Worker),
+            )
+            .expect("Chat execution should open");
+
+        let app_endpoint = app.start_ws_bridge(0).expect("start app bridge");
+        let chat_endpoint = chat.start_ws_bridge(0).expect("start chat bridge");
+        assert_eq!(
+            app_endpoint.port, chat_endpoint.port,
+            "both executions must share the one listener port"
+        );
+        assert_ne!(
+            app_endpoint.token, chat_endpoint.token,
+            "each execution must get its own token"
+        );
+
+        let feature_ids = request_ids("system_feature_supported").expect("known request method");
+        let round_trip = |request_id: &str| ProtocolMessage {
+            request_id: request_id.into(),
+            payload: Payload {
+                trait_id: feature_ids.trait_id,
+                method_id: feature_ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: HostFeatureSupportedRequest::V1(v01::HostFeatureSupportedRequest::Chain {
+                    genesis_hash: vec![0u8; 32],
+                })
+                .encode(),
+            },
+        };
+        async fn answer<S>(ws: &mut S) -> ProtocolMessage
+        where
+            S: futures::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+                + Unpin,
+        {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    match ws.next().await {
+                        Some(Ok(WsMessage::Binary(bytes))) => {
+                            break ProtocolMessage::decode(&mut &bytes[..])
+                                .expect("decode response");
+                        }
+                        Some(Ok(_)) => continue,
+                        Some(Err(err)) => panic!("ws error: {err}"),
+                        None => panic!("connection closed before response"),
+                    }
+                }
+            })
+            .await
+            .expect("must answer")
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        rt.block_on(async {
+            let app_url = format!(
+                "ws://127.0.0.1:{}/?t={}",
+                app_endpoint.port, app_endpoint.token
+            );
+            let chat_url = format!(
+                "ws://127.0.0.1:{}/?t={}",
+                chat_endpoint.port, chat_endpoint.token
+            );
+
+            let (mut app_ws, _) = tokio_tungstenite::connect_async(&app_url)
+                .await
+                .expect("app dial");
+            let (mut chat_ws, _) = tokio_tungstenite::connect_async(&chat_url)
+                .await
+                .expect("chat dial");
+
+            app_ws
+                .send(WsMessage::Binary(round_trip("app:1").encode()))
+                .await
+                .expect("send on app connection");
+            assert_eq!(answer(&mut app_ws).await.request_id, "app:1");
+
+            chat_ws
+                .send(WsMessage::Binary(round_trip("chat:1").encode()))
+                .await
+                .expect("send on chat connection");
+            assert_eq!(answer(&mut chat_ws).await.request_id, "chat:1");
+
+            app.stop_ws_bridge();
+
+            chat_ws
+                .send(WsMessage::Binary(round_trip("chat:2").encode()))
+                .await
+                .expect("send on chat connection after App stops");
+            assert_eq!(
+                answer(&mut chat_ws).await.request_id,
+                "chat:2",
+                "Chat's connection must keep answering after a sibling execution stops"
+            );
+
+            assert!(
+                tokio_tungstenite::connect_async(&app_url).await.is_err(),
+                "a revoked token must not still be accepted"
+            );
+
+            chat.stop_ws_bridge();
+        });
+    }
+
     fn native_host_runtime_no_session() -> Arc<NativeTrUApiHostRuntime> {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
@@ -3624,6 +4682,7 @@ mod tests {
                 Arc::new(EventCallbacks::refusing(
                     v01::HostDevicePermissionRequest::Camera,
                 )),
+                None,
                 None,
                 native_execution_config("gated.dot", ProductExecutionKind::App),
             )

@@ -13,7 +13,7 @@ struct ProductRootEntropyDeriverTests {
     private func makeSUT() throws -> ProductRootEntropyDeriver {
         let manager = RootEntropyManager(
             keychain: InMemoryKeychain(),
-            entropyIdStore: MockEntropyIdStore()
+            installationKeyIdStore: MockInstallationKeyIdStore()
         )
         try manager.createRootEntropy(testRootEntropy)
         return ProductRootEntropyDeriver(entropyManager: manager)

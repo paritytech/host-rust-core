@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "c40be48215dfc079";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "dce7dbcb3598c981";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -254,12 +254,6 @@ pub const CHAT_ACTION_SUBSCRIBE: MethodIds = MethodIds {
     method_id: 4,
 };
 
-/// Wire discriminants for `chat_custom_message_render`.
-pub const CHAT_CUSTOM_MESSAGE_RENDER: MethodIds = MethodIds {
-    trait_id: 4,
-    method_id: 5,
-};
-
 /// Wire discriminants for `coin_payment_create_purse`.
 pub const COIN_PAYMENT_CREATE_PURSE: MethodIds = MethodIds {
     trait_id: 5,
@@ -440,6 +434,18 @@ pub const SIGNING_SIGN_PAYLOAD: MethodIds = MethodIds {
     method_id: 5,
 };
 
+/// Wire discriminants for `signing_sign_raw_unwatermarked_deprecated`.
+pub const SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED: MethodIds = MethodIds {
+    trait_id: 13,
+    method_id: 6,
+};
+
+/// Wire discriminants for `signing_sign_raw_unwatermarked_deprecated_with_legacy_account`.
+pub const SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT: MethodIds = MethodIds {
+    trait_id: 13,
+    method_id: 7,
+};
+
 /// Wire discriminants for `statement_store_subscribe`.
 pub const STATEMENT_STORE_SUBSCRIBE: MethodIds = MethodIds {
     trait_id: 14,
@@ -474,6 +480,30 @@ pub const THEME_SUBSCRIBE: MethodIds = MethodIds {
 pub const LOCALE_SUBSCRIBE: MethodIds = MethodIds {
     trait_id: 16,
     method_id: 0,
+};
+
+/// Wire discriminants for `renderer_render`.
+pub const RENDERER_RENDER: MethodIds = MethodIds {
+    trait_id: 17,
+    method_id: 0,
+};
+
+/// Wire discriminants for `renderer_action_subscribe`.
+pub const RENDERER_ACTION_SUBSCRIBE: MethodIds = MethodIds {
+    trait_id: 17,
+    method_id: 1,
+};
+
+/// Wire discriminants for `pocket_list_subscribe`.
+pub const POCKET_LIST_SUBSCRIBE: MethodIds = MethodIds {
+    trait_id: 18,
+    method_id: 0,
+};
+
+/// Wire discriminants for `pocket_remove_card`.
+pub const POCKET_REMOVE_CARD: MethodIds = MethodIds {
+    trait_id: 18,
+    method_id: 1,
 };
 
 /// The full wire table. Trait ids and per-trait method ordering are
@@ -621,10 +651,6 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Subscription(CHAT_ACTION_SUBSCRIBE),
     },
     WireEntry {
-        method: "chat_custom_message_render",
-        kind: WireKind::Subscription(CHAT_CUSTOM_MESSAGE_RENDER),
-    },
-    WireEntry {
         method: "coin_payment_create_purse",
         kind: WireKind::Request(COIN_PAYMENT_CREATE_PURSE),
     },
@@ -745,6 +771,14 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Request(SIGNING_SIGN_PAYLOAD),
     },
     WireEntry {
+        method: "signing_sign_raw_unwatermarked_deprecated",
+        kind: WireKind::Request(SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED),
+    },
+    WireEntry {
+        method: "signing_sign_raw_unwatermarked_deprecated_with_legacy_account",
+        kind: WireKind::Request(SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT),
+    },
+    WireEntry {
         method: "statement_store_subscribe",
         kind: WireKind::Subscription(STATEMENT_STORE_SUBSCRIBE),
     },
@@ -767,5 +801,21 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "locale_subscribe",
         kind: WireKind::Subscription(LOCALE_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "renderer_render",
+        kind: WireKind::Subscription(RENDERER_RENDER),
+    },
+    WireEntry {
+        method: "renderer_action_subscribe",
+        kind: WireKind::Subscription(RENDERER_ACTION_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "pocket_list_subscribe",
+        kind: WireKind::Subscription(POCKET_LIST_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "pocket_remove_card",
+        kind: WireKind::Request(POCKET_REMOVE_CARD),
     },
 ];

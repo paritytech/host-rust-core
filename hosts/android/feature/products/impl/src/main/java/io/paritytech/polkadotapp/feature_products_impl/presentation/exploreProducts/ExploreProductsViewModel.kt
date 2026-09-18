@@ -8,6 +8,7 @@ import io.paritytech.polkadotapp.common.utils.flowOf
 import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.common.utils.shareInBackground
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsTldProvider
+import io.paritytech.polkadotapp.feature_products_api.domain.runtime.ProductRuntimeSettings
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_api.presentation.SpaBrowserPayload
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductsBotApiImpl
@@ -20,33 +21,51 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.navigation
 import io.paritytech.polkadotapp.feature_products_impl.domain.jsRuntime.WebViewRuntime
 import io.paritytech.polkadotapp.feature_products_impl.domain.product.ProductRegistrar
 import io.paritytech.polkadotapp.feature_products_impl.domain.product.launchEnsureRegistered
+import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.ProductTrUAPIHostBridge
+import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.TrUAPISessionStarter
 import io.paritytech.polkadotapp.feature_products_impl.domain.webView.BrowserWebViewProvider
 import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * Explore catalog: a product-listing WebView driven by the host runtime
+ * selected via [ProductRuntimeSettings], either the native JS-bridge host or
+ * the Rust TrUAPI core. Cross-`.dot` taps are intercepted by
+ * [NavigationPolicy.CatalogNavigation] and open the selected product via the
+ * router, rather than navigating inline.
+ */
 @HiltViewModel
 class ExploreProductsViewModel @Inject constructor(
     private val browserWebViewProviderFactory: BrowserWebViewProvider.Factory,
     private val hostCallGroupFactory: HostCallGroupFactory,
     private val sessionFactory: HostApiSession.Factory,
     private val botApiFactory: ProductsBotApiImpl.Factory,
+    private val sessionStarter: TrUAPISessionStarter,
     private val productRegistrar: ProductRegistrar,
     private val router: ProductsRouter,
     private val exploreProductsService: ExploreProductsService,
+    private val runtimeSettings: ProductRuntimeSettings,
     private val dotNsTldProvider: DotNsTldProvider,
 ) : BaseViewModel() {
-    private data class SessionComponents(
-        val session: HostApiSession,
-        val provider: BrowserWebViewProvider,
-    )
+    private sealed interface SessionComponents {
+        val provider: BrowserWebViewProvider
+
+        class Native(
+            override val provider: BrowserWebViewProvider,
+            val session: HostApiSession,
+        ) : SessionComponents
+
+        class TrUAPI(
+            override val provider: BrowserWebViewProvider,
+            val bridge: ProductTrUAPIHostBridge,
+        ) : SessionComponents
+    }
 
     private val componentsFlow = flowOf {
         createComponents()
@@ -55,12 +74,6 @@ class ExploreProductsViewModel @Inject constructor(
     val webViewFlow = componentsFlow
         .map { it.provider.getWebView() }
         .stateIn(scope = this, started = SharingStarted.Eagerly, initialValue = null)
-
-    init {
-        componentsFlow.onEach {
-            it.session.initialize()
-        }.launchIn(this)
-    }
 
     fun onProductSelected(productId: ProductId) {
         launch { router.openSpaBrowser(SpaBrowserPayload.ByProductId(productId.value)) }
@@ -87,8 +100,19 @@ class ExploreProductsViewModel @Inject constructor(
                 ?.let { tld -> ProductId.fromUrl(url.toUri(), tld).getOrNull() }
                 ?.let { productRegistrar.launchEnsureRegistered(it) }
         }
-        val productIdProvider = webViewProvider.callingProductIdProvider
 
+        return if (runtimeSettings.isTrUAPIRuntimeEnabled()) {
+            createTrUAPIComponents(webViewProvider, exploreUrl)
+        } else {
+            createNativeComponents(webViewProvider, navigationPolicy)
+        }
+    }
+
+    private fun createNativeComponents(
+        webViewProvider: BrowserWebViewProvider,
+        navigationPolicy: NavigationPolicy,
+    ): SessionComponents {
+        val productIdProvider = webViewProvider.callingProductIdProvider
         val runtime = WebViewRuntime(webViewProvider)
 
         val botApi = botApiFactory.create(productIdProvider)
@@ -105,6 +129,32 @@ class ExploreProductsViewModel @Inject constructor(
         val transport = runtime.createTransport()
         val session = sessionFactory.create(environment, runtime, transport, this)
 
-        return SessionComponents(session, webViewProvider)
+        launch {
+            runCatching { session.initialize() }
+                .logFailure("Failed to initialize Explore host session")
+        }
+
+        return SessionComponents.Native(webViewProvider, session)
+    }
+
+    private fun createTrUAPIComponents(
+        webViewProvider: BrowserWebViewProvider,
+        exploreUrl: String,
+    ): SessionComponents {
+        // Explore has no deeplink handler of its own, so leaving the catalog opens
+        // the product in the SPA browser, matching NavigationPolicy.CatalogNavigation.
+        val hostApiNavigation = NavigationPolicy.HostApiNavigation(
+            onDeeplinkNavigation = { destination ->
+                dotNsTldProvider.currentTldOrNull()
+                    ?.let { tld -> ProductId.fromUrl(destination, tld) }
+                    ?.onSuccess(::onProductSelected)
+                    ?.logFailure("Explore navigateTo: not a product url $destination")
+            },
+            webViewLoader = { target -> viewModelScope.launch { webViewProvider.getWebView().loadUrl(target) } },
+            dotNsTldProvider = dotNsTldProvider,
+        )
+
+        val bridge = sessionStarter.start(webViewProvider, exploreUrl, viewModelScope, hostApiNavigation)
+        return SessionComponents.TrUAPI(webViewProvider, bridge)
     }
 }

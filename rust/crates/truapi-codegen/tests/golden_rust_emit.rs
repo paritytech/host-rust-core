@@ -1,14 +1,18 @@
 //! Golden snapshot test for the Rust dispatcher emitter.
 //!
-//! Each test runs `cargo +nightly rustdoc -p truapi` into its own
-//! `--target-dir` under a per-test tempdir so concurrent test execution
-//! cannot race on the shared `target/doc/truapi.json` path. Nightly Rust
-//! is required; if it is not available the test panics rather than
-//! silently passing (set up rustup with `rustup toolchain install nightly`).
+//! `cargo +nightly rustdoc` runs once per package into a dedicated
+//! `target/codegen-test-rustdoc/<package>` directory, off the shared
+//! `target/doc/<package>.json` path that a concurrent `cargo doc` would
+//! claim. Every test reads the same JSON, so the build is paid once per
+//! package per run. Nightly Rust is required; if it is not available the
+//! test panics rather than silently passing (set up rustup with
+//! `rustup toolchain install nightly`).
 
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 fn nightly_toolchain() -> String {
     std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
@@ -49,19 +53,37 @@ fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
     strings
 }
 
-/// Run `cargo +nightly rustdoc -p truapi --output-format json` into the
-/// given `target_dir` and return the path to the produced JSON file.
-/// Panics with a clear message if nightly is unavailable so CI cannot
-/// pass vacuously.
-fn produce_rustdoc_json(workspace_root: &Path, target_dir: &Path) -> PathBuf {
-    produce_rustdoc_json_for_package(workspace_root, target_dir, "truapi")
+/// Path to `truapi`'s rustdoc JSON, building it on first use.
+fn produce_rustdoc_json(workspace_root: &Path) -> PathBuf {
+    produce_rustdoc_json_for_package(workspace_root, "truapi")
 }
 
-fn produce_rustdoc_json_for_package(
-    workspace_root: &Path,
-    target_dir: &Path,
-    package: &str,
-) -> PathBuf {
+/// Path to `package`'s rustdoc JSON, building it on first use and reusing
+/// that build for every later caller in this test binary. Panics with a
+/// clear message if nightly is unavailable so CI cannot pass vacuously.
+fn produce_rustdoc_json_for_package(workspace_root: &Path, package: &str) -> PathBuf {
+    static BUILT: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    let built = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
+    // Held across the build so two tests asking for the same package queue
+    // instead of racing into one target directory.
+    let mut built = built
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(json) = built.get(package) {
+        return json.clone();
+    }
+
+    let target_dir = workspace_root
+        .join("target/codegen-test-rustdoc")
+        .join(package);
+    let json = run_rustdoc_json(workspace_root, &target_dir, package);
+    built.insert(package.to_owned(), json.clone());
+    json
+}
+
+/// One `cargo +nightly rustdoc --output-format json` invocation, returning
+/// the path to the JSON it wrote.
+fn run_rustdoc_json(workspace_root: &Path, target_dir: &Path, package: &str) -> PathBuf {
     let mut command = Command::new("cargo");
     command
         .arg(format!("+{}", nightly_toolchain()))
@@ -178,7 +200,7 @@ fn golden_dispatcher_and_wire_table() {
     let workspace = workspace_root();
 
     let tempdir = workspace_tempdir(&workspace);
-    let rustdoc_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
+    let rustdoc_json = produce_rustdoc_json(&workspace);
 
     let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
         .args([
@@ -246,10 +268,12 @@ fn golden_dispatcher_and_wire_table() {
 #[test]
 fn binary_emission_is_idempotent() {
     let workspace = workspace_root();
-    let tempdir = workspace_tempdir(&workspace);
-    let rustdoc_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
+    let rustdoc_json = produce_rustdoc_json(&workspace);
 
-    let run_once = || -> (String, String) {
+    // Every emitted file, not a hand-picked list: the nondeterminism this
+    // guards against has landed in the TypeScript output as readily as in the
+    // Rust output, and a list only covers what someone remembered to add.
+    let run_once = || -> BTreeMap<PathBuf, String> {
         let tmp = workspace_tempdir(&workspace);
         let status = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
             .args([
@@ -263,17 +287,49 @@ fn binary_emission_is_idempotent() {
             .status()
             .expect("run truapi-codegen");
         assert!(status.success(), "codegen run failed");
-        let dispatcher =
-            fs::read_to_string(tmp.path().join("rust/dispatcher.rs")).expect("read dispatcher");
-        let wire_table =
-            fs::read_to_string(tmp.path().join("rust/wire_table.rs")).expect("read wire_table");
-        (dispatcher, wire_table)
+        read_tree(tmp.path())
     };
 
-    let (a_disp, a_wire) = run_once();
-    let (b_disp, b_wire) = run_once();
-    assert_eq!(a_disp, b_disp, "dispatcher.rs differs between runs");
-    assert_eq!(a_wire, b_wire, "wire_table.rs differs between runs");
+    let first = run_once();
+    let second = run_once();
+    assert!(!first.is_empty(), "codegen emitted nothing");
+    assert_eq!(
+        first.keys().collect::<Vec<_>>(),
+        second.keys().collect::<Vec<_>>(),
+        "the two runs emitted different files"
+    );
+    for (path, contents) in &first {
+        assert_eq!(
+            contents,
+            &second[path],
+            "{} differs between runs",
+            path.display()
+        );
+    }
+}
+
+/// Every file under `root`, keyed by its path relative to `root`.
+fn read_tree(root: &Path) -> BTreeMap<PathBuf, String> {
+    let mut files = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).expect("read generated directory") {
+            let path = entry.expect("read generated entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("path under root")
+                    .to_path_buf();
+                files.insert(
+                    relative,
+                    fs::read_to_string(&path).expect("read generated file"),
+                );
+            }
+        }
+    }
+    files
 }
 
 #[test]
@@ -282,12 +338,8 @@ fn golden_host_callbacks_ts() {
     let workspace = workspace_root();
 
     let tempdir = workspace_tempdir(&workspace);
-    let truapi_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
-    let platform_json = produce_rustdoc_json_for_package(
-        &workspace,
-        &tempdir.path().join("rustdoc-platform-target"),
-        "truapi-platform",
-    );
+    let truapi_json = produce_rustdoc_json(&workspace);
+    let platform_json = produce_rustdoc_json_for_package(&workspace, "truapi-platform");
 
     let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
         .args([

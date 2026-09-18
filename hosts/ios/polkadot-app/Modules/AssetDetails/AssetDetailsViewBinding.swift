@@ -63,13 +63,13 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
             presenter?.onTopUp()
         }
 
+        viewModel.onWithdraw = { [weak presenter] in
+            presenter?.onWithdraw()
+        }
+
         #if TESTNET_FEATURE
             viewModel.onTestnetTopUp = { [weak presenter] in
                 presenter?.onTestnetTopUp()
-            }
-
-            viewModel.onMakeAllVouchersReady = { [weak presenter] in
-                presenter?.onMakeAllVouchersReady()
             }
         #endif
     }
@@ -101,11 +101,11 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
         lockedAmountString = String(localized: .balanceOnhold(amount: lockedAmount.amount))
     }
 
-    #if TESTNET_FEATURE
-        func didReceive(coinageBreakdown: CoinageBalanceBreakdownViewModel) {
-            viewModel.coinageBreakdown = coinageBreakdown
-        }
+    func didReceive(coinageBreakdown: CoinageBalanceBreakdownViewModel) {
+        viewModel.coinageBreakdown = coinageBreakdown
+    }
 
+    #if TESTNET_FEATURE
         func didReceive(testnetTopUpLoading: Bool) {
             viewModel.isTestnetTopUpInProgress = testnetTopUpLoading
         }
@@ -117,6 +117,12 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
 
     func didReceive(isRecoveryInProgress: Bool) {
         viewModel.isUpdating = isRecoveryInProgress
+    }
+
+    func didReceive(isAccountBackupPending: Bool) {
+        withAnimation(.easeInOut) {
+            viewModel.showsAccountBackupPending = isAccountBackupPending
+        }
     }
 
     func didShowBackupNotification() {
@@ -136,8 +142,11 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
         }
     }
 
-    func didReceive(topUpLoading: Bool) {
-        viewModel.isTopUpInProgress = topUpLoading
+    func didReceive(rampLoading action: RampAction, isLoading: Bool) {
+        switch action {
+        case .topUp: viewModel.isTopUpInProgress = isLoading
+        case .withdraw: viewModel.isWithdrawInProgress = isLoading
+        }
     }
 
     private func emitCardUpdate() {

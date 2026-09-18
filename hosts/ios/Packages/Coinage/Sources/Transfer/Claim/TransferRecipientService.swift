@@ -434,7 +434,6 @@ private extension TransferRecipientService {
     struct PreparedEntry {
         let index: Int
         let privateKey: Data
-        let senderPublicKey: Data
         let sourceCoin: OnChainCoin
         let destinationCoin: Coin
     }
@@ -501,11 +500,17 @@ private extension TransferRecipientService {
             }
 
             do {
-                let newCoin = try await coinMinter.mintCoin(exponent: Int16(sourceCoin.value))
+                // The transfer we are about to submit ages the coin by one.
+                let newCoin = try await coinMinter.mintCoin(
+                    exponent: Int16(sourceCoin.value),
+                    provenance: .received(
+                        ageAfterTransfer: sourceCoin.age + 1,
+                        bundleSize: senderKeys.count
+                    )
+                )
                 prepared.append(PreparedEntry(
                     index: entry.index,
                     privateKey: entry.privateKey,
-                    senderPublicKey: entry.publicKey,
                     sourceCoin: sourceCoin,
                     destinationCoin: newCoin
                 ))
@@ -529,7 +534,6 @@ private extension TransferRecipientService {
                     do {
                         let coin = try await transferSubmitter.submitTransfer(
                             senderPrivateKey: entry.privateKey,
-                            senderPublicKey: entry.senderPublicKey,
                             destinationCoin: entry.destinationCoin
                         )
                         logger?.debug("Transfer extrinsic succeeded for entry \(entry.index)")

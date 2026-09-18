@@ -29,7 +29,6 @@ actor ChatRequestServiceFactory {
     let operationQueue: OperationQueue
     let logger: LoggerProtocol
     let remoteContactResolver: RemoteContactResolving
-    let statementTracker: StatementDeliveryTracking
 
     private var connection: StatementStoreConnecting?
     private var accountSignManager: StatementStoreSignerManaging?
@@ -37,7 +36,6 @@ actor ChatRequestServiceFactory {
 
     init(
         remoteContactResolver: RemoteContactResolving,
-        statementTracker: StatementDeliveryTracking,
         chatChainId: ChainModel.Id = AppConfig.Chains.chatChain,
         chainRegistry: ChainRegistryProtocol = ChainRegistryFacade.sharedRegistry,
         entropyManager: RootEntropyManaging = RootEntropyManager.shared,
@@ -47,7 +45,6 @@ actor ChatRequestServiceFactory {
         logger: SDKLoggerProtocol = Logger.shared
     ) {
         self.remoteContactResolver = remoteContactResolver
-        self.statementTracker = statementTracker
         self.chatChainId = chatChainId
         self.chainRegistry = chainRegistry
         self.entropyManager = entropyManager
@@ -75,7 +72,6 @@ extension ChatRequestServiceFactory: ChatRequestServiceMaking {
             settings: discoverySettings,
             statementStoreConnection: connection,
             chatRequestFactory: chatRequestFactory,
-            statementTracker: statementTracker,
             logger: logger
         )
     }

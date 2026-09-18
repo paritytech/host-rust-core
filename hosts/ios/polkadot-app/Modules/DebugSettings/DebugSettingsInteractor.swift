@@ -41,8 +41,6 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
         Task { [weak self, mnemonicBackupHelper, keystore] in
             try? await ClosureOperation {
                 try? mnemonicBackupHelper.deleteMnemonic()
-                try? keystore.deleteKey(for: "coin-index")
-                try? keystore.deleteKey(for: "voucher-index")
                 JWTTokenStore(keychain: keystore, sessionIdStore: BackendSessionIdStore()).deleteAll()
             }
             .asyncExecute()
@@ -85,14 +83,20 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
     }
 
     func toggleTruApiRuntime() {
-        let current = SettingsManager.shared.value(for: .truApiRuntimeEnabled)
+        let current = SettingsManager.shared.isTrUAPIRuntimeEnabled
         SettingsManager.shared.set(value: !current, for: .truApiRuntimeEnabled)
         provideTruApiRuntimeState()
     }
 
     func restartApp() {
-        Logger.shared.info("TrUAPI runtime changed — terminating for restart")
+        Logger.shared.info("Debug settings changed — terminating for restart")
         exit(0)
+    }
+
+    func resetTips() {
+        #if TESTNET_FEATURE
+            SettingsManager.shared.set(value: true, for: .tipsResetPending)
+        #endif
     }
 }
 
@@ -131,7 +135,7 @@ private extension DebugSettingsInteractor {
     }
 
     func provideTruApiRuntimeState() {
-        let enabled = SettingsManager.shared.value(for: .truApiRuntimeEnabled)
+        let enabled = SettingsManager.shared.isTrUAPIRuntimeEnabled
         Task { @MainActor [weak presenter] in
             presenter?.didReceive(truApiRuntimeEnabled: enabled)
         }

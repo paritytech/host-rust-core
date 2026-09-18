@@ -136,6 +136,53 @@ struct CoinageBalanceTests {
 
     // MARK: - Combined
 
+    @Test(arguments: [RecyclingStrategyType.balanced, .maxPrivacy])
+    func maturityMovesVoucherBalanceToAvailable(_ type: RecyclingStrategyType) {
+        let minimumMembers: UInt32 = 32
+        let tenMinutes: TimeInterval = 10 * 60
+        let ringCapacity = 767
+        let exponent: Int16 = 1
+        let enteredAt = Date(timeIntervalSince1970: 1_000)
+        let trackedVoucher = tracked(voucher(
+            exponent: exponent,
+            state: .inRecycler(.init(index: 1, membersCount: minimumMembers, enteredAt: enteredAt))
+        ))
+        let strategy = ParametricRecyclingStrategy(
+            params: type.params(forcedRecyclingAge: CoinageConstants.recycleAtAge)
+        )
+        let preClassificator = CoinageAssetPreClassificator()
+        let balances = [tenMinutes - 1, tenMinutes].map { elapsed in
+            let usability = VoucherUsabilityContext(
+                ringCapacities: [exponent: ringCapacity],
+                now: enteredAt.addingTimeInterval(elapsed)
+            )
+            return CoinageBalanceService.calculateBalance(
+                coinBuckets: preClassificator.preClassifyCoins([]),
+                voucherBuckets: preClassificator.preClassifyVouchers(
+                    [trackedVoucher],
+                    strategy: strategy,
+                    context: usability
+                ),
+                verdicts: [:],
+                canSpendWithConfirmation: strategy.allowsConfirmedSpend(),
+                context: context
+            )
+        }
+
+        #expect(balances == [
+            CoinageBalance(
+                availablePrivate: 0,
+                gainingPrivacy: .init(amount: planks(exponent), canSpendWithConfirmation: type == .balanced),
+                pending: 0
+            ),
+            CoinageBalance(
+                availablePrivate: planks(exponent),
+                gainingPrivacy: .init(amount: 0, canSpendWithConfirmation: type == .balanced),
+                pending: 0
+            )
+        ])
+    }
+
     @Test("Buckets a mix of coins and vouchers correctly")
     func combined() {
         expect(
@@ -166,15 +213,15 @@ private extension CoinageBalanceTests {
         CoinageAssetState(handedOff: false, consumerStatus: status, minterStatus: nil)
     }
 
-    func key(_ index: DerivationIndex) -> Data {
-        Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
+    func key(_ index: CoinageKeyIndex) -> Data {
+        Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
     }
 
-    func coin(exponent: Int16, index: DerivationIndex, age: Int16?, onChain: Bool) -> Coin {
+    func coin(exponent: Int16, index: CoinageKeyIndex, age: Int16?, onChain: Bool) -> Coin {
         Coin(exponent: exponent, derivationIndex: index, age: age, isOnchain: onChain, publicKey: key(index))
     }
 
-    func minted(exponent: Int16, index: DerivationIndex) -> TrackedCoin {
+    func minted(exponent: Int16, index: CoinageKeyIndex) -> TrackedCoin {
         tracked(coin(exponent: exponent, index: index, age: 0, onChain: true), state: free)
     }
 
@@ -182,7 +229,7 @@ private extension CoinageBalanceTests {
         TrackedCoin(coin: coin, state: state)
     }
 
-    func voucher(exponent: Int16, state: Voucher.OnChainState, index: DerivationIndex = 0) -> Voucher {
+    func voucher(exponent: Int16, state: Voucher.OnChainState, index: CoinageKeyIndex = 0) -> Voucher {
         Voucher(
             exponent: exponent,
             derivationIndex: index,
@@ -193,7 +240,7 @@ private extension CoinageBalanceTests {
         )
     }
 
-    func inRecycler(exponent: Int16, members: UInt32, index: DerivationIndex = 0) -> Voucher {
+    func inRecycler(exponent: Int16, members: UInt32, index: CoinageKeyIndex = 0) -> Voucher {
         voucher(exponent: exponent, state: .inRecycler(.init(index: 1, membersCount: members)), index: index)
     }
 

@@ -61,8 +61,9 @@ final class ContactsListViewController: UIViewController, ViewHolder, RootScreen
         }
 
         if rootView.isEmpty {
-            contentUnavailableConfiguration = UIContentUnavailableConfiguration.titleSubtitle(
-                with: String(localized: .chatsEmptyListTitle),
+            contentUnavailableConfiguration = UIContentUnavailableConfiguration.illustrated(
+                image: .chatsEmptyIllustration,
+                title: String(localized: .chatsEmptyListTitle),
                 subtitle: String(localized: .chatsEmptyListMessage)
             )
         } else {
@@ -91,7 +92,7 @@ final class ContactsListViewController: UIViewController, ViewHolder, RootScreen
 private extension ContactsListViewController {
     func setupBarItems() {
         let action = UIAction { [weak self] _ in
-            self?.presenter.showSearchContact()
+            self?.presenter.showScanPanel()
         }
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(

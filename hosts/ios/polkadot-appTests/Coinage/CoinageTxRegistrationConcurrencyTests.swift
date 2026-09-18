@@ -6,8 +6,9 @@ import KeyDerivation
 import Testing
 
 @testable import polkadot_app
+import DurableTransactions
 
-/// Guards the serialization of `CoinageTxCoreDataRepository`'s transaction.
+/// Guards the serialization of the CoreData ledger's registration transaction.
 ///
 /// It once built a new `NSManagedObjectContext` per call instead of using the shared serial one,
 /// so two concurrent registrations each read the store before either saved, neither saw the other,
@@ -19,18 +20,18 @@ import Testing
 @Suite("CoinageTx registration concurrency")
 final class DurabilityRegistrationConcurrencyTests {
     private var facade: UserDataStorageTestFacade!
-    private var store: CoinageTxCoreDataRepository!
+    private var store: CoinageCoreDataLedger!
 
     init() {
         facade = UserDataStorageTestFacade()
-        store = CoinageTxCoreDataRepository(storageFacade: facade)
+        store = CoinageCoreDataLedger(storageFacade: facade)
     }
 
     @Test("concurrent registrations on the same input admit exactly one")
     func concurrentRegistrationsOnSameInputAdmitExactlyOne() async throws {
         for _ in 0 ..< 50 {
             let facade = UserDataStorageTestFacade()
-            let store = CoinageTxCoreDataRepository(storageFacade: facade)
+            let store = CoinageCoreDataLedger(storageFacade: facade)
             try await persistCoins([0, 1, 2], facade: facade)
 
             let sharedInput = CoinageTxInput.coin(.own(0, testKey(0)))
@@ -99,12 +100,12 @@ final class DurabilityRegistrationConcurrencyTests {
     func concurrentRegistrationsKeepSequenceMonotonic() async throws {
         for _ in 0 ..< 50 {
             let facade = UserDataStorageTestFacade()
-            let store = CoinageTxCoreDataRepository(storageFacade: facade)
-            try await persistCoins((0 ..< 10).map(UInt64.init) + (100 ..< 110).map(UInt64.init), facade: facade)
+            let store = CoinageCoreDataLedger(storageFacade: facade)
+            try await persistCoins((0 ..< 10).map(keyIndex) + (100 ..< 110).map(keyIndex), facade: facade)
 
             let entries = (0 ..< 10).map { i -> CoinageTxEntry in
-                let inputIndex = UInt64(i)
-                let outputIndex = UInt64(100 + i)
+                let inputIndex = keyIndex(i)
+                let outputIndex = keyIndex(100 + i)
                 return CoinageTxEntry(
                     id: CoinageTxId(),
                     inputs: [.coin(.own(inputIndex, testKey(inputIndex)))],
@@ -280,9 +281,41 @@ final class DurabilityRegistrationConcurrencyTests {
         }
     }
 
+    /// The two halves commit together: a rejected asset registration rolls the engine's row back too, so
+    /// the ledger never holds a transaction row without the assets it locks.
+    @Test("a rejected asset registration leaves no engine row behind")
+    func rejectedAssetRegistrationRollsBackEngineRow() async throws {
+        try await persistCoins([0, 1], facade: facade)
+
+        let input = CoinageTxInput.coin(.own(0, testKey(0)))
+        let first = CoinageTxEntry(
+            inputs: [input],
+            outputs: [.coin(1, testKey(1))],
+            txHash: Data(repeating: 0xAB, count: 32),
+            checkpoint: BlockRef(number: 100, hash: Data([100])),
+            mortality: 64
+        )
+        try await store.register(first)
+
+        let conflicting = CoinageTxEntry(
+            inputs: [input],
+            outputs: [],
+            txHash: Data(repeating: 0xAC, count: 32),
+            checkpoint: BlockRef(number: 100, hash: Data([100])),
+            mortality: 64
+        )
+        await #expect(throws: CoinageTxError.inputAlreadyClaimed(input.publicKey.toHex())) {
+            try await store.register(conflicting)
+        }
+
+        let engineRows = try await store.durable.getAllEntries()
+        #expect(engineRows.count == 1)
+        #expect(engineRows.first?.txHash == first.txHash)
+    }
+
     /// Coins must exist before a transaction registers against them, so persist the input and
     /// output coins a test references before it registers any entry.
-    private func persistCoins(_ indices: [DerivationIndex], facade: UserDataStorageTestFacade) async throws {
+    private func persistCoins(_ indices: [CoinageKeyIndex], facade: UserDataStorageTestFacade) async throws {
         let repo = facade.makeRepo(mapper: CoinMapper())
         let coins = indices.map { Coin(exponent: 0, derivationIndex: $0, age: nil, publicKey: testKey($0)) }
         try await repo.saveOperation({ coins }, { [] }).asyncExecute()
@@ -291,52 +324,10 @@ final class DurabilityRegistrationConcurrencyTests {
 
 /// A deterministic public key from a derivation index — distinct per index and stable, so the
 /// persisted coins' keys match the entries the tests register against them.
-private func testKey(_ index: DerivationIndex) -> PublicKey {
-    withUnsafeBytes(of: index.bigEndian) { Data($0) }
+private func testKey(_ index: CoinageKeyIndex) -> PublicKey {
+    withUnsafeBytes(of: index.item.bigEndian) { Data($0) }
 }
 
-/// The real validator — it reads each entry's own public keys, which `persistCoins` stores to
-/// match (both derive the key the same way from the index).
-private let concurrencyValidator = CoinageTxRegistrationValidator()
-
-private final class CapturedId: @unchecked Sendable {
-    var id: CoinageTxId?
-}
-
-private extension CoinageTxCoreDataRepository {
-    /// Registers a prepared entry, running the real validator's invariant checks inside the store
-    /// transaction, and returns the id the store minted. Keeps the existing `store.register(entry)`
-    /// call shape while adapting to the repo-generated-id registration API.
-    @discardableResult
-    func register(_ entry: CoinageTxEntry) async throws -> CoinageTxId {
-        let registration = CoinageTxRegistration(
-            txHash: entry.txHash,
-            checkpoint: entry.checkpoint,
-            mortalityBlocks: entry.mortality,
-            groupId: entry.groupId,
-            inputs: entry.inputs,
-            outputs: entry.outputs
-        )
-        let captured = CapturedId()
-        try await register(
-            [registration],
-            validation: { try concurrencyValidator.validate([registration], transaction: $0) },
-            onCommit: { captured.id = $0.first }
-        )
-        guard let id = captured.id else { throw CoinageTxError.entryNotFound(entry.id) }
-        return id
-    }
-
-    /// Test-only convenience mirroring the removed `updateStatus(_:to:)`: reads the current status
-    /// and applies a terminal/live verdict through the production compare-and-set.
-    func updateStatus(_ id: CoinageTxId, to status: CoinageTxStatus) async throws {
-        guard let current = try await getStatus(id) else {
-            throw CoinageTxError.entryNotFound(id)
-        }
-        _ = try await updateTxStatus(
-            for: id,
-            expectedCurrentStatus: current,
-            verdict: Verdict(status: status, successDetectedAt: nil)
-        )
-    }
+private func keyIndex(_ item: Int) -> CoinageKeyIndex {
+    CoinageKeyIndex(installation: .test, item: UInt64(item))
 }

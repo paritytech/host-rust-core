@@ -44,7 +44,6 @@ jobs:
           GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
           GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
           NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
-          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
         run: ./gradlew testGpDebugUnitTest testGpReleaseUnitTest testDebugUnitTest testReleaseUnitTest --no-daemon --stacktrace
 
   build:
@@ -74,5 +73,4 @@ jobs:
           GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
           GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
           NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
-          W3S_AUTH_KEY: ${{ secrets.W3S_AUTH_KEY }}
         run: ./gradlew assembleGpDebug --no-daemon --stacktrace

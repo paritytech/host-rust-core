@@ -4,23 +4,24 @@ import SubstrateSdk
 
 struct SearchAccountViewModel {
     let inputViewModel: InputModel
-    let dataType: DataType
+    let content: Content
 
     init(
         inputViewModel: InputModel = InputModel(
             inputViewModel: InputViewModel.createAccountInputViewModel(for: "")
         ),
-        dataType: DataType = .idle(recent: [], contacts: [])
+        content: Content = .empty
     ) {
         self.inputViewModel = inputViewModel
-        self.dataType = dataType
+        self.content = content
     }
 }
 
 extension SearchAccountViewModel {
     enum Section: Hashable {
-        case `default`
+        case contacts
         case recentContacts
+        case globalSearch
     }
 
     enum AccountType: Hashable {
@@ -33,9 +34,12 @@ extension SearchAccountViewModel {
         var selectedAccount: AccountType?
     }
 
-    enum DataType {
-        case idle(recent: [RecipientViewModel], contacts: [AccountType])
-        case searchResults([AccountType])
+    struct Content {
+        let recent: [RecipientViewModel]
+        let contacts: [AccountType]
+        let global: [AccountType]
+
+        static let empty = Content(recent: [], contacts: [], global: [])
     }
 }
 
@@ -59,8 +63,9 @@ extension SearchAccountViewModel.AccountType {
 extension SearchAccountViewModel.Section {
     var title: String? {
         switch self {
-        case .default: nil
+        case .contacts: String(localized: .transactionSearchMyContacts)
         case .recentContacts: String(localized: .transactionSearchRecentContacts)
+        case .globalSearch: String(localized: .transactionSearchAllUsers)
         }
     }
 }

@@ -39,7 +39,16 @@ public final class DSGlassBackgroundView: UIView {
 
     private let shape: Shape
     private let style: Style
-    private let tint: UIColor?
+    public var tint: UIColor? {
+        didSet {
+            guard tint != oldValue else {
+                return
+            }
+            applyEffectTint()
+            applyLegacyTint()
+        }
+    }
+
     private let effectView: UIVisualEffectView
     private let substrateView = UIView()
 
@@ -140,13 +149,21 @@ private extension DSGlassBackgroundView {
     /// `UIGlassEffect` captures its tint when assigned, so a dynamic colour has to be
     /// re-resolved and the effect rebuilt whenever the theme trait changes.
     func applyEffectTint() {
-        guard #available(iOS 26.0, *), let tint else {
+        guard #available(iOS 26.0, *) else {
             return
         }
 
         let effect = UIGlassEffect(style: style == .clear ? .clear : .regular)
-        effect.tintColor = tint.resolvedColor(with: traitCollection)
+        effect.tintColor = tint?.resolvedColor(with: traitCollection)
         effectView.effect = effect
+    }
+
+    /// Below iOS 26 the glass is a blur substrate, so the tint colours that substrate instead.
+    func applyLegacyTint() {
+        guard #unavailable(iOS 26.0) else {
+            return
+        }
+        substrateView.backgroundColor = tint ?? .bgSurfaceContainer
     }
 }
 

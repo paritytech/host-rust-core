@@ -1,6 +1,7 @@
 package io.paritytech.polkadotapp.feature_coinage_impl
 
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.CoinAmountBreakdown
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher.Location
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
@@ -112,10 +113,12 @@ class VoucherBatchDistributionTest {
     private var voucherIndexCounter = 0
 
     private fun voucher(exponent: Int, ring: Int): RecyclerVoucher = RecyclerVoucher(
-        ringVrfKeyIndex = voucherIndexCounter++,
+        ringVrfKeyIndex = testKey(voucherIndexCounter++),
         ringVrfPublicKey = mock(),
         recyclerValue = ValueExponent(exponent),
-        location = Location.InRecycler(RingIndex(ring.toBigInteger()), recyclerMembers = FULL_RING),
+        location = Location.InRecycler(RingIndex(ring.toBigInteger()), recyclerMembers = FULL_RING, enteredAt = null),
+        recyclerFungibility = RecyclerFungibility.NONE,
+        maxRecyclerFungibility = RecyclerFungibility.NONE,
     )
 
     private companion object {

@@ -6,22 +6,27 @@ protocol LogsEmailDraftMaking {
 }
 
 final class LogsEmailDraftFactory: LogsEmailDraftMaking {
+    private let archiveURL: URL?
+
     private lazy var subjectDateFormatter: DateFormatter = {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "dd/MM/yyyy"
         return dateFormatter
     }()
 
+    init(archiveURL: URL? = nil) {
+        self.archiveURL = archiveURL
+    }
+
     func makeLogsDraft() -> EmailDraft? {
         guard
             let logsURL = fileManager.logsDirectoryURL(),
-            let docsURL = documentDirectoryURL()
+            let zipURL = archiveURL ?? documentDirectoryURL()?.appendingPathComponent("Logs.zip")
         else {
             return nil
         }
 
-        let zipName = "Logs.zip"
-        let zipURL = docsURL.appendingPathComponent(zipName)
+        let zipName = zipURL.lastPathComponent
 
         if fileManager.fileExists(atPath: zipURL.path) {
             try? fileManager.removeItem(at: zipURL)
@@ -39,7 +44,9 @@ final class LogsEmailDraftFactory: LogsEmailDraftMaking {
         return EmailDraft(
             subject: "\(subjectDateFormatter.string(from: Date())) - iOS",
             message: "\n\n\n",
-            recipients: ["game@novasama.io"],
+            // No recipient: the log archive is a debug aid, and who receives it is the
+            // user's call — the mail composer opens with an empty To field for them to fill.
+            recipients: [],
             attachment: .init(
                 data: data,
                 mimeType: "application/octet-stream",

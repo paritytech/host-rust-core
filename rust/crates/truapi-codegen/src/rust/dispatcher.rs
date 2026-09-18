@@ -137,10 +137,10 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<String> {
 
 /// Emit the free functions that start a host-initiated subscription (a
 /// method the host calls into the product, e.g.
-/// `chat_custom_message_render`). Its `Start` payload is the request
-/// wrapper's own encoding, sent immediately rather than registered against
-/// the dispatcher; the product's `Receive`/`Interrupt` replies are routed
-/// back by [`HostInitiatedSubscriptionManager`].
+/// `renderer_render`). Its `Start` payload is the request wrapper's own
+/// encoding, sent immediately rather than registered against the dispatcher;
+/// the product's `Receive`/`Interrupt` replies are routed back by
+/// [`HostInitiatedSubscriptionManager`].
 fn write_host_initiated_callers(
     out: &mut String,
     api: &ApiDefinition,
@@ -166,14 +166,18 @@ fn write_host_initiated_callers(
                 &request.type_ref,
                 &wrappers,
             )?;
-            let ReturnType::Subscription(item) = &method.return_type else {
+            let ReturnType::Subscription { item, interrupt } = &method.return_type else {
                 bail!(
-                    "Host-initiated method `{}` must return Subscription<T>",
+                    "Host-initiated method `{}` must return Subscription<Item, Interrupt>",
                     method.name
                 );
             };
             let item_name =
                 versioned_wrapper_root(&method.name, "host-initiated item", item, &wrappers)?;
+            let interrupt_path = error_type_path(
+                &module,
+                &versioned_error_wrapper(&method.name, interrupt, &wrappers)?,
+            );
             let wire_name = wire_method_name(&trait_def.name, &method.name);
             let ids = const_name(&wire_name);
             let request_path = format!("versioned::{module}::{request_name}");
@@ -188,7 +192,7 @@ fn write_host_initiated_callers(
                     subscriptions: &HostInitiatedSubscriptionManager,
                     transport: Arc<dyn Transport>,
                     request: {request_path},
-                ) -> truapi::Subscription<Result<{item_path}, truapi::latest::GenericError>> {{
+                ) -> truapi::Subscription<{item_path}, truapi::CallError<{interrupt_path}>> {{
                     subscriptions.start(
                         wire_table::{ids},
                         parity_scale_codec::Encode::encode(&request),
@@ -211,22 +215,12 @@ struct MethodEmission {
     wire_name: String,
     module: String,
     kind: MethodKind,
-    /// `None` when the method declares no request parameter. Never `Raw`:
-    /// `build` rejects an unrepresentable parameter outright.
-    request_payload: Option<WirePayload>,
+    /// The versioned wrapper naming this method's request payload.
+    request_payload: String,
     response_wrapper: Option<String>,
-    error_payload: WirePayload,
+    error_payload: String,
     item_wrapper: Option<String>,
     required_execution: Option<String>,
-}
-
-#[derive(Clone)]
-enum WirePayload {
-    Versioned(String),
-    /// No representable wire payload: the absent error type of a plain
-    /// (non-`Result`) subscription. Request parameters never reach this state,
-    /// since `MethodEmission::build` rejects an unrepresentable one.
-    Raw,
 }
 
 impl MethodEmission {
@@ -239,17 +233,17 @@ impl MethodEmission {
     ) -> Result<Self> {
         let versioned_wrappers = versioned_wrapper_names(api);
         let request_payload = match method.params.as_slice() {
-            [] => None,
+            [] => bail!(
+                "Method `{}`: expected exactly one request parameter, so an empty request needs a \
+                 payload-less versioned wrapper",
+                method.name
+            ),
             [param] => match &param.type_ref {
                 TypeRef::Named { name, args }
                     if args.is_empty() && versioned_wrappers.contains(name) =>
                 {
-                    Some(WirePayload::Versioned(name.clone()))
+                    name.clone()
                 }
-                // Rejected here rather than stored as `Raw`: the
-                // subscription path reads an absent request off this field,
-                // so a `Raw` reaching it would emit a host call missing its
-                // declared argument instead of failing codegen.
                 _ => bail!(
                     "Method `{}`: its request parameter is not a versioned wrapper, so it has no \
                      representable wire payload",
@@ -263,19 +257,15 @@ impl MethodEmission {
             ),
         };
         let error_payload = match &method.return_type {
-            ReturnType::Result { err, .. } | ReturnType::ResultSubscription { err, .. } => {
-                wire_payload_for_error(&method.name, err, &versioned_wrappers)?
+            ReturnType::Result { err, .. } => {
+                versioned_error_wrapper(&method.name, err, &versioned_wrappers)?
             }
-            ReturnType::Subscription(_) => WirePayload::Raw,
+            ReturnType::Subscription { interrupt, .. } => {
+                versioned_error_wrapper(&method.name, interrupt, &versioned_wrappers)?
+            }
         };
 
         let (response_wrapper, item_wrapper) = match &method.return_type {
-            // `Result<(), _>` returns produce an empty wire payload.
-            // The trait method is called for its side effects and the
-            // dispatcher encodes `()` (zero bytes) on success.
-            ReturnType::Result {
-                ok: TypeRef::Unit, ..
-            } => (None, None),
             ReturnType::Result { ok, .. } => (
                 Some(
                     versioned_wrapper_root(&method.name, "response", ok, &versioned_wrappers)?
@@ -283,19 +273,7 @@ impl MethodEmission {
                 ),
                 None,
             ),
-            ReturnType::Subscription(item) => (
-                None,
-                Some(
-                    versioned_wrapper_root(
-                        &method.name,
-                        "subscription item",
-                        item,
-                        &versioned_wrappers,
-                    )?
-                    .to_string(),
-                ),
-            ),
-            ReturnType::ResultSubscription { item, .. } => (
+            ReturnType::Subscription { item, .. } => (
                 None,
                 Some(
                     versioned_wrapper_root(
@@ -325,9 +303,7 @@ impl MethodEmission {
     fn write(&self, out: &mut String, host_expr: &str) -> Result<()> {
         match self.kind {
             MethodKind::Request => self.write_request_envelope(out, host_expr),
-            MethodKind::Subscription | MethodKind::ResultSubscription => {
-                self.write_subscription_envelope(out, host_expr)
-            }
+            MethodKind::Subscription => self.write_subscription_envelope(out, host_expr),
         }
     }
 
@@ -340,12 +316,8 @@ impl MethodEmission {
         let method = &self.name;
         let ids = const_name(&self.wire_name);
 
-        let Some(WirePayload::Versioned(request_name)) = &self.request_payload else {
-            bail!("Method `{method}`: every request method needs a versioned request wrapper");
-        };
-        let Some(error_name) = self.error_payload.versioned_name() else {
-            bail!("Method `{method}`: every request method needs a versioned error wrapper");
-        };
+        let request_name = &self.request_payload;
+        let error_name = &self.error_payload;
         let request_path = format!("versioned::{module}::{request_name}");
         let error_path = format!("versioned::{module}::{error_name}");
         let response_path = self
@@ -461,12 +433,12 @@ impl MethodEmission {
     /// method with no request parameter — its version then falls back to the
     /// item wrapper's latest, since no per-request signal exists to derive one
     /// from. Items are downgraded to that version and streamed as `Receive`
-    /// frames; a synchronous or mid-decode failure is streamed as one
-    /// `Interrupt(Some(err))`. Natural stream completion
-    /// (`Interrupt(None)`) is encoded generically by the runtime with no
-    /// per-method type knowledge needed, so it isn't generated here, and
-    /// `Stop` is intercepted by the framework before it ever reaches a
-    /// registered handler.
+    /// frames. The stream's own terminating `Err`, and any failure before the
+    /// stream exists, are encoded as the `Interrupt` payload's `Err` arm; a
+    /// stream that ends without one interrupts with `Ok(())`, which the
+    /// runtime encodes with no per-method type knowledge. `Stop` is
+    /// intercepted by the framework before it ever reaches a registered
+    /// handler.
     fn write_subscription_envelope(&self, out: &mut String, host_expr: &str) -> Result<()> {
         let module = &self.module;
         let method = &self.name;
@@ -477,30 +449,10 @@ impl MethodEmission {
         };
         let item_path = format!("versioned::{module}::{item_name}");
 
-        let is_result_sub = matches!(self.kind, MethodKind::ResultSubscription);
-        let has_request = matches!(self.request_payload, Some(WirePayload::Versioned(_)));
+        let request_name = &self.request_payload;
+        let start_ty = format!("versioned::{module}::{request_name}");
 
-        let start_ty = match &self.request_payload {
-            Some(WirePayload::Versioned(request_name)) => {
-                format!("versioned::{module}::{request_name}")
-            }
-            _ => "()".to_string(),
-        };
-        // A unit-typed binding trips clippy's `let_unit_value` lint, so a
-        // subscription with no `Start` payload names it `_request` instead
-        // of relying on a follow-up `let _ = request;` to silence it.
-        let request_binding = if has_request { "request" } else { "_request" };
-
-        let error_ty = if is_result_sub {
-            let Some(error_name) = self.error_payload.versioned_name() else {
-                bail!(
-                    "Method `{method}`: result subscription methods must have a versioned error wrapper"
-                );
-            };
-            format!("versioned::{module}::{error_name}")
-        } else {
-            "truapi::latest::GenericError".to_string()
-        };
+        let error_ty = error_type_path(module, &self.error_payload);
 
         writeln!(out, "    {{").unwrap();
         self.write_execution_binding(out);
@@ -522,33 +474,23 @@ impl MethodEmission {
             16,
             &formatdoc! {
                 r#"
-                let {request_binding}: {start_ty} = match DecodeAll::decode_all(&mut &bytes[..]) {{
+                let request: {start_ty} = match DecodeAll::decode_all(&mut &bytes[..]) {{
                     Ok(request) => request,
                     Err(err) => {{
                         let error: truapi::CallError<{error_ty}> =
                             truapi::CallError::MalformedFrame {{ reason: err.to_string() }};
-                        return Err(Some(error).encode());
+                        return Err(subscription_interrupt(error));
                     }}
                 }};
                 "#
             },
         );
 
-        if has_request {
-            writeln!(
-                out,
-                "                let target_version = request.version();"
-            )
-            .unwrap();
-        } else {
-            write_indented(
-                out,
-                16,
-                &format!(
-                    "let target_version = <{item_path} as truapi::versioned::Versioned>::LATEST;\n"
-                ),
-            );
-        }
+        writeln!(
+            out,
+            "                let target_version = request.version();"
+        )
+        .unwrap();
         write_indented(
             out,
             16,
@@ -563,50 +505,41 @@ impl MethodEmission {
                     r#"
                     if !execution_allowed {{
                         let error: truapi::CallError<{error_ty}> = truapi::CallError::Denied;
-                        return Err(Some(error).encode());
+                        return Err(subscription_interrupt(error));
                     }}
                     "#
                 },
             );
         }
 
-        let call_args = if has_request { "&cx, request" } else { "&cx" };
+        let call_args = "&cx, request";
 
-        if is_result_sub {
-            write_indented(
-                out,
-                16,
-                &formatdoc! {
-                    r#"
-                    let stream = match host.{method}({call_args}).await {{
-                        Ok(sub) => sub,
-                        Err(err) => {{
-                            let error = downgrade_call_error(err, target_version);
-                            return Err(Some(error).encode());
-                        }}
-                    }};
-                    "#
-                },
-            );
-        } else {
-            writeln!(
-                out,
-                "                let stream = host.{method}({call_args}).await;"
-            )
-            .unwrap();
-        }
+        writeln!(
+            out,
+            "                let stream = host.{method}({call_args}).await;"
+        )
+        .unwrap();
 
+        // A domain error carries its own versions, so it is downgraded with the
+        // items to the version the caller asked in.
+        let downgrade_interrupt =
+            "\n        .map_err(|error| downgrade_call_error(error, target_version))";
         write_indented(
             out,
             16,
             &formatdoc! {
                 r#"
-                let stream = futures::StreamExt::map(stream, move |item: {item_path}| {{
-                    <{item_path} as truapi::versioned::FromLatest>::from_latest(
-                        truapi::versioned::IntoLatest::into_latest(item),
-                        target_version,
-                    )
-                }});
+                let stream = futures::StreamExt::map(
+                    stream,
+                    move |item: Result<{item_path}, truapi::CallError<{error_ty}>>| {{
+                        item.map(|item| {{
+                            <{item_path} as truapi::versioned::FromLatest>::from_latest(
+                                truapi::versioned::IntoLatest::into_latest(item),
+                                target_version,
+                            )
+                        }}){downgrade_interrupt}
+                    }},
+                );
                 Ok(subscription_stream(stream))
                 "#
             },
@@ -637,32 +570,15 @@ impl MethodEmission {
     }
 }
 
-impl WirePayload {
-    fn versioned_name(&self) -> Option<&str> {
-        match self {
-            Self::Versioned(name) => Some(name),
-            Self::Raw => None,
-        }
-    }
-}
-
-fn wire_payload_for_error(
+/// Resolve a method's error payload to its versioned wrapper. Every error the
+/// wire carries has one; anything else has no representable payload.
+fn versioned_error_wrapper(
     method: &str,
     ty: &TypeRef,
     versioned_wrappers: &BTreeSet<String>,
-) -> Result<WirePayload> {
+) -> Result<String> {
     let inner = call_error_inner(ty).unwrap_or(ty);
-    match inner {
-        TypeRef::Named { name, args } if args.is_empty() && versioned_wrappers.contains(name) => {
-            Ok(WirePayload::Versioned(name.clone()))
-        }
-        _ => {
-            if matches!(inner, TypeRef::Unit) {
-                bail!("Method `{method}`: error type cannot be unit")
-            }
-            Ok(WirePayload::Raw)
-        }
-    }
+    versioned_wrapper_root(method, "error", inner, versioned_wrappers).map(ToString::to_string)
 }
 
 fn versioned_wrapper_root<'a>(
@@ -738,6 +654,11 @@ fn write_header(out: &mut String) {
     .unwrap();
 }
 
+/// Rust path of the versioned domain payload a method's `CallError` carries.
+fn error_type_path(module: &str, error: &str) -> String {
+    format!("versioned::{module}::{error}")
+}
+
 fn write_imports(out: &mut String, traits: &[&TraitDef]) {
     writedoc!(
         out,
@@ -764,7 +685,9 @@ fn write_imports(out: &mut String, traits: &[&TraitDef]) {
         use crate::dispatcher::Dispatcher;
         use crate::frame::downgrade_call_error;
         use crate::generated::wire_table;
-        use crate::subscription::{{HostInitiatedSubscriptionManager, subscription_stream}};
+        use crate::subscription::{{
+            HostInitiatedSubscriptionManager, subscription_interrupt, subscription_stream,
+        }};
         use crate::transport::Transport;
         "#
     )

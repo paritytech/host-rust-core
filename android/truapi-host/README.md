@@ -42,6 +42,15 @@ and the People/Bulletin genesis hashes. It must match the People chain's
 `NetworkSuffix.NetworkSuffix`. Include this configuration update in the
 embedding app's package upgrade.
 
+`HostRuntimeConfig.assetHubChainGenesisHash` is required. Supply the Asset Hub
+genesis hash from the same network configuration, as 32 bytes. Product manifests
+are read from the dotNS contracts deployed there, so it is what makes a
+`trustedProducts` grant resolvable: without a usable value no manifest resolves,
+so every cross-product grant not already cached is refused, and the refusal is
+indistinguishable from the other product having granted nothing. Pass 32 zero
+bytes only to declare deliberately that this host has no Asset Hub. Include this
+configuration update in the embedding app's package upgrade.
+
 ### Compatibility
 
 - **minSdk**: 29 (Android 10). Aligns with the polkadot-app-android-v2 floor.
@@ -58,8 +67,9 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence.
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
-- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
+- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` holding its own token on the runtime's shared WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
 - `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
+- `PocketHostBridge` - the host's Pocket card collection, implemented by hosts with a Pocket surface and passed as `pocket` to `openProductExecution`. The execution then offers `notifyPocketCardsChanged`. `removeCard` decides and removes together, returning `NativePocketRemoval.Removed`, `Absent` or `Privileged`, so a card cannot be pinned between the check and the removal. Like Chat, Pocket is reachable only from a Worker execution with an active session, so without `activateLocalSession` every Pocket call answers `Denied`. Hosts without the bridge pass nothing and Pocket calls answer unsupported.
 
 ## Chat
 
@@ -102,6 +112,7 @@ val runtime = TrUAPIHostRuntime(
         hostName = "My Chat Host",
         peopleChainGenesisHash = peopleChainGenesisHash,   // exactly 32 bytes
         bulletinChainGenesisHash = bulletinChainGenesisHash,
+        assetHubChainGenesisHash = assetHubChainGenesisHash,
         networkSuffix = "dot",
     ),
 )
@@ -132,7 +143,7 @@ unverified. Contextual output escaping is the host's job.
 
 `postMessage` receives any `ChatMessageContent` variant; throw from it for one this host cannot render. The id it returns is the correlation key `ActionTrigger.messageId` carries back, so it must name that message for as long as the host stores it.
 
-On the execution: `publishChatAction` delivers a user's action back to the product (buffered until it subscribes), `notifyChatRoomsChanged` republishes the room list, `renderCustomMessage` returns a `Flow` of typed UI for a stored custom message, and `sessionChatIdentityKey` reads the session's X25519 chat identity key.
+On the execution: `publishChatAction` delivers a user's action back to the product (buffered until it subscribes), `notifyChatRoomsChanged` republishes the room list, `render` returns a `Flow` of `RendererNode` trees for one render context, `publishRendererAction` delivers a renderer action back to the product, and `sessionChatIdentityKey` reads the session's X25519 chat identity key. An open render stream is one worker reference the core holds on the product's behalf; the transition it causes arrives on the runtime bridge's `workerDemandChanged`, never on the execution's. Two rules the core cannot check are the host's to keep: send a render context only for a surface the product's manifest `includes`, and publish a renderer action only from the current tree of an open render stream.
 
 ## Architecture
 
@@ -172,7 +183,13 @@ runtime.trackStatementRenewalTargets(
 )
 ```
 
-The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. There is still no reader and no untrack on this surface, so a host cannot list what is tracked or remove a wrong entry. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+The ledger persists across launches, and an entry is dropped when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+
+`statementRenewalTargets()` lists what the ledger holds, in the order it was tracked. It needs no active session, so a `WorkManager` worker can read it on a cold start before deciding whether the pass is worth running. Each entry carries an `owner`: a recipe has none and resolves under whichever identity is active, while a fixed account records the root key that promised it. `statementRenewalOwnerKey()` returns that key for the active identity, and needs a session. An entry whose owner is that key, or which has no owner, is one the next pass will renew; any other is one it will prune.
+
+`untrackStatementRenewalAccount(accountId)` drops one fixed account and reports whether the ledger held it. It is scoped to the active identity and so needs a session, and it never removes an entry another identity promised. A stale entry does not deny you a slot forever, since registration replaces the oldest slot past its cooldown once a period is full, but it does cost an allocation attempt every period and keeps churning the slot table, which is what untracking it saves.
+
+Only `Account` can be untracked. `WalletSso` and `ProductStatementAllowance` are recipes with no removal path, so a product you no longer run keeps being resolved and renewed until the promising identity changes.
 
 Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread. It needs an active session too, which is the whole difficulty here: a worker on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
@@ -339,6 +356,10 @@ val runtimeConfig = HostRuntimeConfig(
     hostIcon = "https://host.example/icon.png",
     peopleChainGenesisHash = ByteArray(32),
     bulletinChainGenesisHash = ByteArray(32),
+    // Stand-in for a real Asset Hub genesis hash. Non-zero on purpose:
+    // all-zero is the "no Asset Hub" sentinel and refuses every cross-product
+    // `trustedProducts` grant.
+    assetHubChainGenesisHash = ByteArray(32) { 1.toByte() },
     networkSuffix = "dot",
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.

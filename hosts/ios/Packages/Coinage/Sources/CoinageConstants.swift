@@ -1,6 +1,9 @@
 import Foundation
 
 public enum CoinageConstants {
+    /// Upper bound of the recycler-fungibility scale (percentage).
+    public static let fullFungibility: UInt8 = 100
+
     /// Interval at which the background recycling task is scheduled (24 hours).
     public static let backgroundRecyclingInterval: TimeInterval = 24 * 60 * 60
 
@@ -11,6 +14,11 @@ public enum CoinageConstants {
     /// How long a claim from raw secret keys (top-up / recovery) keeps retrying before giving up.
     /// Shorter than ``claimRetryWindow`` — these callers await the outcome inline.
     public static let secretKeyClaimTimeout: TimeInterval = 60
+
+    /// How long an incoming top-up keeps trying before whatever it has is all it will ever have (1
+    /// hour). Measured from when the operation opened, not from an individual attempt, so a resumed
+    /// top-up finishes the window it was given.
+    public static let topUpRetryWindow: TimeInterval = 60 * 60
 
     /// Coin age threshold at which coin is still operatable
     public static let coinMaxAge: Int16 = 16
@@ -26,12 +34,10 @@ public enum CoinageConstants {
 
     /// Key-derivation path components for coinage keys. Coins derive under
     /// `//coinage//<purse>//<page>/<item>` and vouchers under
-    /// `//coinage-ring-vrf//<purse>//<page>//<item>`.
+    /// `//coinage-ring-vrf//<purse>//<page>//<item>`, where `<page>` is the installation id
+    /// (see ``CoinageInstallationId/pageSegment``).
     public enum Derivation {
         /// `MAIN_PURSE` — the single purse all coinage keys derive under.
         static let mainPurse: UInt32 = 4_294_967_295
-
-        /// `PAGE` — coinage keys currently all live on page 0.
-        static let page: UInt32 = 0
     }
 }

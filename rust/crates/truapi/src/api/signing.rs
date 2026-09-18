@@ -21,6 +21,9 @@ use crate::{wire, wire_trait};
 pub trait Signing: Send + Sync {
     /// Construct a transaction for a product account.
     ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
+    ///
     /// Under Extrinsic V5, omitting `VerifyMultiSignature` from `extensions`
     /// lets the host sign with the signer's key. Listing it — as `Disabled`,
     /// with a proof in a later extension — encodes the given bytes verbatim and
@@ -211,6 +214,9 @@ pub trait Signing: Send + Sync {
 
     /// Sign raw bytes or a message.
     ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
+    ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
     /// assert(productContext.isOk(), "getProductContext failed:", productContext);
@@ -237,6 +243,9 @@ pub trait Signing: Send + Sync {
     }
 
     /// Sign an extrinsic payload.
+    ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
@@ -270,6 +279,85 @@ pub trait Signing: Send + Sync {
         _cx: &CallContext,
         _request: HostSignPayloadRequest,
     ) -> Result<HostSignPayloadResponse, CallError<HostSignPayloadError>> {
+        Err(CallError::unavailable())
+    }
+
+    /// Sign the supplied data without adding or removing a watermark.
+    ///
+    /// Temporary compatibility API for runtime ownership proofs, including the
+    /// 32-byte Resources alias used by Humanity. Payload decoding matches
+    /// watermarked signing, but the decoded bytes are signed exactly as supplied.
+    /// This permits transaction-shaped data and requires signing authorization
+    /// and explicit user confirmation.
+    ///
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612
+    ///
+    /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecated({
+    ///   account: { dotNsIdentifier: productContext.value.productId, derivationIndex: { tag: "Index", value: 0 } },
+    ///   payload: {
+    ///     tag: "Bytes",
+    ///     value: {
+    ///       bytes: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    ///     },
+    ///   },
+    /// });
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecated failed:", result);
+    /// console.log("raw bytes signed:", result.value);
+    /// ```
+    #[deprecated(
+        note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
+    )]
+    #[wire(id = 6)]
+    async fn sign_raw_unwatermarked_deprecated(
+        &self,
+        _cx: &CallContext,
+        _request: HostSignRawRequest,
+    ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
+        Err(CallError::unavailable())
+    }
+
+    /// Sign the supplied data without adding or removing a watermark.
+    ///
+    /// Temporary compatibility API for runtime ownership proofs, including the
+    /// 32-byte Resources alias used by Humanity. Payload decoding matches
+    /// watermarked signing, but the decoded bytes are signed exactly as supplied.
+    /// This permits transaction-shaped data and requires signing authorization
+    /// and explicit user confirmation.
+    ///
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612
+    ///
+    /// ```ts
+    /// const accountsResult = await truapi.account.getLegacyAccounts();
+    /// assert(accountsResult.isOk(), "getLegacyAccounts failed:", accountsResult);
+    /// const identityAccount =
+    ///   accountsResult.value.accounts.find((account) => account.name === "Identity") ??
+    ///   accountsResult.value.accounts[0];
+    /// assert(identityAccount, "no legacy accounts available");
+    ///
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecatedWithLegacyAccount({
+    ///   signer: identityAccount.publicKey,
+    ///   payload: {
+    ///     tag: "Bytes",
+    ///     value: { bytes: "0x1111111111111111111111111111111111111111111111111111111111111111" },
+    ///   },
+    /// });
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecatedWithLegacyAccount failed:", result);
+    /// console.log("raw bytes signed:", result.value);
+    /// ```
+    #[deprecated(
+        note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
+    )]
+    #[wire(id = 7)]
+    async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
+        &self,
+        _cx: &CallContext,
+        _request: HostSignRawWithLegacyAccountRequest,
+    ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
+    {
         Err(CallError::unavailable())
     }
 }

@@ -93,10 +93,35 @@ playground/                Interactive Next.js playground (truapi-playground dot
 hosts/ios/                 iOS host app; resolves the core from this tree
 hosts/android/             Android host app
 hosts/dotli/               dotli host, vendored as a submodule
+hosts/imports.json         Source repository and imported revision per host
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
-scripts/battery.sh         Run the generated battery against both headless CLI host roles
+scripts/refresh-host-import.sh
+                           Refresh a vendored host tree from its source repository
+scripts/battery.sh         Run the generated battery against both headless CLI host roles,
+                           plus the Pocket phase a Worker execution serves
 ```
+
+Taking a screenshot opens **Report app issue** wherever the shake-opened Debug
+menu is, which is every build except the store submission: `DEBUG_TOOLS_ENABLED`
+on Android, false only for the `release` build type, and `TESTNET_FEATURE` on
+iOS, unset only for the `Release` configuration. Android screenshot detection
+requires Android 14+.
+The modal includes a snapshot of the app screen, a description, and ZIP logs.
+Send uploads the report through [issue-proxy](https://github.com/paritytech/issue-proxy).
+Configure these Firebase Remote Config string parameters for each mobile environment:
+
+| Parameter | Value |
+| --- | --- |
+| `issue_proxy_url` | Full HTTPS endpoint, including `/v1/issues` |
+| `issue_proxy_api_key` | The proxy's `ISSUE_PROXY_API_KEY`, sent as a bearer token |
+
+Both hosts use the app's existing Remote Config readiness path before reading
+the URL and key. There are no bundled defaults; missing configuration shows an
+error. Remote Config values are readable by clients, so the GitHub credential
+stays on the proxy and must never be placed here. The thank-you popup appears only after HTTP 201. Uploads
+include PNG screenshots up to 10 MiB and ZIP logs, with a 25 MiB limit for the
+whole multipart request. The Debug menu and **Share logs** remain available.
 
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
 
@@ -135,7 +160,11 @@ a single package with tree-shakeable subpath entries:
 
 A host that serves chain traffic itself embeds the `truapi-provider` crate: an
 embedded smoldot light client plus a bundled chain-spec catalog, addressed by
-genesis hash, so the host ships no chain specs and never refreshes them. The crate
+genesis hash, so the host ships no chain specs and never refreshes them. The light
+client holds at most 32 connections at once and refuses a `connect` past that, so a
+consumer that leaks them fails instead of growing; closing one hands its slot back.
+Connections to a remote node, which only the WASM build compiles, are not counted
+against it. The crate
 compiles to one binary artifact per platform, each exposing the same
 `ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
 dependency on the crate:
@@ -202,7 +231,18 @@ scripts/battery.sh --pairing-host   # paired phase only
 make e2e-signing-cli                # same direct signing-host phase
 make e2e-pairing-cli                # same paired pairing-host phase
 make e2e-chat-cli                   # chat content screening against a chat signing-host
+make e2e-pocket-cli                 # Pocket protocol check against a Pocket signing-host
 ```
+
+The Pocket phase runs its product as a Worker execution, the only execution
+Pocket is served to. It seeds the CLI's in-memory Pocket host from
+`TRUAPI_POCKET_CARDS` (`loyalty,humanity:privileged`), which is what makes one
+card removable and one privileged, and records every removal it is asked for in
+the transcript named by `TRUAPI_POCKET_LOG`. The cases read that transcript, so
+a pass means the host and the product agree on what happened rather than
+resting on the product's word. The report lands at
+`explorer/diagnosis-reports/pocket/signing-host-cli.md` and feeds the explorer's
+Pocket compatibility matrix.
 
 To run the playground locally in a plain browser tab, against a signing host on
 your own machine:
@@ -247,7 +287,85 @@ To run the playground inside a real host instead, start it with `yarn dev` and
 open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
 [`playground/README.md`](playground/README.md) for deployment.
 
-To build the iOS host and open the playground in Simulator:
+### Refreshing a vendored host tree
+
+The host trees under `hosts/` are snapshots of the repositories they were
+imported from, and those repositories keep moving. `hosts/imports.json` records
+where each tree came from and at which revision.
+
+```bash
+scripts/refresh-host-import.sh status ios     # how far behind, and what differs
+scripts/refresh-host-import.sh refresh ios    # take the new tree, re-apply adaptations
+```
+
+`refresh` replaces the tree with the source's, re-applies this repository's
+adaptations on top as a three-way patch, then compares every path against the
+source by blob hash in both directions. A difference no adaptation accounts for
+is upstream work that was dropped; an adaptation that left no difference either
+did not apply or has been adopted upstream.
+
+A clean apply is staged for review. A conflicted one is left unmerged, so git
+refuses to commit it until someone decides which side is right.
+
+### Working on the iOS host
+
+`hosts/ios/` is the iOS app, and it resolves the core from this tree rather than
+from a published version. The core's bindings, xcframework and FFI headers are
+gitignored build outputs, so a fresh clone cannot load the app's package graph
+until they exist. Generate them once:
+
+```bash
+make ios-bootstrap
+```
+
+Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
+the bindings are generated from, which is the `truapi`, `truapi-platform`,
+`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the device slice, which is enough for Simulator but not for an archive.
+
+Because the app builds against the core in this tree, a core change that breaks
+it fails here rather than at the next version bump. Every pull request touching
+the app, or the crates its bindings come from, runs:
+
+- `build`, a DevCI compile, failing on any build warning the committed baseline
+  does not already have
+- `test`, the unit test suite
+- `preview`, an installable simulator `.app` attached to the run, stamped with
+  the commit it came from in `TrUAPICommit`
+
+Pull requests that build the app carry a comment linking the build for its head
+commit, updated in place as the branch moves. To run one:
+
+```bash
+gh run download <run-id> --name simulator-preview-<short-sha>
+unzip polkadot-app-*.app.zip
+xcrun simctl install booted polkadot-app.app
+xcrun simctl launch booted io.parity.polkadotapp.develop
+```
+
+It is an arm64 simulator slice, so it needs an Apple Silicon Mac and cannot be
+installed on a device.
+
+### A build that installs on a phone
+
+Label a pull request `ios-device-build` and `ios-device-preview.yml` produces a
+signed ad-hoc archive attached to the run, named for the commit it was built
+from. It uploads nowhere: not to Apple, not to any distribution service.
+
+The commit is stamped into the app before the build rather than after, because
+editing a signed bundle invalidates its signature and the archive would then
+refuse to install. The job checks the stamp survived and that every
+seal in the bundle, including the nested extension, still validates.
+
+Installing it needs the device's UDID in the ad-hoc provisioning profile, which
+is Apple bookkeeping rather than CI. The workflows that register a device and
+regenerate the profile are held until the cutover, tracked on #764; the device
+preview itself is tracked on #681.
+
+### Building the standalone iOS host app
+
+The targets below build `polkadot-app-ios-v2`, a separate checkout set by
+`IOS_HOST`, not `hosts/ios`. To build the playground in Simulator against it:
 
 ```bash
 make ios-run
@@ -275,8 +393,8 @@ does not provision or pair a signer-bot user.
 To exercise the shared-core Chat path with the first-party TrUAPI Playground
 worker, build and serve the local product, install its worker into the
 simulator app's product storage, and open its native Chat application. The
-worker drives all six Chat methods, so a host without bot registration reports
-that row red:
+worker drives all five Chat methods and both Renderer methods, so a host
+without bot registration reports that row red:
 
 ```bash
 make ios-chat-run
@@ -344,6 +462,11 @@ See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
 Android host artifacts alongside them. A release also opens a bump issue on each
 repository listed in [`.github/consumers.json`](.github/consumers.json) that pins
 one of the published packages.
+
+CI requires changesets for published build inputs and rejects version bumps
+with unconsumed changesets, including in the merge queue. The daily
+`Registry drift` workflow reports manifest versions missing from npm; see the
+release guide for opt-outs and recovery.
 
 ## Contributing
 

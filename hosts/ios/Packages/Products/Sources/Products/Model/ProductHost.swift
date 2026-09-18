@@ -33,7 +33,7 @@ public struct ProductHost: Sendable {
 extension ProductHost {
     /// Inverse of ``toDotDomain()`` when the root is unknown: productIds are
     /// always `name + separator + root` with a single root label.
-    static func name(fromDotDomain dotDomain: String) -> String? {
+    public static func name(fromDotDomain dotDomain: String) -> String? {
         let components = dotDomain.components(separatedBy: ProductHost.separator)
 
         guard components.count >= 2, !components.contains(where: \.isEmpty) else {
@@ -78,7 +78,7 @@ extension ProductHost {
     }
 
     static func fromNavigationDestination(_ dest: String, tld: String) -> ProductHost? {
-        guard let url = URL(string: dest), url.host() != nil else {
+        guard let url = NavigationDestinationURL.make(dest), url.host() != nil else {
             return parse(dest, tld: tld)
         }
 

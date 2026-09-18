@@ -609,6 +609,12 @@ mod tests {
 
     /// The snapshot round trip resolves against a live light client, and the
     /// blob it returns is accepted back as a warm-start seed.
+    ///
+    /// `chainHead_unstable_finalizedDatabase` first asks the runtime service for
+    /// the finalized runtime's storage merkle values, and that answer waits on
+    /// smoldot's sync-mode decision, which no reachable peer will ever settle
+    /// here. The test platform collapses that deadline; see
+    /// [`crate::light_platform_test`].
     #[cfg(feature = "smoldot")]
     #[test]
     fn snapshot_round_trips_into_a_seed() {

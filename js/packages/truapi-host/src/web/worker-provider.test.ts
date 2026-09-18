@@ -2,12 +2,17 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
-  CustomRendererNode,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  RendererNode,
 } from "@parity/truapi";
 import { bytesToHex } from "@parity/truapi/scale";
-import type { GenericError, Result, ThemeVariant } from "@parity/truapi";
+import type {
+  GenericError,
+  ProductRendererRenderRequest,
+  Result,
+  ThemeVariant,
+} from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import { AuthState, CoreStorageKey } from "../generated/host-callbacks.js";
@@ -18,6 +23,7 @@ import type {
 import type {
   ProductRuntimeConfig,
   TrUApiProductProvider,
+  WorkerDemandChange,
 } from "../runtime.js";
 import { makeHostCallbacks, settle } from "../test-support.js";
 import { createWebWorkerPairingHostRuntime } from "./index.js";
@@ -116,6 +122,23 @@ function hostConfigFromRuntimeConfig(
     ...hostConfig
   } = config;
   return hostConfig;
+}
+
+/** One render request the provider-level render tests reuse. */
+function renderRequest(): ProductRendererRenderRequest {
+  return {
+    context: { tag: "PocketCard", value: { cardId: "card" } },
+    payload: "0x",
+  };
+}
+
+/** Position of the last message of `kind` in post order, or -1 if never sent. */
+function indexOfKind(worker: FakeWorker, kind: string): number {
+  let index = -1;
+  worker.messages.forEach((message, at) => {
+    if (message.kind === kind) index = at;
+  });
+  return index;
 }
 
 function lastMessageOfKind(worker: FakeWorker, kind: string): WorkerMessage {
@@ -220,7 +243,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       kind: "init",
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
-      capabilities: { chat: false, permissionStatus: false },
+      capabilities: { chat: false, permissionStatus: false, pocket: false },
       debuggerUrl: null,
     });
 
@@ -254,6 +277,28 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
       chat: true,
       permissionStatus: false,
+      pocket: false,
+    });
+  });
+
+  it("reports the pocket capability to the worker when the host serves it", async () => {
+    const worker = new FakeWorker();
+    void createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        pocket: { removePocketCard: async () => {} },
+      }),
+      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+    );
+
+    worker.emit({ kind: "loaded" });
+
+    // Without this the worker never builds the pocket callbacks, so a host
+    // that serves Pocket is answered `Unsupported` anyway.
+    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
+      chat: false,
+      permissionStatus: false,
+      pocket: true,
     });
   });
 
@@ -1160,24 +1205,20 @@ describe("createWebWorkerPairingHostRuntime", () => {
   it("ends a render whose tree cannot be decoded instead of stranding it", async () => {
     const worker = new FakeWorker();
     const provider = await readyProvider(worker);
-    const coreId = lastMessageOfKind(worker, "createCore").coreId;
 
     const errors: Error[] = [];
     let completed = 0;
-    provider.renderCustomMessage!(
-      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
-      {
-        onUpdate: () => {},
-        onComplete: () => completed++,
-        onError: (error) => errors.push(error),
-      },
-    );
-    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+    provider.render!(renderRequest(), {
+      onUpdate: () => {},
+      onComplete: () => completed++,
+      onError: (error) => errors.push(error),
+    });
+    const { renderId } = lastMessageOfKind(worker, "renderStart");
 
-    // 0xff is not a CustomRendererNode discriminant.
+    // 0xff is not a RendererNode discriminant.
     expect(() =>
       worker.emit({
-        kind: "renderCustomMessageItem",
+        kind: "renderItem",
         renderId,
         node: new Uint8Array([0xff]),
       }),
@@ -1186,33 +1227,105 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(errors).toHaveLength(1);
     expect(completed).toBe(0);
     // The worker must be told to stop, or its wasm subscription leaks.
-    expect(lastMessageOfKind(worker, "renderCustomMessageStop").renderId).toBe(
-      renderId,
+    expect(lastMessageOfKind(worker, "renderStop").renderId).toBe(renderId);
+  });
+
+  it("fails a render the codec rejects without registering it", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const errors: Error[] = [];
+    const stop = provider.render!(
+      // Odd-length hex: a `HexString` the codec cannot turn into bytes.
+      {
+        context: { tag: "PocketCard", value: { cardId: "card" } },
+        payload: "0xabc",
+      },
+      { onUpdate: () => {}, onError: (error) => errors.push(error) },
     );
+
+    expect(errors).toHaveLength(1);
+    // Nothing was registered, so nothing is left for the worker to stop.
+    expect(indexOfKind(worker, "renderStart")).toBe(-1);
+    stop();
+    expect(indexOfKind(worker, "renderStop")).toBe(-1);
+  });
+
+  it("settles a render exactly once when postMessage throws for renderStart", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const post = worker.postMessage.bind(worker);
+    worker.postMessage = (message: WorkerMessage) => {
+      if (message.kind === "renderStart") {
+        throw new Error("worker gone");
+      }
+      post(message);
+    };
+
+    const errors: Error[] = [];
+    const stop = provider.render!(renderRequest(), {
+      onUpdate: () => {},
+      onError: (error) => errors.push(error),
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toMatch(/worker gone/);
+    // The post never reached the worker, so there is nothing to stop.
+    expect(indexOfKind(worker, "renderStart")).toBe(-1);
+    expect(indexOfKind(worker, "renderStop")).toBe(-1);
+
+    // The returned disposer is a safe no-op: the ledger entry is already gone.
+    expect(() => stop()).not.toThrow();
+    expect(indexOfKind(worker, "renderStop")).toBe(-1);
+    expect(errors).toHaveLength(1);
+
+    // A later core disposal must not settle the already-settled sink again.
+    provider.dispose();
+    expect(errors).toHaveLength(1);
+  });
+
+  it("fails every open render of a core the worker reported a frame error for", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const errors: Error[] = [];
+    provider.render!(renderRequest(), {
+      onUpdate: () => {},
+      onError: (error) => errors.push(error),
+    });
+    const { coreId } = lastMessageOfKind(worker, "renderStart");
+
+    worker.emit({ kind: "frameError", coreId, error: "bad frame" });
+
+    // The worker cancels the subscription with the core, so the sink's only
+    // terminal is this one.
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toMatch(/worker frame error: bad frame/);
+
+    provider.dispose();
+    expect(errors).toHaveLength(1);
   });
 
   it("keeps a throwing render sink from breaking the worker listener", async () => {
     const worker = new FakeWorker();
     const provider = await readyProvider(worker);
 
-    provider.renderCustomMessage!(
-      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
-      {
-        onUpdate: () => {
-          throw new Error("renderer exploded");
-        },
-        onError: () => {
-          throw new Error("and so did onError");
-        },
+    provider.render!(renderRequest(), {
+      onUpdate: () => {
+        throw new Error("renderer exploded");
       },
-    );
-    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+      onError: () => {
+        throw new Error("and so did onError");
+      },
+    });
+    const { renderId } = lastMessageOfKind(worker, "renderStart");
 
     expect(() =>
       worker.emit({
-        kind: "renderCustomMessageItem",
+        kind: "renderItem",
         renderId,
-        node: CustomRendererNode.enc({ tag: "Nil", value: undefined }),
+        node: RendererNode.enc({ tag: "Nil", value: undefined }),
       }),
     ).not.toThrow();
 
@@ -1220,6 +1333,125 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(() =>
       worker.emit({ kind: "frame", coreId: 0, bytes: new Uint8Array([1]) }),
     ).not.toThrow();
+  });
+
+  it("leaves the render's worker reference to the core", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const provider = await finishProviderReady(
+      worker,
+      runtime.createProvider({ productId: "dotli.dot" }),
+    );
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
+
+    const stop = provider.render!(renderRequest(), { onUpdate: () => {} });
+
+    // The core holds the reference, so this thread asks for none of its own.
+    expect(indexOfKind(worker, "acquireWorker")).toBe(-1);
+    // The demand the core's own reference caused still reaches the host.
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "dotli.dot",
+      wanted: true,
+    });
+    expect(seen).toEqual([{ productId: "dotli.dot", wanted: true }]);
+
+    stop();
+    expect(indexOfKind(worker, "releaseWorker")).toBe(-1);
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "dotli.dot",
+      wanted: false,
+    });
+    expect(seen).toEqual([
+      { productId: "dotli.dot", wanted: true },
+      { productId: "dotli.dot", wanted: false },
+    ]);
+    runtime.dispose();
+  });
+
+  it("binds a method-valued onUpdate to its own receiver", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    class RecordingSink {
+      nodes: RendererNode[] = [];
+      onUpdate(node: RendererNode) {
+        this.nodes.push(node);
+      }
+    }
+    const sink = new RecordingSink();
+
+    provider.render!(renderRequest(), sink);
+    const { renderId } = lastMessageOfKind(worker, "renderStart");
+
+    expect(() =>
+      worker.emit({
+        kind: "renderItem",
+        renderId,
+        node: RendererNode.enc({ tag: "Nil", value: undefined }),
+      }),
+    ).not.toThrow();
+
+    expect(sink.nodes).toHaveLength(1);
+    expect(sink.nodes[0]).toEqual({ tag: "Nil", value: undefined });
+  });
+
+  it("publishes a renderer action and settles on the worker's response", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const published = provider.publishRendererAction!({
+      context: { tag: "PocketCard", value: { cardId: "card" } },
+      actionId: "confirm",
+      payload: "0x",
+    });
+    const { requestId } = lastMessageOfKind(worker, "publishRendererAction");
+    worker.emit({ kind: "publishRendererActionResponse", requestId, ok: true });
+
+    await expect(published).resolves.toBeUndefined();
+  });
+
+  it("publishes a chat action and settles on the worker's response", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const published = provider.publishChatAction!({
+      roomId: "room",
+      peer: "peer",
+      payload: {
+        tag: "ActionTriggered",
+        value: { messageId: "message", actionId: "confirm" },
+      },
+    });
+    const { requestId } = lastMessageOfKind(worker, "publishChatAction");
+    worker.emit({ kind: "publishChatActionResponse", requestId, ok: true });
+
+    await expect(published).resolves.toBeUndefined();
+  });
+
+  it("rejects a chat action the worker could not publish", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    const published = provider.publishChatAction!({
+      roomId: "room",
+      peer: "peer",
+      payload: {
+        tag: "ActionTriggered",
+        value: { messageId: "message", actionId: "confirm" },
+      },
+    });
+    const { requestId } = lastMessageOfKind(worker, "publishChatAction");
+    worker.emit({
+      kind: "publishChatActionResponse",
+      requestId,
+      ok: false,
+      error: "Denied",
+    });
+
+    await expect(published).rejects.toThrow("Denied");
   });
 });
 
@@ -1274,5 +1506,160 @@ describe("debugger enablement reporting", () => {
     const worker = new FakeWorker();
     const logged = await withStubbedStorage(null, () => readyRuntime(worker));
     expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
+  });
+});
+
+describe("worker demand", () => {
+  it("forwards references and fans the wanted level out", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const seen: WorkerDemandChange[] = [];
+
+    runtime.acquireWorker("a.dot");
+    expect(worker.messages.at(-1)).toEqual({
+      kind: "acquireWorker",
+      productId: "a.dot",
+    });
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    // A late subscriber first learns what is wanted right now.
+    const unsubscribe = runtime.subscribeWorkerDemand((change) =>
+      seen.push(change),
+    );
+    expect(seen).toEqual([{ productId: "a.dot", wanted: true }]);
+
+    runtime.acquireWorker("b.dot");
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "b.dot",
+      wanted: true,
+    });
+
+    runtime.releaseWorker("a.dot");
+    expect(worker.messages.at(-1)).toEqual({
+      kind: "releaseWorker",
+      productId: "a.dot",
+    });
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: false,
+    });
+    expect(seen).toEqual([
+      { productId: "a.dot", wanted: true },
+      { productId: "b.dot", wanted: true },
+      { productId: "a.dot", wanted: false },
+    ]);
+
+    unsubscribe();
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "b.dot",
+      wanted: false,
+    });
+    expect(seen).toHaveLength(3);
+    runtime.dispose();
+  });
+
+  it("reports every wanted worker as unwanted when the runtime goes away", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    runtime.dispose();
+    expect(seen).toEqual([
+      { productId: "a.dot", wanted: true },
+      { productId: "a.dot", wanted: false },
+    ]);
+
+    // Nothing is posted to a disposed worker, and a late subscriber sees nothing.
+    const before = worker.messages.length;
+    runtime.acquireWorker("a.dot");
+    expect(worker.messages.length).toBe(before);
+    const late: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => late.push(change));
+    expect(late).toEqual([]);
+  });
+
+  it("ignores a level that was already in flight when the runtime went away", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    runtime.dispose();
+
+    // The worker posted this before it saw the dispose, so it lands afterwards.
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
+    expect(seen).toEqual([]);
+  });
+
+  it("delivers one change once to a listener that subscribes from a listener", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const nested: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand(() => {
+      if (nested.length === 0) {
+        runtime.subscribeWorkerDemand((change) => nested.push(change));
+      }
+    });
+
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    // The replay tells it the product is wanted; the delivery still running
+    // must not tell it again.
+    expect(nested).toEqual([{ productId: "a.dot", wanted: true }]);
+    runtime.dispose();
+  });
+
+  it("keeps delivering after a listener throws, in replay and in updates", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "a.dot",
+      wanted: true,
+    });
+
+    // A throw during the initial replay must still return the unsubscribe,
+    // otherwise the listener is registered with no way to remove it.
+    const thrower = (): never => {
+      throw new Error("listener exploded");
+    };
+    const unsubscribe = runtime.subscribeWorkerDemand(thrower);
+    expect(typeof unsubscribe).toBe("function");
+
+    const seen: WorkerDemandChange[] = [];
+    runtime.subscribeWorkerDemand((change) => seen.push(change));
+    worker.emit({
+      kind: "workerDemandChanged",
+      productId: "b.dot",
+      wanted: true,
+    });
+    expect(seen).toEqual([
+      { productId: "a.dot", wanted: true },
+      { productId: "b.dot", wanted: true },
+    ]);
+
+    unsubscribe();
+    runtime.dispose();
   });
 });

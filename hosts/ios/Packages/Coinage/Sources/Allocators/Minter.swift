@@ -3,7 +3,7 @@ import Foundation
 /// Mints fresh coins by allocating a derivation index and persisting the row, so a coin exists in
 /// the database from the moment it is minted.
 protocol CoinMinting: Sendable {
-    func mintCoin(exponent: Int16) async throws -> Coin
+    func mintCoin(exponent: Int16, provenance: CoinProvenance) async throws -> Coin
 }
 
 /// Mints fresh vouchers, persisting each on allocation.
@@ -12,11 +12,12 @@ protocol VoucherMinting: Sendable {
 }
 
 extension CoinMinting {
-    /// Mints one coin per exponent, in order.
-    func mintCoins(_ exponents: [Int16]) async throws -> [Coin] {
+    /// Mints one coin per exponent, in order, all sharing one provenance — the operation that
+    /// produced them is the same for every output.
+    func mintCoins(_ exponents: [Int16], provenance: CoinProvenance) async throws -> [Coin] {
         var coins: [Coin] = []
         for exponent in exponents {
-            try await coins.append(mintCoin(exponent: exponent))
+            try await coins.append(mintCoin(exponent: exponent, provenance: provenance))
         }
         return coins
     }
@@ -49,8 +50,8 @@ final class CoinageMinter: CoinageMinting {
         self.voucherAllocator = voucherAllocator
     }
 
-    func mintCoin(exponent: Int16) async throws -> Coin {
-        try await coinAllocator.allocate(exponent: exponent)
+    func mintCoin(exponent: Int16, provenance: CoinProvenance) async throws -> Coin {
+        try await coinAllocator.allocate(exponent: exponent, provenance: provenance)
     }
 
     func mintVoucher(exponent: Int16) async throws -> Voucher {

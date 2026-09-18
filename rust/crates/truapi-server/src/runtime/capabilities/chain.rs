@@ -11,20 +11,20 @@ use truapi::versioned::chain::{
     RemoteChainHeadBodyError, RemoteChainHeadBodyRequest, RemoteChainHeadBodyResponse,
     RemoteChainHeadCallError, RemoteChainHeadCallRequest, RemoteChainHeadCallResponse,
     RemoteChainHeadContinueError, RemoteChainHeadContinueRequest, RemoteChainHeadContinueResponse,
-    RemoteChainHeadFollowItem, RemoteChainHeadFollowRequest, RemoteChainHeadHeaderError,
-    RemoteChainHeadHeaderRequest, RemoteChainHeadHeaderResponse, RemoteChainHeadStopOperationError,
-    RemoteChainHeadStopOperationRequest, RemoteChainHeadStopOperationResponse,
-    RemoteChainHeadStorageError, RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse,
-    RemoteChainHeadUnpinError, RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse,
-    RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
-    RemoteChainSpecChainNameError, RemoteChainSpecChainNameRequest,
-    RemoteChainSpecChainNameResponse, RemoteChainSpecGenesisHashError,
-    RemoteChainSpecGenesisHashRequest, RemoteChainSpecGenesisHashResponse,
-    RemoteChainSpecPropertiesError, RemoteChainSpecPropertiesRequest,
-    RemoteChainSpecPropertiesResponse, RemoteChainTransactionBroadcastError,
-    RemoteChainTransactionBroadcastRequest, RemoteChainTransactionBroadcastResponse,
-    RemoteChainTransactionStopError, RemoteChainTransactionStopRequest,
-    RemoteChainTransactionStopResponse,
+    RemoteChainHeadFollowError, RemoteChainHeadFollowItem, RemoteChainHeadFollowRequest,
+    RemoteChainHeadHeaderError, RemoteChainHeadHeaderRequest, RemoteChainHeadHeaderResponse,
+    RemoteChainHeadStopOperationError, RemoteChainHeadStopOperationRequest,
+    RemoteChainHeadStopOperationResponse, RemoteChainHeadStorageError,
+    RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse, RemoteChainHeadUnpinError,
+    RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse, RemoteChainInfoError,
+    RemoteChainInfoRequest, RemoteChainInfoResponse, RemoteChainSpecChainNameError,
+    RemoteChainSpecChainNameRequest, RemoteChainSpecChainNameResponse,
+    RemoteChainSpecGenesisHashError, RemoteChainSpecGenesisHashRequest,
+    RemoteChainSpecGenesisHashResponse, RemoteChainSpecPropertiesError,
+    RemoteChainSpecPropertiesRequest, RemoteChainSpecPropertiesResponse,
+    RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
+    RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopError,
+    RemoteChainTransactionStopRequest, RemoteChainTransactionStopResponse,
 };
 use truapi::{CallContext, CallError, Subscription, v01};
 
@@ -40,15 +40,18 @@ impl Chain for ProductRuntimeHost {
         &self,
         cx: &CallContext,
         request: RemoteChainHeadFollowRequest,
-    ) -> Subscription<RemoteChainHeadFollowItem> {
+    ) -> Subscription<RemoteChainHeadFollowItem, CallError<RemoteChainHeadFollowError>> {
         let RemoteChainHeadFollowRequest::V1(inner) = request;
         let follow_subscription_id = self.follow_id(cx.request_id());
         let stream = self
             .services
             .chain
             .remote_chain_head_follow(follow_subscription_id, inner)
-            .map(RemoteChainHeadFollowItem::V1);
-        Subscription::new(Box::pin(stream))
+            .map(|item| {
+                item.map(RemoteChainHeadFollowItem::V1)
+                    .map_err(runtime_failure_to_call_error)
+            });
+        Subscription::new(stream)
     }
 
     #[instrument(skip_all, fields(runtime.method = "chain.get_head_header"))]

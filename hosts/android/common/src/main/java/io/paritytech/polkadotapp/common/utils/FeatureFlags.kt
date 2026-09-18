@@ -10,8 +10,9 @@ object FeatureFlags {
             FeatureOption.SHOW_MOB_RULE_CASE_FOR_DEVELOPMENT,
             FeatureOption.SHORT_WORKER_BACKOFF,
             FeatureOption.LOW_BATTERY_EVIDENCE_PROVISION,
-            FeatureOption.SKIP_MOBRULE_CASE,
-            FeatureOption.DEBUG_MENU -> BuildConfig.DEBUG
+            FeatureOption.SKIP_MOBRULE_CASE -> BuildConfig.DEBUG
+
+            FeatureOption.DEBUG_MENU -> BuildConfig.DEBUG_TOOLS_ENABLED
 
             FeatureOption.ARBITRARY_PRODUCTS,
             FeatureOption.BROWSE_TAB,
@@ -23,6 +24,7 @@ object FeatureFlags {
             FeatureOption.PERSONHOOD,
             FeatureOption.COLLECTIBLES -> fullFeatured
 
+            FeatureOption.TAB_BAR_CONNECTIVITY_INDICATOR -> BuildConfig.TAB_BAR_CONNECTIVITY_INDICATOR
             FeatureOption.ALLOW_SHORT_EVIDENCE_VIDEO -> BuildConfig.ALLOW_SHORT_EVIDENCE_VIDEO
             FeatureOption.SAMPLE_BOT -> BuildConfig.SAMPLE_BOT
             FeatureOption.DIM1_BOT_BY_DEFAULT -> BuildConfig.DIM1_BOT_BY_DEFAULT
@@ -44,6 +46,10 @@ enum class FeatureOption {
     PEER_BOT_BY_DEFAULT,
     DEBUG_MENU,
     BROWSE_TAB,
+
+    // The chain-health indicators repeated in the tab bar, with the expandable details above it. Carried
+    // by its own BuildConfig field rather than SAFETY_MODE, which is also set on release builds.
+    TAB_BAR_CONNECTIVITY_INDICATOR,
 
     // The tab bar in its full form: item labels, and the scanner wrapped in the center pill next to the
     // open-tabs button. Off, the bar is icons only and the scanner is a bare icon.

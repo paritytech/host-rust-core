@@ -7,8 +7,11 @@ import CommonService
 import ExtrinsicService
 import KeyDerivation
 import Coinage
+import DurableTransactions
 import Products
 import SubstrateSdk
+import SubstrateOperation
+import SubstrateStorageQuery
 import FoundationExt
 import Individuality
 import UniqueDevice
@@ -56,6 +59,7 @@ final class ServiceCoordinator {
     let attachmentUploadService: AttachmentUploadingServicing
     let attachmentDownloadService: AttachmentDownloadingServicing
     let coinageTransferMonitor: CoinageTransferMonitoring
+    let durableTransactionEngine: any DurableTxServicing
     let w3sPaymentTracking: W3sPaymentTracking
     let audioSessionManager: AudioSessionManaging
     let determineStateSyncService: DetermineStateSyncServicing
@@ -97,6 +101,7 @@ final class ServiceCoordinator {
         attachmentUploadService: AttachmentUploadingServicing,
         attachmentDownloadService: AttachmentDownloadingServicing,
         coinageTransferMonitor: CoinageTransferMonitoring,
+        durableTransactionEngine: any DurableTxServicing,
         w3sPaymentTracking: W3sPaymentTracking,
         audioSessionManager: AudioSessionManaging,
         determineStateSyncService: DetermineStateSyncServicing,
@@ -131,6 +136,7 @@ final class ServiceCoordinator {
         self.attachmentUploadService = attachmentUploadService
         self.attachmentDownloadService = attachmentDownloadService
         self.coinageTransferMonitor = coinageTransferMonitor
+        self.durableTransactionEngine = durableTransactionEngine
         self.w3sPaymentTracking = w3sPaymentTracking
         self.audioSessionManager = audioSessionManager
         self.determineStateSyncService = determineStateSyncService
@@ -196,8 +202,9 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
                 logger.error("Coinage service setup failed: \(error)")
                 return
             }
+            // After coinage setup, which releases uncommitted handoffs the first pass must not see.
+            durableTransactionEngine.start()
             // Recovering backup 1st
-            await coinageBackupSyncService.setup()
             await coinageTransferMonitor.setup()
             await w3sPaymentTracking.setup()
             await depositService.setup()
@@ -219,10 +226,10 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         allowanceRenewalService.throttle()
 
         messageExpansionService.stop()
+        durableTransactionEngine.stop()
 
         Task {
             await deviceSyncService.throttle()
-            await coinageBackupSyncService.throttle()
             await coinageTransferMonitor.throttle()
             await w3sPaymentTracking.throttle()
             await signInHostCoordinator.throttle()
@@ -315,7 +322,9 @@ extension ServiceCoordinator {
                 logger: logger
             ),
             let chatCoordinator = createChatCoordinator(factory: chatCoordinatorFactory, logger: logger),
-            let coinageServices = createCoinageServices(),
+            let coinageServices = createCoinageServices(
+                allowanceManager: allowanceManagerFacade.smartContractManager
+            ),
             let depositService = createDepositService(
                 walletToFund: depositWallet,
                 walletToDeposit: depositWallet,
@@ -343,8 +352,7 @@ extension ServiceCoordinator {
             return nil
         }
 
-        let statementDeliveryTracker = StatementDeliveryTracker()
-        let chatRequestCoordinator = createChatRequestCoordinator(statementTracker: statementDeliveryTracker)
+        let chatRequestCoordinator = createChatRequestCoordinator()
         let audioSessionManager = AudioSessionManager()
 
         let paymentsSupport = PaymentsSupport(coinageService: coinageServices.coinageService)
@@ -403,22 +411,22 @@ extension ServiceCoordinator {
             pathMonitor: NetworkPathMonitor()
         )
 
-        let chainLatencyProvider = ChainLatencyProvider(
-            chainRegistry: ChainRegistryFacade.sharedRegistry,
-            logger: logger
-        )
-
         let chainBlockProvider = ChainBlockProvider(
             chainRegistry: ChainRegistryFacade.sharedRegistry,
             operationQueue: OperationManagerFacade.sharedDefaultQueue,
             logger: logger
         )
 
+        let chainLivenessAnchorProvider = ChainLivenessAnchorProvider(
+            blockInfoProviders: createBlockInfoProviders(),
+            chainTimeProviders: createChainTimeProviders()
+        )
+
         let chainStatusProvider = ChainStatusProvider(
             networkStatusService: networkStatusService,
-            latencyProvider: chainLatencyProvider,
             blockProvider: chainBlockProvider,
-            statementTracker: statementDeliveryTracker,
+            anchorProvider: chainLivenessAnchorProvider,
+            appStateStreamFactory: ApplicationStateStreamFactory(),
             logger: logger
         )
 
@@ -443,6 +451,7 @@ extension ServiceCoordinator {
             attachmentUploadService: attachmentUploadService,
             attachmentDownloadService: attachmentDownloadService,
             coinageTransferMonitor: coinageServices.transferMonitor,
+            durableTransactionEngine: coinageServices.durableTransactionEngine,
             w3sPaymentTracking: coinageServices.w3sPaymentTracking,
             audioSessionManager: audioSessionManager,
             determineStateSyncService: syncServiceResult.service,
@@ -479,8 +488,8 @@ private extension ServiceCoordinator {
         }
     }
 
-    /// - Note: The `truApiRuntimeEnabled` flag is read once at coordinator creation (app start).
-    ///   Toggling the flag takes effect on the next launch.
+    /// - Note: The runtime flag is read once at coordinator creation (app start), so toggling it
+    ///   takes effect on the next launch. An unset flag means TrUAPI — see `isTrUAPIRuntimeEnabled`.
     static func createSignInHostCoordinator(
         factory: MessageExchangeCoordinatorMaking,
         runtimeProvider: TrUAPIHostRuntimeProviding,
@@ -489,7 +498,7 @@ private extension ServiceCoordinator {
         logger: LoggerProtocol
     ) -> MessageExchangeSignInHostCoordinating? {
         do {
-            if SettingsManager.shared.value(for: .truApiRuntimeEnabled) {
+            if SettingsManager.shared.isTrUAPIRuntimeEnabled {
                 return try factory.makeTrUAPIHostCoordinator(runtimeProvider: runtimeProvider)
             }
 
@@ -505,9 +514,7 @@ private extension ServiceCoordinator {
 }
 
 private extension ServiceCoordinator {
-    static func createChatRequestCoordinator(
-        statementTracker: StatementDeliveryTracking
-    ) -> ChatRequestCoordinatorServicing {
+    static func createChatRequestCoordinator() -> ChatRequestCoordinatorServicing {
         let storageFacade = UserDataStorageFacade.shared
         let operationQueue = OperationManagerFacade.sharedDefaultQueue
         let logger = Logger.shared
@@ -530,8 +537,7 @@ private extension ServiceCoordinator {
                         remoteAccountOperation(chatChainId: AppConfig.Chains.usernameChain)
                     ],
                     logger: Logger.shared
-                ),
-                statementTracker: statementTracker
+                )
             ),
             logger: Logger.shared
         )
@@ -607,6 +613,39 @@ private extension ServiceCoordinator {
             operationQueue: OperationManagerFacade.sharedDefaultQueue,
             logger: logger
         )
+    }
+
+    private static func createBlockInfoProviders() -> [ChainConnectionTarget: BlockInfoProviding] {
+        ChainConnectionTarget.allCases
+            .reduce(into: [ChainConnectionTarget: BlockInfoProviding]()) { accumulator, target in
+                accumulator[target] = BlockInfoProvider(
+                    chainRegistry: ChainRegistryFacade.sharedRegistry,
+                    operationQueue: OperationManagerFacade.sharedDefaultQueue,
+                    chainId: target.chainId
+                )
+            }
+    }
+
+    private static func createChainTimeProviders() -> [ChainConnectionTarget: ChainTimeProviding] {
+        let chainRegistry = ChainRegistryFacade.sharedRegistry
+        let operationQueue = OperationManagerFacade.sharedDefaultQueue
+
+        let storageRequestFactory = StorageRequestFactory(
+            remoteFactory: StorageKeyFactory(),
+            operationManager: OperationManager(operationQueue: operationQueue)
+        )
+
+        var providers: [ChainConnectionTarget: ChainTimeProviding] = [:]
+
+        for target in ChainConnectionTarget.allCases {
+            providers[target] = ChainTimeProvider(
+                chainId: target.chainId,
+                chainRegistry: chainRegistry,
+                storageRequestFactory: storageRequestFactory
+            )
+        }
+
+        return providers
     }
 }
 

@@ -36,7 +36,7 @@ protocol CoinOnChainQuerying: Sendable {
     /// Subscribes to on-chain coin state for `publicKeys`, yielding the present value exponent per
     /// key on every block where any of them change. A key that goes absent (spent) drops out of the
     /// map; a never-landed coin never appears. Callers bound the wait themselves.
-    func subscribeCoinInfos(for publicKeys: [Data]) -> AnyAsyncSequence<[Data: Int16]>
+    func subscribeCoinInfos(for publicKeys: [Data]) -> AnyAsyncSequence<[Data: ClaimableCoinInfo]>
 }
 
 extension CoinOnChainQuerying {
@@ -184,29 +184,29 @@ final class CoinOnChainQueryService: CoinOnChainQuerying, @unchecked Sendable {
         throw CoinOnChainQueryError.subscriptionTerminated
     }
 
-    func subscribeCoinInfos(for publicKeys: [Data]) -> AnyAsyncSequence<[Data: Int16]> {
+    func subscribeCoinInfos(for publicKeys: [Data]) -> AnyAsyncSequence<[Data: ClaimableCoinInfo]> {
         guard !publicKeys.isEmpty else {
-            return AsyncStream<[Data: Int16]> { $0.finish() }.eraseToAnyAsyncSequence()
+            return AsyncStream<[Data: ClaimableCoinInfo]> { $0.finish() }.eraseToAnyAsyncSequence()
         }
 
         let dataByHex = Dictionary(publicKeys.map { ($0.toHex(), $0) }, uniquingKeysWith: { first, _ in first })
 
         return subscribeCoins(for: publicKeys)
-            .scan([String: Int16]()) { accumulated, result in
+            .scan([String: ClaimableCoinInfo]()) { accumulated, result in
                 var next = accumulated
                 for (key, coin) in result.updates {
                     if let coin {
-                        next[key] = Int16(coin.value)
+                        next[key] = ClaimableCoinInfo(exponent: Int16(coin.value), age: coin.age)
                     } else {
                         next.removeValue(forKey: key)
                     }
                 }
                 return next
             }
-            .map { exponentsByHex -> [Data: Int16] in
-                var out: [Data: Int16] = [:]
-                for (hex, exponent) in exponentsByHex {
-                    if let data = dataByHex[hex] { out[data] = exponent }
+            .map { infosByHex -> [Data: ClaimableCoinInfo] in
+                var out: [Data: ClaimableCoinInfo] = [:]
+                for (hex, info) in infosByHex {
+                    if let data = dataByHex[hex] { out[data] = info }
                 }
                 return out
             }

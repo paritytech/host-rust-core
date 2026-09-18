@@ -178,7 +178,7 @@ fn data_type_category(module_path: &[String]) -> String {
 fn data_type_definition(
     ty: &TypeDef,
     public_name: &str,
-    emit_versions: &HashMap<String, BTreeSet<u32>>,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
 ) -> Result<String> {
     let generic_decl = generic_param_declaration(&ty.generic_params);
     let mut out = String::new();

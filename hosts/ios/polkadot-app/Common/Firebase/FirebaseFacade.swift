@@ -32,6 +32,12 @@ final class FirebaseFacade {
     func set(chainRegistry registry: ChainRegistryProtocol) {
         chainRegistry = registry
     }
+
+    /// Waits for cached or fetched Remote Config before reading the reporting credentials.
+    func asyncWaitIssueProxyConfiguration() async throws -> IssueProxyConfiguration {
+        _ = try await asyncWaitRemoteConfig()
+        return try firebaseService.syncedIssueProxyConfiguration()
+    }
 }
 
 extension FirebaseFacade: RemoteConfigManaging {

@@ -5,17 +5,26 @@ import Individuality
 
 struct MemberStatusResult: BatchStorageSubscriptionResult {
     struct MemberUpdate {
-        let derivationIndex: DerivationIndex
+        let publicKey: PublicKey
         let ringPosition: MembersPallet.RingPosition?
     }
 
+    /// Ring state is shared, so these arrive per ring rather than per voucher.
     struct RingStatusUpdate {
-        let derivationIndex: DerivationIndex
+        let recycler: RecyclerKey
         let ringKeysStatus: MembersPallet.RingKeysStatus?
+    }
+
+    /// `RecyclersUnloadedCount` for a ring. The entry is an `OptionQuery` populated only as aliases
+    /// are unloaded, so an absent reading means "none yet", not "unknown".
+    struct UnloadedCountUpdate {
+        let recycler: RecyclerKey
+        let unloadedCount: UInt32?
     }
 
     let ringPositionUpdates: [MemberUpdate]
     let ringStatusUpdates: [RingStatusUpdate]
+    let unloadedCountUpdates: [UnloadedCountUpdate]
     let blockHash: BlockHashData?
 
     init(
@@ -25,6 +34,7 @@ struct MemberStatusResult: BatchStorageSubscriptionResult {
     ) throws {
         var updates: [MemberUpdate] = []
         var ringStatusUpdates: [RingStatusUpdate] = []
+        var unloadedCountUpdates: [UnloadedCountUpdate] = []
 
         for item in values {
             guard
@@ -35,32 +45,44 @@ struct MemberStatusResult: BatchStorageSubscriptionResult {
             }
 
             switch subKey {
-            case let .member(derivationIndex):
+            case let .member(publicKey):
                 let ringPosition = try? item.value.map(
                     to: MembersPallet.RingPosition?.self,
                     with: context
                 )
 
                 updates.append(.init(
-                    derivationIndex: derivationIndex,
+                    publicKey: publicKey,
                     ringPosition: ringPosition
                 ))
 
-            case let .ringStatus(derivationIndex):
+            case let .ringStatus(recycler):
                 let ringKeysStatus = try? item.value.map(
                     to: MembersPallet.RingKeysStatus?.self,
                     with: context
                 )
 
                 ringStatusUpdates.append(.init(
-                    derivationIndex: derivationIndex,
+                    recycler: recycler,
                     ringKeysStatus: ringKeysStatus
+                ))
+
+            case let .unloadedCount(recycler):
+                let count = try? item.value.map(
+                    to: StringScaleMapper<UInt32>?.self,
+                    with: context
+                )
+
+                unloadedCountUpdates.append(.init(
+                    recycler: recycler,
+                    unloadedCount: count?.value
                 ))
             }
         }
 
         ringPositionUpdates = updates
         self.ringStatusUpdates = ringStatusUpdates
+        self.unloadedCountUpdates = unloadedCountUpdates
         blockHash = try blockHashJson.map(to: BlockHashData?.self, with: context)
     }
 }

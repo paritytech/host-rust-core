@@ -58,6 +58,7 @@ import io.paritytech.polkadotapp.common.utils.FeatureOption
 import io.paritytech.polkadotapp.common.utils.isEnabled
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
+import io.paritytech.polkadotapp.design.components.icon.vectors.NetworkStatus
 import io.paritytech.polkadotapp.design.components.icon.vectors.TabsBox
 import io.paritytech.polkadotapp.design.components.icon.vectors.TabsDigitBox
 import io.paritytech.polkadotapp.design.components.icon.vectors.Trash
@@ -69,6 +70,8 @@ import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
+import io.paritytech.polkadotapp.feature_connection_status_api.presentation.ChainHealthPanel
+import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicatorsModel
 import io.paritytech.polkadotapp.feature_products_api.domain.browser.TabInfo
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableMap
@@ -98,7 +101,8 @@ private val AppMenuShadowElevation = 8.dp
  * tabs to manage, so the pill keeps the scanner alone.
  *
  * With [FeatureOption.FULL_TAB_BAR] off the bar is reduced to icons: no item labels, and the scanner drops
- * the pill to sit as a bare icon.
+ * the pill to sit as a bare icon — unless [FeatureOption.TAB_BAR_CONNECTIVITY_INDICATOR] is on, whose design
+ * keeps the pill and the full width with the labels still off.
  */
 @Composable
 fun RootNavBar(
@@ -107,9 +111,12 @@ fun RootNavBar(
     tabWarnings: ImmutableMap<BottomTab, Boolean>,
     apps: ImmutableList<TabInfo>,
     appsExpanded: Boolean,
+    chainsHealth: ChainHealthIndicatorsModel,
+    networkStatusExpanded: Boolean,
     scannerTooltipVisible: Boolean,
     onTabSelected: (BottomTab) -> Unit,
     onCountClicked: () -> Unit,
+    onNetworkStatusClicked: () -> Unit,
     onAppClick: (Long) -> Unit,
     onAppClose: (Long) -> Unit,
     onScanClicked: () -> Unit,
@@ -117,6 +124,11 @@ fun RootNavBar(
 ) {
     val availableTabs = BottomTab.availableEntries
     val fullTabBar = FeatureOption.FULL_TAB_BAR.isEnabled
+    val networkStatusItem = FeatureOption.TAB_BAR_CONNECTIVITY_INDICATOR.isEnabled
+    val pillBar = fullTabBar || networkStatusItem
+    val networkStatusUp = networkStatusItem && networkStatusExpanded
+    val networkStatusSlot = availableTabs.size
+    val selectedIndex = if (networkStatusUp) networkStatusSlot else availableTabs.indexOf(currentTab).coerceAtLeast(0)
 
     Column(
         modifier = modifier
@@ -125,31 +137,22 @@ fun RootNavBar(
             .navigationBarsPadding(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        AnimatedVisibility(
-            visible = appsExpanded,
-            enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-            exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                PolkadotSurface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(NavBarCornerRadius),
-                    color = PolkadotTheme.colors.bg.surface.container,
-                    border = BorderStroke(PolkadotTheme.borders.default, PolkadotTheme.colors.stroke.primary),
-                ) {
-                    OpenAppsRow(apps = apps, onAppClick = onAppClick, onAppClose = onAppClose)
-                }
-                VerticalSpacer { tiny }
+        ExpandablePanel(visible = appsExpanded) {
+            OpenAppsRow(apps = apps, onAppClick = onAppClick, onAppClose = onAppClose)
+        }
+        if (networkStatusItem) {
+            ExpandablePanel(visible = networkStatusExpanded) {
+                ChainHealthPanel(model = chainsHealth)
             }
         }
 
         PolkadotNavigationBar(
-            selectedIndex = availableTabs.indexOf(currentTab).coerceAtLeast(0),
-            itemCount = availableTabs.size,
+            selectedIndex = selectedIndex,
+            itemCount = availableTabs.size + if (networkStatusItem) 1 else 0,
             shape = RoundedCornerShape(NavBarCornerRadius),
-            fillWidth = fullTabBar,
+            fillWidth = pillBar,
             centerContent = {
-                if (fullTabBar) {
+                if (pillBar) {
                     CenterPill(
                         scannerTooltipVisible = scannerTooltipVisible,
                         onScanClicked = onScanClicked,
@@ -171,13 +174,48 @@ fun RootNavBar(
         ) {
             availableTabs.fastForEach { tab ->
                 PolkadotNavigationBarItem(
-                    selected = tab == currentTab,
+                    selected = tab == currentTab && !networkStatusUp,
                     onClick = { onTabSelected(tab) },
                     icon = tab.icon(),
                     label = if (fullTabBar) tab.title() else null,
                     hasNotification = tabWarnings[tab] == true,
                 )
             }
+            if (networkStatusItem) {
+                PolkadotNavigationBarItem(
+                    selected = networkStatusExpanded,
+                    onClick = onNetworkStatusClicked,
+                    label = null,
+                ) { contentColor ->
+                    NovaIcon(
+                        modifier = Modifier.fillMaxSize(),
+                        imageVector = NovaIcons.NetworkStatus,
+                        tint = contentColor,
+                        contentDescription = stringResource(RCommon.string.chain_health_panel_title),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExpandablePanel(visible: Boolean, content: @Composable () -> Unit) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
+        exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            PolkadotSurface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(NavBarCornerRadius),
+                color = PolkadotTheme.colors.bg.surface.container,
+                border = BorderStroke(PolkadotTheme.borders.default, PolkadotTheme.colors.stroke.primary),
+            ) {
+                content()
+            }
+            VerticalSpacer { tiny }
         }
     }
 }

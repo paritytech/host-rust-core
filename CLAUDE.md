@@ -52,13 +52,20 @@ ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFF
 playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
 hosts/ios/                 iOS host app; resolves the core from this tree
 hosts/android/             Android host app
+hosts/imports.json         source repository and imported revision per host,
+                           read and updated by scripts/refresh-host-import.sh
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
-scripts/battery.sh         run the generated battery against both headless CLI host roles
+scripts/battery.sh         run the generated battery against both headless CLI host roles,
+                           plus the Pocket phase a Worker execution serves
+scripts/refresh-host-import.sh
+                           refresh a vendored host tree from its source repository
 scripts/truapi-host-installer.sh
                            one-liner installer for the prebuilt truapi-host CLI
 .github/consumers.json     maps each released package to the repos notified by a bump issue
+.github/registry-drift-exceptions.json
+                           documents intentionally unpublished npm package versions
 ```
 
 ### Crate + binding invariants
@@ -121,12 +128,20 @@ scripts/truapi-host-installer.sh
   the same class of drift; `make android-check` does it locally. The embedding
   apps are compiled by neither.
 - Both compile gates are path-filtered from one place. The `changes` job in
-  `ci.yml` computes `sdk_swift` and `sdk_kotlin`, and each gated job reads the
-  output. Because neither binding set is committed, a filter has to name every
+  `ci.yml` computes `sdk_swift`, `sdk_kotlin`, `needs_changeset`, and
+  `adds_changeset`, and each gated job reads the output. Because neither
+  binding set is committed, a filter has to name every
   crate its bindings are generated from, since a protocol change leaves no
   `ios/` or `android/` diff to key on. Every job in `ci.yml` is aggregated by
   `ci-status`, which is the check worth requiring: a job skipped by its filter
   counts as a pass, so a gate cannot stall a PR it does not apply to.
+  `Changeset guard` reads live PR titles and labels, so re-running failed jobs
+  picks up a `no-changeset` opt-out. `Release guard` rejects npm version changes
+  with unconsumed changesets on the merge result, including in the merge queue.
+  `registry-drift.yml` checks default-branch manifests against npm daily and
+  maintains one issue; explicit package-version exceptions live in
+  `.github/registry-drift-exceptions.json`. See `docs/RELEASE_PROCESS.md` for
+  label setup and release recovery.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
   To publish, include `@parity/ios-host <version>` in the `release:` PR title.
@@ -150,6 +165,8 @@ scripts/truapi-host-installer.sh
 - Every `pub` Rust item (functions, methods, types, traits, modules, constants) carries a doc comment (`///` or `//!`).
   Keep it short and focused on intent or invariants, not on what the signature already says.
 - Do not add code comments or doc comments that narrate migrations, compatibility shims, or historical changes. Comments should describe only the current code.
+- Everything else about comments, including when an inline comment earns its place, is in [`AGENTS.md`](AGENTS.md). That file also covers shared-branch
+  hygiene, the scope of a change, tests, and editing existing Rust.
 - Remove legacy compatibility code by default. Keep or add it only when explicitly requested.
 - In Rust format strings, prefer inlined variables: `"log value: {value:?}"` over `"log value: {:?}", value`.
 - For Rust modules, prefer `foo.rs` plus an optional `foo/` directory for
@@ -196,7 +213,7 @@ When the Rust trait surface changes, rerun:
 ```
 
 That will repopulate the ignored generated TS under `js/packages/truapi/src/generated/`,
-`js/packages/truapi/src/playground/codegen/`, and `js/packages/truapi/test/generated/examples/`.
+`js/packages/truapi/src/playground/codegen/`, and `playground/test/generated/examples/`.
 After regenerating, rebuild the client and refresh the playground's link copy:
 
 ```bash

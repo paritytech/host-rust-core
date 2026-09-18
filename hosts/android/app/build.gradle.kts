@@ -158,8 +158,6 @@ dependencies {
     implementation(project(":feature:connection-status:api"))
     implementation(project(":feature:connection-status:impl"))
     implementation(project(":feature:revive:impl"))
-    implementation(project(":feature:web3summit:api"))
-    implementation(project(":feature:web3summit:impl"))
     implementation(project(":feature:w3s-pay:impl"))
     // Endregion features
 
@@ -184,6 +182,10 @@ dependencies {
 
     "gpImplementation"(libs.google.play.services.mlkit)
     "vanillaImplementation"(libs.google.mlkit.barcode.scanning)
+
+    testImplementation(project(":test-shared"))
+    testImplementation(libs.squareup.okhttp3.mockwebserver)
+    testImplementation(libs.squareup.okhttp3.tls)
 
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

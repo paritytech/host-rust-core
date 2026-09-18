@@ -5,9 +5,10 @@ use std::sync::atomic::Ordering;
 
 use parity_scale_codec::Encode;
 use truapi::api::{
-    Account, Chain, Entropy, Notifications, Permissions, Preimage, ResourceAllocation, Signing,
-    System, Theme,
+    Account, Chain, Entropy, LocalStorage, Notifications, Permissions, Preimage,
+    ResourceAllocation, Signing, StatementStore, System, Theme,
 };
+use truapi::v02;
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
     HostAccountCreateProofResponse, HostAccountGetAliasError, HostAccountGetAliasResponse,
@@ -22,6 +23,9 @@ use truapi::versioned::chain::{
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
+};
+use truapi::versioned::local_storage::{
+    HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
 };
 use truapi::versioned::notifications::{
     HostPushNotificationCancelRequest, HostPushNotificationCancelResponse,
@@ -45,17 +49,25 @@ use truapi::versioned::signing::{
     HostSignRawResponse, HostSignRawWithLegacyAccountError, HostSignRawWithLegacyAccountRequest,
     HostSignRawWithLegacyAccountResponse,
 };
+use truapi::versioned::statement_store::{
+    RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+};
 use truapi::versioned::system::{
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostGetProductContextRequest,
     HostGetProductContextResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
-use truapi_platform::{AuthState, CoreStorageKey, PermissionAuthorizationRequest};
+use truapi_platform::{
+    AuthState, CoreStorage as PlatformCoreStorage, CoreStorageKey, PermissionAuthorizationRequest,
+};
 
+use super::product_manifest::{CachedManifest, MANIFEST_TTL_SECS};
 use super::*;
 use crate::host_logic::product_account::index_bytes;
+use crate::host_logic::product_manifest::test_manifest_json;
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
+use crate::host_logic::statement_store::current_unix_secs;
 use crate::test_support::*;
 
 fn test_product_subtree(product_id: &str) -> [u8; 32] {
@@ -167,6 +179,348 @@ fn get_chain_info_round_trips_through_runtime() {
     assert_eq!(inner.genesis_hash, [0xaa; 32]);
 }
 
+fn read_storage(
+    host: &ProductRuntimeHost,
+    product: Option<&str>,
+    key: &str,
+) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
+    futures::executor::block_on(LocalStorage::read(
+        host,
+        &CallContext::default(),
+        HostLocalStorageReadRequest::V2(v02::HostLocalStorageReadRequest {
+            product: product.map(str::to_string),
+            key: key.to_string(),
+        }),
+    ))
+}
+
+#[test]
+fn a_storage_key_is_namespaced_under_its_owner() {
+    // The owner is an argument, not `self`: keying off the caller would hand a
+    // granted foreign read the caller's own values under the target's name.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    let key = host.product_storage_key("wallet.dot", "k".to_string());
+    let decoded = ProductStorageKey::decode(&key).expect("the key round-trips");
+    assert_eq!(decoded.product_id(), "wallet.dot");
+    assert_ne!(decoded.product_id(), host.product_id());
+}
+
+#[test]
+fn a_read_naming_the_caller_however_it_is_spelled_reaches_its_own_storage() {
+    // `product: None` is what every v0.1 read meant, naming your own id is the
+    // same call, and casing is normalized before the comparison. None of the
+    // three is a cross-product access, so none consults a grant.
+    let platform = stub_platform();
+    let storage = platform.clone();
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let own = host.product_id();
+    storage.local_storage.lock().expect("mutex").insert(
+        ProductStorageKey::new(&own, "k")
+            .expect("the owner normalizes")
+            .encode(),
+        b"my own value".to_vec(),
+    );
+
+    for spelling in [None, Some(own.clone()), Some(own.to_uppercase())] {
+        let answered = read_storage(&host, spelling.as_deref(), "k")
+            .unwrap_or_else(|err| panic!("{spelling:?} must reach own storage: {err:?}"));
+        let HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value }) =
+            answered
+        else {
+            panic!("a v2 request answers with a v2 response");
+        };
+        assert_eq!(
+            value.as_deref(),
+            Some(&b"my own value"[..]),
+            "spelling {spelling:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unresolvable_product_is_refused_identically_to_an_ungranted_one() {
+    // One answer for every reason, so the call cannot be used to probe which
+    // products exist. Two of these are not product ids at all and the third is
+    // a perfectly good one; on a host that reaches no chain none of them
+    // resolves, and the caller cannot tell that apart from a refused grant.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    for target in ["not a product", "", "wallet.dot"] {
+        assert_eq!(
+            read_storage(&host, Some(target), "k").unwrap_err(),
+            access_not_granted(),
+            "target {target:?}"
+        );
+    }
+}
+
+/// The one refusal every unmet grant answers with.
+fn access_not_granted() -> CallError<HostLocalStorageReadError> {
+    CallError::Domain(HostLocalStorageReadError::V2(
+        v02::HostLocalStorageReadError::AccessNotGranted,
+    ))
+}
+
+/// Reads `owner`'s stored value at `k`, requiring the grant to admit it.
+fn granted_value(host: &ProductRuntimeHost, owner: &str) -> Option<Vec<u8>> {
+    let HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value }) =
+        read_storage(host, Some(owner), "k").expect("the grant admits the read")
+    else {
+        panic!("a v2 request answers with a v2 response");
+    };
+    value
+}
+
+/// Seeds `owner`'s storage with a value only a granted read can reach.
+fn seed_owner_value(platform: &StubPlatform, owner: &str) {
+    platform.local_storage.lock().expect("mutex").insert(
+        ProductStorageKey::new(owner, "k")
+            .expect("the owner normalizes")
+            .encode(),
+        b"wallet's own value".to_vec(),
+    );
+}
+
+/// Seeds `owner`'s cached manifest, so a grant resolves without a chain.
+fn cache_manifest(platform: &StubPlatform, owner: &str, trusted: &str, age_secs: u64) {
+    cache_manifest_entry(platform, owner, Some(test_manifest_json(trusted)), age_secs);
+}
+
+/// Seed `owner`'s cached lookup with an explicit `fetched_at`, for tests about
+/// the freshness bound itself rather than about grants.
+fn cache_manifest_at(platform: &StubPlatform, owner: &str, trusted: &str, fetched_at_secs: u64) {
+    let json = format!(
+        r#"{{"$v":1,"displayName":"D","description":"d",
+                "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted}}}"#
+    );
+    let entry = CachedManifest {
+        fetched_at_secs,
+        json: Some(json),
+    };
+    futures::executor::block_on(platform.write_core_storage(
+        crate::runtime::product_manifest::manifest_cache_key(owner),
+        entry.encode(),
+    ))
+    .expect("stub core storage accepts the entry");
+}
+
+/// Seeds `owner`'s cached lookup, `None` standing for "publishes no manifest".
+fn cache_manifest_entry(platform: &StubPlatform, owner: &str, json: Option<String>, age_secs: u64) {
+    let entry = CachedManifest {
+        fetched_at_secs: current_unix_secs().saturating_sub(age_secs),
+        json,
+    };
+    futures::executor::block_on(platform.write_core_storage(
+        crate::runtime::product_manifest::manifest_cache_key(owner),
+        entry.encode(),
+    ))
+    .expect("stub core storage accepts the entry");
+}
+
+#[test]
+fn a_cached_grant_reads_the_granting_products_storage() {
+    // The caller is `unknown.dot`, so the manifest names the bare label.
+    //
+    // Seeding only the target's namespace is what makes this a regression pin:
+    // keying the read off the caller instead would miss the value entirely.
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["storage"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        granted_value(&host, "wallet.dot").as_deref(),
+        Some(&b"wallet's own value"[..])
+    );
+}
+
+#[test]
+fn all_satisfies_a_storage_read() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["all"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        granted_value(&host, "wallet.dot").as_deref(),
+        Some(&b"wallet's own value"[..])
+    );
+}
+
+#[test]
+fn a_grant_to_another_product_does_not_admit_this_caller() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"stash":["storage"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
+}
+
+#[test]
+fn a_cached_miss_refuses_without_returning_to_the_chain() {
+    // "This product publishes no manifest" is an answer worth keeping. Without
+    // it every refusal re-reads the contracts, and the round trip separates a
+    // target that has a manifest from one that does not.
+    let platform = stub_platform();
+    cache_manifest_entry(&platform, "wallet.dot", None, 0);
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
+}
+
+#[test]
+fn a_grant_of_some_other_scope_does_not_open_storage() {
+    // Only `storage` and `all` open a read. A value naming anything else, now
+    // or once a later scope is defined, must leave storage refusing.
+    let platform = stub_platform();
+    cache_manifest(
+        &platform,
+        "wallet.dot",
+        r#"{"unknown":["storage-write"]}"#,
+        0,
+    );
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
+}
+
+#[test]
+fn a_context_grant_does_not_open_storage() {
+    // Scopes are independent, and `context` is the case worth pinning rather
+    // than an unrecognised value: it is a scope this core does honour, just
+    // not for storage.
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
+}
+
+/// A cache entry stamped in the future is stale, not immortal.
+///
+/// The TTL is the revocation bound: a grant a publisher withdraws stays in force
+/// until the document is read again. An entry written while the device clock ran
+/// ahead used to satisfy the bound forever, because `saturating_sub` floors at
+/// zero, so that one entry could never be revoked.
+#[test]
+fn a_cache_entry_stamped_in_the_future_is_not_honoured() {
+    let platform = stub_platform();
+    // A year ahead: `saturating_sub` gives 0, which is below any TTL.
+    cache_manifest_at(
+        &platform,
+        "wallet.dot",
+        r#"{"unknown":["storage"]}"#,
+        crate::host_logic::statement_store::current_unix_secs() + 365 * 24 * 60 * 60,
+    );
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted(),
+        "a future-stamped entry must be re-read, not trusted forever"
+    );
+}
+
+#[test]
+fn a_cached_grant_stops_being_honoured_once_it_expires() {
+    // The lifetime is the revocation bound. Past it the entry is ignored,
+    // and with no Asset Hub to re-read from the grant is gone.
+    let platform = stub_platform();
+    cache_manifest(
+        &platform,
+        "wallet.dot",
+        r#"{"unknown":["storage"]}"#,
+        MANIFEST_TTL_SECS + 1,
+    );
+    seed_owner_value(&platform, "wallet.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+        access_not_granted()
+    );
+}
+
+/// With no session, every proof refusal is the same refusal.
+///
+/// This is the ordering hazard closed. `create_account_proof` consults the
+/// session before the grant, so a granting target, a non-granting target and
+/// the caller's own key all answer `Rejected`, and the pair of refusals stops
+/// being a probe for who granted whom. The grant path itself is covered
+/// end-to-end, with a live session, in
+/// `runtime::signing_host::tests::a_context_grant_lets_a_foreign_product_prove_with_the_owners_key`.
+#[test]
+fn with_no_session_a_proof_refusal_never_discloses_whether_a_grant_exists() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "granting.dot", r#"{"unknown":["context"]}"#, 0);
+    cache_manifest(
+        &platform,
+        "silent.dot",
+        r#"{"someone-else":["context"]}"#,
+        0,
+    );
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let sessionless = Some(CallError::Domain(HostAccountCreateProofError::V1(
+        v01::HostAccountCreateProofError::Rejected,
+    )));
+
+    assert_eq!(proof_refusal(&host, "granting.dot"), sessionless);
+    assert_eq!(proof_refusal(&host, "silent.dot"), sessionless);
+    assert_eq!(proof_refusal(&host, &host.product_id()), sessionless);
+}
+
+fn proof_refusal(
+    host: &ProductRuntimeHost,
+    product: &str,
+) -> Option<CallError<HostAccountCreateProofError>> {
+    futures::executor::block_on(
+        host.create_account_proof(&CallContext::default(), create_proof_request(product)),
+    )
+    .err()
+}
+
+#[test]
+fn a_proof_naming_the_caller_in_another_spelling_is_still_its_own() {
+    // Normalized before comparison, so casing cannot turn a product's own
+    // key into a cross-product refusal.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    let shouted = host.product_id().to_uppercase();
+    assert_eq!(
+        proof_refusal(&host, &shouted),
+        Some(CallError::Domain(HostAccountCreateProofError::V1(
+            v01::HostAccountCreateProofError::Rejected
+        )))
+    );
+}
+
+#[test]
+fn an_unresolvable_product_cannot_reach_a_foreign_key() {
+    // A key handle that does not normalize names no product, so it cannot be
+    // reached. Note what this asserts: the frontend answers `Unknown { reason }`
+    // here, naming the malformed handle, where the authority answers the uniform
+    // `NotAllowlisted` for the same input. That asymmetry is real and deliberate
+    // at this layer: the id came from this Host's own caller, not off the wire,
+    // so telling it that its handle is malformed discloses nothing it did not
+    // already send. The authority cannot say the same and does not.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    assert_eq!(
+        proof_refusal(&host, "not a product"),
+        Some(CallError::Domain(HostAccountCreateProofError::V1(
+            v01::HostAccountCreateProofError::Unknown {
+                reason: "Invalid key handle".to_string()
+            }
+        )))
+    );
+}
+
 #[test]
 fn get_chain_info_unserved_identifier_is_not_supported() {
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
@@ -269,6 +623,7 @@ fn chat_post_message_screens_content_before_it_reaches_a_host() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -412,6 +767,7 @@ fn chat_room_ids_agree_across_create_and_post() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -496,6 +852,7 @@ fn chat_register_bot_rejects_unsafe_product_fields() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -580,6 +937,7 @@ fn chat_register_bot_reaches_the_installed_adapter() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let chat_platform = Arc::new(RecordingChatPlatform::default());
@@ -617,6 +975,248 @@ fn chat_register_bot_reaches_the_installed_adapter() {
     );
 }
 
+/// Records what reaches the host's Pocket adapter and answers from a fixed
+/// card set.
+struct RecordingPocketPlatform {
+    cards: Vec<v01::PocketCard>,
+    removed: Mutex<Vec<String>>,
+}
+
+impl RecordingPocketPlatform {
+    fn with_cards(cards: Vec<(&str, bool)>) -> Self {
+        Self {
+            cards: cards
+                .into_iter()
+                .map(|(card_id, privileged)| v01::PocketCard {
+                    card_id: card_id.to_string(),
+                    privileged,
+                })
+                .collect(),
+            removed: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[truapi::async_trait]
+impl truapi_platform::PocketPlatform for RecordingPocketPlatform {
+    fn subscribe_pocket_cards(
+        &self,
+        _product: &ProductContext,
+    ) -> futures::stream::BoxStream<
+        'static,
+        Result<truapi::latest::HostPocketListSubscribeItem, truapi::latest::GenericError>,
+    > {
+        let cards = self.cards.clone();
+        Box::pin(futures::stream::iter([
+            Ok(truapi::latest::HostPocketListSubscribeItem { cards }),
+            Err(truapi::latest::GenericError {
+                reason: "host list failed".to_string(),
+            }),
+        ]))
+    }
+
+    async fn remove_pocket_card(
+        &self,
+        _product: &ProductContext,
+        request: truapi::latest::HostPocketRemoveCardRequest,
+    ) -> Result<(), truapi::latest::HostPocketRemoveCardError> {
+        if self
+            .cards
+            .iter()
+            .any(|card| card.card_id == request.card_id && card.privileged)
+        {
+            return Err(truapi::latest::HostPocketRemoveCardError::Privileged);
+        }
+        self.removed
+            .lock()
+            .expect("removed mutex poisoned")
+            .push(request.card_id);
+        Ok(())
+    }
+}
+
+fn pocket_host(
+    kind: truapi_platform::ProductExecutionKind,
+    pocket: Option<Arc<RecordingPocketPlatform>>,
+    with_session: bool,
+) -> ProductRuntimeHost {
+    let (host_config, _) = runtime_config("pocket.dot");
+    let product = ProductContext::new_with_execution("pocket.dot".to_string(), kind)
+        .expect("test pocket product context is valid");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    adapters.pocket_platform =
+        pocket.map(|pocket| pocket as Arc<dyn truapi_platform::PocketPlatform>);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    if with_session {
+        install_pairing_session(&host, session_info());
+    }
+    host
+}
+
+fn remove_card(
+    host: &ProductRuntimeHost,
+    card_id: &str,
+) -> Result<HostPocketRemoveCardResponse, CallError<HostPocketRemoveCardError>> {
+    futures::executor::block_on(Pocket::remove_card(
+        host,
+        &CallContext::default(),
+        HostPocketRemoveCardRequest::V1(v01::HostPocketRemoveCardRequest {
+            card_id: card_id.to_string(),
+        }),
+    ))
+}
+
+/// First thing a Pocket subscription yields: an item, or the interrupt that
+/// ended it before any item arrived.
+fn first_pocket_item(
+    host: &ProductRuntimeHost,
+) -> Option<
+    Result<
+        HostPocketListSubscribeItem,
+        CallError<truapi::versioned::pocket::HostPocketListSubscribeError>,
+    >,
+> {
+    futures::executor::block_on(
+        futures::executor::block_on(Pocket::list_subscribe(
+            host,
+            &CallContext::default(),
+            truapi::versioned::pocket::HostPocketListSubscribeRequest::V1,
+        ))
+        .next(),
+    )
+}
+
+#[test]
+fn pocket_list_subscribe_forwards_the_host_list_and_interrupts_on_stream_errors() {
+    let pocket = Arc::new(RecordingPocketPlatform::with_cards(vec![
+        ("loyalty", false),
+        ("humanity", true),
+    ]));
+    let host = pocket_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        Some(pocket),
+        true,
+    );
+
+    let mut items = futures::executor::block_on(Pocket::list_subscribe(
+        &host,
+        &CallContext::default(),
+        truapi::versioned::pocket::HostPocketListSubscribeRequest::V1,
+    ));
+    let HostPocketListSubscribeItem::V1(first) = futures::executor::block_on(items.next())
+        .expect("the host list is forwarded")
+        .expect("the host list arrives as an item, not an interrupt");
+    assert_eq!(first.cards.len(), 2);
+    assert!(
+        first
+            .cards
+            .iter()
+            .any(|card| card.card_id == "humanity" && card.privileged)
+    );
+    // A failing platform stream ends the subscription with an interrupt the
+    // product can act on. Dropping it would freeze the product's card list on
+    // its last value with nothing to say the host stopped reporting.
+    assert!(matches!(
+        futures::executor::block_on(items.next()),
+        Some(Err(CallError::HostFailure { .. }))
+    ));
+    assert!(futures::executor::block_on(items.next()).is_none());
+}
+
+#[test]
+fn pocket_remove_card_normalizes_the_id_and_maps_domain_errors() {
+    let pocket = Arc::new(RecordingPocketPlatform::with_cards(vec![
+        ("loyalty", false),
+        ("humanity", true),
+    ]));
+    let host = pocket_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        Some(pocket.clone()),
+        true,
+    );
+
+    // Trimmed and NFC-normalized before the host sees it, so the host stores
+    // one spelling of a card id however the product spells it.
+    assert_eq!(
+        remove_card(&host, "  loyalty  ").expect("removal succeeds"),
+        HostPocketRemoveCardResponse::V1
+    );
+    assert_eq!(
+        pocket
+            .removed
+            .lock()
+            .expect("removed mutex poisoned")
+            .as_slice(),
+        ["loyalty"]
+    );
+
+    assert!(matches!(
+        remove_card(&host, "humanity"),
+        Err(CallError::Domain(HostPocketRemoveCardError::V1(
+            v01::HostPocketRemoveCardError::Privileged
+        )))
+    ));
+    assert!(matches!(
+        remove_card(&host, ""),
+        Err(CallError::Domain(HostPocketRemoveCardError::V1(
+            v01::HostPocketRemoveCardError::Unknown { .. }
+        )))
+    ));
+    assert_eq!(
+        pocket.removed.lock().expect("removed mutex poisoned").len(),
+        1,
+        "a rejected card id never reaches the host"
+    );
+}
+
+#[test]
+fn pocket_is_denied_to_apps_and_sessionless_workers_and_unsupported_without_an_adapter() {
+    let pocket = Arc::new(RecordingPocketPlatform::with_cards(vec![]));
+    let app = pocket_host(
+        truapi_platform::ProductExecutionKind::App,
+        Some(pocket.clone()),
+        true,
+    );
+    assert!(matches!(
+        remove_card(&app, "loyalty"),
+        Err(CallError::Denied)
+    ));
+    assert!(matches!(
+        first_pocket_item(&app),
+        Some(Err(CallError::Denied))
+    ));
+
+    let no_session = pocket_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        Some(pocket),
+        false,
+    );
+    assert!(matches!(
+        remove_card(&no_session, "loyalty"),
+        Err(CallError::Denied)
+    ));
+
+    let no_adapter = pocket_host(truapi_platform::ProductExecutionKind::Worker, None, true);
+    assert!(matches!(
+        remove_card(&no_adapter, "loyalty"),
+        Err(CallError::Unsupported)
+    ));
+    assert!(matches!(
+        first_pocket_item(&no_adapter),
+        Some(Err(CallError::Unsupported))
+    ));
+}
+
 #[test]
 fn chain_follow_ids_are_scoped_per_product_core() {
     let (host_config, product) = runtime_config("same.dot");
@@ -627,6 +1227,7 @@ fn chain_follow_ids_are_scoped_per_product_core() {
         host_config.host.host_info.clone(),
         host_config.people_chain_genesis_hash,
         host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
         spawner.clone(),
     );
     let pairing_host = PairingHost::new(services.clone(), host_config);
@@ -655,15 +1256,50 @@ fn bare_localhost_product_allows_dev_product_accounts() {
     assert!(host.is_product_account_valid_for_caller("myapp.dot"));
 }
 
+/// A product destination reaches the platform as a `polkadot://` URL, whatever
+/// the product spelled it as. Asserting only that the call succeeded would not
+/// notice it arriving as `https://`.
 #[test]
-fn navigate_to_uses_dotns_decision_and_then_platform() {
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+fn navigate_to_hands_a_product_destination_over_as_a_polkadot_url() {
+    for spelling in [
+        "mytestapp.dot",
+        "polkadot://mytestapp.dot",
+        "https://mytestapp.dot",
+    ] {
+        let platform = Arc::new(StubPlatform::default());
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+            url: spelling.to_string(),
+        });
+
+        let response = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
+
+        assert_eq!(response, HostNavigateToResponse::V1);
+        assert_eq!(
+            platform.navigations.lock().unwrap().as_slice(),
+            ["polkadot://mytestapp.dot".to_string()],
+            "for {spelling}"
+        );
+    }
+}
+
+/// A web address still arrives as `https://`, so the two stay distinguishable.
+#[test]
+fn navigate_to_hands_a_web_address_over_unchanged() {
+    let platform = Arc::new(StubPlatform::default());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
     let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-        url: "mytestapp.dot".to_string(),
+        url: "https://example.com/path".to_string(),
     });
-    let response = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
-    assert_eq!(response, HostNavigateToResponse::V1);
+
+    futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
+
+    assert_eq!(
+        platform.navigations.lock().unwrap().as_slice(),
+        ["https://example.com/path".to_string()]
+    );
 }
 
 #[test]
@@ -1694,9 +2330,9 @@ fn preimage_lookup_cache_hit_emits_once_and_stays_open() {
     let item = futures::executor::block_on(subscription.next()).expect("preimage item");
     assert_eq!(
         item,
-        RemotePreimageLookupSubscribeItem::V1(v01::RemotePreimageLookupSubscribeItem {
-            value: Some(value)
-        })
+        Ok(RemotePreimageLookupSubscribeItem::V1(
+            v01::RemotePreimageLookupSubscribeItem { value: Some(value) }
+        ))
     );
     // The subscription stays open (no completion/interrupt frame) after the
     // single cache-hit emission.
@@ -1725,9 +2361,9 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
     let item = futures::executor::block_on(subscription.next()).expect("preimage item");
     assert_eq!(
         item,
-        RemotePreimageLookupSubscribeItem::V1(v01::RemotePreimageLookupSubscribeItem {
-            value: None
-        })
+        Ok(RemotePreimageLookupSubscribeItem::V1(
+            v01::RemotePreimageLookupSubscribeItem { value: None }
+        ))
     );
 
     // Correct bytes pass the integrity check through.
@@ -1744,9 +2380,9 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
     let item = futures::executor::block_on(subscription.next()).expect("preimage item");
     assert_eq!(
         item,
-        RemotePreimageLookupSubscribeItem::V1(v01::RemotePreimageLookupSubscribeItem {
-            value: Some(value)
-        })
+        Ok(RemotePreimageLookupSubscribeItem::V1(
+            v01::RemotePreimageLookupSubscribeItem { value: Some(value) }
+        ))
     );
 }
 
@@ -1754,14 +2390,18 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
 fn theme_subscribe_maps_platform_values() {
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
     let cx = CallContext::default();
-    let mut subscription = futures::executor::block_on(Theme::subscribe(&host, &cx));
+    let mut subscription = futures::executor::block_on(Theme::subscribe(
+        &host,
+        &cx,
+        truapi::versioned::theme::HostThemeSubscribeRequest::V1,
+    ));
     let item = futures::executor::block_on(subscription.next()).expect("theme item");
     assert_eq!(
         item,
-        HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
+        Ok(HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
             name: v01::ThemeName::Custom("midnight".to_string()),
             variant: v01::ThemeVariant::Dark,
-        })
+        }))
     );
 }
 
@@ -2186,6 +2826,283 @@ fn auto_signing_vrf_request() -> HostAccountSignVrfRequest {
             value: vec![7],
         }],
     })
+}
+
+/// A pairing host holding an AutoSigning capability, with its SSO script
+/// already spent on the allocation: anything that relays from here fails, so a
+/// call that succeeds was served locally.
+fn granted_pairing_host() -> (Arc<StubPlatform>, ProductRuntimeHost) {
+    let session = sso_session_info();
+    let platform = auto_signing_test_platform(&session, "auto-1");
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session);
+    request_auto_signing(&host, "auto-1");
+    (platform, host)
+}
+
+/// The product account the capability in [`granted_pairing_host`] derives.
+fn granted_keypair() -> schnorrkel::Keypair {
+    let root =
+        crate::host_logic::product_account::derive_root_keypair_from_entropy(&[0xAB; 16]).unwrap();
+    crate::host_logic::product_account::derive_product_keypair(&root, "myapp.dot", index_bytes(0))
+        .unwrap()
+}
+
+#[test]
+fn auto_signing_serves_sign_raw_locally_without_prompt_or_sso() {
+    let (platform, host) = granted_pairing_host();
+
+    let HostSignRawResponse::V1(response) = futures::executor::block_on(host.sign_raw(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .expect("the capability signs locally, with no signing host to relay to");
+
+    assert!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    let signature =
+        schnorrkel::Signature::from_bytes(&response.signature).expect("64-byte signature");
+    let keypair = granted_keypair();
+    assert!(
+        keypair
+            .public
+            .verify_simple(b"substrate", b"<Bytes>hello world</Bytes>", &signature)
+            .is_ok(),
+        "the local signature is over the watermarked bytes, by the product account",
+    );
+}
+
+#[test]
+fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
+    let (platform, host) = granted_pairing_host();
+
+    let HostCreateTransactionResponse::V1(response) =
+        futures::executor::block_on(host.create_transaction(
+            &CallContext::default(),
+            HostCreateTransactionRequest::V1(v01::ProductAccountTxPayload {
+                signer: account_id("myapp.dot", 0),
+                genesis_hash: [1; 32],
+                call_data: vec![0x04, 0x00],
+                extensions: vec![],
+                // V4 needs no chain metadata, so the whole assembly is local.
+                tx_ext_version: 0,
+            }),
+        ))
+        .expect("a V4 transaction assembles locally under the capability");
+
+    assert!(
+        platform
+            .create_transaction_reviews
+            .lock()
+            .expect("create transaction review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    let (signer, _, call) = crate::host_logic::extrinsic::tests::split_v4(&response.transaction);
+    assert_eq!(
+        signer,
+        granted_keypair().public.to_bytes(),
+        "the product account signed it",
+    );
+    assert_eq!(call, vec![0x04, 0x00]);
+}
+
+#[test]
+fn auto_signing_serves_sign_payload_locally_without_prompt() {
+    let (platform, host) = granted_pairing_host();
+    let payload = crate::test_support::sign_payload_data();
+    let preimage = crate::host_logic::transaction::extrinsic_payload_preimage(&payload)
+        .expect("preimage builds");
+
+    let HostSignPayloadResponse::V1(response) = futures::executor::block_on(host.sign_payload(
+        &CallContext::default(),
+        HostSignPayloadRequest::V1(v01::HostSignPayloadRequest {
+            account: account_id("myapp.dot", 0),
+            payload,
+        }),
+    ))
+    .expect("the capability signs the payload locally");
+
+    assert!(
+        platform
+            .sign_payload_reviews
+            .lock()
+            .expect("sign payload review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    // A `MultiSignature`: the sr25519 discriminant, then the raw signature.
+    assert_eq!(response.signature.len(), 65);
+    assert_eq!(response.signature[0], 1);
+    let signature =
+        schnorrkel::Signature::from_bytes(&response.signature[1..]).expect("64-byte signature");
+    assert!(
+        granted_keypair()
+            .public
+            .verify_simple(b"substrate", &preimage, &signature)
+            .is_ok(),
+        "the local signature is over the payload preimage, by the product account",
+    );
+}
+
+#[test]
+fn auto_signing_serves_a_product_statement_proof_on_a_pairing_host() {
+    // The SSO raw-signing protocol cannot carry an exact, unwatermarked
+    // payload, so without a capability this role answers `UnableToSign`. The
+    // capability's own key is what makes the operation available at all;
+    // neither role prompts for statement proofs either way.
+    let (_platform, host) = granted_pairing_host();
+
+    let response = futures::executor::block_on(StatementStore::create_proof(
+        &host,
+        &CallContext::default(),
+        RemoteStatementStoreCreateProofRequest::V1(
+            truapi::latest::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("myapp.dot", 0),
+                statement: statement(),
+            },
+        ),
+    ))
+    .expect("the capability signs the statement locally");
+
+    let RemoteStatementStoreCreateProofResponse::V1(inner) = response;
+    let truapi::latest::StatementProof::Sr25519 { signer, signature } = inner.proof else {
+        panic!("expected an sr25519 statement proof");
+    };
+    let keypair = granted_keypair();
+    assert_eq!(
+        signer,
+        keypair.public.to_bytes(),
+        "the product account signed it",
+    );
+    let payload = crate::host_logic::statement_store::unsigned_statement_signing_payload(
+        crate::host_logic::statement_store::statement_fields_from_v01(statement()).unwrap(),
+    )
+    .unwrap();
+    let signature = schnorrkel::Signature::from_bytes(&signature).expect("64-byte signature");
+    assert!(
+        keypair
+            .public
+            .verify_simple(b"substrate", &payload, &signature)
+            .is_ok(),
+        "the signature is over the statement's signing payload",
+    );
+}
+
+#[test]
+fn a_broken_auto_signing_slot_fails_sign_raw_rather_than_prompting() {
+    // The lookup erases a capability it cannot trust as it rejects it, so
+    // falling through to a prompt here would ask the user to approve a
+    // signature the host has already refused to make. This is what the grant
+    // query's `Result` return is for: a `bool` predicate would answer "no
+    // grant" and raise the modal.
+    let session = sso_session_info();
+    let platform = auto_signing_test_platform(&session, "auto-broken");
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session.clone());
+    request_auto_signing(&host, "auto-broken");
+
+    let expected_subtree = test_product_subtree("myapp.dot");
+    let storage_key = core_storage_test_key(CoreStorageKey::AutoSigningKeys);
+    {
+        let mut storage = platform
+            .local_storage
+            .lock()
+            .expect("local storage mutex poisoned");
+        let blob = storage
+            .get_mut(&storage_key)
+            .expect("scoped AutoSigning capability persisted");
+        let expected_offset = blob
+            .windows(expected_subtree.len())
+            .position(|window| window == expected_subtree)
+            .expect("persisted expected subtree is present");
+        blob[expected_offset] ^= 0x01;
+    }
+
+    let restored = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&restored, session);
+    let error = futures::executor::block_on(restored.sign_raw(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Unknown {
+                reason
+            })) if reason == "AutoSigning capability is not for the current product subtree"
+        ),
+        "the broken capability is reported, not silently downgraded: {error:?}",
+    );
+    assert!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .is_empty(),
+        "no prompt is raised for a capability the host just erased",
+    );
+}
+
+#[test]
+fn an_unwatermarked_sign_raw_still_prompts_under_a_grant() {
+    let (platform, host) = granted_pairing_host();
+
+    #[allow(deprecated)]
+    let error = futures::executor::block_on(host.sign_raw_unwatermarked_deprecated(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .expect_err("the stub declines the confirmation");
+
+    assert!(matches!(
+        error,
+        CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Rejected))
+    ));
+    assert_eq!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .len(),
+        1,
+        "the deprecated API prompts whatever the capability says",
+    );
 }
 
 #[test]
@@ -3717,3 +4634,165 @@ fn feature_supported_encodes_response_to_known_bytes() {
 }
 
 mod signing;
+
+/// The pairing authority's cross-product gate, driven directly.
+///
+/// `pairing_host.rs` carried no `#[test]` at all: every grant test drove the
+/// signing role, and the e2e drives the signing-host CLI. Replacing the body of
+/// `PairingHost::require_ring_vrf_key_access` with `Ok(())`, which lets any
+/// paired peer reach any product's ring-VRF key by naming it, left the entire
+/// package green. That is the exact threat #655 gives as the reason the authority must
+/// adjudicate for itself rather than trust a relayed verdict, so it cannot be
+/// the one path with no coverage.
+///
+/// Driven at the authority, which is where a pairing-wire request arrives:
+/// `sso_responder` hands `calling_product_id` and `key_handle` straight here,
+/// both decoded from the peer's message.
+#[test]
+fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
+    let (host_config, product) = runtime_config("dim2.dot");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host.clone(), product);
+    install_pairing_session(&host, session_info());
+    let session = pairing_host
+        .current_session()
+        .expect("the pairing host has an active session");
+
+    let proof = futures::executor::block_on(ProductAuthority::create_proof(
+        &*pairing_host,
+        &CallContext::default(),
+        &session,
+        crate::host_logic::sso::messages::ProductRequest {
+            calling_product_id: "dim2.dot".to_string(),
+            payload: v01::HostAccountCreateProofRequest {
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                context: v01::ProductProofContext {
+                    product_id: "dim2.dot".to_string(),
+                    suffix: v01::DerivationIndex::Index(0),
+                },
+                ring_location: ring_location_fixture(),
+                message: b"prove me".to_vec(),
+            },
+        },
+    ));
+    assert_eq!(
+        proof.err(),
+        Some(RingVrfError::NotAllowlisted),
+        "the pairing authority must refuse a foreign key that no manifest granted"
+    );
+
+    let signed = futures::executor::block_on(ProductAuthority::ring_vrf_sign(
+        &*pairing_host,
+        &CallContext::default(),
+        &session,
+        crate::host_logic::sso::messages::ProductRequest {
+            calling_product_id: "dim2.dot".to_string(),
+            payload: v01::HostAccountRingVrfSignRequest {
+                key_handle: v01::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+                message: b"sign me".to_vec(),
+            },
+        },
+    ));
+    assert_eq!(
+        signed.err(),
+        Some(RingVrfError::NotAllowlisted),
+        "and the same on the signing method, which arrives through the same door"
+    );
+}
+
+/// The grant lookup obeys the caller's deadline.
+///
+/// It can reach dotNS on the Asset Hub, which is several sequential chain
+/// operations each bounded only by `OPERATION_TIMEOUT` (10s). Run before
+/// `remote_authority_call` that cost sat outside the caller's deadline and
+/// ignored a cancel, so a product asking for a short timeout could wait far
+/// longer with no way to stop it. This pins that it now returns on the deadline:
+/// the stub answers no RPC, so an unscoped lookup would stall for the full
+/// operation timeout instead.
+#[test]
+fn a_grant_lookup_obeys_the_callers_deadline() {
+    let (host_config, product) = runtime_config("dim2.dot");
+    let platform: Arc<dyn Platform> = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    install_pairing_session(&host, session_info());
+
+    let mut cx = CallContext::default();
+    cx.set_timeout(Duration::from_millis(1));
+    let started = std::time::Instant::now();
+    let result = futures::executor::block_on(
+        host.create_account_proof(&cx, create_proof_request("peopl.dot")),
+    );
+    let elapsed = started.elapsed();
+
+    // The uniform refusal, not a transport error carrying a reason. Left to
+    // `remote_authority_call`, a deadline that expires during the lookup answers
+    // `Unknown { reason }` while an already-cached target that grants nothing
+    // answers `NotAllowlisted` at once, so the error tag alone would tell a
+    // caller which targets this device has resolved before, which is the
+    // enumeration the denial read was moved after the manifest to prevent.
+    assert!(
+        matches!(
+            result.as_ref().err(),
+            Some(CallError::Domain(HostAccountCreateProofError::V1(
+                v01::HostAccountCreateProofError::NotAllowlisted
+            )))
+        ),
+        "a lookup that runs out of time must answer the uniform refusal, got {:?}",
+        result.as_ref().err()
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the grant lookup must be bounded by the caller's deadline, not by the \
+         dotNS operation timeout; took {elapsed:?}"
+    );
+}
+
+/// Subnames of one product share one cached manifest, because they are one
+/// dotNS node holding one document.
+///
+/// The cache used to be keyed by the full product id while the document is
+/// resolved by the bare label, so `app.peopl.dot` and `worker.peopl.dot` each
+/// drove a fresh chain resolution and a fresh durable write for a document the
+/// host already held, with nothing bounding how many spellings a caller could
+/// name. On the pairing wire that id comes from the peer.
+#[test]
+fn subnames_of_one_product_share_one_cached_manifest() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "peopl.dot", r#"{"unknown":["storage"]}"#, 0);
+    seed_owner_value(&platform, "peopl.dot");
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+
+    // Seeded once under `peopl.dot`; every executable beneath it reads it.
+    for spelling in ["peopl.dot", "app.peopl.dot", "worker.peopl.dot"] {
+        assert!(
+            read_storage(&host, Some(spelling), "k").is_ok(),
+            "{spelling} must resolve the one manifest cached for its product"
+        );
+    }
+}

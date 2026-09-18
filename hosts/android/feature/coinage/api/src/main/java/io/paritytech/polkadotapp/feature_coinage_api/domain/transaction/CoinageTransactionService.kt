@@ -7,9 +7,9 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.Co
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableExtrinsic
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -68,9 +68,9 @@ interface CoinageTransactionService {
      */
     fun startRecovery()
 
-    suspend fun getTransactionStatus(id: CoinageTransactionId): Result<CoinageTransactionStatus>
+    suspend fun getTransactionStatus(id: CoinageTransactionId): Result<DurableTxStatus>
 
-    fun subscribeTransactionStatus(id: CoinageTransactionId): Flow<CoinageTransactionStatus>
+    fun subscribeTransactionStatus(id: CoinageTransactionId): Flow<DurableTxStatus>
 
     /** In registration order. Empty when nothing was ever registered under [groupId]. */
     suspend fun getOperationGroupStatuses(groupId: CoinageOperationGroupId): Result<List<CoinageTransactionState>>

@@ -18,7 +18,7 @@ import io.paritytech.polkadotapp.feature_settings_impl.presentation.main.compone
 import io.paritytech.polkadotapp.common.R as RCommon
 
 @Composable
-fun AppDeviceInfoSection(isDebug: Boolean) {
+fun AppDeviceInfoSection(showDeviceDetails: Boolean) {
     val context = LocalContext.current
     val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
 
@@ -37,7 +37,7 @@ fun AppDeviceInfoSection(isDebug: Boolean) {
             contentDescription = "polkadot_logo",
             colorFilter = ColorFilter.tint(PolkadotTheme.colors.fg.primary)
         )
-        if (isDebug) {
+        if (showDeviceDetails) {
             InfoText(stringResource(RCommon.string.settings_app_version, packageInfo.versionName.orEmpty(), packageInfo.longVersionCode))
 
             InfoText(stringResource(RCommon.string.settings_android_version, Build.VERSION.RELEASE, Build.VERSION.SDK_INT))

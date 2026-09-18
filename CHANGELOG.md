@@ -5,10 +5,51 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
-## [0.14.0] - 2026-09-10
+## [0.17.0] - 2026-09-17
 
 ### Added
 
+- cap the light client's live connections (#817)
+- a label-gated signed build that installs on a phone (#815)
+- refresh a vendored host tree from its source repository (#811)
+- read the statement renewal ledger, and untrack from a native host (#786)
+- serve the Pocket card collection (#706)
+- Pocket modality RFC and protocol spec (#609)
+
+### Changed
+
+- require versioned wrappers for empty wire payloads (#785)
+- restorable Rust cache, wire-table gate in the rust job (#779)
+- remove genesis constants (#753)
+- publish the iOS host and subscribe the app to its bumps (#758)
+- parallel iOS slices, one rustdoc call, deterministic type names (#773)
+- cut the Rust test suite from 2m12s to 21s (#767)
+
+### Fixed
+
+- install the Asset Hub genesis hash on the signing role (#729)
+- move the published fallback forward and stop it rotting silently (#812)
+- advertise the X25519 chat identity key on chain (#814)
+- keep one base path on one signer identity (#810)
+- keep a later push from cancelling a release commit's CI (#809)
+- give the CLI build matrix the generated Rust it cannot compile without (#780)
+
+## [0.16.0] - 2026-09-14
+
+### RFCs
+
+- **Accepted:** Wire message type: an explicit byte for trait, method, and leg
+
+### Added
+
+- Unified Renderer (#633)
+- Worker Lifecycle (#632)
+- Subscription interrupt (#631)
+- notify removed devices (#584)
+- add temporary deprecated unwrapped signing (#731)
+- address every frame with a (trait, method, message_type) envelope (#357)
+- generate typed dispatch and wire conversions (#651)
+- resolve the core from this tree for the iOS host (#725)
 - warm start on every client (#629)
 - wire trace engine, standalone inspector, and in-app panel (#536)
 - payload-blind wire-debug tap, sinks, and the codegen decode surface (#295)
@@ -16,6 +57,11 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.16.0, @parity/truapi-host 0.16.0 (#744)
+- RFC: Scoped grants in trustedProducts (#454)
+- @parity/truapi 0.15.0, @parity/truapi-host 0.12.0 (#732)
+- serve inter-host requests through typed handlers (#628)
+- @parity/truapi 0.14.0, @parity/truapi-host 0.11.0, @parity/ios-host 0.14.0, @parity/android-host 0.1.0 (#722)
 - Clarify TrUAPI README and documentation paths (#721)
 - move the request id into the call context (#718)
 - @parity/truapi-provider 0.1.0 (#662)
@@ -24,6 +70,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Fixed
 
+- bound iframe bootstrap and requests (#665)
 - run the bootnode health check when a dispatch asks for it (#691)
 - version the persisted session blob and decode the older layouts (#647)
 - read lite PoP names in both their dotted and flattened forms (#602)

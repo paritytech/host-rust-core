@@ -1,5 +1,5 @@
 > [!WARNING]
-> This is a prototype, reference implementation, and proof-of-concept. This open source code is provided for research, experimentation, and developer education only. It has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. The app is a self-custodial wallet that can hold real assets — use at your own risk.
+> This is a prototype, reference implementation, and proof-of-concept. This open source code is developed and published by Parity Technologies for research, experimentation, and developer education only. It has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. The app is a self-custodial wallet that can hold real assets — use at your own risk.
 
 <div align="center">
 
@@ -19,7 +19,7 @@
 ## Features
 
 - **Identity** — On-chain username with an allowance for free transactions, verified by Proof-of-Unique-Device.
-- **Personhood** — Upgrade your username to a higher allowance via Proof-of-Personhood by playing the DIM2 videocall gesture game, and earn prizes and collectables.
+- **Personhood** — Upgrade your username to a higher allowance via Proof-of-Personhood by playing the DIM2 videocall gesture game. Game rewards and collectibles can be surfaced through dApps (behind a feature flag).
 - **Chat** — End-to-end p2p encrypted text messaging with media (images/video) and encrypted video/audio calls.
 - **Payments** — Send and receive payments by username or QR code, and directly in chat.
 - **Auto-conversion** — Top up your wallet and auto-convert it into the tokens you want.
@@ -57,12 +57,19 @@ cd polkadot-ios-community
 open polkadot-app.xcodeproj
 ```
 
-The app builds and runs with safe public defaults out of the box. To enable
-Firebase, analytics, fiat on-ramp, or crash reporting, fill in real values in
-`polkadot-app/env-vars.sh` and the `GoogleService-Info` plists — see
-[docs/PUBLISHING.md](./docs/PUBLISHING.md) for the full list of variables.
+The project compiles out of the box with empty secrets and placeholder Firebase
+plists. Select the **polkadot-app** scheme and an iOS 17+ simulator, then build
+and run (`Cmd+R`).
 
-Select the **polkadot-app** scheme and an iOS 17+ simulator, then build and run (`Cmd+R`).
+To get past the startup screen the app needs a **Firebase project of your own**:
+the chain set, the identity-backend URL, the DotNS contract addresses and the
+other runtime endpoints are all delivered through Firebase Remote Config, and
+the placeholder plists point at nothing. [docs/PUBLISHING.md](./docs/PUBLISHING.md)
+lists every Remote Config parameter and build-time variable and the brand
+identity keys in `Configs/brand.xcconfig`; the identity backend is open source
+as [device-uniqueness-backend-community](https://github.com/paritytech/device-uniqueness-backend-community). Optional
+integrations (fiat on-ramp, crash reporting) are enabled by filling in
+`polkadot-app/env-vars.sh`.
 
 The app talks to Polkadot system chains (People Chain, Asset Hub, Bulletin Chain); the chain set is
 delivered via remote config, and development and nightly builds are exercised against Polkadot's

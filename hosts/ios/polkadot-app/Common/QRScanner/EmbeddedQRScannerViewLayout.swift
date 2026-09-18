@@ -24,20 +24,22 @@ final class EmbeddedQRScannerViewLayout: QRScannerViewLayout {
         heightAnchor.constraint(equalTo: widthAnchor).isActive = true
 
         addSubview(placeholderView)
+
         placeholderView.backgroundColor = .bgSurfaceNested
-        placeholderView.layer.cornerRadius = DSRadii.extraLarge
+        placeholderView.layer.cornerRadius = DSRadii.large
         placeholderView.layer.masksToBounds = true
         placeholderView.snp.makeConstraints { make in
-            make.edges.equalToSuperview().inset(DSSpacings.tiny)
+            make.top.left.right.equalToSuperview().inset(DSSpacings.mediumIncreased)
+            make.bottom.equalToSuperview().inset(DSSpacings.small)
         }
 
         addSubview(qrFrameView)
         qrFrameView.alpha = 0
-        qrFrameView.layer.cornerRadius = DSRadii.extraLarge
+        qrFrameView.layer.cornerRadius = DSRadii.large
         qrFrameView.layer.masksToBounds = true
         qrFrameView.fillColor = .clear
         qrFrameView.snp.makeConstraints { make in
-            make.edges.equalToSuperview().inset(DSSpacings.tiny)
+            make.edges.equalTo(placeholderView)
         }
 
         messageLabel.textColor = .fgPrimary

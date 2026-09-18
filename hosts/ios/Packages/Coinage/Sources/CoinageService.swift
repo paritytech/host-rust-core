@@ -26,6 +26,10 @@ public protocol CoinageServicing: Actor {
     /// Lifecycle (setup/throttle) is managed internally by CoinageService.
     nonisolated var externalPaymentService: any ExternalPaymentServicing { get }
 
+    /// The incoming-payment (top-up) service — exposed for dependency registration.
+    /// Lifecycle (setup/throttle) is managed internally by CoinageService.
+    nonisolated var incomingPaymentService: any IncomingPaymentServicing { get }
+
     /// Suspends until the denomination context is ready, then returns it.
     /// Throws if `setup(with:)` has not been called or if setup failed.
     func denominationContext() async throws -> DenominationBreakdownContext
@@ -53,20 +57,27 @@ public protocol CoinageServicing: Actor {
     /// Suspends and waits if the service has not been configured with an asset yet.
     func coinageBalanceService() async throws -> CoinageBalanceServiceProtocol
 
-    /// Preview an external payment for UI validation (degraded privacy check).
+    /// Preview an external payment: what it would spend and whether that costs privacy.
     func previewExternalPayment(for amount: BigUInt) async throws -> ExternalPaymentPreview
 
-    /// Initiate an external payment. Saves to store and returns the payment id.
+    /// Whether private vouchers alone would pay `amount` — the check behind the privacy warning.
+    func canExecuteExternalPaymentPrivately(amount: BigUInt) async throws -> Bool
+
+    /// Register an external payment identified by `(productId, paymentId)`.
+    /// Throws `ExternalPaymentError.alreadyExists` on replay.
     func initiateExternalPayment(
-        origin: String,
+        productId: String,
+        paymentId: String,
         amountInPlanks: Balance,
         destination: AccountId
-    ) async throws -> String
+    ) async throws
 
-    /// Subscribe to the status of an external payment.
-    func subscribeExternalPaymentStatus(
+    /// Subscribe to the status of an external payment identified by `(productId, paymentId)`; the
+    /// stream fails with `ExternalPaymentError.notFound` for an unknown identity.
+    nonisolated func subscribeExternalPaymentStatus(
+        productId: String,
         paymentId: String
-    ) throws -> AnyAsyncSequence<ExternalPaymentStatus>
+    ) -> AnyAsyncSequence<ExternalPaymentStatus>
 
     /// Preview a transfer and compute both the full and non-degraded sendable amounts.
     func previewTransfer(for amount: BigUInt) async throws -> TransferPreview
@@ -76,25 +87,23 @@ public protocol CoinageServicing: Actor {
     /// `groupId` labels the registered transaction(s) — the transfer's message id, or `nil`.
     func executeTransfer(result: CoinSelectionResult, groupId: CoinageTxGroupId?) async throws -> PreparedTransfer
 
-    /// Scans the chain for coins and vouchers belonging to the user.
-    /// Runs coin and voucher recovery concurrently.
-    /// - Returns: Tuple of recovered coins and vouchers found on-chain
-    /// - Throws: `CoinageError.notConfigured` if recovery service is unavailable
-    func recoverCoinsAndVouchers() async throws -> (coins: ScanResult<Coin>, vouchers: ScanResult<Voucher>)
+    /// Where recovery of previous installations' balance stands — see ``BackupProgress``.
+    nonisolated func subscribeBackupProgress() -> AnyAsyncSequence<BackupProgress>
+
+    /// Another look for balance under previous installations, past where the launch scan stopped.
+    func deepSearchBackup() async
+
+    /// The user accepted the recovered balance; the progress becomes ``BackupProgress/completed``.
+    func markBackupAsCompleted() async
+
+    /// Whether this installation is registered on chain — see ``CoinageAccountBackupStatus``.
+    nonisolated func subscribeAccountBackupStatus() -> AnyAsyncSequence<CoinageAccountBackupStatus>
 
     /// See `TransferClaimServicing.transferCoinsFromSecretKeys`.
     func transferCoinsFromSecretKeys(
         secretKeys: [Data],
         transferCoins: Bool
     ) async throws -> BigUInt
-
-    /// Scans beyond the given horizons for new coins and vouchers.
-    /// Runs coin and voucher extend scan concurrently.
-    /// Returns discovered items and updated horizons.
-    func extendScanCoinsAndVouchers(
-        coinHorizon: Int,
-        voucherHorizon: Int
-    ) async throws -> (coins: ScanResult<Coin>, vouchers: ScanResult<Voucher>)
 
     /// Recover spent coins by re-sweeping them back into the user's balance.
     /// Enumerates locally spent coins and delegates to
@@ -123,6 +132,7 @@ public actor CoinageService {
     private let coinStateSyncService: CoinStateSyncService
     private let voucherLocationService: VoucherLocationService
     private let recoveryService: any CoinageBackupRecoveryServicing
+    private let installationRegistrar: any CoinageInstallationRegistering
     public nonisolated let recyclingService: any CoinageRecyclingServicing
 
     // Recycling strategy evaluation — the evaluator is built lazily once the context resolves.
@@ -133,6 +143,10 @@ public actor CoinageService {
 
     // External payment — lifecycle managed internally, exposed for dependency registration
     public nonisolated let externalPaymentService: any ExternalPaymentServicing
+
+    // Incoming payments (top-ups) — lifecycle managed internally (setup driven by `setup(with:)`),
+    // exposed for dependency registration. Mirrors `externalPaymentService`.
+    public nonisolated let incomingPaymentService: any IncomingPaymentServicing
 
     private let contextLoader: DenominationContextLoaderProtocol
 
@@ -179,6 +193,8 @@ public actor CoinageService {
         applicationStateStreamFactory: ApplicationStateStreamFactory,
         databaseFactory: any DatabaseDependencyFactoring,
         recoveryService: any CoinageBackupRecoveryServicing,
+        installationRegistrar: any CoinageInstallationRegistering,
+        incomingPaymentService: any IncomingPaymentServicing,
         logger: SDKLoggerProtocol? = nil
     ) {
         self.coinService = coinService
@@ -198,9 +214,11 @@ public actor CoinageService {
         self.applicationStateStreamFactory = applicationStateStreamFactory
         self.databaseFactory = databaseFactory
         self.recoveryService = recoveryService
+        self.installationRegistrar = installationRegistrar
         self.txService = txService
         self.claimCoinsService = claimCoinsService
         self.transferStatusService = transferStatusService
+        self.incomingPaymentService = incomingPaymentService
         self.logger = logger
     }
 }
@@ -215,22 +233,30 @@ extension CoinageService: CoinageServicing {
         return try await externalPaymentService.previewPayment(for: amount, context: context)
     }
 
+    public func canExecuteExternalPaymentPrivately(amount: BigUInt) async throws -> Bool {
+        let context = try await requireContext()
+        return try await externalPaymentService.canExecuteExternalPaymentPrivately(amount: amount, context: context)
+    }
+
     public func initiateExternalPayment(
-        origin: String,
+        productId: String,
+        paymentId: String,
         amountInPlanks: Balance,
         destination: AccountId
-    ) async throws -> String {
+    ) async throws {
         try await externalPaymentService.initiatePayment(
-            origin: origin,
+            productId: productId,
+            paymentId: paymentId,
             amountInPlanks: amountInPlanks,
             destination: destination
         )
     }
 
-    public func subscribeExternalPaymentStatus(
+    public nonisolated func subscribeExternalPaymentStatus(
+        productId: String,
         paymentId: String
-    ) throws -> AnyAsyncSequence<ExternalPaymentStatus> {
-        try externalPaymentService.subscribePaymentStatus(paymentId: paymentId)
+    ) -> AnyAsyncSequence<ExternalPaymentStatus> {
+        externalPaymentService.subscribePaymentStatus(productId: productId, paymentId: paymentId)
     }
 
     // MARK: Denomination Context
@@ -272,12 +298,15 @@ extension CoinageService: CoinageServicing {
             coinStateSyncService.setup()
             voucherLocationService.setup()
             externalPaymentService.setup(with: context)
+            incomingPaymentService.setup(with: context)
 
             ensureRecyclingEvaluator(context: context)
 
+            // Before the engine's first recovery pass, which the app starts once setup returns, so nothing
+            // is decided against a mark that is about to disappear.
             try await txService.releaseUncommittedHandoffs()
 
-            txService.start()
+            await startInstallationBackup()
 
         } catch {
             // Reset so a subsequent setup(with:) call triggers a fresh fetch
@@ -367,7 +396,8 @@ extension CoinageService: CoinageServicing {
             let vouchers = try await voucherService.load(
                 amount: amount,
                 externalAssetHolder: externalAssetHolder,
-                breakdownContext: context
+                breakdownContext: context,
+                groupId: nil
             )
             return vouchers.reduce(BigUInt.zero) { $0 + context.valueInPlanks(for: $1.exponent) }
         }
@@ -400,19 +430,20 @@ extension CoinageService: CoinageServicing {
 
     // MARK: Recovery
 
-    public func recoverCoinsAndVouchers() async throws -> (coins: ScanResult<Coin>, vouchers: ScanResult<Voucher>) {
-        async let coins = recoveryService.recoverCoins()
-        async let vouchers = recoveryService.recoverVouchers()
-        return try await (coins, vouchers)
+    public nonisolated func subscribeBackupProgress() -> AnyAsyncSequence<BackupProgress> {
+        recoveryService.subscribeProgress()
     }
 
-    public func extendScanCoinsAndVouchers(
-        coinHorizon: Int,
-        voucherHorizon: Int
-    ) async throws -> (coins: ScanResult<Coin>, vouchers: ScanResult<Voucher>) {
-        async let coins = recoveryService.extendScanCoins(from: coinHorizon)
-        async let vouchers = recoveryService.extendScanVouchers(from: voucherHorizon)
-        return try await (coins, vouchers)
+    public func deepSearchBackup() async {
+        await recoveryService.deepSearch()
+    }
+
+    public func markBackupAsCompleted() async {
+        await recoveryService.markAsCompleted()
+    }
+
+    public nonisolated func subscribeAccountBackupStatus() -> AnyAsyncSequence<CoinageAccountBackupStatus> {
+        installationRegistrar.subscribeStatus()
     }
 
     public func recoverSpentCoinsOnChain() async throws -> BigUInt {
@@ -425,6 +456,17 @@ extension CoinageService: CoinageServicing {
             spentCoins: spentCoins,
             context: context
         )
+    }
+}
+
+// MARK: - Installation backup
+
+private extension CoinageService {
+    /// Registers this installation and recovers the previous ones. `setup(with:)` may run again to update
+    /// the asset precision; both services run once per process and ignore later starts.
+    func startInstallationBackup() async {
+        installationRegistrar.start()
+        await recoveryService.start()
     }
 }
 

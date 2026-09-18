@@ -65,6 +65,7 @@ const TRAIT_MODULE_MAP: &[(&str, &str)] = &[
     ("Payment", "payment"),
     ("Permissions", "permissions"),
     ("Preimage", "preimage"),
+    ("Renderer", "renderer"),
     ("ResourceAllocation", "resource_allocation"),
     ("Signing", "signing"),
     ("StatementStore", "statement_store"),
@@ -184,10 +185,19 @@ mod tests {
             name: name.to_string(),
             kind: MethodKind::Subscription,
             params: vec![],
-            return_type: ReturnType::Subscription(TypeRef::Named {
-                name: "ItemWrapper".to_string(),
-                args: vec![],
-            }),
+            return_type: ReturnType::Subscription {
+                item: TypeRef::Named {
+                    name: "ItemWrapper".to_string(),
+                    args: vec![],
+                },
+                interrupt: TypeRef::Named {
+                    name: "CallError".to_string(),
+                    args: vec![TypeRef::Named {
+                        name: "GenericError".to_string(),
+                        args: vec![],
+                    }],
+                },
+            },
             wire: WireAttrs {
                 host_initiated: false,
                 id: Some(start_id),
@@ -727,7 +737,10 @@ mod tests {
             // `ReqWrapper` must be a real versioned wrapper here: otherwise the
             // request-parameter check fires first and this stops exercising the
             // response check it is named for.
-            types: vec![versioned_wrapper_def("ReqWrapper")],
+            types: vec![
+                versioned_wrapper_def("ReqWrapper"),
+                versioned_wrapper_def("ErrWrapper"),
+            ],
             framework_types: Vec::new(),
         };
         let err = generate_dispatcher(&api).expect_err("primitive response must error");

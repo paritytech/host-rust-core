@@ -2,6 +2,7 @@ package io.paritytech.polkadotapp.app.root.presentation.root
 
 import android.content.Intent
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -24,6 +25,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import io.paritytech.polkadotapp.app.BuildConfig
 import io.paritytech.polkadotapp.app.R
 import io.paritytech.polkadotapp.app.root.navigation.NavigationHolder
+import io.paritytech.polkadotapp.app.root.presentation.debug.reportIssue.DebugScreenshotObserver
 import io.paritytech.polkadotapp.app.root.presentation.root.compose.DevResetOverlay
 import io.paritytech.polkadotapp.app.root.presentation.root.compose.RootNavBarHost
 import io.paritytech.polkadotapp.app.root.presentation.root.compose.chatoverlay.ChatExtensionOverlayHost
@@ -35,6 +37,8 @@ import io.paritytech.polkadotapp.common.presentation.notification.AppNotifier
 import io.paritytech.polkadotapp.common.presentation.notification.error
 import io.paritytech.polkadotapp.common.presentation.resources.ContextManager
 import io.paritytech.polkadotapp.common.presentation.screens.ObserveViewModelEvents
+import io.paritytech.polkadotapp.common.utils.FeatureOption
+import io.paritytech.polkadotapp.common.utils.isEnabled
 import io.paritytech.polkadotapp.common.utils.observe
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.ChainHealthBar
@@ -55,6 +59,9 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
 
     @Inject
     lateinit var appNotifier: AppNotifier
+
+    @Inject
+    lateinit var router: RootRouter
 
     private val viewModel by viewModels<RootViewModel>()
 
@@ -82,6 +89,9 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
         handleDeeplinkOutcome()
         if (BuildConfig.DEBUG) {
             setupDevResetOverlay()
+        }
+        if (FeatureOption.DEBUG_MENU.isEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            lifecycle.addObserver(DebugScreenshotObserver(this, navController, router, appNotifier))
         }
         setupRootNavBar()
         setupAppNotificationOverlay()
@@ -147,7 +157,6 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
     }
 
     private fun setupChainHealthBar() {
-        // Overlaid on top like a system indicator (activity_root.xml FrameLayout).
         findViewById<ComposeView>(R.id.connectionStatusBanner).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
             setContent {
@@ -158,15 +167,11 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
             }
         }
 
-        // Push screen content below the bar by inflating its top inset; backgrounds still draw
-        // full-bleed behind it.
         val navHost = findViewById<View>(R.id.rootNavHost)
         val barHeightPx = (ChainHealthBarDefaults.ContentHeight.value * resources.displayMetrics.density).roundToInt()
 
-        // Insets reach the subtree two ways and both have to inflate, or the content moves between them.
-        // Animation frames (the IME sliding in) are dispatched through the animation callback and never
-        // pass through the apply listener, so without the callback below the content springs up by the
-        // bar height for the length of the keyboard animation and drops back once it settles.
+        // Keyboard animation frames reach the subtree through this callback and never through the apply
+        // listener below, so both have to inflate or the content jumps while the IME slides in.
         ViewCompat.setWindowInsetsAnimationCallback(
             navHost,
             object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
@@ -182,11 +187,9 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
         }
     }
 
+    // Only the status-bar top: systemBars picks this up via its union, while setting the compound type
+    // here would clobber navigationBars.top and push the chat input row upward.
     private fun WindowInsetsCompat.inflateTopInsets(extraTopPx: Int): WindowInsetsCompat {
-        // Inflate only the status-bar top. systemBars/safeDrawing pick this up via their union (so
-        // top-bar screens still clear the bar), while the bottom navigation-bar inset is left intact.
-        // Setting the compound systemBars type here would also clobber navigationBars.top and push
-        // bottom-anchored content (e.g. the chat input row) upward.
         val statusBars = getInsets(WindowInsetsCompat.Type.statusBars())
         return WindowInsetsCompat.Builder(this)
             .setInsets(
@@ -196,14 +199,13 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
             .build()
     }
 
-    // The global navigation bar: a bottom overlay shown on every screen. Self-contained — it resolves its
-    // own view-model and holders; the activity only places it.
     private fun setupRootNavBar() {
         val composeView = ComposeView(this).apply {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
             setContent {
+                val chainsHealth by viewModel.chainsHealth.collectAsStateWithLifecycle()
                 PolkadotTheme {
-                    RootNavBarHost(navController = navController)
+                    RootNavBarHost(navController = navController, chainsHealth = chainsHealth)
                 }
             }
         }

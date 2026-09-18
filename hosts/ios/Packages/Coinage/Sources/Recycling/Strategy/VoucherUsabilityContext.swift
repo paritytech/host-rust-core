@@ -1,7 +1,6 @@
 import Foundation
 
-/// Inputs the voucher-usability predicate needs beyond the voucher itself: the current time (for the
-/// unload-delay escape hatch) and ring capacities per denomination.
+/// Current time and ring capacities used to evaluate voucher readiness.
 public struct VoucherUsabilityContext: Equatable {
     /// Capacity (max provable ring members) keyed by voucher exponent.
     public let ringCapacities: [Int16: Int]

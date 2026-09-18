@@ -11,8 +11,8 @@ import ChainRegistry
 enum SsoTestData {
     static let entropyManager: RootEntropyManaging = {
         let keychain = InMemoryKeychain()
-        let store = MockEntropyIdStore()
-        let manager = RootEntropyManager(keychain: keychain, entropyIdStore: store)
+        let store = MockInstallationKeyIdStore()
+        let manager = RootEntropyManager(keychain: keychain, installationKeyIdStore: store)
         let entropy = Data.random(of: 32)!
         try! manager.createRootEntropy(entropy)
         return manager

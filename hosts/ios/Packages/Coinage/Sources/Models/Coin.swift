@@ -4,7 +4,7 @@ import SubstrateSdk
 
 public struct Coin: Hashable, CoinageDerivable, Sendable {
     public let exponent: Int16 // 2^n
-    public let derivationIndex: DerivationIndex
+    public let derivationIndex: CoinageKeyIndex
 
     /// On-chain age. `nil` means the coin was never seen on chain; `0` is fresh from unload/split.
     public let age: Int16?
@@ -16,16 +16,25 @@ public struct Coin: Hashable, CoinageDerivable, Sendable {
     /// Whether the coin has been handed off to a peer, and how far along.
     public var handoffMark: CoinHandoffMark = .none
 
+    /// Fungibility of the recycler this coin came out of, as a percentage in `0...100`.
+    /// `nil` when it is not known — a coin recovered from chain state carries no record of it.
+    public let recyclerFungibility: UInt8?
+
+    /// Ordered provenance of this coin — the operations that produced it.
+    public let hops: [Hop]
+
     /// On-chain public key (account id) derived from `derivationIndex`, cached so the durability
     /// layer never re-derives it on the fly.
     public let publicKey: PublicKey
 
     public init(
         exponent: Int16,
-        derivationIndex: DerivationIndex,
+        derivationIndex: CoinageKeyIndex,
         age: Int16?,
         isOnchain: Bool = false,
         handoffMark: CoinHandoffMark = .none,
+        recyclerFungibility: UInt8? = nil,
+        hops: [Hop] = [],
         publicKey: PublicKey
     ) {
         self.exponent = exponent
@@ -33,6 +42,8 @@ public struct Coin: Hashable, CoinageDerivable, Sendable {
         self.age = age
         self.isOnchain = isOnchain
         self.handoffMark = handoffMark
+        self.recyclerFungibility = recyclerFungibility
+        self.hops = hops
         self.publicKey = publicKey
     }
 
@@ -43,6 +54,8 @@ public struct Coin: Hashable, CoinageDerivable, Sendable {
             age: age,
             isOnchain: isOnchain,
             handoffMark: handoffMark,
+            recyclerFungibility: recyclerFungibility,
+            hops: hops,
             publicKey: publicKey
         )
     }
@@ -54,6 +67,8 @@ public struct Coin: Hashable, CoinageDerivable, Sendable {
             age: age,
             isOnchain: isOnchain,
             handoffMark: handoffMark,
+            recyclerFungibility: recyclerFungibility,
+            hops: hops,
             publicKey: publicKey
         )
     }
@@ -65,6 +80,8 @@ public struct Coin: Hashable, CoinageDerivable, Sendable {
             age: age,
             isOnchain: isOnchain,
             handoffMark: handoffMark,
+            recyclerFungibility: recyclerFungibility,
+            hops: hops,
             publicKey: publicKey
         )
     }
@@ -79,8 +96,8 @@ extension Coin: Operation_iOS.Identifiable {
 public extension Coin {
     /// The storage identifier for a coin at `derivationIndex`. Single source of truth so no
     /// call site hand-writes the string form.
-    static func identifier(for derivationIndex: DerivationIndex) -> String {
-        "\(derivationIndex)"
+    static func identifier(for derivationIndex: CoinageKeyIndex) -> String {
+        derivationIndex.toString()
     }
 
     var hasEverBeenOnChain: Bool {

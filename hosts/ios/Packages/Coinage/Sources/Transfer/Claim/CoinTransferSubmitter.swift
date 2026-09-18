@@ -10,14 +10,9 @@ protocol CoinTransferSubmitting: Sendable {
     ///
     /// - Parameters:
     ///   - senderPrivateKey: Private key of the source coin owner.
-    ///   - senderPublicKey: Public key of the source coin owner.
     ///   - destinationCoin: Pre-allocated destination coin to transfer into.
     /// - Returns: The destination coin on success.
-    func submitTransfer(
-        senderPrivateKey: Data,
-        senderPublicKey: Data,
-        destinationCoin: Coin
-    ) async throws -> Coin
+    func submitTransfer(senderPrivateKey: Data, destinationCoin: Coin) async throws -> Coin
 }
 
 /// Default implementation that builds and submits a `CoinagePallet.Calls.Transfer` extrinsic.
@@ -33,15 +28,8 @@ final class CoinTransferSubmitter: CoinTransferSubmitting, @unchecked Sendable {
         self.extrinsicMonitor = extrinsicMonitor
     }
 
-    func submitTransfer(
-        senderPrivateKey: Data,
-        senderPublicKey: Data,
-        destinationCoin: Coin
-    ) async throws -> Coin {
-        let coinWallet = try CoinDerivedWallet(
-            privateKey: senderPrivateKey,
-            publicKey: senderPublicKey
-        )
+    func submitTransfer(senderPrivateKey: Data, destinationCoin: Coin) async throws -> Coin {
+        let coinWallet = DynamicDerivedWallet(secretKeyProvider: { senderPrivateKey })
         let origin = try originFactory.createAsCoinOrigin(for: coinWallet)
         let call = CoinagePallet.Calls.Transfer(to: destinationCoin.publicKey)
         let builder: ExtrinsicBuilderClosure = { builder in

@@ -1,6 +1,8 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.recycling
 
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerIndex
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher.Location
@@ -10,14 +12,19 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.params
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.preClassifyCoins
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.preClassifyVouchers
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageAssetState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TrackedCoin
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TrackedVoucher
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito.mock
 import java.math.BigInteger
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Instant
 
 private const val FULL_RING = 767
 
@@ -54,8 +61,8 @@ class CoinagePreClassificationTest {
         val failed = coinOf(age = Coin.Age.Unknown, onChain = false, derivationIndex = 2)
 
         val buckets = listOf(
-            tracked(arriving, minterStatus = CoinageTransactionStatus.PENDING),
-            tracked(failed, minterStatus = CoinageTransactionStatus.FAILURE),
+            tracked(arriving, minterStatus = DurableTxStatus.PENDING),
+            tracked(failed, minterStatus = DurableTxStatus.FAILURE),
         ).preClassifyCoins()
 
         assertEquals(listOf(arriving), buckets.minting)
@@ -70,7 +77,7 @@ class CoinagePreClassificationTest {
     fun `a coin whose mint finalized before presence caught up is still minting`() {
         val coin = coinOf(age = Coin.Age.Unknown, onChain = false)
 
-        val buckets = listOf(tracked(coin, minterStatus = CoinageTransactionStatus.FINALIZED_SUCCESS))
+        val buckets = listOf(tracked(coin, minterStatus = DurableTxStatus.FINALIZED_SUCCESS))
             .preClassifyCoins()
 
         assertEquals(listOf(coin), buckets.minting)
@@ -82,7 +89,7 @@ class CoinagePreClassificationTest {
      */
     @Test
     fun `a free coin is in the total for every minter status but failure`() {
-        val counted = CoinageTransactionStatus.entries - CoinageTransactionStatus.FAILURE
+        val counted = DurableTxStatus.entries - DurableTxStatus.FAILURE
 
         counted.forEach { status ->
             val onChain = coinOf(age = Coin.Age.Known(3), onChain = true, derivationIndex = 1)
@@ -99,7 +106,7 @@ class CoinagePreClassificationTest {
     fun `a coin whose mint failed is in no bucket`() {
         val failed = coinOf(age = Coin.Age.Unknown, onChain = false)
 
-        val buckets = listOf(tracked(failed, minterStatus = CoinageTransactionStatus.FAILURE)).preClassifyCoins()
+        val buckets = listOf(tracked(failed, minterStatus = DurableTxStatus.FAILURE)).preClassifyCoins()
 
         assertTrue(buckets.total.isEmpty())
     }
@@ -116,7 +123,7 @@ class CoinagePreClassificationTest {
 
     @Test
     fun `min privacy makes an in-recycler voucher usable at once`() {
-        val voucher = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), recyclerMembers = 0))
+        val voucher = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), recyclerMembers = 0, enteredAt = null))
 
         val buckets = listOf(trackedVoucher(voucher)).preClassifyVouchers(minPrivacy, context())
 
@@ -124,13 +131,32 @@ class CoinagePreClassificationTest {
     }
 
     @Test
-    fun `max privacy holds an in-recycler voucher back until the ring is full`() {
-        val partial = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), recyclerMembers = FULL_RING - 1))
+    fun `max privacy holds an in-recycler voucher back below ninety percent without a timestamp`() {
+        val partial = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), recyclerMembers = 690, enteredAt = null))
 
         val buckets = listOf(trackedVoucher(partial)).preClassifyVouchers(maxPrivacy, context())
 
         assertEquals(listOf(partial), buckets.gainingPrivacy)
         assertTrue(buckets.usable.isEmpty())
+    }
+
+    @Test
+    fun `max privacy releases at ninety percent of the included ring`() {
+        val vouchers = listOf(690, 691).map { members ->
+            voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), members, enteredAt = null))
+        }
+
+        assertEquals(listOf(false, true), vouchers.map { maxPrivacy.isVoucherUsable(it, context()) })
+    }
+
+    @Test
+    fun `balanced releases at twenty percent of the included ring`() {
+        val balanced = ParametricRecyclingStrategy(RecyclingStrategyType.BALANCED.params, forcedAgeOf(FORCED_AGE))
+        val vouchers = listOf(153, 154).map { members ->
+            voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), members, enteredAt = null))
+        }
+
+        assertEquals(listOf(false, true), vouchers.map { balanced.isVoucherUsable(it, context()) })
     }
 
     @Test
@@ -147,7 +173,7 @@ class CoinagePreClassificationTest {
     fun `a voucher whose mint finalized before its location synced is still minting`() {
         val voucher = voucherOf(Location.Unknown)
 
-        val buckets = listOf(trackedVoucher(voucher, CoinageTransactionStatus.FINALIZED_SUCCESS))
+        val buckets = listOf(trackedVoucher(voucher, DurableTxStatus.FINALIZED_SUCCESS))
             .preClassifyVouchers(minPrivacy, context())
 
         assertEquals(listOf(voucher), buckets.minting)
@@ -157,7 +183,7 @@ class CoinagePreClassificationTest {
     fun `a voucher whose mint failed is in no bucket`() {
         val voucher = voucherOf(Location.Unknown)
 
-        val buckets = listOf(trackedVoucher(voucher, CoinageTransactionStatus.FAILURE))
+        val buckets = listOf(trackedVoucher(voucher, DurableTxStatus.FAILURE))
             .preClassifyVouchers(minPrivacy, context())
 
         assertTrue(buckets.total.isEmpty())
@@ -165,7 +191,7 @@ class CoinagePreClassificationTest {
 
     @Test
     fun `buckets never overlap`() {
-        val usable = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), FULL_RING), ringVrfKeyIndex = 1)
+        val usable = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), FULL_RING, enteredAt = null), ringVrfKeyIndex = 1)
         val onboarding = voucherOf(Location.Onboarding, ringVrfKeyIndex = 2)
 
         val buckets = listOf(trackedVoucher(usable), trackedVoucher(onboarding))
@@ -175,35 +201,73 @@ class CoinagePreClassificationTest {
         assertEquals(2, buckets.total.size)
     }
 
-    private fun context() = FetchedVoucherUsabilityContext(ringCapacities = mapOf(ValueExponent(1) to FULL_RING))
+    @Test
+    fun `timed readiness requires thirty two members and ten full minutes in both modes`() {
+        data class Case(val members: Int, val elapsed: Duration, val ready: Boolean)
+        val cases = listOf(
+            Case(31, 10.minutes, false),
+            Case(32, 10.minutes - 1.milliseconds, false),
+            Case(32, 10.minutes, true),
+        )
+        val enteredAt = Instant.fromEpochMilliseconds(0)
+        for (type in listOf(RecyclingStrategyType.BALANCED, RecyclingStrategyType.MAX_PRIVACY)) {
+            val strategy = ParametricRecyclingStrategy(type.params, forcedAgeOf(FORCED_AGE))
+            for (case in cases) {
+                val voucher = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), case.members, enteredAt))
+                assertEquals("$type: $case", case.ready, strategy.isVoucherUsable(voucher, context(enteredAt + case.elapsed)))
+            }
+        }
+    }
+
+    @Test
+    fun `saturation releases small rings before either timed requirement`() {
+        val voucher = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), 9, enteredAt = null))
+
+        assertEquals(true, maxPrivacy.isVoucherUsable(voucher, context(capacity = 10)))
+    }
+
+    @Test
+    fun `maturity does not release transaction restricted vouchers`() {
+        val voucher = voucherOf(Location.InRecycler(RecyclerIndex(BigInteger.ONE), 32, Instant.fromEpochMilliseconds(0)))
+        val held = TrackedVoucher(voucher, CoinageAssetState(handedOff = true, minterStatus = null, consumerStatus = null))
+        val buckets = listOf(held).preClassifyVouchers(maxPrivacy, context(Instant.fromEpochMilliseconds(600000)))
+
+        assertEquals(emptyList<RecyclerVoucher>(), buckets.total)
+    }
+
+    private fun context(now: Instant = Instant.fromEpochMilliseconds(0), capacity: Int = FULL_RING) =
+        FetchedVoucherUsabilityContext(ringCapacities = mapOf(ValueExponent(1) to capacity), now = now)
 
     private fun tracked(
         coin: Coin,
-        minterStatus: CoinageTransactionStatus? = null,
+        minterStatus: DurableTxStatus? = null,
         state: CoinageAssetState = CoinageAssetState(false, minterStatus, null),
     ) = TrackedCoin(coin, state)
 
     private fun trackedVoucher(
         voucher: RecyclerVoucher,
-        minterStatus: CoinageTransactionStatus = CoinageTransactionStatus.PENDING,
+        minterStatus: DurableTxStatus = DurableTxStatus.PENDING,
     ) = TrackedVoucher(
         voucher,
         CoinageAssetState(handedOff = false, minterStatus = minterStatus, consumerStatus = null),
     )
 
     private fun coinOf(age: Coin.Age, onChain: Boolean, derivationIndex: Int = 0) = Coin(
-        derivationIndex = derivationIndex,
+        derivationIndex = testKey(derivationIndex),
         valueExponent = ValueExponent(1),
         age = age,
         isOnChain = onChain,
         accountId = mock(),
+        provenance = CoinProvenance.UNKNOWN,
     )
 
     private fun voucherOf(location: Location, ringVrfKeyIndex: Int = 0) = RecyclerVoucher(
-        ringVrfKeyIndex = ringVrfKeyIndex,
+        ringVrfKeyIndex = testKey(ringVrfKeyIndex),
         ringVrfPublicKey = mock(),
         recyclerValue = ValueExponent(1),
         location = location,
+        recyclerFungibility = RecyclerFungibility.NONE,
+        maxRecyclerFungibility = RecyclerFungibility.NONE,
     )
 
     private companion object {

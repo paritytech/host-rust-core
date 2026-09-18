@@ -9,12 +9,6 @@
             "state": "translated",
             "value": "Dismiss"
           }
-        },
-        "es-ES": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Descartar"
-          }
         }
       }
     },
@@ -34,24 +28,6 @@
                 "stringUnit": {
                   "state": "translated",
                   "value": "+%lld more"
-                }
-              }
-            }
-          }
-        },
-        "es-ES": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "+%lld más"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "+%lld más"
                 }
               }
             }

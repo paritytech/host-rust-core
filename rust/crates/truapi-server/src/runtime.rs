@@ -7,6 +7,8 @@
 //! permission cache layer). Methods with no platform backing return
 //! `CallError::unavailable()`.
 
+/// Connection-scoped, host-fed action streams.
+pub(crate) mod actions;
 mod allowances;
 /// Core-owned auth/session UI state machine.
 pub(crate) mod auth_state;
@@ -15,10 +17,13 @@ mod authority;
 pub(crate) mod bulletin_rpc;
 mod capabilities;
 mod chat;
+mod dotns_lookup;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
+pub(crate) mod product_manifest;
 mod product_subtree;
+mod renderer;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;
@@ -41,31 +46,42 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
+pub(crate) use actions::ActionChannel;
 use authority::{AuthorityCancelError, AuthoritySession};
 pub(crate) use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
-pub(crate) use chat::{ChatConnection, chat_platform_for};
+pub(crate) use chat::chat_platform_for;
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
+pub(crate) use renderer::renderer_access_for;
 pub(crate) use services::RuntimeServices;
-#[cfg(not(target_arch = "wasm32"))]
-pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, establish_pairing,
-    respond_to_pairing, resume_pairing,
+    LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, disconnect_paired_host,
+    establish_pairing, respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
+#[cfg(not(target_arch = "wasm32"))]
+pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 use tracing::{instrument, warn};
-use truapi::api::Chat;
+use truapi::api::{Chat, Pocket, Renderer};
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
-    HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
-    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
-    HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+    HostChatActionSubscribeError, HostChatActionSubscribeItem, HostChatActionSubscribeRequest,
+    HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
+    HostChatListSubscribeError, HostChatListSubscribeItem, HostChatListSubscribeRequest,
+    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+};
+use truapi::versioned::pocket::{
+    HostPocketListSubscribeError, HostPocketListSubscribeItem, HostPocketListSubscribeRequest,
+    HostPocketRemoveCardError, HostPocketRemoveCardRequest, HostPocketRemoveCardResponse,
 };
 use truapi::versioned::preimage::RemotePreimageSubmitError;
+use truapi::versioned::renderer::{
+    HostRendererActionSubscribeError, HostRendererActionSubscribeItem,
+    HostRendererActionSubscribeRequest,
+};
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 use truapi_platform::{
     AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
@@ -82,6 +98,7 @@ use crate::host_logic::permissions::PermissionsService;
 use crate::host_logic::product_account::{
     derivation_index_bytes, derive_product_public_key, public_key_from_address,
 };
+use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
 use crate::host_logic::session::SessionState;
@@ -240,7 +257,9 @@ pub struct ProductRuntimeHost {
     /// Stable per-product-runtime id used to scope long-lived chain follow
     /// operation ids within one shared host runtime.
     core_instance: u64,
-    chat: Arc<ChatConnection>,
+    chat: Arc<ActionChannel<HostChatActionSubscribeItem>>,
+    renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
+    pocket_platform: Option<Arc<dyn truapi_platform::PocketPlatform>>,
 }
 
 impl ProductRuntimeHost {
@@ -262,6 +281,8 @@ impl ProductRuntimeHost {
             product,
             core_instance,
             chat: adapters.chat,
+            renderer: adapters.renderer,
+            pocket_platform: adapters.pocket_platform,
         }
     }
 
@@ -369,11 +390,13 @@ impl ProductRuntimeHost {
             host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
+            host_config.asset_hub_chain_genesis_hash,
             spawner.clone(),
         );
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let core_instance = services.next_core_instance();
-        let chat = Arc::new(ChatConnection::new());
+        let chat = Arc::new(ActionChannel::chat());
+        let renderer = Arc::new(ActionChannel::renderer());
         let host = Self {
             services,
             platform,
@@ -383,6 +406,8 @@ impl ProductRuntimeHost {
             product,
             core_instance,
             chat,
+            renderer,
+            pocket_platform: None,
         };
         (host, pairing_host)
     }
@@ -423,6 +448,77 @@ impl ProductRuntimeHost {
         product_id == "localhost"
             || product_id.starts_with("localhost:")
             || dot_ns_identifier == product_id
+    }
+
+    /// Resolve the grant under the caller's deadline and cancellation, answering
+    /// the uniform refusal if either fires.
+    ///
+    /// Called before `remote_authority_call`, not inside it. Inside, two timers
+    /// armed on the same budget race, and whichever fires first decides the
+    /// error the caller sees: this one answers the uniform refusal, that one
+    /// answers `Unknown` with a reason. The refusal shape would then depend on
+    /// scheduling. Bounded here instead, the gate is decided before the
+    /// authority call is made at all.
+    ///
+    /// Left to `remote_authority_call`, a deadline that expires during the
+    /// lookup surfaces as `Unknown { reason }`, while an already-cached target
+    /// that grants nothing answers immediately, so the error tag alone tells a
+    /// caller which targets this device has resolved before. That is the
+    /// enumeration the denial read was moved after the manifest to avoid,
+    /// arriving by another route. Expiry here is indistinguishable from
+    /// "granted nothing", like every other refusal on this path.
+    pub(crate) async fn bounded_cross_product_scope_target(
+        &self,
+        target: &str,
+        scope: Granted,
+        cx: &CallContext,
+    ) -> Option<String> {
+        let lookup = self.cross_product_scope_target(target, scope).fuse();
+        let cancelled = cx.cancel().cancelled().fuse();
+        pin_mut!(lookup, cancelled);
+        let Some(budget) = cx.timeout() else {
+            return futures::select! {
+                resolved = lookup => resolved,
+                _ = cancelled => None,
+            };
+        };
+        let deadline = futures_timer::Delay::new(budget).fuse();
+        pin_mut!(deadline);
+        futures::select! {
+            resolved = lookup => resolved,
+            _ = cancelled => None,
+            () = deadline => None,
+        }
+    }
+
+    /// The normalized id to act on when the calling product may reach `target`
+    /// under `scope`, or `None` when it may not.
+    ///
+    /// The caller's own id is not a cross-product access and consults no grant.
+    /// Any other product must name this caller in its manifest's
+    /// `trustedProducts` with `scope` or `all`.
+    ///
+    /// Returning the id rather than a bare yes keeps one canonical spelling for
+    /// the callers that go on to address the target — the grant and whatever it
+    /// admits are then decided against the same string.
+    pub(crate) async fn cross_product_scope_target(
+        &self,
+        target: &str,
+        scope: Granted,
+    ) -> Option<String> {
+        let normalized = normalize_product_identifier(target).ok()?;
+        if normalized == self.product_id() {
+            return Some(normalized);
+        }
+        product_manifest::grants_scope(
+            &self.services,
+            &*self.platform,
+            &self.product_id(),
+            &normalized,
+            scope,
+        )
+        .await
+        .then_some(normalized)
     }
 
     fn normalize_product_account_id(
@@ -481,9 +577,18 @@ impl ProductRuntimeHost {
         .map_err(|err| err.to_string())
     }
 
-    fn product_storage_key(&self, key: String) -> String {
-        ProductStorageKey::new(self.product.product_id.as_str(), key)
-            .expect("product runtime context was already validated")
+    /// The storage key `owner` holds `key` under.
+    ///
+    /// The owner is explicit because a read may be addressed at another product:
+    /// deriving it from `self` would hand a granted foreign read the caller's own
+    /// values instead of the ones it asked for.
+    ///
+    /// `owner` must already be normalized — either this product's validated id or
+    /// an id returned by [`Self::cross_product_scope_target`]. `ProductStorageKey`
+    /// re-applies the same normalization, so the key cannot fail to build.
+    fn product_storage_key(&self, owner: &str, key: String) -> String {
+        ProductStorageKey::new(owner, key)
+            .expect("storage key owner was already normalized")
             .encode()
     }
 
@@ -655,10 +760,28 @@ async fn account_access_authorization(
         return Ok(PermissionAuthorizationStatus::Authorized);
     }
 
+    // Both sides bare-labelled, matching the grant this decision overrides and
+    // the key `user_denied_account_access` reads back. A decision filed against
+    // the full target would not be found when the grant is resolved for a
+    // subname of it.
     let request = PermissionAuthorizationRequest::AccountAccess {
-        target_product_id: target_product_id.to_string(),
+        target_product_id: crate::host_logic::product_manifest::bare_product_label(
+            target_product_id,
+        )
+        .to_string(),
     };
-    let service = PermissionsService::new(platform, platform, requesting_product_id);
+    // Stored per product, not per executable, because that is the granularity a
+    // manifest grant uses: `dim2.dot`, `app.dim2.dot` and `worker.dim2.dot` are
+    // one grantee. A decision filed under the full id could be missed by the
+    // same product arriving under a subname it already owns, which would let a
+    // refused product keep a `context` grant by respelling itself. The prompt
+    // still names the id the user saw; only the slot it is filed under is the
+    // product's.
+    let service = PermissionsService::new(
+        platform,
+        platform,
+        crate::host_logic::product_manifest::bare_product_label(requesting_product_id),
+    );
     let cached = service
         .authorization_status(&request)
         .await
@@ -907,7 +1030,56 @@ impl ProductRuntimeHost {
         action: truapi::versioned::chat::HostChatActionSubscribeItem,
     ) -> Result<(), crate::host_core::ProductRuntimeError> {
         self.native_chat_platform()?;
-        self.chat.publish_action(action)
+        self.chat.publish(action)
+    }
+
+    /// Renderer access policy for this connection; see [`renderer_access_for`].
+    pub(crate) fn renderer_access(&self) -> Result<(), crate::host_core::ProductRuntimeError> {
+        renderer_access_for(self.product.execution_kind)
+    }
+
+    /// Take one core-held reference on this connection's product worker, for
+    /// a body the product is drawing. Pair every call with one
+    /// [`Self::release_worker_reference`].
+    pub(crate) fn acquire_worker_reference(&self) {
+        self.services
+            .worker_ledger
+            .acquire(&self.product.product_id);
+    }
+
+    /// Release one core-held reference on this connection's product worker.
+    pub(crate) fn release_worker_reference(&self) {
+        self.services
+            .worker_ledger
+            .release(&self.product.product_id);
+    }
+
+    /// End the renderer action stream this connection's product is reading.
+    pub(crate) fn detach_renderer(&self) {
+        self.renderer.detach();
+    }
+
+    /// Buffer one renderer action for this connection's product.
+    pub(crate) fn publish_renderer_action(
+        &self,
+        item: HostRendererActionSubscribeItem,
+    ) -> Result<(), crate::host_core::ProductRuntimeError> {
+        self.renderer_access()?;
+        self.renderer.publish(item)
+    }
+
+    /// Pocket access policy for this connection: the collection is reachable
+    /// only from a Worker execution with an active session, and only where the
+    /// host installed an adapter. The kind and session checks come first, so a
+    /// connection that may never reach Pocket is told `Denied` even on a host
+    /// that serves nothing.
+    fn pocket_platform<E>(&self) -> Result<Arc<dyn truapi_platform::PocketPlatform>, CallError<E>> {
+        if self.product.execution_kind != truapi_platform::ProductExecutionKind::Worker
+            || self.authority.session_state().current().is_none()
+        {
+            return Err(CallError::Denied);
+        }
+        self.pocket_platform.clone().ok_or(CallError::Unsupported)
     }
 }
 
@@ -956,30 +1128,31 @@ impl Chat for ProductRuntimeHost {
     }
 
     #[instrument(skip_all, fields(runtime.method = "chat.list_subscribe"))]
-    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
-        let Ok(platform) = self.chat_platform::<()>() else {
-            return Subscription::empty();
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostChatListSubscribeRequest,
+    ) -> Subscription<HostChatListSubscribeItem, CallError<HostChatListSubscribeError>> {
+        let platform = match self.chat_platform::<HostChatListSubscribeError>() {
+            Ok(platform) => platform,
+            Err(error) => return Subscription::interrupted(error),
         };
-        Subscription::new(Box::pin(
+        Subscription::new(
             platform
                 .subscribe_chat_rooms(&self.product)
-                .filter_map(|item| async {
-                    // TODO: preserve platform stream errors as terminal
-                    // subscription interrupts once subscription items can carry
-                    // in-stream failures. Until then a dropped error freezes the
-                    // product's room list on its last value, so record why.
-                    match item {
-                        Ok(item) => Some(HostChatListSubscribeItem::V1(item)),
-                        Err(error) => {
-                            warn!(
-                                reason = %error.reason,
-                                "chat room list platform stream failed"
-                            );
-                            None
-                        }
+                .map(|item| match item {
+                    Ok(item) => Ok(HostChatListSubscribeItem::V1(item)),
+                    Err(error) => {
+                        warn!(
+                            reason = %error.reason,
+                            "chat room list platform stream failed"
+                        );
+                        Err(CallError::HostFailure {
+                            reason: error.reason,
+                        })
                     }
                 }),
-        ))
+        )
     }
 
     #[instrument(skip_all, fields(runtime.method = "chat.post_message"))]
@@ -1009,13 +1182,92 @@ impl Chat for ProductRuntimeHost {
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostChatActionSubscribeItem> {
-        if self.chat_platform::<()>().is_err() {
-            return Subscription::empty();
+        _request: HostChatActionSubscribeRequest,
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<HostChatActionSubscribeError>> {
+        if let Err(error) = self.chat_platform::<HostChatActionSubscribeError>() {
+            return Subscription::interrupted(error);
         }
-        self.chat.subscribe_actions()
+        self.chat.subscribe()
     }
 }
+
+#[truapi_platform::async_trait]
+impl Renderer for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "renderer.action_subscribe"))]
+    async fn action_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostRendererActionSubscribeRequest,
+    ) -> Subscription<HostRendererActionSubscribeItem, CallError<HostRendererActionSubscribeError>>
+    {
+        if self.renderer_access().is_err() {
+            return Subscription::interrupted(CallError::Denied);
+        }
+        self.renderer.subscribe()
+    }
+}
+
+#[truapi::async_trait]
+impl Pocket for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "pocket.list_subscribe"))]
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostPocketListSubscribeRequest,
+    ) -> Subscription<HostPocketListSubscribeItem, CallError<HostPocketListSubscribeError>> {
+        let platform = match self.pocket_platform::<HostPocketListSubscribeError>() {
+            Ok(platform) => platform,
+            Err(error) => return Subscription::interrupted(error),
+        };
+        Subscription::new(
+            platform
+                .subscribe_pocket_cards(&self.product)
+                .map(|item| match item {
+                    Ok(item) => Ok(HostPocketListSubscribeItem::V1(item)),
+                    Err(error) => {
+                        warn!(
+                            reason = %error.reason,
+                            "pocket card list platform stream failed"
+                        );
+                        Err(CallError::HostFailure {
+                            reason: error.reason,
+                        })
+                    }
+                }),
+        )
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "pocket.remove_card"))]
+    async fn remove_card(
+        &self,
+        _cx: &CallContext,
+        request: HostPocketRemoveCardRequest,
+    ) -> Result<HostPocketRemoveCardResponse, CallError<HostPocketRemoveCardError>> {
+        let platform = self.pocket_platform()?;
+        let HostPocketRemoveCardRequest::V1(mut request) = request;
+        // A card id is a product-chosen label the host renders in its own
+        // chrome, so it is screened before the host ever sees it: trimmed,
+        // NFC-normalized, and rejected if it carries characters that let two
+        // distinct ids render identically.
+        request.card_id =
+            normalize_chat_identifier("cardId", &request.card_id).map_err(pocket_field_error)?;
+        platform
+            .remove_pocket_card(&self.product, request)
+            .await
+            .map(|()| HostPocketRemoveCardResponse::V1)
+            .map_err(|error| CallError::Domain(HostPocketRemoveCardError::V1(error)))
+    }
+}
+
+/// Report a rejected card id as a removal domain error.
+fn pocket_field_error(error: ChatFieldError) -> CallError<HostPocketRemoveCardError> {
+    CallError::Domain(HostPocketRemoveCardError::V1(
+        v01::HostPocketRemoveCardError::Unknown {
+            reason: error.to_string(),
+        },
+    ))
+}
+
 /// Report a rejected chat bot field as a bot-registration domain error.
 fn chat_register_bot_field_error(
     error: truapi_platform::ChatFieldError,

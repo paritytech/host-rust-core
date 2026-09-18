@@ -50,6 +50,8 @@ struct WalletBackupNotificationCard: View {
             Label {
                 Text(.BalanceSync.notificationTitle)
                     .typography(.titleLarge)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
             } icon: {
                 Image(.iconInfo20)
                     .renderingMode(.template)
@@ -58,9 +60,13 @@ struct WalletBackupNotificationCard: View {
             }
             .foregroundStyle(.fgWarning)
 
+            // The expandable layout measures the details with a proposed height, which would clip
+            // these to one line without the fixed vertical size.
             Text(.BalanceSync.notificationDescription)
                 .typography(.bodyMedium)
                 .foregroundStyle(.fgPrimary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
 
             Button { onWhyUpdate?() } label: {
                 HStack(spacing: 0) {

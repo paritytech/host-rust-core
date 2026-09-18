@@ -41,6 +41,13 @@
     },
     {
       "target" : {
+        "containerPath" : "container:Packages\/Revive",
+        "identifier" : "ReviveTests",
+        "name" : "ReviveTests"
+      }
+    },
+    {
+      "target" : {
         "containerPath" : "container:Packages\/CarParser",
         "identifier" : "CarParserTests",
         "name" : "CarParserTests"
@@ -78,10 +85,24 @@
       }
     },
     {
+      "skippedTests" : {
+        "suites" : [
+          {
+            "name" : "ClaimAssetServiceTests"
+          }
+        ]
+      },
       "target" : {
         "containerPath" : "container:Packages\/Coinage",
         "identifier" : "CoinageTests",
         "name" : "CoinageTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Packages\/DurableTransactions",
+        "identifier" : "DurableTransactionsTests",
+        "name" : "DurableTransactionsTests"
       }
     },
     {

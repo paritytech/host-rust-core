@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.AssetPublicKey
+import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerEntry
 import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionHash
 
@@ -28,3 +29,5 @@ internal fun LedgerEntry.logId(): String = coinageLogId(id, txHash, groupId)
 internal fun String.shortHash(): String = take(SHORT_HASH_LENGTH)
 
 internal fun AssetPublicKey.shortKey(): String = toString().shortHash()
+
+internal fun LedgerAsset.describe(): String = "${asset ?: kind}@${publicKey.shortKey()}"

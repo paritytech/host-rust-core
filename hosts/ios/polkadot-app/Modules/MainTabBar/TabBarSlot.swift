@@ -5,6 +5,7 @@ import PolkadotUI
 enum TabBarAction: Hashable {
     case scan
     case spaTabs
+    case connectionStatus
 }
 
 enum TabBarSlot: Equatable {
@@ -20,34 +21,52 @@ extension TabBarSlot {
         return item
     }
 
-    func makeBarItem(badge: DSTabBarItem.Badge?, spaTabCount: Int) -> DSTabBarItem {
+    func makeBarItem(badge: DSTabBarItem.Badge?, spaTabCount: Int, showsLabel: Bool) -> DSTabBarItem {
         switch self {
         case let .tab(item):
-            item.makeBarItem(badge: badge)
+            item.makeBarItem(badge: badge, showsLabel: showsLabel)
         case let .action(action):
-            action.makeBarItem(spaTabCount: spaTabCount)
+            action.makeBarItem(spaTabCount: spaTabCount, showsLabel: showsLabel)
         }
     }
 }
 
 extension TabBarAction {
-    func makeBarItem(spaTabCount: Int) -> DSTabBarItem {
+    func makeBarItem(spaTabCount: Int, showsLabel: Bool) -> DSTabBarItem {
         DSTabBarItem(
             content: content(spaTabCount: spaTabCount),
-            title: nil,
+            title: showsLabel ? title : nil,
             role: .action,
-            accessibilityLabel: accessibilityLabel(spaTabCount: spaTabCount)
+            accessibilityLabel: accessibilityLabel(spaTabCount: spaTabCount),
+            showsGlassBackground: showsGlassBackground
         )
     }
 }
 
 private extension TabBarAction {
+    var title: String? {
+        switch self {
+        case .scan: nil
+        case .spaTabs: String(localized: .tabApps)
+        case .connectionStatus: String(localized: .tabNetwork)
+        }
+    }
+
+    var showsGlassBackground: Bool {
+        switch self {
+        case .scan: true
+        default: false
+        }
+    }
+
     func content(spaTabCount: Int) -> DSTabBarItem.Content {
         switch self {
         case .scan:
             .icon(UIImage.tabScan.withRenderingMode(.alwaysTemplate))
         case .spaTabs:
             .tabsGlyph(count: spaTabCount)
+        case .connectionStatus:
+            .icon(DSTabBarConnectionGlyph.image)
         }
     }
 
@@ -57,6 +76,8 @@ private extension TabBarAction {
             String(localized: .Products.productTabsAccessibilityScanner)
         case .spaTabs:
             String(localized: .Products.productTabsAccessibilityOpenApps(spaTabCount))
+        case .connectionStatus:
+            String(localized: .Common.connectionStatusAccessibilityLabel)
         }
     }
 }

@@ -18,6 +18,7 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.ChatMessageSender
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatId
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessage
 import io.paritytech.polkadotapp.feature_coinage_api.domain.debug.CoinageDebugSettings
+import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentKey
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentPlanner
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentService
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.awaitTransferOutcome
@@ -53,6 +54,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.math.BigDecimal
+import java.util.UUID
 import java.util.concurrent.TimeoutException
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.seconds
@@ -177,12 +179,14 @@ class RealSendEnterAmountInteractor @Inject constructor(
     private suspend fun sendExternalPayment(recipient: AccountId, value: BigDecimal): Result<Unit> {
         val amount = asset().planksFromAmount(value)
 
+        val key = ExternalPaymentKey(origin = WALLET_PAYMENT_ORIGIN, id = UUID.randomUUID().toString())
+
         return externalPaymentService.initiatePayment(
-            origin = WALLET_PAYMENT_ORIGIN,
+            key = key,
             amount = amount,
             destination = recipient,
         )
-            .flatMap { paymentId -> externalPaymentService.awaitTransferOutcome(WALLET_PAYMENT_ORIGIN, paymentId) }
+            .flatMap { externalPaymentService.awaitTransferOutcome(key) }
             .logFailure("External payment failed")
     }
 

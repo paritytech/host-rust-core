@@ -1,0 +1,36 @@
+name: Update signing data
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 10 * * *" # 10:00 AM every day
+
+jobs:
+  update_signing_data:
+    # Runs match with readonly false, so it renews the certificates and
+    # profiles at Apple and pushes the encrypted result back to the match
+    # repository. force_for_new_devices is what picks up a newly registered
+    # device, so the daily run is how a device reaches an ad-hoc build.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup iOS Environment
+        uses: ./hosts/ios/.github/actions/install
+        with:
+          match_auth_required: "true"
+          match_repository_pat: ${{ secrets.FASTLANE_RW_PAT }}
+
+      - name: Update signing data
+        working-directory: hosts/ios
+        run: bundle exec fastlane update_signing_data
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}

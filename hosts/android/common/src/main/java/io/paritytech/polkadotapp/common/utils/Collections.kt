@@ -26,6 +26,15 @@ inline fun <K, V, R> Map<K, V>.mapValuesNotNull(crossinline mapper: (Map.Entry<K
  */
 fun <K, V> Map<K, V>.ensureKeysWithNullDefault(keys: Collection<K>): Map<K, V?> = keys.associateWith { this[it] }
 
+/**
+ * Every key of [keys] present, with [default] where this map has no entry for it.
+ *
+ * The counterpart to [ensureKeysWithNullDefault] for readers that already know what absence means — a
+ * counter the chain holds no entry for is a genuine zero, not an unknown.
+ */
+fun <K, V : Any> Map<K, V>.ensureKeysWithDefault(keys: Collection<K>, default: V): Map<K, V> =
+    keys.associateWith { this[it] ?: default }
+
 @Suppress("UNCHECKED_CAST")
 inline fun <K, V> Map<K, V?>.filterNotNull(): Map<K, V> {
     return filterValues { it != null } as Map<K, V>

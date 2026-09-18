@@ -4,6 +4,7 @@ import io.paritytech.polkadotapp.common.domain.model.DataByteArray
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.CoinAllocator
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.VoucherAllocator
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
@@ -25,8 +26,11 @@ private class RealCoinageTransaction(
     private val outputs = mutableListOf<OwnAsset>()
     private val handedOff = mutableListOf<OwnAsset>()
 
-    override suspend fun mintCoins(valueExponents: List<ValueExponent>): Result<List<Coin>> =
-        coinAllocator.allocateAll(valueExponents).onSuccess { coins ->
+    override suspend fun mintCoins(
+        valueExponents: List<ValueExponent>,
+        provenance: CoinProvenance
+    ): Result<List<Coin>> =
+        coinAllocator.allocateAll(valueExponents, provenance).onSuccess { coins ->
             outputs += coins.map { OwnAsset.Coin(it.derivationIndex) }
         }
 

@@ -14,9 +14,11 @@ final class SettingsInteractor {
     private let eventCenter: EventCenterProtocol
     private let chatContactDataProviderFactory: ChatContactDataProviderMaking
     private let recyclingStrategyProvider: any CoinageRecyclingStrategyProviding
+    private let tabBarLabelsStore: any TabBarLabelsProviding
     private var availabilityObserver: NSObjectProtocol?
     private var blockedContactsTask: Task<Void, Never>?
     private var privacyStrategyTask: Task<Void, Never>?
+    private var tabBarLabelsTask: Task<Void, Never>?
 
     init(
         logger: LoggerProtocol,
@@ -26,7 +28,8 @@ final class SettingsInteractor {
         notificationCenter: NotificationCenter = .default,
         eventCenter: EventCenterProtocol = EventCenter.shared,
         chatContactDataProviderFactory: ChatContactDataProviderMaking = ChatContactDataProviderFactory(),
-        recyclingStrategyProvider: any CoinageRecyclingStrategyProviding = CoinageRecyclingStrategyStore.shared
+        recyclingStrategyProvider: any CoinageRecyclingStrategyProviding = CoinageRecyclingStrategyStore.shared,
+        tabBarLabelsStore: any TabBarLabelsProviding = TabBarLabelsStore.shared
     ) {
         self.logger = logger
         self.mnemonicBackupHelper = mnemonicBackupHelper
@@ -36,6 +39,7 @@ final class SettingsInteractor {
         self.eventCenter = eventCenter
         self.chatContactDataProviderFactory = chatContactDataProviderFactory
         self.recyclingStrategyProvider = recyclingStrategyProvider
+        self.tabBarLabelsStore = tabBarLabelsStore
     }
 
     deinit {
@@ -44,6 +48,7 @@ final class SettingsInteractor {
         }
         blockedContactsTask?.cancel()
         privacyStrategyTask?.cancel()
+        tabBarLabelsTask?.cancel()
     }
 }
 
@@ -127,6 +132,18 @@ private extension SettingsInteractor {
             }
         }
     }
+
+    func subscribeToTabBarLabels() {
+        tabBarLabelsTask = Task { [weak self, tabBarLabelsStore, logger] in
+            do {
+                for try await isEnabled in tabBarLabelsStore.stream() {
+                    await self?.presenter?.didReceiveTabBarLabelsEnabled(isEnabled)
+                }
+            } catch {
+                logger.error("Tab bar labels subscription error: \(error)")
+            }
+        }
+    }
 }
 
 // MARK: - SettingsInteractorInputProtocol
@@ -134,6 +151,7 @@ private extension SettingsInteractor {
 extension SettingsInteractor: SettingsInteractorInputProtocol {
     func setup() {
         subscribeToPrivacyStrategy()
+        subscribeToTabBarLabels()
         configureAppVersion()
         subscribeToAvailabilityChanges()
         subscribeToBackupStatusChanges()
@@ -144,6 +162,10 @@ extension SettingsInteractor: SettingsInteractorInputProtocol {
 
     func savePrivacyStrategy(_ strategy: RecyclingStrategyType) {
         recyclingStrategyProvider.save(strategy: strategy)
+    }
+
+    func saveTabBarLabelsEnabled(_ isEnabled: Bool) {
+        tabBarLabelsStore.save(isEnabled: isEnabled)
     }
 
     func openMailApp() {

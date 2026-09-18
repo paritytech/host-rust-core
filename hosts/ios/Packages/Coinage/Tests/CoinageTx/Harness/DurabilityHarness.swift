@@ -1,27 +1,33 @@
+import DurableTransactions
+import DurableTransactionsTestSupport
+@preconcurrency import ExtrinsicService
 import Foundation
 import os
-@preconcurrency import ExtrinsicService
 import SubstrateSdk
 @testable import Coinage
 
 /// Blocks a coinage extrinsic stays valid for by default in the harness.
 let harnessMortalPeriod: UInt32 = 128
 
-/// The whole durability subsystem over a ``FakeChain`` and an in-memory ledger.
+/// The chain the harness's coinage domain lives on.
+let harnessChainId: ChainId = "harness-chain"
+
+/// The whole durability subsystem over a ``CoinageFakeChain`` and an in-memory ledger.
 ///
-/// It wires the *real* registrar, async submission tracker and recovery pass — exactly as
-/// `CoinageService.make` does — over fakes, so the async submission path is exercised for real. The
-/// one deviation from production is deliberate: the
-/// tracker's release-time `onRecovery` only *records* a request rather than launching a pass, so
-/// passes run only when a scenario asks — which keeps every walk replayable and shrinkable.
+/// It wires the *real* engine pieces — registrar, async submission tracker and recovery pass — over the
+/// real coinage oracle and fakes, so the async submission path and the coinage rules are exercised for
+/// real. The one deviation from production is deliberate: the tracker's release-time `onRecovery` only
+/// *records* a request rather than launching a pass, so passes run only when a scenario asks — which
+/// keeps every walk replayable and shrinkable.
 ///
-/// ``crash()`` is the point of the harness: it drops every volatile set (the watched set, the
-/// registrar, the tracker, the pass) and builds the subsystem again over the same store, which is only
+/// ``crash()`` is the point of the harness: it drops every volatile set (the ownership set, the
+/// registrar, the tracker, the pass) and builds the subsystem again over the same stores, which is only
 /// possible because no volatile state is global. ``relaunch()`` additionally releases uncommitted
 /// handoff marks, the way a process start does.
 final class DurabilityHarness: @unchecked Sendable {
-    let chain: FakeChain
-    let chainFactory: FakeCoinageChainViewFactory
+    let chain: CoinageFakeChain
+    let chainFactory: FakePinnedChainViewFactory<CoinageChainState>
+    let stateReader: FakeCoinageStateReader
     let store: MockCoinageTxRepository
     let submitter: FakeExtrinsicSubmitter
     private let backgroundExecutor = StubBackgroundExecutor()
@@ -34,13 +40,15 @@ final class DurabilityHarness: @unchecked Sendable {
         initialState: CoinageChainState = .empty,
         submitter: FakeExtrinsicSubmitter = FakeExtrinsicSubmitter()
     ) {
-        chain = FakeChain(initialState: initialState)
-        chainFactory = FakeCoinageChainViewFactory(chain: chain)
+        chain = CoinageFakeChain(initialState: initialState)
+        chainFactory = FakePinnedChainViewFactory(chain: chain)
+        stateReader = FakeCoinageStateReader(chain: chain)
         store = MockCoinageTxRepository()
         self.submitter = submitter
         subsystem = Subsystem.build(
             store: store,
             chainFactory: chainFactory,
+            stateReader: stateReader,
             submitter: submitter,
             backgroundExecutor: backgroundExecutor
         )
@@ -50,18 +58,27 @@ final class DurabilityHarness: @unchecked Sendable {
     var recoveryRequestCount: Int { subsystem.recorder.count }
 
     /// Whether a live submission still owns the entry — the ledger lock a pass steps around.
-    func isOwnedBySubmission(_ id: CoinageTxId) -> Bool { subsystem.watched.isWatched(id) }
+    func isOwnedBySubmission(_ id: CoinageTxId) -> Bool { subsystem.owned.isOwned(id) }
 
     /// Reserves `assets` against being spent again, returning the commit handle. The two-phase form a
-    /// scenario drives directly (``handOff(_:)`` is the pre-commit-and-commit shorthand).
+    /// scenario drives directly (``handOff(_:)`` is the pre-commit-and-commit shorthand). The same check
+    /// the coinage service runs: a live claimant makes the pre-commit throw.
     func preCommitHandoff(_ assets: [OwnAsset]) async throws -> any CoinageHandoffCommit {
-        try await subsystem.registrar.preCommitHandoff(assets)
+        let keys = Set(assets.map(\.publicKey))
+        try await store.ledger.precommitHandOff(assets) { context in
+            let claimed = try context.filterClaimed(keys)
+            if let key = claimed.first {
+                throw CoinageTxError.handoffOfClaimedAsset(key.toHex())
+            }
+        }
+        return StoreHandoffCommit(assets: assets, ledger: store.ledger)
     }
 
     func crash() {
         subsystem = Subsystem.build(
             store: store,
             chainFactory: chainFactory,
+            stateReader: stateReader,
             submitter: submitter,
             backgroundExecutor: backgroundExecutor
         )
@@ -83,12 +100,14 @@ final class DurabilityHarness: @unchecked Sendable {
 
     /// A pass with one read failing throughout it, so every evidence path has an unknown to handle.
     func runPass(withFault fault: FuzzFault) async {
-        let healthy = chainFactory.faults
-        chainFactory.faults = await faults(healthy, with: fault)
+        let healthyChain = chainFactory.faults
+        let healthyCoinage = stateReader.faults
+        await applyFault(fault)
         // Not the fault-free `runPass`: a pass that cannot pin returns without a verdict, which is the
         // outcome this is here to produce.
         await subsystem.pass.run()
-        chainFactory.faults = healthy
+        chainFactory.faults = healthyChain
+        stateReader.faults = healthyCoinage
     }
 
     /// Runs the watchers to their release. A pass skips the entries submission still owns, so a
@@ -102,9 +121,9 @@ final class DurabilityHarness: @unchecked Sendable {
         }
         guard !ids.isEmpty else { return }
 
-        let watched = subsystem.watched
+        let owned = subsystem.owned
         var spins = 0
-        while ids.contains(where: { watched.isWatched($0) }) {
+        while ids.contains(where: { owned.isOwned($0) }) {
             // Inside the loop, not once before it: a tracker's `Task` may not have reached
             // `submitAndSubscribe` (and parked its watch) yet when this is first called, so releasing
             // is retried every spin until the park exists and the emit lands — otherwise the tracker
@@ -139,20 +158,28 @@ final class DurabilityHarness: @unchecked Sendable {
 
     // MARK: - Registration
 
-    /// Registers a batch atomically, tracks each through the real async tracker, and returns the ids.
-    /// Callers usually follow with ``releaseSubmissions()`` before running a pass.
+    /// Registers a batch atomically — the engine's rows and coinage's asset rows in one transaction —
+    /// tracks each through the real async tracker, and returns the ids. Callers usually follow with
+    /// ``releaseSubmissions()`` before running a pass.
     @discardableResult
     func submit(_ registrations: [CoinageTxRegistration]) async throws -> [CoinageTxId] {
-        let ids = try await subsystem.registrar.register(registrations)
+        let ledger = store.ledger
+        let assets = registrations.map(\.assets)
+        let ids = try await subsystem.registrar.register(registrations.map(\.durable)) { scope, ids in
+            try ledger.registerAssets(assets, for: ids, in: scope)
+        }
         pendingSubmissions.withLock { $0.append(contentsOf: ids) }
 
         let recorder = subsystem.recorder
         let baseline = submitter.submissionCount
         for (id, registration) in zip(ids, registrations) {
-            subsystem.tracker.trackTransaction(
-                harnessBuiltModel(hex: registration.txHash.toHex(includePrefix: true)),
-                transactionId: id
-            ) { recorder.record() }
+            let submission = DurableTxTracker.Submission(
+                model: harnessBuiltModel(hex: registration.txHash.toHex(includePrefix: true)),
+                transactionId: id,
+                chainId: harnessChainId,
+                submitter: submitter
+            )
+            subsystem.tracker.track(submission) { recorder.record() }
         }
 
         // Wait until the trackers have parked their watches, so submission index order matches
@@ -199,7 +226,7 @@ final class DurabilityHarness: @unchecked Sendable {
     @discardableResult
     func handOff(_ assets: [OwnAsset]) async -> Bool {
         do {
-            let commit = try await subsystem.registrar.preCommitHandoff(assets)
+            let commit = try await preCommitHandoff(assets)
             try await commit.commit()
             return true
         } catch {
@@ -211,7 +238,7 @@ final class DurabilityHarness: @unchecked Sendable {
 
     /// The alias storage key the collector would ask for this voucher, derived from the chain exactly
     /// as it derives it — `nil` when the voucher is in no ring, so it has no alias key.
-    func currentAliasKey(index: DerivationIndex) -> FakeAliasKey? {
+    func currentAliasKey(index: CoinageKeyIndex) -> FakeAliasKey? {
         let member = HarnessKeys.voucherMemberKey(index)
         let state = chain.bestHead.state
         guard let exponent = state.recyclerMembers[member],
@@ -222,38 +249,36 @@ final class DurabilityHarness: @unchecked Sendable {
 
     // MARK: - Faults
 
-    private func faults(_ base: ChainReadFaults, with fault: FuzzFault) async -> ChainReadFaults {
-        var next = base
+    private func applyFault(_ fault: FuzzFault) async {
         switch fault {
         case .coins:
-            next.statelessBlocks.formUnion([chain.finalizedHead.hash, chain.bestHead.hash])
+            stateReader.faults.statelessBlocks.formUnion([chain.finalizedHead.hash, chain.bestHead.hash])
         case .aliases:
-            await next.unreadableAliases.formUnion(allCurrentAliasKeys())
+            await stateReader.faults.unreadableAliases.formUnion(allCurrentAliasKeys())
         case .memberships:
-            next.membershipsUnreadable = true
+            stateReader.faults.membershipsUnreadable = true
         case .ringPositions:
-            next.ringPositionsUnreadable = true
+            stateReader.faults.ringPositionsUnreadable = true
         case .blocks:
-            next.everyBlockUnreadable = true
+            chainFactory.faults.everyBlockUnreadable = true
         case .outcomes:
             let entries = await (try? store.getAllEntries()) ?? []
-            next.unreadableOutcomes.formUnion(entries.map(\.txHash))
+            chainFactory.faults.unreadableOutcomes.formUnion(entries.map(\.txHash))
         case .pin:
-            next.pinFails = true
+            chainFactory.faults.pinFails = true
         }
-        return next
     }
 
     /// The current alias keys of every voucher any entry references, so an alias fault silences the
     /// reads a pass would actually make.
     private func allCurrentAliasKeys() async -> Set<FakeAliasKey> {
         let entries = await (try? store.getAllEntries()) ?? []
-        let indices = entries.flatMap { entry -> [DerivationIndex] in
-            let fromInputs = entry.inputs.compactMap { input -> DerivationIndex? in
+        let indices = entries.flatMap { entry -> [CoinageKeyIndex] in
+            let fromInputs = entry.inputs.compactMap { input -> CoinageKeyIndex? in
                 if case let .recyclerVoucher(index, _) = input { return index }
                 return nil
             }
-            let fromOutputs = entry.outputs.compactMap { output -> DerivationIndex? in
+            let fromOutputs = entry.outputs.compactMap { output -> CoinageKeyIndex? in
                 if case let .recyclerVoucher(index, _) = output { return index }
                 return nil
             }
@@ -275,36 +300,42 @@ private extension DurabilityHarness {
     }
 
     struct Subsystem {
-        let watched: CoinageTrackingTxSet
-        let registrar: CoinageTxRegistrar
-        let tracker: CoinageTxTracker
-        let pass: RecoveryPass
+        let owned: DurableTxOwnershipSet
+        let registrar: DurableTxRegistrar
+        let tracker: DurableTxTracker
+        let pass: DurableRecoveryPass
         let recorder: RecoveryRecorder
 
         static func build(
             store: MockCoinageTxRepository,
-            chainFactory: FakeCoinageChainViewFactory,
-            submitter: FakeExtrinsicSubmitter,
+            chainFactory: FakePinnedChainViewFactory<CoinageChainState>,
+            stateReader: FakeCoinageStateReader,
+            submitter _: FakeExtrinsicSubmitter,
             backgroundExecutor: StubBackgroundExecutor
         ) -> Subsystem {
-            let watched = CoinageTrackingTxSet()
+            let owned = DurableTxOwnershipSet()
             let recorder = RecoveryRecorder()
-            let registrar = CoinageTxRegistrar(
-                store: store,
-                validator: CoinageTxRegistrationValidator(),
-                watched: watched,
+            let oracles = TxCompletionOracleRegistry()
+            oracles.register(
+                CoinageResourceOracle(chainId: harnessChainId, ledger: store.ledger, reader: stateReader),
+                for: .coinage
+            )
+            let registrar = DurableTxRegistrar(store: store.durable, owned: owned, logger: nil)
+            let pass = DurableRecoveryPass(
+                store: store.durable,
+                chainFactory: chainFactory,
+                owned: owned,
+                oracles: oracles,
                 logger: nil
             )
-            let pass = RecoveryPass(store: store, chainFactory: chainFactory, watched: watched, logger: nil)
-            let tracker = CoinageTxTracker(
-                submitter: submitter,
-                store: store,
+            let tracker = DurableTxTracker(
+                store: store.durable,
                 chainFactory: chainFactory,
-                watched: watched,
+                owned: owned,
                 backgroundExecutor: backgroundExecutor,
                 logger: nil
             )
-            return Subsystem(watched: watched, registrar: registrar, tracker: tracker, pass: pass, recorder: recorder)
+            return Subsystem(owned: owned, registrar: registrar, tracker: tracker, pass: pass, recorder: recorder)
         }
     }
 }

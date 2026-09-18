@@ -1,7 +1,8 @@
 //! Unified [`Account`] trait.
 
 use crate::versioned::account::{
-    HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
+    HostAccountConnectionStatusSubscribeError, HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
     HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
     HostAccountGetRequest, HostAccountGetResponse, HostAccountListRingVrfKeysError,
@@ -35,8 +36,12 @@ pub trait Account: Send + Sync {
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem> {
-        Subscription::empty()
+        _request: HostAccountConnectionStatusSubscribeRequest,
+    ) -> Subscription<
+        HostAccountConnectionStatusSubscribeItem,
+        CallError<HostAccountConnectionStatusSubscribeError>,
+    > {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Retrieve a product-scoped account.
@@ -143,14 +148,22 @@ pub trait Account: Send + Sync {
     ///   message: "0x48656c6c6f",
     /// });
     /// assert(result.isErr(), "foreign createAccountProof unexpectedly succeeded:", result);
+    /// // RFC-0024 forbids a prompt fallback for a bearer proof made with a
+    /// // foreign key, so the only correct outcome is a refusal. Which refusal
+    /// // depends on how far the call gets: the session is consulted before the
+    /// // grant, so a signed-out host answers `Rejected` and a signed-in one
+    /// // without a `context` grant answers `NotAllowlisted`. Both are refusals
+    /// // and neither asks the user anything, which is what this demonstrates.
+    /// const refusal =
+    ///   result.error.tag === "Domain" && result.error.value.tag === "V1"
+    ///     ? result.error.value.value.tag
+    ///     : result.error.tag;
     /// assert(
-    ///   result.error.tag === "Domain" &&
-    ///     result.error.value.tag === "V1" &&
-    ///     result.error.value.value.tag === "NotAllowlisted",
-    ///   "foreign createAccountProof did not return NotAllowlisted:",
+    ///   refusal === "NotAllowlisted" || refusal === "Rejected",
+    ///   "foreign createAccountProof was not refused:",
     ///   result,
     /// );
-    /// console.log("foreign account proof refused without prompting");
+    /// console.log(`foreign account proof refused without prompting: ${refusal}`);
     /// ```
     #[wire(id = 3)]
     async fn create_account_proof(
@@ -198,7 +211,8 @@ pub trait Account: Send + Sync {
     /// Register a ring-VRF key owned by the calling product.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const PEOPLE_COLLECTION_ID =
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
@@ -206,7 +220,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.registerRingVrfKey({
     ///   index: { tag: "Index", value: 0 },
     ///   ring: {
-    ///     chainId: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+    ///     chainId: people.value.genesisHash,
     ///     junctions: [
     ///       { tag: "CollectionId", value: PEOPLE_COLLECTION_ID },
     ///     ],

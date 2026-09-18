@@ -2,7 +2,7 @@
 //!
 //! The TS host/client codec expects every request/response frame to be
 //! `Result<{Method}Response, CallError<{Method}Error>>`, and every
-//! subscription's `Interrupt` frame to be `Option<CallError<{Method}Error>>`
+//! subscription's `Interrupt` frame to be `Result<(), CallError<{Method}Error>>`
 //! — both leg types already-versioned wrappers (their own `V<N>` tag is the
 //! wire's only version signal), with which leg a frame carries named by the
 //! outer wire's own `messageType` byte rather than anything inside these
@@ -192,7 +192,7 @@ fn versioned_result_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<
 }
 
 /// Expected bytes for a subscription's `Interrupt`-leg payload ending with a
-/// domain error: `[Option::Some=0x01][CallError::Domain=0x00][encoded,
+/// domain error: `[Result::Err=0x01][CallError::Domain=0x00][encoded,
 /// already-versioned error wrapper]`.
 fn versioned_interrupt_err_payload<Wrapper: Encode>(wrapped_error: Wrapper) -> Vec<u8> {
     let mut expected = vec![0x01u8, 0x00u8];
@@ -252,6 +252,8 @@ fn assert_subscription_start_interrupts_error<Wrapper: Encode>(
         transport.clone(),
     ));
 
+    transport.wait_for(1, std::time::Duration::from_secs(5));
+
     let sent = transport.sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].request_id, request_id);
@@ -265,7 +267,7 @@ fn assert_subscription_start_interrupts_error<Wrapper: Encode>(
 }
 
 #[test]
-fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
+fn foreign_account_proof_encodes_a_domain_refusal() {
     let core = make_core();
     let request = v01::HostAccountCreateProofRequest {
         key_handle: v01::ProductAccountId {
@@ -301,10 +303,27 @@ fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
     assert_eq!(response.payload.trait_id, ids.trait_id);
     assert_eq!(response.payload.method_id, ids.method_id);
     assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
-    // RFC-0024 forbids a prompt fallback for bearer proofs made with a foreign key.
+    // RFC-0024 forbids a prompt fallback for a bearer proof made with a foreign
+    // key. What this pins is the wire shape of the refusal: an encoded domain
+    // error rather than a transport failure or a success.
+    //
+    // It does NOT pin "without confirmation", which the old name claimed. The
+    // stub platform answers `confirm_user_action` with `Ok(false)` and records
+    // nothing, and the test holds no handle to it, so a confirmation could be
+    // asked and denied and this would still pass. That property is asserted in
+    // `runtime::signing_host::tests` against a recording platform.
+    //
+    // It does NOT pin which refusal. `create_account_proof` consults the session
+    // before the grant (#655), so with no session this is the session guard's
+    // answer and says nothing about allowlisting. Giving the core a session does
+    // not fix that either: the authority picks one up asynchronously, so the
+    // assertion would race the dispatch. That the grant is what refuses a
+    // foreign handle is asserted in
+    // `runtime::signing_host::tests::a_foreign_proof_is_refused_when_the_owner_granted_nothing`
+    // and end to end by `make e2e-cross-product-ringvrf`.
     let expected =
         versioned_result_err_payload(truapi::versioned::account::HostAccountCreateProofError::V1(
-            v01::HostAccountCreateProofError::NotAllowlisted,
+            v01::HostAccountCreateProofError::Rejected,
         ));
     assert_eq!(response.payload.value, expected);
 }
@@ -423,7 +442,7 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
     assert_eq!(sent[0].payload.trait_id, ids.trait_id);
     assert_eq!(sent[0].payload.method_id, ids.method_id);
     assert_eq!(sent[0].payload.message_type, MESSAGE_TYPE_INTERRUPT);
-    assert_eq!(sent[0].payload.value.first(), Some(&0x01), "Option::Some");
+    assert_eq!(sent[0].payload.value.first(), Some(&0x01), "Result::Err");
     assert_eq!(
         sent[0].payload.value.get(1),
         Some(&0x03),
@@ -431,15 +450,65 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
     );
 
     let mut payload = &sent[0].payload.value[..];
-    let error =
-        Option::<CallError<truapi::versioned::payment::HostPaymentBalanceSubscribeError>>::decode(
-            &mut payload,
-        )
-        .expect("decode malformed interrupt error");
+    let interrupt = Result::<
+        (),
+        CallError<truapi::versioned::payment::HostPaymentBalanceSubscribeError>,
+    >::decode(&mut payload)
+    .expect("decode malformed interrupt error");
     assert!(payload.is_empty());
-    match error {
-        Some(CallError::MalformedFrame { reason }) => assert!(!reason.is_empty()),
+    match interrupt {
+        Err(CallError::MalformedFrame { reason }) => assert!(!reason.is_empty()),
         other => panic!("expected MalformedFrame interrupt, got {other:?}"),
+    }
+}
+
+/// A chain follow that cannot reach its provider must end with the failure,
+/// not with `Ok(())`. A clean end reaches the product as `complete`, which
+/// reads as a chain that simply stopped having blocks to report.
+#[test]
+fn a_chain_follow_that_cannot_start_interrupts_with_the_failure() {
+    let core = make_core();
+    let ids = subscription_ids("chain_follow_head_subscribe").expect("known subscription method");
+    let transport = Arc::new(RecordingTransport::default());
+    let value = truapi::versioned::chain::RemoteChainHeadFollowRequest::V1(
+        v01::RemoteChainHeadFollowRequest {
+            genesis_hash: vec![0u8; 32],
+            with_runtime: false,
+        },
+    )
+    .encode();
+
+    futures::executor::block_on(core.dispatch(
+        ProtocolMessage {
+            request_id: "p:chain-follow".into(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: MESSAGE_TYPE_START,
+                value,
+            },
+        },
+        transport.clone(),
+    ));
+
+    transport.wait_for(1, std::time::Duration::from_secs(5));
+
+    let sent = transport.sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].payload.message_type, MESSAGE_TYPE_INTERRUPT);
+
+    let mut payload = &sent[0].payload.value[..];
+    let interrupt = Result::<(), CallError<v01::GenericError>>::decode(&mut payload)
+        .expect("decode the follow interrupt");
+    assert!(payload.is_empty());
+    match interrupt {
+        Err(CallError::HostFailure { reason }) => {
+            assert!(
+                reason.contains("remote_chain_head_follow"),
+                "unexpected reason: {reason}"
+            );
+        }
+        other => panic!("expected the follow failure, got {other:?}"),
     }
 }
 
@@ -529,8 +598,8 @@ fn subscription_start_receive_stop_through_wire_boundary() {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
             message_type: MESSAGE_TYPE_START,
-            // No request wrapper for this method: an empty Start payload.
-            value: Vec::new(),
+            value: truapi::versioned::account::HostAccountConnectionStatusSubscribeRequest::V1
+                .encode(),
         },
     };
     futures::executor::block_on(core.dispatch(start, dyn_transport.clone()));

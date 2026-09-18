@@ -11,13 +11,14 @@ protocol AssetDetailsViewProtocol: ControllerBackedProtocol {
     func didReceive(lockedAmount: BalanceViewModelProtocol?)
     func didReceive(fundingStates: [AssetFundingStatusView.FundingState])
     func didReceive(isRecoveryInProgress: Bool)
+    func didReceive(isAccountBackupPending: Bool)
     func didShowBackupNotification()
     func didHideBackupNotification()
 
-    func didReceive(topUpLoading: Bool)
+    func didReceive(rampLoading action: RampAction, isLoading: Bool)
 
+    func didReceive(coinageBreakdown: CoinageBalanceBreakdownViewModel)
     #if TESTNET_FEATURE
-        func didReceive(coinageBreakdown: CoinageBalanceBreakdownViewModel)
         func didReceive(testnetTopUpLoading: Bool)
     #endif
 }
@@ -33,10 +34,10 @@ protocol AssetDetailsPresenterProtocol: AnyObject {
     func onBackupCancel()
     func onBackupWhyUpdate()
     func onTopUp()
+    func onWithdraw()
 
     #if TESTNET_FEATURE
         func onTestnetTopUp()
-        func onMakeAllVouchersReady()
     #endif
 }
 
@@ -47,11 +48,10 @@ protocol AssetDetailsInteractorInputProtocol: AnyObject {
     func triggerSync()
     func cancelBackupNotification()
 
-    func openTopUpProduct()
+    func openRampProduct(_ action: RampAction)
 
     #if TESTNET_FEATURE
         func topUp()
-        func makeAllVouchersReady()
     #endif
 }
 
@@ -62,15 +62,18 @@ protocol AssetDetailsInteractorOutputProtocol: AnyObject {
 
     func didReceive(price: PriceData?)
     func didReceive(fiatOnrampStatuses: Set<FiatOnrampTransactionStatusPayload>)
-    func didFail(recovery error: Error)
     func didReceive(isRecoveryInProgress: Bool)
-    func didCompleteRecovery()
-    func didClearBackupNotification()
+    func didReceive(isAccountBackupPending: Bool)
+    func didReceive(showsRecoveredBalance: Bool)
 
-    func didResolveTopUpProduct(_ result: Result<ProductPage, Error>)
+    func didResolveRampProduct(_ action: RampAction, result: Result<ProductPage, Error>)
 
+    /// One call, because the presenter rebuilds the whole breakdown on receipt: delivering the
+    /// figures and the holdings separately would render the new totals beside the previous
+    /// holdings, which is the mismatch `CoinageSummary` exists to prevent.
+    func didReceive(coinageAmounts: CoinageAmounts, holdings: CoinageHoldings)
+    func didReceive(denominationContext: DenominationBreakdownContext)
     #if TESTNET_FEATURE
-        func didReceive(coins: [TrackedCoin], vouchers: [TrackedVoucher])
         func didCompleteTopUp(_ result: Result<Void, Error>)
     #endif
 }

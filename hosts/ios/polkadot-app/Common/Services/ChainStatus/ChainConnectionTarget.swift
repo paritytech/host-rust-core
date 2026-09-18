@@ -27,7 +27,7 @@ enum ChainConnectionTarget: CaseIterable {
         case .bulletin:
             "Bulletin"
         case .assethub:
-            "Asset Hub"
+            "Hub"
         }
     }
 
@@ -39,18 +39,6 @@ enum ChainConnectionTarget: CaseIterable {
         case .bulletin:
             .seconds(6)
         }
-    }
-
-    var healthThresholds: ChainHealthThresholds {
-        ChainHealthThresholds(
-            blockAge: ChainHealthBounds(
-                healthy: expectedBlockTime * 2,
-                zero: expectedBlockTime * 10
-            ),
-            finalityLag: ChainHealthCountBounds(healthy: 15, zero: 30),
-            ping: ChainHealthBounds(healthy: .milliseconds(150), zero: .milliseconds(1_000)),
-            missingTermGrace: .seconds(45)
-        )
     }
 
     var statusIcon: ChainStatusIcon {

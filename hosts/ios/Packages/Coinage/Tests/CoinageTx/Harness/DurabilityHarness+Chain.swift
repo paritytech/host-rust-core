@@ -1,3 +1,5 @@
+import DurableTransactions
+import DurableTransactionsTestSupport
 import Foundation
 @testable import Coinage
 
@@ -14,19 +16,19 @@ let harnessDenominations = [3, 4]
 
 extension DurabilityHarness {
     /// A function of the index alone, so a shrunk trace replays to the same denominations.
-    func denomination(of index: DerivationIndex) -> Int {
-        harnessDenominations[Int(index) % harnessDenominations.count]
+    func denomination(of index: CoinageKeyIndex) -> Int {
+        harnessDenominations[Int(index.item) % harnessDenominations.count]
     }
 
     // MARK: - Asset builders
 
-    func coinInput(_ index: DerivationIndex) -> CoinageTxInput { .coin(.own(index, HarnessKeys.coinKey(index))) }
-    func coinOutput(_ index: DerivationIndex) -> OwnAsset { .coin(index, HarnessKeys.coinKey(index)) }
-    func voucherInput(_ index: DerivationIndex) -> CoinageTxInput {
+    func coinInput(_ index: CoinageKeyIndex) -> CoinageTxInput { .coin(.own(index, HarnessKeys.coinKey(index))) }
+    func coinOutput(_ index: CoinageKeyIndex) -> OwnAsset { .coin(index, HarnessKeys.coinKey(index)) }
+    func voucherInput(_ index: CoinageKeyIndex) -> CoinageTxInput {
         .recyclerVoucher(index, HarnessKeys.voucherMemberKey(index))
     }
 
-    func voucherOutput(_ index: DerivationIndex) -> OwnAsset {
+    func voucherOutput(_ index: CoinageKeyIndex) -> OwnAsset {
         .recyclerVoucher(index, HarnessKeys.voucherMemberKey(index))
     }
 
@@ -59,20 +61,20 @@ extension DurabilityHarness {
 
     // MARK: - Arranging chain state
 
-    func mintCoinsOnChain(_ coins: [DerivationIndex], finality: TestActionFinality) {
+    func mintCoinsOnChain(_ coins: [CoinageKeyIndex], finality: TestActionFinality) {
         produceBlock(finality) { state in
             coins.reduce(state) { $0.mintCoin(HarnessKeys.coinKey($1)) }
         }
     }
 
-    func consumeCoinOnChain(_ coin: DerivationIndex, finality: TestActionFinality) {
+    func consumeCoinOnChain(_ coin: CoinageKeyIndex, finality: TestActionFinality) {
         produceBlock(finality) { $0.consumeCoin(HarnessKeys.coinKey(coin)) }
     }
 
     /// A voucher in a recycler: a member of the denomination's collection, included in a ring, with no
     /// alias state — absence from the map means the alias is available.
     func givenVoucherInRecycler(
-        _ voucher: DerivationIndex,
+        _ voucher: CoinageKeyIndex,
         denomination: Int,
         ring: Int,
         finality: TestActionFinality
@@ -87,20 +89,20 @@ extension DurabilityHarness {
 
     /// Loaded into the recycler but not yet placed in a ring, so it has no ring index and cannot be
     /// unloaded.
-    func givenVoucherOnboarding(_ voucher: DerivationIndex, denomination: Int, finality: TestActionFinality) {
+    func givenVoucherOnboarding(_ voucher: CoinageKeyIndex, denomination: Int, finality: TestActionFinality) {
         let member = HarnessKeys.voucherMemberKey(voucher)
         produceBlock(finality) { $0.joinRecycler(member: member, exponent: denomination, position: .onboarding) }
     }
 
     /// Suspended from its ring: still a member, but holding no ring index, so nothing can be said about
     /// whether it was unloaded.
-    func givenVoucherSuspended(_ voucher: DerivationIndex, denomination: Int, finality: TestActionFinality) {
+    func givenVoucherSuspended(_ voucher: CoinageKeyIndex, denomination: Int, finality: TestActionFinality) {
         let member = HarnessKeys.voucherMemberKey(voucher)
         produceBlock(finality) { $0.joinRecycler(member: member, exponent: denomination, position: .suspended) }
     }
 
     /// The queued voucher takes a place in a ring, which is what makes it unloadable.
-    func placeVoucherInRing(_ voucher: DerivationIndex, ring: Int, finality: TestActionFinality) {
+    func placeVoucherInRing(_ voucher: CoinageKeyIndex, ring: Int, finality: TestActionFinality) {
         let member = HarnessKeys.voucherMemberKey(voucher)
         produceBlock(finality) { state in
             guard let exponent = state.recyclerMembers[member] else { return state }
@@ -109,20 +111,20 @@ extension DurabilityHarness {
     }
 
     /// Archival: the membership goes, which is the only thing that takes a voucher out of a recycler.
-    func archiveRecyclerOf(_ voucher: DerivationIndex, finality: TestActionFinality) {
+    func archiveRecyclerOf(_ voucher: CoinageKeyIndex, finality: TestActionFinality) {
         let member = HarnessKeys.voucherMemberKey(voucher)
         produceBlock(finality) { $0.leaveRecycler(member: member) }
     }
 
     /// The unload executed: the alias reads unloaded at the voucher's current ring.
-    func unloadVoucherOnChain(_ voucher: DerivationIndex, finality: TestActionFinality) {
+    func unloadVoucherOnChain(_ voucher: CoinageKeyIndex, finality: TestActionFinality) {
         guard let key = currentAliasKey(index: voucher) else { return }
         produceBlock(finality) { $0.withAlias(key) }
     }
 
     /// Writes an alias under a ring the voucher is not in, which nothing should read for it.
     func unloadVoucherAtOtherRing(
-        _ voucher: DerivationIndex,
+        _ voucher: CoinageKeyIndex,
         denomination: Int,
         ring: Int,
         finality: TestActionFinality
@@ -133,7 +135,7 @@ extension DurabilityHarness {
 
     /// Suspends a voucher from its ring: still a recycler member, but holding no ring index, so its alias
     /// can no longer be located. Models a ring rebuild landing on an already-unloaded voucher.
-    func suspendVoucher(_ voucher: DerivationIndex, finality: TestActionFinality) {
+    func suspendVoucher(_ voucher: CoinageKeyIndex, finality: TestActionFinality) {
         let member = HarnessKeys.voucherMemberKey(voucher)
         produceBlock(finality) { state in
             guard let exponent = state.recyclerMembers[member] else { return state }
@@ -186,8 +188,8 @@ extension DurabilityHarness {
 extension DurabilityHarness {
     @discardableResult
     func register(
-        inputCoin: DerivationIndex,
-        outputCoin: DerivationIndex,
+        inputCoin: CoinageKeyIndex,
+        outputCoin: CoinageKeyIndex,
         period: UInt32 = harnessMortalPeriod
     ) async throws -> CoinageTxId {
         try await submit([registration(
@@ -199,7 +201,7 @@ extension DurabilityHarness {
 
     @discardableResult
     func registerOffboard(
-        inputCoin: DerivationIndex,
+        inputCoin: CoinageKeyIndex,
         period: UInt32 = harnessMortalPeriod
     ) async throws -> CoinageTxId {
         try await submit([registration(inputs: [coinInput(inputCoin)], outputs: [], period: period)])[0]
@@ -207,8 +209,8 @@ extension DurabilityHarness {
 
     @discardableResult
     func registerSplit(
-        inputCoin: DerivationIndex,
-        outputCoins: [DerivationIndex],
+        inputCoin: CoinageKeyIndex,
+        outputCoins: [CoinageKeyIndex],
         period: UInt32 = harnessMortalPeriod
     ) async throws -> CoinageTxId {
         try await submit([registration(
@@ -220,8 +222,8 @@ extension DurabilityHarness {
 
     @discardableResult
     func registerVoucherMint(
-        inputCoin: DerivationIndex,
-        voucher: DerivationIndex,
+        inputCoin: CoinageKeyIndex,
+        voucher: CoinageKeyIndex,
         period: UInt32 = harnessMortalPeriod
     ) async throws -> CoinageTxId {
         try await submit([registration(
@@ -233,7 +235,7 @@ extension DurabilityHarness {
 
     @discardableResult
     func registerExternalLoad(
-        voucher: DerivationIndex,
+        voucher: CoinageKeyIndex,
         period: UInt32 = harnessMortalPeriod
     ) async throws -> CoinageTxId {
         try await submit([registration(inputs: [], outputs: [voucherOutput(voucher)], period: period)])[0]
@@ -241,8 +243,8 @@ extension DurabilityHarness {
 
     @discardableResult
     func registerVoucherUnload(
-        vouchers: [DerivationIndex],
-        outputCoin: DerivationIndex,
+        vouchers: [CoinageKeyIndex],
+        outputCoin: CoinageKeyIndex,
         period: UInt32 = harnessMortalPeriod
     ) async throws -> CoinageTxId {
         try await submit([registration(
@@ -254,7 +256,7 @@ extension DurabilityHarness {
 
     @discardableResult
     func registerGroup(
-        pairs: [(input: DerivationIndex, output: DerivationIndex)],
+        pairs: [(input: CoinageKeyIndex, output: CoinageKeyIndex)],
         groupId: CoinageTxGroupId,
         period: UInt32 = harnessMortalPeriod
     ) async throws -> [CoinageTxId] {

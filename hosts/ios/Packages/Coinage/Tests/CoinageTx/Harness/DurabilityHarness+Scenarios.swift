@@ -1,3 +1,5 @@
+import DurableTransactions
+import DurableTransactionsTestSupport
 import Foundation
 @testable import Coinage
 
@@ -30,7 +32,7 @@ extension DurabilityHarness {
 
     /// The state of a coin as the ledger projects it. `consumerStatus` reports a non-failure consumer,
     /// since a failed spend releases its claim.
-    func assetState(coin: DerivationIndex) async throws -> HarnessAssetState {
+    func assetState(coin: CoinageKeyIndex) async throws -> HarnessAssetState {
         let minter = try await store.minter(of: coinOutput(coin))
         let consumers = try await store.consumers(of: coinInput(coin))
         let liveConsumer = consumers.first { $0.status != .failure }
@@ -43,7 +45,7 @@ extension DurabilityHarness {
     }
 
     /// The state of a voucher as the ledger projects it. Vouchers are never handed off.
-    func assetState(voucher: DerivationIndex) async throws -> HarnessAssetState {
+    func assetState(voucher: CoinageKeyIndex) async throws -> HarnessAssetState {
         let minter = try await store.minter(of: voucherOutput(voucher))
         let consumers = try await store.consumers(of: voucherInput(voucher))
         let liveConsumer = consumers.first { $0.status != .failure }
@@ -58,8 +60,8 @@ extension DurabilityHarness {
     /// ``CoinageEvidenceCollector`` over the fake chain.
     func evidence(for id: CoinageTxId) async throws -> ChainEvidence {
         guard let entry = try await store.getEntry(id: id) else { throw FuzzHarnessError.noEntry(0) }
-        let view = try await chainFactory.pin()
-        return await CoinageEvidenceCollector().collect(entry: entry, view: view)
+        let view = try await chainFactory.pin(chainId: harnessChainId)
+        return await CoinageEvidenceCollector().collect(entry: entry, reader: stateReader, heads: view.heads)
     }
 }
 
@@ -94,7 +96,7 @@ extension DurabilityHarness {
 extension DurabilityHarness {
     /// Registered, and its watcher released — a pass decides only entries submission no longer owns.
     @discardableResult
-    func givenUnwatchedEntry(inputCoin: DerivationIndex, outputCoin: DerivationIndex) async throws -> CoinageTxId {
+    func givenUnwatchedEntry(inputCoin: CoinageKeyIndex, outputCoin: CoinageKeyIndex) async throws -> CoinageTxId {
         let id = try await register(inputCoin: inputCoin, outputCoin: outputCoin)
         await releaseSubmissions()
         return id
@@ -105,8 +107,8 @@ extension DurabilityHarness {
     /// the chain.
     @discardableResult
     func givenEntryExecutedOnChain(
-        inputCoin: DerivationIndex,
-        outputCoin: DerivationIndex,
+        inputCoin: CoinageKeyIndex,
+        outputCoin: CoinageKeyIndex,
         finality: TestActionFinality
     ) async throws -> CoinageTxId {
         let id = try await givenUnwatchedEntry(inputCoin: inputCoin, outputCoin: outputCoin)
@@ -126,8 +128,8 @@ extension DurabilityHarness {
     /// `finality`; this helper does not choose it.
     @discardableResult
     func givenEntryDecided(
-        inputCoin: DerivationIndex,
-        outputCoin: DerivationIndex,
+        inputCoin: CoinageKeyIndex,
+        outputCoin: CoinageKeyIndex,
         finality: TestActionFinality
     ) async throws -> CoinageTxId {
         let id = try await givenEntryExecutedOnChain(inputCoin: inputCoin, outputCoin: outputCoin, finality: finality)
@@ -145,8 +147,8 @@ extension DurabilityHarness {
         chainFactory.faults.txSearchDisabled = true
     }
 
-    func makeCoinsUnreadable(_ coins: DerivationIndex...) {
-        chainFactory.faults.unreadableCoins.formUnion(coins.map { HarnessKeys.coinKey($0) })
+    func makeCoinsUnreadable(_ coins: CoinageKeyIndex...) {
+        stateReader.faults.unreadableCoins.formUnion(coins.map { HarnessKeys.coinKey($0) })
     }
 
     func makeBlocksUnreadable(_ blockNumbers: UInt32...) {
@@ -155,20 +157,20 @@ extension DurabilityHarness {
 
     /// Silences the alias read of named vouchers — those in a ring, since one with no ring index has no
     /// alias key to fail.
-    func makeVoucherAliasesUnreadable(_ vouchers: DerivationIndex...) {
+    func makeVoucherAliasesUnreadable(_ vouchers: CoinageKeyIndex...) {
         for voucher in vouchers {
             if let key = currentAliasKey(index: voucher) {
-                chainFactory.faults.unreadableAliases.insert(key)
+                stateReader.faults.unreadableAliases.insert(key)
             }
         }
     }
 
     func makeRecyclerMembershipsUnreadable() {
-        chainFactory.faults.membershipsUnreadable = true
+        stateReader.faults.membershipsUnreadable = true
     }
 
     func makeRingPositionsUnreadable() {
-        chainFactory.faults.ringPositionsUnreadable = true
+        stateReader.faults.ringPositionsUnreadable = true
     }
 
     func makeEveryBlockUnreadable() {
@@ -181,5 +183,6 @@ extension DurabilityHarness {
 
     func clearFaults() {
         chainFactory.faults = .none
+        stateReader.faults = .none
     }
 }

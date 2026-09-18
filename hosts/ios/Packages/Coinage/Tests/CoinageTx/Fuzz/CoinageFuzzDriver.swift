@@ -1,5 +1,6 @@
 import Foundation
 @testable import Coinage
+import DurableTransactions
 
 /// Random walks over coins, vouchers and reorgs, checked against invariants rather than expected
 /// verdicts.
@@ -15,9 +16,9 @@ import Foundation
 final class CoinageFuzzDriver {
     let harness: DurabilityHarness
 
-    private var nextCoin: DerivationIndex = firstOutputCoin
+    private var nextCoin: CoinageKeyIndex = firstOutputCoin
     /// Addresses are never reused, so a voucher index is offered for minting at most once.
-    private var mintedVouchers: Set<DerivationIndex> = []
+    private var mintedVouchers: Set<CoinageKeyIndex> = []
 
     /// Clean passes each entry has seen since its window closed / since its transaction settled below
     /// the finalized head — counted rather than requiring two back-to-back, since passes are rare among
@@ -255,8 +256,8 @@ private extension CoinageFuzzDriver {
         await harness.releaseSubmissions()
     }
 
-    func takeCoin() -> DerivationIndex {
-        defer { nextCoin += 1 }
+    func takeCoin() -> CoinageKeyIndex {
+        defer { nextCoin = nextCoin.next() }
         return nextCoin
     }
 
@@ -279,21 +280,22 @@ private extension CoinageFuzzDriver {
     func coinKeysAtFinalizedHead() -> Set<PublicKey> { Set(harness.chain.finalizedHead.state.coins.keys) }
 
     /// The coin indices — seeds plus every output coin handed out so far — the chain currently holds.
-    func coinsOnBestChain(_ keys: Set<PublicKey>) -> [DerivationIndex] {
-        (seedCoins + Array(firstOutputCoin ..< nextCoin)).filter { keys.contains(HarnessKeys.coinKey($0)) }
+    func coinsOnBestChain(_ keys: Set<PublicKey>) -> [CoinageKeyIndex] {
+        (seedCoins + (firstOutputCoin.item ..< nextCoin.item).map(CoinageKeyIndex.harness))
+            .filter { keys.contains(HarnessKeys.coinKey($0)) }
     }
 
-    func isMemberOnBestChain(_ voucher: DerivationIndex) -> Bool {
+    func isMemberOnBestChain(_ voucher: CoinageKeyIndex) -> Bool {
         bestState.recyclerMembers[HarnessKeys.voucherMemberKey(voucher)] != nil
     }
 
-    func isOnboardingOnBestChain(_ voucher: DerivationIndex) -> Bool {
+    func isOnboardingOnBestChain(_ voucher: CoinageKeyIndex) -> Bool {
         bestState.ringPositions[HarnessKeys.voucherMemberKey(voucher)] == .onboarding
     }
 
     /// Unloadable at the best head: a recycler member, in a ring, with no alias saying it was already
     /// unloaded.
-    func unloadableOnBestChain(_ voucher: DerivationIndex) -> Bool {
+    func unloadableOnBestChain(_ voucher: CoinageKeyIndex) -> Bool {
         guard isMemberOnBestChain(voucher), let aliasKey = harness.currentAliasKey(index: voucher) else {
             return false
         }
@@ -359,11 +361,11 @@ private extension CoinageFuzzDriver {
 // MARK: - Constants
 
 private extension CoinageFuzzDriver {
-    var seedCoins: [DerivationIndex] { [1, 2, 3] }
-    var seedVouchers: [DerivationIndex] { [7, 8] }
+    var seedCoins: [CoinageKeyIndex] { [1, 2, 3] }
+    var seedVouchers: [CoinageKeyIndex] { [7, 8] }
     /// Wide enough that a walk never runs out: an index is offered once and never returned.
-    var mintableVouchers: [DerivationIndex] { Array(9 ... 128) }
-    var voucherPool: [DerivationIndex] { seedVouchers + mintableVouchers }
+    var mintableVouchers: [CoinageKeyIndex] { (9 ... 128).map(CoinageKeyIndex.harness) }
+    var voucherPool: [CoinageKeyIndex] { seedVouchers + mintableVouchers }
     var rings: [Int] { [5, 6] }
 }
 
@@ -372,7 +374,7 @@ private extension CoinageFuzzDriver {
 private let fuzzMortalPeriod: UInt32 = 12
 
 /// The first coin index handed out for outputs, above the seed coins.
-private let firstOutputCoin: DerivationIndex = 100
+private let firstOutputCoin: CoinageKeyIndex = 100
 
 /// One pass is not a fixpoint: an entry demoted by Rule 0 spends that pass being demoted and is decided
 /// by the next. Two is the whole cascade for an expired entry.
@@ -577,7 +579,7 @@ extension DurabilityHarness {
     /// like.
     func givenFuzzSeedAssets() {
         mintCoinsOnChain([1, 2, 3], finality: .finalized)
-        for voucher in [DerivationIndex(7), DerivationIndex(8)] {
+        for voucher in [CoinageKeyIndex(7), CoinageKeyIndex(8)] {
             givenVoucherInRecycler(voucher, denomination: 3, ring: 5, finality: .finalized)
         }
     }

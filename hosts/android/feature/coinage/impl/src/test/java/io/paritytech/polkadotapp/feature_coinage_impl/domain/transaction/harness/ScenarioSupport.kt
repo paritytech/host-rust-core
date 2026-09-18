@@ -14,6 +14,7 @@ import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.RecyclerA
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.FINALIZED
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.ChainEvidence
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageEvidenceCollector
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingIndex
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingPosition
 import kotlinx.coroutines.test.runTest
@@ -75,7 +76,7 @@ suspend fun DurabilityHarness.cleanVoucherFromRecycler(voucher: Int, finality: T
 
 /** Archival: the member-to-denomination entry goes synchronously, before dusting clears any alias. */
 suspend fun DurabilityHarness.archiveRecyclerOf(voucher: Int, finality: TestActionFinality) {
-    val member = voucherDerivation.memberKeyOf(voucher)
+    val member = voucherDerivation.memberKeyOf(testKey(voucher))
     produceBlock(finality) { it.leaveRecycler(member) }
 }
 
@@ -107,13 +108,13 @@ suspend fun DurabilityHarness.givenVoucherInRecycler(
     ring: Int,
     finality: TestActionFinality,
 ) {
-    val member = voucherDerivation.memberKeyOf(voucher)
+    val member = voucherDerivation.memberKeyOf(testKey(voucher))
     produceBlock(finality) { it.joinRecycler(member, ValueExponent(denomination), includedPosition(ring)) }
 }
 
 /** Loaded into the recycler but not yet placed in a ring, so it has no ring index and cannot be unloaded. */
 suspend fun DurabilityHarness.givenVoucherOnboarding(voucher: Int, denomination: Int, finality: TestActionFinality) {
-    val member = voucherDerivation.memberKeyOf(voucher)
+    val member = voucherDerivation.memberKeyOf(testKey(voucher))
     produceBlock(finality) { it.joinRecycler(member, ValueExponent(denomination), onboardingPosition()) }
 }
 
@@ -123,7 +124,7 @@ suspend fun DurabilityHarness.givenVoucherOnboarding(voucher: Int, denomination:
  * Its alias key cannot be derived without one, so nothing can be said about whether it was unloaded.
  */
 suspend fun DurabilityHarness.givenVoucherSuspended(voucher: Int, denomination: Int, finality: TestActionFinality) {
-    val member = voucherDerivation.memberKeyOf(voucher)
+    val member = voucherDerivation.memberKeyOf(testKey(voucher))
     produceBlock(finality) { it.joinRecycler(member, ValueExponent(denomination), RingPosition.Suspended) }
 }
 
@@ -271,8 +272,8 @@ suspend fun DurabilityHarness.register(
     periodBlocks: Int = HARNESS_MORTAL_PERIOD,
 ) = service.submitTransaction(
     extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
-    inputs = listOf(CoinageInput.Coin.Own(inputCoin)),
-    outputs = listOf(OwnAsset.Coin(outputCoin)),
+    inputs = listOf(CoinageInput.Coin.Own(testKey(inputCoin))),
+    outputs = listOf(OwnAsset.Coin(testKey(outputCoin))),
     groupId = null,
 )
 
@@ -289,8 +290,8 @@ suspend fun DurabilityHarness.registerGroup(
     transactions = coinPairs.map { (input, output) ->
         CoinageTransactionRequest(
             extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
-            inputs = listOf(CoinageInput.Coin.Own(input)),
-            outputs = listOf(OwnAsset.Coin(output)),
+            inputs = listOf(CoinageInput.Coin.Own(testKey(input))),
+            outputs = listOf(OwnAsset.Coin(testKey(output))),
         )
     },
     groupId = groupId,
@@ -305,7 +306,7 @@ suspend fun DurabilityHarness.registerGroup(
 suspend fun DurabilityHarness.givenUnwatchedOffboard(inputCoin: Int): CoinageTransactionId {
     val id = service.submitTransaction(
         extrinsic = extrinsicAnchoredAtFinalizedHead(),
-        inputs = listOf(CoinageInput.Coin.Own(inputCoin)),
+        inputs = listOf(CoinageInput.Coin.Own(testKey(inputCoin))),
         outputs = emptyList(),
         groupId = null,
     ).getOrThrow()
@@ -328,8 +329,8 @@ suspend fun DurabilityHarness.registerVoucherUnload(
     periodBlocks: Int = HARNESS_MORTAL_PERIOD,
 ) = service.submitTransaction(
     extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
-    inputs = vouchers.map(CoinageInput::Voucher),
-    outputs = listOf(OwnAsset.Coin(outputCoin)),
+    inputs = vouchers.map({ CoinageInput.Voucher(testKey(it)) }),
+    outputs = listOf(OwnAsset.Coin(testKey(outputCoin))),
     groupId = null,
 )
 
@@ -339,7 +340,7 @@ suspend fun DurabilityHarness.registerOffboard(
     periodBlocks: Int = HARNESS_MORTAL_PERIOD,
 ) = service.submitTransaction(
     extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
-    inputs = listOf(CoinageInput.Coin.Own(inputCoin)),
+    inputs = listOf(CoinageInput.Coin.Own(testKey(inputCoin))),
     outputs = emptyList(),
     groupId = null,
 )
@@ -351,8 +352,8 @@ suspend fun DurabilityHarness.registerSplit(
     periodBlocks: Int = HARNESS_MORTAL_PERIOD,
 ) = service.submitTransaction(
     extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
-    inputs = listOf(CoinageInput.Coin.Own(inputCoin)),
-    outputs = outputCoins.map(OwnAsset::Coin),
+    inputs = listOf(CoinageInput.Coin.Own(testKey(inputCoin))),
+    outputs = outputCoins.map { OwnAsset.Coin(testKey(it)) },
     groupId = null,
 )
 
@@ -368,7 +369,7 @@ suspend fun DurabilityHarness.registerExternalVoucherLoad(
 ) = service.submitTransaction(
     extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
     inputs = emptyList(),
-    outputs = listOf(OwnAsset.Voucher(voucher)),
+    outputs = listOf(OwnAsset.Voucher(testKey(voucher))),
     groupId = null,
 )
 
@@ -379,17 +380,17 @@ suspend fun DurabilityHarness.registerVoucherMint(
     periodBlocks: Int = HARNESS_MORTAL_PERIOD,
 ) = service.submitTransaction(
     extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
-    inputs = listOf(CoinageInput.Coin.Own(inputCoin)),
-    outputs = listOf(OwnAsset.Voucher(voucher)),
+    inputs = listOf(CoinageInput.Coin.Own(testKey(inputCoin))),
+    outputs = listOf(OwnAsset.Voucher(testKey(voucher))),
     groupId = null,
 )
 
 suspend fun DurabilityHarness.statusOf(id: CoinageTransactionId) = repository.getStatus(id).getOrThrow()
 
-suspend fun DurabilityHarness.assetStateOf(coin: Int) = repository.getAssetState(OwnAsset.Coin(coin)).getOrThrow()
+suspend fun DurabilityHarness.assetStateOf(coin: Int) = repository.getAssetState(OwnAsset.Coin(testKey(coin))).getOrThrow()
 
 suspend fun DurabilityHarness.voucherStateOf(voucher: Int) =
-    repository.getAssetState(OwnAsset.Voucher(voucher)).getOrThrow()
+    repository.getAssetState(OwnAsset.Voucher(testKey(voucher))).getOrThrow()
 
 /** What the rules would read for [id] against a view pinned now. */
 suspend fun DurabilityHarness.evidenceFor(id: CoinageTransactionId): ChainEvidence {
@@ -398,7 +399,9 @@ suspend fun DurabilityHarness.evidenceFor(id: CoinageTransactionId): ChainEviden
         coinageSigningContextProvider = RealCoinageSigningContextProvider(),
     )
 
-    return collector.collect(repository.getEntry(id).getOrThrow()!!, chain.pin().getOrThrow())
+    val view = chain.pin(HARNESS_CHAIN).getOrThrow()
+
+    return collector.collect(repository.getEntry(id).getOrThrow()!!, chain.create(view), view)
 }
 
 // ---- internals ----------------------------------------------------------------------------------------
@@ -419,7 +422,7 @@ internal fun onboardingPosition() = RingPosition.Onboarding(queuePage = 0, queue
 
 /** The alias key the collector will ask for, derived from the chain exactly as it derives it. */
 internal suspend fun DurabilityHarness.currentAliasKeyOf(voucher: Int): RecyclerAliasKey? {
-    val member = voucherDerivation.memberKeyOf(voucher)
+    val member = voucherDerivation.memberKeyOf(testKey(voucher))
     val state = chain.chain.bestHead.state
     val denomination = state.recyclerMembers[member] ?: return null
     val ringIndex = (state.ringPositions[member] as? RingPosition.Included)?.ringIndex ?: return null
@@ -431,7 +434,7 @@ private suspend fun DurabilityHarness.requireAliasKeyOf(voucher: Int) = currentA
     ?: error("voucher $voucher is in no ring on chain, so it has no alias key")
 
 internal suspend fun DurabilityHarness.aliasKeyAt(voucher: Int, denomination: Int, ring: Int): RecyclerAliasKey {
-    val alias = voucherDerivation.aliasWithoutCounting(voucher, RealCoinageSigningContextProvider().recyclerVouchersContext())
+    val alias = voucherDerivation.aliasWithoutCounting(testKey(voucher), RealCoinageSigningContextProvider().recyclerVouchersContext())
 
     return RecyclerAliasKey(
         valueExponent = denomination.toBigInteger(),

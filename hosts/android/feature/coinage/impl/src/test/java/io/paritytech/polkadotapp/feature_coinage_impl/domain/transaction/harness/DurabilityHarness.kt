@@ -1,6 +1,5 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness
 
-import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.paritytech.polkadotapp.chains.extrinsic.ExtrinsicStatus
@@ -8,17 +7,17 @@ import io.paritytech.polkadotapp.chains.multiNetwork.connection.ChainConnectionR
 import io.paritytech.polkadotapp.chains.multiNetwork.connection.EnabledChainConnectionReference
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_impl.data.signer.context.RealCoinageSigningContextProvider
-import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageChainViewFactory
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.COINAGE_DOMAIN_ID
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.RealCoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageEvidenceCollector
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageRecoveryLoop
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageRecoveryScheduler
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.RealCoinageRecoveryPass
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.registration.CoinageEntryRegistrar
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.CoinageSubmissionTracker
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.SubmissionOwnedEntries
-import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageResourceOracle
 import io.paritytech.polkadotapp.feature_transactions.api.data.ExtrinsicService
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableRecoveryLoop
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableRecoveryScheduler
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableSubmissionTracker
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.RealDurableRecoveryPass
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.RealDurableTransactionService
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.SubmissionOwnedTransactions
 import io.paritytech.polkadotapp.test_shared.TestCoroutineDispatchers
 import io.paritytech.polkadotapp.test_shared.chain.FakeChain
 import kotlinx.coroutines.CoroutineScope
@@ -43,7 +42,10 @@ class DurabilityHarness(
     initialState: CoinageChainState,
 ) {
     val chain = FakeCoinageChainViewFactory(FakeChain(initialState))
-    val repository = InMemoryCoinageEntryRepository()
+    val ledger = InMemoryLedger()
+
+    /** The reads scenarios make of the ledger, under the shape they used before the engine split. */
+    val repository get() = ledger.repository
 
     /** References the tracker holds, so a scenario can assert a watch keeps the chain connected. */
     val connections = RecordingConnectionRefCounter()
@@ -62,8 +64,8 @@ class DurabilityHarness(
     val submissionCount: Int get() = submissions
 
     val service: RealCoinageTransactionService get() = subsystem.service
-    val ownedEntries: SubmissionOwnedEntries get() = subsystem.ownedEntries
-    val recoveryPass: RealCoinageRecoveryPass get() = subsystem.pass
+    val ownedEntries: SubmissionOwnedTransactions get() = subsystem.ownedEntries
+    val recoveryPass: RealDurableRecoveryPass get() = subsystem.pass
 
     internal fun nextExtrinsicHex(): String = "0x" + (extrinsics++).toString(16).padStart(8, '0')
 
@@ -126,61 +128,76 @@ class DurabilityHarness(
      */
     fun releaseSubmissions() = testScope.advanceUntilIdle()
 
+    /**
+     * The engine and coinage's oracle, built over one in-memory ledger — the only place the harness had to
+     * learn that the subsystem is now two pieces. Everything a scenario drives kept its shape.
+     */
     private fun launchSubsystem(): Subsystem {
         val dispatcher = StandardTestDispatcher(testScope.testScheduler)
         val scope = CoroutineScope(testScope.coroutineContext + SupervisorJob())
-        val ownedEntries = SubmissionOwnedEntries()
+        val ownedEntries = SubmissionOwnedTransactions()
 
-        val registrar = CoinageEntryRegistrar(
-            repository = repository,
-            coinKeypairDerivation = coinDerivation,
-            voucherRingDerivation = voucherDerivation,
-            submissionOwnedEntries = ownedEntries,
-        )
-
-        val pass = RealCoinageRecoveryPass(
-            repository = repository,
-            chainViewFactory = chain,
+        val oracle = CoinageResourceOracle(
+            chainAssetProvider = harnessChainAssetProvider(),
+            assetLedger = ledger.coinage,
+            stateReaderFactory = chain,
             evidenceCollector = CoinageEvidenceCollector(
                 voucherRingDerivation = voucherDerivation,
                 coinageSigningContextProvider = RealCoinageSigningContextProvider(),
             ),
-            submissionOwnedEntries = ownedEntries,
         )
 
-        val loop = CoinageRecoveryLoop(repository = repository, recoveryPass = pass, chainViewFactory = chain)
+        val pass = RealDurableRecoveryPass(
+            repository = ledger.engine,
+            chainViewFactory = chain,
+            submissionOwned = ownedEntries,
+            oracles = mapOf(COINAGE_DOMAIN_ID to oracle),
+        )
+
+        val loop = DurableRecoveryLoop(
+            repository = ledger.engine,
+            recoveryPass = pass,
+            chainViewFactory = chain,
+            oracles = mapOf(COINAGE_DOMAIN_ID to oracle),
+        )
         val scheduler = RecordingRecoveryScheduler()
 
-        val service = RealCoinageTransactionService(
-            registrar = registrar,
-            submissionTracker = submissionTracker(ownedEntries, chain),
+        val engine = RealDurableTransactionService(
+            repository = ledger.engine,
+            submissionTracker = submissionTracker(ownedEntries, oracle),
+            submissionOwned = ownedEntries,
             recoveryLoop = loop,
             recoveryScheduler = scheduler,
-            repository = repository,
             dispatchers = TestCoroutineDispatchers(dispatcher),
         )
 
-        return Subsystem(service, ownedEntries, pass, scheduler, scope)
+        val service = RealCoinageTransactionService(
+            engine = engine,
+            assetLedger = ledger.coinage,
+            coinKeypairDerivation = coinDerivation,
+            voucherRingDerivation = voucherDerivation,
+        )
+
+        return Subsystem(service, engine, ownedEntries, pass, scheduler, scope)
     }
 
     private fun submissionTracker(
-        ownedEntries: SubmissionOwnedEntries,
-        chainViewFactory: CoinageChainViewFactory,
-    ): CoinageSubmissionTracker {
-        val chainAssetProvider: ChainAssetProvider = mockk()
+        ownedEntries: SubmissionOwnedTransactions,
+        oracle: CoinageResourceOracle,
+    ): DurableSubmissionTracker {
         val extrinsicService: ExtrinsicService = mockk()
 
-        coEvery { chainAssetProvider.chain() } returns mockk(relaxed = true)
         every { extrinsicService.submitAndWatchBuiltExtrinsic(any(), any(), any()) } answers {
             submissionStatuses(submissions++)
         }
 
-        return CoinageSubmissionTracker(
-            chainAssetProvider = chainAssetProvider,
+        return DurableSubmissionTracker(
+            oracles = mapOf(COINAGE_DOMAIN_ID to oracle),
+            chainRegistry = mockk(relaxed = true),
             extrinsicService = extrinsicService,
-            repository = repository,
-            chainViewFactory = chainViewFactory,
-            submissionOwnedEntries = ownedEntries,
+            repository = ledger.engine,
+            chainViewFactory = chain,
+            submissionOwned = ownedEntries,
             resubmitWhenValidFactory = mockk(relaxed = true),
             chainConnectionRefCounter = connections,
         )
@@ -188,13 +205,14 @@ class DurabilityHarness(
 
     private class Subsystem(
         val service: RealCoinageTransactionService,
-        val ownedEntries: SubmissionOwnedEntries,
-        val pass: RealCoinageRecoveryPass,
+        val engine: RealDurableTransactionService,
+        val ownedEntries: SubmissionOwnedTransactions,
+        val pass: RealDurableRecoveryPass,
         val scheduler: RecordingRecoveryScheduler,
         private val scope: CoroutineScope,
     ) {
         fun close() {
-            service.close()
+            engine.close()
             scope.cancel()
         }
     }
@@ -207,7 +225,7 @@ class DurabilityHarness(
  * every block a scenario produces queues a background pass whose timing decides the outcome. The loop is
  * covered on its own by `CoinageRecoveryLoopTest`; what these scenarios test is the pass.
  */
-private class RecordingRecoveryScheduler : CoinageRecoveryScheduler {
+private class RecordingRecoveryScheduler : DurableRecoveryScheduler {
     var requests = 0
         private set
 
@@ -215,6 +233,14 @@ private class RecordingRecoveryScheduler : CoinageRecoveryScheduler {
         requests++
     }
 }
+
+/** The one chain the harness models; the engine only needs it to be consistent. */
+const val HARNESS_CHAIN = "harness-chain"
+
+private fun harnessChainAssetProvider(): io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider =
+    mockk<io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider>().also {
+        every { it.chainId() } returns HARNESS_CHAIN
+    }
 
 /** Blocks a coinage extrinsic stays valid for in the harness, matching what the chain would build. */
 const val HARNESS_MORTAL_PERIOD = 128

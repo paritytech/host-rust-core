@@ -431,6 +431,7 @@ For example:
 truapi-host signing-host --session alice.01 exec '/devices'
 truapi-host signing-host --session alice.01 exec '/devices --list'
 truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --force'
 ```
 
 `exec '/script'` needs a TTY because it opens an editor. In non-TTY execution,
@@ -440,7 +441,9 @@ use `exec '/script <path>'` instead. `/copy` and `/approval` are unavailable.
 `exec '/devices'` and `exec '/devices --list'` inspect the selected session's
 saved pairings without starting their responders. `exec '/devices --remove
 <statement-account-id>'` is an explicit removal and does not ask for another
-confirmation.
+confirmation. It submits `Disconnected` directly and removes local state only
+after the statement store accepts it. Appending `--force` still attempts that
+submission, but warns and continues with local cleanup if it fails.
 
 ### 6.5 `--serve`
 
@@ -545,7 +548,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
-| `/devices --remove <statement-account-id>` | no | yes | Remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id>` | no | yes | Disconnect and remove one paired device by its 32-byte statement account ID. |
+| `/devices --remove <statement-account-id> --force` | no | yes | Attempt to disconnect one paired device, then remove its local pairing even if notification fails. |
 | `/approval` | no | yes | Print the current manual or automatic approval mode. TUI only. |
 | `/approval manual` | no | yes | Prompt for every future confirmation. TUI only. |
 | `/approval automatic` | no | yes | Approve every future confirmation automatically. TUI only. |
@@ -571,8 +575,16 @@ quoted or escaped `/pair` argument is treated as an image path.
 `/devices` and `/devices --list` are equivalent. They sort peers by statement
 account ID and print each ID with any available host and platform metadata.
 `/devices --remove` accepts exactly one 32-byte hexadecimal statement account ID
-with an optional `0x` prefix. Interactive removal uses the `[y/N]` approval and
-describes that only the selected peer is affected. `exec` removal runs directly.
+with an optional `0x` prefix and an optional trailing `--force`. Interactive
+removal uses the `[y/N]` approval and describes that only the selected peer is
+affected. `exec` removal runs directly. Both modes submit one `Disconnected`
+message before local cleanup, allowing up to 30 seconds for the statement store
+to accept it. This does not wait for a peer acknowledgement. If submission fails
+or times out, ordinary removal preserves the saved pairing, responder, and
+allowance-renewal target. Forced removal emits
+an unfiltered warning and continues with local cleanup, so the remote host may
+continue to show stale connected state, but it cannot reach a responder on this
+signing host.
 
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
@@ -1172,9 +1184,17 @@ Managed session names must:
 At startup the initial session is:
 
 1. `ephemeral` for explicit mnemonic mode;
-2. explicit `--session`;
+2. explicit `--session`, resolved through the name each promoted session
+   records itself as created under, so a name promoted away still selects the
+   session it created;
 3. `default` for explicit `--account`; or
 4. the network's remembered `current-session`.
+
+A missing or stale `current-session` resolves against the provisioned sessions
+rather than falling back to `default`: exactly one session holding an account
+store is selected, and several are refused with their names so `--session` can
+choose. A session directory without an account store is not provisioned and is
+never selected this way.
 
 `default` is a compatibility/bootstrap session. Once an auto-managed signer is
 known, the public and durable session name becomes its Lite username and its
@@ -1652,9 +1672,13 @@ reports:
 
 Deliberately unavailable methods:
 
-- all six product-initiated Chat methods, because the CLI installs no
-  `ChatPlatform`; the host-initiated custom-render subscription is also unused
-  because the CLI has no native Chat UI;
+- all five product-initiated Chat methods, because the CLI installs no
+  `ChatPlatform` for the `App` execution kind these reports run under;
+- the product-initiated `Renderer/action_subscribe`, because
+  `renderer_access_for` grants product Renderer access only to a `Worker`
+  execution and these reports run the CLI as `App`; the host-initiated
+  `Renderer` render subscription is also unused because the CLI draws no
+  product-rendered bodies;
 - all nine Coin Payment methods, which answer `CallError::Unsupported`; and
 - all four Payment methods, which answer typed `Unknown` domain errors.
 

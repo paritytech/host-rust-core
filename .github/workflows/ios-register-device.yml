@@ -1,0 +1,45 @@
+name: Register device
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_name:
+        description: "Device name (e.g. John's iPhone)"
+        required: true
+        type: string
+      device_udid:
+        description: "Device UDID (40-char hex or 24-char with dash for newer devices)"
+        required: true
+        type: string
+
+jobs:
+  register_device:
+    runs-on: macos-26
+    # Held until the iOS cutover. This tree is behind the app repository.
+    # It registers devices at App Store Connect. Its existing guard is a
+    # substring test against a string literal, so a login that appears anywhere
+    # inside it passes.
+    #
+    # Removing this is part of the cutover, tracked on #764.
+    if: false
+    # The condition this replaces, to restore at cutover:
+    #   if: contains(fromJSON('["sergkononenko","ERussel","stepanLav","kogeler","TarikGul","pgherveou","filvecchiato","valentinfernandez1"]'), github.actor)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup iOS Environment
+        uses: ./hosts/ios/.github/actions/install
+
+      - name: Register device
+        working-directory: hosts/ios
+        run: bundle exec fastlane register name:"$DEVICE_NAME" udid:"$DEVICE_UDID"
+        env:
+          DEVICE_NAME: ${{ inputs.device_name }}
+          DEVICE_UDID: ${{ inputs.device_udid }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}

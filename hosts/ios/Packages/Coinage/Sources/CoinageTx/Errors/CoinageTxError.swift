@@ -1,3 +1,4 @@
+import DurableTransactions
 import Foundation
 
 /// Failures raised by the durability subsystem.
@@ -20,4 +21,19 @@ public enum CoinageTxError: Error, Equatable {
     case chainViewUnavailable
     /// The built extrinsic is immortal, so it carries no era window to recover it against.
     case notMortal
+}
+
+public extension CoinageTxError {
+    /// The engine's rejections that coinage publishes under its own name; `nil` for the ones it does not
+    /// rename, which callers see as the engine raised them.
+    init?(durableTxError: DurableTxError) {
+        switch durableTxError {
+        case .notMortal: self = .notMortal
+        case .chainViewUnavailable: self = .chainViewUnavailable
+        case let .entryNotFound(id): self = .entryNotFound(id)
+        case .unregisteredDomain,
+             .buildIncomplete,
+             .foreignRegistrationScope: return nil
+        }
+    }
 }

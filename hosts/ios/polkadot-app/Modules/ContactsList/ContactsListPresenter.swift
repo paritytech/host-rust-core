@@ -45,8 +45,8 @@ extension ContactsListPresenter: ContactsListPresenterProtocol {
         interactor.notifyViewDisappeared()
     }
 
-    func showSearchContact() {
-        wireframe.showSearchContact(from: view)
+    func showScanPanel() {
+        wireframe.showScanPanel()
     }
 
     func openChat(contactIdentifier: String) {

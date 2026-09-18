@@ -46,6 +46,13 @@ pub(crate) enum ProviderError {
         /// The underlying failure.
         reason: String,
     },
+    /// The light client already holds as many connections as the provider
+    /// allows.
+    #[display("the light client already holds {limit} connections")]
+    TooManyConnections {
+        /// The ceiling that was reached.
+        limit: usize,
+    },
     /// The native WebSocket backend was called without an ambient tokio
     /// runtime to drive its transport.
     #[display("the WebSocket backend requires an ambient tokio runtime")]

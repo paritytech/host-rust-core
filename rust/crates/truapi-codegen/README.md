@@ -52,7 +52,7 @@ The generator runs in three stages:
 2. **Normalize**: extract the API model, including each method's `#[wire(id = N)]`.
 3. **Emit**: generators write TypeScript output.
 
-Missing or duplicate wire ids fail generation. Subscription methods reserve four consecutive ids for `_start`, `_stop`, `_interrupt`, and `_receive`.
+Missing or duplicate wire ids fail generation. One id addresses a method whatever its shape: which leg a frame carries is the envelope's own `message_type` byte.
 
 ## CLI
 

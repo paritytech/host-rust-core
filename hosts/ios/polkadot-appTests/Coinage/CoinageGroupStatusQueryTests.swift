@@ -4,10 +4,11 @@ import Foundation
 import Testing
 
 @testable import polkadot_app
+import DurableTransactions
 
-/// The durability group-status seam against the real `CoinageTxCoreDataRepository` over in-memory
-/// CoreData: `getOperationGroupStatuses` / `subscribeOperationGroupStatuses` find every transaction
-/// registered under `groupId = messageId`, which is how a claim or a payment tracks its group.
+/// The durability group-status seam against the real CoreData ledger over in-memory CoreData:
+/// `getOperationGroupStatuses` / `subscribeOperationGroupStatuses` find every transaction registered
+/// under `groupId = messageId`, which is how a claim or a payment tracks its group.
 @Suite("Durability group-status query")
 struct CoinageGroupStatusQueryTests {
     @Test("Fetch returns only the group's entries, in registration (sequence) order")
@@ -39,16 +40,36 @@ struct CoinageGroupStatusQueryTests {
         #expect(first?.count == 2)
         #expect(first?.allSatisfy { $0.groupId == "g" } == true)
     }
+
+    @Test("A group is scoped to the coinage domain")
+    func groupScopedToDomain() async throws {
+        let store = makeStore()
+        try await register(store, group: "g", key: 1)
+
+        // The same group id under another domain is a different group.
+        _ = try await store.durable.register([
+            DurableTxRegistration(
+                domainId: TxDomainId("other"),
+                groupId: "g",
+                txHash: Data(repeating: 9, count: 32),
+                checkpoint: BlockRef(number: 100, hash: Data([100])),
+                mortalityBlocks: 64
+            )
+        ]) { _, _ in }
+
+        let group = try await store.getOperationGroupStatuses("g")
+        #expect(group.count == 1)
+    }
 }
 
 private extension CoinageGroupStatusQueryTests {
-    func makeStore() -> CoinageTxCoreDataRepository {
-        CoinageTxCoreDataRepository(storageFacade: UserDataStorageTestFacade())
+    func makeStore() -> CoinageCoreDataLedger {
+        CoinageCoreDataLedger(storageFacade: UserDataStorageTestFacade())
     }
 
-    /// Registers a received-input entry (no local coin needed) under `group`, bypassing invariant
-    /// validation — the seam under test is the persistence query, not registration.
-    func register(_ store: CoinageTxCoreDataRepository, group: CoinageTxGroupId, key: UInt8) async throws {
+    /// Registers a received-input entry (no local coin needed) under `group` — the seam under test is
+    /// the persistence query, not the asset invariants.
+    func register(_ store: CoinageCoreDataLedger, group: CoinageTxGroupId, key: UInt8) async throws {
         let registration = CoinageTxRegistration(
             txHash: Data(repeating: key, count: 32),
             checkpoint: BlockRef(number: 100, hash: Data([100])),
@@ -57,6 +78,6 @@ private extension CoinageGroupStatusQueryTests {
             inputs: [.coin(.received(Data(repeating: key, count: 32)))],
             outputs: []
         )
-        try await store.register([registration], validation: { _ in }, onCommit: { _ in })
+        try await store.register([registration])
     }
 }

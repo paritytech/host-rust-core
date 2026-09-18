@@ -5,16 +5,17 @@ import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CheckpointBlock
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FAILURE
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainAliasState
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.AssetPublicKey
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerEntry
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingPosition
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
 import kotlin.random.Random
 
 /**
@@ -51,7 +52,7 @@ class CoinageFuzzDriver(private val harness: DurabilityHarness) {
 
     /** Marks whose keys really did leave, so a relaunch must keep them however it clears uncommitted ones. */
     private val committedMarks = mutableSetOf<AssetPublicKey>()
-    private val terminalSeen = mutableMapOf<Long, Pair<CoinageTransactionStatus, CheckpointBlock?>>()
+    private val terminalSeen = mutableMapOf<Long, Pair<DurableTxStatus, CheckpointBlock?>>()
 
     /** See [canonicalTransactions]. [indexedHash] is the block [indexedUpTo] named when it was folded in. */
     private val canonicalIndex = mutableMapOf<String, CanonicalInclusion>()
@@ -238,7 +239,7 @@ class CoinageFuzzDriver(private val harness: DurabilityHarness) {
         }
 
         is FuzzAction.HandOff -> {
-            harness.service.preCommitHandoff(listOf(OwnAsset.Coin(action.coin)))
+            harness.service.preCommitHandoff(listOf(OwnAsset.Coin(testKey(action.coin))))
                 .getOrNull()
                 ?.commit()
                 ?.onSuccess { committedMarks += coinKeyOf(action.coin) }
@@ -589,7 +590,7 @@ class CoinageFuzzDriver(private val harness: DurabilityHarness) {
         }
 
     /** Only ever called for an asset the ledger recorded as a voucher of ours, which always carries one. */
-    private fun LedgerAsset.voucherIndex(): Int = (asset as OwnAsset.Voucher).ringVrfIndex
+    private fun LedgerAsset.voucherIndex(): Int = (asset as OwnAsset.Voucher).ringVrfIndex.item
 
     private fun isOnboardingOnBestChain(voucher: Int) =
         bestState()?.ringPositions?.get(voucherKeyOf(voucher)) is RingPosition.Onboarding

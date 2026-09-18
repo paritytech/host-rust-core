@@ -2,7 +2,7 @@
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
-
+#![doc = include_str!("../README.md")]
 //! TrUAPI trait and type definitions for the host product SDK.
 //!
 //! Concrete wire types live in per-version modules. Versioned envelopes are in
@@ -28,6 +28,7 @@ pub use async_trait::async_trait;
 
 pub mod api;
 pub mod v01;
+pub mod v02;
 pub mod versioned;
 
 /// A 32-byte value, passed as plain bytes on FFI surfaces. Version-neutral:
@@ -51,20 +52,25 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
+        AccountId, AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode,
+        BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction,
         ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
         ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
-        ContextualAlias, DerivationIndex, GenericError, HostAccountCreateProofRequest,
+        ColorToken, ColumnProps, ContentAlignment, ContextualAlias, DerivationIndex, Dimensions,
+        Effect, EffectProps, GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
         HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
-        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
-        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
+        ImageFit, ImageProps, ImageSource, Modifier, NotificationId, OperationStartedResult,
+        PocketCard, ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey,
+        RemotePermission, RemoteStatementStoreCreateProofError,
         RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension, VrfSignature,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
+        RendererNode, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi,
+        RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement, StatementProof,
+        StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps, TextProps,
+        ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
+        VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -95,12 +101,14 @@ pub mod latest {
     pub type HostChatPostMessageResponse = LatestOf<versioned::chat::HostChatPostMessageResponse>;
     /// Native chat message posting failure.
     pub type HostChatPostMessageError = LatestOf<versioned::chat::HostChatPostMessageError>;
-    /// Host-to-product custom render work request.
-    pub type ProductChatCustomMessageRenderRequest =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderRequest>;
-    /// Product-to-host custom renderer tree.
-    pub type ProductChatCustomMessageRenderItem =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderItem>;
+    /// Action triggered inside a product-rendered body, delivered to the worker.
+    pub type HostRendererActionSubscribeItem =
+        LatestOf<versioned::renderer::HostRendererActionSubscribeItem>;
+    /// Host-to-product render request for one body.
+    pub type ProductRendererRenderRequest =
+        LatestOf<versioned::renderer::ProductRendererRenderRequest>;
+    /// Product-to-host renderer tree.
+    pub type ProductRendererRenderItem = LatestOf<versioned::renderer::ProductRendererRenderItem>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
@@ -140,6 +148,12 @@ pub mod latest {
     pub type HostLocaleSubscribeItem = LatestOf<versioned::locale::HostLocaleSubscribeItem>;
     /// Navigation request error.
     pub type HostNavigateToError = LatestOf<versioned::system::HostNavigateToError>;
+    /// The calling product's Pocket cards.
+    pub type HostPocketListSubscribeItem = LatestOf<versioned::pocket::HostPocketListSubscribeItem>;
+    /// Pocket card removal request.
+    pub type HostPocketRemoveCardRequest = LatestOf<versioned::pocket::HostPocketRemoveCardRequest>;
+    /// Pocket card removal failure.
+    pub type HostPocketRemoveCardError = LatestOf<versioned::pocket::HostPocketRemoveCardError>;
     /// Push notification scheduling request.
     pub type HostPushNotificationRequest =
         LatestOf<versioned::notifications::HostPushNotificationRequest>;
@@ -208,7 +222,7 @@ pub use truapi_macros::{service, wire, wire_trait};
 /// `(trait, method)` byte pair. The handshake accepts only this version, and
 /// codegen stamps it into the generated clients, so every peer derives it
 /// from here.
-pub const WIRE_CODEC_VERSION: u8 = 2;
+pub const WIRE_CODEC_VERSION: u8 = 3;
 
 /// Per-message id carried from the transport frame.
 pub type RequestId = String;
@@ -445,32 +459,45 @@ impl CallContext {
 
 /// Handle to an active subscription. Implements [`Stream`] to yield values
 /// pushed by the host. Drop to unsubscribe.
-pub struct Subscription<T> {
-    inner: Pin<Box<dyn Stream<Item = T> + Send>>,
+///
+/// The stream yields `Ok(item)` for each value and at most one `Err`, which
+/// ends it: the runtime encodes that value as the `_interrupt` payload and
+/// polls no further. A stream that ends without an `Err` interrupts with
+/// `Ok(())`, which the peer reads as a normal completion.
+pub struct Subscription<Item, Interrupt> {
+    inner: Pin<Box<dyn Stream<Item = Result<Item, Interrupt>> + Send>>,
 }
 
-impl<T> Stream for Subscription<T> {
-    type Item = T;
+impl<Item, Interrupt> Stream for Subscription<Item, Interrupt> {
+    type Item = Result<Item, Interrupt>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
 }
 
-impl<T> Subscription<T> {
-    /// Creates a new subscription from a boxed stream.
-    pub fn new(stream: Pin<Box<dyn Stream<Item = T> + Send>>) -> Self {
-        Self { inner: stream }
+impl<Item, Interrupt> Subscription<Item, Interrupt> {
+    /// Creates a subscription from a stream of items and at most one
+    /// terminating interrupt.
+    pub fn new<S>(stream: S) -> Self
+    where
+        S: Stream<Item = Result<Item, Interrupt>> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+        }
     }
 
-    /// Creates a subscription that yields no items. Useful as a placeholder for
-    /// default "unavailable" trait bodies where the dispatcher will discard the
-    /// stream and emit an Interrupt frame.
-    pub fn empty() -> Self
+    /// Creates a subscription that yields no items and ends with `interrupt`.
+    /// The default trait bodies of unimplemented methods interrupt with
+    /// [`CallError::unavailable`], so a caller sees a failure rather than a
+    /// stream that finished.
+    pub fn interrupted(interrupt: Interrupt) -> Self
     where
-        T: Send + 'static,
+        Item: Send + 'static,
+        Interrupt: Send + 'static,
     {
-        Self::new(Box::pin(futures::stream::empty()))
+        Self::new(futures::stream::once(core::future::ready(Err(interrupt))))
     }
 }
 
