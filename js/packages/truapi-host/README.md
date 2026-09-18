@@ -333,25 +333,45 @@ once, after the last. A `wanted: false` is permission to stop, not an order: a h
 ## Debugging (dev-only)
 
 The worker can stream every product↔core wire frame to the wire debugger. It is
-off by default and enabled purely from the host page — the product needs no
-changes. Two conditions must **both** hold or nothing dials and the core installs
-no tap:
+off by default and the embedding host decides; the product needs no changes.
+Two conditions must **both** hold or nothing dials and the core installs no tap:
 
 1. **The host page is a dev build.** The dial sits behind a hard
    `import.meta.env.DEV` gate, which bundlers replace with a boolean literal: in
-   a production bundle it returns `null` unconditionally, so no stored key can
-   turn the tap on. A production build that shows no frames is this gate, not a
-   broken debugger — and it says so: with the key set but the gate closed, the
-   host logs once that the dial is compiled out, rather than staying silent and
-   reading as a broken tool. That matters for a host whose only local build is
-   production-mode; `NODE_ENV=development` is what opens the gate under Vite.
-2. **The host origin's `localStorage` carries a `ws://` loopback URL**, read on
-   the host page at runtime boot and forwarded to the worker in its `init`
-   message:
+   a production bundle that gate is false, so no option can turn the tap on. A
+   production build that shows no frames is this gate, not a broken debugger.
+   `NODE_ENV=development` is what opens the gate under Vite.
+2. **A `ws://` loopback URL reaches the runtime**, from one of two places. The
+   host's own value wins over the build's, so the build's is a default and never
+   an override:
 
-   ```js
-   localStorage.setItem("truapi:debugger", "ws://127.0.0.1:9231");
+   ```ts
+   // 1. the host passes it, the normal path, where the host stays in control
+   await createWebWorkerPairingHostRuntime(worker, callbacks, {
+     hostConfig,
+     debugger: "ws://127.0.0.1:9231", // null or "" refuses the dial outright
+   });
    ```
+
+   ```bash
+   # 2. or compile a default in, which is what a local stack does: every
+   #    browser profile that opens the build dials, with nothing to switch on
+   VITE_TRUAPI_DEBUGGER_URL=ws://127.0.0.1:9231 vite build
+   ```
+
+   Passing `null` or `""` is how a host refuses the dial even when the build
+   carries one; omitting the field takes the build's value.
+
+   While a dial is live the host shows a small fixed-position badge naming every
+   endpoint frames are going to, so a tap left on from an earlier session is
+   visible rather than buried in a console line. Pass `debuggerIndicator: false`
+   to suppress it, and only when the host renders its own signal, since the
+   point is that a host streaming frames is never silent about it. One runtime
+   suppressing the badge leaves another runtime's badge alone.
+
+   The dial is resolved once, when the runtime is created, and cannot be changed
+   from the page afterwards, so whether this session is observed is a property
+   of the build and the host, not of anything typed into a console later.
 
 Run the debugger at the other end (`@parity/truapi-debugger`, `npm run serve`,
 `127.0.0.1:9231`). On the next runtime boot the worker dials that URL and (via

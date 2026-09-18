@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
@@ -26,105 +26,18 @@ import type {
   WorkerDemandChange,
 } from "../runtime.js";
 import { makeHostCallbacks, settle } from "../test-support.js";
+import {
+  asWorker,
+  FakeWorker,
+  hostConfigFromRuntimeConfig,
+  lastMessageOfKind,
+  readyRuntime,
+  runtimeConfig,
+} from "./worker-test-harness.js";
+import type { WorkerMessage } from "./worker-test-harness.js";
 import { createWebWorkerPairingHostRuntime } from "./index.js";
 import type { CreateWebWorkerPairingHostRuntimeOptions } from "./index.js";
 
-type WorkerMessage = Record<string, unknown>;
-
-/** Minimal `Worker` stand-in that records posted messages and lets a test
- *  drive the `message`/`error`/`messageerror` events by hand. */
-class FakeWorker {
-  listeners = new Map<string, Set<(event: unknown) => void>>();
-  messages: WorkerMessage[] = [];
-  terminated = false;
-
-  addEventListener(name: string, fn: (event: unknown) => void) {
-    const listeners = this.listeners.get(name) ?? new Set();
-    listeners.add(fn);
-    this.listeners.set(name, listeners);
-  }
-
-  removeEventListener(name: string, fn: (event: unknown) => void) {
-    this.listeners.get(name)?.delete(fn);
-  }
-
-  postMessage(message: WorkerMessage) {
-    this.messages.push(message);
-  }
-
-  terminate() {
-    this.terminated = true;
-  }
-
-  emit(message: WorkerMessage) {
-    for (const listener of this.listeners.get("message") ?? []) {
-      listener({ data: message });
-    }
-  }
-
-  emitError(message: string) {
-    for (const listener of this.listeners.get("error") ?? []) {
-      listener({ message });
-    }
-  }
-
-  emitMessageError() {
-    for (const listener of this.listeners.get("messageerror") ?? []) {
-      listener({ data: null });
-    }
-  }
-}
-
-/** Coerce the `FakeWorker` to the `Worker` shape the provider expects. */
-function asWorker(worker: FakeWorker): Worker {
-  return worker as unknown as Worker;
-}
-
-function runtimeConfig(
-  overrides: Partial<ProductRuntimeConfig> = {},
-): ProductRuntimeConfig {
-  return {
-    productId: "dotli.dot",
-    host: {
-      name: "Polkadot Web",
-      icon: "https://dot.li/dotli.png",
-      version: "0.5.0",
-    },
-    platform: {
-      type: "node",
-      version: process.versions.node,
-    },
-    people: {
-      genesisHash:
-        "0xa22a2424d2cbf561eaecf7da8b1b548fa9d1939f60265e942b1049616a012f71",
-    },
-    bulletin: {
-      genesisHash:
-        "0xbbcccc1cbe333151b8ed63b17e9e0dec61ee53b57296f1fbe2d161ae3e6fb4dc",
-    },
-    assetHub: {
-      genesisHash:
-        "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    },
-    pairing: {
-      deeplinkScheme: "polkadotapp",
-    },
-    ...overrides,
-  };
-}
-
-function hostConfigFromRuntimeConfig(
-  config: ProductRuntimeConfig,
-): CreateWebWorkerPairingHostRuntimeOptions["hostConfig"] {
-  const {
-    productId: _productId,
-    executionKind: _executionKind,
-    ...hostConfig
-  } = config;
-  return hostConfig;
-}
-
-/** One render request the provider-level render tests reuse. */
 function renderRequest(): ProductRendererRenderRequest {
   return {
     context: { tag: "PocketCard", value: { cardId: "card" } },
@@ -139,12 +52,6 @@ function indexOfKind(worker: FakeWorker, kind: string): number {
     if (message.kind === kind) index = at;
   });
   return index;
-}
-
-function lastMessageOfKind(worker: FakeWorker, kind: string): WorkerMessage {
-  const message = [...worker.messages].reverse().find((m) => m.kind === kind);
-  expect(message).toBeDefined();
-  return message!;
 }
 
 async function finishProviderReady(
@@ -193,17 +100,6 @@ async function createProviderFromRuntime(
   };
 }
 
-async function readyRuntime(worker: FakeWorker) {
-  const runtimePromise = createWebWorkerPairingHostRuntime(
-    asWorker(worker),
-    makeHostCallbacks(),
-    { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
-  );
-  worker.emit({ kind: "loaded" });
-  worker.emit({ kind: "ready" });
-  return runtimePromise;
-}
-
 async function readyProvider(worker: FakeWorker, options: ReadyOptions = {}) {
   const providerPromise = createProviderFromRuntime(
     asWorker(worker),
@@ -244,6 +140,8 @@ describe("createWebWorkerPairingHostRuntime", () => {
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
       capabilities: { chat: false, permissionStatus: false, pocket: false },
+      // Null under `bun test`: the `import.meta.env.DEV` gate reads undefined,
+      // so no dial resolves and the worker builds no tap.
       debuggerUrl: null,
     });
 
@@ -1483,60 +1381,6 @@ describe("createWebWorkerPairingHostRuntime", () => {
     });
 
     await expect(published).rejects.toThrow("Denied");
-  });
-});
-
-describe("debugger enablement reporting", () => {
-  // Regression for design doc §9: a switch set on a build whose dial is compiled
-  // out must say so once. Silence there is indistinguishable from a broken
-  // debugger, and a host whose only local build is production-mode (dot.li ships
-  // `build`/`preview`, no dev server) gets no other signal.
-  //
-  // Under `bun test` `import.meta.env.DEV` is `undefined`, so the gate takes its
-  // production path - which is exactly the path being asserted.
-  const withStubbedStorage = async (
-    key: string | null,
-    run: () => Promise<unknown>,
-  ): Promise<string[]> => {
-    const g = globalThis as typeof globalThis & { localStorage?: unknown };
-    const had = Object.prototype.hasOwnProperty.call(g, "localStorage");
-    const previous = g.localStorage;
-    const logged: string[] = [];
-    const info = console.info;
-    g.localStorage = {
-      getItem: (name: string) => (name === "truapi:debugger" ? key : null),
-      setItem: () => {},
-    };
-    console.info = (...args: unknown[]) => {
-      logged.push(args.map(String).join(" "));
-    };
-    try {
-      await run();
-    } finally {
-      console.info = info;
-      if (had) g.localStorage = previous;
-      else delete g.localStorage;
-    }
-    return logged;
-  };
-
-  it("reports once when the switch is set but the dial is compiled out", async () => {
-    const worker = new FakeWorker();
-    const logged = await withStubbedStorage("ws://127.0.0.1:9231", () =>
-      readyRuntime(worker),
-    );
-    const line = logged.find((l) => l.includes("wire debugger"));
-    expect(line).toBeDefined();
-    expect(line).toContain("truapi:debugger");
-    // Must not assert a cause it cannot know: a production build and a bundler
-    // that never substituted the token both leave the condition false.
-    expect(line).toContain("did not resolve true");
-  });
-
-  it("stays silent when the switch is unset", async () => {
-    const worker = new FakeWorker();
-    const logged = await withStubbedStorage(null, () => readyRuntime(worker));
-    expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
   });
 });
 

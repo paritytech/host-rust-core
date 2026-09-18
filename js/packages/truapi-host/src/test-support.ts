@@ -41,6 +41,7 @@ export function makeHostCallbacks(
       async *lookupPreimage() {},
     },
     theme: { async *subscribeTheme() {} },
+    locale: { async *subscribeLocale() {} },
     chain: {
       connect: async () => ({
         send() {},
@@ -76,6 +77,7 @@ export function makeHostCallbacks(
     },
     preimage: { ...defaults.preimage, ...overrides.preimage },
     theme: { ...defaults.theme, ...overrides.theme },
+    locale: { ...defaults.locale, ...overrides.locale },
     chain: { ...defaults.chain, ...overrides.chain },
     // Chat is an optional capability: only fixtures that ask for it get the
     // group, so the default fixture is a host that does not serve chat.
