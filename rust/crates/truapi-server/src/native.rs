@@ -623,9 +623,6 @@ pub struct NativeTrUApiHostRuntime {
     events: Arc<NativeEventBus>,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
-    /// One localhost WebSocket listener shared by every product execution
-    /// this host runtime opens. Starts lazily on the first execution's
-    /// `start_ws_bridge` call and lives for as long as this host runtime.
     #[cfg(feature = "ws-bridge")]
     ws_bridge: Arc<SharedWsBridge>,
     /// The one Worker execution per product; opening another replaces it.
@@ -671,7 +668,9 @@ impl NativeTrUApiHostRuntime {
             #[cfg(feature = "ws-bridge")]
             spawner,
             #[cfg(feature = "ws-bridge")]
-            ws_bridge: Arc::new(SharedWsBridge::new()),
+            ws_bridge: Arc::new(SharedWsBridge::new(Arc::new(move |marker, detail| {
+                callbacks.on_core_log(marker.to_string(), detail.to_string());
+            }))),
             worker_executions: Mutex::new(HashMap::new()),
         }))
     }
@@ -1036,11 +1035,8 @@ pub struct NativeProductExecution {
         crate::runtime::ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>,
     >,
     closed: AtomicBool,
-    /// The host runtime's shared listener; every execution under the same
-    /// host runtime clones this same `Arc`.
     #[cfg(feature = "ws-bridge")]
     ws_bridge: Arc<SharedWsBridge>,
-    /// This execution's own registered token, if its bridge is running.
     #[cfg(feature = "ws-bridge")]
     bridge_token: Mutex<Option<String>>,
     #[cfg(feature = "ws-bridge")]
@@ -1085,10 +1081,7 @@ impl NativeProductExecution {
 
     #[cfg(feature = "ws-bridge")]
     fn stop_bridge(&self) {
-        // Taken in its own statement so the guard is released before `revoke`,
-        // which blocks until this execution's connections have unwound. Held
-        // across that call, it would make a concurrent `start_ws_bridge` on
-        // this execution wait out the whole teardown.
+        // Release the token lock before waiting for connection cancellation.
         let token = self
             .bridge_token
             .lock()
@@ -1274,11 +1267,8 @@ impl NativeProductExecution {
 #[cfg(feature = "ws-bridge")]
 #[uniffi::export]
 impl NativeProductExecution {
-    /// Register this execution against the host runtime's shared localhost
-    /// bridge, minting an independent authentication token. Every execution
-    /// under the same host runtime connects through the same port;
-    /// `bind_port` only has an effect for the first execution to register
-    /// while the shared listener is still unstarted.
+    /// Register this execution with its own token on the host's shared listener.
+    /// `bind_port` applies only when the listener first starts.
     pub fn start_ws_bridge(&self, bind_port: u16) -> Result<WsBridgeEndpoint, WsBridgeStartError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(WsBridgeStartError::Io(
@@ -2259,6 +2249,7 @@ mod tests {
     }
 
     struct EventCallbacks {
+        logs: Mutex<Vec<String>>,
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<(String, String, String)>>,
         chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
@@ -2293,6 +2284,7 @@ mod tests {
 
         fn new() -> Self {
             Self {
+                logs: Mutex::new(Vec::new()),
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
                 chat_bot_status: Mutex::new(v01::ChatBotRegistrationStatus::New),
@@ -2323,7 +2315,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl HostCallbacks for EventCallbacks {
-        fn on_core_log(&self, _marker: String, _detail: String) {}
+        fn on_core_log(&self, marker: String, _detail: String) {
+            self.logs.lock().expect("logs mutex poisoned").push(marker);
+        }
         fn worker_demand_changed(&self, product_id: String, transition: WorkerTransition) {
             self.worker_demand
                 .lock()
@@ -4030,11 +4024,113 @@ mod tests {
         execution.stop_ws_bridge();
     }
 
-    /// The PR's headline behavior, exercised through the real
-    /// `NativeProductExecution`/UniFFI-facing surface rather than only
-    /// `ws_bridge.rs`'s own lower-level unit tests: two executions under one
-    /// host runtime share the shared bridge's port with isolated tokens, and
-    /// stopping one leaves the other's live connection untouched.
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn closing_an_execution_releases_its_callbacks_while_the_host_lives() {
+        let host = native_host_runtime_no_session();
+        let callbacks = Arc::new(EventCallbacks::new());
+        let weak_callbacks = Arc::downgrade(&callbacks);
+        let execution = host
+            .open_product_execution(
+                callbacks,
+                None,
+                None,
+                native_execution_config("first.dot", ProductExecutionKind::App),
+            )
+            .expect("open execution");
+        execution.start_ws_bridge(0).expect("start bridge");
+
+        execution.shutdown();
+        drop(execution);
+
+        assert!(
+            weak_callbacks.upgrade().is_none(),
+            "the listener must not retain a closed execution's callbacks"
+        );
+        drop(host);
+    }
+
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn bridge_logs_follow_the_host_and_authenticated_execution() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let callbacks = [
+            Arc::new(EventCallbacks::new()),
+            Arc::new(EventCallbacks::new()),
+            Arc::new(EventCallbacks::new()),
+        ];
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks[0].clone(),
+            native_host_runtime_config(),
+        )
+        .expect("create host");
+        let executions = [(1, "first.dot"), (2, "second.dot")].map(|(index, product_id)| {
+            host.open_product_execution(
+                callbacks[index].clone(),
+                None,
+                None,
+                native_execution_config(product_id, ProductExecutionKind::App),
+            )
+            .expect("open execution")
+        });
+        executions[0].start_ws_bridge(0).expect("start first");
+        let endpoint = executions[1].start_ws_bridge(0).expect("start second");
+        let client = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        let socket = client.block_on(async {
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+                "ws://127.0.0.1:{}/?t={}",
+                endpoint.port, endpoint.token
+            ))
+            .await
+            .expect("connect second");
+            socket
+                .send(WsMessage::Text("ignored".into()))
+                .await
+                .expect("send text");
+            socket
+        });
+        crate::test_support::wait_until(
+            || {
+                callbacks.iter().any(|callbacks| {
+                    callbacks
+                        .logs
+                        .lock()
+                        .expect("logs mutex poisoned")
+                        .iter()
+                        .any(|marker| marker == "truapi.ws_bridge.text_frame_ignored")
+                })
+            },
+            "connection did not process the text frame",
+        );
+        let logs = callbacks.map(|callbacks| {
+            callbacks
+                .logs
+                .lock()
+                .expect("logs mutex poisoned")
+                .iter()
+                .filter(|marker| marker.starts_with("truapi.ws_bridge."))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            logs,
+            [
+                vec!["truapi.ws_bridge.started"],
+                vec![],
+                vec![
+                    "truapi.ws_bridge.connection_open",
+                    "truapi.ws_bridge.text_frame_ignored"
+                ],
+            ]
+        );
+        drop(socket);
+    }
+
     #[cfg(feature = "ws-bridge")]
     #[test]
     fn two_executions_share_one_bridge_through_the_native_api() {
@@ -4136,8 +4232,6 @@ mod tests {
                 .await
                 .expect("chat dial");
 
-            // Each execution's own token round-trips independently on the
-            // one shared port.
             app_ws
                 .send(WsMessage::Binary(round_trip("app:1").encode()))
                 .await
@@ -4150,9 +4244,6 @@ mod tests {
                 .expect("send on chat connection");
             assert_eq!(answer(&mut chat_ws).await.request_id, "chat:1");
 
-            // Stopping (revoking) App must not touch Chat's live connection,
-            // and must block until App's own connection has actually finished
-            // unwinding before returning.
             app.stop_ws_bridge();
 
             chat_ws
@@ -4165,10 +4256,6 @@ mod tests {
                 "Chat's connection must keep answering after a sibling execution stops"
             );
 
-            // The token is removed from the registry synchronously inside
-            // `revoke`, so a fresh connect with it is refused with no retry
-            // loop. This says nothing about whether the aborted connection has
-            // finished unwinding.
             assert!(
                 tokio_tungstenite::connect_async(&app_url).await.is_err(),
                 "a revoked token must not still be accepted"
