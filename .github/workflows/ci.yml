@@ -485,6 +485,27 @@ jobs:
         with:
           persist-credentials: false
 
+      # The adapter's codegen task runs the core's scripts/codegen.sh, which
+      # emits rustdoc JSON and formats the result, both of which are nightly
+      # only. The app tree pins the nightly date because rustdoc's JSON format
+      # version moves with the toolchain, so read the pin rather than restate
+      # it. The stable toolchain below is what everything else builds with.
+      - name: Read the pinned nightly
+        id: nightly
+        run: |
+          set -euo pipefail
+          toolchain="$(sed -n 's/^truapi\.rustNightly=//p' hosts/android/gradle.properties)"
+          [ -n "${toolchain}" ] || {
+            echo "truapi.rustNightly is not set in hosts/android/gradle.properties" >&2
+            exit 1
+          }
+          echo "toolchain=${toolchain}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # pinned nightly
+        with:
+          toolchain: ${{ steps.nightly.outputs.toolchain }}
+          components: rustfmt
+
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
