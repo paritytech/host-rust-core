@@ -218,8 +218,9 @@ export interface RequestParams<Ok, Err> {
    * aborted when the call is made sends nothing and rejects immediately.
    *
    * A host that predates the `Cancel` leg drops the frame, so an aborted call
-   * against one settles on its deadline instead. Check
-   * `system.featureSupported` before offering an abort.
+   * against one settles on its deadline instead. There is no way to detect that
+   * first: `system.featureSupported` answers only about chains, so an abort
+   * against an older host is indistinguishable from one it honoured.
    **/
   signal?: AbortSignal;
 }

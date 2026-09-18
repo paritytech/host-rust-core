@@ -935,6 +935,51 @@ mod tests {
         );
     }
 
+    /// A tombstone is spent by the call it withdraws. Leaving it behind makes
+    /// the id permanently unusable on that connection: every later `Request`
+    /// naming it answers `Cancelled` and its handler never runs, which is a
+    /// withdrawal the peer did not ask for.
+    #[test]
+    fn an_early_withdrawal_is_spent_by_the_call_it_withdraws() {
+        let mut dispatcher = Dispatcher::new(test_spawner());
+        let ids = MethodIds {
+            trait_id: 7,
+            method_id: 65,
+        };
+        let invocations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let handler_invocations = invocations.clone();
+        dispatcher.on_request(ids, move |_request_id, _bytes, _cancel| {
+            handler_invocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move { vec![4, 5, 6] })
+        });
+        let transport = Arc::new(RecordingTransport::default());
+
+        let dispatch = |message_type: u8| {
+            let transport: Arc<dyn Transport> = transport.clone();
+            futures::executor::block_on(
+                dispatcher.dispatch(make_frame(7, 65, message_type, Vec::new()), transport),
+            );
+        };
+        dispatch(MESSAGE_TYPE_CANCEL);
+        dispatch(MESSAGE_TYPE_REQUEST);
+        dispatch(MESSAGE_TYPE_REQUEST);
+
+        assert_eq!(
+            invocations.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the second call reuses a spent id, so its handler must run"
+        );
+        assert_eq!(
+            transport.sent(),
+            [
+                expect_response(7, 65, encode_cancelled_response()),
+                expect_response(7, 65, vec![4, 5, 6]),
+            ]
+            .concat(),
+            "the withdrawal answers the first call only; the second gets its own result"
+        );
+    }
+
     /// The refusal has to be visible where frames arrive, not just in the
     /// registry: a duplicate must leave without answering, where a withdrawn
     /// call answers `Cancelled`. Crossing those two would either answer a

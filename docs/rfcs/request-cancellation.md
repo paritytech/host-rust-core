@@ -84,9 +84,8 @@ product that never sends a `Cancel` never has to decode the new variant.
 
 That is worth the care, because `WIRE_CODEC_VERSION` is what a bump would cost. The handshake compares it for exact
 equality in both directions, so moving it is a flag day rather than a rollout: a product on the new number cannot talk
-to a host on the old one at all, for any method, and native hosts ship on app-release cycles. Codegen now derives the
-number from `truapi::WIRE_CODEC_VERSION` instead of taking it as an argument, so the generated client and the host's
-handshake cannot drift apart again.
+to a host on the old one at all, for any method, and native hosts ship on app-release cycles. Keeping the generated
+client's number in step with `truapi::WIRE_CODEC_VERSION` is #848's work, not this change's.
 
 ### Peers that predate the leg
 
@@ -106,7 +105,10 @@ own deadline sends `Cancel` before it rejects, which is the leak it closes: toda
 and rejects without telling anyone.
 
 Tearing down an execution is unchanged. It aborts the dispatch futures wholesale, which drops the handlers outright and
-is strictly stronger than firing their tokens, and the registry entries go with them.
+is strictly stronger than firing their tokens. The registry entries those futures held are not released on that path,
+since the release runs after the handler returns and an aborted future never reaches it. They cost a slot each until the
+registry itself is dropped with the connection, and a monotonic id is never presented again, so nothing is left
+reachable.
 
 Cancelling a call that waits on a paired host ends the local wait by the path a timeout already takes. The paired host
 is not told, because the SSO protocol has no cancel message.
