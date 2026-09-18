@@ -2292,8 +2292,8 @@ impl PairingHost {
         // presents to a third product that granted nothing. That third party
         // cannot consent here and is not a party to the grant.
         //
-        // The owner's own calls are unaffected; only a cross-product caller is
-        // held to its own context.
+        // The owner's own calls are unaffected; a cross-product caller is held to
+        // its own context or the granting product's.
         crate::runtime::product_manifest::require_own_context(&access, &request.payload.context)?;
         let private_session = self.current_private_session(session)?;
         if let Some(entropy) = self

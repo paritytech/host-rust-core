@@ -930,8 +930,8 @@ impl ProductAuthority for SigningHost {
             Err(RingVrfError::NotAllowlisted) => None,
             Err(err) => return Err(err),
         };
-        // The grant admits the caller's own context and no one else's, exactly
-        // as on `create_proof`. The alias this returns and the alias a proof
+        // The grant admits the caller's own context and the granting product's,
+        // and no one else's, exactly as on `create_proof`. The alias this returns and the alias a proof
         // attests are one VRF evaluation, so guarding only the proof would leave
         // the same bytes reachable through this read.
         let key_handle = match granted {
@@ -1006,8 +1006,8 @@ impl ProductAuthority for SigningHost {
         // presents to a third product that granted nothing. That third party
         // cannot consent here and is not a party to the grant.
         //
-        // The owner's own calls are unaffected; only a cross-product caller is
-        // held to its own context.
+        // The owner's own calls are unaffected; a cross-product caller is held to
+        // its own context or the granting product's.
         crate::runtime::product_manifest::require_own_context(&access, &request.payload.context)?;
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
@@ -1781,6 +1781,12 @@ mod tests {
         assert!(
             mint("peopl.dot", "bank.dot").is_ok(),
             "the owner may still mint its own alias in any context"
+        );
+        assert_eq!(
+            mint("dim2.dot", "peopl.paseo").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "a namesake on another network is a different product, so its context \
+             is not the granting product's"
         );
     }
 

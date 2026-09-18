@@ -429,12 +429,21 @@ async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> 
 /// The contextual alias is a function of (owner key, context), so an
 /// unconstrained context lets a grantee produce the alias the owner presents to
 /// a third product, one that granted nothing, is not a party to the grant, and
-/// cannot consent here. The owner's own context is not that case: the owner is
-/// the party that granted, and a context naming it is the grant read literally.
-/// It is also the only context a chain-wide proof context resolves to —
-/// `PeopleLite.set_alias_account` verifies against `Score.score_context`, which
-/// names the personhood product for every prover, so admitting the grantee's
-/// own context alone admits nothing such a chain accepts.
+/// cannot consent here.
+///
+/// The owner's own context is admitted because the scope already says so:
+/// `granted-scopes.md` gives a grantee the owner's keys, and refusing the
+/// owner's context left the scope unusable, since `PeopleLite.set_alias_account`
+/// verifies against `Score.score_context`, which names the personhood product for
+/// every prover on the chain. Admitting the grantee's own context alone admits
+/// nothing such a chain accepts.
+///
+/// Be clear about what that costs rather than what it spares. On a chain whose
+/// contexts are personhood-owned, the owner's context *is* the pseudonym the
+/// owner presents to every third product in the score system, so what remains
+/// refused is the case that barely arises here. The residual guard is worth less
+/// than its name suggests; it is the `raw:` development context and a genuinely
+/// third-party-named one that it still closes.
 ///
 /// The owner's own calls are unaffected: minting your own aliases in any
 /// context is what the parameter is for.
@@ -466,13 +475,20 @@ pub(crate) fn require_own_context(
     let Ok(context_id) = normalize_product_identifier(&context.product_id) else {
         return Err(RingVrfError::NotAllowlisted);
     };
-    // Compared by label, not by full id: the grant is to a product and a product
-    // is all its executables, so `dim2.dot` may act in `app.dim2.dot`'s context.
-    let label = bare_product_label(&context_id);
-    if label != bare_product_label(&access.caller) && label != bare_product_label(&access.owner) {
-        return Err(RingVrfError::NotAllowlisted);
+    // The caller's own context is compared by label, not by full id: the grant is
+    // to a product and a product is all its executables, so `dim2.dot` may act in
+    // `app.dim2.dot`'s context.
+    if bare_product_label(&context_id) == bare_product_label(&access.caller) {
+        return Ok(());
     }
-    Ok(())
+    // The owner's is compared by full id, for the reason the ownership test above
+    // gives: a label match would admit `peopl.paseo`'s context against a handle
+    // owned by `peopl.dot`, so a grant on one network would reach a namesake's
+    // context on another.
+    if context_id == access.owner {
+        return Ok(());
+    }
+    Err(RingVrfError::NotAllowlisted)
 }
 
 /// The identities the gate decided about, both normalized.
