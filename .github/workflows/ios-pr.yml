@@ -108,7 +108,7 @@ jobs:
     steps:
       - name: Check for skip-ci label
         id: check_skip
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const pr = context.payload.pull_request;
@@ -127,7 +127,7 @@ jobs:
     runs-on: macos-26-xlarge
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # The xcframework targets iOS, so this needs the SDK.
       - name: Setup iOS Environment
@@ -180,7 +180,7 @@ jobs:
     timeout-minutes: 30
     runs-on: macos-26-xlarge
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
@@ -291,7 +291,7 @@ jobs:
     runs-on: macos-26-xlarge
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
@@ -428,7 +428,7 @@ jobs:
     timeout-minutes: 30
     runs-on: macos-26-xlarge
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install

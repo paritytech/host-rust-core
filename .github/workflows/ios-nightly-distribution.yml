@@ -64,7 +64,7 @@ jobs:
       inputs.release_pr_number != '' }}
     steps:
       - name: Merge PR and delete branch
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           github-token: ${{ github.token }}
           script: |
