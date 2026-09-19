@@ -103,6 +103,12 @@ final class DebugSettingsViewController: UIViewController, ViewHolder {
             for: .valueChanged
         )
 
+        rootView.hostPlacedSwitch.addTarget(
+            self,
+            action: #selector(actionToggleHostPlacement),
+            for: .valueChanged
+        )
+
         #if DEBUG
             rootView.openTrUAPIPlaygroundButton.addTarget(
                 self,
@@ -161,6 +167,10 @@ final class DebugSettingsViewController: UIViewController, ViewHolder {
         presenter.toggleTruApiRuntime()
     }
 
+    @objc func actionToggleHostPlacement() {
+        presenter.toggleHostPlacement()
+    }
+
     @objc func actionOpenTrUAPIPlayground() {
         presenter.openTrUAPIPlayground()
     }
@@ -184,6 +194,10 @@ extension DebugSettingsViewController: DebugSettingsViewProtocol {
 
     func didReceive(strategyDebugEnabled: Bool) {
         rootView.strategyDebugSwitch.isOn = strategyDebugEnabled
+    }
+
+    func didReceive(hostPlacementEnabled: Bool) {
+        rootView.hostPlacedSwitch.isOn = hostPlacementEnabled
     }
 
     func didReceive(truApiRuntimeEnabled: Bool) {
