@@ -47,14 +47,11 @@ import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeName
 import uniffi.truapi_platform.AuthState
 import uniffi.truapi_platform.HostChainSet
-import uniffi.truapi_platform.PermissionAuthorizationRequest
-import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Instant
-import uniffi.truapi.RemotePermissionRequest as NativeRemotePermissionRequest
 import uniffi.truapi.ThemeVariant as NativeThemeVariant
 import uniffi.truapi_platform.PermissionDecision as TrUAPIPermissionDecision
 
@@ -267,17 +264,10 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
             val endpoint = opened.startWsBridge()
             observeAppTheme()
             observeAppLifecycle()
-            onReadyToInject(LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token, opened.webRtcAllowed()))
+            onReadyToInject(LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token))
             opened
         }.onFailure { stop() }
     }
-
-    // A peek at the stored decision, never a prompt: the bootstrap bakes it in
-    // as a literal, so it can only change when the page reloads.
-    private suspend fun TrUAPIProductExecution.webRtcAllowed(): Boolean =
-        permissionAuthorizationStatus(
-            PermissionAuthorizationRequest.Remote(NativeRemotePermissionRequest(RemotePermission.WebRtc)),
-        ) == PermissionAuthorizationStatus.AUTHORIZED
 
     private fun observeAppLifecycle() {
         scope.launch {

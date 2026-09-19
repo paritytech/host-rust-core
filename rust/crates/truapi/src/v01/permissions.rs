@@ -64,6 +64,11 @@ pub enum RemotePermission {
     },
     /// WebRTC access.
     ///
+    /// The container authorizes each peer connection through Rust before its
+    /// first network method. Later methods on that connection share the same
+    /// decision, so a one-use grant permits one connection. New connections
+    /// check current permissions without requiring a page reload.
+    ///
     /// Camera and microphone capture is gated by the OS permission prompts and
     /// [`HostDevicePermissionRequest`], not by this permission.
     #[display("WebRTC connections")]

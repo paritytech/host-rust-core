@@ -310,7 +310,7 @@ jobs:
           gate adds_changeset '^\.changeset/[^/]+\.md$'
 
   ios-swift:
-    name: iOS package (swift compile)
+    name: iOS package (Swift + WebKit)
     needs: [changes, codegen]
     if: needs.changes.outputs.sdk_swift == 'true'
     runs-on: macos-15
@@ -343,7 +343,7 @@ jobs:
         with:
           name: codegen-output
 
-      # Simulator slice only, debug profile. This gate compiles Swift and ships
+      # Simulator slice only, debug profile. This gate tests Swift and ships
       # no binary, so the device slice and release codegen are waste. The
       # published binary is older than the current Rust surface, so
       # TRUAPI_USE_LOCAL_BINARY points the manifest at this build instead.
@@ -363,7 +363,10 @@ jobs:
       # so SwiftPM refuses to resolve the package until this exists.
       - name: Build the lockdown container bundle
         run: |
+          npm ci --ignore-scripts
+          npm run build --prefix js/packages/truapi
           npm --prefix js/container install --no-fund --no-audit
+          npm --prefix js/container run typecheck
           npm --prefix js/container run build
 
       - name: Build the simulator XCFramework for TrUAPIProvider
@@ -396,16 +399,15 @@ jobs:
       - name: Compile the package and its tests from the tag
         run: |
           set -euo pipefail
+          simulator="$(node --input-type=module -e 'import { selectSimulator } from "./scripts/lib/ios-simulator.mjs"; console.log(selectSimulator().udid)')"
+          echo "TRUAPI_TEST_SIMULATOR=$simulator" >> "$GITHUB_ENV"
           probe="$RUNNER_TEMP/tag-probe"
           mkdir -p "$probe/ios/truapi-host/Binaries" "$probe/ios/truapi-provider/Binaries"
           cp -R ios/truapi-host/Binaries/truapi_server.xcframework "$probe/ios/truapi-host/Binaries/"
           cp -R ios/truapi-provider/Binaries/truapi_provider.xcframework "$probe/ios/truapi-provider/Binaries/"
           cd "$probe"
-          xcodebuild build-for-testing \
-            -scheme TrUAPIHost \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
-            CODE_SIGNING_ALLOWED=NO
+          TRUAPI_TEST_SIMULATOR="$simulator" ./ios/truapi-host/scripts/test.sh build-for-testing \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost"
           # Built for the simulator like TrUAPIHost above, not with `swift build`,
           # which targets macOS: the xcframeworks carry iOS slices only, and the
           # generated bindings use Swift concurrency, which the package's macOS
@@ -415,6 +417,37 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIProviderDerivedData" \
             CODE_SIGNING_ALLOWED=NO
+
+      - name: Test native product network permissions in WKWebView
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/tag-probe"
+          ./ios/truapi-host/scripts/test.sh test-without-building \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost" \
+            -only-testing:NetworkPermissionTests/ProductNetworkAccessTests \
+            -resultBundlePath "$RUNNER_TEMP/TrUAPINetworkTests.xcresult"
+
+      - name: Export native test diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/TrUAPINetworkTests.xcresult"
+          if [[ -d "$result" ]]; then
+            xcrun xcresulttool get test-results summary --path "$result"
+            xcrun xcresulttool get test-results tests --path "$result"
+            xcrun xcresulttool export diagnostics --path "$result" \
+              --output-path "$RUNNER_TEMP/TrUAPINetworkDiagnostics"
+          fi
+
+      - name: Upload native test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-network-test-results
+          path: |
+            ${{ runner.temp }}/TrUAPINetworkTests.xcresult
+            ${{ runner.temp }}/TrUAPINetworkDiagnostics
+          if-no-files-found: ignore
 
   # Compile gate for the Android host module: regenerates the UniFFI Kotlin
   # bindings and compiles the shell against them. No cross-compile, no
@@ -643,6 +676,11 @@ jobs:
 
       - name: Test
         run: npm test --prefix js/packages/truapi
+
+      - name: Test shared product container
+        run: |
+          npm ci --prefix js/container --ignore-scripts
+          bun test js/container/src
 
   ts-host:
     name: "@parity/truapi-host"

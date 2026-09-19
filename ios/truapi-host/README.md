@@ -9,11 +9,12 @@ The package lives in the truapi repo next to the Rust core it wraps. `Package.sw
 The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 
 - [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostRuntime`, `TrUAPIProductExecution`, their configuration and bridge protocols, and `LocalhostBridgeBootstrap`.
-- [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) — `TrUAPIHost.installProductScripts(into:execution:endpoint:)`, which registers the bootstrap and the lockdown container with the frame scopes the lockdown depends on and peeks the WebRTC decision. The supported way to wire a product web view.
+- [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) registers the shared container in every frame. Fetch, XHR and remote WebSockets ask Rust directly through the existing private bridge.
 - the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
 - `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
 - [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
-- `Tests/` — WS-bridge round-trip tests that boot the real Rust core.
+- `Tests/` contains WS-bridge and WebKit network tests that boot the real Rust core.
+- `TestHost/` provides the UIKit app and XcodeGen project for simulator tests.
 
 The generated bindings, the container bundle and the xcframework are all **gitignored** build outputs, so a fresh checkout has no Swift sources for the package's targets. Run `rebuild.sh` before opening it. The xcframework is additionally distributed as a GitHub release asset. Two scripts split the lifecycle:
 
@@ -55,14 +56,15 @@ binding for every UniFFI-exposed type. It runs on Linux, so it never compiles
 Swift.
 
 The hand-written conformers in `TrUAPIHost.swift` and `Tests/` are covered by
-the `iOS package (swift compile)` job instead, which builds a simulator-only
-debug XCFramework from the pull request source and runs `xcodebuild
-build-for-testing`. It is path-filtered to pull requests touching `ios/`, `Package.swift`, the
+the `iOS package (Swift + WebKit)` job instead, which builds a simulator-only
+debug XCFramework from the pull request source, compiles the package tests,
+and runs the network permission suite in WKWebView. It is path-filtered to pull requests touching `ios/`, `Package.swift`, the
 `Makefile`, `js/container/`, or any of the crates the bindings are generated
 from (`truapi`, `truapi-platform`, `truapi-server`, `truapi-provider`); the
 filter has to name them explicitly, since a protocol change no longer shows up
 as an `ios/` diff.
-Nothing compiles `TrUAPIHost.kt` or the embedding apps.
+The Android host job compiles `TrUAPIHost.kt` against generated bindings;
+the separate iOS CI workflow builds and tests the embedding app.
 
 Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — to refresh your local build outputs. Nothing to commit: CI regenerates them. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, cuts the `<version>` tag, and opens the `Package.swift` follow-up pull request only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
@@ -104,11 +106,11 @@ indistinguishable from the other product having granted nothing. Pass 32 zero
 bytes only to declare deliberately that this host has no Asset Hub. Include this
 configuration update in the embedding app's package upgrade.
 
-Run the package tests against an iOS simulator (the xcframework has no macOS slice):
+Run the package tests in their UIKit host on an iOS simulator (the xcframework has no macOS slice). The helper installs pinned XcodeGen under `.agent/tools`, generates the project, and selects an available simulator:
 
 ```bash
 # from the repo root
-xcodebuild test -scheme TrUAPIHost-Package -destination 'platform=iOS Simulator,name=iPhone 16'
+./ios/truapi-host/scripts/test.sh
 ```
 
 ## Chat
@@ -254,12 +256,16 @@ The product running in the `WKWebView` opens a `WebSocket` to the localhost port
 
 The core's `Permissions` platform trait has two methods, and so does `HostCallbacks`:
 
-- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
+- `devicePermission(request:)` - product consent for device capabilities (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
 - `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return `PermissionDecision`: `.allowOnce`, `.allowAlways`, or `.deny`. Preserve the user’s choice; the core keeps one-use grants in memory and consumes them at the authorized operation. OS refusal after app consent should throw instead of returning `.deny`, which records a product denial. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 Identity and account access reviews use `confirmPermission(review:)`, which also returns `PermissionDecision`. Override it to preserve Allow once. Its compatibility default maps `confirmUserAction`'s Boolean approval to `.allowAlways`; signing and other single-action reviews continue to use that Boolean callback.
+
+Fetch, XHR, WebSocket connections, notification scheduling, external navigation and existing remote-operation gates consume temporary grants. The shared container authorizes each `getUserMedia` call through `authorize_device_permission`, camera before microphone. Each approval consumes its one-use grant for that attempt: a later microphone denial or native capture failure does not restore the camera grant. The returned stream remains usable until stopped; another capture requires new authorization.
+
+The container enforces product consent, while native media delegates resolve OS permission without consuming product consent again. An OS grant does not establish product consent. This boundary requires the container to run before product code in every frame, with its native methods and prototypes locked. SPA and Chat install it at document start. Authorization uses a private transport and response handler with captured browser primitives, so replacing public SDK replies, collection methods or Promise methods cannot approve a pending capture.
 
 ## SSO session handling
 
@@ -482,25 +488,25 @@ execution.notifyPreimageChanged(key: preimageKey, value: preimageBytesOrNil)
 runtime.notifyChainResponse(connectionId: chainConnectionId, json: jsonRpcResponse)
 runtime.notifyChainClosed(connectionId: chainConnectionId)
 
-// Register the bootstrap + lockdown container before the web view loads the
-// product page. `installProductScripts` owns the two properties that are easy to
-// get wrong and silently fatal: the container goes into EVERY frame (a frame
-// without it has pristine fetch/WebSocket/RTCPeerConnection, and a product
-// reaches one through an `<iframe>` in its own HTML), while the bootstrap stays
-// main-frame-only so a subframe has no bridge and no policy and fails closed. It
-// also resolves the WebRTC decision by peeking the execution rather than prompting.
-// Do not register these scripts by hand.
-let contentController = WKUserContentController()
-try await TrUAPIHost.installProductScripts(
-    into: contentController,
-    execution: execution,
+// Install before loading. The product URL comes from trusted host resolution.
+let configuration = WKWebViewConfiguration()
+let webView = WKWebView(frame: .zero, configuration: configuration)
+let productURL = URL(string: "https://your-product.example/")!
+try TrUAPIHost.installProductScripts(
+    into: webView,
     endpoint: endpoint
 )
+webView.load(URLRequest(url: productURL))
 
-let configuration = WKWebViewConfiguration()
-configuration.userContentController = contentController
-let webView = WKWebView(frame: .zero, configuration: configuration)
-webView.load(URLRequest(url: URL(string: "https://your-product.example/")!))
+// Settings changes apply to subsequent permission-checked operations.
+try execution.setPermissionAuthorizationStatus(
+    request: .remote(RemotePermissionRequest(permission: .remote(domains: ["api.example.com"]))),
+    status: .denied
+)
+
+// On view teardown:
+webView.stopLoading()
+execution.close()
 
 // On logout:
 runtime.disconnect()
@@ -508,10 +514,33 @@ runtime.disconnect()
 
 The product page reads `window.__truapi_localhost.url` (set by the bootstrap script) and passes it to `@parity/truapi`'s `createWebSocketProvider(url)`.
 
+The shared container captures a private WebSocket connection to the product execution and asks Rust to authorize each fetch or XHR before sending it, and each remote WebSocket before connecting. It parses the URL with captured browser primitives and sends its hostname to `authorize_remote_permission`; Rust normalizes and checks the domain. Swift supplies the endpoint and handles native permission prompts; it does not relay individual network permission messages. An upfront permission request and a network operation are separate, so an Allow once decision is consumed by the next permitted operation rather than persisted.
+
+XHR keeps native request headers, response types and browser CORS behavior. `open()` configures the request synchronously; `send()` waits for permission before sending. Aborting or reopening during that wait cancels the pending send. Synchronous XHR is unsupported because it cannot wait for an asynchronous permission decision.
+
+A remote `WebSocket` starts in `CONNECTING` while Rust checks the same domain permission. Allow once permits that connection and all its messages; a new connection checks again. Closing while permission is pending prevents the connection from opening. Text, binary messages and subprotocols use the native socket after approval. The exact private host bridge endpoint remains available without a Remote permission.
+
+Forwarded WebSocket events and XHR failures before sending are synthetic, with `isTrusted` set to `false`.
+
+WebRTC uses the same private transport. Each peer connection asks Rust for permission at its first network method, such as `createOffer`, and shares that decision across later methods on the connection. Allow once permits one connection. New connections check the current permission without requiring a page reload.
+
+The installer adds the bootstrap and container scripts before loading. It preserves the host's website data store and navigation delegate. Hosts that assemble their own script lists can keep using `LocalhostBridgeBootstrap.script` followed by `ContainerScriptBundle.load()`, with the container injected into every frame.
+
+Update existing integrations for the changed signatures: `installProductScripts(into:endpoint:)` now takes a `WKWebView`, without an execution argument or `await`. Both the Swift and Kotlin `LocalhostBridgeBootstrap.script` methods drop `webRtcAllowed`. Permission changes apply to new operations instead of requiring a new startup snapshot.
+
+`Worker`, `WebTransport` and `getDisplayMedia` screen capture are unavailable. Workers would provide a separate realm with unguarded network APIs; WebTransport has no permission wrapper, and screen capture has no product permission.
+
+Redirects and stylesheet/font loads retain native WebKit behavior. Redirect destinations are not separately authorized by the fetch/XHR wrappers; direct DOM resource loads remain outside those wrappers. There is no content-rule registration, global settings refresh or installation disposal requirement. Close the execution when its product stops, and maintain the host's existing web-view navigation and teardown behavior.
+
+Build the generated JavaScript SDK before the container: from the repository root, run `npm ci --ignore-scripts`, `npm run build --prefix js/packages/truapi`, then `npm run build --prefix js/container`. A protocol change also requires regenerating the SDK through the repository's normal build pipeline.
+
+`ProductNetworkAccessTests` exercises grant/deny/revocation, one-use fetch, WebRTC and media authorization, native redirects, stylesheet/font requests, and preserving a persistent store and existing navigation delegate. Media coverage uses a capture stub with the actual private Rust permission transport; it does not require simulator camera hardware. The tests require the built container, current Rust bindings and a real WKWebView in the UIKit test host. These Apple-only tests cannot run on Linux.
+
+
 ## Build outputs in detail
 
 `./scripts/rebuild.sh` orchestrates everything; the underlying pieces, should you need one in isolation:
 
 - **xcframework** — `make xcframework` (repo root) builds `truapi-server` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
-- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and so does the `iOS package (swift compile)` job, which is what puts Swift sources into the package before `xcodebuild` runs.
+- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and so does the `iOS package (Swift + WebKit)` job, which is what puts Swift sources into the package before `xcodebuild` runs.
 - **container** — `npm run build` in `js/container/` (repo root) bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.

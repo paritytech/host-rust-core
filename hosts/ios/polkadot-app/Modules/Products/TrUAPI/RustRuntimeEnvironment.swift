@@ -28,15 +28,11 @@ struct RustRuntimeEnvironment {
         /// inject. Called from the runtime's `start`; opening the execution
         /// (``makeSPAExecution``/``makeChatExecution``) stays side-effect free.
         /// The local session is activated once on the shared runtime, not here.
-        func startBridge() async throws -> String {
-            let webRtcAllowed = try await execution.permissionAuthorizationStatus(
-                request: .remote(RemotePermissionRequest(permission: .webRtc))
-            ) == .authorized
+        func startBridge() throws -> String {
             let endpoint = try execution.startWsBridge(bindPort: 0)
             return LocalhostBridgeBootstrap.script(
                 port: endpoint.port,
-                token: endpoint.token,
-                webRtcAllowed: webRtcAllowed
+                token: endpoint.token
             )
         }
     }

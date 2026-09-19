@@ -193,6 +193,37 @@ later request for one of those domains alone still gets its own prompt.
 
 Products MAY request permissions lazily (on first use) or upfront during initialization. Both patterns are valid. Requesting upfront is recommended when the product can predict its needs, as it provides a better user experience by batching consent into a single moment.
 
+The shared fetch, XHR and WebSocket wrappers validate the request URL with
+captured browser URL primitives and pass its hostname to the internal
+`authorize_remote_permission` method. Rust normalizes the host and resolves
+its domain permission, consuming a one-use grant when applicable. The fetch
+and XHR wrappers check the initial URL; native requests retain the legacy
+redirect behavior. Redirect targets and DOM resource loads are not separately
+checked by these wrappers. Swift supplies native callbacks, such as the
+permission dialog, but does not forward authorization messages.
+
+Before each `getUserMedia` request, the container calls the internal
+`authorize_device_permission` method for each requested capability, camera
+before microphone. Each approval consumes its one-use grant for that attempt.
+If microphone permission is denied after camera approval, the camera grant
+has already been consumed; a native capture failure does not restore grants
+either. The returned stream remains usable until stopped. Another capture
+requires new authorization, including when WebKit reuses its native decision.
+
+The container enforces product consent in the product's realm; native media
+delegates enforce OS permission without consuming product consent again.
+This relies on installing the container before product code in every frame
+and locking the native methods and their prototypes. The authorization
+transport and its response handler stay private, with browser primitives
+captured before product code runs. Replacing collection or Promise methods
+therefore cannot obtain a pending approval callback, unlike the earlier
+asynchronous gate. A native OS grant alone is not product consent.
+
+Synchronous XHR, `Worker`, `WebTransport` and `getDisplayMedia` screen capture
+are unavailable. Workers would provide a separate realm with unguarded
+network APIs; WebTransport has no permission wrapper, and screen capture has
+no product permission.
+
 ### Implicit Permission Triggering by Business Methods
 
 The following business methods gate on a specific permission and MUST internally trigger a permission prompt if the permission has not yet been resolved:

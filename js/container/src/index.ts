@@ -1,8 +1,7 @@
 // ============================================================================
 // TrUAPI mode lockdown. Runs AFTER LocalhostBridgeBootstrap (native injects
 // the bootstrap first), which publishes the bridge endpoint on
-// window.__truapi_localhost, the pre-resolved permission decisions on
-// window.__truapi_policy__, and exposes __HOST_API_PORT__ /
+// window.__truapi_localhost and exposes __HOST_API_PORT__ /
 // __HOST_WEBVIEW_MARK__.
 // The bootstrap dials its WebSocket lazily (inside port.start()), so
 // window.WebSocket must remain constructible for exactly the bridge URL.
@@ -12,7 +11,7 @@
 // product can reach one through any iframe path that skips
 // `document.createElement` (innerHTML, document.write, createElementNS,
 // srcdoc). Only the bootstrap is main-frame-only: a subframe with no bridge
-// endpoint and no policy fails closed on every gate below.
+// endpoint fails closed on every gate below.
 // ============================================================================
 
 // =============================================================================
@@ -26,50 +25,29 @@ import {
   reportLockdownFailures,
 } from './freeze.js';
 import { consumeWebRtcPolicy, installWebRtcPolicy } from './webrtc.js';
+import { installFetchGate } from './network.js';
+import { installXhrGate } from './xhr.js';
+import { installWebSocketGate } from './websocket.js';
+import { installMediaPolicy } from './media.js';
+import { createPermissionAuthorization } from './network-transport.js';
 
-// Capture native fetch BEFORE lockdown so the same-origin gate can use it.
-const _nativeFetch = window.fetch.bind(window);
+const _authorize = createPermissionAuthorization(window);
 
-const _NativeWebSocket = window.WebSocket;
 const _bridgeUrl: string | undefined = (window as any).__truapi_localhost?.url;
+const _webSocketBackend = (window as any).__truapi_websocket_connect__;
+freezeAndDelete(window, '__truapi_websocket_connect__');
+installWebSocketGate(window, _authorize.network, _bridgeUrl, _webSocketBackend);
 
-const _GatedWebSocket = new Proxy(window.WebSocket, {
-  construct(target, args: [string, ...unknown[]]) {
-    if (_bridgeUrl !== undefined && args[0] === _bridgeUrl) {
-      return new _NativeWebSocket(args[0]);
-    }
-    throw new TypeError('Network access is not allowed');
-  },
-});
-
-freezeValue(window, 'WebSocket', _GatedWebSocket);
-
-// Close the prototype-constructor bypass: `new window.WebSocket.prototype.constructor(url)`
-// would reach the ungated native constructor without this.
-freezeCustom(
-  _NativeWebSocket.prototype,
-  'constructor',
-  { value: _GatedWebSocket, writable: false },
-  (current) => current === _GatedWebSocket,
+installFetchGate(window, _authorize.network);
+installXhrGate(window, _authorize.network);
+installMediaPolicy(
+  window,
+  (window as any).__truapi_policy__?.mediaAllowed === false ? false : _authorize.media,
 );
 
-// --- Network: fetch gated to same-origin only ---
-freezeValue(window, 'fetch', (input: RequestInfo | URL, init?: RequestInit) => {
-  try {
-    const raw = typeof input === 'string' ? input
-      : input instanceof URL ? input.href
-      : input.url;
-    const url = new URL(raw, window.location.href);
-    if (url.origin === window.location.origin) {
-      return _nativeFetch(input, init);
-    }
-  } catch { /* fall through to rejection */ }
-  return Promise.reject(new TypeError('Network access is not allowed'));
-});
-
 // --- Network: delete (no future permission path) ---
-freezeAndDelete(window, 'XMLHttpRequest');
 freezeAndDelete(window, 'EventSource');
+freezeAndDelete(window, 'WebTransport');
 
 freezeValue(navigator, 'sendBeacon', () => false);
 
@@ -86,6 +64,7 @@ freezeCustom(
 );
 
 // --- Workers ---
+freezeAndDelete(window, 'Worker');
 freezeAndDelete(window, 'SharedWorker');
 
 if (navigator.serviceWorker) {
@@ -109,11 +88,11 @@ freezeValue(document, 'createElement', (tagName: string, options?: ElementCreati
   return _createElement(tagName, options);
 });
 
-// --- WebRTC: gated on the decision the host resolved before this realm ---
-// Read and clear the policy global first so nothing downstream can observe or
-// rewrite it. An absent policy denies, which is what makes a subframe (no
-// bootstrap, so no policy) fail closed.
-installWebRtcPolicy(window, consumeWebRtcPolicy(window));
+// Hosts without WebRTC support can disable it regardless of product consent.
+installWebRtcPolicy(
+  window,
+  consumeWebRtcPolicy(window) === false ? false : _authorize.webRtc,
+);
 
 // --- Report: every lock above has been attempted, so a failure can throw ---
 // A lock that did not take is a hole in the sandbox. Reporting last means the

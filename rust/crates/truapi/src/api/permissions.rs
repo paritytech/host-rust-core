@@ -27,12 +27,37 @@ pub trait Permissions: Send + Sync {
 
     /// Request a remote-operation permission.
     ///
+    /// This example makes live requests to Frankfurter after permission is granted.
+    ///
     /// ```ts
     /// const result = await truapi.permissions.requestRemotePermission({
-    ///   permission: { tag: "Remote", value: { domains: ["api.example.com"] } },
+    ///   permission: { tag: "Remote", value: { domains: ["api.frankfurter.dev"] } },
     /// });
     /// assert(result.isOk(), "requestRemotePermission failed:", result);
     /// console.log("remote permission result:", result.value);
+    /// if (result.value.granted) {
+    ///   const response = await fetch("https://api.frankfurter.dev/v2/rates?base=EUR&quotes=USD");
+    ///   assert(response.ok, "Fetch after permission grant failed:", response.status);
+    ///   const rates = await response.json();
+    ///   assert(Array.isArray(rates) && rates.length > 0, "Expected exchange rates:", rates);
+    ///   console.log("exchange rates:", rates);
+    ///
+    ///   const xhrRates = await new Promise((resolve, reject) => {
+    ///     const request = new XMLHttpRequest();
+    ///     request.open("GET", "https://api.frankfurter.dev/v2/rates?base=EUR&quotes=USD");
+    ///     request.responseType = "json";
+    ///     request.timeout = 15000;
+    ///     request.onload = () => request.status === 200
+    ///       ? resolve(request.response)
+    ///       : reject(new Error(`XHR failed: ${request.status}`));
+    ///     request.onerror = request.ontimeout = () => reject(new Error("XHR failed"));
+    ///     request.send();
+    ///   });
+    ///   assert(Array.isArray(xhrRates) && xhrRates.length > 0, "Expected XHR exchange rates:", xhrRates);
+    ///   console.log("XHR exchange rates:", xhrRates);
+    /// } else {
+    ///   console.log("Remote permission denied; skipping network requests.");
+    /// }
     /// ```
     #[wire(id = 1)]
     async fn request_remote_permission(

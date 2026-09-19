@@ -57,7 +57,6 @@ struct SPARustRuntimeTests {
         let directURL = try #require(URL(string: "http://localhost:3000"))
         let configuration = try makeConfiguration(contentSource: .directURL(directURL))
         let execution = MockProductExecution()
-        execution.permissionStatus = .authorized
         let engine = MockJSEngine()
         let runtime = makeRuntime(execution: execution, configuration: configuration)
 
@@ -65,15 +64,17 @@ struct SPARustRuntimeTests {
 
         #expect(url == directURL)
         #expect(execution.startWsBridgeCallCount == 1)
-        #expect(execution.permissionRequests == [
-            .remote(RemotePermissionRequest(permission: .webRtc))
-        ])
+        #expect(execution.permissionRequests.isEmpty)
+        #expect(engine.mediaHandlerWasInstalledAtInitialization)
 
         // Bootstrap → container → zoom disable, doc-start ordering intact.
         #expect(engine.initializedScripts.count == 3)
         #expect(engine.initializedScripts[0].content.contains("truapi-native-ready"))
-        #expect(engine.initializedScripts[0].content.contains("webRtcAllowed: true"))
+        #expect(!engine.initializedScripts[0].content.contains("__truapi_policy__"))
         #expect(engine.initializedScripts[1].content.contains("freezeAndDelete"))
+        #expect(engine.initializedScripts[2].content.contains("viewport"))
+        #expect(engine.initializedScripts[2].insertionPoint == .atDocEnd)
+        #expect(engine.initializedScripts[2].frameScope == .mainFrameOnly)
 
         await runtime.dispose()
     }
@@ -90,7 +91,7 @@ struct SPARustRuntimeTests {
         #expect(url.scheme == ProductScriptSchemeHandler.scheme)
         #expect(url.host == "test.dot")
         #expect(url.path == "/")
-        #expect(engine.initializedScripts[0].content.contains("webRtcAllowed: false"))
+        #expect(engine.initializedScripts[0].content.contains("truapi-native-ready"))
 
         await runtime.dispose()
     }
@@ -118,21 +119,18 @@ struct SPARustRuntimeTests {
         #expect(engine.destroyCallCount == 1)
     }
 
-    @Test func scriptsFactoryOrdersBootstrapBeforeContainer() throws {
-        let factory = SPARustRuntimeScriptsFactory(bootstrapScript: "/*bootstrap*/")
+    @Test func rustScriptsFactoryOrdersBootstrapBeforeContainer() throws {
+        let factory = RustRuntimeScriptsFactory(bootstrapScript: "/*bootstrap*/")
 
         let scripts = try factory.makeScripts()
 
-        #expect(scripts.count == 3)
+        #expect(scripts.count == 2)
         #expect(scripts[0].content == "/*bootstrap*/")
         #expect(scripts[0].insertionPoint == .atDocStart)
         #expect(scripts[0].frameScope == .mainFrameOnly)
         #expect(scripts[1].content.contains("__truapi_localhost"))
         #expect(scripts[1].insertionPoint == .atDocStart)
         #expect(scripts[1].frameScope == .allFrames)
-        #expect(scripts[2].content.contains("viewport"))
-        #expect(scripts[2].insertionPoint == .atDocEnd)
-        #expect(scripts[2].frameScope == .mainFrameOnly)
     }
 
     @Test func directURLHandlerAllowsSameHostInterceptsOthers() throws {
