@@ -1,5 +1,4 @@
-//! Runs a user host-script under `bun`, driving a host through the injected
-//! `truapi` global.
+//! Launches product scripts in the browser sandbox through a trusted Bun runner.
 //!
 //! The Rust CLI owns the flow: it starts the host, then spawns `js/runner.ts`
 //! (which connects the `@parity/truapi` client to the host and evaluates the
@@ -37,9 +36,7 @@ impl ScriptHostRole {
     }
 }
 
-const SCRATCH_TEMPLATE: &str = r#"#!/usr/bin/env bun
-
-// Scripts can use packages installed next to the script or in a parent project.
+const SCRATCH_TEMPLATE: &str = r#"// Scripts run in a browser sandbox and can import browser-compatible packages.
 
 const result = await truapi.account.getUserId();
 if (!result.isOk()) {
@@ -53,6 +50,12 @@ console.log('user id', result.value);
 /// `@parity/truapi` compiled in, so a downloaded install runs product scripts
 /// without a source checkout.
 const PACKAGED_RUNNER: &str = "runner.js";
+const BROWSER_INSTALLER: &str = "node_modules/playwright-core/cli.js";
+const EMPTY_BUN_CONFIG: &str = if cfg!(windows) {
+    "--config=NUL"
+} else {
+    "--config=/dev/null"
+};
 
 /// Locate the host-script runner.
 fn runner_path() -> PathBuf {
@@ -72,8 +75,7 @@ fn resolve_runner(explicit: Option<OsString>, executable: Option<&Path>) -> Path
     if let Some(path) = explicit {
         return PathBuf::from(path);
     }
-    let packaged = executable.and_then(packaged_runner);
-    if let Some(packaged) = packaged.filter(|path| path.is_file()) {
+    if let Some(packaged) = executable.and_then(packaged_runner) {
         return packaged;
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("js/runner.ts")
@@ -92,7 +94,53 @@ fn packaged_runner(executable: &Path) -> Option<PathBuf> {
                 .join(PACKAGED_RUNNER),
         );
     }
-    Some(directory.join(PACKAGED_RUNNER))
+    let runner = directory.join(PACKAGED_RUNNER);
+    runner.is_file().then_some(runner)
+}
+
+fn browser_installer(runner: &Path) -> Result<PathBuf> {
+    let directory = runner.parent().context("runner has no parent directory")?;
+    let installer = directory.join(BROWSER_INSTALLER);
+    if installer.is_file() {
+        return Ok(installer);
+    }
+    if runner
+        .file_name()
+        .is_none_or(|name| name != PACKAGED_RUNNER)
+    {
+        for ancestor in directory.ancestors().skip(1) {
+            let installer = ancestor.join(BROWSER_INSTALLER);
+            if installer.is_file() {
+                return Ok(installer);
+            }
+        }
+    }
+    anyhow::bail!(
+        "browser installer missing beside {}; reinstall truapi-host, or run \
+         `npm ci --ignore-scripts` in a source checkout",
+        runner.display()
+    )
+}
+
+/// Prepare the Chromium runtime matching this installation's runner.
+pub async fn install_browser() -> Result<()> {
+    let installer = browser_installer(&runner_path())?;
+    let status = bun_command(&installer, &std::env::current_dir()?)?
+        .args(["install", "chromium", "--only-shell"])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .status()
+        .await
+        .context("could not start the browser installer; install Bun and ensure it is on PATH")?;
+    if !status.success() {
+        anyhow::bail!(
+            "browser installation failed ({status}); resolve the installer error and retry \
+             `truapi-host install-browser`"
+        );
+    }
+    Ok(())
 }
 
 /// Create a durable, uniquely-named TypeScript scratch file seeded with the
@@ -180,8 +228,9 @@ pub async fn run(
     product_id: &str,
     script: &Path,
     host_role: ScriptHostRole,
+    trusted_script: bool,
 ) -> Result<ExitStatus> {
-    let mut command = command(frame_url, product_id, script, host_role)?;
+    let mut command = command(frame_url, product_id, script, host_role, trusted_script)?;
     terminal_ui::output_event(SystemEvent::ScriptStarted);
     command
         .status()
@@ -197,7 +246,7 @@ pub async fn run_captured(
     ui: UiHandle,
     host_role: ScriptHostRole,
 ) -> Result<ExitStatus> {
-    let mut command = command(frame_url, product_id, script, host_role)?;
+    let mut command = command(frame_url, product_id, script, host_role, false)?;
     terminal_ui::output_event(SystemEvent::ScriptStarted);
     command
         .stdout(Stdio::piped())
@@ -234,6 +283,7 @@ fn command(
     product_id: &str,
     script: &Path,
     host_role: ScriptHostRole,
+    trusted_script: bool,
 ) -> Result<Command> {
     let runner = runner_path();
     if !runner.exists() {
@@ -246,20 +296,126 @@ fn command(
         .canonicalize()
         .with_context(|| format!("script not found: {}", script.display()))?;
 
-    let mut command = Command::new("bun");
+    let mut command = bun_command(&runner, &std::env::current_dir()?)?;
     command
-        .arg("run")
-        .arg(&runner)
         .env("TRUAPI_FRAME_URL", frame_url)
         .env("TRUAPI_PRODUCT_ID", product_id)
         .env("TRUAPI_SCRIPT", &script)
         .env("TRUAPI_CLI_HOST_ROLE", host_role.as_env_value());
+    if trusted_script {
+        command.arg("--trusted-script");
+    }
+    Ok(command)
+}
+
+fn bun_command(entrypoint: &Path, caller_directory: &Path) -> Result<Command> {
+    let entrypoint = entrypoint
+        .canonicalize()
+        .with_context(|| format!("trusted Bun entrypoint not found: {}", entrypoint.display()))?;
+    let directory = entrypoint
+        .parent()
+        .context("Bun entrypoint has no parent directory")?;
+    let mut command = Command::new("bun");
+    command
+        .args([
+            EMPTY_BUN_CONFIG,
+            "--no-env-file",
+            "--no-macros",
+            "--no-install",
+        ])
+        .arg("run")
+        .arg(&entrypoint)
+        .current_dir(directory)
+        .env("TRUAPI_SCRIPT_CWD", caller_directory);
     Ok(command)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires Bun; run with --include-ignored"]
+    async fn caller_configuration_cannot_execute_before_the_sandbox() -> Result<()> {
+        const TEST_FIXTURE: &str = "TRUAPI_BUN_LAUNCHER_TEST_FIXTURE";
+        if let Some(fixture) = std::env::var_os(TEST_FIXTURE) {
+            let fixture = PathBuf::from(fixture);
+            let product = std::env::current_dir()?;
+            let output = bun_command(&fixture.join("trusted/entry.ts"), &product)?
+                .env_remove("TRUAPI_UNTRUSTED_DOTENV")
+                .output()
+                .await?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8(output.stderr)?, "");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&output.stdout)?,
+                serde_json::json!({
+                    "preloaded": false,
+                    "environment": null,
+                    "dependency": "trusted dependency",
+                    "caller": product,
+                })
+            );
+            return Ok(());
+        }
+
+        let fixture = tempfile::tempdir()?;
+        let product = fixture.path().join("product");
+        let trusted = fixture.path().join("trusted");
+        fs::create_dir_all(&product)?;
+        fs::create_dir_all(trusted.join("node_modules/trusted-dependency"))?;
+        fs::write(
+            product.join("bunfig.toml"),
+            "preload = [\"./preload.ts\"]\n",
+        )?;
+        fs::write(
+            product.join("preload.ts"),
+            "globalThis.preloadExecuted = true; console.log('untrusted preload executed');\n",
+        )?;
+        fs::write(product.join(".env"), "TRUAPI_UNTRUSTED_DOTENV=loaded\n")?;
+        fs::write(product.join("tsconfig.json"), "not valid JSON")?;
+        fs::write(
+            trusted.join("node_modules/trusted-dependency/package.json"),
+            r#"{"name":"trusted-dependency","main":"index.js"}"#,
+        )?;
+        fs::write(
+            trusted.join("node_modules/trusted-dependency/index.js"),
+            "export const value = 'trusted dependency';\n",
+        )?;
+        let entrypoint = trusted.join("entry.ts");
+        fs::write(
+            &entrypoint,
+            r#"import { value } from 'trusted-dependency';
+console.log(JSON.stringify({
+  preloaded: globalThis.preloadExecuted === true,
+  environment: process.env.TRUAPI_UNTRUSTED_DOTENV ?? null,
+  dependency: value,
+  caller: process.env.TRUAPI_SCRIPT_CWD,
+}));
+"#,
+        )?;
+        let output = Command::new(std::env::current_exe()?)
+            .args([
+                "--ignored",
+                "--exact",
+                "script_runner::tests::caller_configuration_cannot_execute_before_the_sandbox",
+            ])
+            .current_dir(&product)
+            .env(TEST_FIXTURE, fixture.path())
+            .output()
+            .await?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
 
     /// The override exists so a packaged install can be pointed at a working
     /// copy; it has to win over the bundle sitting next to the binary.
@@ -348,7 +504,24 @@ mod tests {
     }
 
     #[test]
-    fn scratch_script_starts_as_a_bun_script_with_dependency_free_example() -> Result<()> {
+    fn an_incomplete_managed_install_does_not_fall_back_to_source_code() -> Result<()> {
+        let install = tempfile::tempdir()?;
+        let version = install
+            .path()
+            .join("versions")
+            .join(env!("CARGO_PKG_VERSION"));
+        fs::create_dir_all(&version)?;
+        let executable = version.join("truapi-host");
+        fs::write(&executable, "binary")?;
+        assert_eq!(
+            resolve_runner(None, Some(&executable)),
+            version.join(PACKAGED_RUNNER)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scratch_script_describes_the_browser_contract() -> Result<()> {
         let temporary = tempfile::tempdir()?;
 
         let script = create_scratch_script(temporary.path())?;
@@ -356,9 +529,7 @@ mod tests {
 
         assert_eq!(
             contents,
-            r#"#!/usr/bin/env bun
-
-// Scripts can use packages installed next to the script or in a parent project.
+            r#"// Scripts run in a browser sandbox and can import browser-compatible packages.
 
 const result = await truapi.account.getUserId();
 if (!result.isOk()) {
@@ -372,29 +543,74 @@ console.log('user id', result.value);
     }
 
     #[test]
+    fn browser_installer_uses_the_runner_version_without_an_ancestor_fallback() -> Result<()> {
+        let install = tempfile::tempdir()?;
+        let parent_installer = install.path().join(BROWSER_INSTALLER);
+        fs::create_dir_all(parent_installer.parent().unwrap())?;
+        fs::write(&parent_installer, "wrong version")?;
+        let version = install.path().join("versions/current");
+        fs::create_dir_all(&version)?;
+        let runner = version.join(PACKAGED_RUNNER);
+        assert!(browser_installer(&runner).is_err());
+
+        let matching_installer = version.join(BROWSER_INSTALLER);
+        fs::create_dir_all(matching_installer.parent().unwrap())?;
+        fs::write(&matching_installer, "matching version")?;
+        assert_eq!(browser_installer(&runner)?, matching_installer);
+        Ok(())
+    }
+
+    #[test]
+    fn source_browser_installer_resolves_the_checkout_dependency() -> Result<()> {
+        let checkout = tempfile::tempdir()?;
+        let installer = checkout.path().join(BROWSER_INSTALLER);
+        fs::create_dir_all(installer.parent().unwrap())?;
+        fs::write(&installer, "source installer")?;
+        let runner = checkout
+            .path()
+            .join("rust/crates/truapi-host-cli/js/runner.ts");
+        assert_eq!(browser_installer(&runner)?, installer);
+        Ok(())
+    }
+
+    #[test]
     fn host_scripts_are_run_by_bun() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let script = temporary.path().join("script.ts");
         fs::write(&script, "console.log('hello');\n")?;
 
-        let command = command(
-            "ws://127.0.0.1:1234",
-            "example.dot",
-            &script,
-            ScriptHostRole::SigningHost,
-        )?;
-        let command = command.as_std();
-        let arguments = command.get_args().collect::<Vec<_>>();
-
-        assert_eq!(command.get_program(), std::ffi::OsStr::new("bun"));
-        assert_eq!(arguments[0], std::ffi::OsStr::new("run"));
-        assert_eq!(arguments[1], runner_path());
-        assert_eq!(
-            command
-                .get_envs()
-                .find_map(|(key, value)| { (key == "TRUAPI_CLI_HOST_ROLE").then_some(value) }),
-            Some(Some(std::ffi::OsStr::new("signing-host")))
-        );
+        let runner = runner_path().canonicalize()?;
+        for trusted_script in [false, true] {
+            let command = command(
+                "ws://127.0.0.1:1234",
+                "example.dot",
+                &script,
+                ScriptHostRole::SigningHost,
+                trusted_script,
+            )?;
+            let command = command.as_std();
+            let arguments = command.get_args().collect::<Vec<_>>();
+            let mut expected = vec![
+                std::ffi::OsStr::new(EMPTY_BUN_CONFIG),
+                std::ffi::OsStr::new("--no-env-file"),
+                std::ffi::OsStr::new("--no-macros"),
+                std::ffi::OsStr::new("--no-install"),
+                std::ffi::OsStr::new("run"),
+                runner.as_os_str(),
+            ];
+            if trusted_script {
+                expected.push(std::ffi::OsStr::new("--trusted-script"));
+            }
+            assert_eq!(command.get_program(), std::ffi::OsStr::new("bun"));
+            assert_eq!(arguments, expected);
+            assert_eq!(command.get_current_dir(), runner.parent());
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find_map(|(key, value)| { (key == "TRUAPI_CLI_HOST_ROLE").then_some(value) }),
+                Some(Some(std::ffi::OsStr::new("signing-host")))
+            );
+        }
         Ok(())
     }
 

@@ -36,6 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scri
 
 Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for the commands, the terminal UI, and product scripts.
 
+Product scripts run in sandboxed Chromium and use the shared container and Rust permission policy. They require Bun on `PATH` and the matching browser, installed with `truapi-host install-browser`.
+
 ## Usage
 
 `@parity/truapi` is the low-level generated protocol client. Product apps should normally use a higher-level product SDK, such as [`paritytech/product-sdk`](https://github.com/paritytech/product-sdk), while SDK and host-integration layers can depend on this package directly.

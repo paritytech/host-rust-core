@@ -20,6 +20,7 @@ import {
   installEnvironment,
   run,
   startReleaseServer,
+  stubArchive,
   versionReportingArchive,
 } from "./truapi-host-release.mjs";
 
@@ -35,6 +36,46 @@ const installerSource = readFileSync(
  */
 const target = detectTarget();
 const skip = target === undefined && "no prebuilt target for this platform";
+
+test(
+  "installs nested browser assets beside their matching runner",
+  { skip },
+  async () => {
+    const assets = {
+      "runner.js": "runner",
+      "sandbox-assets/container.js": "container",
+      "sandbox-assets/client.mjs": "client",
+      "sandbox-assets/bootstrap.js": "bootstrap",
+      "node_modules/playwright-core/cli.js": "installer",
+      "node_modules/playwright-core/browsers.json": "browser versions",
+      "node_modules/esbuild-wasm/esbuild.wasm": "portable builder",
+    };
+    const release = await startReleaseServer();
+    release.publish(
+      "0.10.0",
+      target,
+      stubArchive("#!/bin/sh\necho truapi-host\n", assets),
+    );
+    try {
+      await withHome(async (home) => {
+        const result = await runInstaller(
+          installEnvironment(home, release.baseUrl),
+        );
+        assert.equal(result.status, 0, result.stderr);
+        const installed = Object.fromEntries(
+          Object.keys(assets).map((name) => [
+            name,
+            readFileSync(join(home, "share/current", name), "utf8"),
+          ]),
+        );
+        assert.deepEqual(installed, assets);
+        assert.match(result.stdout, /truapi-host install-browser/);
+      });
+    } finally {
+      await release.close();
+    }
+  },
+);
 
 /** Run the installer the way the documented one-liner does: piped into bash. */
 function runInstaller(environment) {

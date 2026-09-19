@@ -21,6 +21,7 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, decodes copied pairing QR images or accepts deeplinks, registers statement allowance on-chain, signs. |
+| `install-browser` | Install the matching Chromium headless shell for sandboxed product scripts. |
 | `identity-check` | Probe the root and the network's `uid.<tld>` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
@@ -40,7 +41,8 @@ truapi-host signing-host
 
 Prebuilt binaries exist for `aarch64-apple-darwin`,
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. The Linux
-binaries are statically linked, so they run on any distribution. The installer
+binaries are statically linked. Chromium has separate host library and sandbox
+requirements. The installer
 puts each version in `$XDG_DATA_HOME/truapi-host/versions/<version>/` and
 symlinks `~/.local/bin/truapi-host` through a `current` link, so an update only
 moves that one link.
@@ -52,13 +54,30 @@ moves that one link.
 | `TRUAPI_HOST_BIN_DIR` | Directory the `PATH` symlink goes in, default `~/.local/bin`. |
 
 Product scripts (`--script`, `/script`) work from an installed binary: the
-archive ships a `runner.js` with the `@parity/truapi` client bundled in. You
-still need `bun` on `PATH`, since it executes the runner and your script.
+archive ships `runner.js`, `sandbox-assets/` with the shared container and SDK,
+and matching `playwright-core` and `esbuild-wasm` packages. Bun prepares scripts
+and runs the trusted launcher. Product code executes in a sandboxed Chromium
+browser with no Bun/Node filesystem, process, or environment access.
+
+Install Bun on `PATH`, then install the browser explicitly:
+
+```bash
+truapi-host install-browser
+```
+
+The browser is downloaded to Playwright's cache. `PLAYWRIGHT_BROWSERS_PATH`
+selects a different cache for both installation and execution. Linux needs
+Chromium's runtime libraries, a compatible glibc, and working browser sandbox
+support. The shipped `node_modules/playwright-core/cli.js install-deps chromium`
+command can install distribution dependencies when run with Bun and the required
+system privileges. Browser startup fails if its dependencies or sandbox are
+unavailable; the runner never falls back to unrestricted execution.
 
 Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
 default, so starting either host does not reserve a TCP port. Pass
 `--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
-this is required for browser clients, which cannot open filesystem sockets.
+this is required for external browser clients, which cannot open filesystem
+sockets. Sandboxed CLI scripts use the trusted launcher's private socket relay.
 
 ### Staying current
 
@@ -113,10 +132,13 @@ Existing `.dot` personhood membership does not transfer to the new keys.
 
 A source build resolves the product-script runner from the checkout, so it also
 needs the generated `@parity/truapi` sources. (An installed release ships its
-own bundled runner and does not.) To build and install the CLI yourself:
+own bundled runner and does not.) Source execution also needs the root npm
+dependencies for the browser driver and script builders:
 
 ```bash
+npm ci --ignore-scripts
 make headless install  # build dependencies and install truapi-host once
+truapi-host install-browser
 truapi-host signing-host
 ```
 
@@ -320,11 +342,10 @@ as bold is therefore not rendered in the full-screen UI.
 
 Bare `/script` reopens the last script recorded for the active session,
 including a path previously selected with `/script <path>`. If that file is
-missing or the session has no script yet, it creates a durable Bun TypeScript
+missing or the session has no script yet, it creates a durable TypeScript
 file under the active host state's `scripts/` directory. The dependency-free
 starter calls `truapi.account.getUserId()` and prints the returned user id.
-Scripts opened from an npm project can import packages installed by that
-project.
+Scripts can import browser-compatible packages installed by that project.
 The TUI temporarily yields the terminal to `$VISUAL`, then `$EDITOR`, or
 `vi` when neither is set. After the editor exits successfully, the TUI is
 restored and the saved script runs through the public frame endpoint. Editor
@@ -472,9 +493,38 @@ so its pairing runs only for the current process and `/devices` is unavailable.
 
 ## Writing a product script
 
-A product script is top-level JavaScript or TypeScript (an ES module) run by
-Bun. It can import npm dependencies available beside the script or in a parent
-project. The runner injects three globals before running it:
+A product script is top-level JavaScript or TypeScript run as a browser ES
+module. The CLI uses the same `js/container` code as the native iOS host and
+the shared Rust Remote permission policy. In the CLI, the trusted launcher asks
+Rust to authorize the initial URL when Chromium intercepts an outgoing fetch or XHR.
+One approval covers the request, its CORS preflights and redirects, matching native
+hosts. XHR supports asynchronous requests with native headers and response types;
+synchronous XHR is unavailable. Browser CORS rules still apply.
+
+Permission prompts name the requested domains or capability and offer Allow once,
+Allow always and Deny. A domain grant covers every port on that host, including
+local services. Chromium's local-network permission is enabled for the synthetic
+product origin so approved local requests work; the launcher still checks their
+destination through Rust.
+
+Remote WebSockets use the same domain permission. The trusted launcher opens each
+connection only after Rust approval and forwards text/binary messages and subprotocols.
+Allow once permits one connection, including later messages. Closing a pending socket
+cancels it. The launcher sends the product Origin; its sockets do not share browser
+cookies. URL credentials use Bun's preemptive Basic authentication rather than a
+browser's challenge response. `bufferedAmount` reports bytes waiting for the launcher,
+not its socket's remaining output buffer. Direct browser WebSockets stay blocked,
+so page code cannot bypass the launcher. WebRTC, WebTransport, workers and subframes
+are unavailable in this runner.
+
+Imports must resolve inside the script's directory or a `node_modules` tree in
+that directory or an ancestor. Resolved symlinks must stay within these approved
+roots. Browser-compatible JS/TS and JSON dependencies are bundled without
+executing product code or package hooks. Node/Bun modules and imports outside
+these roots fail preparation. Import `@parity/truapi` to use the host's matching
+SDK. Browser execution has a five-minute limit; a timeout fails the run.
+
+The runner injects three globals before running it:
 
 - **`truapi`** — the `@parity/truapi` client connected to the pairing host and
   scoped to the host's `--product-id`. Call `truapi.account.requestLogin(...)`,
@@ -507,6 +557,19 @@ res.match(
   },
 );
 ```
+
+A default-exported function is also supported and receives `host`; its result
+is awaited. Host diagnostics that need files, subprocesses, or environment
+variables must explicitly select trusted mode:
+
+```bash
+truapi-host pairing-host --trusted-script --script ./diagnostic.ts
+```
+
+Trusted mode imports the script into Bun with the launcher's capabilities and
+prints that choice. Use it for trusted automation, not product isolation tests.
+`--trusted-script` requires `--script` and applies only to that invocation.
+Interactive `/script` commands use the browser.
 
 `--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.testnet`, or a
 `localhost` identifier; default
@@ -551,6 +614,8 @@ Scripts under `js/scripts/` include:
   prompt.
 
   `scripts/battery.sh` at the repo root is the supported entry point. It
+  explicitly selects trusted mode because these diagnostics read host logs and
+  write report files. These runs exercise APIs, not the product sandbox. It
   prepares the codegen output and playground dependencies the battery imports,
   builds the host from source, and produces both reports in one invocation: the
   direct signing-host phase, then the paired phase, where it starts a pairing
@@ -594,7 +659,7 @@ Scripts under `js/scripts/` include:
 
   ```bash
   # Terminal 1
-  cargo run -p truapi-host-cli -- pairing-host \
+  cargo run -p truapi-host-cli -- pairing-host --trusted-script \
     --product-id truapi-playground.dot \
     --script rust/crates/truapi-host-cli/js/scripts/battery.ts \
     --auto-accept
@@ -643,13 +708,13 @@ happens.
 
 Both hosts take `--auto-accept`. Without it, confirmations a web/iOS host would
 show as a modal (sign requests, permission prompts, and cross-product Ring-VRF
-requests) are rendered prominently in the signing-host transcript and answered
-directly with `y` or `n` (typed `yes`/`no` plus Enter also works). Approval
+requests) are rendered prominently in the signing-host transcript. Actions use
+`y` to approve and `n` to reject. Permissions use `o` for Allow once, `a` for
+Allow always and `n` for Deny. Typed answers plus Enter also work. Approval
 cards summarize and redact signing payloads rather than dumping debug objects.
-The current command draft is
-restored afterward; Esc safely rejects. Concurrent approvals are serialized.
-In non-interactive `exec` mode, a TTY gets a plain yes/no prompt and non-TTY
-stdin safely rejects instead of hanging. Same-product Ring-VRF requests do not
+The current command draft is restored afterward; Esc rejects. Concurrent
+approvals are serialized. Plain mode offers the same choices when stdin is a
+TTY; non-TTY stdin rejects instead of hanging. Same-product Ring-VRF requests do not
 prompt, matching the iOS signing host. Pass `--auto-accept` for unattended
 runs; every auto-approved decision is still printed.
 

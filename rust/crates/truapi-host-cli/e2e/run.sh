@@ -65,7 +65,7 @@ trap cleanup EXIT
 # The pairing host runs the product script; the script's
 # `truapi.account.requestLogin` makes the host emit a pairing deeplink, which we
 # hand to a signing host. The pairing host exits with the script's status.
-"$BIN" pairing-host --product-id "$PRODUCT_ID" --script "$SCRIPT" \
+"$BIN" pairing-host --product-id "$PRODUCT_ID" --trusted-script --script "$SCRIPT" \
   --frame-listen "$FRAME" --base-path "$PAIRING_BASE_PATH" \
   --auto-accept > >(tee "$LOG") 2>&1 &
 PAIR_PID=$!

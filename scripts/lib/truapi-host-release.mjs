@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -9,7 +10,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * A stand-in for the GitHub release the installer and the in-binary updater
@@ -40,14 +41,25 @@ export function detectTarget() {
 }
 
 /** A release archive whose `truapi-host` is an executable stand-in script. */
-export function stubArchive(body) {
+export function stubArchive(body, files = {}) {
   const staging = mkdtempSync(join(tmpdir(), "truapi-host-archive-"));
   try {
     const binary = join(staging, BINARY);
     writeFileSync(binary, body);
     chmodSync(binary, 0o755);
+    for (const [name, contents] of Object.entries(files)) {
+      mkdirSync(dirname(join(staging, name)), { recursive: true });
+      writeFileSync(join(staging, name), contents);
+    }
     const archive = join(staging, "archive.tar.gz");
-    execFileSync("tar", ["-czf", archive, "-C", staging, BINARY]);
+    execFileSync("tar", [
+      "-czf",
+      archive,
+      "-C",
+      staging,
+      BINARY,
+      ...Object.keys(files),
+    ]);
     return readFileSync(archive);
   } finally {
     rmSync(staging, { recursive: true, force: true });

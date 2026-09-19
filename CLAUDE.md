@@ -16,6 +16,7 @@ rust/crates/
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
+  truapi-host-cli/       CLI pairing/signing hosts; js/ owns sandboxed and trusted script runners
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
   truapi-host/            @parity/truapi-host: WASM-backed host runtime. Subpath entries:
@@ -35,7 +36,7 @@ js/packages/
                           same-page host, no server, no dial). @parity/truapi has
                           no debug seam. Where the app ultimately lives is still
                           an open decision.
-js/container/              TS lockdown container for the iOS host web view; `npm run build`
+js/container/              Shared TS lockdown container for native web views and CLI scripts; `npm run build`
                            bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
 ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);
                            second product of the root Package.swift, released on its
@@ -63,6 +64,10 @@ scripts/refresh-host-import.sh
                            refresh a vendored host tree from its source repository
 scripts/truapi-host-installer.sh
                            one-liner installer for the prebuilt truapi-host CLI
+scripts/build-cli-runner.ts
+                           packages the CLI runner, browser assets and runtime dependencies
+scripts/cli-runner-package.test.ts
+                           verifies packaged assets and a browser WebSocket round trip
 .github/consumers.json     maps each released package to the repos notified by a bump issue
 .github/registry-drift-exceptions.json
                            documents intentionally unpublished npm package versions
@@ -100,7 +105,10 @@ scripts/truapi-host-installer.sh
   `release: @parity/truapi <version>` therefore also publishes prebuilt
   `truapi-host` binaries through `.github/workflows/release-cli.yml`: one
   archive per target (`aarch64-apple-darwin`, `x86_64-unknown-linux-musl`,
-  `aarch64-unknown-linux-musl`) plus a `.sha256`, uploaded to the
+  `aarch64-unknown-linux-musl`) plus a `.sha256`. Each archive includes the
+  native binary, Bun runner, shared container/browser SDK assets, Playwright
+  driver and esbuild-wasm compiler; Chromium is installed separately with
+  `truapi-host install-browser`. Archives are uploaded to the
   `@parity/truapi@<version>` release, followed by the `truapi-host-cli-stable`
   pointer that `scripts/truapi-host-installer.sh` and the CLI's own updater
   read. Release asset URLs must percent-encode the tag

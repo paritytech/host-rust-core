@@ -84,7 +84,7 @@ pair_once() {
 
   "$BIN" pairing-host \
     --product-id "$PRODUCT_ID" \
-    --script "$SCRIPT" \
+    --trusted-script --script "$SCRIPT" \
     --base-path "$pairing_base" \
     --auto-accept >"$pairing_log" 2>&1 &
   local pairing_pid=$!
@@ -128,7 +128,7 @@ for pairing_base in "$PAIRING_A_BASE" "$PAIRING_B_BASE"; do
   label="$(basename "$pairing_base")"
   "$BIN" pairing-host \
     --product-id "$PRODUCT_ID" \
-    --script "$SCRIPT" \
+    --trusted-script --script "$SCRIPT" \
     --base-path "$pairing_base" \
     --auto-accept >"$LOG_DIR/$label-restored.log" 2>&1 &
   process_id=$!

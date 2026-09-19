@@ -3,7 +3,7 @@
 // the client package; Unix endpoints perform the same RFC 6455 protocol over a
 // filesystem socket, which no browser needs and only this CLI speaks.
 import { createHash, randomBytes } from "node:crypto";
-import { connect, type Socket } from "node:net";
+import { connect } from "node:net";
 import {
   createWebSocketProvider,
   type WireProvider,
@@ -42,7 +42,7 @@ function unixWsProvider(socketPath: string): FrameProvider {
     .digest("base64");
   const socket = connect(socketPath);
   let handshakeBuffer = Buffer.alloc(0);
-  let frameBuffer = Buffer.alloc(0);
+  let frameBuffer: Buffer = Buffer.alloc(0);
   let fragmentedOpcode: number | undefined;
   let fragmentedPayloads: Buffer[] = [];
   let fragmentedLength = 0;

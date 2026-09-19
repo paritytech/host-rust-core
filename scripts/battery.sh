@@ -191,7 +191,7 @@ signing_phase() {
   TRUAPI_BATTERY_REPORT_PATH="${TRUAPI_BATTERY_REPORT_PATH:-$report}" \
     "$HOST" signing-host \
     --product-id "$PRODUCT_ID" \
-    --script "$SCRIPT" \
+    --trusted-script --script "$SCRIPT" \
     --auto-accept \
     ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0
@@ -211,7 +211,7 @@ chat_phase() {
   "$HOST" signing-host \
     --product-id "$PRODUCT_ID" \
     --execution-kind worker \
-    --script "$CHAT_SCRIPT" \
+    --trusted-script --script "$CHAT_SCRIPT" \
     --auto-accept \
     ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0
@@ -232,7 +232,7 @@ pocket_phase() {
   "$HOST" signing-host \
     --product-id "$PRODUCT_ID" \
     --execution-kind worker \
-    --script "$POCKET_SCRIPT" \
+    --trusted-script --script "$POCKET_SCRIPT" \
     --auto-accept \
     ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0
@@ -263,7 +263,7 @@ pairing_phase() {
     "$HOST" pairing-host \
     --base-path "$PAIRING_STATE" \
     --product-id "$PRODUCT_ID" \
-    --script "$SCRIPT" \
+    --trusted-script --script "$SCRIPT" \
     --auto-accept \
     ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0

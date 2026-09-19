@@ -91,26 +91,22 @@ install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `m
 # The layout here is what scripts/truapi-host-installer.sh expects to download.
 CLI_INSTALLER_URL := https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh
 CLI_DIST_DIR := target/dist
-# Default to the triple that is actually published, not the rustc host: the
-# Linux releases are musl so one artifact per architecture runs anywhere.
+# Published Linux binaries use musl; Chromium has separate host library requirements.
 CLI_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p' | sed 's/-linux-gnu$$/-linux-musl/')
 CLI_VERSION ?= $(shell awk -F'"' '/^version = /{print $$2; exit}' rust/crates/truapi-host-cli/Cargo.toml)
-CLI_ARCHIVE := truapi-host-$(CLI_VERSION)-$(CLI_TARGET).tar.gz
+CLI_ARCHIVE = truapi-host-$(CLI_VERSION)-$(CLI_TARGET).tar.gz
 CLI_RUNNER := $(CLI_DIST_DIR)/runner.js
-CLI_STAGE := $(CLI_DIST_DIR)/$(CLI_TARGET)
+CLI_STAGE = $(CLI_DIST_DIR)/$(CLI_TARGET)
 # macOS ships shasum, most Linux images ship only sha256sum.
 SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo "sha256sum" || echo "shasum -a 256")
 
-# The checkout's runner imports @parity/truapi by relative path, so it only
-# works from a built source tree. Bundling inlines the client, which is what
-# lets a downloaded binary run product scripts. Needs generated sources, so run
-# `make codegen` first on a fresh checkout. Architecture-independent, so a file
-# target: CI builds it once and every per-target archive reuses it.
+# Generated SDK sources are needed before bundling. CI builds the runner,
+# browser assets and driver once, then reuses them in every target archive.
 $(CLI_RUNNER):
-	mkdir -p $(CLI_DIST_DIR)
-	bun build rust/crates/truapi-host-cli/js/runner.ts --target=bun --outfile $@
+	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
-cli-runner: $(CLI_RUNNER) ## Bundle the self-contained product-script runner into target/dist.
+cli-runner: ## Bundle the product-script runner and browser sandbox into target/dist.
+	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
 cli-dist: check-generated $(CLI_RUNNER) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
 	rustup target add $(CLI_TARGET)
@@ -118,7 +114,8 @@ cli-dist: check-generated $(CLI_RUNNER) ## Package truapi-host for CLI_TARGET in
 	rm -rf $(CLI_STAGE)
 	mkdir -p $(CLI_STAGE)
 	cp target/$(CLI_TARGET)/release/truapi-host $(CLI_RUNNER) $(CLI_STAGE)/
-	tar -czf $(CLI_DIST_DIR)/$(CLI_ARCHIVE) -C $(CLI_STAGE) truapi-host runner.js
+	cp -R $(CLI_DIST_DIR)/sandbox-assets $(CLI_DIST_DIR)/node_modules $(CLI_STAGE)/
+	tar -czf $(CLI_DIST_DIR)/$(CLI_ARCHIVE) -C $(CLI_STAGE) truapi-host runner.js sandbox-assets node_modules
 	cd $(CLI_DIST_DIR) && $(SHA256) $(CLI_ARCHIVE) > $(CLI_ARCHIVE).sha256
 	@echo "packaged $(CLI_DIST_DIR)/$(CLI_ARCHIVE)"
 

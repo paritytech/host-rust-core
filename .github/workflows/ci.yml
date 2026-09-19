@@ -83,6 +83,13 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-features
 
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Test launcher isolation from product configuration
+        run: cargo test -p truapi-host-cli --bin truapi-host caller_configuration_cannot_execute_before_the_sandbox -- --include-ignored
+
   wasm-provider:
     name: truapi-provider (wasm browser tests)
     timeout-minutes: 10
@@ -297,7 +304,7 @@ jobs:
           # survive. `@parity/truapi` is here because the runner inlines it from
           # source, and bundling it is a step no other job performs. A release
           # is the wrong place to find out one of them moved.
-          gate cli_package '^(rust/crates/truapi-host-cli/|js/packages/truapi/(src/|package\.json$|tsconfig[^/]*\.json$)|Makefile$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|\.github/workflows/(ci|cli-package)\.yml$)'
+          gate cli_package '^(rust/crates/(truapi-host-cli|truapi|truapi-codegen|truapi-macros)/|js/container/|js/packages/truapi/(src/|package\.json$|tsconfig[^/]*\.json$)|Makefile$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|scripts/(codegen\.sh|build-cli-runner\.ts|cli-runner-package\.test\.ts)$|\.github/workflows/(ci|cli-package|release-cli)\.yml$)'
 
           # Include generators, dependency pins and package build configuration:
           # these can change a published artifact without touching its sources.
@@ -638,6 +645,63 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/cli-package.yml
+
+  cli-sandbox:
+    name: CLI sandbox
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    needs: [changes, codegen]
+    if: needs.changes.outputs.cli_package == 'true'
+    env:
+      TRUAPI_REQUIRE_GENERATED: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
+      - name: Install and build the client
+        run: |
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/truapi-browsers" >> "$GITHUB_ENV"
+          npm ci --ignore-scripts
+          npm run build --prefix js/packages/truapi
+
+      - name: Test product preparation
+        run: |
+          npm run typecheck:cli
+          bun test rust/crates/truapi-host-cli/js/sandbox-build.test.ts
+
+      - name: Install sandboxed Chromium
+        run: |
+          bun node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+          if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 ]; then
+            cat > "$RUNNER_TEMP/truapi-browser-apparmor" <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile truapi-cli-browser "$PLAYWRIGHT_BROWSERS_PATH/**/chrome-headless-shell" flags=(unconfined) {
+            userns,
+          }
+          EOF
+            sudo apparmor_parser -r "$RUNNER_TEMP/truapi-browser-apparmor"
+          fi
+
+      - name: Test browser isolation and network enforcement
+        run: bun test rust/crates/truapi-host-cli/js/sandbox-runner.test.ts
+
+      - name: Test the packaged runner
+        run: bun test scripts/cli-runner-package.test.ts
 
   ts-client:
     name: "@parity/truapi"
@@ -1107,6 +1171,7 @@ jobs:
         provider-android-bindings,
         host-android-bindings,
         cli-package,
+        cli-sandbox,
         ts-client,
         ts-host,
         ts-debugger,
@@ -1153,7 +1218,7 @@ jobs:
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
             android-bindings provider-android-bindings host-android-bindings
-            cli-package ts-client
+            cli-package cli-sandbox ts-client
             ts-host ts-debugger playground explorer e2e workflow-lint
             release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -29,6 +29,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context as LayerContext, Layer};
+use truapi_platform::PermissionDecision;
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;
@@ -47,6 +48,39 @@ const MOUSE_SCROLL_LINES: usize = 3;
 const COMPOSER_HORIZONTAL_PADDING: u16 = 1;
 const QR_INDENT: usize = 2;
 const QR_QUIET_ZONE: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalKind {
+    Action,
+    Permission,
+}
+
+impl ApprovalKind {
+    pub fn choices(self) -> &'static str {
+        match self {
+            Self::Action => "[y] Approve   [n] Reject",
+            Self::Permission => "[o] Allow once   [a] Allow always   [n] Deny",
+        }
+    }
+
+    pub fn parse(self, input: &str) -> Option<PermissionDecision> {
+        match self {
+            Self::Action => parse_approval(input).map(|approved| {
+                if approved {
+                    PermissionDecision::AllowAlways
+                } else {
+                    PermissionDecision::Deny
+                }
+            }),
+            Self::Permission => match input.trim().to_ascii_lowercase().as_str() {
+                "o" | "once" => Some(PermissionDecision::AllowOnce),
+                "a" | "always" => Some(PermissionDecision::AllowAlways),
+                "" | "n" | "no" | "deny" => Some(PermissionDecision::Deny),
+                _ => None,
+            },
+        }
+    }
+}
 
 /// Tracing target reserved for SSO summaries that must remain visible at every log level.
 pub const SSO_TRANSCRIPT_TARGET: &str = "truapi_server::sso_transcript";
@@ -99,7 +133,8 @@ enum FeedItem {
         id: u64,
         action: String,
         detail: String,
-        outcome: Option<bool>,
+        kind: ApprovalKind,
+        outcome: Option<PermissionDecision>,
     },
     Request {
         key: String,
@@ -307,7 +342,8 @@ enum UiEvent {
     Approval {
         action: String,
         detail: String,
-        response: oneshot::Sender<bool>,
+        kind: ApprovalKind,
+        response: oneshot::Sender<PermissionDecision>,
     },
     Connection(String),
     Session {
@@ -595,21 +631,31 @@ impl UiHandle {
         });
     }
 
-    /// Ask the terminal owner for a serialized yes/no decision.
     pub async fn confirm(&self, action: impl Into<String>, detail: impl Into<String>) -> bool {
+        self.decide(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
+    }
+
+    /// Ask the terminal owner for a serialized approval decision.
+    pub async fn decide(
+        &self,
+        action: impl Into<String>,
+        detail: impl Into<String>,
+        kind: ApprovalKind,
+    ) -> PermissionDecision {
         let (response, answer) = oneshot::channel();
         if self
             .sender
             .send(UiEvent::Approval {
                 action: action.into(),
                 detail: detail.into(),
+                kind,
                 response,
             })
             .is_err()
         {
-            return false;
+            return PermissionDecision::Deny;
         }
-        answer.await.unwrap_or(false)
+        answer.await.unwrap_or(PermissionDecision::Deny)
     }
 }
 
@@ -1211,7 +1257,8 @@ fn leave_terminal(mut terminal: Renderer) -> Result<()> {
 
 struct PendingApproval {
     id: u64,
-    response: oneshot::Sender<bool>,
+    kind: ApprovalKind,
+    response: oneshot::Sender<PermissionDecision>,
     saved_input: String,
 }
 
@@ -1543,10 +1590,11 @@ impl App {
             UiEvent::Approval {
                 action,
                 detail,
+                kind,
                 response,
             } => {
                 if self.pending_approval.is_some() {
-                    let _ = response.send(false);
+                    let _ = response.send(PermissionDecision::Deny);
                     self.notice(
                         NoticeTone::Error,
                         "Rejected an overlapping approval request".to_string(),
@@ -1561,10 +1609,12 @@ impl App {
                     id,
                     action: sanitize_terminal_text(&action),
                     detail: sanitize_terminal_text(&detail),
+                    kind,
                     outcome: None,
                 });
                 self.pending_approval = Some(PendingApproval {
                     id,
+                    kind,
                     response,
                     saved_input,
                 });
@@ -2033,25 +2083,27 @@ impl App {
     }
 
     fn handle_approval_key(&mut self, key: KeyEvent) {
+        let Some(pending) = &self.pending_approval else {
+            return;
+        };
+        let kind = pending.kind;
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match (control, key.code) {
-            (false, KeyCode::Esc) => self.answer_approval(false),
-            (false, KeyCode::Char('y' | 'Y')) if self.editor.text().is_empty() => {
-                self.answer_approval(true);
-            }
-            (false, KeyCode::Char('n' | 'N')) if self.editor.text().is_empty() => {
-                self.answer_approval(false);
-            }
-            (false, KeyCode::Enter) => {
-                let answer = self.editor.text();
-                match parse_approval(&answer) {
-                    Some(answer) => self.answer_approval(answer),
-                    None => {
-                        self.editor.clear();
-                        self.notice(NoticeTone::Error, "Answer yes or no".to_string(), None);
-                    }
+            (false, KeyCode::Esc) => self.answer_approval(PermissionDecision::Deny),
+            (false, KeyCode::Char(character)) if self.editor.text().is_empty() => {
+                if let Some(decision) = kind.parse(&character.to_string()) {
+                    self.answer_approval(decision);
+                } else {
+                    self.editor.insert(character);
                 }
             }
+            (false, KeyCode::Enter) => match kind.parse(&self.editor.text()) {
+                Some(answer) => self.answer_approval(answer),
+                None => {
+                    self.editor.clear();
+                    self.notice(NoticeTone::Error, kind.choices().to_string(), None);
+                }
+            },
             (true, KeyCode::Char('c')) => self.editor.clear(),
             (false, KeyCode::Char(character)) => self.editor.insert(character),
             (false, KeyCode::Backspace) => self.editor.backspace(),
@@ -2068,7 +2120,7 @@ impl App {
         }
     }
 
-    fn answer_approval(&mut self, approved: bool) {
+    fn answer_approval(&mut self, approved: PermissionDecision) {
         let Some(pending) = self.pending_approval.take() else {
             return;
         };
@@ -2381,13 +2433,18 @@ fn composer_status_line(
 
 fn footer_text(app: &App, approval: bool, autocomplete: bool, width: u16) -> String {
     if approval {
+        let choices = app
+            .pending_approval
+            .as_ref()
+            .map_or(ApprovalKind::Action, |pending| pending.kind)
+            .choices();
         if app.scroll_from_bottom > 0 {
-            return "y approve · n deny · End latest · PgUp/PgDn".to_string();
+            return format!("{choices} · End latest · PgUp/PgDn");
         }
         if app.max_scroll_from_bottom > 0 {
-            return "y approve · n deny · PgUp/PgDn scroll".to_string();
+            return format!("{choices} · PgUp/PgDn scroll");
         }
-        return "y approve · n deny · Esc deny".to_string();
+        return format!("{choices} · Esc deny");
     }
     if let Some(command) = app.busy.as_deref() {
         if app.scroll_from_bottom > 0 {
@@ -2680,11 +2737,27 @@ fn feed_item_lines(item: &FeedItem, width: usize, height: usize) -> Vec<Line<'st
         FeedItem::Approval {
             action,
             detail,
+            kind,
             outcome,
             ..
         } => match outcome {
-            Some(true) => status_lines(NoticeTone::Success, &format!("Approved {action}"), None),
-            Some(false) => status_lines(NoticeTone::Warning, &format!("Rejected {action}"), None),
+            Some(PermissionDecision::AllowOnce) => status_lines(
+                NoticeTone::Success,
+                &format!("Allowed once: {action}"),
+                None,
+            ),
+            Some(PermissionDecision::AllowAlways) => status_lines(
+                NoticeTone::Success,
+                &if *kind == ApprovalKind::Permission {
+                    format!("Allowed always: {action}")
+                } else {
+                    format!("Approved {action}")
+                },
+                None,
+            ),
+            Some(PermissionDecision::Deny) => {
+                status_lines(NoticeTone::Warning, &format!("Rejected {action}"), None)
+            }
             None => vec![
                 Line::default(),
                 Line::from(vec![
@@ -2705,7 +2778,7 @@ fn feed_item_lines(item: &FeedItem, width: usize, height: usize) -> Vec<Line<'st
                 )),
                 Line::default(),
                 Line::from(Span::styled(
-                    "  [y] Approve   [n] Reject   Esc deny",
+                    format!("  {}   Esc deny", kind.choices()),
                     semantic_style(Color::Cyan),
                 )),
             ],
@@ -2958,7 +3031,7 @@ fn redact_pairing_link(text: &str) -> String {
     format!("{}<pairing link>", &text[..start])
 }
 
-fn sanitize_terminal_text(text: &str) -> String {
+pub(crate) fn sanitize_terminal_text(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut characters = text.chars().peekable();
     while let Some(character) = characters.next() {
@@ -3113,20 +3186,59 @@ mod tests {
     }
 
     #[test]
-    fn approval_temporarily_replaces_and_then_restores_command_draft() {
-        let mut app = test_app();
-        app.editor.set_text("/script draft.ts");
-        let (response, answer) = oneshot::channel();
-        app.handle_event(UiEvent::Approval {
-            action: "sign request".to_string(),
-            detail: "payload".to_string(),
-            response,
-        });
-        app.handle_approval_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-
-        assert_eq!(answer.blocking_recv(), Ok(true));
-        assert_eq!(app.editor.text(), "/script draft.ts");
-        assert!(app.pending_approval.is_none());
+    fn approval_preserves_the_decision_and_restores_command_draft() {
+        for (kind, key, expected) in [
+            (
+                ApprovalKind::Action,
+                KeyCode::Char('y'),
+                PermissionDecision::AllowAlways,
+            ),
+            (
+                ApprovalKind::Permission,
+                KeyCode::Char('o'),
+                PermissionDecision::AllowOnce,
+            ),
+            (
+                ApprovalKind::Permission,
+                KeyCode::Char('a'),
+                PermissionDecision::AllowAlways,
+            ),
+            (
+                ApprovalKind::Permission,
+                KeyCode::Char('n'),
+                PermissionDecision::Deny,
+            ),
+            (
+                ApprovalKind::Permission,
+                KeyCode::Esc,
+                PermissionDecision::Deny,
+            ),
+            (
+                ApprovalKind::Permission,
+                KeyCode::Enter,
+                PermissionDecision::Deny,
+            ),
+        ] {
+            let mut app = test_app();
+            app.editor.set_text("/script draft.ts");
+            let (response, answer) = oneshot::channel();
+            app.handle_event(UiEvent::Approval {
+                action: "remote permission".to_string(),
+                detail: "access to api.example.com".to_string(),
+                kind,
+                response,
+            });
+            assert!(app.transcript_text().contains(kind.choices()));
+            app.handle_approval_key(KeyEvent::new(key, KeyModifiers::NONE));
+            assert_eq!(
+                (
+                    answer.blocking_recv(),
+                    app.editor.text(),
+                    app.pending_approval.is_none()
+                ),
+                (Ok(expected), "/script draft.ts".to_string(), true)
+            );
+        }
     }
 
     #[test]
@@ -3256,6 +3368,7 @@ mod tests {
         app.handle_event(UiEvent::Approval {
             action: "sign request".to_string(),
             detail: "payload".to_string(),
+            kind: ApprovalKind::Action,
             response,
         });
         assert!(footer_text(&app, true, false, 120).contains("PgUp/PgDn scroll"));
@@ -4234,6 +4347,7 @@ mod tests {
         app.handle_event(UiEvent::Approval {
             action: "\u{1b}[31msign request\u{1b}[0m".to_string(),
             detail: "\u{1b}]0;unsafe title\u{7}safe detail".to_string(),
+            kind: ApprovalKind::Action,
             response,
         });
 

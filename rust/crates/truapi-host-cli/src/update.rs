@@ -478,14 +478,20 @@ mod tests {
 
     /// A release archive holding one executable `truapi-host`.
     fn archive_of(body: &str) -> Vec<u8> {
+        archive_with_files(&[(BINARY, body)])
+    }
+
+    fn archive_with_files(files: &[(&str, &str)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         let mut builder = tar::Builder::new(encoder);
-        let mut header = tar::Header::new_gnu();
-        header.set_size(body.len() as u64);
-        header.set_mode(0o755);
-        builder
-            .append_data(&mut header, BINARY, body.as_bytes())
-            .unwrap();
+        for (path, body) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(if *path == BINARY { 0o755 } else { 0o644 });
+            builder
+                .append_data(&mut header, path, body.as_bytes())
+                .unwrap();
+        }
         builder.into_inner().unwrap().finish().unwrap()
     }
 
@@ -597,6 +603,37 @@ mod tests {
             Path::new("versions/0.10.0")
         );
         assert_eq!(install.active_version().as_deref(), Some("0.10.0"));
+    }
+
+    #[test]
+    fn installing_keeps_browser_assets_with_the_matching_runner() {
+        let root = tempfile::tempdir().unwrap();
+        let install = install_at(root.path());
+        let files = [
+            (BINARY, "binary"),
+            ("runner.js", "runner"),
+            ("sandbox-assets/container.js", "container"),
+            ("sandbox-assets/client.mjs", "client"),
+            ("sandbox-assets/bootstrap.js", "bootstrap"),
+            ("node_modules/playwright-core/cli.js", "installer"),
+            ("node_modules/esbuild-wasm/esbuild.wasm", "portable builder"),
+            (
+                "node_modules/playwright-core/browsers.json",
+                "browser versions",
+            ),
+        ];
+        let archive = archive_with_files(&files);
+        install_archive(&install, "0.10.0", &archive, &digest_of(&archive)).unwrap();
+        let installed = files.map(|(path, _)| {
+            (
+                path,
+                fs::read_to_string(install.current_link().join(path)).unwrap(),
+            )
+        });
+        assert_eq!(
+            installed,
+            files.map(|(path, contents)| (path, contents.to_string()))
+        );
     }
 
     /// Named after the running version rather than a literal, so this keeps

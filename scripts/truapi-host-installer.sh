@@ -186,8 +186,8 @@ report() {
     esac
     echo
     echo "Run '$BINARY --help' to get started, or '$BINARY signing-host' to"
-    echo "start a wallet-local host. Product scripts (--script) also need 'bun'"
-    echo "on your PATH; see the truapi-host-cli README."
+    echo "start a wallet-local host. Product scripts need Bun on PATH and Chromium."
+    echo "Run '$BINARY install-browser' to install the matching browser."
 }
 
 main() {

@@ -33,7 +33,7 @@ messages as a product connected to another host.
 The CLI replaces the platform/operating-system seam with native implementations
 for persistence, chain RPC, approvals, notifications, navigation, theme, and
 terminal presentation. It also owns account onboarding, process orchestration,
-the product-frame WebSocket bridge, and the Bun script runner.
+the product-frame WebSocket bridge, and the sandboxed browser script runner.
 
 It is local test infrastructure, not:
 
@@ -194,27 +194,38 @@ cargo install \
 ### 3.3 Runtime dependencies
 
 Host-only commands need the installed Rust binary. Product scripts additionally
-need `bun` on `PATH`, plus a runner (see below). A source build also needs the
-repository's generated `@parity/truapi` TypeScript sources.
+need Bun on `PATH`, the matching Chromium headless shell, its host libraries,
+and working browser sandbox support. `truapi-host install-browser` installs
+the matching browser explicitly. `PLAYWRIGHT_BROWSERS_PATH` selects its cache
+for installation and execution. The Linux Rust binary uses musl; Chromium
+still needs a compatible glibc and its runtime libraries. Browser setup does
+not automatically change system sandbox policy or install OS packages.
+
+A source build also needs `npm ci --ignore-scripts` at the repository root and
+the generated `@parity/truapi` TypeScript sources.
 
 The runner is resolved in this order: `TRUAPI_HOST_RUNNER`, then `runner.js`
 next to the running binary, then `js/runner.ts` in the source checkout
-(compiled from `CARGO_MANIFEST_DIR`).
+(compiled from `CARGO_MANIFEST_DIR`). A managed version with a missing runner
+fails instead of falling back to source code. After an update moves `current`,
+the running binary continues using the runner from its own version directory.
 
-A release archive ships `runner.js` beside the binary, with `@parity/truapi`
-bundled in, so an installed copy runs product scripts with no source tree. A
-source build has no bundle and falls back to the checkout copy, whose relative
-`@parity/truapi` import means it only works from a built tree.
+A release archive ships `runner.js`, `sandbox-assets/{container.js,client.mjs,bootstrap.js}`,
+and matching `node_modules/{playwright-core,esbuild-wasm}` beside the binary.
+The browser assets use the existing `js/container` source and the same esbuild
+compiler used by native iOS packaging. The runtime builder is the portable
+WebAssembly package. Installed execution does not need a source checkout.
 
-`bun` is required either way, since the runner and user scripts are executed by
-it.
+Bun executes the trusted launcher and prepares product modules. Product code
+executes in Chromium by default. Missing browser assets, browser installation,
+or sandbox support cause failure without an unrestricted fallback.
 
 The binary has `--help` and `--version`.
 
 ### 3.4 Self-update
 
 An install laid out by §3.2 keeps itself current. Every command except
-`update` spawns a background check that:
+`update` and `install-browser` spawns a background check that:
 
 1. does nothing unless the running executable resolves inside
    `<root>/versions/`, so a `cargo install` copy or a source build is never
@@ -303,6 +314,7 @@ truapi-host pairing-host [options]
 | Option | Default | Behavior |
 | --- | --- | --- |
 | `--script <path>` | none | Run one JS/TS product script and exit with its status. |
+| `--trusted-script` | off | Run that `--script` in Bun with host capabilities; requires `--script`. |
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
 | `--base-path <path>` | section 12.1 | Base directory; managed state lives under its `v2/` subdirectory. |
@@ -337,6 +349,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | Option | Default | Behavior |
 | --- | --- | --- |
 | `--script <path>` | none | Run one direct product script and exit with its status. |
+| `--trusted-script` | off | Run that `--script` in Bun with host capabilities; requires `--script`. |
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--deeplink <url>` | none | Answer a pairing deeplink after initialization. |
 | `--mnemonic <phrase>` | none | Use raw BIP-39 entropy as an ephemeral local signer. |
@@ -736,11 +749,12 @@ pairing cancellation method.
 
 An approval temporarily saves and clears the command draft. The operator can:
 
-- press `y` or `Y` with an empty input to approve;
-- press `n`, `N`, or Esc to reject; or
-- type `yes`/`no` and press Enter.
+- press `y` to approve an action;
+- press `o` for Allow once or `a` for Allow always on a permission;
+- press `n` or Esc to reject; or
+- type the corresponding word and press Enter. Letter shortcuts accept either case.
 
-Invalid typed answers show `Answer yes or no`. The saved draft is restored
+Invalid typed answers show the available choices. The saved draft is restored
 after the decision. Approval requests are serialized by the platform prompt
 lock.
 
@@ -787,20 +801,64 @@ Adjacent output is chunked at 256 lines or 64 KiB.
 
 ### 10.1 Execution contract
 
-A product script is a JavaScript or TypeScript ES module executed by Bun.
-Before importing it, the runner:
+A product script is a JavaScript or TypeScript ES module executed in a
+sandboxed Chromium context. This applies to `--script`, interactive `/script`,
+and `exec '/script ...'`. The trusted Bun runner:
 
 1. reads its required environment;
-2. opens the product-frame WebSocket over its Unix or TCP endpoint, with a
-   15-second connection timeout;
-3. creates the public `@parity/truapi` client;
-4. injects the script globals; and
-5. imports the absolute script URL.
+2. bundles browser-compatible product imports without evaluating product code;
+3. opens one connection for product frames and authorization over the host's
+   Unix or TCP endpoint, with a 15-second connection timeout;
+4. starts Chromium with its process sandbox enabled and a fresh browser context;
+5. installs the shared container, MessagePort relay and browser SDK before
+   product code; and
+6. loads the product module from a synthetic product origin.
 
 Top-level module code is awaited. If the module's default export is a function,
 the runner calls and awaits it with the host context.
 
-The provider is disposed on success or failure.
+Imports are limited to the script directory and `node_modules` directories
+found there or in ancestors, after resolving symlinks. Only supported JS/TS
+and JSON modules are prepared. Node/Bun built-ins, files outside these roots,
+and unsupported module loaders fail preparation. `@parity/truapi` resolves to
+the browser SDK shipped with the host. Product preparation does not execute
+package hooks or compile-time product code.
+
+The container sends fetch and XHR intent through its private port. The trusted launcher
+intercepts the actual request and asks Rust to authorize its initial host on
+the product's existing connection. Chromium request IDs associate CORS preflights
+and redirects with the operation. One approval covers the entire operation,
+including redirects to other hosts, matching native fetch/XHR behavior.
+Aborting a request invalidates its pending authorization. XHR keeps native request
+headers, response types and events after authorization; synchronous XHR is unavailable.
+CORS remains browser-enforced. Remote WebSockets are opened by a trusted launcher broker after
+one Rust authorization per connection. The broker forwards text/binary messages and
+subprotocols, sends the product Origin and closes its connections at teardown. It
+does not share browser cookies. `bufferedAmount` tracks the relay queue rather than
+the launcher's socket buffer. Direct browser WebSockets remain blocked by CSP.
+Workers, subframes, WebRTC and WebTransport are unavailable in the CLI product realm. Product code has no Bun/Node filesystem,
+subprocess or host-environment access.
+
+The intent binding acknowledges well-formed Remote intents without consulting
+Rust. It lets the container reach the browser request without spending a grant
+twice; it is not an authorization decision. CDP and the WebSocket broker enforce
+consent outside the product realm. CLI browser tests exercise that enforcement;
+the shared container tests separately cover denial through its private port.
+
+Chromium's local-network permission is scoped to the synthetic product origin.
+Without it, even Rust-approved loopback requests fail. Each operation's initial host
+passes Rust authorization; host-scoped grants include all ports and the prompt
+states this. CSP restricts protocols and disables JavaScript evaluation, workers and frames;
+WebAssembly compilation remains available. CDP applies the destination permission check.
+
+The browser execution phase times out after five minutes. Success, failure or
+timeout closes the browser and disposes the frame provider.
+
+`--trusted-script --script <path>` explicitly selects Bun execution for diagnostics
+that read host logs or write reports. It prints the selected mode and imports
+the product with the launcher's capabilities. The flag requires `--script` and
+applies only to that invocation; interactive `/script` remains sandboxed.
+Trusted execution loads neither the browser nor its compiler dependencies.
 
 ### 10.2 Injected globals
 
@@ -821,9 +879,10 @@ declare function assert(
 `host.productAccount()` defaults to derivation index `0` and uses the exact
 active product id.
 
-`assert` joins string arguments directly and formats other values with
-`node:util.inspect` without color. A false condition throws either the joined
-message or `assertion failed`.
+The browser's `assert` converts message values with `String` and joins them
+with spaces. Trusted mode retains `node:util.inspect` without color for
+non-string values. A false condition throws either the joined message or
+`assertion failed`.
 
 ### 10.3 Internal child environment
 
@@ -835,15 +894,23 @@ The Rust parent sets:
 | `TRUAPI_PRODUCT_ID` | Normalized active product id. |
 | `TRUAPI_SCRIPT` | Canonical absolute script path. |
 | `TRUAPI_CLI_HOST_ROLE` | `pairing-host` or `signing-host`. |
+| `TRUAPI_SCRIPT_CWD` | Original caller directory, restored only for trusted scripts. |
 
-These variables are runner internals, not CLI configuration inputs.
+These variables are runner internals, not CLI configuration inputs. They are
+not injected into the sandboxed product's environment.
+
+The launcher runs from its trusted directory with automatic Bun config,
+dotenv loading, macros, and package installation disabled. Product-side
+configuration cannot run code before the browser sandbox starts.
 
 ### 10.4 Script status
 
 - Successful completion exits `0`.
 - A thrown error or rejected promise is printed as `[script error] ...` and
   exits `1`.
-- Failure to open the product socket within 15 seconds exits `2`.
+- A browser execution timeout exits `1`. Both modes' 15-second product-socket
+  connection timeout exits `2`.
+- Browser installation, startup or sandbox failures exit `1`.
 - Failure to locate the runner, canonicalize the script, or spawn Bun is a CLI
   error.
 
@@ -889,7 +956,7 @@ valid if a session directory is promoted. Explicit scripts outside the session
 store their absolute path. A missing remembered file is ignored and replaced
 by a new scratch file.
 
-The default scratch file is a dependency-free Bun script that calls
+The default scratch file is a dependency-free browser-compatible script that calls
 `truapi.account.getUserId()` and prints `user id` followed by the returned
 value. It does not emit terminal styling.
 
@@ -911,10 +978,13 @@ The top-level `--script` option does not update remembered `/script` state.
 | `ring-vrf-smoke.ts` | Verify RFC-0024 registration, listing, alias, non-membership proof, and direct signing behavior. |
 | `preimage-smoke.ts` | Exercise Bulletin preimage submission and lookup. |
 | `smart-contract-allowance-smoke.ts` | Requests a PGAS allowance for product account index 0 and reports the outcome. |
+| `chat-battery.ts` | Run host-backed Chat screening diagnostics and write a report. |
 
 `battery.ts` writes to `explorer/diagnosis-reports/spa/<role>-cli.md` unless
 `TRUAPI_BATTERY_REPORT_PATH` overrides the destination. `scripts/battery.sh` in
-the repository root produces both reports in one invocation: it runs the direct
+the repository root explicitly selects trusted mode because the diagnostics
+read host transcripts and write files. The reports measure API behavior and
+do not prove product isolation. It produces both reports in one invocation: it runs the direct
 signing-host phase, then starts a pairing host and answers its emitted link
 with a second signing host using the same product id and forwarded host flags
 so the paired phase can complete. Known unsupported service families remain
@@ -1636,6 +1706,7 @@ reports:
 - `Notifications/cancel_push_notification`
 - `Permissions/request_device_permission`
 - `Permissions/request_remote_permission`
+- `Permissions/authorize_remote_permission`
 - `Preimage/lookup_subscribe`
 - `Preimage/submit`
 - `Resource Allocation/request`
@@ -1728,8 +1799,9 @@ not written to session state. A new process derives its initial policy from
 In the TUI it uses the approval card described in section 9. In plain mode:
 
 - stdin must be a TTY;
-- the prompt is `Approve? [y/N]`;
-- only `y` or `yes` approves; and
+- action confirmations offer `[y] Approve` and `[n] Reject`;
+- permissions offer `[o] Allow once`, `[a] Allow always` and `[n] Deny`;
+- full words (`yes`, `once`, `always`, `no`) are also accepted; and
 - EOF, invalid input, or non-TTY stdin rejects.
 
 Approval summaries exist for:
@@ -1746,12 +1818,17 @@ Approval summaries exist for:
 - device permission; and
 - remote permission.
 
+Remote permission summaries identify the domains or capability requested. Domain
+grants cover all ports, including local services. Device prompts identify the
+capability. Permission reviews preserve Allow once without writing a permanent
+grant; ordinary action confirmations remain Boolean.
+
 Raw signing payloads are hidden from approval summaries. Proof summaries show
 only product and message length.
 
 ### 17.2 Auto-accept
 
-`--auto-accept` returns `true` for each platform prompt and emits:
+`--auto-accept` approves actions and returns Allow always for permissions. It emits:
 
 ```text
 ✓ Approved <action> automatically
@@ -2019,6 +2096,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `VISUAL` | Preferred script editor. |
 | `EDITOR` | Fallback script editor. |
 | `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
+| `PLAYWRIGHT_BROWSERS_PATH` | Browser cache used by `install-browser` and the sandboxed runner. |
 | `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on either preset. |
 | `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
 | `COLORFGBG` | Infer TUI background color. |
@@ -2032,10 +2110,10 @@ ended. This preserves the child status but bypasses later Rust destructors.
 These are part of the as-built specification:
 
 - only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
-- product scripts require Bun and, by default, the source checkout;
+- default product scripts require Bun, Chromium and functioning browser sandbox support; installed releases include their runtime assets;
 - there is no structured/JSON output mode;
 - there is no `--version`;
-- there is no script timeout option;
+- browser execution has a fixed five-minute timeout and no CLI timeout option;
 - commands other than `dev` have no global signal-aware graceful-shutdown controller;
 - onboarding can wait for the fixed identity/ring polling windows;
 - session/core/product state has no inter-process mutation lock;
@@ -2043,6 +2121,7 @@ These are part of the as-built specification:
 - non-loopback product listeners can bind but reject every TCP frame peer;
 - product text WebSocket frames are accepted as protocol bytes;
 - product-frame and chain outbound queues are unbounded;
+- browser bridge binary messages use JSON number arrays, so memory cost exceeds payload size; transport budgets are tracked in [#847](https://github.com/paritytech/host-rust-core/issues/847);
 - unknown chain genesis hashes fall back to People;
 - interactive child ANSI styling is stripped rather than parsed; and
 - pairing and signing state are local plaintext test state.
@@ -2057,7 +2136,8 @@ The implementation is covered by:
   session restore, cached signer activation, and bare-script safety;
 - `truapi-server` runtime, protocol, cryptographic vector, and integration
   tests;
-- script-runner/Bun diagnosis tests;
+- shared container, browser isolation, controlled-import and packaged-runtime tests;
+- trusted Bun diagnosis tests;
 - paired and direct `battery.ts` runs, both driven by `scripts/battery.sh`; and
 - checked-in compatibility reports:
   - `explorer/diagnosis-reports/spa/pairing-host-cli.md`
