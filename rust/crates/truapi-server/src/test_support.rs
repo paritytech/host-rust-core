@@ -76,7 +76,12 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 /// can exercise its delegation paths without pulling in a real backend.
 #[derive(Default)]
 pub(crate) struct StubPlatform {
+    pub(crate) device_permission_decisions:
+        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
+    pub(crate) device_permission_requests: Mutex<Vec<v01::HostDevicePermissionRequest>>,
     pub(crate) remote_permission_denied: bool,
+    pub(crate) remote_permission_decisions:
+        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
     /// Every `remote_permission` request, in order, so a test can assert which
     /// domains reached the prompt and that a stored grant suppresses a re-ask.
     pub(crate) remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
@@ -90,6 +95,9 @@ pub(crate) struct StubPlatform {
     pub(crate) account_access_confirmed: bool,
     pub(crate) account_access_error: Option<&'static str>,
     pub(crate) account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
+    /// Permission answers retain their lifetime separately from action confirmations.
+    pub(crate) permission_confirmation_decisions:
+        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
     /// Inverted so the derived default (`false`) approves, matching the
     /// pre-consent behavior where a cold own-account resolve was not gated.
     pub(crate) product_subtree_denied: bool,
@@ -1152,21 +1160,40 @@ impl PlatformNotifications for StubPlatform {
 impl PlatformPermissions for StubPlatform {
     async fn device_permission(
         &self,
-        _request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
-        Ok(v01::HostDevicePermissionResponse { granted: true })
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        self.device_permission_requests
+            .lock()
+            .expect("device permission list mutex poisoned")
+            .push(request);
+        Ok(self
+            .device_permission_decisions
+            .lock()
+            .expect("device permission decisions mutex poisoned")
+            .pop_front()
+            .unwrap_or(truapi_platform::PermissionDecision::AllowAlways))
     }
 
     async fn remote_permission(
         &self,
         request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         self.remote_permission_requests
             .lock()
             .expect("remote permission list mutex poisoned")
             .push(request);
-        Ok(v01::RemotePermissionResponse {
-            granted: !self.remote_permission_denied,
+        if let Some(decision) = self
+            .remote_permission_decisions
+            .lock()
+            .expect("remote permission decisions mutex poisoned")
+            .pop_front()
+        {
+            return Ok(decision);
+        }
+        Ok(if self.remote_permission_denied {
+            truapi_platform::PermissionDecision::Deny
+        } else {
+            truapi_platform::PermissionDecision::AllowAlways
         })
     }
 }
@@ -1728,6 +1755,23 @@ impl AuthPresenter for StubPlatform {
 
 #[truapi_platform::async_trait]
 impl UserConfirmation for StubPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        let confirmed = self.confirm_user_action(review).await?;
+        Ok(self
+            .permission_confirmation_decisions
+            .lock()
+            .expect("permission confirmation mutex poisoned")
+            .pop_front()
+            .unwrap_or(if confirmed {
+                truapi_platform::PermissionDecision::AllowAlways
+            } else {
+                truapi_platform::PermissionDecision::Deny
+            }))
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,

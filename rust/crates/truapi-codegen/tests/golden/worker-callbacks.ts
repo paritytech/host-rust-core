@@ -32,6 +32,7 @@ export const CALLBACK_NAMES = [
   "read",
   "write",
   "clear",
+  "confirmPermission",
   "confirmUserAction",
 ] as const;
 export type CallbackName = (typeof CALLBACK_NAMES)[number];
@@ -81,6 +82,7 @@ function rawCallbacks(
     | "read"
     | "write"
     | "clear"
+    | "confirmPermission"
     | "confirmUserAction"
   >
 > {
@@ -146,6 +148,10 @@ function rawCallbacks(
     clear: (key) =>
       bridge.callbackRequest("clear", [key]) as ReturnType<
         Required<RawCallbacks>["clear"]
+      >,
+    confirmPermission: (review) =>
+      bridge.callbackRequest("confirmPermission", [review]) as ReturnType<
+        Required<RawCallbacks>["confirmPermission"]
       >,
     confirmUserAction: (review) =>
       bridge.callbackRequest("confirmUserAction", [review]) as ReturnType<

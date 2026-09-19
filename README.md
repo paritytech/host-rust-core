@@ -64,6 +64,8 @@ requests after a bounded deadline; pass `requestTimeoutMs` to `createTransport` 
 
 See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full client reference.
 
+The [permission model](docs/rfcs/0002-permission-model.md) separates outbound domain access from `OpenUrl` external navigation and requires `Notifications` for push delivery. Hosts preserve the user's `AllowOnce`, `AllowAlways`, or `Deny` choice; Rust owns one-use grants for Rust-backed executions.
+
 ## Repository layout
 
 ```

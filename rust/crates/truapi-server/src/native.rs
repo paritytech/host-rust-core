@@ -23,15 +23,16 @@ use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
     HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
-    PreimageHost, ProductContext, ProductExecutionKind, ProductOperations, ProductStorage,
-    RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision, Permissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductExecutionKind, ProductOperations,
+    ProductStorage, RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
 use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
+use crate::host_logic::permissions::TemporaryPermissions;
 use crate::host_logic::sso::messages::{
     RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
     decode_remote_message, v1,
@@ -448,6 +449,7 @@ pub fn has_trusted_remote_permissions(product_id: String) -> bool {
 /// directly: an async callback method returning a type from another UniFFI
 /// namespace lowers into that namespace's `RustBuffer`, and the generated
 /// Kotlin then fails to compile. The conversion is total.
+/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum NativeDevicePermissionStatus {
     /// The OS grants this capability to the host application.
@@ -471,13 +473,36 @@ impl From<NativeDevicePermissionStatus> for truapi_platform::DevicePermissionSta
     }
 }
 
+/// Keeps async permission callbacks in this UniFFI namespace for the same
+/// Kotlin `RustBuffer` constraint as [`NativeDevicePermissionStatus`].
+/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativePermissionDecision {
+    /// Approves one operation in this execution.
+    AllowOnce,
+    /// Approves subsequent operations until the setting changes.
+    AllowAlways,
+    /// Refuses subsequent operations until the setting changes.
+    Deny,
+}
+
+impl From<NativePermissionDecision> for PermissionDecision {
+    fn from(decision: NativePermissionDecision) -> Self {
+        match decision {
+            NativePermissionDecision::AllowOnce => Self::AllowOnce,
+            NativePermissionDecision::AllowAlways => Self::AllowAlways,
+            NativePermissionDecision::Deny => Self::Deny,
+        }
+    }
+}
+
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
 /// executor's worker threads, and blocking one of those threads can stall
 /// the entire bridge — not just the request being served. Async callbacks
 /// (`navigate_to`, `push_notification`, `device_permission`,
-/// `remote_permission`, `feature_supported`, `confirm_user_action`,
+/// `remote_permission`, `feature_supported`, `confirm_user_action`, `confirm_permission`,
 /// `lookup_preimage`) are awaited by the core — implementations hop to the
 /// main thread for any UI and may keep the future pending arbitrarily long,
 /// but must suspend rather than block the polling thread (foreign
@@ -506,11 +531,11 @@ pub trait HostCallbacks: Send + Sync {
     fn cancel_notification(&self, id: u32) -> Result<(), HostRejection>;
 
     /// Prompt the user for a device-level permission (camera, mic, ...);
-    /// the host returns whether the permission was granted.
+    /// the host preserves whether approval applies once or always.
     async fn device_permission(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<bool, HostRejection>;
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Report the OS status of a device capability without prompting.
     ///
@@ -531,7 +556,7 @@ pub trait HostCallbacks: Send + Sync {
     async fn remote_permission(
         &self,
         request: v01::RemotePermission,
-    ) -> Result<bool, HostRejection>;
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Observe an auth state change, in transition order: render `Pairing` as
     /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
@@ -570,6 +595,12 @@ pub trait HostCallbacks: Send + Sync {
         &self,
         review: UserConfirmationReview,
     ) -> Result<bool, HostRejection>;
+
+    /// Preserve the lifetime of consent for identity and account disclosures.
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
     /// current item in its subscription stream.
@@ -798,6 +829,7 @@ impl NativeTrUApiHostRuntime {
             chat,
             pocket,
             permission_status,
+            permission_grants: Arc::new(TemporaryPermissions::default()),
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -1182,6 +1214,8 @@ pub struct NativeProductExecution {
     /// The same `CallbackPlatform` as `platform`, kept separately because
     /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
     permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
+    /// One-use grants follow this execution across its product and admin connections.
+    permission_grants: Arc<TemporaryPermissions>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -1215,6 +1249,7 @@ impl NativeProductExecution {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
             permission_status: Some(self.permission_status.clone()),
+            permission_grants: self.permission_grants.clone(),
             chat: self.chat_connection.clone(),
             renderer: self.renderer_connection.clone(),
             pocket_platform: self.pocket.clone(),
@@ -1433,6 +1468,7 @@ impl NativeProductExecution {
         }
         #[cfg(feature = "ws-bridge")]
         self.stop_bridge();
+        self.permission_grants.clear();
         self.chat_connection.close();
         self.renderer_connection.close();
     }
@@ -1814,35 +1850,33 @@ impl Permissions for CallbackPlatform {
     async fn device_permission(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
+    ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.device_permission".to_string(),
             format!("{request}"),
         );
 
-        let granted = self
-            .callbacks
+        self.callbacks
             .device_permission(request)
             .await
-            .map_err(v01::GenericError::from)?;
-        Ok(v01::HostDevicePermissionResponse { granted })
+            .map(Into::into)
+            .map_err(v01::GenericError::from)
     }
 
     async fn remote_permission(
         &self,
         request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+    ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.remote_permission".to_string(),
             format!("{request}"),
         );
 
-        let granted = self
-            .callbacks
+        self.callbacks
             .remote_permission(request.permission)
             .await
-            .map_err(v01::GenericError::from)?;
-        Ok(v01::RemotePermissionResponse { granted })
+            .map(Into::into)
+            .map_err(v01::GenericError::from)
     }
 }
 
@@ -2079,6 +2113,21 @@ impl AuthPresenter for CallbackPlatform {
 
 #[async_trait]
 impl UserConfirmation for CallbackPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<PermissionDecision, v01::GenericError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.confirm_permission".to_string(),
+            String::new(),
+        );
+        self.callbacks
+            .confirm_permission(review)
+            .await
+            .map(PermissionDecision::from)
+            .map_err(v01::GenericError::from)
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,
@@ -2579,6 +2628,12 @@ mod tests {
         worker_demand: Mutex<Vec<(String, WorkerTransition)>>,
         /// Capability this host reports as refused by the OS, if any.
         os_refused: Option<v01::HostDevicePermissionRequest>,
+        /// Configurable prompt outcome for grant, denial, and callback failure tests.
+        remote_permission_result: Result<NativePermissionDecision, HostRejection>,
+        /// Disclosure consent is distinct from boolean action confirmation.
+        permission_confirmation_result: NativePermissionDecision,
+        /// Counts prompts across the execution's separate connections.
+        remote_permission_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl EventCallbacks {
@@ -2617,6 +2672,9 @@ mod tests {
                 chain_closes: Mutex::new(Vec::new()),
                 worker_demand: Mutex::new(Vec::new()),
                 os_refused: None,
+                remote_permission_result: Ok(NativePermissionDecision::Deny),
+                permission_confirmation_result: NativePermissionDecision::Deny,
+                remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
     }
@@ -2647,8 +2705,8 @@ mod tests {
         async fn device_permission(
             &self,
             _request: v01::HostDevicePermissionRequest,
-        ) -> Result<bool, HostRejection> {
-            Ok(false)
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            Ok(NativePermissionDecision::Deny)
         }
         async fn device_permission_status(
             &self,
@@ -2663,8 +2721,9 @@ mod tests {
         async fn remote_permission(
             &self,
             _request: v01::RemotePermission,
-        ) -> Result<bool, HostRejection> {
-            Ok(false)
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            self.remote_permission_calls.fetch_add(1, Ordering::SeqCst);
+            self.remote_permission_result.clone()
         }
         fn auth_state_changed(&self, state: AuthState) {
             self.auth_states
@@ -2707,6 +2766,12 @@ mod tests {
             _review: UserConfirmationReview,
         ) -> Result<bool, HostRejection> {
             Ok(false)
+        }
+        async fn confirm_permission(
+            &self,
+            _review: UserConfirmationReview,
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            Ok(self.permission_confirmation_result)
         }
         async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
             Ok(self
@@ -4118,6 +4183,13 @@ mod tests {
         struct Noop;
         #[async_trait::async_trait]
         impl HostCallbacks for Noop {
+            async fn confirm_permission(
+                &self,
+                _review: UserConfirmationReview,
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
+            }
+
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
@@ -4135,8 +4207,8 @@ mod tests {
             async fn device_permission(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             async fn device_permission_status(
                 &self,
@@ -4147,8 +4219,8 @@ mod tests {
             async fn remote_permission(
                 &self,
                 _request: v01::RemotePermission,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -4278,6 +4350,13 @@ mod tests {
 
         #[async_trait::async_trait]
         impl HostCallbacks for GatedPermissionCallbacks {
+            async fn confirm_permission(
+                &self,
+                _review: UserConfirmationReview,
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
+            }
+
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
@@ -4295,7 +4374,7 @@ mod tests {
             async fn device_permission(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<bool, HostRejection> {
+            ) -> Result<NativePermissionDecision, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
@@ -4303,7 +4382,7 @@ mod tests {
                     .recv()
                     .await
                     .expect("release signal");
-                Ok(true)
+                Ok(NativePermissionDecision::AllowAlways)
             }
             async fn device_permission_status(
                 &self,
@@ -4314,8 +4393,8 @@ mod tests {
             async fn remote_permission(
                 &self,
                 _request: v01::RemotePermission,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -4925,6 +5004,189 @@ mod tests {
         )
         .expect("review must lift back");
         assert_eq!(lifted, review);
+    }
+
+    #[test]
+    fn native_remote_authorization_uses_the_execution_permission_callback() {
+        use truapi::api::Permissions;
+        use truapi::versioned::permissions;
+
+        for (answer, granted) in [
+            (Ok(NativePermissionDecision::AllowAlways), true),
+            (Ok(NativePermissionDecision::Deny), false),
+            (
+                Err(HostRejection::Rejected {
+                    reason: "permission UI unavailable".to_string(),
+                }),
+                false,
+            ),
+        ] {
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                Arc::new(EventCallbacks::new()),
+                native_host_runtime_config(),
+            )
+            .unwrap();
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_result: answer,
+                ..EventCallbacks::new()
+            });
+            let execution = host
+                .open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config("fetch.dot", ProductExecutionKind::App),
+                )
+                .unwrap();
+            let request = v01::RemotePermissionRequest {
+                permission: v01::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            let response = futures::executor::block_on(
+                execution
+                    .admin()
+                    .product_runtime()
+                    .authorize_remote_permission(
+                        &truapi::CallContext::default(),
+                        permissions::RemotePermissionRequest::V1(request),
+                    ),
+            )
+            .unwrap();
+            assert_eq!(
+                (
+                    response,
+                    callbacks.remote_permission_calls.load(Ordering::SeqCst)
+                ),
+                (
+                    permissions::RemotePermissionResponse::V1(v01::RemotePermissionResponse {
+                        granted
+                    }),
+                    1,
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn native_permission_confirmation_preserves_consent_lifetime() {
+        futures::executor::block_on(async {
+            for decision in [
+                NativePermissionDecision::AllowOnce,
+                NativePermissionDecision::AllowAlways,
+                NativePermissionDecision::Deny,
+            ] {
+                let platform = CallbackPlatform {
+                    callbacks: Arc::new(EventCallbacks {
+                        permission_confirmation_result: decision,
+                        ..EventCallbacks::new()
+                    }),
+                    events: Arc::default(),
+                    storage_events: Arc::default(),
+                };
+                let review = UserConfirmationReview::IdentityDisclosure(
+                    truapi_platform::IdentityDisclosureReview {
+                        product_id: "product.dot".to_string(),
+                    },
+                );
+                assert_eq!(
+                    (
+                        platform.confirm_permission(review.clone()).await.unwrap(),
+                        platform.confirm_user_action(review).await.unwrap(),
+                    ),
+                    (PermissionDecision::from(decision), false),
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn native_execution_shares_one_use_permissions_across_connections_only() {
+        use truapi::api::Permissions;
+
+        let callbacks = Arc::new(EventCallbacks {
+            remote_permission_result: Ok(NativePermissionDecision::AllowOnce),
+            ..EventCallbacks::new()
+        });
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            native_host_runtime_config(),
+        )
+        .unwrap();
+        let open = || {
+            host.open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("fetch.dot", ProductExecutionKind::App),
+            )
+            .unwrap()
+        };
+        let execution = open();
+        let other = open();
+        futures::executor::block_on(async {
+            let admin = execution.admin();
+            let request = v01::RemotePermissionRequest {
+                permission: v01::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            let context = truapi::CallContext::default();
+            let sdk_request = || {
+                admin.product_runtime().request_remote_permission(
+                    &context,
+                    truapi::versioned::permissions::RemotePermissionRequest::V1(request.clone()),
+                )
+            };
+            let granted = sdk_request().await.unwrap();
+            let permission = PermissionAuthorizationRequest::Remote(request.clone());
+            let other_status = other
+                .permission_authorization_status(permission.clone())
+                .await
+                .unwrap();
+            let consumed = execution
+                .admin()
+                .product_runtime()
+                .authorize_remote_permission(
+                    &context,
+                    truapi::versioned::permissions::RemotePermissionRequest::V1(request.clone()),
+                )
+                .await
+                .unwrap();
+            let after_use = execution
+                .permission_authorization_status(permission.clone())
+                .await
+                .unwrap();
+            let prompts_after_use = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+            sdk_request().await.unwrap();
+            execution.shutdown();
+            let after_shutdown = admin
+                .permission_authorization_status(permission)
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    granted,
+                    other_status,
+                    consumed,
+                    after_use,
+                    prompts_after_use,
+                    after_shutdown
+                ),
+                (
+                    truapi::versioned::permissions::RemotePermissionResponse::V1(
+                        v01::RemotePermissionResponse { granted: true },
+                    ),
+                    PermissionAuthorizationStatus::NotDetermined,
+                    truapi::versioned::permissions::RemotePermissionResponse::V1(
+                        v01::RemotePermissionResponse { granted: true },
+                    ),
+                    PermissionAuthorizationStatus::NotDetermined,
+                    1,
+                    PermissionAuthorizationStatus::NotDetermined,
+                )
+            );
+        });
     }
 
     /// Drives the whole native chain for a status read: foreign callback,

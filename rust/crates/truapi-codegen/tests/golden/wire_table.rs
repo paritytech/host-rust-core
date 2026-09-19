@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "7e298b33bf55effb";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "462dacb6e0d1f504";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -384,6 +384,18 @@ pub const PERMISSIONS_REQUEST_DEVICE_PERMISSION: MethodIds = MethodIds {
 pub const PERMISSIONS_REQUEST_REMOTE_PERMISSION: MethodIds = MethodIds {
     trait_id: 10,
     method_id: 1,
+};
+
+/// Wire discriminants for `permissions_authorize_remote_permission`.
+pub const PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION: MethodIds = MethodIds {
+    trait_id: 10,
+    method_id: 2,
+};
+
+/// Wire discriminants for `permissions_authorize_device_permission`.
+pub const PERMISSIONS_AUTHORIZE_DEVICE_PERMISSION: MethodIds = MethodIds {
+    trait_id: 10,
+    method_id: 3,
 };
 
 /// Wire discriminants for `preimage_lookup_subscribe`.
@@ -755,6 +767,14 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "permissions_request_remote_permission",
         kind: WireKind::Request(PERMISSIONS_REQUEST_REMOTE_PERMISSION),
+    },
+    WireEntry {
+        method: "permissions_authorize_remote_permission",
+        kind: WireKind::Request(PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION),
+    },
+    WireEntry {
+        method: "permissions_authorize_device_permission",
+        kind: WireKind::Request(PERMISSIONS_AUTHORIZE_DEVICE_PERMISSION),
     },
     WireEntry {
         method: "preimage_lookup_subscribe",

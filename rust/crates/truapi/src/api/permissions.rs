@@ -40,4 +40,20 @@ pub trait Permissions: Send + Sync {
         cx: &CallContext,
         request: RemotePermissionRequest,
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>>;
+
+    /// Authorize one remote operation, consuming an available one-use grant.
+    #[wire(id = 2, internal)]
+    async fn authorize_remote_permission(
+        &self,
+        cx: &CallContext,
+        request: RemotePermissionRequest,
+    ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>>;
+
+    /// Authorize one device operation, consuming an available one-use grant.
+    #[wire(id = 3, internal)]
+    async fn authorize_device_permission(
+        &self,
+        cx: &CallContext,
+        request: HostDevicePermissionRequest,
+    ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>>;
 }

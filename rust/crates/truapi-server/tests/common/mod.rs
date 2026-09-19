@@ -159,14 +159,14 @@ impl Permissions for WireShapePlatform {
     async fn device_permission(
         &self,
         _request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
-        Ok(v01::HostDevicePermissionResponse { granted: true })
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        Ok(truapi_platform::PermissionDecision::AllowAlways)
     }
     async fn remote_permission(
         &self,
         _request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
-        Ok(v01::RemotePermissionResponse { granted: true })
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        Ok(truapi_platform::PermissionDecision::AllowAlways)
     }
 }
 

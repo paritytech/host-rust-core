@@ -33,7 +33,6 @@ import type {
   HostChatPostMessageResponse,
   HostChatRegisterBotRequest,
   HostChatRegisterBotResponse,
-  HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostLocalStorageChangeItem,
@@ -45,7 +44,6 @@ import type {
   HostThemeSubscribeItem,
   HostWorkerBeginOperationResponse,
   NotificationId,
-  RemotePermissionResponse,
   Result,
 } from "@parity/truapi";
 
@@ -331,13 +329,18 @@ export type PermissionAuthorizationRequest =
 /**
  * Authorization status for a permission request.
  *
- * `NotDetermined` means the core has no persisted answer and will prompt the
+ * `NotDetermined` means the core has no saved or one-use answer and will prompt the
  * host the next time the product requests this permission.
  */
 export type PermissionAuthorizationStatus =
   | "NotDetermined"
   | "Denied"
   | "Authorized";
+
+/**
+ * User decision including how long an authorization should last.
+ */
+export type PermissionDecision = "AllowOnce" | "AllowAlways" | "Deny";
 
 /**
  * Review shown before a preimage is submitted.
@@ -777,7 +780,7 @@ export const PermissionAuthorizationRequest: S.Codec<PermissionAuthorizationRequ
 /**
  * Authorization status for a permission request.
  *
- * `NotDetermined` means the core has no persisted answer and will prompt the
+ * `NotDetermined` means the core has no saved or one-use answer and will prompt the
  * host the next time the product requests this permission.
  */
 export const PermissionAuthorizationStatus: S.Codec<PermissionAuthorizationStatus> =
@@ -785,6 +788,14 @@ export const PermissionAuthorizationStatus: S.Codec<PermissionAuthorizationStatu
     (): S.Codec<PermissionAuthorizationStatus> =>
       S.Status("NotDetermined", "Denied", "Authorized"),
   );
+
+/**
+ * User decision including how long an authorization should last.
+ */
+export const PermissionDecision: S.Codec<PermissionDecision> = S.lazy(
+  (): S.Codec<PermissionDecision> =>
+    S.Status("AllowOnce", "AllowAlways", "Deny"),
+);
 
 /**
  * Review shown before a preimage is submitted.
@@ -1312,14 +1323,14 @@ export interface Permissions {
    */
   devicePermission(
     request: HostDevicePermissionRequest,
-  ): Promise<HostDevicePermissionResponse>;
+  ): Promise<PermissionDecision>;
 
   /**
    * Prompt the user for a remote (product-scoped) permission bundle.
    */
   remotePermission(
     request: RemotePermissionRequest,
-  ): Promise<RemotePermissionResponse>;
+  ): Promise<PermissionDecision>;
 }
 
 /**
@@ -1451,6 +1462,13 @@ export interface ThemeHost {
  * Local user confirmation UI for sensitive core-owned operations.
  */
 export interface UserConfirmation {
+  /**
+   * Preserve the lifetime of consent for identity and account disclosures.
+   */
+  confirmPermission?(
+    review: UserConfirmationReview,
+  ): Promise<PermissionDecision>;
+
   /**
    * Confirm a reviewed action before the core continues.
    */

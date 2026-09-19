@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readdir, readFile, writeFile, mkdir, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -27,24 +27,10 @@ async function resolveNeverthrow() {
 }
 const NEVERTHROW_DTS = await resolveNeverthrow();
 
-async function* walk(dir) {
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) yield* walk(path);
-    else if (
-      entry.isFile() &&
-      path.endsWith(".d.ts") &&
-      !entry.name.startsWith("truapi-dts")
-    ) {
-      yield path;
-    }
-  }
-}
-
 // Strip cross-file relative imports — once everything is wrapped in a single
 // `declare module "@parity/truapi"` block, relative paths resolve to nothing.
 const RELATIVE_IMPORT_RE =
-  /^(?:import|export)[^;]*?from\s+["'](?:\.\.?\/)[^"']*["'];?\s*\n?/gm;
+  /^(?:import|export)[^;]*?from\s+["'](\.\.?\/[^"']*)["'];?\s*\n?/gm;
 // `import { type Result } from "neverthrow"` lines also need to go: we inline
 // neverthrow's real .d.ts content at the top of the bundle, so the symbols
 // are in module-local scope and don't need to cross the module boundary.
@@ -60,9 +46,18 @@ function stripImports(text) {
 // "../scale"`. After stripping those imports, `T` and `S` would be undefined
 // — so we re-create them as ambient namespaces wrapping the matching files.
 const typeFiles = new Map();
-for await (const path of walk(DIST)) {
-  typeFiles.set(relative(DIST, path).replace(/\\/g, "/"), path);
+async function collectTypes(path) {
+  const rel = relative(DIST, path).replace(/\\/g, "/");
+  if (typeFiles.has(rel)) return;
+  const source = await readFile(path, "utf8");
+  typeFiles.set(rel, path);
+  for (const [, specifier] of source.matchAll(RELATIVE_IMPORT_RE)) {
+    await collectTypes(
+      resolve(dirname(path), specifier.replace(/\.js$/, ".d.ts")),
+    );
+  }
 }
+await collectTypes(join(DIST, "index.d.ts"));
 
 async function readFileNamespace(name, relPath) {
   const path = typeFiles.get(relPath);

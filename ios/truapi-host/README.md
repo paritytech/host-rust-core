@@ -257,7 +257,9 @@ The core's `Permissions` platform trait has two methods, and so does `HostCallba
 - `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
 - `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
-Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+Both return `PermissionDecision`: `.allowOnce`, `.allowAlways`, or `.deny`. Preserve the user’s choice; the core keeps one-use grants in memory and consumes them at the authorized operation. OS refusal after app consent should throw instead of returning `.deny`, which records a product denial. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+
+Identity and account access reviews use `confirmPermission(review:)`, which also returns `PermissionDecision`. Override it to preserve Allow once. Its compatibility default maps `confirmUserAction`'s Boolean approval to `.allowAlways`; signing and other single-action reviews continue to use that Boolean callback.
 
 ## SSO session handling
 
@@ -274,7 +276,7 @@ func prepareDisconnectRequest() -> Data
 - `.disconnected` — the peer ended the session; tear down the transport and records on the wallet side.
 - `.ignored` — the message was not a request; nothing to post.
 
-Confirmation-gated requests suspend on `confirmUserAction`, so `handleSsoRequest` can take arbitrarily long. Always call it from a `Task`, never the main thread.
+Confirmation-gated requests suspend on `confirmUserAction` or `confirmPermission`, so `handleSsoRequest` can take arbitrarily long. Always call it from a `Task`, never the main thread.
 
 `prepareDisconnectRequest()` returns the SCALE-encoded `Disconnected` message to post when the wallet is ending the session. Posting and record cleanup (host entry, device record, device-removed broadcast) stay with the wallet.
 
@@ -345,7 +347,7 @@ An account id must be exactly 32 bytes. Anything else is rejected as `NativeRene
 > (`MainActor` / `DispatchQueue.main`) before touching UIKit, WebKit, or the
 > `WKWebView`. The `async` callbacks (`navigateTo`, `pushNotification`,
 > `devicePermission`, `remotePermission`, `featureSupported`,
-> `confirmUserAction`, `lookupPreimage`) are awaited by the core, so an
+> `confirmUserAction`, `confirmPermission`, `lookupPreimage`) are awaited by the core, so an
 > implementation may suspend for as long as the user takes to decide (e.g.
 > `await MainActor.run { ... }` or an `withCheckedContinuation` around a
 > prompt); other TrUAPI traffic keeps flowing while you wait. The remaining
@@ -394,14 +396,14 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         DispatchQueue.main.async { /* cancel notification */ }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool {
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision {
         // Awaited by the core: present the prompt and suspend until the user
         // decides. Other TrUAPI traffic keeps flowing while suspended.
-        await MainActor.run { /* show prompt for request (.camera, .microphone, ...); */ false }
+        await MainActor.run { /* show prompt for request (.camera, .microphone, ...); */ PermissionDecision.deny }
     }
 
-    func remotePermission(request: RemotePermission) async throws -> Bool {
-        await MainActor.run { /* show prompt for request (.chainSubmit, .remote(domains:), ...); */ false }
+    func remotePermission(request: RemotePermission) async throws -> PermissionDecision {
+        await MainActor.run { /* show prompt for request (.chainSubmit, .remote(domains:), ...); */ PermissionDecision.deny }
     }
 
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
@@ -432,6 +434,10 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         // Switch on the review variant (.signPayload, .createTransaction, ...)
         // to render the confirmation prompt with its typed fields.
         await MainActor.run { /* render review; */ false }
+    }
+
+    func confirmPermission(review: UserConfirmationReview) async throws -> PermissionDecision {
+        await MainActor.run { /* render permission review; */ PermissionDecision.deny }
     }
 
     func lookupPreimage(key: Data) async throws -> Data? { nil }

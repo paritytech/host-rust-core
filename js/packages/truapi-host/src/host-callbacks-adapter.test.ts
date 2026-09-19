@@ -5,14 +5,12 @@ import {
   HostChatCreateRoomRequest,
   HostChatCreateRoomResponse,
   HostDevicePermissionRequest,
-  HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
   RemotePermissionRequest,
-  RemotePermissionResponse,
 } from "@parity/truapi";
 import type {
   GenericError,
@@ -25,6 +23,7 @@ import { createWasmRawCallbacks } from "./generated/host-callbacks-adapter.js";
 import {
   AuthState,
   CoreStorageKey,
+  PermissionDecision,
   ProductContext,
   ProductExecutionKind,
   UserConfirmationReview,
@@ -37,6 +36,29 @@ import { makeHostCallbacks, settle } from "./test-support.js";
 // `Uint8Array`. Primitives, strings and byte blobs pass through unchanged.
 
 const GENESIS = `0x${"11".repeat(32)}` as `0x${string}`;
+
+it("preserves one-use permission decisions across the WASM callback", async () => {
+  const review = {
+    tag: "IdentityDisclosure" as const,
+    value: { productId: "playground.dot" },
+  };
+  for (const decision of ["AllowOnce", "AllowAlways", "Deny"] as const) {
+    const reviews: UserConfirmationReview[] = [];
+    const raw = createWasmRawCallbacks(makeHostCallbacks({
+      userConfirmation: {
+        confirmPermission: async (request) => {
+          reviews.push(request);
+          return decision;
+        },
+      },
+    }));
+    const encoded = await raw.confirmPermission(UserConfirmationReview.enc(review));
+    expect({ decision: PermissionDecision.dec(encoded), reviews }).toEqual({
+      decision,
+      reviews: [review],
+    });
+  }
+});
 
 const defaultTheme = (variant: ThemeVariant): HostThemeSubscribeItemValue => ({
   name: { tag: "Default" },
@@ -95,12 +117,10 @@ describe("createWasmRawCallbacks", () => {
           },
         },
         permissions: {
-          devicePermission: async (request) => ({
-            granted: request === "Camera",
-          }),
-          remotePermission: async (request) => ({
-            granted: request.permission.tag === "ChainSubmit",
-          }),
+          devicePermission: async (request) =>
+            request === "Camera" ? "AllowAlways" : "Deny",
+          remotePermission: async (request) =>
+            request.permission.tag === "ChainSubmit" ? "AllowOnce" : "Deny",
         },
         features: {
           featureSupported: async (request) => ({
@@ -132,19 +152,19 @@ describe("createWasmRawCallbacks", () => {
       ).id,
     ).toBe(5);
     expect(
-      HostDevicePermissionResponse.dec(
+      PermissionDecision.dec(
         await raw.devicePermission!(HostDevicePermissionRequest.enc("Camera")),
-      ).granted,
-    ).toBe(true);
+      ),
+    ).toBe("AllowAlways");
     expect(
-      RemotePermissionResponse.dec(
+      PermissionDecision.dec(
         await raw.remotePermission!(
           RemotePermissionRequest.enc({
             permission: { tag: "ChainSubmit" },
           }),
         ),
-      ).granted,
-    ).toBe(true);
+      ),
+    ).toBe("AllowOnce");
     expect(
       HostFeatureSupportedResponse.dec(
         await raw.featureSupported!(

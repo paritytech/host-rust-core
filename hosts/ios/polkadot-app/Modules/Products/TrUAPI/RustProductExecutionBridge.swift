@@ -17,6 +17,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
     struct Dependencies {
         let productId: ProductId
         let permissionGuard: ProductPermissionGuarding
+        let osPermissionAsker: OSPermissionAsking
         let notificationScheduler: ProductNotificationScheduling
         let navigationRouter: ProductsNavigationRouting
         let chainRegistry: ChainRegistryProtocol
@@ -61,18 +62,39 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool {
-        try await dependencies.permissionGuard.requestPermission(
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> TrUAPIPermissionDecision {
+        try await dependencies.permissionGuard.requestDevicePermissionDecision(
             productId: dependencies.productId,
-            permission: .deviceCapability(request.deviceCapabilityType)
-        )
+            capability: request.deviceCapabilityType
+        ).hostDecision
     }
 
-    func remotePermission(request: RemotePermission) async throws -> Bool {
-        try await dependencies.permissionGuard.requestPermissionsBatched(
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws -> NativeDevicePermissionStatus {
+        switch request {
+        case .camera,
+             .microphone,
+             .notifications:
+            switch await dependencies.osPermissionAsker.checkPermission(for: request.deviceCapabilityType) {
+            case .allowed: .granted
+            case .denied: .denied
+            case .notDetermined: .notDetermined
+            }
+        case .location:
+            .notDetermined
+        case .bluetooth,
+             .nfc,
+             .clipboard,
+             .openUrl,
+             .biometrics:
+            .notApplicable
+        }
+    }
+
+    func remotePermission(request: RemotePermission) async throws -> TrUAPIPermissionDecision {
+        try await dependencies.permissionGuard.requestPermissionsDecision(
             productId: dependencies.productId,
             permissions: request.toDomainRequest().toDomainPermissions()
-        )
+        ).hostDecision
     }
 
     func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32 {
@@ -97,6 +119,10 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
 
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool {
         await dependencies.confirmationPresenter.confirm(review: review, from: dependencies.productId)
+    }
+
+    func confirmPermission(review: UserConfirmationReview) async throws -> TrUAPIPermissionDecision {
+        await dependencies.confirmationPresenter.confirmPermission(review: review, from: dependencies.productId)
     }
 
     func chainConnect(genesisHash: Data) throws -> UInt32? {
@@ -169,6 +195,16 @@ extension RustProductExecutionBridge: TrUAPIChainEventHandling {
 }
 
 // MARK: - Mappers
+
+extension Products.PermissionDecision {
+    var hostDecision: TrUAPIPermissionDecision {
+        switch self {
+        case .allowOnce: .allowOnce
+        case .allowAlways: .allowAlways
+        case .deny: .deny
+        }
+    }
+}
 
 extension HostDevicePermissionRequest {
     /// Maps the TrUAPI device permission to the Products domain type.

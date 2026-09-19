@@ -44,6 +44,7 @@ import uniffi.truapi.HostNavigateToError
 import uniffi.truapi.RemotePermission
 import uniffi.truapi_platform.AuthState
 import uniffi.truapi_platform.HostChainSet
+import uniffi.truapi_platform.PermissionDecision
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostStorageException
@@ -206,9 +207,11 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
             throw HostNavigateRejection.Navigate(HostNavigateToError.Unknown("navigation unavailable at host level"))
         }
 
-        override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean = false
+        override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision =
+            PermissionDecision.DENY
 
-        override suspend fun remotePermission(request: RemotePermission): Boolean = false
+        override suspend fun remotePermission(request: RemotePermission): PermissionDecision =
+            PermissionDecision.DENY
 
         override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
             confirmationLauncher.decide(review, requesterFallback = HOST_REQUESTER)

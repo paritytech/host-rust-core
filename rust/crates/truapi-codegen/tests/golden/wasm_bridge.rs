@@ -54,6 +54,7 @@ pub(super) struct JsBridge {
     pub(super) clear: Function,
     pub(super) subscribe_storage: Function,
     pub(super) subscribe_theme: Function,
+    pub(super) confirm_permission: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
     pub(super) permission_status_present: bool,
@@ -98,6 +99,7 @@ impl JsBridge {
             clear: get_function(callbacks, "clear")?,
             subscribe_storage: get_function(callbacks, "subscribeStorage")?,
             subscribe_theme: get_function(callbacks, "subscribeTheme")?,
+            confirm_permission: get_function(callbacks, "confirmPermission")?,
             confirm_user_action: get_function(callbacks, "confirmUserAction")?,
             chat_present: get_optional_function(callbacks, "createChatRoom")?.is_some()
                 && get_optional_function(callbacks, "registerChatBot")?.is_some()
@@ -364,14 +366,14 @@ impl truapi_platform::Permissions for WasmPlatform {
     async fn device_permission(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         let bytes = invoke_bytes_return(
             &self.bridge.device_permission,
             vec![Uint8Array::from(request.encode().as_slice()).into()],
         )
         .await
         .map_err(generic)?;
-        decode_bytes::<v01::HostDevicePermissionResponse>(
+        decode_bytes::<truapi_platform::PermissionDecision>(
             bytes,
             "devicePermission response did not decode",
         )
@@ -381,14 +383,14 @@ impl truapi_platform::Permissions for WasmPlatform {
     async fn remote_permission(
         &self,
         request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         let bytes = invoke_bytes_return(
             &self.bridge.remote_permission,
             vec![Uint8Array::from(request.encode().as_slice()).into()],
         )
         .await
         .map_err(generic)?;
-        decode_bytes::<v01::RemotePermissionResponse>(
+        decode_bytes::<truapi_platform::PermissionDecision>(
             bytes,
             "remotePermission response did not decode",
         )
@@ -539,6 +541,23 @@ impl truapi_platform::ThemeHost for WasmPlatform {
 
 #[truapi_platform::async_trait]
 impl truapi_platform::UserConfirmation for WasmPlatform {
+    async fn confirm_permission(
+        &self,
+        review: truapi_platform::UserConfirmationReview,
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.confirm_permission,
+            vec![Uint8Array::from(review.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::PermissionDecision>(
+            bytes,
+            "confirmPermission response did not decode",
+        )
+        .map_err(generic)
+    }
+
     async fn confirm_user_action(
         &self,
         review: truapi_platform::UserConfirmationReview,

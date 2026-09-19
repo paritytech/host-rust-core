@@ -22,13 +22,13 @@ struct TrUAPIReviewPromptMapperTests {
     }
 
     @Test
-    func mapsPreimageSubmitToHostProductPermission() {
-        let request = mapper.makePermissionRequest(from: PreimageSubmitReview(size: 1_024))
+    func mapsPreimageSubmitToActionWithRequesterAndSize() {
+        let request = mapper.makeActionRequest(
+            from: PreimageSubmitReview(size: 1_024),
+            requester: "caller.dot"
+        )
 
-        #expect(request == TrUAPIPermissionRequest(
-            productId: "",
-            permissions: [.preimageSubmitAccess]
-        ))
+        #expect(request == .preimageSubmit(productId: "caller.dot", size: 1_024))
     }
 
     @Test
@@ -45,15 +45,12 @@ struct TrUAPIReviewPromptMapperTests {
     }
 
     @Test
-    func mapsProductSubtreeToOwnAccountAccess() {
-        let request = mapper.makePermissionRequest(
+    func mapsProductSubtreeToAccountRetrievalAction() {
+        let request = mapper.makeActionRequest(
             from: ProductSubtreeReview(productId: "caller.dot")
         )
 
-        #expect(request == TrUAPIPermissionRequest(
-            productId: "caller.dot",
-            permissions: [.accountAccess(targetProductId: "caller.dot")]
-        ))
+        #expect(request == .productSubtree(productId: "caller.dot"))
     }
 
     @Test

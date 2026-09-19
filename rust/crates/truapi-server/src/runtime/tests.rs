@@ -31,7 +31,7 @@ use truapi::versioned::local_storage::{
 };
 use truapi::versioned::notifications::{
     HostPushNotificationCancelRequest, HostPushNotificationCancelResponse,
-    HostPushNotificationRequest, HostPushNotificationResponse,
+    HostPushNotificationError, HostPushNotificationRequest, HostPushNotificationResponse,
 };
 use truapi::versioned::permissions::{HostDevicePermissionRequest, HostDevicePermissionResponse};
 use truapi::versioned::preimage::{
@@ -1309,57 +1309,102 @@ fn navigate_to_hands_a_web_address_over_unchanged() {
 }
 
 #[test]
-fn navigate_to_rejects_empty_input_without_calling_platform() {
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+fn navigate_to_rejects_invalid_input_without_prompting_or_calling_platform() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
-    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-        url: "".to_string(),
-    });
-    let err = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap_err();
-    match err {
-        CallError::Domain(HostNavigateToError::V1(v01::HostNavigateToError::Unknown {
-            ..
-        })) => {}
-        other => panic!("expected Unknown navigate error, got {other:?}"),
+    for url in [
+        "",
+        "javascript:alert(1)",
+        "data:text/plain,test",
+        "file:///etc/passwd",
+        "vbscript:msgbox(1)",
+    ] {
+        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+            url: url.to_string(),
+        });
+        assert!(matches!(
+            futures::executor::block_on(host.navigate_to(&cx, request)),
+            Err(CallError::Domain(HostNavigateToError::V1(
+                v01::HostNavigateToError::Unknown { .. }
+            )))
+        ));
     }
+    assert_eq!(
+        (
+            platform.navigations.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (vec![], vec![], vec![]),
+    );
 }
 
 #[test]
-fn navigate_to_external_denies_without_a_remote_grant() {
+fn navigate_to_external_denies_without_open_url_permission() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    let urls = [
+        "https://example.com/page",
+        "http://other.example.com/page",
+        "mailto:someone@example.com",
+        "tel:+15551234567",
+        "sms:+15551234567",
+        "maps:?q=Berlin",
+        "polkadot://1exampleaddress",
+        "dot:transfer",
+    ];
+    let mut responses = Vec::new();
+    for url in urls {
+        responses.push(futures::executor::block_on(host.navigate_to(
+            &cx,
+            HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                url: url.to_string(),
+            }),
+        )));
+    }
+    assert_eq!(
+        (
+            responses,
+            platform.navigations.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            vec![
+                Err(CallError::Domain(HostNavigateToError::V1(
+                    v01::HostNavigateToError::PermissionDenied
+                )));
+                urls.len()
+            ],
+            vec![],
+            vec![v01::HostDevicePermissionRequest::OpenUrl],
+            vec![],
+        ),
+    );
+}
+
+#[test]
+fn navigate_to_external_reuses_open_url_grant_across_destinations() {
     let platform = Arc::new(StubPlatform {
         remote_permission_denied: true,
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
-    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-        url: "https://example.com/page".to_string(),
-    });
 
-    let err = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap_err();
-    match err {
-        CallError::Domain(HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied)) => {}
-        other => panic!("expected navigate permission denial, got {other:?}"),
-    }
-    assert!(
-        platform
-            .navigations
-            .lock()
-            .expect("navigation list mutex poisoned")
-            .is_empty(),
-        "a denied navigation must not reach the platform"
-    );
-}
-
-#[test]
-fn navigate_to_external_prompts_for_the_host_then_reuses_the_grant() {
-    let platform = Arc::new(StubPlatform::default());
-    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
-    let cx = CallContext::default();
-
-    for path in ["https://example.com/first", "https://example.com/second"] {
+    let urls = [
+        "https://example.com/first",
+        "https://other.example.com/second",
+        "http://third.example.com/page",
+    ];
+    for url in urls {
         let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-            url: path.to_string(),
+            url: url.to_string(),
         });
         assert_eq!(
             futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
@@ -1367,103 +1412,307 @@ fn navigate_to_external_prompts_for_the_host_then_reuses_the_grant() {
         );
     }
 
-    let asked = platform
-        .remote_permission_requests
-        .lock()
-        .expect("remote permission list mutex poisoned")
-        .clone();
     assert_eq!(
-        asked,
-        vec![v01::RemotePermissionRequest {
-            permission: v01::RemotePermission::Remote {
-                domains: vec!["example.com".to_string()],
-            },
-        }],
-        "the gate asks once, for the target host, and the grant covers later paths"
-    );
-    assert_eq!(
-        platform
-            .navigations
-            .lock()
-            .expect("navigation list mutex poisoned")
-            .len(),
-        2
+        (
+            platform.navigations.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            urls.map(str::to_string).to_vec(),
+            vec![v01::HostDevicePermissionRequest::OpenUrl],
+            vec![],
+        ),
     );
 }
 
 #[test]
-fn navigate_to_dotns_and_localhost_bypass_the_remote_gate() {
-    // Both resolve back into the host's own product surface, so a denied
-    // remote permission must not block in-ecosystem navigation.
+fn navigate_to_internal_targets_do_not_consume_open_url_permission() {
     let platform = Arc::new(StubPlatform {
         remote_permission_denied: true,
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
 
-    for url in ["mytestapp.dot", "localhost:3000"] {
+    for url in [
+        "mytestapp.dot",
+        "localhost:3000",
+        "polkadot://mytestapp.dot/-/pocket/open?card=loyalty",
+    ] {
         let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
             url: url.to_string(),
         });
         assert_eq!(
             futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
             HostNavigateToResponse::V1,
-            "{url} must not consume a remote grant"
+            "{url} stays within the host's product surface"
         );
     }
-    assert!(
-        platform
-            .remote_permission_requests
-            .lock()
-            .expect("remote permission list mutex poisoned")
-            .is_empty()
+    assert_eq!(
+        (
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (vec![], vec![]),
     );
 }
 
 #[test]
-fn navigate_to_handoff_schemes_bypass_the_remote_gate() {
-    // Only `http(s)` reaches a domain a grant can name. The other allowed
-    // schemes hand the URL to another app, so a denying platform must not
-    // turn them into a permission error.
+fn navigate_to_consumes_open_url_allow_once_at_handoff() {
+    futures::executor::block_on(async {
+        for url in [
+            "https://example.com/page",
+            "http://other.example.com/page",
+            "mailto:someone@example.com",
+            "tel:+15551234567",
+            "sms:+15551234567",
+            "maps:?q=Berlin",
+            "polkadot://1exampleaddress",
+            "dot:transfer",
+        ] {
+            for request_upfront in [false, true] {
+                let platform = Arc::new(StubPlatform {
+                    device_permission_decisions: Mutex::new(
+                        [
+                            truapi_platform::PermissionDecision::AllowOnce,
+                            truapi_platform::PermissionDecision::Deny,
+                        ]
+                        .into(),
+                    ),
+                    remote_permission_denied: true,
+                    ..Default::default()
+                });
+                let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+                let cx = CallContext::default();
+                if request_upfront {
+                    for _ in 0..2 {
+                        assert_eq!(
+                            host.request_device_permission(
+                                &cx,
+                                HostDevicePermissionRequest::V1(
+                                    v01::HostDevicePermissionRequest::OpenUrl
+                                )
+                            )
+                            .await
+                            .unwrap(),
+                            HostDevicePermissionResponse::V1(v01::HostDevicePermissionResponse {
+                                granted: true
+                            }),
+                        );
+                    }
+                }
+                let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                    url: url.to_string(),
+                });
+                let first = host.navigate_to(&cx, request.clone()).await;
+                let status = host
+                    .permission_authorization_status(PermissionAuthorizationRequest::Device(
+                        v01::HostDevicePermissionRequest::OpenUrl,
+                    ))
+                    .await
+                    .unwrap();
+                let second = host.navigate_to(&cx, request).await;
+                assert_eq!(
+                    (
+                        first,
+                        second,
+                        status,
+                        platform.navigations.lock().unwrap().clone(),
+                        platform.device_permission_requests.lock().unwrap().clone(),
+                        platform.remote_permission_requests.lock().unwrap().clone(),
+                    ),
+                    (
+                        Ok(HostNavigateToResponse::V1),
+                        Err(CallError::Domain(HostNavigateToError::V1(
+                            v01::HostNavigateToError::PermissionDenied
+                        ))),
+                        PermissionAuthorizationStatus::NotDetermined,
+                        vec![url.to_string()],
+                        vec![v01::HostDevicePermissionRequest::OpenUrl; 2],
+                        vec![],
+                    ),
+                    "url={url}, request_upfront={request_upfront}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn device_authorization_consumes_allow_once_for_each_capability() {
+    futures::executor::block_on(async {
+        for capability in [
+            v01::HostDevicePermissionRequest::Camera,
+            v01::HostDevicePermissionRequest::Microphone,
+        ] {
+            for request_upfront in [false, true] {
+                let platform = Arc::new(StubPlatform {
+                    device_permission_decisions: Mutex::new(
+                        [PermissionDecision::AllowOnce, PermissionDecision::Deny].into(),
+                    ),
+                    ..Default::default()
+                });
+                let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+                let cx = CallContext::default();
+                let request = HostDevicePermissionRequest::V1(capability);
+                if request_upfront {
+                    for _ in 0..2 {
+                        assert_eq!(
+                            host.request_device_permission(&cx, request.clone())
+                                .await
+                                .unwrap(),
+                            HostDevicePermissionResponse::V1(v01::HostDevicePermissionResponse {
+                                granted: true
+                            }),
+                        );
+                    }
+                }
+                let first = host.authorize_device_permission(&cx, request.clone()).await;
+                let status = host
+                    .permission_authorization_status(PermissionAuthorizationRequest::Device(
+                        capability,
+                    ))
+                    .await
+                    .unwrap();
+                let second = host.authorize_device_permission(&cx, request).await;
+                assert_eq!(
+                    (
+                        first,
+                        second,
+                        status,
+                        platform.device_permission_requests.lock().unwrap().clone()
+                    ),
+                    (
+                        Ok(HostDevicePermissionResponse::V1(
+                            v01::HostDevicePermissionResponse { granted: true }
+                        )),
+                        Ok(HostDevicePermissionResponse::V1(
+                            v01::HostDevicePermissionResponse { granted: false }
+                        )),
+                        PermissionAuthorizationStatus::NotDetermined,
+                        vec![capability; 2],
+                    ),
+                    "capability={capability}, request_upfront={request_upfront}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn device_authorization_concurrent_calls_cannot_share_one_use_grants() {
+    futures::executor::block_on(async {
+        for capability in [
+            v01::HostDevicePermissionRequest::Camera,
+            v01::HostDevicePermissionRequest::Microphone,
+        ] {
+            let platform = Arc::new(StubPlatform {
+                device_permission_decisions: Mutex::new(
+                    [PermissionDecision::AllowOnce, PermissionDecision::Deny].into(),
+                ),
+                ..Default::default()
+            });
+            let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+            let cx = CallContext::default();
+            let request = HostDevicePermissionRequest::V1(capability);
+            host.request_device_permission(&cx, request.clone())
+                .await
+                .unwrap();
+            let (first, second) = futures::join!(
+                host.authorize_device_permission(&cx, request.clone()),
+                host.authorize_device_permission(&cx, request),
+            );
+            assert_eq!(
+                (
+                    first,
+                    second,
+                    platform.device_permission_requests.lock().unwrap().clone()
+                ),
+                (
+                    Ok(HostDevicePermissionResponse::V1(
+                        v01::HostDevicePermissionResponse { granted: true }
+                    )),
+                    Ok(HostDevicePermissionResponse::V1(
+                        v01::HostDevicePermissionResponse { granted: false }
+                    )),
+                    vec![capability; 2],
+                ),
+                "capability={capability}",
+            );
+        }
+    });
+}
+
+#[test]
+fn device_authorization_reuses_permanent_grants() {
+    futures::executor::block_on(async {
+        let platform = Arc::new(StubPlatform {
+            device_permission_decisions: Mutex::new(
+                [
+                    PermissionDecision::AllowAlways,
+                    PermissionDecision::AllowAlways,
+                    PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let capabilities = [
+            v01::HostDevicePermissionRequest::Camera,
+            v01::HostDevicePermissionRequest::Microphone,
+        ];
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            for capability in capabilities {
+                responses.push(
+                    host.authorize_device_permission(
+                        &CallContext::default(),
+                        HostDevicePermissionRequest::V1(capability),
+                    )
+                    .await,
+                );
+            }
+        }
+        assert_eq!(
+            (
+                responses,
+                platform.device_permission_requests.lock().unwrap().clone()
+            ),
+            (
+                vec![
+                    Ok(HostDevicePermissionResponse::V1(
+                        v01::HostDevicePermissionResponse { granted: true }
+                    ));
+                    4
+                ],
+                capabilities.to_vec(),
+            ),
+        );
+    });
+}
+
+#[test]
+fn device_authorization_storage_failure_does_not_prompt_or_authorize() {
     let platform = Arc::new(StubPlatform {
-        remote_permission_denied: true,
+        permission_storage_error: Some("device permission storage unavailable"),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
-    let cx = CallContext::default();
-
-    let handoffs = [
-        "mailto:someone@example.com",
-        "tel:+15551234567",
-        "polkadot://1exampleaddress",
-        "dot:transfer",
-    ];
-    for url in handoffs {
-        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-            url: url.to_string(),
-        });
-        assert_eq!(
-            futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
-            HostNavigateToResponse::V1,
-            "{url} has no authorizable domain and must reach the platform"
-        );
-    }
-    assert!(
-        platform
-            .remote_permission_requests
-            .lock()
-            .expect("remote permission list mutex poisoned")
-            .is_empty(),
-        "a hostless scheme must not consume a grant"
-    );
+    let response = futures::executor::block_on(host.authorize_device_permission(
+        &CallContext::default(),
+        HostDevicePermissionRequest::V1(v01::HostDevicePermissionRequest::Camera),
+    ));
     assert_eq!(
-        platform
-            .navigations
-            .lock()
-            .expect("navigation list mutex poisoned")
-            .len(),
-        handoffs.len()
+        (response, platform.device_permission_requests.lock().unwrap().clone()),
+        (
+            Err(CallError::HostFailure {
+                reason: "permission storage failed: GenericError { reason: \"device permission storage unavailable\" }".to_string(),
+            }),
+            vec![],
+        ),
     );
 }
 
@@ -1503,13 +1752,162 @@ fn push_notification_delegates_payload_and_returns_host_id() {
 }
 
 #[test]
+fn push_notification_consumes_allow_once_before_scheduling() {
+    for request_upfront in [false, true] {
+        let platform = Arc::new(StubPlatform {
+            device_permission_decisions: Mutex::new(
+                [
+                    truapi_platform::PermissionDecision::AllowOnce,
+                    truapi_platform::PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            notification_id: 42,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+        let notification = v01::HostPushNotificationRequest {
+            text: "Hello".to_string(),
+            deeplink: None,
+            scheduled_at: None,
+        };
+
+        if request_upfront {
+            assert_eq!(
+                futures::executor::block_on(host.request_device_permission(
+                    &cx,
+                    HostDevicePermissionRequest::V1(
+                        v01::HostDevicePermissionRequest::Notifications
+                    ),
+                ))
+                .unwrap(),
+                HostDevicePermissionResponse::V1(v01::HostDevicePermissionResponse {
+                    granted: true
+                })
+            );
+        }
+        let first = futures::executor::block_on(
+            host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+        );
+        let second = futures::executor::block_on(
+            host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+        );
+
+        assert_eq!(
+            (
+                first,
+                second,
+                platform.pushed_notifications.lock().unwrap().clone(),
+                platform.device_permission_requests.lock().unwrap().clone(),
+            ),
+            (
+                Ok(HostPushNotificationResponse::V1(
+                    v01::HostPushNotificationResponse { id: 42 }
+                )),
+                Err(CallError::Domain(HostPushNotificationError::V1(
+                    v01::HostPushNotificationError::Unknown {
+                        reason: PERMISSION_DENIED_REASON.to_string(),
+                    },
+                ))),
+                vec![notification],
+                vec![v01::HostDevicePermissionRequest::Notifications; 2],
+            ),
+            "request_upfront={request_upfront}"
+        );
+    }
+}
+
+#[test]
+fn push_notification_denial_never_reaches_scheduler() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    let request = HostPushNotificationRequest::V1(v01::HostPushNotificationRequest {
+        text: "Hello".to_string(),
+        deeplink: None,
+        scheduled_at: None,
+    });
+
+    let response = futures::executor::block_on(host.send_push_notification(&cx, request));
+
+    assert_eq!(
+        (
+            response,
+            platform.pushed_notifications.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            Err(CallError::Domain(HostPushNotificationError::V1(
+                v01::HostPushNotificationError::Unknown {
+                    reason: PERMISSION_DENIED_REASON.to_string(),
+                },
+            ))),
+            vec![],
+            vec![v01::HostDevicePermissionRequest::Notifications],
+        )
+    );
+}
+
+#[test]
+fn push_notification_reuses_allow_always() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new(
+            [
+                truapi_platform::PermissionDecision::AllowAlways,
+                truapi_platform::PermissionDecision::Deny,
+            ]
+            .into(),
+        ),
+        notification_id: 42,
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    let notification = v01::HostPushNotificationRequest {
+        text: "Hello".to_string(),
+        deeplink: None,
+        scheduled_at: None,
+    };
+    let first = futures::executor::block_on(
+        host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+    );
+    let second = futures::executor::block_on(
+        host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+    );
+
+    assert_eq!(
+        (
+            first,
+            second,
+            platform.pushed_notifications.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            Ok(HostPushNotificationResponse::V1(
+                v01::HostPushNotificationResponse { id: 42 }
+            )),
+            Ok(HostPushNotificationResponse::V1(
+                v01::HostPushNotificationResponse { id: 42 }
+            )),
+            vec![notification; 2],
+            vec![v01::HostDevicePermissionRequest::Notifications],
+        )
+    );
+}
+
+#[test]
 fn cancel_notification_delegates_host_id() {
     let cancelled_notifications = Arc::new(Mutex::new(Vec::new()));
     let platform = Arc::new(StubPlatform {
         cancelled_notifications: cancelled_notifications.clone(),
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
-    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
     let request =
         HostPushNotificationCancelRequest::V1(v01::HostPushNotificationCancelRequest { id: 42 });
@@ -1517,13 +1915,13 @@ fn cancel_notification_delegates_host_id() {
     let response =
         futures::executor::block_on(host.cancel_push_notification(&cx, request)).unwrap();
 
-    assert_eq!(response, HostPushNotificationCancelResponse::V1);
     assert_eq!(
-        cancelled_notifications
-            .lock()
-            .expect("notification cancellation list mutex poisoned")
-            .as_slice(),
-        &[42]
+        (
+            response,
+            cancelled_notifications.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+        ),
+        (HostPushNotificationCancelResponse::V1, vec![42], vec![])
     );
 }
 
@@ -1674,6 +2072,68 @@ fn get_account_other_product_accepts_confirmation_then_derives_key() {
         inner.account.public_key,
         test_product_account_public("other.dot", 0).to_vec()
     );
+}
+
+#[test]
+fn get_account_allow_once_does_not_authorize_the_next_disclosure() {
+    futures::executor::block_on(async {
+        let platform = Arc::new(StubPlatform {
+            permission_confirmation_decisions: Mutex::new(
+                [
+                    truapi_platform::PermissionDecision::AllowOnce,
+                    truapi_platform::PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        let session = sso_session_info();
+        install_pairing_session(&host, session.clone());
+        cache_test_product_subtree(&host, &session, "other.dot");
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("other.dot", 0),
+        });
+        let response = host
+            .get_account(&CallContext::default(), request.clone())
+            .await
+            .unwrap();
+        let HostAccountGetResponse::V1(response) = response;
+        let saved = platform
+            .read_core_storage(CoreStorageKey::account_access_authorization(
+                "myapp", "other",
+            ))
+            .await
+            .unwrap();
+        let mut rejected = Vec::new();
+        for _ in 0..2 {
+            rejected.push(matches!(
+                host.get_account(&CallContext::default(), request.clone())
+                    .await,
+                Err(CallError::Domain(HostAccountGetError::V1(
+                    v01::HostAccountGetError::Rejected
+                )))
+            ));
+        }
+        assert_eq!(
+            (
+                response.account.public_key,
+                saved,
+                rejected,
+                platform.account_access_reviews.lock().unwrap().len(),
+            ),
+            (
+                test_product_account_public("other.dot", 0).to_vec(),
+                None,
+                vec![true, true],
+                2,
+            ),
+        );
+    });
 }
 
 #[test]
@@ -2043,6 +2503,57 @@ fn get_user_id_caches_identity_disclosure_grant() {
 }
 
 #[test]
+fn get_user_id_allow_once_does_not_authorize_the_next_disclosure() {
+    futures::executor::block_on(async {
+        let platform = Arc::new(StubPlatform {
+            permission_confirmation_decisions: Mutex::new(
+                [
+                    truapi_platform::PermissionDecision::AllowOnce,
+                    truapi_platform::PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        install_pairing_session(&host, session_info());
+        let response = host
+            .get_user_id(&CallContext::default(), HostGetUserIdRequest::V1)
+            .await
+            .unwrap();
+        let HostGetUserIdResponse::V1(response) = response;
+        let status = host
+            .permission_authorization_status(PermissionAuthorizationRequest::IdentityDisclosure)
+            .await
+            .unwrap();
+        let mut rejected = Vec::new();
+        for _ in 0..2 {
+            rejected.push(matches!(
+                host.get_user_id(&CallContext::default(), HostGetUserIdRequest::V1)
+                    .await,
+                Err(CallError::Domain(HostGetUserIdError::V1(
+                    v01::HostGetUserIdError::PermissionDenied
+                )))
+            ));
+        }
+        assert_eq!(
+            (
+                response.primary_username,
+                status,
+                rejected,
+                platform.identity_disclosure_calls.load(Ordering::SeqCst),
+            ),
+            (
+                "Alice Smith".to_string(),
+                PermissionAuthorizationStatus::NotDetermined,
+                vec![true, true],
+                2,
+            ),
+        );
+    });
+}
+
+#[test]
 fn get_user_id_caches_identity_disclosure_denial() {
     let platform = Arc::new(StubPlatform::default());
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
@@ -2276,7 +2787,7 @@ fn preimage_submit_requires_remote_permission_before_backend_call() {
     match err {
         CallError::Domain(RemotePreimageSubmitError::V1(v01::PreimageSubmitError::Unknown {
             reason,
-        })) => assert_eq!(reason, REMOTE_PERMISSION_DENIED_REASON),
+        })) => assert_eq!(reason, PERMISSION_DENIED_REASON),
         other => panic!("expected preimage permission denial, got {other:?}"),
     }
     assert!(
@@ -2310,7 +2821,7 @@ fn chain_broadcast_requires_remote_permission_before_backend_call() {
     match err {
         CallError::Domain(RemoteChainTransactionBroadcastError::V1(v01::GenericError {
             reason,
-        })) => assert_eq!(reason, REMOTE_PERMISSION_DENIED_REASON),
+        })) => assert_eq!(reason, PERMISSION_DENIED_REASON),
         other => panic!("expected chain broadcast permission denial, got {other:?}"),
     }
     assert!(platform.sent_rpc.lock().unwrap().is_empty());

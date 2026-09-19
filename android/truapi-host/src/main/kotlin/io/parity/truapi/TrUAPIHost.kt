@@ -57,6 +57,7 @@ import uniffi.truapi_platform.AuthState
 import uniffi.truapi_platform.HostChainSet
 import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
+import uniffi.truapi_platform.PermissionDecision
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatCallbacks
@@ -64,6 +65,7 @@ import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
 import uniffi.truapi_server.NativeDevicePermissionStatus
+import uniffi.truapi_server.NativePermissionDecision
 import uniffi.truapi_server.NativeProductExecution
 import uniffi.truapi_server.NativeTrUApiHostRuntime
 import uniffi.truapi_server.ProductRuntimeException
@@ -234,38 +236,26 @@ private val defaultOperationIds = AtomicInteger(0)
  *     application running inside the WebView.
  *
  * Embedders render the typed request values in their own UI, then report the
- * user's decision as a `Boolean`.
+ * user's decision as a `PermissionDecision`.
  *
- * Threading: the Rust core invokes every callback on a background thread it
- * owns, never the UI (main) thread. These six each run on their own thread from
- * a blocking pool, so an implementation may safely block its calling thread
- * (e.g. with a `CountDownLatch`) until the user decides; other TrUAPI traffic
- * keeps flowing: [navigateTo], [pushNotification], [devicePermission],
- * [remotePermission], [featureSupported], and [confirmUserAction]. The
- * remaining callbacks (auth state, storage, core storage, chain, theme,
- * preimage lookups, and [cancelNotification]) run inline on the dispatcher
- * thread and must return promptly without blocking. Any UI work
- * MUST still be marshalled onto the main thread, e.g. with
- * `Handler(Looper.getMainLooper()).post { ... }` or a `CoroutineScope` bound to
- * `Dispatchers.Main`. Touching views or the `WebView` directly from a callback
- * throws `CalledFromWrongThreadException`.
+ * The Rust core invokes callbacks on its shared background bridge executor.
+ * Suspend callbacks while waiting for a decision; blocking their thread stalls
+ * other TrUAPI traffic. Synchronous callbacks must return promptly. Run UI work
+ * on the main thread, for example with `withContext(Dispatchers.Main) { ... }`.
  */
 interface HostBridge {
     /** Lifecycle logger. Marker is a stable slug, detail is free-form. */
     fun onCoreLog(marker: String, detail: String) {}
 
     /**
-     * Open a URL in the system browser. Invoked on a blocking-pool thread;
-     * marshal the UI launch (e.g. `startActivity`) to the main thread. May
-     * block the calling thread if the user has to approve the navigation.
+     * Open a URL in the system browser, suspending for any approval on the main thread.
      */
     @Throws(HostNavigateRejection::class)
     suspend fun navigateTo(url: String)
 
     /**
      * Deliver a push notification and return the host-assigned notification
-     * id. Invoked on the dispatcher thread; marshal any UI work to the main
-     * thread and return promptly.
+     * id. Run any UI work on the main thread.
      */
     @Throws(HostRejection::class)
     suspend fun pushNotification(request: HostPushNotificationRequest): UInt = 0u
@@ -275,13 +265,11 @@ interface HostBridge {
     fun cancelNotification(id: UInt) {}
 
     /**
-     * Prompt for a device-level permission. Returns whether it was granted.
-     * Invoked on a blocking-pool thread; present the prompt on the main thread
-     * and block the calling thread until the user decides. Blocking here does
-     * not stall other TrUAPI traffic.
+     * Prompt for a device-level permission on the main thread, suspending until
+     * the user decides. Preserve whether approval applies once or always.
      */
     @Throws(HostRejection::class)
-    suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean
+    suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision
 
     /**
      * Report the OS status of a device capability without prompting. Answer from
@@ -304,13 +292,11 @@ interface HostBridge {
     ): NativeDevicePermissionStatus = NativeDevicePermissionStatus.NOT_APPLICABLE
 
     /**
-     * Prompt for a remote (product-scoped) permission bundle. Invoked on a
-     * blocking-pool thread; present the prompt on the main thread and block the
-     * calling thread until the user decides. Blocking here does not stall other
-     * TrUAPI traffic.
+     * Prompt for a remote (product-scoped) permission bundle on the main thread,
+     * suspending until the user decides.
      */
     @Throws(HostRejection::class)
-    suspend fun remotePermission(request: RemotePermission): Boolean
+    suspend fun remotePermission(request: RemotePermission): PermissionDecision
 
     /**
      * Observe an auth state change, in transition order: render
@@ -342,13 +328,17 @@ interface HostBridge {
 
     /**
      * Confirm one user-reviewed core action; the review variant picks the
-     * prompt (sign payload, sign raw, create transaction, account alias,
-     * resource allocation, or preimage submit). Invoked on a blocking-pool
-     * thread; present the prompt on the main thread and block the calling
-     * thread until the user decides.
+     * prompt (sign payload, sign raw, create transaction, resource allocation,
+     * or preimage submit). Present it on the main thread, suspending until the
+     * user decides.
      */
     @Throws(HostRejection::class)
     suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = false
+
+    /** Preserve the selected lifetime for identity and account access consent. */
+    @Throws(HostRejection::class)
+    suspend fun confirmPermission(review: UserConfirmationReview): PermissionDecision =
+        if (confirmUserAction(review)) PermissionDecision.ALLOW_ALWAYS else PermissionDecision.DENY
 
     /** Return the current preimage value for [key], or null for a miss. */
     @Throws(HostRejection::class)
@@ -496,6 +486,12 @@ interface PocketHostBridge {
     fun removeCard(cardId: String): NativePocketRemoval
 }
 
+private fun PermissionDecision.toNative(): NativePermissionDecision = when (this) {
+    PermissionDecision.ALLOW_ONCE -> NativePermissionDecision.ALLOW_ONCE
+    PermissionDecision.ALLOW_ALWAYS -> NativePermissionDecision.ALLOW_ALWAYS
+    PermissionDecision.DENY -> NativePermissionDecision.DENY
+}
+
 /**
  * Adapter from the public [HostBridge] surface to the generated UniFFI
  * [HostCallbacks] interface. Keeps the public API stable even if uniffi-bindgen
@@ -523,15 +519,15 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun cancelNotification(id: UInt) =
         withHostRejection { bridge.cancelNotification(id) }
 
-    override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean =
-        withHostRejection { bridge.devicePermission(request) }
+    override suspend fun devicePermission(request: HostDevicePermissionRequest): NativePermissionDecision =
+        withHostRejection { bridge.devicePermission(request).toNative() }
 
     override suspend fun devicePermissionStatus(
         request: HostDevicePermissionRequest,
     ): NativeDevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
 
-    override suspend fun remotePermission(request: RemotePermission): Boolean =
-        withHostRejection { bridge.remotePermission(request) }
+    override suspend fun remotePermission(request: RemotePermission): NativePermissionDecision =
+        withHostRejection { bridge.remotePermission(request).toNative() }
 
     override fun authStateChanged(state: AuthState) {
         try {
@@ -563,6 +559,9 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
         withHostRejection { bridge.confirmUserAction(review) }
+
+    override suspend fun confirmPermission(review: UserConfirmationReview): NativePermissionDecision =
+        withHostRejection { bridge.confirmPermission(review).toNative() }
 
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         withHostRejection { bridge.lookupPreimage(key) }
