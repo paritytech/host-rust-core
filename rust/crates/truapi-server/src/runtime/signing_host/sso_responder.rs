@@ -116,6 +116,7 @@ impl DecodeFailureRequestIds {
 
 /// Terminal outcome of one responder serve loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum ResponderExit {
     /// The pairing host announced `Disconnected`; its durable pairing may be removed.
     PeerDisconnected,
@@ -125,11 +126,29 @@ pub enum ResponderExit {
 
 /// Public key material identifying one pairing host's resumable SSO session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct PairedSsoPeer {
     /// Pairing host's statement-store account id.
     pub statement_account_id: [u8; 32],
     /// Pairing host's X25519 public key.
     pub encryption_public_key: [u8; 32],
+}
+
+/// Host notified when a device finishes pairing with this signing host.
+///
+/// The core has no chat of its own, so announcing a new device to the user's
+/// existing contacts belongs to the host.
+///
+/// Arrives on the thread answering the handshake, while the pairing call is
+/// still running, so hand the device off rather than announcing it inline.
+pub trait DevicePairingObserver: Send + Sync {
+    /// `device` paired: its handshake answer is on the Statement Store.
+    ///
+    /// At least once per pairing, so a device that pairs again is reported
+    /// again with the same value. The answer reaching the store is not proof
+    /// the peer read it: one that cancelled or timed out waiting leaves a
+    /// device here that never connects.
+    fn device_paired(&self, device: PairedSsoPeer);
 }
 
 struct EstablishedPairing {
@@ -283,6 +302,10 @@ async fn establish_pairing_session(
     )
     .await?;
     debug!("answered pairing handshake");
+    // The submit is the earliest point the peer could read the answer.
+    if let Some(observer) = services.device_pairing_observer() {
+        observer.device_paired(peer);
+    }
 
     Ok(EstablishedPairing {
         session,
@@ -1394,6 +1417,123 @@ mod tests {
                 response,
             );
         }
+    }
+
+    fn pairing_deeplink(peer: PairedSsoPeer) -> String {
+        let proposal = VersionedHandshakeProposal::V2(v2::Proposal {
+            device: v2::Device {
+                statement_account_id: peer.statement_account_id,
+                encryption_public_key: peer.encryption_public_key,
+            },
+            metadata: vec![v2::MetadataEntry(
+                v2::MetadataKey::HostName,
+                "paired host".to_string(),
+            )],
+        });
+        format!(
+            "polkadotapp://pair?handshake={}",
+            hex::encode(proposal.encode())
+        )
+    }
+
+    #[derive(Default)]
+    struct RecordingPairingObserver {
+        paired: std::sync::Mutex<Vec<PairedSsoPeer>>,
+    }
+
+    impl RecordingPairingObserver {
+        fn paired(&self) -> Vec<PairedSsoPeer> {
+            self.paired
+                .lock()
+                .expect("paired device list mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl DevicePairingObserver for RecordingPairingObserver {
+        fn device_paired(&self, device: PairedSsoPeer) {
+            self.paired
+                .lock()
+                .expect("paired device list mutex poisoned")
+                .push(device);
+        }
+    }
+
+    fn pairing_fixture(submit_status: &'static str) -> (Arc<RuntimeServices>, Arc<SigningHost>) {
+        signing_fixture(Arc::new(StubPlatform {
+            rpc_method_responses: vec![(
+                "statement_submit",
+                format!(r#"{{"status":"{submit_status}"}}"#),
+            )],
+            ..Default::default()
+        }))
+    }
+
+    /// Without this the host never learns a device paired, so no contact is
+    /// told a new device joined.
+    #[test]
+    fn a_paired_device_is_reported_to_the_host() {
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key([0x42; 32]),
+        };
+        let (services, signing_host) = pairing_fixture("new");
+        let observer = Arc::new(RecordingPairingObserver::default());
+        assert!(services.install_device_pairing_observer(observer.clone()));
+
+        futures::executor::block_on(establish_pairing(
+            services,
+            signing_host,
+            &pairing_deeplink(peer),
+        ))
+        .expect("the handshake is answered");
+
+        assert_eq!(observer.paired(), vec![peer]);
+    }
+
+    /// Reporting a handshake the peer never received would have the host
+    /// announce a device over a session that does not exist.
+    #[test]
+    fn a_handshake_that_never_landed_reports_no_device() {
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key([0x42; 32]),
+        };
+        // Neither "new" nor "known", so the submit is rejected.
+        let (services, signing_host) = pairing_fixture("ignored");
+        let observer = Arc::new(RecordingPairingObserver::default());
+        assert!(services.install_device_pairing_observer(observer.clone()));
+
+        let failure = futures::executor::block_on(establish_pairing(
+            services,
+            signing_host,
+            &pairing_deeplink(peer),
+        ))
+        .expect_err("a rejected handshake submit fails the pairing");
+        // Without this the test would also pass on a failure from earlier,
+        // leaving the rule unexercised.
+        assert!(
+            failure.contains("statement_submit not accepted"),
+            "pairing failed before the handshake submit: {failure}"
+        );
+
+        assert_eq!(observer.paired(), Vec::new());
+    }
+
+    #[test]
+    fn pairing_without_an_observer_still_answers_the_handshake() {
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key([0x42; 32]),
+        };
+        let (services, signing_host) = pairing_fixture("new");
+
+        futures::executor::block_on(establish_pairing(
+            services,
+            signing_host,
+            &pairing_deeplink(peer),
+        ))
+        .expect("the handshake is answered without an observer");
     }
 
     #[test]

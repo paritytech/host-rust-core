@@ -66,6 +66,9 @@ import uniffi.truapi_server.NativeRendererObserver
 import uniffi.truapi_server.NativeDevicePermissionStatus
 import uniffi.truapi_server.NativeProductExecution
 import uniffi.truapi_server.NativeTrUApiHostRuntime
+import uniffi.truapi_server.NativeAnnouncedPairing
+import uniffi.truapi_server.PairedSsoPeer
+import uniffi.truapi_server.ResponderExit
 import uniffi.truapi_server.ProductRuntimeException
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
@@ -415,6 +418,19 @@ interface HostBridge {
     @Throws(HostRejection::class)
     suspend fun endOperation(productId: String, id: UInt) {}
 
+    /**
+     * A device finished pairing with this signing host.
+     *
+     * The core has no chat of its own, so announcing the new device to the
+     * user's existing contacts is the host's to do. At least once per
+     * pairing, and the host keeps its own record of which devices it has
+     * already seen: a resumed pairing reports nothing and the core has no
+     * list to replay. Arrives on the thread answering the handshake, while
+     * the pairing call is still running: marshal the work off rather than
+     * announcing it inline.
+     */
+    fun devicePaired(device: PairedSsoPeer) {}
+
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
 
@@ -512,6 +528,11 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     // Infallible across the FFI for the same reason `onCoreLog` is.
     override fun workerDemandChanged(productId: String, transition: WorkerTransition) {
         runCatching { bridge.workerDemandChanged(productId, transition) }
+    }
+
+    // Infallible across the FFI for the same reason `onCoreLog` is.
+    override fun devicePaired(device: PairedSsoPeer) {
+        runCatching { bridge.devicePaired(device) }
     }
 
     override suspend fun navigateTo(url: String) =
@@ -892,6 +913,76 @@ class TrUAPIHostRuntime private constructor(
      */
     fun releaseWorker(productId: String) {
         inner.releaseWorker(productId)
+    }
+
+    /**
+     * Tell the pairing host behind [deeplink] that allowance allocation is
+     * under way, so it leaves its QR screen while the allocation runs.
+     *
+     * Answering needs this host's own statement-store allowance, so register
+     * the `WalletSso` renewal target first. The peer's own device statement
+     * account is the other target, read with `parsePairingDeeplink` and
+     * tracked before [establishPairing] runs; the allocation this notice
+     * covers is what that call waits on. The returned handle is owed a
+     * [notifyPairingFailed] if pairing then fails: the peer has dropped its QR
+     * and waits without a deadline of its own, and the handle holds the
+     * responder secret until it is released.
+     */
+    suspend fun notifyPairingAllowanceAllocation(deeplink: String): NativeAnnouncedPairing =
+        inner.notifyPairingAllowanceAllocation(deeplink)
+
+    /**
+     * Tell a pairing host that already dropped its QR why pairing stopped.
+     *
+     * Takes the handle from [notifyPairingAllowanceAllocation], so the notice
+     * is signed by the account that already reached that peer even if this
+     * host's signer has rotated since.
+     */
+    suspend fun notifyPairingFailed(announced: NativeAnnouncedPairing, reason: String) {
+        inner.notifyPairingFailed(announced, reason)
+    }
+
+    /**
+     * Answer a pairing host's handshake deeplink, without serving the session
+     * it opens.
+     *
+     * The answer is signed by this host's own SSO statement identity, so the
+     * `WalletSso` renewal target has to be allocated for it to reach the
+     * Statement Store at all. The peer's device statement account is the other
+     * tracked target, since this host allocates the allowance the peer authors
+     * its own session statements under; read it from the deeplink with
+     * `parsePairingDeeplink`. A pairing that fails after that leaves the peer's
+     * target to untrack again, unless the device was already paired and the
+     * target still carries a live pairing.
+     *
+     * A device that pairs here reaches [HostBridge.devicePaired]. Serving the
+     * session is [resumePairing], called with the peer this host persisted.
+     */
+    suspend fun establishPairing(deeplink: String) {
+        inner.establishPairing(deeplink)
+    }
+
+    /**
+     * Serve a paired host's SSO session until it ends.
+     *
+     * Runs for the life of the session, so give it its own coroutine. Only
+     * [ResponderExit.PEER_DISCONNECTED] authorises dropping the stored
+     * pairing; after [ResponderExit.SUBSCRIPTION_ENDED] or a thrown error the
+     * peer is still paired and this can be called again.
+     */
+    suspend fun resumePairing(peer: PairedSsoPeer): ResponderExit = inner.resumePairing(peer)
+
+    /**
+     * Tell a paired host this signing host is ending their SSO session.
+     *
+     * Submits the disconnect notice and nothing else. The local side is the
+     * caller's: cancel that peer's [resumePairing] coroutine, which otherwise
+     * keeps answering a host this one no longer considers paired, and untrack
+     * its device statement account, which otherwise keeps being renewed every
+     * period. Dropping the stored pairing alone leaves both running.
+     */
+    suspend fun disconnectPairedHost(peer: PairedSsoPeer) {
+        inner.disconnectPairedHost(peer)
     }
 
     /** Core-owned logout for the process-wide authentication session. */

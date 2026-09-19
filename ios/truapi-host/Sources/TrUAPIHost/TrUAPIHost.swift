@@ -375,6 +375,18 @@ public protocol HostBridge: AnyObject, Sendable {
     /// succeeds, so a retry after an ambiguous failure is safe.
     func endOperation(productId: String, id: UInt32) async throws
 
+    /// A device finished pairing with this signing host.
+    ///
+    /// The core has no chat of its own, so announcing the new device to the
+    /// user's existing contacts is the host's to do. At least once per
+    /// pairing, and the host keeps its own record of which devices it has
+    /// already seen: a resumed pairing reports nothing and the core has no
+    /// list to replay. Arrives on the thread answering the handshake, while
+    /// the pairing call is still running: hand the device off rather than
+    /// announcing it inline. Defaults to a no-op for a host that answers no
+    /// pairing.
+    func devicePaired(device: PairedSsoPeer)
+
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
 
@@ -465,6 +477,7 @@ public extension HostBridge {
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
+    func devicePaired(device: PairedSsoPeer) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
     /// Defaults opt out of worker keep-alive; override to run background work
@@ -592,6 +605,10 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 
     func workerDemandChanged(productId: String, transition: WorkerTransition) {
         bridge.workerDemandChanged(productId: productId, transition: transition)
+    }
+
+    func devicePaired(device: PairedSsoPeer) {
+        bridge.devicePaired(device: device)
     }
 
     func navigateTo(url: String) async throws {
@@ -848,6 +865,77 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// host may stop the worker. Releasing with none held is a no-op.
     public func releaseWorker(productId: String) {
         inner.releaseWorker(productId: productId)
+    }
+
+    /// Tell the pairing host behind `deeplink` that allowance allocation is
+    /// under way, so it leaves its QR screen while the allocation runs.
+    ///
+    /// Answering needs this host's own statement-store allowance, so register
+    /// the `WalletSso` renewal target first. The peer's own device statement
+    /// account is the other target, read with ``parsePairingDeeplink(deeplink:)``
+    /// and tracked before ``establishPairing(deeplink:)`` runs; the allocation
+    /// this notice covers is what that call waits on. The returned handle is
+    /// owed a ``notifyPairingFailed(announced:reason:)`` if pairing then
+    /// fails: the peer has dropped its QR and waits without a deadline of its
+    /// own, and the handle holds the responder secret until it is released.
+    public func notifyPairingAllowanceAllocation(
+        deeplink: String
+    ) async throws -> NativeAnnouncedPairing {
+        try await inner.notifyPairingAllowanceAllocation(deeplink: deeplink)
+    }
+
+    /// Tell a pairing host that already dropped its QR why pairing stopped.
+    ///
+    /// Takes the handle from
+    /// ``notifyPairingAllowanceAllocation(deeplink:)``, so the notice is
+    /// signed by the account that already reached that peer even if this
+    /// host's signer has rotated since.
+    public func notifyPairingFailed(
+        announced: NativeAnnouncedPairing,
+        reason: String
+    ) async throws {
+        try await inner.notifyPairingFailed(announced: announced, reason: reason)
+    }
+
+    /// Answer a pairing host's handshake deeplink, without serving the session
+    /// it opens.
+    ///
+    /// The answer is signed by this host's own SSO statement identity, so the
+    /// `.walletSso` renewal target has to be allocated for it to reach the
+    /// Statement Store at all. The peer's device statement account is the
+    /// other tracked target, since this host allocates the allowance the peer
+    /// authors its own session statements under; read it from the deeplink
+    /// with ``parsePairingDeeplink(deeplink:)``. A pairing that fails after
+    /// that leaves the peer's target to untrack again, unless the device was
+    /// already paired and the target still carries a live pairing.
+    ///
+    /// A device that pairs here reaches ``HostBridge/devicePaired(device:)``.
+    /// Serving the session is ``resumePairing(peer:)``, called with the peer
+    /// this host persisted.
+    public func establishPairing(deeplink: String) async throws {
+        try await inner.establishPairing(deeplink: deeplink)
+    }
+
+    /// Serve a paired host's SSO session until it ends.
+    ///
+    /// Runs for the life of the session, so give it its own task. Only
+    /// `.peerDisconnected` authorises dropping the stored pairing; after
+    /// `.subscriptionEnded` or a thrown error the peer is still paired and
+    /// this can be called again.
+    public func resumePairing(peer: PairedSsoPeer) async throws -> ResponderExit {
+        try await inner.resumePairing(peer: peer)
+    }
+
+    /// Tell a paired host this signing host is ending their SSO session.
+    ///
+    /// Submits the disconnect notice and nothing else. The local side is the
+    /// caller's: cancel that peer's ``resumePairing(peer:)`` task, which
+    /// otherwise keeps answering a host this one no longer considers paired,
+    /// and untrack its device statement account, which otherwise keeps being
+    /// renewed every period. Dropping the stored pairing alone leaves both
+    /// running.
+    public func disconnectPairedHost(peer: PairedSsoPeer) async throws {
+        try await inner.disconnectPairedHost(peer: peer)
     }
 
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {

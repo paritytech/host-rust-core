@@ -57,7 +57,7 @@ use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use renderer::renderer_access_for;
 pub(crate) use services::RuntimeServices;
-pub use signing_host::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
+pub use signing_host::{AnnouncedPairing, DevicePairingObserver, PairedSsoPeer, ResponderExit};
 pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, disconnect_paired_host,
     establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,

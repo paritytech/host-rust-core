@@ -72,7 +72,7 @@ pub use runtime::login_failure::reports_exhausted_period;
 pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;
-pub use runtime::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
+pub use runtime::{AnnouncedPairing, DevicePairingObserver, PairedSsoPeer, ResponderExit};
 pub use truapi_platform::{
     CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
     PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,

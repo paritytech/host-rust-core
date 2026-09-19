@@ -236,6 +236,35 @@ cannot check are the host's to keep: send a render context only for a surface
 the product's manifest `includes`, and publish a renderer action only from the
 current tree of an open render stream.
 
+The runtime answers other devices pairing with it:
+`notifyPairingAllowanceAllocation(deeplink:)` and
+`notifyPairingFailed(announced:reason:)` are the two notices a peer gets before
+the answer, `establishPairing(deeplink:)` is the answer,
+`resumePairing(peer:)` serves the session for its whole life and belongs in its
+own task, and `disconnectPairedHost(peer:)` ends it. Only
+`.peerDisconnected` from `resumePairing` authorises dropping the stored
+pairing. The host persists the peer between answering and serving, which is why
+those are separate calls.
+
+Two steps around them are the host's. `establishPairing` signs its answer with
+this host's own SSO statement identity, so `.walletSso` has to be allocated
+before it runs, and the peer's device statement account has to be tracked
+alongside it for the peer to author into the session:
+`parsePairingDeeplink(deeplink:)` reads that account out of the deeplink before
+any notice goes out, and a pairing that then fails untracks it again unless the
+device was already paired. `disconnectPairedHost` submits the notice and nothing more, so ending
+a pairing also means cancelling that peer's `resumePairing` task and untracking
+its renewal account; dropping the stored pairing alone leaves both running.
+
+`devicePaired` on the runtime bridge reports a device that finished pairing
+with this signing host, carrying the `PairedSsoPeer` the pairing produced. The
+core has no chat of its own, so announcing the new device to the user's
+existing contacts is the host's to do. It fires at least once per pairing, so
+a device that pairs again reports again; a resumed pairing reports nothing, so
+the host keeps its own record of which devices it has already seen. It arrives
+on the thread answering the handshake, so hand the device off rather than
+announcing it inline. Defaults to a no-op for a host that answers no pairing.
+
 ## Architecture
 
 ```text
