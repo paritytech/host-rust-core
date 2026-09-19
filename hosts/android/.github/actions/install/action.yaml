@@ -1,5 +1,18 @@
 name: Install dependencies for Android build
 description: Contains all dependencies for Android build
+inputs:
+  truapi_ref:
+    description: >-
+      paritytech/host-rust-core commit to build the TrUAPI core from. Pinned to a
+      SHA so an unrelated merge there cannot turn this build red; bump it
+      deliberately.
+      The app's HostCallbacks implementation must match the native API surface
+      at this commit. Currently seven commits past the 0.16.0 release tag that
+      polkadot-app-ios-v2 pins, for the Pocket collection (#706) the Android
+      Pocket modality needs. Drop back to the tag once Pocket ships in a
+      release; iOS pins its own ref and the two are bumped independently.
+    required: false
+    default: "b0d95f0d4d2526f7dd0a58b78452667e9b22b99d"
 
 runs:
   using: "composite"
@@ -35,8 +48,14 @@ runs:
         java-version: "21"
         cache: "gradle"
 
+    # `packages` defaults to `tools platform-tools`. `tools` is the obsolete
+    # Android SDK Tools package; it pulls the emulator, which nothing here needs,
+    # and its download is what fails with "Error on ZipFile unknown archive".
+    # platform-tools is kept for the adb that instrumental_tests.yaml relies on.
     - name: 📱 Install Android SDK
       uses: android-actions/setup-android@v3
+      with:
+        packages: "platform-tools"
 
     - name: 📦 Install Node.js
       uses: actions/setup-node@v6
@@ -80,12 +99,53 @@ runs:
       with:
         clang-version: "21"
 
+    # :bindings:truapi-host compiles the TrUAPI Rust core from an out-of-repo
+    # checkout, and :feature:products:impl depends on that module, so without a
+    # truapi checkout the whole build fails to configure. Pinned to a SHA rather
+    # than a branch so an unrelated truapi merge cannot turn this build red;
+    # bump it deliberately.
+    #
+    # Ordered before the Rust toolchain because that action's built-in rust-cache
+    # keys on the Cargo.lock files present when it runs. Checking truapi out
+    # afterwards leaves `.truapi/target` uncached, so the core is rebuilt from
+    # scratch on every job.
+    - name: 🧩 Checkout truapi
+      uses: actions/checkout@v4
+      with:
+        repository: paritytech/host-rust-core
+        ref: ${{ inputs.truapi_ref }}
+        path: .truapi
+
+    # The host cdylib build and UniFFI Kotlin generation are Gradle task
+    # dependencies of compileKotlin (buildHostCdylib -> generateUniffiKotlin),
+    # so any compile task triggers them; no explicit steps needed here.
+    - name: Set truapi.dir in local.properties
+      shell: bash
+      run: echo "truapi.dir=$GITHUB_WORKSPACE/.truapi" >> ./local.properties
+
     - name: 🦀 Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
+        # The nightly the codegen needs is installed by date in the step below,
+        # rather than as whatever `nightly` resolves to on the day.
         toolchain: stable
         override: true
         components: rustfmt, clippy
+        # truapi is a separate cargo workspace outside this repo's tree, so
+        # rust-cache does not discover it on its own.
+        cache-workspaces: |
+          .
+          .truapi -> target
+
+    # :bindings:truapi-host runs the core's own codegen script, whose rustdoc JSON
+    # only a nightly emits and whose output it formats with that toolchain's
+    # rustfmt. Dated, because the JSON format moves with the toolchain; Gradle
+    # passes the same property to the script as TRUAPI_NIGHTLY_TOOLCHAIN.
+    - name: Add nightly for the core codegen
+      run: |
+        nightly="$(sed -n 's/^truapi.rustNightly=//p' gradle.properties)"
+        rustup toolchain install "$nightly" --profile minimal --component rustfmt
+      shell: bash
 
     - name: Add targets
       run: |

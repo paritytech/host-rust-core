@@ -63,11 +63,11 @@ configuration update in the embedding app's package upgrade.
 
 The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](src/main/kotlin/io/parity/truapi/TrUAPIHost.kt):
 
-- `HostBridge` - callback bundle the embedding app implements. Splits device permissions, remote permissions, navigation, push, feature support, a single `confirmUserAction`, and both storage backends.
+- `HostBridge` - callback bundle the embedding app implements. Splits device permissions, remote permissions, navigation, push, feature support, action and permission confirmations, and both storage backends.
 - `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence.
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
-- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
+- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` holding its own token on the runtime's shared WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
 - `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
 - `PocketHostBridge` - the host's Pocket card collection, implemented by hosts with a Pocket surface and passed as `pocket` to `openProductExecution`. The execution then offers `notifyPocketCardsChanged`. `removeCard` decides and removes together, returning `NativePocketRemoval.Removed`, `Absent` or `Privileged`, so a card cannot be pinned between the check and the removal. Like Chat, Pocket is reachable only from a Worker execution with an active session, so without `activateLocalSession` every Pocket call answers `Denied`. Hosts without the bridge pass nothing and Pocket calls answer unsupported.
 
@@ -157,7 +157,7 @@ TrUAPIProductExecution.startWsBridge()
   → Rust dispatcher
 ```
 
-The product running in the `WebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, `confirmUserAction`, preimage lookup, theme, `featureSupported`, `storage`) reach the embedder through `HostBridge`. Bulletin preimage build/sign/submit now happens inside the core, so the host only serves `lookupPreimage`.
+The product running in the `WebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, `confirmUserAction`, `confirmPermission`, preimage lookup, theme, `featureSupported`, `storage`) reach the embedder through `HostBridge`. Bulletin preimage build/sign/submit now happens inside the core, so the host only serves `lookupPreimage`.
 
 ## Permissions split
 
@@ -166,7 +166,9 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 - `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
 - `remotePermission(request)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
-Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+Both return `PermissionDecision` (`ALLOW_ONCE`, `ALLOW_ALWAYS`, or `DENY`). Preserve the choice so the core can consume one-use grants without persisting them. OS refusal after app consent should throw rather than record a product denial. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+
+Identity and account access reviews use `confirmPermission(review)`, which also returns `PermissionDecision`. Override it to preserve Allow once. Its compatibility default maps `confirmUserAction`'s Boolean approval to `ALLOW_ALWAYS`; signing and other single-action reviews continue to use that Boolean callback.
 
 ## Statement-store allowance renewal
 
@@ -236,7 +238,7 @@ An account id must be exactly 32 bytes. Anything else throws `NativeRenewalTarge
 > thread with `Handler(Looper.getMainLooper())` or a `Dispatchers.Main`
 > `CoroutineScope`. The `suspend` callbacks (`navigateTo`, `pushNotification`,
 > `devicePermission`, `remotePermission`, `featureSupported`,
-> `confirmUserAction`, `lookupPreimage`) are awaited by the core, so an
+> `confirmUserAction`, `confirmPermission`, `lookupPreimage`) are awaited by the core, so an
 > implementation may suspend for as long as the user takes to decide (e.g.
 > `withContext(Dispatchers.Main)` around a prompt); other TrUAPI traffic keeps
 > flowing while you wait. The remaining callbacks (auth state, storage, core
@@ -267,6 +269,7 @@ import uniffi.truapi.ThemeVariant
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi_platform.PermissionDecision
 import uniffi.truapi.HostPushNotificationRequest
 
 class MyStorage : HostStorage {
@@ -307,14 +310,14 @@ class MyBridge(private val webView: WebView) : HostBridge {
         main.post { /* cancel notification */ }
     }
 
-    override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean {
+    override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision {
         // Awaited by the core: present the prompt for the requested capability
         // (CAMERA, MICROPHONE, ...) and suspend until the user decides. Other
         // TrUAPI traffic keeps flowing while suspended.
-        return withContext(Dispatchers.Main) { /* show prompt; */ false }
+        return withContext(Dispatchers.Main) { /* show prompt; */ PermissionDecision.DENY }
     }
 
-    override suspend fun remotePermission(request: RemotePermission): Boolean = false
+    override suspend fun remotePermission(request: RemotePermission): PermissionDecision = PermissionDecision.DENY
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean = false
 
     // Core-owned auth state stream: render AuthState.Pairing as the pairing
@@ -340,12 +343,15 @@ class MyBridge(private val webView: WebView) : HostBridge {
         /* close host connection */
     }
 
-    // One confirmation callback for every reviewed core action. Switch on the
-    // review variant (SignPayload / SignRaw / CreateTransaction / AccountAlias /
+    // Switch on the action review variant (SignPayload / SignRaw / CreateTransaction /
     // ResourceAllocation / PreimageSubmit / ...) to render the prompt with its
     // typed fields.
     override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean {
         return withContext(Dispatchers.Main) { /* show prompt; */ false }
+    }
+
+    override suspend fun confirmPermission(review: UserConfirmationReview): PermissionDecision {
+        return withContext(Dispatchers.Main) { /* show permission prompt; */ PermissionDecision.DENY }
     }
 }
 
@@ -385,20 +391,10 @@ runtime.notifyChainClosed(chainConnectionId)
 // following `loadUrl` replaces, so the product would lose the endpoint. Scope
 // it to the product origin. The page reads `window.__truapi_localhost.url` and
 // passes it to `@parity/truapi`'s `createWebSocketProvider`.
-// A peek, never a prompt — see LocalhostBridgeBootstrap.script. Baked in as a
-// literal because the container enforces it inside the product's own realm,
-// where an async permission request would be forgeable. A fresh grant therefore
-// only takes effect once the web view reloads.
-//
-// Read this as a policy value, not a gate: Android injects no lockdown
-// container, so nothing consumes the decision and WebRTC is reachable on
-// Android whatever the status says. Pass what the core returns anyway — a
-// literal `true` compiles and would silently keep that open once the container
-// does land (#334 scopes the gate to iOS).
-val webRtcAllowed = execution.permissionAuthorizationStatus(
-    PermissionAuthorizationRequest.Remote(RemotePermissionRequest(RemotePermission.WebRtc))
-) == PermissionAuthorizationStatus.AUTHORIZED
-val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token, webRtcAllowed)
+// This publishes the endpoint only. Android's current embedding does not
+// install the shared container, so it does not yet enforce its per-fetch or
+// per-peer-connection Rust permission checks.
+val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token)
 main.post {
     val productUrl = "https://your-product.example/"
     if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {

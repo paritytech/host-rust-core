@@ -16,6 +16,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -198,6 +199,28 @@ fun PolkadotNavigationBarItem(
     label: String?,
     hasNotification: Boolean = false
 ) {
+    PolkadotNavigationBarItem(
+        selected = selected,
+        onClick = onClick,
+        label = label,
+        hasNotification = hasNotification
+    ) { contentColor ->
+        NovaIcon(
+            modifier = Modifier.fillMaxSize(),
+            imageVector = icon,
+            tint = contentColor
+        )
+    }
+}
+
+@Composable
+fun PolkadotNavigationBarItem(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String?,
+    hasNotification: Boolean = false,
+    icon: @Composable (contentColor: Color) -> Unit
+) {
     val targetColor = if (selected) PolkadotTheme.colors.fg.primary else PolkadotTheme.colors.fg.secondary
     val contentColor by animateColorAsState(
         targetValue = targetColor,
@@ -219,13 +242,13 @@ fun PolkadotNavigationBarItem(
         verticalArrangement = Arrangement.Center
     ) {
         Box {
-            NovaIcon(
+            Box(
                 modifier = Modifier
                     .padding(horizontal = PolkadotTheme.spacings.small)
-                    .size(IconSize),
-                imageVector = icon,
-                tint = contentColor
-            )
+                    .size(IconSize)
+            ) {
+                icon(contentColor)
+            }
 
             NotificationDot(
                 visible = hasNotification,

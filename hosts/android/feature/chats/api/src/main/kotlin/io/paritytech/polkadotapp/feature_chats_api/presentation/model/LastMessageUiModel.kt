@@ -62,7 +62,8 @@ sealed interface LastMessageUiModel : ChatPreviewUiModel {
     data class Payment(
         override val timestamp: Timestamp,
         override val isIncoming: Boolean,
-        val tokenAmount: TokenAmountModel
+        val tokenAmount: TokenAmountModel,
+        val paymentStatus: ChatMessageUiModel.CoinagePayment.Status
     ) : LastMessageUiModel
 
     data class Reacted(

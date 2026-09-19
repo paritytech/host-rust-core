@@ -183,6 +183,7 @@ Rules:
 | Product module sub-modules    | `polkadot-app/Modules/Products/`         | Adding new product screens           |
 | Deep link handlers            | `AppConfig/AppConfig.swift`              | Adding product deep links            |
 | SPA module                    | `polkadot-app/Modules/SPA/`             | Smart Proposal Agent changes         |
+| DotNs contract reads          | `Packages/Products/Sources/Products/DotNs/ReviveDotNsContractApi.swift` over `Revive` (architecture/revive.md) | Resolver / registry lookups, cache policy |
 | Product runtimes              | `polkadot-app/Modules/Products/{Chat,SPA}/{Native,Rust}/` | Adding a runtime mode, changing runtime lifecycle |
 
 ## Anti-Patterns

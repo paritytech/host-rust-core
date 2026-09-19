@@ -326,6 +326,10 @@ extension MainTabBarViewController: MainTabBarViewProtocol {
         chromeController.setBadge(badge.map { _ in .attention }, at: index)
     }
 
+    func setLabels(visible: Bool) {
+        chromeController.setLabels(visible: visible)
+    }
+
     func view(for tab: TabBarItem) -> UIViewController? {
         controllerByItem[tab]
     }

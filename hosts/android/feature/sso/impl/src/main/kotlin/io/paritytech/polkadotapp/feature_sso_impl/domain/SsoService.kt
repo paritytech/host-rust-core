@@ -131,6 +131,7 @@ class SsoService @Inject constructor(
                 val message = error.message ?: "Unknown legacy account"
                 val responseContent = when (signingRequest) {
                     is SigningRequestBody.RawLegacy -> SsoSessionResponse.Content.FailedToSignRawLegacy(message)
+                    is SigningRequestBody.TransactionLegacy -> SsoSessionResponse.Content.FailedToSignTransaction(message)
                     is SigningRequestBody.CreateTransactionLegacy -> SsoSessionResponse.Content.FailedToCreateTransaction(message)
                 }
                 sendResponse(request.responseWith(responseContent))

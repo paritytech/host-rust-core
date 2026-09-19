@@ -27,7 +27,7 @@ jobs:
     # Removing this is part of the cutover, tracked on #764.
     if: false
     # The condition this replaces, to restore at cutover:
-    #   if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    #   if: contains(fromJSON('["sergkononenko","ERussel","stepanLav","kogeler","TarikGul","pgherveou","filvecchiato","valentinfernandez1"]'), github.actor)
     steps:
       - uses: actions/checkout@v6
 

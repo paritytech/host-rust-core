@@ -15,10 +15,10 @@ import kotlinx.coroutines.launch
 private const val UNSET = Float.MAX_VALUE
 
 /**
- * UI state of the right-edge pull-out bar: how far it is pulled in ([offset]) and whether the apps grid is
- * expanded. Owns the cancellable settle animation, so the bar can be re-grabbed mid-flight instead of being
- * locked until it finishes. Held via `remember` in the overlay; the gesture loop feeds it raw pointer
- * deltas and nothing else touches its fields.
+ * UI state of the right-edge pull-out bar: how far it is pulled in ([offset]) and which panel above it, if
+ * any, is expanded. Owns the cancellable settle animation, so the bar can be re-grabbed mid-flight instead
+ * of being locked until it finishes. Held via `remember` in the overlay; the gesture loop feeds it raw
+ * pointer deltas and nothing else touches its fields.
  */
 @Stable
 class TabBarPullState(
@@ -35,8 +35,13 @@ class TabBarPullState(
     // Offset captured on press, so a tap-while-open can undo the press-peek and return there.
     private var pressAnchor = 0f
 
-    var appsExpanded by mutableStateOf(false)
-        private set
+    private var expandedPanel by mutableStateOf(ExpandedPanel.None)
+
+    val appsExpanded: Boolean get() = expandedPanel == ExpandedPanel.Apps
+
+    val networkStatusExpanded: Boolean get() = expandedPanel == ExpandedPanel.NetworkStatus
+
+    val panelExpanded: Boolean get() = expandedPanel != ExpandedPanel.None
 
     /** Fully-collapsed pull — only the nub showing. */
     val maxOffset: Float get() = (barWidthPx - nubPx).coerceAtLeast(0f)
@@ -53,20 +58,22 @@ class TabBarPullState(
 
     fun setBarWidth(px: Float) { barWidthPx = px }
 
-    fun collapseApps() { appsExpanded = false }
+    fun collapsePanels() { expandedPanel = ExpandedPanel.None }
 
-    fun toggleApps() { appsExpanded = !appsExpanded }
+    fun toggleApps() = toggle(ExpandedPanel.Apps)
+
+    fun toggleNetworkStatus() = toggle(ExpandedPanel.NetworkStatus)
 
     /** Snap to the screen's default posture: open when [forceShown] (Main), collapsed otherwise. */
     fun snapToDefault(forceShown: Boolean) {
         if (maxOffset <= 0f) return
-        appsExpanded = false
+        collapsePanels()
         val target = if (forceShown) 0f else maxOffset
         if (offsetX == UNSET) offsetX = target else settleTo(target)
     }
 
     fun collapse() {
-        appsExpanded = false
+        collapsePanels()
         settleTo(maxOffset)
     }
 
@@ -93,7 +100,7 @@ class TabBarPullState(
             offset < maxOffset / 2f -> 0f
             else -> maxOffset
         }
-        if (target == maxOffset) appsExpanded = false
+        if (target == maxOffset) collapsePanels()
         settleTo(target, inwardVelocityPx)
     }
 
@@ -102,6 +109,10 @@ class TabBarPullState(
 
     /** Tap while already open — just undo the press-peek. */
     fun undoPeek() = settleTo(pressAnchor)
+
+    private fun toggle(panel: ExpandedPanel) {
+        expandedPanel = if (expandedPanel == panel) ExpandedPanel.None else panel
+    }
 
     private fun settleTo(target: Float, initialVelocity: Float = 0f) {
         settleJob?.cancel()
@@ -115,3 +126,5 @@ class TabBarPullState(
         }
     }
 }
+
+private enum class ExpandedPanel { None, Apps, NetworkStatus }

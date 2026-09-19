@@ -14,7 +14,10 @@ enum class ChainPresence { PRESENT, ABSENT, UNKNOWN }
 enum class AliasRead { UNLOADED, NOT_UNLOADED, UNKNOWN }
 
 /**
- * Everything the rules may read about the chain, gathered for one entry against one pinned view.
+ * Everything coinage's oracle reads about the chain, gathered for one transaction against one pinned view.
+ *
+ * Whether a recorded block is still canonical is not here: that is true of any transaction, so the engine
+ * resolves it for the whole pass at once rather than one read per transaction.
  *
  * Keys are assets' on-chain identities, and every asset of the entry appears in every map — what a read did
  * not establish is [ChainPresence.UNKNOWN] rather than a missing key, so "we did not find out" is a value
@@ -31,6 +34,4 @@ data class ChainEvidence(
     val presenceAtBest: Map<AssetPublicKey, ChainPresence>,
     val aliasAtFinalized: Map<AssetPublicKey, AliasRead>,
     val aliasAtBest: Map<AssetPublicKey, AliasRead>,
-    /** Is the block we recorded still canonical? Null when the read failed. */
-    val recordedBlockStillCanonical: Boolean?,
 )

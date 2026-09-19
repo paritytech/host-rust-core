@@ -56,8 +56,8 @@ use truapi_server::host_logic::dotns_gateway::{
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
-    PairedSsoPeer, PairingHostConfig, PairingHostRuntime, ResponderExit, SigningHostConfig,
-    SigningHostRuntime, StatementRenewalTarget,
+    AnnouncedPairing, PairedSsoPeer, PairingHostConfig, PairingHostRuntime, ResponderExit,
+    SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
 };
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
@@ -1021,10 +1021,21 @@ fn approval_policy(auto_accept: bool) -> ApprovalPolicy {
 
 /// Spawner that runs runtime futures on the tokio runtime, so their WebSocket
 /// connects and timers have a reactor.
+///
+/// The core spawns teardown work from `Drop`, which can run after the runtime
+/// has shut down; `tokio::spawn` panics there, so the handle is looked up
+/// rather than assumed.
 fn tokio_spawner() -> Spawner {
-    Arc::new(|fut: BoxFuture<'static, ()>| {
-        tokio::spawn(fut);
-    })
+    Arc::new(
+        |fut: BoxFuture<'static, ()>| match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(fut);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "dropping a runtime future: no tokio runtime is running");
+            }
+        },
+    )
 }
 
 fn host_info(name: &str) -> HostInfo {
@@ -2193,6 +2204,104 @@ async fn activate_current_signer(session: &mut SigningHostSession) -> Result<()>
     Ok(())
 }
 
+/// Register this host's own statement-store allowance, reporting whether it
+/// ended up usable.
+///
+/// Every handshake answer is signed by the `WalletSso` account, so nothing
+/// reaches the pairing host until this lands. Failing is not fatal: the
+/// device-slot pass renews the same target, and can rotate the signer to get
+/// it. It only means there is no way to say anything in the meantime.
+async fn prepare_own_allowance(session: &mut SigningHostSession) -> bool {
+    use truapi_server::statement_allowance::renewal::TargetRenewalStatus;
+
+    if let Err(error) = ensure_signer(session).await {
+        tracing::warn!(%error, "no signer to register the wallet allowance under");
+        return false;
+    }
+    if let Err(error) = session
+        .runtime
+        .track_statement_renewal_targets(vec![StatementRenewalTarget::WalletSso])
+        .await
+    {
+        tracing::warn!(reason = %error.reason, "failed to record the wallet allowance");
+        return false;
+    }
+    let report = match session.runtime.renew_statement_allowances().await {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!(reason = %error.reason, "wallet allowance renewal failed");
+            return false;
+        }
+    };
+    // `renew_statement_allowances` reports per-target failures in its outcomes
+    // rather than as an error, so an exhausted slot reads as success here
+    // unless the outcome itself is checked.
+    report
+        .outcomes
+        .iter()
+        .rev()
+        .find(|outcome| outcome.label == WALLET_SSO_RENEWAL_LABEL)
+        .is_some_and(|outcome| {
+            matches!(
+                outcome.status,
+                TargetRenewalStatus::Registered { .. }
+                    | TargetRenewalStatus::AlreadyAllocated { .. }
+            )
+        })
+}
+
+/// Tell the pairing host that allocation has started, so it stops showing a QR
+/// that has already been scanned.
+async fn announce_allowance_allocation(
+    session: &mut SigningHostSession,
+    deeplink: &str,
+) -> Option<AnnouncedPairing> {
+    if !prepare_own_allowance(session).await {
+        return None;
+    }
+    match session
+        .runtime
+        .notify_pairing_allowance_allocation(deeplink)
+        .await
+    {
+        Ok(announced) => Some(announced),
+        Err(error) => {
+            terminal_ui::output_event(SystemEvent::SigningHostError {
+                reason: format!(
+                    "failed to announce allowance allocation to the pairing host: {}",
+                    error.reason
+                ),
+            });
+            None
+        }
+    }
+}
+
+/// Tell a pairing host that already dropped its QR why pairing stopped.
+///
+/// It waits on the handshake topic without a deadline, so staying silent here
+/// leaves it waiting forever. Reported under `announced`, because allocating
+/// the device slot can rotate this host's signer onto an account that never
+/// obtained an allowance and so cannot reach the host at all.
+async fn report_pairing_failure(
+    session: &SigningHostSession,
+    announced: &AnnouncedPairing,
+    reason: String,
+) {
+    if let Err(error) = session
+        .runtime
+        .notify_pairing_failed(announced, reason)
+        .await
+    {
+        terminal_ui::output_event(SystemEvent::SigningHostError {
+            reason: format!(
+                "failed to tell the pairing host that pairing failed: {}",
+                error.reason
+            ),
+        });
+    }
+}
+
 async fn prepare_pairing_response(
     session: &mut SigningHostSession,
     candidate: &PairedHost,
@@ -2278,7 +2387,15 @@ async fn establish_paired_host(
     let candidate_is_existing = existing
         .iter()
         .any(|host| host.statement_account_id() == candidate.statement_account_id());
+    // Allocating the device slot submits extrinsics and waits for them on
+    // chain. Without this the pairing host stays on its QR screen throughout,
+    // with no sign that the scan registered.
+    let announced = announce_allowance_allocation(session, deeplink).await;
+
     if let Err(error) = prepare_pairing_response(session, &candidate, &existing).await {
+        if let Some(announced) = &announced {
+            report_pairing_failure(session, announced, error.to_string()).await;
+        }
         discard_new_pairing_candidate(session, &candidate, candidate_is_existing).await;
         return Err(error);
     }
@@ -2293,6 +2410,9 @@ async fn establish_paired_host(
     }
     .await;
     if let Err(error) = result {
+        if let Some(announced) = &announced {
+            report_pairing_failure(session, announced, error.to_string()).await;
+        }
         discard_new_pairing_candidate(session, &candidate, candidate_is_existing).await;
         return Err(error);
     }
@@ -2324,6 +2444,9 @@ fn is_statement_slot_exhaustion(err: &anyhow::Error) -> bool {
 fn signer_identity_may_rotate(auto_managed: bool, paired_host_count: usize) -> bool {
     auto_managed && paired_host_count == 0
 }
+
+/// Report label `StatementRenewalTarget::WalletSso` renews under.
+const WALLET_SSO_RENEWAL_LABEL: &str = "wallet-sso";
 
 fn pairing_device_renewal_target(statement_account_id: [u8; 32]) -> StatementRenewalTarget {
     StatementRenewalTarget::Account {
@@ -2380,7 +2503,7 @@ async fn renew_pairing_allowances(
         }
     };
 
-    let mut required_labels = vec!["wallet-sso".to_string()];
+    let mut required_labels = vec![WALLET_SSO_RENEWAL_LABEL.to_string()];
     required_labels.extend(
         required_device_ids
             .iter()

@@ -13,6 +13,7 @@ data class SendEnterAmountUiState(
     /** Null when the strategy is holding nothing back, or will not part with it. */
     val gainingPrivacy: TokenAmountModel?,
     val showBalanceError: Boolean,
+    val isAmountPositive: Boolean,
     val recipient: String?,
     val recipientType: ExtractedAddress.DisplayType?,
     val recipientAvatarColor: AvatarColorScheme,

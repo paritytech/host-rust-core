@@ -19,8 +19,8 @@ use web_time::Instant;
 use crate::host_logic::bulletin::preimage_key;
 use crate::runtime::bulletin_rpc::BulletinSubmitError;
 use crate::runtime::{
-    PREIMAGE_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, PREIMAGE_SUBMIT_TIMEOUT, ProductRuntimeHost,
-    REMOTE_PERMISSION_DENIED_REASON, bulletin_allowance_error_reason, preimage_submit_error,
+    PERMISSION_DENIED_REASON, PREIMAGE_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, PREIMAGE_SUBMIT_TIMEOUT,
+    ProductRuntimeHost, bulletin_allowance_error_reason, preimage_submit_error,
     remote_authority_call, remote_authority_context_until,
 };
 
@@ -103,7 +103,7 @@ impl Preimage for ProductRuntimeHost {
         self.require_remote_permission(
             v01::RemotePermission::PreimageSubmit,
             RemotePreimageSubmitError::V1(v01::PreimageSubmitError::Unknown {
-                reason: REMOTE_PERMISSION_DENIED_REASON.to_string(),
+                reason: PERMISSION_DENIED_REASON.to_string(),
             }),
         )
         .await?;

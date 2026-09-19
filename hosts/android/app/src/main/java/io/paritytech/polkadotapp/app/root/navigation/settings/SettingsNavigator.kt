@@ -47,10 +47,6 @@ class SettingsNavigator @Inject constructor(
         performNavigation(R.id.action_global_to_change_currency)
     }
 
-    override fun openLanguage() {
-        performNavigation(R.id.action_global_to_change_language)
-    }
-
     override fun openProductSettings() {
         performNavigation(R.id.action_global_to_product_settings_graph)
     }

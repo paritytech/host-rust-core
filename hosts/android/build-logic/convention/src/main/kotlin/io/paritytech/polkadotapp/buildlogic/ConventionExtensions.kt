@@ -92,6 +92,10 @@ internal fun Project.configureDetekt() {
     }
 
     tasks.withType<Detekt>().configureEach {
+        // Generated sources are not ours to style-check, and autoCorrect would
+        // rewrite them. The UniFFI bindings under bindings/truapi-host live in
+        // src/, so detekt sees them; other generators emit into build/.
+        exclude("**/generated/**")
         reports {
             html.required.set(true)
             sarif.required.set(false)

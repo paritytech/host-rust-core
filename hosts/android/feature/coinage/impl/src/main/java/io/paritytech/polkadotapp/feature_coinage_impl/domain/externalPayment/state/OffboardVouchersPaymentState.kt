@@ -7,13 +7,13 @@ import io.paritytech.polkadotapp.chains.network.binding.Balance
 import io.paritytech.polkadotapp.chains.network.binding.intoBalance
 import io.paritytech.polkadotapp.common.data.worker.stateMachine.WorkerStateMachineState.TransitionResult
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentContext
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RingVrfIndex
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageKeyIndex
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
+import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogE
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.externalPayment.ExternalPaymentGroupIds
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.externalPayment.usecase.ExternalUnloadStatus
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.externalPayment.usecase.UnloadRecyclerIntoExternalAssetUseCase
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.recycling.CoinageAssetSelector
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.recycling.SpendScope
 import kotlinx.coroutines.flow.first
 import java.math.BigInteger
 
@@ -26,12 +26,16 @@ import java.math.BigInteger
  */
 class OffboardVouchersPaymentState @AssistedInject constructor(
     @Assisted override val context: PaymentContext,
-    @Assisted val selected: List<RingVrfIndex>,
+    @Assisted val selected: List<CoinageKeyIndex>,
     @Assisted val surplusPlanks: BigInteger,
-    private val assetSelector: CoinageAssetSelector,
+    private val voucherRepository: VoucherRepository,
     private val unloadIntoExternalAsset: UnloadRecyclerIntoExternalAssetUseCase,
-    private val ensureVouchersFactory: EnsureVouchersPaymentState.Factory,
 ) : ExternalPaymentState {
+    companion object {
+        const val UNLOAD_SUBMISSION_FAILED = "unload submission failed"
+        const val NOTHING_UNLOADED = "no unload transaction executed"
+    }
+
     override val id: String = "OffboardVouchers"
 
     val surplus: Balance get() = surplusPlanks.intoBalance()
@@ -40,36 +44,28 @@ class OffboardVouchersPaymentState @AssistedInject constructor(
     interface Factory {
         fun create(
             context: PaymentContext,
-            selected: List<RingVrfIndex>,
+            selected: List<CoinageKeyIndex>,
             surplusPlanks: BigInteger,
         ): OffboardVouchersPaymentState
     }
 
     context(noContext: NoContext)
-    override suspend fun performTransition(): TransitionResult<ExternalPaymentState> = runTransition {
-        // Selectable, not merely on chain: a voucher another operation of ours already holds would be
-        // rejected at registration and take the whole unload down with it.
-        val selectableByIndex = assetSelector.getSelectableVouchers(SpendScope.SPENDABLE).associateBy { it.ringVrfKeyIndex }
-        val vouchers = selected.mapNotNull { selectableByIndex[it] }
-
-        if (vouchers.size != selected.size) {
-            // A stale plan, not a failed payment: the money is still there, so plan again rather than
-            // telling the caller it lost.
-            return@runTransition ensureVouchersFactory.create(context)
-        }
-
-        val groupId = unloadGroupOf(context.id)
+    override suspend fun performTransition(): TransitionResult<ExternalPaymentState> = transition {
+        val groupId = ExternalPaymentGroupIds.unload(context.key)
 
         unloadIntoExternalAsset.initiateUnload(
-            vouchers = vouchers,
+            vouchers = voucherRepository.getByRingVrfKeyIndices(selected),
             destination = context.destination,
             surplus = surplus,
             groupId = groupId,
-        ).getOrThrow()
+        ).fold(
+            onSuccess = { Result.success(awaitOutcome(groupId)) },
+            onFailure = { error ->
+                coinageLogE("External payment unload submission failed payment=${context.key}: ${error.message}")
 
-        // Continues in this tick rather than leaving the outcome to a worker retry: the payment is not
-        // delivered until the chain says so, and the caller is waiting on this transition to find out.
-        awaitOutcome(groupId)
+                Result.success(FailedPaymentState(context, UNLOAD_SUBMISSION_FAILED))
+            }
+        )
     }
 
     private suspend fun awaitOutcome(groupId: CoinageOperationGroupId): ExternalPaymentState {
@@ -77,23 +73,11 @@ class OffboardVouchersPaymentState @AssistedInject constructor(
             .first { it !is ExternalUnloadStatus.Submitted }
 
         return when (outcome) {
-            is ExternalUnloadStatus.Success -> CompletedPaymentState(context)
+            is ExternalUnloadStatus.FinalizedSuccess -> CompletedPaymentState(context)
 
-            is ExternalUnloadStatus.PartialSuccess -> PartiallyCompletedPaymentState(
-                context = context,
-                reason = "${outcome.executed} of ${outcome.total} unload transactions executed",
-            )
+            is ExternalUnloadStatus.PartialSuccess -> PartiallyCompletedPaymentState(context, outcome.claimed)
 
-            is ExternalUnloadStatus.Failed -> FailedPaymentState(context, "no unload transaction executed")
-
-            is ExternalUnloadStatus.Submitted -> error("Unreachable: filtered out above")
+            is ExternalUnloadStatus.Failed, is ExternalUnloadStatus.Submitted -> FailedPaymentState(context, NOTHING_UNLOADED)
         }
     }
 }
-
-/**
- * The payment's own id, so the group is found again after a crash without anything extra being persisted for
- * it. Re-entering this state then joins the transactions the previous attempt registered instead of unloading
- * the same vouchers twice.
- */
-private fun unloadGroupOf(paymentId: PaymentId) = CoinageOperationGroupId("external-payment:$paymentId")

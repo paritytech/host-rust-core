@@ -13,18 +13,28 @@ import io.paritytech.polkadotapp.common.data.memory.SingleValueCache
 import io.paritytech.polkadotapp.common.data.memory.getCatching
 import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.domain.model.intoAccountId
+import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.common.utils.mapList
 import io.paritytech.polkadotapp.database.dao.CoinDao
+import io.paritytech.polkadotapp.database.dao.CoinHopsUpdateLocal
 import io.paritytech.polkadotapp.database.dao.CoinUpdateLocal
 import io.paritytech.polkadotapp.database.model.CoinLocal
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinUpdate
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.DerivationIndex
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageInstallationId
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageKeyIndex
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Hop
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_impl.data.blockchain.coinage
 import io.paritytech.polkadotapp.feature_coinage_impl.data.blockchain.coinsByOwner
 import io.paritytech.polkadotapp.feature_coinage_impl.data.blockchain.getMaximumAge
 import io.paritytech.polkadotapp.feature_coinage_impl.data.blockchain.maxConsolidation
+import io.paritytech.polkadotapp.feature_coinage_impl.data.installation.queryPerInstallation
+import io.paritytech.polkadotapp.feature_coinage_impl.data.installation.toCoinageKeyIndex
+import io.paritytech.polkadotapp.feature_coinage_impl.data.mappers.decodeCoinHops
+import io.paritytech.polkadotapp.feature_coinage_impl.data.mappers.encodeCoinHops
 import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainCoinInfo
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.common.getNextIndex
 import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
@@ -40,6 +50,10 @@ interface CoinRepository {
 
     suspend fun saveAll(coins: List<Coin>)
 
+    suspend fun saveNew(coin: Coin)
+
+    suspend fun saveNew(coins: List<Coin>)
+
     /** Every coin we know of, on chain or not. */
     fun subscribeAllCoins(): Flow<List<Coin>>
 
@@ -50,17 +64,20 @@ interface CoinRepository {
     /** Only the coins at [accountIds], for a caller watching a few of them rather than the wallet. */
     fun subscribeCoinsBy(accountIds: List<AccountId>): Flow<List<Coin>>
 
-    suspend fun getCoinsBy(derivationIndices: List<DerivationIndex>): List<Coin>
+    suspend fun getCoinsBy(derivationIndices: List<CoinageKeyIndex>): List<Coin>
 
     suspend fun getCoinRecyclingAge(): Result<Int>
 
-    suspend fun getNextDerivationIndex(): Int
+    suspend fun getNextDerivationIndex(installation: CoinageInstallationId): Int
 
     suspend fun subscribeCoinsInfoFor(chainId: ChainId, accounts: List<AccountId>): Flow<Result<Map<AccountId, OnChainCoinInfo?>>>
 
     suspend fun fetchCoinsInfoFor(chainId: ChainId, accounts: List<AccountId>): Result<Map<AccountId, OnChainCoinInfo?>>
 
     suspend fun updateCoins(updates: List<CoinUpdate>)
+
+    /** Fills in the hops of coins that arrived without any, once the chain has reported their age. */
+    suspend fun updateCoinHops(updates: Map<CoinageKeyIndex, List<Hop>>)
 
     /** Coins the chain currently holds. Says nothing about whether they may be spent — see the ledger. */
     suspend fun getOnChainCoins(): List<Coin>
@@ -93,6 +110,14 @@ class RealCoinRepository @Inject constructor(
         coinDao.insertAll(coins.map { it.toLocal() })
     }
 
+    override suspend fun saveNew(coin: Coin) {
+        coinDao.insertNew(listOf(coin.toLocal()))
+    }
+
+    override suspend fun saveNew(coins: List<Coin>) {
+        coinDao.insertNew(coins.map { it.toLocal() })
+    }
+
     override fun subscribeAllCoins(): Flow<List<Coin>> {
         return coinDao.subscribeAll().mapList { it.toDomain() }
     }
@@ -105,8 +130,8 @@ class RealCoinRepository @Inject constructor(
         return coinDao.subscribeAllCoinsWithUnknownAge().mapList { it.toDomain() }
     }
 
-    override suspend fun getNextDerivationIndex(): Int {
-        return coinDao.getMaxDerivationIndex().getNextIndex()
+    override suspend fun getNextDerivationIndex(installation: CoinageInstallationId): Int {
+        return coinDao.getMaxDerivationIndex(installation.value.value).getNextIndex()
     }
 
     override suspend fun fetchCoinsInfoFor(chainId: ChainId, accounts: List<AccountId>): Result<Map<AccountId, OnChainCoinInfo?>> {
@@ -134,6 +159,20 @@ class RealCoinRepository @Inject constructor(
         coinDao.updateCoins(updateLocals)
     }
 
+    override suspend fun updateCoinHops(updates: Map<CoinageKeyIndex, List<Hop>>) {
+        if (updates.isEmpty()) return
+
+        coinDao.updateCoinHops(
+            updates.map { (keyIndex, hops) ->
+                CoinHopsUpdateLocal(
+                    installationId = keyIndex.installation.value.value,
+                    derivationIndex = keyIndex.item,
+                    hops = hops.encodeCoinHops()
+                )
+            }
+        )
+    }
+
     override suspend fun getOnChainCoins(): List<Coin> {
         return coinDao.getOnChainCoins().map { it.toDomain() }
     }
@@ -156,29 +195,43 @@ class RealCoinRepository @Inject constructor(
         return coinDao.subscribeBy(accountIds.map { it.value }).mapList { it.toDomain() }
     }
 
-    override suspend fun getCoinsBy(derivationIndices: List<DerivationIndex>): List<Coin> {
-        if (derivationIndices.isEmpty()) return emptyList()
-
-        return coinDao.getByDerivationIndices(derivationIndices).map { it.toDomain() }
+    override suspend fun getCoinsBy(derivationIndices: List<CoinageKeyIndex>): List<Coin> {
+        return derivationIndices.queryPerInstallation { installationId, items ->
+            coinDao.getByDerivationIndices(installationId, items)
+        }.map { it.toDomain() }
     }
 
     fun CoinLocal.toDomain(): Coin {
         return Coin(
-            derivationIndex = derivationIndex,
+            derivationIndex = installationId.toCoinageKeyIndex(derivationIndex),
             valueExponent = ValueExponent(valueExponent),
             age = ageValue?.let(Coin.Age::Known) ?: Coin.Age.Unknown,
             isOnChain = onChain,
-            accountId = accountId.intoAccountId()
+            accountId = accountId.intoAccountId(),
+            provenance = CoinProvenance(
+                recyclerFungibility = recyclerFungibility?.let(RecyclerFungibility::ofPercent),
+                // A corrupt blob costs one details row its circles; failing here would take down the balance
+                // stream this mapper sits inside, so the row is drawn as though the coin had no history.
+                hops = hops.decodeCoinHops()
+                    .logFailure("Can't decode hops of coin $derivationIndex")
+                    .getOrDefault(emptyList()),
+                incomingBundleSize = incomingBundleSize,
+            )
         )
     }
 
     fun Coin.toLocal(): CoinLocal {
         return CoinLocal(
-            derivationIndex = derivationIndex,
+            installationId = derivationIndex.installation.value.value,
+            derivationIndex = derivationIndex.item,
             accountId = accountId.value,
             valueExponent = valueExponent.value,
             ageValue = (age as? Coin.Age.Known)?.value,
             onChain = isOnChain,
+            recyclerFungibility = provenance.recyclerFungibility?.percent,
+            // Null rather than an encoded empty list, so a coin with no hops costs no blob.
+            hops = provenance.hops.takeIf { it.isNotEmpty() }?.encodeCoinHops(),
+            incomingBundleSize = provenance.incomingBundleSize,
         )
     }
 

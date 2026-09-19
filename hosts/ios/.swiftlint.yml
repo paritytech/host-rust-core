@@ -5,6 +5,7 @@ excluded:
   - polkadot-appIntegrationTests
   - vendor/bundle
   - ".git/"
+  - ".claude/"
   - ".gitignore"
   - ".gitmodules"
   - ".build/"

@@ -223,6 +223,7 @@ jobs:
       sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
       sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
       sdk_provider_kotlin: ${{ steps.filter.outputs.sdk_provider_kotlin }}
+      host_android: ${{ steps.filter.outputs.host_android }}
       cli_package: ${{ steps.filter.outputs.cli_package }}
       workflows: ${{ steps.filter.outputs.workflows }}
       needs_changeset: ${{ steps.filter.outputs.needs_changeset }}
@@ -260,6 +261,7 @@ jobs:
               echo "sdk_swift=true"
               echo "sdk_kotlin=true"
               echo "sdk_provider_kotlin=true"
+              echo "host_android=true"
               echo "cli_package=true"
               echo "workflows=true"
             } >> "$GITHUB_OUTPUT"
@@ -284,6 +286,10 @@ jobs:
           # shell: the crate, the two it depends on, the bindings generator and
           # the Gradle wiring that compiles the result.
           gate sdk_provider_kotlin '^(android/truapi-provider/|rust/crates/truapi-provider/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/uniffi-bindgen-cli/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|\.github/workflows/ci\.yml$)'
+          # The vendored Android host, plus the crates its bindings are
+          # generated from. Nothing gated on this tree before, so a core change
+          # that broke it reached a release with no gate in between.
+          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -304,7 +310,7 @@ jobs:
           gate adds_changeset '^\.changeset/[^/]+\.md$'
 
   ios-swift:
-    name: iOS package (swift compile)
+    name: iOS package (Swift + WebKit)
     needs: [changes, codegen]
     if: needs.changes.outputs.sdk_swift == 'true'
     runs-on: macos-15
@@ -337,7 +343,7 @@ jobs:
         with:
           name: codegen-output
 
-      # Simulator slice only, debug profile. This gate compiles Swift and ships
+      # Simulator slice only, debug profile. This gate tests Swift and ships
       # no binary, so the device slice and release codegen are waste. The
       # published binary is older than the current Rust surface, so
       # TRUAPI_USE_LOCAL_BINARY points the manifest at this build instead.
@@ -357,7 +363,10 @@ jobs:
       # so SwiftPM refuses to resolve the package until this exists.
       - name: Build the lockdown container bundle
         run: |
+          npm ci --ignore-scripts
+          npm run build --prefix js/packages/truapi
           npm --prefix js/container install --no-fund --no-audit
+          npm --prefix js/container run typecheck
           npm --prefix js/container run build
 
       - name: Build the simulator XCFramework for TrUAPIProvider
@@ -390,16 +399,15 @@ jobs:
       - name: Compile the package and its tests from the tag
         run: |
           set -euo pipefail
+          simulator="$(node --input-type=module -e 'import { selectSimulator } from "./scripts/lib/ios-simulator.mjs"; console.log(selectSimulator().udid)')"
+          echo "TRUAPI_TEST_SIMULATOR=$simulator" >> "$GITHUB_ENV"
           probe="$RUNNER_TEMP/tag-probe"
           mkdir -p "$probe/ios/truapi-host/Binaries" "$probe/ios/truapi-provider/Binaries"
           cp -R ios/truapi-host/Binaries/truapi_server.xcframework "$probe/ios/truapi-host/Binaries/"
           cp -R ios/truapi-provider/Binaries/truapi_provider.xcframework "$probe/ios/truapi-provider/Binaries/"
           cd "$probe"
-          xcodebuild build-for-testing \
-            -scheme TrUAPIHost \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
-            CODE_SIGNING_ALLOWED=NO
+          TRUAPI_TEST_SIMULATOR="$simulator" ./ios/truapi-host/scripts/test.sh build-for-testing \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost"
           # Built for the simulator like TrUAPIHost above, not with `swift build`,
           # which targets macOS: the xcframeworks carry iOS slices only, and the
           # generated bindings use Swift concurrency, which the package's macOS
@@ -409,6 +417,37 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIProviderDerivedData" \
             CODE_SIGNING_ALLOWED=NO
+
+      - name: Test native product network permissions in WKWebView
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/tag-probe"
+          ./ios/truapi-host/scripts/test.sh test-without-building \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost" \
+            -only-testing:NetworkPermissionTests/ProductNetworkAccessTests \
+            -resultBundlePath "$RUNNER_TEMP/TrUAPINetworkTests.xcresult"
+
+      - name: Export native test diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/TrUAPINetworkTests.xcresult"
+          if [[ -d "$result" ]]; then
+            xcrun xcresulttool get test-results summary --path "$result"
+            xcrun xcresulttool get test-results tests --path "$result"
+            xcrun xcresulttool export diagnostics --path "$result" \
+              --output-path "$RUNNER_TEMP/TrUAPINetworkDiagnostics"
+          fi
+
+      - name: Upload native test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-network-test-results
+          path: |
+            ${{ runner.temp }}/TrUAPINetworkTests.xcresult
+            ${{ runner.temp }}/TrUAPINetworkDiagnostics
+          if-no-files-found: ignore
 
   # Compile gate for the Android host module: regenerates the UniFFI Kotlin
   # bindings and compiles the shell against them. No cross-compile, no
@@ -453,6 +492,110 @@ jobs:
         run: make uniffi-kotlin
       - name: Compile the shell against the bindings
         run: gradle :truapi-host:assembleRelease
+
+  # The app tree vendored at hosts/android consumes the core in this repository
+  # rather than a published package, so a core change that breaks it fails here
+  # instead of at the next version bump. The job builds the core, generates the
+  # Kotlin bindings, and compiles the app code that pattern matches over the
+  # generated types, which is where a removed or renamed variant surfaces.
+  #
+  # Scoped to :feature:products:impl and what it depends on. That is where every
+  # consumer of the generated types lives, and it configures from environment
+  # placeholders, where the app module would need values this repository does
+  # not hold.
+  host-android-bindings:
+    name: Android host app (kotlin compile)
+    needs: changes
+    if: needs.changes.outputs.host_android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The adapter's codegen task runs the core's scripts/codegen.sh, which
+      # emits rustdoc JSON and formats the result, both of which are nightly
+      # only. The app tree pins the nightly date because rustdoc's JSON format
+      # version moves with the toolchain, so read the pin rather than restate
+      # it. The stable toolchain below is what everything else builds with.
+      - name: Read the pinned nightly
+        id: nightly
+        run: |
+          set -euo pipefail
+          toolchain="$(sed -n 's/^truapi\.rustNightly=//p' hosts/android/gradle.properties | head -n1)"
+          # The value reaches an action input that is interpolated into a shell
+          # command, so accept only the dated-nightly shape.
+          case "${toolchain}" in
+            nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *)
+              echo "::error::truapi.rustNightly must be a dated nightly, got '${toolchain}'"
+              exit 1
+              ;;
+          esac
+          echo "toolchain=${toolchain}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # pinned nightly
+        with:
+          toolchain: ${{ steps.nightly.outputs.toolchain }}
+          components: rustfmt
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+        with:
+          shared-key: host-android-bindings-gate
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # JDK 21 and NDK 29, which is what the app tree's own install action uses.
+      # The SDK modules here build on 17; these are different trees.
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # The runner image ships the SDK, and the NDK that
+      # AndroidRustConventionPlugin pins, so neither is installed here.
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # No truapi.dir: the core resolves two levels up, which is one of the
+      # properties this job keeps true.
+      #
+      # The target is the module that consumes the bindings, not the module that
+      # produces them. Generated bindings cannot disagree with the library they
+      # were generated from, so compiling them proves nothing; the signal is in
+      # the app code that pattern matches over core types. Compiling this module
+      # builds :bindings:truapi-host on the way, so both are covered.
+      #
+      # These values are configuration rather than credentials, and the app tree
+      # reads each of them from the environment when it is absent from
+      # local.properties. Placeholders are enough to configure the module, and
+      # keep the gate independent of secrets this repository does not hold.
+      - name: Compile the core's Android consumers
+        working-directory: hosts/android
+        env:
+          APPLICATION_ID: io.paritytech.polkadotapp
+          APPLICATION_NAME: Polkadot
+          CURRENCY_SYMBOL: DOT
+          FIRESTORE_DATABASE_ID: ci
+          GOOGLE_OAUTH_ID: ci
+          # Typed as a long, so a non-numeric placeholder is a compile error.
+          GOOGLE_PROJECT_ID: "0"
+          LOG_COLLECTION_EMAIL: ci@example.invalid
+          NIGHTLY_FUNDING_MNEMONIC: ci
+          PRIVACY_POLICY_URL: https://example.invalid/privacy
+          SENTRY_ORG: ci
+          SENTRY_PROJECT: ci
+          TERMS_OF_USE_URL: https://example.invalid/terms
+        run: ./gradlew --configure-on-demand :feature:products:impl:compileReleaseKotlin
 
   # The provider ships as its own AAR, so its bindings compile on a path the
   # host gate never touches. `make provider-android-check` generates first and
@@ -533,6 +676,11 @@ jobs:
 
       - name: Test
         run: npm test --prefix js/packages/truapi
+
+      - name: Test shared product container
+        run: |
+          npm ci --prefix js/container --ignore-scripts
+          bun test js/container/src
 
   ts-host:
     name: "@parity/truapi-host"
@@ -957,6 +1105,7 @@ jobs:
         ios-swift,
         android-bindings,
         provider-android-bindings,
+        host-android-bindings,
         cli-package,
         ts-client,
         ts-host,
@@ -1003,7 +1152,8 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           REQUIRED: >-
             rust wasm-provider licenses codegen ios-bindings changes ios-swift
-            android-bindings provider-android-bindings cli-package ts-client
+            android-bindings provider-android-bindings host-android-bindings
+            cli-package ts-client
             ts-host ts-debugger playground explorer e2e workflow-lint
             release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

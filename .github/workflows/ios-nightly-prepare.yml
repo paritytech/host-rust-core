@@ -11,17 +11,17 @@ on:
         description: "Source ref to create release branch from (existing branch name or commit SHA)"
         type: string
         required: false
-        default: develop
+        default: main
       increment_step:
         description: "Build number increment step (1 if empty)"
         type: string
         required: false
         default: ""
-  # Held on workflow_dispatch until the build credentials tracked in #672
-  # land. The trigger below is the one this workflow runs on; restoring it
-  # is the change that puts this workflow live.
-#   schedule:
-#     - cron: "0 16 * * 1-5" # 16:00 UTC Monday-Friday
+  schedule:
+    # 20:00 UTC, four hours after the app repository builds Safetynet on the
+    # same weekday schedule. Far enough apart that one finishes before the
+    # other starts, and late enough to carry the day's merges.
+    - cron: "0 20 * * 1-5" # 20:00 UTC Monday-Friday
 
 permissions:
   contents: write
@@ -30,19 +30,11 @@ permissions:
 
 jobs:
   prepare:
-    # Held until the iOS cutover. This tree is behind the app repository.
-    # It drives the nightly distribution chain. The dispatch it creates carries
-    # GITHUB_TOKEN, so its triggering actor is github-actions[bot], which is what
-    # the check in ios-build-distribute.yml accepts. That check stops a human
-    # dispatching distribution directly, not this path.
-    #
-    # Removing this is part of the cutover, tracked on #764.
-    if: false
     uses: ./.github/workflows/ios-prepare-pipeline.yml
     with:
       is_nightly: true
       bump_level: "no-bump"
-      source_ref: ${{ inputs.source_ref || 'develop' }}
+      source_ref: ${{ inputs.source_ref || 'main' }}
       increment_step: ${{ inputs.increment_step || '' }}
-      distribution_workflow: nightly_distribution.yml
+      distribution_workflow: ios-nightly-distribution.yml
     secrets: inherit

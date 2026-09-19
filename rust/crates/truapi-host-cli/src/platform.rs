@@ -24,15 +24,17 @@ use truapi::latest as api;
 use truapi::v01;
 use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
-    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionStatusHost, Permissions,
-    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, SignRawReview, ThemeHost,
-    UserConfirmation, UserConfirmationReview,
+    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionDecision,
+    PermissionStatusHost, Permissions, PreimageHost, ProductContext, ProductOperations,
+    ProductStorage, ProductStorageKey, SessionUiInfo, SignRawReview, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
 use crate::terminal_ui::{SystemEvent, UiHandle};
 
 static NEXT_STORAGE_TEMP_ID: AtomicU32 = AtomicU32::new(0);
+static NEXT_OPERATION_ID: AtomicU32 = AtomicU32::new(1);
 
 /// How the host answers confirmation prompts (the web/iOS "sign?" modals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -486,6 +488,48 @@ impl ProductStorage for CliPlatform {
         self.persist_product_storage(scoped.product_id(), values)
             .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
     }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<api::HostLocalStorageChangeItem, api::GenericError>> {
+        // TODO: current value only; the CLI never pushes later changes. Needs a
+        // per-key broadcast off write/clear for cross-context storage sync.
+        let value = ProductStorageKey::decode(&key).ok().and_then(|scoped| {
+            self.product_storage
+                .lock()
+                .expect("product storage mutex poisoned")
+                .get(scoped.product_id())
+                .and_then(|values| values.get(scoped.key()))
+                .cloned()
+        });
+        Box::pin(stream::once(async move {
+            Ok(api::HostLocalStorageChangeItem { value })
+        }))
+    }
+}
+
+#[async_trait]
+impl ProductOperations for CliPlatform {
+    async fn begin_operation(
+        &self,
+        _product: &ProductContext,
+        _label: String,
+    ) -> Result<api::HostWorkerBeginOperationResponse, api::HostWorkerOperationError> {
+        // The headless CLI has no worker to keep alive, so the id exists only so
+        // a product can pair begin/end.
+        Ok(api::HostWorkerBeginOperationResponse {
+            id: NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+
+    async fn end_operation(
+        &self,
+        _product: &ProductContext,
+        _id: u32,
+    ) -> Result<(), api::HostWorkerOperationError> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -676,27 +720,35 @@ impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
         _request: api::HostDevicePermissionRequest,
-    ) -> Result<api::HostDevicePermissionResponse, api::GenericError> {
+    ) -> Result<PermissionDecision, api::GenericError> {
         let granted = self
             .decide(
                 "device permission",
                 "A product requested access to a device capability.".to_string(),
             )
             .await;
-        Ok(api::HostDevicePermissionResponse { granted })
+        Ok(if granted {
+            PermissionDecision::AllowAlways
+        } else {
+            PermissionDecision::Deny
+        })
     }
 
     async fn remote_permission(
         &self,
         _request: api::RemotePermissionRequest,
-    ) -> Result<api::RemotePermissionResponse, api::GenericError> {
+    ) -> Result<PermissionDecision, api::GenericError> {
         let granted = self
             .decide(
                 "remote permission",
                 "A paired product requested a remote capability.".to_string(),
             )
             .await;
-        Ok(api::RemotePermissionResponse { granted })
+        Ok(if granted {
+            PermissionDecision::AllowAlways
+        } else {
+            PermissionDecision::Deny
+        })
     }
 }
 

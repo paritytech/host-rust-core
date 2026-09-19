@@ -13,7 +13,7 @@ on:
       source_ref:
         required: false
         type: string
-        default: "develop"
+        default: "main"
       increment_step:
         required: false
         type: string
@@ -165,7 +165,7 @@ jobs:
           # Release builds from main go straight to distribution: main is already
           # released code, so there is no release branch and no PR to merge back.
           DIRECT_BUILD="false"
-          if [[ "${IS_NIGHTLY}" != "true" && "${SRC}" == "${MAIN_BRANCH}" ]]; then
+          if [[ "${SRC}" == "${MAIN_BRANCH}" ]]; then
             if [[ "${BUMP_LEVEL:-no-bump}" != "no-bump" ]]; then
               echo "::error::Version bump needs a release branch/PR to land the bump commit. Use bump_level 'no-bump' when building directly from ${MAIN_BRANCH}."
               exit 1
@@ -175,7 +175,13 @@ jobs:
           COMMITS_AHEAD=$(git rev-list --count "origin/${MAIN_BRANCH}..${REF}")
           echo "Commits ahead of ${MAIN_BRANCH}: ${COMMITS_AHEAD}"
           HAS_CHANGES=$([[ "${COMMITS_AHEAD}" -gt 0 ]] && echo "true" || echo "false")
-          if [[ "${HAS_CHANGES}" == "true" ]]; then
+          # Counting commits ahead of the main branch only says anything when the
+          # source is something else. Building from the main branch compares it
+          # with itself and always reports zero, which silently turned every
+          # nightly into a no-op.
+          if [[ "${DIRECT_BUILD}" == "true" ]]; then
+            SHOULD_RELEASE="true"
+          elif [[ "${HAS_CHANGES}" == "true" ]]; then
             SHOULD_RELEASE="true"
           elif [[ "${IS_NIGHTLY}" == "true" ]]; then
             SHOULD_RELEASE="false"
@@ -384,9 +390,16 @@ jobs:
               });
               console.log('Distribution workflow triggered successfully');
             } catch (error) {
-              if (error.status === 404) {
-                console.log(`Warning: ${workflowId} not found in ref ${workflowRef}. It will work after merging.`);
-              } else {
+              if (error.status !== 404) {
                 throw error;
+              }
+              // A ref that does not carry the workflow yet is the one case
+              // worth tolerating. On the default branch it always carries it,
+              // so a 404 there means the name is wrong and the pipeline has
+              // dispatched nothing while reporting success.
+              if (workflowRef === context.payload.repository.default_branch) {
+                core.setFailed(`${workflowId} not found on ${workflowRef}; nothing was dispatched.`);
+              } else {
+                core.warning(`${workflowId} not found in ref ${workflowRef}; it will resolve once that ref carries it.`);
               }
             }

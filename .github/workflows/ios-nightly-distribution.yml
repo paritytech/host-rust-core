@@ -8,8 +8,14 @@ on:
         required: true
         type: string
       release_pr_number:
-        description: "Release PR number"
-        required: true
+        description: "Release PR number, empty for a direct build"
+        required: false
+        default: ""
+        type: string
+      increment_step:
+        description: "Build number increment step for direct builds (1 if empty)"
+        required: false
+        default: ""
         type: string
 
 jobs:
@@ -18,6 +24,7 @@ jobs:
     with:
       release_branch: ${{ inputs.release_branch }}
       release_pr_number: ${{ inputs.release_pr_number }}
+      increment_step: ${{ inputs.increment_step || '' }}
       build_configuration: "Nightly"
       distribute_to_external_group: true
       external_group_name: "Daily test builds"
@@ -32,6 +39,10 @@ jobs:
   # environment, under its own bundle id so it installs alongside the real app. See
   # Configs/base.safetynet.xcconfig.
   build_safetynet:
+    # Safetynet ships from the app repository. Held here rather than left to
+    # be refused by ios-build-distribute, because a refusal fails the job and
+    # every nightly run would be red with the two jobs after it skipped.
+    if: false
     uses: ./.github/workflows/ios-build-distribute.yml
     with:
       release_branch: ${{ inputs.release_branch }}
@@ -44,11 +55,13 @@ jobs:
   auto_merge:
     name: Auto-merge nightly build PR
     runs-on: ubuntu-latest
-    needs: [build_nightly, build_safetynet]
+    needs: [build_nightly]
+    # A build straight from the main branch carries no release branch and no
+    # pull request, so there is nothing here to merge.
     if: >-
       ${{ !cancelled() &&
       needs.build_nightly.outputs.succeeded == 'true' &&
-      needs.build_safetynet.outputs.succeeded == 'true' }}
+      inputs.release_pr_number != '' }}
     steps:
       - name: Merge PR and delete branch
         uses: actions/github-script@v8
@@ -89,11 +102,17 @@ jobs:
   send-release-notification:
     name: Send Release Notification
     runs-on: ubuntu-latest
-    needs: [build_nightly, build_safetynet]
-    if: >-
-      ${{ !cancelled() &&
-      needs.build_nightly.outputs.succeeded == 'true' &&
-      needs.build_safetynet.outputs.succeeded == 'true' }}
+    needs: [build_nightly]
+    # Held until the notification relay exists. The action exits non-zero when
+    # it is given neither a Matrix room nor a Telegram chat, and this repository
+    # has neither credential, so it would turn a delivered build into a failed
+    # run. Restore this with the relay.
+    #
+    # The condition this replaces:
+    # if: >-
+    # ${{ !cancelled() &&
+    # needs.build_nightly.outputs.succeeded == 'true' }}
+    if: false
     steps:
       - name: Send nightly release notification
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
@@ -103,7 +122,6 @@ jobs:
           pr_list: ${{ needs.build_nightly.outputs.pr_list_markdown }}
           release_info: |
             Nightly: ${{ needs.build_nightly.outputs.marketing_version }} (${{ needs.build_nightly.outputs.build_number }})
-            Safetynet: ${{ needs.build_safetynet.outputs.marketing_version }} (${{ needs.build_safetynet.outputs.build_number }})
           download_links_format: inline
           # Each secret holds one ready-to-render markdown link entry, e.g.
           # "[TestFlight](https://testflight.apple.com/join/<id>)". The label is part

@@ -31,6 +31,7 @@ use truapi::api::{
     StatementStore,
     System,
     Theme,
+    Worker,
 };
 use truapi::versioned::{self, Versioned};
 use truapi_platform::ProductExecutionKind;
@@ -65,7 +66,8 @@ where
     register_signing(dispatcher, host.clone());
     register_statement_store(dispatcher, host.clone());
     register_system(dispatcher, host.clone());
-    register_theme(dispatcher, host);
+    register_theme(dispatcher, host.clone());
+    register_worker(dispatcher, host);
 }
 
 /// Start the host-initiated `renderer_render` subscription.
@@ -119,7 +121,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_GET_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_GET_ACCOUNT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostAccountGetRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -132,7 +134,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostAccountGetResponse, truapi::CallError<versioned::account::HostAccountGetError>> =
                     match host.get_account(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostAccountGetResponse as truapi::versioned::FromLatest>::from_latest(
@@ -147,7 +149,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_GET_ACCOUNT_ALIAS, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_GET_ACCOUNT_ALIAS, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostAccountGetAliasRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -160,7 +162,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostAccountGetAliasResponse, truapi::CallError<versioned::account::HostAccountGetAliasError>> =
                     match host.get_account_alias(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostAccountGetAliasResponse as truapi::versioned::FromLatest>::from_latest(
@@ -175,7 +177,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_CREATE_ACCOUNT_PROOF, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_CREATE_ACCOUNT_PROOF, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostAccountCreateProofRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -188,7 +190,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostAccountCreateProofResponse, truapi::CallError<versioned::account::HostAccountCreateProofError>> =
                     match host.create_account_proof(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostAccountCreateProofResponse as truapi::versioned::FromLatest>::from_latest(
@@ -203,7 +205,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_SIGN_VRF, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_SIGN_VRF, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostAccountSignVrfRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -216,7 +218,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostAccountSignVrfResponse, truapi::CallError<versioned::account::HostAccountSignVrfError>> =
                     match host.sign_vrf(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostAccountSignVrfResponse as truapi::versioned::FromLatest>::from_latest(
@@ -231,7 +233,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_REGISTER_RING_VRF_KEY, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_REGISTER_RING_VRF_KEY, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostAccountRegisterRingVrfKeyRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -244,7 +246,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostAccountRegisterRingVrfKeyResponse, truapi::CallError<versioned::account::HostAccountRegisterRingVrfKeyError>> =
                     match host.register_ring_vrf_key(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostAccountRegisterRingVrfKeyResponse as truapi::versioned::FromLatest>::from_latest(
@@ -259,7 +261,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_LIST_RING_VRF_KEYS, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_LIST_RING_VRF_KEYS, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostAccountListRingVrfKeysRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -272,7 +274,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostAccountListRingVrfKeysResponse, truapi::CallError<versioned::account::HostAccountListRingVrfKeysError>> =
                     match host.list_ring_vrf_keys(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostAccountListRingVrfKeysResponse as truapi::versioned::FromLatest>::from_latest(
@@ -287,7 +289,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_RING_VRF_SIGN, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_RING_VRF_SIGN, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostAccountRingVrfSignRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -300,7 +302,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostAccountRingVrfSignResponse, truapi::CallError<versioned::account::HostAccountRingVrfSignError>> =
                     match host.ring_vrf_sign(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostAccountRingVrfSignResponse as truapi::versioned::FromLatest>::from_latest(
@@ -315,7 +317,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_GET_LEGACY_ACCOUNTS, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_GET_LEGACY_ACCOUNTS, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostGetLegacyAccountsRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -328,7 +330,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostGetLegacyAccountsResponse, truapi::CallError<versioned::account::HostGetLegacyAccountsError>> =
                     match host.get_legacy_accounts(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostGetLegacyAccountsResponse as truapi::versioned::FromLatest>::from_latest(
@@ -343,7 +345,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::ACCOUNT_GET_USER_ID, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_GET_USER_ID, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostGetUserIdRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -356,7 +358,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostGetUserIdResponse, truapi::CallError<versioned::account::HostGetUserIdError>> =
                     match host.get_user_id(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostGetUserIdResponse as truapi::versioned::FromLatest>::from_latest(
@@ -371,7 +373,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::ACCOUNT_REQUEST_LOGIN, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ACCOUNT_REQUEST_LOGIN, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::account::HostRequestLoginRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -384,7 +386,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::account::HostRequestLoginResponse, truapi::CallError<versioned::account::HostRequestLoginError>> =
                     match host.request_login(&cx, request).await {
                         Ok(response) => Ok(<versioned::account::HostRequestLoginResponse as truapi::versioned::FromLatest>::from_latest(
@@ -437,7 +439,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_GET_HEAD_HEADER, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_GET_HEAD_HEADER, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainHeadHeaderRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -450,7 +452,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainHeadHeaderResponse, truapi::CallError<versioned::chain::RemoteChainHeadHeaderError>> =
                     match host.get_head_header(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainHeadHeaderResponse as truapi::versioned::FromLatest>::from_latest(
@@ -465,7 +467,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_GET_HEAD_BODY, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_GET_HEAD_BODY, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainHeadBodyRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -478,7 +480,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainHeadBodyResponse, truapi::CallError<versioned::chain::RemoteChainHeadBodyError>> =
                     match host.get_head_body(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainHeadBodyResponse as truapi::versioned::FromLatest>::from_latest(
@@ -493,7 +495,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_GET_HEAD_STORAGE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_GET_HEAD_STORAGE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainHeadStorageRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -506,7 +508,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainHeadStorageResponse, truapi::CallError<versioned::chain::RemoteChainHeadStorageError>> =
                     match host.get_head_storage(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainHeadStorageResponse as truapi::versioned::FromLatest>::from_latest(
@@ -521,7 +523,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_CALL_HEAD, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_CALL_HEAD, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainHeadCallRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -534,7 +536,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainHeadCallResponse, truapi::CallError<versioned::chain::RemoteChainHeadCallError>> =
                     match host.call_head(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainHeadCallResponse as truapi::versioned::FromLatest>::from_latest(
@@ -549,7 +551,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_UNPIN_HEAD, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_UNPIN_HEAD, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainHeadUnpinRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -562,7 +564,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainHeadUnpinResponse, truapi::CallError<versioned::chain::RemoteChainHeadUnpinError>> =
                     match host.unpin_head(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainHeadUnpinResponse as truapi::versioned::FromLatest>::from_latest(
@@ -577,7 +579,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_CONTINUE_HEAD, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_CONTINUE_HEAD, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainHeadContinueRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -590,7 +592,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainHeadContinueResponse, truapi::CallError<versioned::chain::RemoteChainHeadContinueError>> =
                     match host.continue_head(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainHeadContinueResponse as truapi::versioned::FromLatest>::from_latest(
@@ -605,7 +607,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_STOP_HEAD_OPERATION, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_STOP_HEAD_OPERATION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainHeadStopOperationRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -618,7 +620,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainHeadStopOperationResponse, truapi::CallError<versioned::chain::RemoteChainHeadStopOperationError>> =
                     match host.stop_head_operation(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainHeadStopOperationResponse as truapi::versioned::FromLatest>::from_latest(
@@ -633,7 +635,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_GET_SPEC_GENESIS_HASH, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_GET_SPEC_GENESIS_HASH, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainSpecGenesisHashRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -646,7 +648,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainSpecGenesisHashResponse, truapi::CallError<versioned::chain::RemoteChainSpecGenesisHashError>> =
                     match host.get_spec_genesis_hash(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainSpecGenesisHashResponse as truapi::versioned::FromLatest>::from_latest(
@@ -661,7 +663,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_GET_SPEC_CHAIN_NAME, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_GET_SPEC_CHAIN_NAME, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainSpecChainNameRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -674,7 +676,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainSpecChainNameResponse, truapi::CallError<versioned::chain::RemoteChainSpecChainNameError>> =
                     match host.get_spec_chain_name(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainSpecChainNameResponse as truapi::versioned::FromLatest>::from_latest(
@@ -689,7 +691,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_GET_SPEC_PROPERTIES, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_GET_SPEC_PROPERTIES, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainSpecPropertiesRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -702,7 +704,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainSpecPropertiesResponse, truapi::CallError<versioned::chain::RemoteChainSpecPropertiesError>> =
                     match host.get_spec_properties(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainSpecPropertiesResponse as truapi::versioned::FromLatest>::from_latest(
@@ -717,7 +719,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_BROADCAST_TRANSACTION, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_BROADCAST_TRANSACTION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainTransactionBroadcastRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -730,7 +732,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainTransactionBroadcastResponse, truapi::CallError<versioned::chain::RemoteChainTransactionBroadcastError>> =
                     match host.broadcast_transaction(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainTransactionBroadcastResponse as truapi::versioned::FromLatest>::from_latest(
@@ -745,7 +747,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_STOP_TRANSACTION, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_STOP_TRANSACTION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainTransactionStopRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -758,7 +760,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainTransactionStopResponse, truapi::CallError<versioned::chain::RemoteChainTransactionStopError>> =
                     match host.stop_transaction(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainTransactionStopResponse as truapi::versioned::FromLatest>::from_latest(
@@ -773,7 +775,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::CHAIN_GET_CHAIN_INFO, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAIN_GET_CHAIN_INFO, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chain::RemoteChainInfoRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -786,7 +788,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::chain::RemoteChainInfoResponse, truapi::CallError<versioned::chain::RemoteChainInfoError>> =
                     match host.get_chain_info(&cx, request).await {
                         Ok(response) => Ok(<versioned::chain::RemoteChainInfoResponse as truapi::versioned::FromLatest>::from_latest(
@@ -808,7 +810,7 @@ where
     {
         let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAT_CREATE_ROOM, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAT_CREATE_ROOM, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chat::HostChatCreateRoomRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -821,7 +823,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 if !execution_allowed {
                     let error: truapi::CallError<versioned::chat::HostChatCreateRoomError> = truapi::CallError::Denied;
                     let result: Result<versioned::chat::HostChatCreateRoomResponse, truapi::CallError<versioned::chat::HostChatCreateRoomError>> = Err(error);
@@ -842,7 +844,7 @@ where
     {
         let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAT_REGISTER_BOT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAT_REGISTER_BOT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chat::HostChatRegisterBotRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -855,7 +857,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 if !execution_allowed {
                     let error: truapi::CallError<versioned::chat::HostChatRegisterBotError> = truapi::CallError::Denied;
                     let result: Result<versioned::chat::HostChatRegisterBotResponse, truapi::CallError<versioned::chat::HostChatRegisterBotError>> = Err(error);
@@ -913,7 +915,7 @@ where
     {
         let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
-        dispatcher.on_request(wire_table::CHAT_POST_MESSAGE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::CHAT_POST_MESSAGE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::chat::HostChatPostMessageRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -926,7 +928,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 if !execution_allowed {
                     let error: truapi::CallError<versioned::chat::HostChatPostMessageError> = truapi::CallError::Denied;
                     let result: Result<versioned::chat::HostChatPostMessageResponse, truapi::CallError<versioned::chat::HostChatPostMessageError>> = Err(error);
@@ -989,7 +991,7 @@ where
 {
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::COIN_PAYMENT_CREATE_PURSE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::COIN_PAYMENT_CREATE_PURSE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::coin_payment::HostCoinPaymentCreatePurseRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1002,7 +1004,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::coin_payment::HostCoinPaymentCreatePurseResponse, truapi::CallError<versioned::coin_payment::HostCoinPaymentCreatePurseError>> =
                     match host.create_purse(&cx, request).await {
                         Ok(response) => Ok(<versioned::coin_payment::HostCoinPaymentCreatePurseResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1017,7 +1019,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::COIN_PAYMENT_QUERY_PURSE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::COIN_PAYMENT_QUERY_PURSE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::coin_payment::HostCoinPaymentQueryPurseRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1030,7 +1032,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::coin_payment::HostCoinPaymentQueryPurseResponse, truapi::CallError<versioned::coin_payment::HostCoinPaymentQueryPurseError>> =
                     match host.query_purse(&cx, request).await {
                         Ok(response) => Ok(<versioned::coin_payment::HostCoinPaymentQueryPurseResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1109,7 +1111,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::COIN_PAYMENT_CREATE_RECEIVABLE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::COIN_PAYMENT_CREATE_RECEIVABLE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::coin_payment::HostCoinPaymentCreateReceivableRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1122,7 +1124,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::coin_payment::HostCoinPaymentCreateReceivableResponse, truapi::CallError<versioned::coin_payment::HostCoinPaymentCreateReceivableError>> =
                     match host.create_receivable(&cx, request).await {
                         Ok(response) => Ok(<versioned::coin_payment::HostCoinPaymentCreateReceivableResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1137,7 +1139,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::COIN_PAYMENT_CREATE_CHEQUE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::COIN_PAYMENT_CREATE_CHEQUE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::coin_payment::HostCoinPaymentCreateChequeRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1150,7 +1152,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::coin_payment::HostCoinPaymentCreateChequeResponse, truapi::CallError<versioned::coin_payment::HostCoinPaymentCreateChequeError>> =
                     match host.create_cheque(&cx, request).await {
                         Ok(response) => Ok(<versioned::coin_payment::HostCoinPaymentCreateChequeResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1267,7 +1269,7 @@ where
 {
     {
         let host = host;
-        dispatcher.on_request(wire_table::ENTROPY_DERIVE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::ENTROPY_DERIVE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::entropy::HostDeriveEntropyRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1280,7 +1282,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::entropy::HostDeriveEntropyResponse, truapi::CallError<versioned::entropy::HostDeriveEntropyError>> =
                     match host.derive(&cx, request).await {
                         Ok(response) => Ok(<versioned::entropy::HostDeriveEntropyResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1301,7 +1303,7 @@ where
 {
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::LOCAL_STORAGE_READ, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::LOCAL_STORAGE_READ, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::local_storage::HostLocalStorageReadRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1314,7 +1316,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::local_storage::HostLocalStorageReadResponse, truapi::CallError<versioned::local_storage::HostLocalStorageReadError>> =
                     match host.read(&cx, request).await {
                         Ok(response) => Ok(<versioned::local_storage::HostLocalStorageReadResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1329,7 +1331,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::LOCAL_STORAGE_WRITE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::LOCAL_STORAGE_WRITE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::local_storage::HostLocalStorageWriteRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1342,7 +1344,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::local_storage::HostLocalStorageWriteResponse, truapi::CallError<versioned::local_storage::HostLocalStorageWriteError>> =
                     match host.write(&cx, request).await {
                         Ok(response) => Ok(<versioned::local_storage::HostLocalStorageWriteResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1356,8 +1358,8 @@ where
         });
     }
     {
-        let host = host;
-        dispatcher.on_request(wire_table::LOCAL_STORAGE_CLEAR, move |request_id: String, bytes: Vec<u8>| {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::LOCAL_STORAGE_CLEAR, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::local_storage::HostLocalStorageClearRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1370,7 +1372,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::local_storage::HostLocalStorageClearResponse, truapi::CallError<versioned::local_storage::HostLocalStorageClearError>> =
                     match host.clear(&cx, request).await {
                         Ok(response) => Ok(<versioned::local_storage::HostLocalStorageClearResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1380,6 +1382,38 @@ where
                         Err(err) => Err(downgrade_call_error(err, target_version)),
                     };
                 result.encode()
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_subscription(wire_table::LOCAL_STORAGE_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::local_storage::HostLocalStorageSubscribeRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::local_storage::HostLocalStorageSubscribeError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Err(subscription_interrupt(error));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id);
+                let stream = host.subscribe(&cx, request).await;
+                let stream = futures::StreamExt::map(
+                    stream,
+                    move |item: Result<versioned::local_storage::HostLocalStorageChangeItem, truapi::CallError<versioned::local_storage::HostLocalStorageSubscribeError>>| {
+                        item.map(|item| {
+                            <versioned::local_storage::HostLocalStorageChangeItem as truapi::versioned::FromLatest>::from_latest(
+                                truapi::versioned::IntoLatest::into_latest(item),
+                                target_version,
+                            )
+                        })
+                        .map_err(|error| downgrade_call_error(error, target_version))
+                    },
+                );
+                Ok(subscription_stream(stream))
             })
         });
     }
@@ -1429,7 +1463,7 @@ where
 {
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::NOTIFICATIONS_SEND_PUSH_NOTIFICATION, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::NOTIFICATIONS_SEND_PUSH_NOTIFICATION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::notifications::HostPushNotificationRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1442,7 +1476,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::notifications::HostPushNotificationResponse, truapi::CallError<versioned::notifications::HostPushNotificationError>> =
                     match host.send_push_notification(&cx, request).await {
                         Ok(response) => Ok(<versioned::notifications::HostPushNotificationResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1457,7 +1491,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::NOTIFICATIONS_CANCEL_PUSH_NOTIFICATION, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::NOTIFICATIONS_CANCEL_PUSH_NOTIFICATION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::notifications::HostPushNotificationCancelRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1470,7 +1504,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::notifications::HostPushNotificationCancelResponse, truapi::CallError<versioned::notifications::HostPushNotificationCancelError>> =
                     match host.cancel_push_notification(&cx, request).await {
                         Ok(response) => Ok(<versioned::notifications::HostPushNotificationCancelResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1523,7 +1557,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::PAYMENT_REQUEST, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::PAYMENT_REQUEST, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::payment::HostPaymentRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1536,7 +1570,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::payment::HostPaymentResponse, truapi::CallError<versioned::payment::HostPaymentError>> =
                     match host.request(&cx, request).await {
                         Ok(response) => Ok(<versioned::payment::HostPaymentResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1583,7 +1617,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::PAYMENT_TOP_UP, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::PAYMENT_TOP_UP, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::payment::HostPaymentTopUpRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1596,7 +1630,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::payment::HostPaymentTopUpResponse, truapi::CallError<versioned::payment::HostPaymentTopUpError>> =
                     match host.top_up(&cx, request).await {
                         Ok(response) => Ok(<versioned::payment::HostPaymentTopUpResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1617,7 +1651,7 @@ where
 {
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::PERMISSIONS_REQUEST_DEVICE_PERMISSION, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::PERMISSIONS_REQUEST_DEVICE_PERMISSION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::permissions::HostDevicePermissionRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1630,7 +1664,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::permissions::HostDevicePermissionResponse, truapi::CallError<versioned::permissions::HostDevicePermissionError>> =
                     match host.request_device_permission(&cx, request).await {
                         Ok(response) => Ok(<versioned::permissions::HostDevicePermissionResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1644,8 +1678,8 @@ where
         });
     }
     {
-        let host = host;
-        dispatcher.on_request(wire_table::PERMISSIONS_REQUEST_REMOTE_PERMISSION, move |request_id: String, bytes: Vec<u8>| {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::PERMISSIONS_REQUEST_REMOTE_PERMISSION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::permissions::RemotePermissionRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1658,10 +1692,66 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::permissions::RemotePermissionResponse, truapi::CallError<versioned::permissions::RemotePermissionError>> =
                     match host.request_remote_permission(&cx, request).await {
                         Ok(response) => Ok(<versioned::permissions::RemotePermissionResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::permissions::RemotePermissionRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::permissions::RemotePermissionError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::permissions::RemotePermissionResponse, truapi::CallError<versioned::permissions::RemotePermissionError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_parts(request_id, cancel);
+                let result: Result<versioned::permissions::RemotePermissionResponse, truapi::CallError<versioned::permissions::RemotePermissionError>> =
+                    match host.authorize_remote_permission(&cx, request).await {
+                        Ok(response) => Ok(<versioned::permissions::RemotePermissionResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_request(wire_table::PERMISSIONS_AUTHORIZE_DEVICE_PERMISSION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::permissions::HostDevicePermissionRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::permissions::HostDevicePermissionError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::permissions::HostDevicePermissionResponse, truapi::CallError<versioned::permissions::HostDevicePermissionError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_parts(request_id, cancel);
+                let result: Result<versioned::permissions::HostDevicePermissionResponse, truapi::CallError<versioned::permissions::HostDevicePermissionError>> =
+                    match host.authorize_device_permission(&cx, request).await {
+                        Ok(response) => Ok(<versioned::permissions::HostDevicePermissionResponse as truapi::versioned::FromLatest>::from_latest(
                             truapi::versioned::IntoLatest::into_latest(response),
                             target_version,
                         )),
@@ -1717,7 +1807,7 @@ where
     {
         let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host;
-        dispatcher.on_request(wire_table::POCKET_REMOVE_CARD, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::POCKET_REMOVE_CARD, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::pocket::HostPocketRemoveCardRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1730,7 +1820,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 if !execution_allowed {
                     let error: truapi::CallError<versioned::pocket::HostPocketRemoveCardError> = truapi::CallError::Denied;
                     let result: Result<versioned::pocket::HostPocketRemoveCardResponse, truapi::CallError<versioned::pocket::HostPocketRemoveCardError>> = Err(error);
@@ -1788,7 +1878,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::PREIMAGE_SUBMIT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::PREIMAGE_SUBMIT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::preimage::RemotePreimageSubmitRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1801,7 +1891,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::preimage::RemotePreimageSubmitResponse, truapi::CallError<versioned::preimage::RemotePreimageSubmitError>> =
                     match host.submit(&cx, request).await {
                         Ok(response) => Ok(<versioned::preimage::RemotePreimageSubmitResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1865,7 +1955,7 @@ where
 {
     {
         let host = host;
-        dispatcher.on_request(wire_table::RESOURCE_ALLOCATION_REQUEST, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::RESOURCE_ALLOCATION_REQUEST, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::resource_allocation::HostRequestResourceAllocationRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1878,7 +1968,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::resource_allocation::HostRequestResourceAllocationResponse, truapi::CallError<versioned::resource_allocation::HostRequestResourceAllocationError>> =
                     match host.request(&cx, request).await {
                         Ok(response) => Ok(<versioned::resource_allocation::HostRequestResourceAllocationResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1899,7 +1989,7 @@ where
 {
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_CREATE_TRANSACTION, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_CREATE_TRANSACTION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostCreateTransactionRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1912,7 +2002,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostCreateTransactionResponse, truapi::CallError<versioned::signing::HostCreateTransactionError>> =
                     match host.create_transaction(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostCreateTransactionResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1927,7 +2017,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_CREATE_TRANSACTION_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_CREATE_TRANSACTION_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostCreateTransactionWithLegacyAccountRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1940,7 +2030,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostCreateTransactionWithLegacyAccountResponse, truapi::CallError<versioned::signing::HostCreateTransactionWithLegacyAccountError>> =
                     match host.create_transaction_with_legacy_account(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostCreateTransactionWithLegacyAccountResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1955,7 +2045,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignRawWithLegacyAccountRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1968,7 +2058,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostSignRawWithLegacyAccountResponse, truapi::CallError<versioned::signing::HostSignRawWithLegacyAccountError>> =
                     match host.sign_raw_with_legacy_account(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostSignRawWithLegacyAccountResponse as truapi::versioned::FromLatest>::from_latest(
@@ -1983,7 +2073,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_PAYLOAD_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_PAYLOAD_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignPayloadWithLegacyAccountRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -1996,7 +2086,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostSignPayloadWithLegacyAccountResponse, truapi::CallError<versioned::signing::HostSignPayloadWithLegacyAccountError>> =
                     match host.sign_payload_with_legacy_account(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostSignPayloadWithLegacyAccountResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2011,7 +2101,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignRawRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2024,7 +2114,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostSignRawResponse, truapi::CallError<versioned::signing::HostSignRawError>> =
                     match host.sign_raw(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostSignRawResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2039,7 +2129,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_PAYLOAD, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_PAYLOAD, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignPayloadRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2052,7 +2142,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostSignPayloadResponse, truapi::CallError<versioned::signing::HostSignPayloadError>> =
                     match host.sign_payload(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostSignPayloadResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2067,7 +2157,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignRawRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2080,7 +2170,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostSignRawResponse, truapi::CallError<versioned::signing::HostSignRawError>> =
                     match host.sign_raw_unwatermarked_deprecated(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostSignRawResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2095,7 +2185,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SIGNING_SIGN_RAW_UNWATERMARKED_DEPRECATED_WITH_LEGACY_ACCOUNT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::signing::HostSignRawWithLegacyAccountRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2108,7 +2198,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::signing::HostSignRawWithLegacyAccountResponse, truapi::CallError<versioned::signing::HostSignRawWithLegacyAccountError>> =
                     match host.sign_raw_unwatermarked_deprecated_with_legacy_account(&cx, request).await {
                         Ok(response) => Ok(<versioned::signing::HostSignRawWithLegacyAccountResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2161,7 +2251,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::STATEMENT_STORE_CREATE_PROOF, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::STATEMENT_STORE_CREATE_PROOF, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::statement_store::RemoteStatementStoreCreateProofRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2174,7 +2264,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::statement_store::RemoteStatementStoreCreateProofResponse, truapi::CallError<versioned::statement_store::RemoteStatementStoreCreateProofError>> =
                     match host.create_proof(&cx, request).await {
                         Ok(response) => Ok(<versioned::statement_store::RemoteStatementStoreCreateProofResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2189,7 +2279,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::STATEMENT_STORE_CREATE_PROOF_AUTHORIZED, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::STATEMENT_STORE_CREATE_PROOF_AUTHORIZED, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::statement_store::RemoteStatementStoreCreateProofAuthorizedRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2202,7 +2292,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::statement_store::RemoteStatementStoreCreateProofAuthorizedResponse, truapi::CallError<versioned::statement_store::RemoteStatementStoreCreateProofAuthorizedError>> =
                     match host.create_proof_authorized(&cx, request).await {
                         Ok(response) => Ok(<versioned::statement_store::RemoteStatementStoreCreateProofAuthorizedResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2217,7 +2307,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::STATEMENT_STORE_SUBMIT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::STATEMENT_STORE_SUBMIT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::statement_store::RemoteStatementStoreSubmitRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2230,7 +2320,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::statement_store::RemoteStatementStoreSubmitResponse, truapi::CallError<versioned::statement_store::RemoteStatementStoreSubmitError>> =
                     match host.submit(&cx, request).await {
                         Ok(response) => Ok(<versioned::statement_store::RemoteStatementStoreSubmitResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2251,7 +2341,7 @@ where
 {
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SYSTEM_HANDSHAKE, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SYSTEM_HANDSHAKE, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::system::HostHandshakeRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2264,7 +2354,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::system::HostHandshakeResponse, truapi::CallError<versioned::system::HostHandshakeError>> =
                     match host.handshake(&cx, request).await {
                         Ok(response) => Ok(<versioned::system::HostHandshakeResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2279,7 +2369,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SYSTEM_FEATURE_SUPPORTED, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SYSTEM_FEATURE_SUPPORTED, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::system::HostFeatureSupportedRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2292,7 +2382,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::system::HostFeatureSupportedResponse, truapi::CallError<versioned::system::HostFeatureSupportedError>> =
                     match host.feature_supported(&cx, request).await {
                         Ok(response) => Ok(<versioned::system::HostFeatureSupportedResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2307,7 +2397,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SYSTEM_NAVIGATE_TO, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SYSTEM_NAVIGATE_TO, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::system::HostNavigateToRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2320,7 +2410,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::system::HostNavigateToResponse, truapi::CallError<versioned::system::HostNavigateToError>> =
                     match host.navigate_to(&cx, request).await {
                         Ok(response) => Ok(<versioned::system::HostNavigateToResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2335,7 +2425,7 @@ where
     }
     {
         let host = host.clone();
-        dispatcher.on_request(wire_table::SYSTEM_HOST_INFO, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SYSTEM_HOST_INFO, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::system::HostInfoRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2348,7 +2438,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::system::HostInfoResponse, truapi::CallError<versioned::system::HostInfoError>> =
                     match host.host_info(&cx, request).await {
                         Ok(response) => Ok(<versioned::system::HostInfoResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2363,7 +2453,7 @@ where
     }
     {
         let host = host;
-        dispatcher.on_request(wire_table::SYSTEM_GET_PRODUCT_CONTEXT, move |request_id: String, bytes: Vec<u8>| {
+        dispatcher.on_request(wire_table::SYSTEM_GET_PRODUCT_CONTEXT, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
             let host = host.clone();
             Box::pin(async move {
                 let request: versioned::system::HostGetProductContextRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
@@ -2376,7 +2466,7 @@ where
                     }
                 };
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 let result: Result<versioned::system::HostGetProductContextResponse, truapi::CallError<versioned::system::HostGetProductContextError>> =
                     match host.get_product_context(&cx, request).await {
                         Ok(response) => Ok(<versioned::system::HostGetProductContextResponse as truapi::versioned::FromLatest>::from_latest(
@@ -2424,6 +2514,80 @@ where
                     },
                 );
                 Ok(subscription_stream(stream))
+            })
+        });
+    }
+}
+
+fn register_worker<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
+where
+    P: Worker + Send + Sync + 'static,
+{
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host.clone();
+        dispatcher.on_request(wire_table::WORKER_BEGIN_OPERATION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::worker::HostWorkerBeginOperationRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::worker::HostWorkerBeginOperationError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::worker::HostWorkerBeginOperationResponse, truapi::CallError<versioned::worker::HostWorkerBeginOperationError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_parts(request_id, cancel);
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::worker::HostWorkerBeginOperationError> = truapi::CallError::Denied;
+                    let result: Result<versioned::worker::HostWorkerBeginOperationResponse, truapi::CallError<versioned::worker::HostWorkerBeginOperationError>> = Err(error);
+                    return result.encode();
+                }
+                let result: Result<versioned::worker::HostWorkerBeginOperationResponse, truapi::CallError<versioned::worker::HostWorkerBeginOperationError>> =
+                    match host.begin_operation(&cx, request).await {
+                        Ok(response) => Ok(<versioned::worker::HostWorkerBeginOperationResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
+            })
+        });
+    }
+    {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host;
+        dispatcher.on_request(wire_table::WORKER_END_OPERATION, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::worker::HostWorkerEndOperationRequest = match DecodeAll::decode_all(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::worker::HostWorkerEndOperationError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        let result: Result<versioned::worker::HostWorkerEndOperationResponse, truapi::CallError<versioned::worker::HostWorkerEndOperationError>> = Err(error);
+                        return result.encode();
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_parts(request_id, cancel);
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::worker::HostWorkerEndOperationError> = truapi::CallError::Denied;
+                    let result: Result<versioned::worker::HostWorkerEndOperationResponse, truapi::CallError<versioned::worker::HostWorkerEndOperationError>> = Err(error);
+                    return result.encode();
+                }
+                let result: Result<versioned::worker::HostWorkerEndOperationResponse, truapi::CallError<versioned::worker::HostWorkerEndOperationError>> =
+                    match host.end_operation(&cx, request).await {
+                        Ok(response) => Ok(<versioned::worker::HostWorkerEndOperationResponse as truapi::versioned::FromLatest>::from_latest(
+                            truapi::versioned::IntoLatest::into_latest(response),
+                            target_version,
+                        )),
+                        Err(err) => Err(downgrade_call_error(err, target_version)),
+                    };
+                result.encode()
             })
         });
     }

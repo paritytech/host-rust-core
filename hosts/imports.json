@@ -1,6 +1,6 @@
 {
   "android": {
-    "branch": "main",
+    "branch": "truapi-dev",
     "infrastructure": [
       ".github/",
       "README.md",
@@ -8,7 +8,7 @@
       "settings.gradle.kts",
       "local.properties"
     ],
-    "ref": "53966dcaa9a2cf15e89924c5c846fabcc70c5f8f",
+    "ref": "e3beab8c690ac54a3ec0fc1a16703c94db0208e5",
     "source": "https://github.com/paritytech/polkadot-android-community.git"
   },
   "ios": {
@@ -21,7 +21,7 @@
       "Packages/AppDependencies/Package.resolved",
       "polkadot-app.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
     ],
-    "ref": "3669747020246aeed997664a5822bd50434c6770",
+    "ref": "bc99bdc551fc4d9beb755e575f211f6bd4a3de63",
     "source": "https://github.com/paritytech/polkadot-ios-community.git"
   }
 }

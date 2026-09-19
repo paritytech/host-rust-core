@@ -28,7 +28,7 @@ extension Voucher.Recycler: CustomDebugStringConvertible {
     }
 }
 
-public extension [DerivationIndex: Voucher.OnChainState] {
+public extension [CoinageKeyIndex: Voucher.OnChainState] {
     var toDebugDescription: String {
         var log = "Voucher dict: \(count): "
 

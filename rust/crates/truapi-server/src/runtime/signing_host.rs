@@ -27,30 +27,25 @@ use truapi::latest::{
     HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
 };
 
-use parity_scale_codec::Encode;
-use subxt::utils::{AccountId32, MultiSignature};
-
 #[cfg(not(target_arch = "wasm32"))]
 pub use allowance_renewal::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 pub(crate) use local_activation::LocalActivation;
-pub use sso_responder::{PairedSsoPeer, ResponderExit};
+pub use sso_responder::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
 pub(crate) use sso_responder::{
-    disconnect_paired_host, establish_pairing, respond_to_pairing, resume_pairing,
+    disconnect_paired_host, establish_pairing, notify_pairing_allowance_allocation,
+    notify_pairing_failed, respond_to_pairing, resume_pairing,
 };
 pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
-    AuthorityError, AuthoritySession, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
-    ProductAuthority, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    StatementStoreAllowanceKey, authority_session_validation_id,
+    AuthorityError, AuthoritySession, AutoSigningGrant, BulletinAllowanceKey,
+    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session_validation_id,
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::entropy::derive_product_entropy;
-use crate::host_logic::extrinsic::{
-    Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
-    build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
-};
+use crate::host_logic::extrinsic::build_local_transaction;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
@@ -60,9 +55,10 @@ use crate::host_logic::product_account::{
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
 };
+use crate::host_logic::raw_signing::raw_payload_bytes;
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
-use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
+use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
@@ -87,9 +83,6 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 use zeroize::Zeroizing;
-
-const BYTES_WRAP_PREFIX: &[u8] = b"<Bytes>";
-const BYTES_WRAP_SUFFIX: &[u8] = b"</Bytes>";
 
 #[derive(Default)]
 struct LocalGrantState {
@@ -717,6 +710,30 @@ impl ProductAuthority for SigningHost {
         false
     }
 
+    async fn auto_signing_status(
+        &self,
+        session: &AuthoritySession,
+        calling_product_id: &str,
+        account: &v01::ProductAccountId,
+    ) -> Result<AutoSigningGrant, AuthorityError> {
+        // A stale session is not a grant, and is answered here rather than
+        // raising a prompt against a session that no longer exists.
+        // `grant_auto_signing` refuses to record a grant whose owner is not
+        // the session's own key, so the session carries the owner a grant can
+        // be keyed on and no root derivation is needed to answer this.
+        let (current, activation_generation) = self.require_current_session(session)?;
+        if self.has_auto_signing_grant(
+            activation_generation,
+            current.public_key,
+            calling_product_id,
+            &account.dot_ns_identifier,
+        ) {
+            Ok(AutoSigningGrant::Active)
+        } else {
+            Ok(AutoSigningGrant::Absent)
+        }
+    }
+
     async fn sign_vrf(
         &self,
         _cx: &CallContext,
@@ -762,6 +779,7 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         request: SignPayloadAuthorityRequest,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         self.require_current_session(session)?;
@@ -774,13 +792,14 @@ impl ProductAuthority for SigningHost {
                 request,
             } => (self.product_keypair(&product_account)?, request.payload),
         };
-        sign_extrinsic_payload(&keypair, payload)
+        Ok(sign_extrinsic_payload(&keypair, payload)?)
     }
 
     async fn sign_raw(
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         request: SignRawAuthorityRequest,
         watermarked: bool,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
@@ -816,6 +835,7 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         request: CreateTransactionAuthorityRequest,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
         self.require_current_session(session)?;
@@ -825,7 +845,7 @@ impl ProductAuthority for SigningHost {
                 // enforced upstream, so the derived key defines the signer.
                 let keypair = self.product_keypair(&payload.signer)?;
                 build_local_transaction(
-                    &self.services,
+                    &self.services.chain,
                     &keypair,
                     payload.genesis_hash,
                     &payload.call_data,
@@ -833,6 +853,7 @@ impl ProductAuthority for SigningHost {
                     payload.tx_ext_version,
                 )
                 .await
+                .map_err(AuthorityError::from)
             }
             CreateTransactionAuthorityRequest::LegacyAccount {
                 product_account,
@@ -850,7 +871,7 @@ impl ProductAuthority for SigningHost {
                     });
                 }
                 build_local_transaction(
-                    &self.services,
+                    &self.services.chain,
                     &keypair,
                     request.genesis_hash,
                     &request.call_data,
@@ -858,6 +879,7 @@ impl ProductAuthority for SigningHost {
                     request.tx_ext_version,
                 )
                 .await
+                .map_err(AuthorityError::from)
             }
             CreateTransactionAuthorityRequest::IdentityAccount(request) => {
                 let keypair = self.identity_keypair()?;
@@ -869,7 +891,7 @@ impl ProductAuthority for SigningHost {
                     });
                 }
                 build_local_transaction(
-                    &self.services,
+                    &self.services.chain,
                     &keypair,
                     request.genesis_hash,
                     &request.call_data,
@@ -877,6 +899,7 @@ impl ProductAuthority for SigningHost {
                     request.tx_ext_version,
                 )
                 .await
+                .map_err(AuthorityError::from)
             }
         }
     }
@@ -908,10 +931,10 @@ impl ProductAuthority for SigningHost {
             Err(RingVrfError::NotAllowlisted) => None,
             Err(err) => return Err(err),
         };
-        // The grant admits the caller's own context and no one else's, exactly
-        // as on `create_proof`. The alias this returns and the alias a proof
-        // attests are one VRF evaluation, so guarding only the proof would leave
-        // the same bytes reachable through this read.
+        // The grant admits the caller's own context and the granting product's,
+        // and no one else's, exactly as on `create_proof`. The alias this returns
+        // and the alias a proof attests are one VRF evaluation, so guarding only
+        // the proof would leave the same bytes reachable through this read.
         let key_handle = match granted {
             Some((key_handle, access)) => {
                 crate::runtime::product_manifest::require_own_context(
@@ -984,8 +1007,8 @@ impl ProductAuthority for SigningHost {
         // presents to a third product that granted nothing. That third party
         // cannot consent here and is not a party to the grant.
         //
-        // The owner's own calls are unaffected; only a cross-product caller is
-        // held to its own context.
+        // The owner's own calls are unaffected; a cross-product caller is held to
+        // its own context or the granting product's.
         crate::runtime::product_manifest::require_own_context(&access, &request.payload.context)?;
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
@@ -1226,6 +1249,7 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
+        _calling_product_id: Option<&str>,
         account: v01::ProductAccountId,
         payload: Vec<u8>,
     ) -> Result<[u8; 64], AuthorityError> {
@@ -1260,152 +1284,15 @@ fn local_session_validation_id(session: &SessionInfo, activation_generation: u64
     id
 }
 
-fn sign_extrinsic_payload(
-    keypair: &schnorrkel::Keypair,
-    payload: v01::HostSignPayloadData,
-) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
-    if payload.version != 4 {
-        return Err(AuthorityError::NotSupported {
-            reason: format!(
-                "signing host: unsupported extrinsic payload version {}; only version 4 is supported",
-                payload.version
-            ),
-        });
-    }
-    let preimage = extrinsic_payload_preimage(&payload).map_err(|err| AuthorityError::Unknown {
-        reason: err.to_string(),
-    })?;
-    let raw_signature = keypair
-        .secret
-        .sign_simple(SR25519_SIGNING_CONTEXT, &preimage, &keypair.public)
-        .to_bytes();
-    let signature = MultiSignature::Sr25519(raw_signature);
-    let signed_transaction = payload.with_signed_transaction.0.unwrap_or(false).then(|| {
-        let extensions = extrinsic_payload_extensions(&payload)
-            .expect("preimage construction already validated signed extensions");
-        build_signed_extrinsic_v4_with_signature(
-            AccountId32(keypair.public.to_bytes()),
-            &signature,
-            &payload.method,
-            &extensions,
-        )
-    });
-    Ok(v01::HostSignPayloadResponse {
-        signature: signature.encode(),
-        signed_transaction,
-    })
-}
-
 fn product_authority_error(err: ProductAccountError) -> AuthorityError {
     AuthorityError::Unavailable {
         reason: err.to_string(),
     }
 }
 
-/// Assemble a transaction locally from caller-supplied, pre-encoded parts.
-///
-/// V4 needs no metadata. V5 resolves the runtime's call and transaction
-/// extension pipeline from the genesis-pinned Subxt client, keeping the caller's
-/// already-encoded call arguments and extension values opaque apart from
-/// `VerifyMultiSignature`, whose value is checked against the runtime's type.
-///
-/// V5 is signed with the local key only when `extensions` omits
-/// `VerifyMultiSignature`; callers that supply it are assembled unsigned.
-async fn build_local_transaction(
-    services: &RuntimeServices,
-    keypair: &schnorrkel::Keypair,
-    genesis_hash: [u8; 32],
-    call_data: &[u8],
-    extensions: &[v01::TxPayloadExtension],
-    tx_ext_version: u8,
-) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
-    let signer = Sr25519Signer::from_keypair(keypair);
-    if tx_ext_version == 0 {
-        let transaction = build_signed_extrinsic_v4(&signer, call_data, extensions);
-        return Ok(v01::HostCreateTransactionResponse { transaction });
-    }
-    if tx_ext_version != 5 {
-        return Err(AuthorityError::NotSupported {
-            reason: format!(
-                "signing host: unsupported tx_ext_version {tx_ext_version}; expected 0 for V4 or 5 for V5"
-            ),
-        });
-    }
-
-    let client = services
-        .chain
-        .online_client(&genesis_hash)
-        .await
-        .map_err(|error| AuthorityError::Unavailable {
-            reason: format!("signing host: cannot load V5 chain metadata: {error}"),
-        })?;
-    let at_block =
-        client
-            .at_current_block()
-            .await
-            .map_err(|error| AuthorityError::Unavailable {
-                reason: format!("signing host: cannot select a V5 metadata block: {error}"),
-            })?;
-    let transaction = build_signed_extrinsic_v5(
-        &signer,
-        genesis_hash,
-        call_data,
-        extensions,
-        at_block.metadata(),
-    )
-    .map_err(|error| match error {
-        V5BuildError::UnsupportedExtensions(reason) => AuthorityError::NotSupported {
-            reason: format!("signing host: {reason}"),
-        },
-        V5BuildError::Other(reason) => AuthorityError::Unknown {
-            reason: format!("signing host: {reason}"),
-        },
-    })?;
-    Ok(v01::HostCreateTransactionResponse { transaction })
-}
-
-/// Decode raw sign-message bytes, optionally adding the `<Bytes>…</Bytes>`
-/// envelope unless already wrapped, matching the polkadot-app raw-signing convention.
-///
-/// String payloads follow the polkadot-app `isHex` rule: a `0x`-prefixed,
-/// even-length string is decoded from hex, and a corrupt hex body is a hard
-/// error (never silently signed as UTF-8); any other string is signed as its
-/// UTF-8 bytes.
-fn raw_payload_bytes(
-    payload: v01::RawPayload,
-    watermarked: bool,
-) -> Result<Vec<u8>, AuthorityError> {
-    let raw = match payload {
-        v01::RawPayload::Bytes { bytes } => bytes,
-        v01::RawPayload::Payload { payload } => decode_payload_string(payload)?,
-    };
-    if !watermarked || (raw.starts_with(BYTES_WRAP_PREFIX) && raw.ends_with(BYTES_WRAP_SUFFIX)) {
-        return Ok(raw);
-    }
-    let mut wrapped =
-        Vec::with_capacity(BYTES_WRAP_PREFIX.len() + raw.len() + BYTES_WRAP_SUFFIX.len());
-    wrapped.extend_from_slice(BYTES_WRAP_PREFIX);
-    wrapped.extend_from_slice(&raw);
-    wrapped.extend_from_slice(BYTES_WRAP_SUFFIX);
-    Ok(wrapped)
-}
-
-fn decode_payload_string(payload: String) -> Result<Vec<u8>, AuthorityError> {
-    // `isHex`: `0x` prefix and even total length. Odd length is not hex and is
-    // signed as UTF-8, matching polkadot-app.
-    if let Some(body) = payload
-        .strip_prefix("0x")
-        .filter(|_| payload.len().is_multiple_of(2))
-    {
-        return hex::decode(body).map_err(|_| AuthorityError::Unknown {
-            reason: "raw sign payload is 0x-prefixed but not valid hex".to_string(),
-        });
-    }
-    Ok(payload.into_bytes())
-}
-
 #[cfg(test)]
 mod tests {
+    mod auto_signing;
     mod raw_signing;
 
     use std::sync::Arc;
@@ -1417,10 +1304,7 @@ mod tests {
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
     use super::TEST_NETWORK_SUFFIX;
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
-    use super::{
-        BYTES_WRAP_PREFIX, BYTES_WRAP_SUFFIX, LocalActivation, RingVrfError,
-        SR25519_SIGNING_CONTEXT, raw_payload_bytes,
-    };
+    use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
         derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
@@ -1845,7 +1729,9 @@ mod tests {
     /// context unconstrained a `context` grant from `peopl.dot` let `dim2.dot`
     /// produce the alias `peopl.dot` presents to `bank.dot`, a third product
     /// that granted nothing, is not a party to the grant, and cannot consent
-    /// here. The grant is to act in the grantee's own context, not in anyone's.
+    /// here. The grant is to act in the grantee's own context or the granting
+    /// product's, not in anyone else's: a context naming the owner is the grant
+    /// read literally, and is the one a chain-wide proof context resolves to.
     ///
     /// The owner's own calls are untouched: minting your own aliases in any
     /// context is what the context parameter is for.
@@ -1860,6 +1746,28 @@ mod tests {
         let session = authority.current_session().expect("active session");
         let ring = full_person_ring_location();
         register_full_person_key(&authority, &session, &ring);
+
+        // `raw:` reaches `development_context_bytes`, which uses the caller's own
+        // 32 bytes verbatim, so admitting it would let a grantee name any
+        // context at all, including a third product's.
+        let mint_raw = |caller: &str| {
+            futures::executor::block_on(authority.create_proof(
+                &CallContext::default(),
+                &session,
+                ProductRequest {
+                    calling_product_id: caller.to_string(),
+                    payload: v01::HostAccountCreateProofRequest {
+                        key_handle: full_person_key_handle(),
+                        context: v01::ProductProofContext {
+                            product_id: "raw:".to_string(),
+                            suffix: v01::DerivationIndex::Raw([0x11; 32]),
+                        },
+                        ring_location: ring.clone(),
+                        message: b"m".to_vec(),
+                    },
+                },
+            ))
+        };
 
         let mint = |caller: &str, context: &str| {
             futures::executor::block_on(authority.create_proof(
@@ -1887,11 +1795,37 @@ mod tests {
         );
         assert!(
             mint("dim2.dot", "dim2.dot").is_ok(),
-            "the grant still admits the grantee acting in its own context"
+            "the grant admits the grantee acting in its own context"
+        );
+        assert!(
+            mint("dim2.dot", "peopl.dot").is_ok(),
+            "the grant admits the grantee acting in the granting product's context"
         );
         assert!(
             mint("peopl.dot", "bank.dot").is_ok(),
             "the owner may still mint its own alias in any context"
+        );
+        assert!(
+            mint("dim2.dot", "app.peopl.dot").is_ok(),
+            "the granting product is all its executables, so its context is too"
+        );
+        assert_eq!(
+            mint_raw("dim2.dot").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "a grant must not reach the development context, which names no \
+             product and so binds the grantee to nothing"
+        );
+        assert_eq!(
+            mint("dim2.dot", "dim2.paseo").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "the grantee's own namesake on another network is a different \
+             product, so its context is not the grantee's"
+        );
+        assert_eq!(
+            mint("dim2.dot", "peopl.paseo").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "a grant published on one network must not reach the pseudonym a \
+             namesake presents on another"
         );
     }
 
@@ -2125,7 +2059,8 @@ mod tests {
     /// The alias and the proof come out of one VRF evaluation, so a guard on
     /// `create_proof` alone leaves the same bytes reachable through
     /// `account_alias`: a grantee could read the alias the owner presents to a
-    /// third product that granted nothing. Both calls now refuse it.
+    /// third product that granted nothing. Both calls refuse it, and both admit
+    /// the granting product's own context.
     #[test]
     fn a_grantee_cannot_read_the_owners_alias_in_a_third_partys_context() {
         let platform = Arc::new(StubPlatform::default());
@@ -2162,7 +2097,21 @@ mod tests {
         );
         assert!(
             alias("dim2.dot", "dim2.dot").is_ok(),
-            "the grant still covers the grantee's own context"
+            "the grant covers the grantee's own context"
+        );
+        assert!(
+            alias("dim2.dot", "peopl.dot").is_ok(),
+            "the grant covers the granting product's own context"
+        );
+        assert!(
+            alias("dim2.dot", "app.peopl.dot").is_ok(),
+            "the granting product is all its executables here too"
+        );
+        assert_eq!(
+            alias("dim2.dot", "peopl.paseo").err(),
+            Some(RingVrfError::NotAllowlisted),
+            "the network rule binds the read as well as the proof: the alias and \
+             the proof come out of one VRF evaluation"
         );
         assert!(
             alias("peopl.dot", "bank.dot").is_ok(),
@@ -3295,6 +3244,7 @@ mod tests {
         let product_response = futures::executor::block_on(authority.sign_payload(
             &cx,
             &session,
+            None,
             SignPayloadAuthorityRequest::Product(v01::HostSignPayloadRequest {
                 account: product_account(0),
                 payload: payload.clone(),
@@ -3335,6 +3285,7 @@ mod tests {
         let legacy_response = futures::executor::block_on(authority.sign_payload(
             &cx,
             &session,
+            None,
             SignPayloadAuthorityRequest::LegacyAccount {
                 product_account: product_account(0),
                 request: v01::HostSignPayloadWithLegacyAccountRequest {
@@ -3376,6 +3327,7 @@ mod tests {
         let response = futures::executor::block_on(authority.sign_raw(
             &cx,
             &session,
+            None,
             request(identity.public.to_bytes()),
             true,
         ))
@@ -3391,6 +3343,7 @@ mod tests {
         let error = futures::executor::block_on(authority.sign_raw(
             &cx,
             &session,
+            None,
             request([0xff; 32]),
             true,
         ))
@@ -3449,6 +3402,7 @@ mod tests {
         let response = futures::executor::block_on(activation.create_transaction(
             &cx,
             &session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(0)),
         ))
         .expect("create_transaction ok");
@@ -3482,6 +3436,7 @@ mod tests {
         let err = futures::executor::block_on(activation.create_transaction(
             &cx,
             &session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(1)),
         ))
         .expect_err("unknown transaction version is unsupported");
@@ -3505,6 +3460,7 @@ mod tests {
         let err = futures::executor::block_on(activation.create_transaction(
             &cx,
             &session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(5)),
         ))
         .expect_err("fixture cannot resolve metadata");
@@ -3533,9 +3489,10 @@ mod tests {
                 tx_ext_version: 0,
             },
         };
-        let err =
-            futures::executor::block_on(activation.create_transaction(&cx, &session, request))
-                .expect_err("mismatched legacy signer");
+        let err = futures::executor::block_on(
+            activation.create_transaction(&cx, &session, None, request),
+        )
+        .expect_err("mismatched legacy signer");
         assert!(
             matches!(err, AuthorityError::Unknown { reason } if reason.contains("does not match"))
         );
@@ -3566,9 +3523,10 @@ mod tests {
                 tx_ext_version: 0,
             },
         };
-        let response =
-            futures::executor::block_on(activation.create_transaction(&cx, &session, request))
-                .expect("legacy create_transaction ok");
+        let response = futures::executor::block_on(
+            activation.create_transaction(&cx, &session, None, request),
+        )
+        .expect("legacy create_transaction ok");
 
         let (account, signature, tail) = split_v4(&response.transaction);
         assert_eq!(account, keypair.public.to_bytes());
@@ -3596,6 +3554,7 @@ mod tests {
         let err = futures::executor::block_on(activation.create_transaction(
             &cx,
             &stale_session,
+            None,
             CreateTransactionAuthorityRequest::Product(tx_payload(0)),
         ))
         .expect_err("no active session");
@@ -3639,62 +3598,6 @@ mod tests {
             CallError::Domain(HostAccountGetError::V1(
                 v01::HostAccountGetError::NotConnected
             ))
-        ));
-    }
-
-    #[test]
-    fn raw_payload_bytes_wraps_and_decodes() {
-        let ok = |p| raw_payload_bytes(p, true).expect("payload ok");
-        // Bytes are <Bytes>-wrapped.
-        assert_eq!(
-            ok(v01::RawPayload::Bytes {
-                bytes: b"hi".to_vec()
-            }),
-            b"<Bytes>hi</Bytes>".to_vec(),
-        );
-        // A 0x-hex string payload decodes to bytes before wrapping.
-        assert_eq!(
-            ok(v01::RawPayload::Payload {
-                payload: "0xdeadbeef".to_string(),
-            }),
-            [
-                BYTES_WRAP_PREFIX,
-                &[0xde, 0xad, 0xbe, 0xef],
-                BYTES_WRAP_SUFFIX
-            ]
-            .concat(),
-        );
-        // A non-hex string payload is signed as UTF-8.
-        assert_eq!(
-            ok(v01::RawPayload::Payload {
-                payload: "hello".to_string(),
-            }),
-            b"<Bytes>hello</Bytes>".to_vec(),
-        );
-        // An odd-length 0x string is not `isHex`, so it is signed as UTF-8.
-        assert_eq!(
-            ok(v01::RawPayload::Payload {
-                payload: "0xabc".to_string(),
-            }),
-            b"<Bytes>0xabc</Bytes>".to_vec(),
-        );
-        // Already-wrapped input is left untouched (no double wrapping).
-        assert_eq!(
-            ok(v01::RawPayload::Bytes {
-                bytes: b"<Bytes>hi</Bytes>".to_vec(),
-            }),
-            b"<Bytes>hi</Bytes>".to_vec(),
-        );
-        // An even-length 0x string that is not valid hex is a hard error,
-        // never silently signed as UTF-8 (matches polkadot-app abort).
-        assert!(matches!(
-            raw_payload_bytes(
-                v01::RawPayload::Payload {
-                    payload: "0xZZ".to_string(),
-                },
-                true
-            ),
-            Err(AuthorityError::Unknown { .. }),
         ));
     }
 
@@ -3769,6 +3672,7 @@ mod tests {
         let err = futures::executor::block_on(authority.sign_raw(
             &cx,
             &stale,
+            None,
             SignRawAuthorityRequest::Product(request),
             true,
         ))
@@ -3797,6 +3701,7 @@ mod tests {
         let err = futures::executor::block_on(authority.sign_raw(
             &cx,
             &session,
+            None,
             SignRawAuthorityRequest::Product(request),
             true,
         ))

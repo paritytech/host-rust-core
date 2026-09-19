@@ -21,7 +21,6 @@ import io.paritytech.polkadotapp.app.root.navigation.username.UsernameNavigator
 import io.paritytech.polkadotapp.app.root.navigation.videogame.VideoGameNavigator
 import io.paritytech.polkadotapp.app.root.navigation.w3spay.W3sPayNavigator
 import io.paritytech.polkadotapp.app.root.navigation.wallet.PocketNavigator
-import io.paritytech.polkadotapp.app.root.navigation.web3summit.Web3SummitPostOnboardingFlow
 import io.paritytech.polkadotapp.app.root.presentation.root.RootRouter
 import io.paritytech.polkadotapp.common.presentation.resources.ContextManager
 import io.paritytech.polkadotapp.feature_backup_impl.BackupRouter
@@ -40,7 +39,6 @@ import io.paritytech.polkadotapp.feature_usernames_impl.presentation.UsernamesRo
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
 import io.paritytech.polkadotapp.feature_w3spay_impl.W3sPayRouter
 import io.paritytech.polkadotapp.feature_wallet_impl.PocketRouter
-import io.paritytech.polkadotapp.feature_web3summit_api.presentation.PostOnboardingFlow
 import javax.inject.Singleton
 
 @Module
@@ -120,8 +118,4 @@ interface NavigatorsModule {
     @Binds
     @Singleton
     fun bindW3sPayRouter(impl: W3sPayNavigator): W3sPayRouter
-
-    @Binds
-    @Singleton
-    fun bindPostOnboardingFlow(impl: Web3SummitPostOnboardingFlow): PostOnboardingFlow
 }

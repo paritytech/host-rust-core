@@ -2,11 +2,12 @@
 
 use futures::StreamExt;
 use tracing::{instrument, warn};
-use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme};
+use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme, Worker};
 use truapi::versioned::IntoLatest;
 use truapi::versioned::local_storage::{
-    HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
-    HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
+    HostLocalStorageChangeItem, HostLocalStorageClearError, HostLocalStorageClearRequest,
+    HostLocalStorageClearResponse, HostLocalStorageReadError, HostLocalStorageReadRequest,
+    HostLocalStorageReadResponse, HostLocalStorageSubscribeError, HostLocalStorageSubscribeRequest,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
 use truapi::versioned::locale::{
@@ -30,13 +31,18 @@ use truapi::versioned::system::{
 use truapi::versioned::theme::{
     HostThemeSubscribeError, HostThemeSubscribeItem, HostThemeSubscribeRequest,
 };
+use truapi::versioned::worker::{
+    HostWorkerBeginOperationError, HostWorkerBeginOperationRequest,
+    HostWorkerBeginOperationResponse, HostWorkerEndOperationError, HostWorkerEndOperationRequest,
+    HostWorkerEndOperationResponse,
+};
 use truapi::{CallContext, CallError, Subscription, v01, v02};
 use truapi_platform::PermissionAuthorizationStatus;
 
-use crate::host_logic::dotns::{NavigateDecision, external_host, parse_navigate};
+use crate::host_logic::dotns::{NavigateDecision, parse_navigate};
 use crate::host_logic::features::feature_supported;
 use crate::host_logic::product_manifest::Granted;
-use crate::runtime::ProductRuntimeHost;
+use crate::runtime::{PERMISSION_DENIED_REASON, ProductRuntimeHost};
 
 #[truapi::async_trait]
 impl System for ProductRuntimeHost {
@@ -88,20 +94,19 @@ impl System for ProductRuntimeHost {
             NavigateDecision::DotName { canonical_url, .. }
             | NavigateDecision::Localhost { canonical_url, .. }
             | NavigateDecision::Pocket { canonical_url, .. } => canonical_url,
-            // An `http(s)` URL hands an arbitrary host the referrer, the shape
-            // of the URL, and whatever the product put in it, so it needs the
-            // same per-domain grant that gates outbound access to that host.
-            // The other allowed schemes are app handoffs with no authorizable
-            // domain (`external_host` returns `None`) and pass straight through.
             NavigateDecision::External { url } => {
-                if let Some(host) = external_host(&url) {
-                    self.require_remote_permission(
-                        v01::RemotePermission::Remote {
-                            domains: vec![host],
-                        },
-                        HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied),
-                    )
-                    .await?;
+                let product_id = self.product_id();
+                let status = self
+                    .permissions_service(&product_id)
+                    .authorize_device(v01::HostDevicePermissionRequest::OpenUrl)
+                    .await
+                    .map_err(|error| CallError::HostFailure {
+                        reason: format!("permission storage failed: {error:?}"),
+                    })?;
+                if status != PermissionAuthorizationStatus::Authorized {
+                    return Err(CallError::Domain(HostNavigateToError::V1(
+                        v01::HostNavigateToError::PermissionDenied,
+                    )));
                 }
                 url
             }
@@ -129,6 +134,48 @@ impl System for ProductRuntimeHost {
 
 #[truapi::async_trait]
 impl Permissions for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "permissions.authorize_device_permission"))]
+    async fn authorize_device_permission(
+        &self,
+        _cx: &CallContext,
+        request: HostDevicePermissionRequest,
+    ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
+        let HostDevicePermissionRequest::V1(inner) = request;
+        let product_id = self.product_id();
+        let service = self.permissions_service(&product_id);
+        match service.authorize_device(inner).await {
+            Ok(decision) => Ok(HostDevicePermissionResponse::V1(
+                v01::HostDevicePermissionResponse {
+                    granted: decision == PermissionAuthorizationStatus::Authorized,
+                },
+            )),
+            Err(err) => Err(CallError::HostFailure {
+                reason: format!("permission storage failed: {err:?}"),
+            }),
+        }
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "permissions.authorize_remote_permission"))]
+    async fn authorize_remote_permission(
+        &self,
+        _cx: &CallContext,
+        request: RemotePermissionRequest,
+    ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
+        let RemotePermissionRequest::V1(inner) = request;
+        let product_id = self.product_id();
+        let service = self.permissions_service(&product_id);
+        match service.authorize_remote(inner).await {
+            Ok(decision) => Ok(RemotePermissionResponse::V1(
+                v01::RemotePermissionResponse {
+                    granted: decision == PermissionAuthorizationStatus::Authorized,
+                },
+            )),
+            Err(err) => Err(CallError::HostFailure {
+                reason: format!("permission storage failed: {err:?}"),
+            }),
+        }
+    }
+
     #[instrument(skip_all, fields(runtime.method = "permissions.request_device_permission"))]
     async fn request_device_permission(
         &self,
@@ -224,11 +271,9 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Result<HostLocalStorageWriteResponse, CallError<HostLocalStorageWriteError>> {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
+        let storage_key = self.product_storage_key(self.product.product_id.as_str(), key);
         self.platform
-            .write(
-                self.product_storage_key(self.product.product_id.as_str(), key),
-                value,
-            )
+            .write(storage_key, value)
             .await
             .map(|()| HostLocalStorageWriteResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageWriteError::V1(err)))
@@ -246,6 +291,80 @@ impl LocalStorage for ProductRuntimeHost {
             .await
             .map(|()| HostLocalStorageClearResponse::V1)
             .map_err(|err| CallError::Domain(HostLocalStorageClearError::V1(err)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "local_storage.subscribe"))]
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        request: HostLocalStorageSubscribeRequest,
+    ) -> Subscription<HostLocalStorageChangeItem, CallError<HostLocalStorageSubscribeError>> {
+        let HostLocalStorageSubscribeRequest::V1(v01::HostLocalStorageSubscribeRequest { key }) =
+            request;
+        // A write that left the bytes alone is not a change, and the
+        // subscription is where that holds for every host: the core cannot
+        // know whether one reports repeats, and withholding the write instead
+        // would hide it from a host hanging quota or sync off it.
+        let mut delivered: Option<Option<Vec<u8>>> = None;
+        let stream = self
+            .platform
+            .subscribe_storage(self.product_storage_key(self.product.product_id.as_str(), key))
+            .filter_map(move |item| {
+                let next = match item {
+                    Ok(item) if delivered.as_ref() == Some(&item.value) => None,
+                    Ok(item) => {
+                        delivered = Some(item.value.clone());
+                        Some(Ok(HostLocalStorageChangeItem::V1(item)))
+                    }
+                    Err(error) => {
+                        warn!(
+                            reason = %error.reason,
+                            "local storage subscription platform stream failed"
+                        );
+                        Some(Err(CallError::HostFailure {
+                            reason: error.reason,
+                        }))
+                    }
+                };
+                futures::future::ready(next)
+            });
+        Subscription::new(stream)
+    }
+}
+
+#[truapi::async_trait]
+impl Worker for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "worker.begin_operation"))]
+    async fn begin_operation(
+        &self,
+        _cx: &CallContext,
+        request: HostWorkerBeginOperationRequest,
+    ) -> Result<HostWorkerBeginOperationResponse, CallError<HostWorkerBeginOperationError>> {
+        let HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label }) =
+            request;
+        let response = self
+            .begin_operation_with_host(label.unwrap_or_default())
+            .await
+            .map_err(|error| CallError::Domain(HostWorkerBeginOperationError::V1(error)))?;
+        self.hold_worker_for_operation(response.id);
+        Ok(HostWorkerBeginOperationResponse::V1(response))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "worker.end_operation"))]
+    async fn end_operation(
+        &self,
+        _cx: &CallContext,
+        request: HostWorkerEndOperationRequest,
+    ) -> Result<HostWorkerEndOperationResponse, CallError<HostWorkerEndOperationError>> {
+        let HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }) = request;
+        let ended = self.platform.end_operation(&self.product, id).await;
+        // The product has declared the operation over, so the core stops
+        // counting it whatever the host made of the call. A host that dropped
+        // the operation and still failed would otherwise leave demand standing
+        // with nothing left able to end it, and a retry releases nothing.
+        self.release_worker_for_operation(id);
+        ended.map_err(|error| CallError::Domain(HostWorkerEndOperationError::V1(error)))?;
+        Ok(HostWorkerEndOperationResponse::V1)
     }
 }
 
@@ -303,6 +422,21 @@ impl Notifications for ProductRuntimeHost {
         request: HostPushNotificationRequest,
     ) -> Result<HostPushNotificationResponse, CallError<HostPushNotificationError>> {
         let HostPushNotificationRequest::V1(inner) = request;
+        let product_id = self.product_id();
+        let status = self
+            .permissions_service(&product_id)
+            .authorize_device(v01::HostDevicePermissionRequest::Notifications)
+            .await
+            .map_err(|err| CallError::HostFailure {
+                reason: format!("permission storage failed: {err:?}"),
+            })?;
+        if status != PermissionAuthorizationStatus::Authorized {
+            return Err(CallError::Domain(HostPushNotificationError::V1(
+                v01::HostPushNotificationError::Unknown {
+                    reason: PERMISSION_DENIED_REASON.to_string(),
+                },
+            )));
+        }
         self.platform
             .push_notification(inner)
             .await

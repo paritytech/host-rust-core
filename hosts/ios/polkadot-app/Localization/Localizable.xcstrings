@@ -917,7 +917,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start a conversation with someone \nby typing their username"
+            "value": "Tap + below to find someone by\nusername"
           }
         }
       }
@@ -928,7 +928,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No active chats"
+            "value": "Add your first contact"
           }
         }
       }
@@ -2410,6 +2410,171 @@
         }
       }
     },
+    "report.issue.attachments": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your screenshot and app logs are included in this report."
+          }
+        }
+      }
+    },
+    "report.issue.capture.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not capture the app screen. Please take another screenshot."
+          }
+        }
+      }
+    },
+    "report.issue.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        }
+      }
+    },
+    "report.issue.collect.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not collect app logs. Please try again."
+          }
+        }
+      }
+    },
+    "report.issue.done": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "report.issue.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tell us about the issue you encountered"
+          }
+        }
+      }
+    },
+    "report.issue.question": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What happened?"
+          }
+        }
+      }
+    },
+    "report.issue.screenshot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screenshot"
+          }
+        }
+      }
+    },
+    "report.issue.send": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        }
+      }
+    },
+    "report.issue.send.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not confirm that your report was sent. It may have been received."
+          }
+        }
+      }
+    },
+    "report.issue.sending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending…"
+          }
+        }
+      }
+    },
+    "report.issue.thanks": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thank you for your feedback!"
+          }
+        }
+      }
+    },
+    "report.issue.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Report app issue"
+          }
+        }
+      }
+    },
+    "report.issue.too.large": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The screenshot or app logs are too large to send."
+          }
+        }
+      }
+    },
+    "report.issue.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Issue reporting is currently unavailable."
+          }
+        }
+      }
+    },
     "root.init.waiting.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -2663,6 +2828,17 @@
         }
       }
     },
+    "settings.cell.tab.bar.labels": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab bar labels"
+          }
+        }
+      }
+    },
     "settings.cell.terms": {
       "extractionState": "manual",
       "localizations": {
@@ -2872,6 +3048,17 @@
         }
       }
     },
+    "tab.apps": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apps"
+          }
+        }
+      }
+    },
     "tab.browse": {
       "extractionState": "manual",
       "localizations": {
@@ -2901,6 +3088,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "More"
+          }
+        }
+      }
+    },
+    "tab.network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network"
           }
         }
       }

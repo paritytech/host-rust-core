@@ -133,7 +133,7 @@ struct ChatRuntimeTests {
         }
     }
 
-    @Test func rustRuntimeStartsBridgeAndEvaluatesBootstrapBeforeContainer() async throws {
+    @Test func rustRuntimeInstallsMediaHandlerAndScriptsBeforeLoading() async throws {
         let execution = MockProductExecution()
         let engine = MockJSEngine()
         let runtime = makeRustRuntime(execution: execution, engine: engine)
@@ -141,26 +141,31 @@ struct ChatRuntimeTests {
         try await runtime.start(messagingSupport: .init(bot: nil, context: nil))
 
         #expect(execution.startWsBridgeCallCount == 1)
+        #expect(engine.mediaHandlerWasInstalledAtInitialization)
+        #expect(execution.permissionRequests.isEmpty)
 
-        // "truapi-native-ready" marks the bootstrap; "freezeAndDelete" the container.
-        let bootstrapIndex = try #require(
-            engine.evaluatedScripts.firstIndex { $0.contains("truapi-native-ready") }
-        )
-        let containerIndex = try #require(
-            engine.evaluatedScripts.firstIndex { $0.contains("freezeAndDelete") }
-        )
-        #expect(bootstrapIndex < containerIndex)
+        #expect(engine.initializedScripts.count == 2)
+        #expect(engine.initializedScripts[0].content.contains("truapi-native-ready"))
+        #expect(engine.initializedScripts[1].content.contains("freezeAndDelete"))
+        #expect(!engine.evaluatedScripts.contains { $0.contains("truapi-native-ready") })
+        #expect(!engine.evaluatedScripts.contains { $0.contains("freezeAndDelete") })
 
         await runtime.dispose()
     }
 
-    @Test func chatScriptsFactoryOrdersBootstrapBeforeContainer() throws {
-        let factory = ChatRustRuntimeScriptsFactory(bootstrapScript: "/*bootstrap*/")
+    @Test func disposalDuringInitializationDestroysEngineBeforeProductCode() async {
+        let execution = MockProductExecution()
+        let engine = MockJSEngine()
+        let runtime = makeRustRuntime(execution: execution, engine: engine)
+        engine.onInitialize = { await runtime.dispose() }
 
-        let scripts = try factory.makeScripts()
+        await #expect(throws: CancellationError.self) {
+            try await runtime.start(messagingSupport: .init(bot: nil, context: nil))
+        }
 
-        #expect(scripts.count == 2)
-        #expect(scripts[0] == "/*bootstrap*/")
-        #expect(scripts[1].contains("__truapi_localhost"))
+        #expect(engine.destroyCallCount == 1)
+        #expect(engine.evaluatedScripts.isEmpty)
+        #expect(execution.closeCallCount == 1)
+        #expect(execution.stopWsBridgeCallCount == 1)
     }
 }

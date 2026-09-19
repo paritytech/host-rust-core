@@ -1,6 +1,6 @@
 import { createContainer } from '@novasamatech/host-container';
 import type { Provider, Subscription } from '@novasamatech/host-api';
-import { RequestCredentialsErr, CreateProofErr, GetAliasErr, SignVrfErr, RegisterRingVrfKeyErr, ListRingVrfKeysErr, RingVrfSignErr, ChatMessagePostingErr, NavigateToErr, StorageErr, SigningErr, PreimageSubmitErr, StatementProofErr, GenericError, DeriveEntropyErr, PaymentRequestErr, PaymentTopUpErr, PaymentTopUpStatusErr, ResourceAllocationErr, CreateTransactionErr, CustomRendererNode, PushNotificationError, GetUserIdErr, WorkerErr, toHex, fromHex } from '@novasamatech/host-api';
+import { RequestCredentialsErr, CreateProofErr, GetAliasErr, SignVrfErr, RegisterRingVrfKeyErr, ListRingVrfKeysErr, RingVrfSignErr, ChatMessagePostingErr, NavigateToErr, StorageErr, SigningErr, PreimageSubmitErr, StatementProofErr, GenericError, DeriveEntropyErr, PaymentRequestErr, PaymentStatusErr, PaymentTopUpErr, PaymentTopUpStatusErr, ResourceAllocationErr, CreateTransactionErr, CustomRendererNode, PushNotificationError, GetUserIdErr, WorkerErr, toHex, fromHex } from '@novasamatech/host-api';
 import { createWsJsonRpcProvider } from '@novasamatech/host-substrate-chain-connection';
 
 type PausableJsonRpcProvider = ReturnType<typeof createWsJsonRpcProvider>;
@@ -943,23 +943,25 @@ container.handlePaymentBalanceSubscribe((_params, send, interrupt) => {
 
 container.handlePaymentRequest(async (params, { ok, err }) => {
   try {
-    const result = await callNative('paymentRequest', {
+    await callNative('paymentRequest', {
       amount: params.amount.toString(),
       destinationHex: toHex(params.destination),
+      idHex: toHex(params.id),
     });
-    return ok({ id: result.id });
+    return ok(undefined);
   } catch (e) {
-    const msg = String(e instanceof Error ? e.message : e);
-    if (msg.includes('payment rejected')) {
-      return err(new PaymentRequestErr.Rejected());
+    switch ((e as { code?: string })?.code) {
+      case 'AlreadyExists':
+        return err(new PaymentRequestErr.AlreadyExists());
+      case 'Rejected':
+        return err(new PaymentRequestErr.Rejected());
+      case 'InsufficientBalance':
+        return err(new PaymentRequestErr.InsufficientBalance());
+      default:
+        return err(new PaymentRequestErr.Unknown({ reason: String((e as Error)?.message ?? e) }));
     }
-    if (msg.includes('insufficient balance')) {
-      return err(new PaymentRequestErr.InsufficientBalance());
-    }
-    return err(new PaymentRequestErr.Unknown({ reason: msg }));
   }
 });
-
 
 container.handlePaymentTopUp(async (params, { ok, err }) => {
   try {
@@ -1025,20 +1027,31 @@ container.handlePaymentTopUpStatusSubscribe((id, send, interrupt) => {
   );
 });
 
-container.handlePaymentStatusSubscribe((paymentId, send, interrupt) => {
+container.handlePaymentStatusSubscribe((id, send, interrupt) => {
   return subscribeNative(
     'paymentStatusSubscribe',
-    { paymentId },
-    (payload: { tag: 'Processing' | 'Completed' | 'Failed'; value: string | null }) => {
-      if (payload.tag === 'Processing') {
-        send({ tag: 'Processing', value: undefined });
-      } else if (payload.tag === 'Completed') {
-        send({ tag: 'Completed', value: undefined });
-      } else {
-        send({ tag: 'Failed', value: payload.value ?? '' });
+    { idHex: toHex(id) },
+    (payload: { tag: string; value: string | null }) => {
+      switch (payload.tag) {
+        case 'Completed':
+          return send({ tag: 'Completed', value: undefined });
+        case 'Failed':
+          return send({ tag: 'Failed', value: payload.value ?? '' });
+        case 'PartiallyClaimed':
+          return send({ tag: 'PartiallyClaimed', value: BigInt(payload.value ?? '0') });
+        default:
+          return send({ tag: 'Processing', value: undefined });
       }
     },
-    () => interrupt(),
+    (e) => {
+      // Deferred for the same reason as the top up status subscription above.
+      const failure =
+        (e as { code?: string })?.code === 'NotFound'
+          ? new PaymentStatusErr.PaymentNotFound()
+          : new PaymentStatusErr.Unknown({ reason: String((e as Error)?.message ?? e) });
+
+      queueMicrotask(() => interrupt(failure));
+    },
   );
 });
 

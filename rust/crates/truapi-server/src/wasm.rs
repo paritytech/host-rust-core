@@ -214,7 +214,7 @@ impl<T> Drop for JsSubscriptionStream<T> {
 
 fn invoke_js_subscription<T>(
     fn_: &Function,
-    payload: Option<Vec<u8>>,
+    payload: Option<JsValue>,
     parse_item: fn(JsValue) -> Result<T, String>,
 ) -> BoxStream<'static, Result<T, v01::GenericError>>
 where
@@ -231,15 +231,12 @@ where
     }) as Box<dyn FnMut(JsValue)>);
 
     let call_result = match payload {
-        Some(payload) => {
-            let arg = Uint8Array::from(payload.as_slice());
-            fn_.call3(
-                &JsValue::NULL,
-                &arg,
-                send_item.as_ref().unchecked_ref(),
-                send_error.as_ref().unchecked_ref(),
-            )
-        }
+        Some(arg) => fn_.call3(
+            &JsValue::NULL,
+            &arg,
+            send_item.as_ref().unchecked_ref(),
+            send_error.as_ref().unchecked_ref(),
+        ),
         None => fn_.call2(
             &JsValue::NULL,
             send_item.as_ref().unchecked_ref(),
@@ -988,6 +985,13 @@ impl WasmPairingHostRuntime {
             .map(|key| key.to_vec())
     }
 
+    /// Read the active session's sr25519 statement-store secret, or
+    /// `undefined` when no session is active.
+    #[wasm_bindgen(js_name = deviceStatementKey)]
+    pub fn device_statement_key(&self) -> Option<Vec<u8>> {
+        self.runtime.device_statement_key().map(|key| key.to_vec())
+    }
+
     /// Read this device's X25519 encryption secret, generating and persisting
     /// it on first read.
     #[wasm_bindgen(js_name = deviceEncryptionKey)]
@@ -1129,6 +1133,33 @@ impl WasmPairingHostRuntime {
     pub fn release_worker(&self, product_id: String) {
         self.runtime.worker_ledger().release(&product_id);
     }
+}
+
+/// Whether `productId` is a first-party product the host grants every
+/// `RemotePermission` without prompting.
+///
+/// Pure and stateless: it reads the compiled-in list and nothing else. **A
+/// stored user decision wins over the list**, so this is only the answer for
+/// the branch where the host's own store reads undetermined. Consulting it
+/// first would let a revoked grant keep working.
+///
+/// `permissionAuthorizationStatus` is the stateful answer — it folds the list
+/// and the stored decision together — and a host that can reach a runtime
+/// should ask that instead.
+///
+/// This exists for the path where a host mediates product network access in its
+/// own code — a service worker, a `fetch` shim — and has already found nothing
+/// stored. Without it a first-party product is prompted by the host for access
+/// the core would have granted.
+///
+/// Covers remote permissions only. Device capabilities, identity disclosure and
+/// cross-product account access always prompt, whoever asks.
+///
+/// Normalizes before matching, and answers `false` for an id that does not
+/// normalize, so an unknown spelling is never read as trusted.
+#[wasm_bindgen(js_name = hasTrustedRemotePermissions)]
+pub fn has_trusted_remote_permissions_for_wasm(product_id: String) -> bool {
+    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
 /// Strictly decode a SCALE-encoded core-storage key for host storage policy.

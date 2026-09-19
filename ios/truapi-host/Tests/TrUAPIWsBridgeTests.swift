@@ -137,24 +137,61 @@ final class StubStorage: HostStorageBackend, @unchecked Sendable {
 }
 
 final class StubCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
+    private let lock = NSLock()
     private var store: [Data: Data] = [:]
 
-    func read(key: Data) throws -> Data? { store[key] }
-    func write(key: Data, value: Data) throws { store[key] = value }
-    func clear(key: Data) throws { store[key] = nil }
+    func read(key: Data) throws -> Data? {
+        lock.withLock { store[key] }
+    }
+
+    func write(key: Data, value: Data) throws {
+        lock.withLock { store[key] = value }
+    }
+
+    func clear(key: Data) throws {
+        lock.withLock { store[key] = nil }
+    }
 }
 
 // Conforms to HostBridge rather than the generated HostCallbacks, so the
 // protocol extension supplies every optional callback and a new one cannot
 // leave this file behind. Only the six requirements without a default are
 // written out.
-final class StubHostBridge: HostBridge {
+final class StubHostBridge: HostBridge, @unchecked Sendable {
     let storage: HostStorageBackend = StubStorage()
     let coreStorage: HostCoreStorageBackend = StubCoreStorage()
+    private let permissionLock = NSLock()
+    private var remoteDecisions: [PermissionDecision]
+    private var deviceDecisions: [PermissionDecision]
+    private var deviceRequests: [HostDevicePermissionRequest] = []
+
+    init(remoteDecisions: [PermissionDecision] = [], deviceDecisions: [PermissionDecision] = []) {
+        self.remoteDecisions = remoteDecisions
+        self.deviceDecisions = deviceDecisions
+    }
+
+    var requestedDevicePermissions: [HostDevicePermissionRequest] {
+        permissionLock.withLock { deviceRequests }
+    }
+
+    private func nextDeviceDecision(request: HostDevicePermissionRequest) -> PermissionDecision {
+        permissionLock.withLock {
+            deviceRequests.append(request)
+            return deviceDecisions.isEmpty ? .deny : deviceDecisions.removeFirst()
+        }
+    }
+
+    private func nextRemoteDecision() -> PermissionDecision {
+        permissionLock.withLock {
+            remoteDecisions.isEmpty ? .deny : remoteDecisions.removeFirst()
+        }
+    }
 
     func navigateTo(url _: String) async throws {}
-    func devicePermission(request _: HostDevicePermissionRequest) async throws -> Bool { false }
-    func remotePermission(request _: RemotePermission) async throws -> Bool { false }
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision {
+        nextDeviceDecision(request: request)
+    }
+    func remotePermission(request _: RemotePermission) async throws -> PermissionDecision { nextRemoteDecision() }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func localStorageRead(key: String) throws -> Data? { try storage.read(key: key) }
@@ -193,5 +230,5 @@ final class StubChatHostBridge: ChatHostBridge {
 final class StubPocketHostBridge: PocketHostBridge {
     func listCards() throws -> [PocketCard] { [] }
 
-    func removeCard(cardId _: String) throws {}
+    func removeCard(cardId _: String) throws -> NativePocketRemoval { .absent }
 }

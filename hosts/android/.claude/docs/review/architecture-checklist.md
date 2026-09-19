@@ -88,12 +88,16 @@ Walk this checklist for any file path that touches an architectural seam. Cite t
 ## Products / HostApi (`architecture/host-api-products.md`)
 
 - **blocking** — A new host call added **without** a referenced RFC stating its permission model. (If no RFC exists / RFC doesn't address permissions, the reviewer must escalate to the user.)
-- **blocking** — `ProductId` constructed from arbitrary strings; should go through `ProductId.fromUrl(...)` / `fromLocalId(...)`.
+- **blocking** — `ProductId` constructed from arbitrary strings; should go through `ProductId.fromUrl(...)` / `fromStoredValue(...)`.
 - **blocking** — WebView ownership ambiguity: two classes both call `destroy()` on the same WebView.
 - **major** — Container script loading split inconsistently across environments (use `ContainerInjectionStrategy` uniformly).
 - **major** — Handler group reaching into a global "current product" instead of injected `CallingProductIdProvider`.
-- **major** — `NavigationPolicy` branching on URL string inside the policy (classification is external).
 - **major** — Multi-room product implemented as multiple `ChatExtension`s instead of a single `ProductChatExtension` with multi-room behavior.
+- **major** — TrUAPI bridge logic reimplemented on the Kotlin side instead of delegated to `HostApiInteractor` (`ProductTrUAPIHostBridge` is a thin adapter; the Rust core dispatches).
+- **major** — A `HostBridge` callback violating the threading contract: dispatcher-thread callbacks blocking, or UI touched off the main thread (see `host-api-products.md`).
+- **major** — A `UserConfirmationReview` variant mapped without coverage in `ConfirmationReviewMappingTest`, or a non-signing variant routed anywhere but the fail-closed `null` path.
+- **major** — Runtime selection decided anywhere other than `ProductRuntimeSettings` read at session creation.
+- **major** — `NavigationPolicy` branching on URL string inside the policy (classification is external via `CoreNavigateClassifier`).
 
 ## Transactions (`architecture/transactions.md`)
 

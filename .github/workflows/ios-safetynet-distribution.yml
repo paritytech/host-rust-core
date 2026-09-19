@@ -71,6 +71,11 @@ jobs:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
 
+      # Held, but kept correct so un-holding it does not reintroduce the
+      # dependency resolution failure the other distribution workflows had.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
+
       - name: Read version and build number
         id: build_version
         uses: ./hosts/ios/.github/actions/read-build-version

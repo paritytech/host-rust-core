@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.webView
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.view.ViewGroup
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
@@ -86,6 +87,9 @@ class BrowserWebViewProvider @AssistedInject constructor(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            // A WebView paints white before its first frame. Left opaque it flashes against the
+            // host around it, which is at its worst under an expanding card.
+            setBackgroundColor(Color.TRANSPARENT)
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true

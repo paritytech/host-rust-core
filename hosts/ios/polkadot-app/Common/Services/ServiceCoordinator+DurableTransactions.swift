@@ -24,7 +24,12 @@ extension ServiceCoordinator {
                 rowObservers: [CoinageTxRowObserver()]
             ),
             chainViewFactory: chainViewFactory,
-            chainTools: DurableChainToolsProvider(chainRegistry: chainRegistry, extrinsicFacade: extrinsicFacade),
+            chainTools: DurableChainToolsProvider(
+                chainRegistry: chainRegistry,
+                extrinsicFacade: extrinsicFacade,
+                versionProvider: ExtrinsicVersionProvider(),
+                signedChains: [AppConfig.Chains.assethubChain]
+            ),
             backgroundExecutor: ConnectionRetainingExecutor(provider: chainRegistry),
             logger: Logger.shared
         )

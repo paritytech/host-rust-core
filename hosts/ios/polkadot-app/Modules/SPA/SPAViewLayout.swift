@@ -7,7 +7,7 @@ import PolkadotUI
 final class SPAViewLayout: UIView {
     let webView: WKWebView
 
-    let activityIndicatorView = ActivityIndicatorView()
+    let activityIndicatorView = PolkadotLogoLoadingView()
 
     let loadProgressView: UIProgressView = {
         let progressView = UIProgressView(progressViewStyle: .bar)

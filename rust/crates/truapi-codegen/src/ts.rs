@@ -16,6 +16,12 @@ mod examples;
 mod explorer;
 mod host_callbacks;
 mod playground;
+mod visibility;
+
+use visibility::{
+    internal_type_names, type_dependencies, type_ref_dependencies, type_ref_uses_hex_string,
+    uses_hex_string,
+};
 
 pub use examples::generate_client_examples;
 pub use explorer::generate_explorer;
@@ -116,9 +122,11 @@ fn selected_public_aliases(
     target_version: u32,
 ) -> BTreeMap<String, String> {
     let mut selected_by_base: BTreeMap<String, (u32, String)> = BTreeMap::new();
+    let internal_types = internal_type_names(api);
     // Several wrappers can name one base type at different versions: two still
     // on V1 while a third has reached V2. The unprefixed alias belongs to the
-    // newest version any of them selected.
+    // newest public version any of them selected. Internal payloads must not
+    // take a name used by the public client.
     for (wrapper_name, versions) in emit_versions {
         let Some(wrapper) = wrappers.get(wrapper_name) else {
             continue;
@@ -137,7 +145,10 @@ fn selected_public_aliases(
                 continue;
             };
             match selected_by_base.get_mut(base) {
-                Some(selected) if inner_version > selected.0 => {
+                Some(selected)
+                    if (!internal_types.contains(name), inner_version)
+                        > (!internal_types.contains(&selected.1), selected.0) =>
+                {
                     *selected = (inner_version, name.clone());
                 }
                 Some(_) => {}
@@ -206,7 +217,7 @@ fn preserve_version_prefixed_types_referenced_by_emitted_types(
             {
                 continue;
             }
-            collect_preserved_version_prefixed_type_refs_from_type(ty, aliases, names);
+            preserve_version_prefixed_names(type_dependencies(ty), aliases, names);
         }
         if names.len() == before {
             break;
@@ -214,47 +225,16 @@ fn preserve_version_prefixed_types_referenced_by_emitted_types(
     }
 }
 
-fn collect_preserved_version_prefixed_type_refs_from_type(
-    ty: &TypeDef,
+fn preserve_version_prefixed_names(
+    dependencies: BTreeSet<String>,
     aliases: &BTreeMap<String, String>,
     names: &mut BTreeSet<String>,
 ) {
-    match &ty.kind {
-        TypeDefKind::Alias(type_ref) => {
-            collect_preserved_version_prefixed_type_refs(type_ref, aliases, names);
-        }
-        TypeDefKind::Struct(fields) => {
-            for field in fields {
-                collect_preserved_version_prefixed_type_refs(&field.type_ref, aliases, names);
-            }
-        }
-        TypeDefKind::TupleStruct(fields) => {
-            for field in fields {
-                collect_preserved_version_prefixed_type_refs(field, aliases, names);
-            }
-        }
-        TypeDefKind::Enum(variants) => {
-            for variant in variants {
-                match &variant.fields {
-                    VariantFields::Unit => {}
-                    VariantFields::Unnamed(fields) => {
-                        for field in fields {
-                            collect_preserved_version_prefixed_type_refs(field, aliases, names);
-                        }
-                    }
-                    VariantFields::Named(fields) => {
-                        for field in fields {
-                            collect_preserved_version_prefixed_type_refs(
-                                &field.type_ref,
-                                aliases,
-                                names,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
+    names.extend(
+        dependencies
+            .into_iter()
+            .filter(|name| version_prefixed_type(name).is_some() && !aliases.contains_key(name)),
+    );
 }
 
 fn collect_preserved_version_prefixed_types(
@@ -265,34 +245,8 @@ fn collect_preserved_version_prefixed_types(
     match kind {
         VersionedKind::Unit => {}
         VersionedKind::Tuple(inner) => {
-            collect_preserved_version_prefixed_type_refs(inner, aliases, names);
+            preserve_version_prefixed_names(type_ref_dependencies(inner), aliases, names);
         }
-    }
-}
-
-fn collect_preserved_version_prefixed_type_refs(
-    ty: &TypeRef,
-    aliases: &BTreeMap<String, String>,
-    names: &mut BTreeSet<String>,
-) {
-    match ty {
-        TypeRef::Named { name, args } => {
-            if version_prefixed_type(name).is_some() && !aliases.contains_key(name) {
-                names.insert(name.clone());
-            }
-            for arg in args {
-                collect_preserved_version_prefixed_type_refs(arg, aliases, names);
-            }
-        }
-        TypeRef::Vec(inner) | TypeRef::Option(inner) | TypeRef::Array(inner, _) => {
-            collect_preserved_version_prefixed_type_refs(inner, aliases, names);
-        }
-        TypeRef::Tuple(items) => {
-            for item in items {
-                collect_preserved_version_prefixed_type_refs(item, aliases, names);
-            }
-        }
-        TypeRef::Primitive(_) | TypeRef::Generic(_) | TypeRef::Unit => {}
     }
 }
 
@@ -491,6 +445,9 @@ pub fn generate(
 
     let types_code = generate_types(api, target_version)?;
     fs::write(Path::new(output_dir).join("types.ts"), types_code)?;
+
+    let internal_code = generate_type_bindings(api, target_version, true)?;
+    fs::write(Path::new(output_dir).join("internal.ts"), internal_code)?;
 
     let client_code = generate_client(api, target_version, codec_version)?;
     fs::write(Path::new(output_dir).join("client.ts"), client_code)?;
@@ -1104,19 +1061,37 @@ fn collect_type_versioned_wrappers(
 }
 
 fn generate_types(api: &ApiDefinition, target_version: u32) -> Result<String> {
-    let mut out = String::new();
-    writedoc!(
-        out,
-        r#"
-        // Auto-generated by truapi-codegen. Do not edit.
+    generate_type_bindings(api, target_version, false)
+}
 
-        import * as S from '../scale.js';
-        import type {{ HexString }} from '../scale.js';
+fn binding_dependencies(
+    ty: &TypeDef,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
+) -> (BTreeSet<String>, bool) {
+    let Some(wrapper) = wrappers.get(&ty.name) else {
+        return (type_dependencies(ty), uses_hex_string(ty));
+    };
+    let selected = emit_versions.get(&ty.name);
+    let mut names = BTreeSet::new();
+    let mut needs_hex_string = false;
+    for variant in wrapper.variants.values() {
+        if selected.is_some_and(|versions| !versions.contains(&variant.version)) {
+            continue;
+        }
+        if let VersionedKind::Tuple(inner) = &variant.kind {
+            names.extend(type_ref_dependencies(inner));
+            needs_hex_string |= type_ref_uses_hex_string(inner);
+        }
+    }
+    (names, needs_hex_string)
+}
 
-        "#
-    )
-    .unwrap();
-
+fn generate_type_bindings(
+    api: &ApiDefinition,
+    target_version: u32,
+    internal: bool,
+) -> Result<String> {
     let wrappers = collect_versioned_wrappers(api);
     let emit_versions = versioned_wrapper_emit_versions(api, &wrappers, target_version)?;
     let aliases = selected_public_aliases(api, &wrappers, &emit_versions, target_version);
@@ -1127,20 +1102,58 @@ fn generate_types(api: &ApiDefinition, target_version: u32) -> Result<String> {
         &aliases,
         &mut preserved_version_prefixed_types,
     );
+    let internal_types = internal_type_names(api);
+    let types: Vec<_> = api
+        .types
+        .iter()
+        .filter(|ty| {
+            internal_types.contains(&ty.name) == internal
+                && (version_prefixed_type(&ty.name).is_none()
+                    || aliases.contains_key(&ty.name)
+                    || preserved_version_prefixed_types.contains(&ty.name))
+        })
+        .collect();
+    let dependencies: Vec<_> = types
+        .iter()
+        .map(|ty| binding_dependencies(ty, &wrappers, &emit_versions))
+        .collect();
 
-    for ty in &api.types {
-        if version_prefixed_type(&ty.name).is_some()
-            && !aliases.contains_key(&ty.name)
-            && !preserved_version_prefixed_types.contains(&ty.name)
-        {
-            continue;
+    let mut out = String::from("// Auto-generated by truapi-codegen. Do not edit.\n\n");
+    if !types.is_empty() {
+        writeln!(out, "import * as S from '../scale.js';").unwrap();
+    }
+    if dependencies
+        .iter()
+        .any(|(_, needs_hex_string)| *needs_hex_string)
+    {
+        writeln!(out, "import type {{ HexString }} from '../scale.js';").unwrap();
+    }
+    if internal {
+        let definitions = types_by_name(api);
+        let imports = dependencies
+            .iter()
+            .flat_map(|(names, _)| names)
+            .filter(|name| !internal_types.contains(*name))
+            .filter_map(|name| definitions.get(name.as_str()).copied())
+            .map(|ty| emitted_type_name(ty, &emit_versions, &aliases))
+            .collect::<BTreeSet<_>>();
+        if !imports.is_empty() {
+            writeln!(
+                out,
+                "import {{ {} }} from './types.js';",
+                imports.into_iter().collect::<Vec<_>>().join(", ")
+            )
+            .unwrap();
         }
+        writeln!(out, "export * from './types.js';").unwrap();
+    }
+    writeln!(out).unwrap();
+    for ty in types {
         write_type_definition(&mut out, ty, &emit_versions, &aliases)?;
         writeln!(out).unwrap();
         write_codec_definition(&mut out, ty, &emit_versions, &aliases)?;
         writeln!(out).unwrap();
     }
-
     Ok(out)
 }
 
@@ -1158,12 +1171,12 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         import * as S from '../scale.js';
         import type {{ HexString }} from '../scale.js';
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ HostInitiatedSubscriptionHandler, HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, Observer, Subscription, TrUApiTransport }} from '../transport.js';
+        import type {{ CallOptions, HostInitiatedSubscriptionHandler, HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, Observer, Subscription, TrUApiTransport }} from '../transport.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
         export {{ ResultAsync, SubscriptionError }};
-        export type {{ HostInitiatedSubscriptionHandler, ObservableLike, Observer, Result, Subscription, TrUApiTransport }};
+        export type {{ CallOptions, HostInitiatedSubscriptionHandler, ObservableLike, Observer, Result, Subscription, TrUApiTransport }};
         export const TRUAPI_VERSION = {target_version} as const;
         export const TRUAPI_CODEC_VERSION = {codec_version} as const;
         export const TRUAPI_WIRE_SCHEMA_HASH = "{schema_hash}" as const;
@@ -1335,7 +1348,7 @@ fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<Str
 
     for service in &services {
         let trait_def = service.trait_def;
-        for method in included_methods(trait_def, &wrappers, target_version)? {
+        for method in included_wire_methods(trait_def, &wrappers, target_version)? {
             let wire_const = wire_const_name(&trait_def.name, &method.name);
             let method_id = wire_id_for_method(trait_def, method)?;
             let trait_id = trait_wire_id(trait_def)?;
@@ -1399,7 +1412,7 @@ fn generate_decode_table(api: &ApiDefinition, target_version: u32) -> Result<Str
         // Auto-generated by truapi-codegen. Do not edit.
 
         import * as S from '../scale.js';
-        import * as T from './types.js';
+        import * as T from './internal.js';
         import * as W from './wire-table.js';
 
         /** Dev-only: decode a wire frame's SCALE payload, keyed by `trait * 256 +
@@ -1547,6 +1560,17 @@ fn write_observable_helper(out: &mut String) {
 }
 
 fn included_methods<'a>(
+    trait_def: &'a TraitDef,
+    wrappers: &BTreeMap<String, VersionedWrapper>,
+    target_version: u32,
+) -> Result<Vec<&'a MethodDef>> {
+    Ok(included_wire_methods(trait_def, wrappers, target_version)?
+        .into_iter()
+        .filter(|method| !method.wire.internal)
+        .collect())
+}
+
+fn included_wire_methods<'a>(
     trait_def: &'a TraitDef,
     wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
@@ -1844,10 +1868,12 @@ fn emit_method(
             let response_codec = leg_codec_expr(ok, wrappers)?;
             let error_codec = leg_error_codec_expr(err, wrappers, &ctx)?;
 
+            // Every request method takes the cancellation signal last, so a
+            // product can withdraw any call without the method opting in.
             let arg_decl = if is_handshake || payload.param_list.is_empty() {
-                String::new()
+                "options?: CallOptions".to_string()
             } else {
-                format!("request: {}", payload.inner_type_ts)
+                format!("request: {}, options?: CallOptions", payload.inner_type_ts)
             };
             let request_expr = if is_handshake {
                 "{ codecVersion: TRUAPI_CODEC_VERSION }".to_string()
@@ -1862,6 +1888,7 @@ fn emit_method(
                     return this.transport.request<{ok_type}, {err_type}>({{
                       ids: W.{wire_const},
                       payload: {request_codec}.enc({{ tag: \"V{version}\", value: {request_expr} }}),
+                      signal: options?.signal,
                       decodeResponse: (payload) => {{
                         const result = S.Result({response_codec}, {error_codec}).dec(payload);
                 ",
@@ -2136,6 +2163,18 @@ fn emit_subscribe_method(
     Ok(())
 }
 
+fn emitted_type_name(
+    ty: &TypeDef,
+    emit_versions: &BTreeMap<String, BTreeSet<u32>>,
+    aliases: &BTreeMap<String, String>,
+) -> String {
+    if should_rename_wire_wrapper(ty, emit_versions, aliases) {
+        versioned_wrapper_ts_name(&ty.name)
+    } else {
+        aliases.get(&ty.name).unwrap_or(&ty.name).clone()
+    }
+}
+
 fn write_type_definition(
     out: &mut String,
     ty: &TypeDef,
@@ -2144,13 +2183,7 @@ fn write_type_definition(
 ) -> Result<()> {
     let generated_names = NameMode::Generated { aliases };
     let generic_decl = generic_param_declaration(&ty.generic_params);
-    let emitted_name = if should_rename_wire_wrapper(ty, emit_versions, aliases) {
-        versioned_wrapper_ts_name(&ty.name)
-    } else if let Some(alias) = aliases.get(&ty.name) {
-        alias.clone()
-    } else {
-        ty.name.clone()
-    };
+    let emitted_name = emitted_type_name(ty, emit_versions, aliases);
 
     write_jsdoc(out, "", ty.docs.as_deref());
     match &ty.kind {
@@ -2916,6 +2949,164 @@ mod tests {
             types: vec![payload],
             framework_types: Vec::new(),
         }
+    }
+
+    fn internal_api_fixture() -> ApiDefinition {
+        let mut internal = request_method_with_wrappers(
+            "do_thing",
+            Some(7),
+            "HiddenRequest",
+            "SharedResponse",
+            "SharedError",
+        );
+        internal.wire.internal = true;
+        internal.docs = Some("```ts\nawait truapi.thing.doThing();\n```".into());
+        let mut public = request_method_with_wrappers(
+            "read_shared",
+            Some(8),
+            "PublicRequest",
+            "SharedResponse",
+            "SharedError",
+        );
+        public.docs = Some("```ts\nawait truapi.thing.readShared();\n```".into());
+        let mut api = api(vec![internal, public]);
+        api.traits[0].name = "Thing".into();
+        api.public_trait_order = vec!["Thing".into()];
+        for name in [
+            "HiddenRequest",
+            "PublicRequest",
+            "SharedResponse",
+            "SharedError",
+        ] {
+            let inner = format!("V01{name}");
+            api.types
+                .push(versioned_tuple_wrapper_variants(name, &[(1, &inner)]));
+            let mut payload = empty_struct(&inner);
+            payload.kind = TypeDefKind::Struct(vec![FieldDef {
+                name: "shared".into(),
+                type_ref: named_type("Shared"),
+                docs: None,
+            }]);
+            api.types.push(payload);
+        }
+        api.types.push(empty_struct("Shared"));
+        api
+    }
+
+    #[test]
+    fn internal_methods_are_absent_from_product_bindings_and_documentation() {
+        let api = internal_api_fixture();
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().to_str().unwrap();
+        generate(&api, output, 1, 2).unwrap();
+        generate_playground_services(&api, output, 1, false).unwrap();
+        generate_explorer(&api, output, 1).unwrap();
+        let examples = directory.path().join("examples");
+        generate_client_examples(&api, examples.to_str().unwrap(), 1).unwrap();
+        let read = |file: &str| fs::read_to_string(directory.path().join(file)).unwrap();
+        let client = read("client.ts");
+        let types = read("types.ts");
+        let services = read("codegen/services.ts");
+        let explorer = read("codegen/types.ts");
+        assert_eq!(
+            (
+                client.contains("doThing"),
+                types.contains("HiddenRequest"),
+                services.contains("do_thing"),
+                explorer.contains("HiddenRequest"),
+                examples.join("thing-do-thing.ts").exists(),
+            ),
+            (false, false, false, false, false),
+        );
+        assert_eq!(
+            (
+                client.contains("readShared"),
+                types.contains("export interface Shared"),
+                services.contains("read_shared"),
+                explorer.contains("Shared"),
+                examples.join("thing-read-shared.ts").exists(),
+            ),
+            (true, true, true, true, true),
+        );
+        let internal = read("internal.ts");
+        assert!(internal.contains("export interface HiddenRequest"));
+        assert!(internal.contains("import { Shared } from './types.js'"));
+        assert_eq!(
+            generate_index(),
+            "export * from './types.js';\nexport * from './client.js';\n"
+        );
+    }
+
+    #[test]
+    fn internal_visibility_preserves_wire_addresses_hash_and_decoding() {
+        let mut api = internal_api_fixture();
+        let hash = wire_schema_hash(&api, 1, 2).unwrap();
+        let table = generate_wire_table(&api, 1).unwrap();
+        let decoder = generate_decode_table(&api, 1).unwrap();
+        assert!(decoder.contains("W.THING_DO_THING"));
+        assert!(decoder.contains("T.VersionedHiddenRequest"));
+        assert!(generate_client(&api, 1, 2).unwrap().contains(&hash));
+        api.traits[0].methods[0].wire.internal = false;
+        assert_eq!(wire_schema_hash(&api, 1, 2).unwrap(), hash);
+        assert_eq!(generate_wire_table(&api, 1).unwrap(), table);
+        assert_eq!(generate_decode_table(&api, 1).unwrap(), decoder);
+    }
+
+    #[test]
+    fn internal_versions_do_not_take_public_payload_names() {
+        let mut api = internal_api_fixture();
+        api.types
+            .retain(|ty| !matches!(ty.name.as_str(), "HiddenRequest" | "PublicRequest"));
+        api.types.extend([
+            versioned_tuple_wrapper_variants("HiddenRequest", &[(1, "V02Payload")]),
+            versioned_tuple_wrapper_variants("PublicRequest", &[(1, "V01Payload")]),
+            single_field_struct("V01Payload", "public_value", "bool"),
+            single_field_struct("V02Payload", "private_value", "bool"),
+        ]);
+
+        let public = generate_types(&api, 2).unwrap();
+        let internal = generate_type_bindings(&api, 2, true).unwrap();
+        assert!(public.contains("export interface Payload {\n  publicValue: boolean;"));
+        assert!(internal.contains("export interface V02Payload {\n  privateValue: boolean;"));
+        assert!(internal.contains("V1: [0, V02Payload]"));
+    }
+
+    #[test]
+    fn internal_imports_follow_the_selected_wire_version() {
+        let mut api = internal_api_fixture();
+        let wrapper = api
+            .types
+            .iter_mut()
+            .find(|ty| ty.name == "HiddenRequest")
+            .unwrap();
+        *wrapper = versioned_tuple_wrapper_variants(
+            "HiddenRequest",
+            &[(1, "Shared"), (2, "FutureShared")],
+        );
+        let TypeDefKind::Enum(variants) = &mut wrapper.kind else {
+            unreachable!()
+        };
+        variants.push(VariantDef {
+            name: "V3".into(),
+            fields: VariantFields::Unnamed(vec![TypeRef::Vec(Box::new(TypeRef::Primitive(
+                "u8".into(),
+            )))]),
+            docs: None,
+            codec_index: None,
+        });
+        api.types.push(empty_struct("FutureShared"));
+        api.types.push(TypeDef {
+            name: "PublicHelper".into(),
+            module_path: Vec::new(),
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Alias(named_type("FutureShared")),
+            docs: None,
+        });
+
+        let internal = generate_type_bindings(&api, 1, true).unwrap();
+        assert!(internal.contains("import { Shared } from './types.js';"));
+        assert!(!internal.contains("FutureShared"));
+        assert!(!internal.contains("HexString"));
     }
 
     #[test]

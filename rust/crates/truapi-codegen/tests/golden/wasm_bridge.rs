@@ -47,10 +47,14 @@ pub(super) struct JsBridge {
     pub(super) subscribe_pocket_cards: Function,
     pub(super) remove_pocket_card: Function,
     pub(super) lookup_preimage: Function,
+    pub(super) begin_operation: Function,
+    pub(super) end_operation: Function,
     pub(super) read: Function,
     pub(super) write: Function,
     pub(super) clear: Function,
+    pub(super) subscribe_storage: Function,
     pub(super) subscribe_theme: Function,
+    pub(super) confirm_permission: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
     pub(super) permission_status_present: bool,
@@ -88,10 +92,14 @@ impl JsBridge {
             remove_pocket_card: get_optional_function(callbacks, "removePocketCard")?
                 .unwrap_or_else(|| missing_callback("removePocketCard")),
             lookup_preimage: get_function(callbacks, "lookupPreimage")?,
+            begin_operation: get_function(callbacks, "beginOperation")?,
+            end_operation: get_function(callbacks, "endOperation")?,
             read: get_function(callbacks, "read")?,
             write: get_function(callbacks, "write")?,
             clear: get_function(callbacks, "clear")?,
+            subscribe_storage: get_function(callbacks, "subscribeStorage")?,
             subscribe_theme: get_function(callbacks, "subscribeTheme")?,
+            confirm_permission: get_function(callbacks, "confirmPermission")?,
             confirm_user_action: get_function(callbacks, "confirmUserAction")?,
             chat_present: get_optional_function(callbacks, "createChatRoom")?.is_some()
                 && get_optional_function(callbacks, "registerChatBot")?.is_some()
@@ -202,7 +210,7 @@ impl truapi_platform::ChatPlatform for WasmPlatform {
     ) -> BoxStream<'static, Result<v01::HostChatListSubscribeItem, v01::GenericError>> {
         invoke_js_subscription(
             &self.bridge.subscribe_chat_rooms,
-            Some(product.encode()),
+            Some(Uint8Array::from(product.encode().as_slice()).into()),
             parse_host_chat_list_subscribe_item_item,
         )
     }
@@ -358,14 +366,14 @@ impl truapi_platform::Permissions for WasmPlatform {
     async fn device_permission(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         let bytes = invoke_bytes_return(
             &self.bridge.device_permission,
             vec![Uint8Array::from(request.encode().as_slice()).into()],
         )
         .await
         .map_err(generic)?;
-        decode_bytes::<v01::HostDevicePermissionResponse>(
+        decode_bytes::<truapi_platform::PermissionDecision>(
             bytes,
             "devicePermission response did not decode",
         )
@@ -375,14 +383,14 @@ impl truapi_platform::Permissions for WasmPlatform {
     async fn remote_permission(
         &self,
         request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         let bytes = invoke_bytes_return(
             &self.bridge.remote_permission,
             vec![Uint8Array::from(request.encode().as_slice()).into()],
         )
         .await
         .map_err(generic)?;
-        decode_bytes::<v01::RemotePermissionResponse>(
+        decode_bytes::<truapi_platform::PermissionDecision>(
             bytes,
             "remotePermission response did not decode",
         )
@@ -398,7 +406,7 @@ impl truapi_platform::PocketPlatform for WasmPlatform {
     ) -> BoxStream<'static, Result<v01::HostPocketListSubscribeItem, v01::GenericError>> {
         invoke_js_subscription(
             &self.bridge.subscribe_pocket_cards,
-            Some(product.encode()),
+            Some(Uint8Array::from(product.encode().as_slice()).into()),
             parse_host_pocket_list_subscribe_item_item,
         )
     }
@@ -427,9 +435,49 @@ impl truapi_platform::PreimageHost for WasmPlatform {
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, v01::GenericError>> {
         invoke_js_subscription(
             &self.bridge.lookup_preimage,
-            Some(key),
+            Some(Uint8Array::from(key.as_slice()).into()),
             parse_optional_bytes_item,
         )
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::ProductOperations for WasmPlatform {
+    async fn begin_operation(
+        &self,
+        product: &truapi_platform::ProductContext,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.begin_operation,
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                JsValue::from_str(&label),
+            ],
+        )
+        .await
+        .map_err(|reason| v01::HostWorkerOperationError::Unknown { reason })?;
+        decode_bytes::<v01::HostWorkerBeginOperationResponse>(
+            bytes,
+            "beginOperation response did not decode",
+        )
+        .map_err(|reason| v01::HostWorkerOperationError::Unknown { reason })
+    }
+
+    async fn end_operation(
+        &self,
+        product: &truapi_platform::ProductContext,
+        id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
+        invoke_unit(
+            &self.bridge.end_operation,
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                JsValue::from_f64(f64::from(id)),
+            ],
+        )
+        .await
+        .map_err(|reason| v01::HostWorkerOperationError::Unknown { reason })
     }
 }
 
@@ -466,6 +514,17 @@ impl truapi_platform::ProductStorage for WasmPlatform {
             .await
             .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
     }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        invoke_js_subscription(
+            &self.bridge.subscribe_storage,
+            Some(JsValue::from_str(&key)),
+            parse_host_local_storage_change_item_item,
+        )
+    }
 }
 
 impl truapi_platform::ThemeHost for WasmPlatform {
@@ -482,6 +541,23 @@ impl truapi_platform::ThemeHost for WasmPlatform {
 
 #[truapi_platform::async_trait]
 impl truapi_platform::UserConfirmation for WasmPlatform {
+    async fn confirm_permission(
+        &self,
+        review: truapi_platform::UserConfirmationReview,
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.confirm_permission,
+            vec![Uint8Array::from(review.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::PermissionDecision>(
+            bytes,
+            "confirmPermission response did not decode",
+        )
+        .map_err(generic)
+    }
+
     async fn confirm_user_action(
         &self,
         review: truapi_platform::UserConfirmationReview,
@@ -499,6 +575,12 @@ fn parse_host_chat_list_subscribe_item_item(
     value: JsValue,
 ) -> Result<v01::HostChatListSubscribeItem, String> {
     decode_js_item::<v01::HostChatListSubscribeItem>(value, "HostChatListSubscribeItem")
+}
+
+fn parse_host_local_storage_change_item_item(
+    value: JsValue,
+) -> Result<v01::HostLocalStorageChangeItem, String> {
+    decode_js_item::<v01::HostLocalStorageChangeItem>(value, "HostLocalStorageChangeItem")
 }
 
 fn parse_host_locale_subscribe_item_item(

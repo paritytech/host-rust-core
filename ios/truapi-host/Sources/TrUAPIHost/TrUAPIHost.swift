@@ -110,24 +110,13 @@ public struct ProductExecutionConfig: Sendable, Equatable {
 /// execution starts when the cdylib is built with the `ws-bridge` feature.
 public enum LocalhostBridgeBootstrap {
     /// Returns a `<script>`-injectable snippet that publishes the endpoint
-    /// metadata on `window.__truapi_localhost`, the pre-resolved permission
-    /// decisions on `window.__truapi_policy__`, exposes the legacy
+    /// metadata on `window.__truapi_localhost`, exposes the legacy
     /// `window.__HOST_API_PORT__` webview transport shape, and fires a
     /// `truapi-native-ready` event.
-    ///
-    /// `webRtcAllowed` must come from `permissionAuthorizationStatus` for
-    /// `RemotePermission.remote(.webRtc)` — a peek, never a prompt. It is baked
-    /// in as a literal because the container enforces it inside the product's
-    /// own realm, where an asynchronous permission request would be forgeable:
-    /// product script can hook the primitives such a request's bookkeeping
-    /// relies on and resolve it itself. A settled value has nothing to steal.
-    /// The consequence is that a fresh grant only takes effect once the web
-    /// view reloads.
-    public static func script(port: UInt16, token: String, webRtcAllowed: Bool) -> String {
+    public static func script(port: UInt16, token: String) -> String {
         let url = "ws://127.0.0.1:\(port)/?t=\(token)"
         let safeUrl = jsStringLiteral(url)
         let safeToken = jsStringLiteral(token)
-        let safeWebRtc = webRtcAllowed ? "true" : "false"
         return """
         (function() {
           var endpoint = { url: \(safeUrl), token: \(safeToken) };
@@ -199,7 +188,6 @@ public enum LocalhostBridgeBootstrap {
           }
 
           window.__truapi_localhost = endpoint;
-          window.__truapi_policy__ = { webRtcAllowed: \(safeWebRtc) };
           window.__HOST_WEBVIEW_MARK__ = true;
           window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
           window.dispatchEvent(new Event('truapi-native-ready'));
@@ -250,42 +238,27 @@ public protocol HostCoreStorageBackend: AnyObject, Sendable {
 ///   * ``remotePermission(request:)`` handles per-product capability
 ///     bundles.
 ///
-/// Threading: the Rust core invokes every callback on a background thread it
-/// owns, never the main thread. These six each run on their own thread from a
-/// blocking pool, so an implementation may safely block its calling thread
-/// (e.g. with `DispatchQueue.main.sync` or a semaphore) until the user
-/// decides; other TrUAPI traffic keeps flowing: ``navigateTo(url:)``,
-/// ``pushNotification(payload:)``, ``devicePermission(request:)``,
-/// ``remotePermission(request:)``, ``featureSupported(request:)``, and
-/// ``confirmUserAction(review:)``.
-/// The remaining callbacks (auth state, storage, core storage, chain, theme,
-/// preimage lookups, and ``cancelNotification(id:)``) run inline on the
-/// dispatcher thread and must return promptly without blocking.
-/// Any UI work MUST still hop to the main thread, e.g.
-/// `await MainActor.run { ... }` or `DispatchQueue.main.async { ... }`. Calling
-/// UIKit/WebKit off the main thread is undefined behaviour.
+/// The Rust core invokes callbacks on its shared background bridge executor.
+/// Async callbacks must suspend while waiting for a decision; blocking their
+/// thread stalls other TrUAPI traffic. Synchronous callbacks must return promptly.
+/// Run UI work on the main actor, for example with `await MainActor.run { ... }`.
 public protocol HostBridge: AnyObject, Sendable {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.
     func onCoreLog(marker: String, detail: String)
 
-    /// Open a URL in the system browser. Invoked on a blocking-pool thread;
-    /// hop to the main thread to present UI. May block the calling thread if
-    /// the user has to approve the navigation.
+    /// Open a URL in the system browser, suspending for any approval on the main actor.
     func navigateTo(url: String) async throws
 
     /// Deliver a push notification (`HostPushNotificationRequest`)
-    /// and return the host-assigned notification id. Invoked on the dispatcher
-    /// thread; hop to the main thread for any UI work and return promptly.
+    /// and return the host-assigned notification id. Run any UI work on the main actor.
     func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32
 
     /// Cancel a previously scheduled notification id.
     func cancelNotification(id: UInt32) throws
 
-    /// Prompt for a device-level permission. Returns the granted flag. Invoked
-    /// on a blocking-pool thread; present the prompt on the main thread and
-    /// block the calling thread until the user decides. Blocking here does
-    /// not stall other TrUAPI traffic.
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool
+    /// Prompt for a device-level permission on the main actor, suspending until
+    /// the user decides. Preserve the approval lifetime.
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision
 
     /// Report the OS status of a device capability without prompting. Answer
     /// from the platform's authorization APIs, for example
@@ -300,11 +273,9 @@ public protocol HostBridge: AnyObject, Sendable {
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus
 
-    /// Prompt for a remote (product-scoped) permission bundle. Invoked on a
-    /// blocking-pool thread; present the prompt on the main thread and block
-    /// the calling thread until the user decides. Blocking here does not
-    /// stall other TrUAPI traffic.
-    func remotePermission(request: RemotePermission) async throws -> Bool
+    /// Prompt for a remote (product-scoped) permission bundle on the main actor,
+    /// suspending until the user decides.
+    func remotePermission(request: RemotePermission) async throws -> PermissionDecision
 
     /// Observe an auth state change, in transition order: render `.pairing` as
     /// the pairing QR UI, `.connected`/`.disconnected` as the account badge,
@@ -331,6 +302,9 @@ public protocol HostBridge: AnyObject, Sendable {
 
     /// Confirm one user-reviewed core action before it continues.
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool
+
+    /// Preserve the selected lifetime for identity and account access consent.
+    func confirmPermission(review: UserConfirmationReview) async throws -> PermissionDecision
 
     /// Return the current preimage value for `key`, or nil for a miss.
     func lookupPreimage(key: Data) async throws -> Data?
@@ -366,6 +340,14 @@ public protocol HostBridge: AnyObject, Sendable {
     /// another thread from inside it. Defaults to a no-op for a host that
     /// runs no workers.
     func workerDemandChanged(productId: String, transition: WorkerTransition)
+
+    /// Begin a pending operation, whose id keeps the product's worker alive
+    /// until it ends. `label` is a log/UI hint, empty when the product gave none.
+    func beginOperation(productId: String, label: String) async throws -> UInt32
+
+    /// End a pending operation. Idempotent: an unknown or already-ended id
+    /// succeeds, so a retry after an ambiguous failure is safe.
+    func endOperation(productId: String, id: UInt32) async throws
 
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
@@ -446,6 +428,9 @@ public extension HostBridge {
     func chainSend(connectionId: UInt32, request: String) throws {}
     func chainClose(connectionId: UInt32) throws {}
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool { false }
+    func confirmPermission(review: UserConfirmationReview) async throws -> PermissionDecision {
+        try await confirmUserAction(review: review) ? .allowAlways : .deny
+    }
     func lookupPreimage(key: Data) async throws -> Data? { nil }
     func currentTheme() throws -> HostThemeSubscribeItem {
         HostThemeSubscribeItem(name: .default, variant: .dark)
@@ -459,7 +444,36 @@ public extension HostBridge {
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
+    /// Defaults opt out of worker keep-alive; override to run background work
+    /// past the product's surface. The id is still distinct per call, because
+    /// an `OperationId` names one operation: a host overriding only
+    /// `endOperation`, and the core's own demand accounting, both end the
+    /// wrong ones when every operation shares an id.
+    func beginOperation(productId: String, label: String) async throws -> UInt32 {
+        defaultOperationIds.take()
+    }
+
+    func endOperation(productId: String, id: UInt32) async throws {}
 }
+
+/// Ids handed out by the default `beginOperation`, distinct for the life of
+/// the process.
+private final class DefaultOperationIds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextId: UInt32 = 1
+
+    func take() -> UInt32 {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = nextId
+        // Never zero, and never traps: an id is only ever compared, so wrapping
+        // back to one costs nothing.
+        nextId = nextId == UInt32.max ? 1 : nextId + 1
+        return id
+    }
+}
+
+private let defaultOperationIds = DefaultOperationIds()
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
 /// `NativeChatCallbacks` protocol.
@@ -539,6 +553,16 @@ private final class PocketCallbackAdapter: NativePocketCallbacks, @unchecked Sen
     }
 }
 
+private extension PermissionDecision {
+    var native: NativePermissionDecision {
+        switch self {
+        case .allowOnce: .allowOnce
+        case .allowAlways: .allowAlways
+        case .deny: .deny
+        }
+    }
+}
+
 /// Adapter that bridges the public `HostBridge` to the generated UniFFI
 /// `HostCallbacks` protocol. Kept private so the generated names never
 /// leak into consumers.
@@ -575,9 +599,9 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool {
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> NativePermissionDecision {
         try await withHostRejection {
-            try await bridge.devicePermission(request: request)
+            try await bridge.devicePermission(request: request).native
         }
     }
 
@@ -589,9 +613,9 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func remotePermission(request: RemotePermission) async throws -> Bool {
+    func remotePermission(request: RemotePermission) async throws -> NativePermissionDecision {
         try await withHostRejection {
-            try await bridge.remotePermission(request: request)
+            try await bridge.remotePermission(request: request).native
         }
     }
 
@@ -641,6 +665,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
+    func confirmPermission(review: UserConfirmationReview) async throws -> NativePermissionDecision {
+        try await withHostRejection {
+            try await bridge.confirmPermission(review: review).native
+        }
+    }
+
     func lookupPreimage(key: Data) async throws -> Data? {
         try await withHostRejection {
             try await bridge.lookupPreimage(key: key)
@@ -686,6 +716,18 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func localStorageClear(key: String) throws {
         try withStorageError {
             try bridge.storage.clear(key: key)
+        }
+    }
+
+    func beginOperation(productId: String, label: String) async throws -> UInt32 {
+        try await withHostRejection {
+            try await bridge.beginOperation(productId: productId, label: label)
+        }
+    }
+
+    func endOperation(productId: String, id: UInt32) async throws {
+        try await withHostRejection {
+            try await bridge.endOperation(productId: productId, id: id)
         }
     }
 
@@ -977,6 +1019,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     ) throws
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
     func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
+    func notifyStorageChanged(key: String, value: Data?)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -1046,6 +1089,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         try await inner.permissionAuthorizationStatus(request: request)
     }
 
+    /// Updates the product decision used by subsequent permission checks.
     public func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
@@ -1059,6 +1103,16 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
         inner.notifyLocaleChanged(locale: locale)
+    }
+
+    /// Push a host storage change to active TrUAPI storage subscriptions,
+    /// across every execution of the product; `nil` means cleared.
+    ///
+    /// Only for changes the host makes itself. A write a product made through
+    /// TrUAPI already reaches its subscribers, so reporting one here delivers
+    /// it twice.
+    public func notifyStorageChanged(key: String, value: Data?) {
+        inner.notifyStorageChanged(key: key, value: value)
     }
 
     public func notifyPreimageChanged(key: Data, value: Data?) {

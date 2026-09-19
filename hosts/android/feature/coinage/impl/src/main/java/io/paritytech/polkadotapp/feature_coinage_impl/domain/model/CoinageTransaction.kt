@@ -2,6 +2,7 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.model
 
 import io.paritytech.polkadotapp.common.domain.model.DataByteArray
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
@@ -19,7 +20,7 @@ interface CoinageTransaction {
         fun newTransaction(): CoinageTransaction
     }
 
-    suspend fun mintCoins(valueExponents: List<ValueExponent>): Result<List<Coin>>
+    suspend fun mintCoins(valueExponents: List<ValueExponent>, provenance: CoinProvenance): Result<List<Coin>>
 
     suspend fun mintVoucher(valueExponent: ValueExponent): Result<RecyclerVoucher>
 
@@ -42,13 +43,15 @@ data class CoinageTransactionAssets(
     val handedOff: List<OwnAsset>,
 )
 
-suspend fun CoinageTransaction.mintCoin(valueExponent: ValueExponent): Result<Coin> =
-    mintCoins(listOf(valueExponent)).map { it.single() }
+suspend fun CoinageTransaction.mintCoin(valueExponent: ValueExponent, provenance: CoinProvenance): Result<Coin> =
+    mintCoins(listOf(valueExponent), provenance).map { it.single() }
 
 fun CoinageTransaction.consumeCoin(coin: Coin) = consumeCoins(listOf(coin))
 
 fun CoinageTransaction.handOffCoins(coins: List<Coin>) = handOff(coins.map { OwnAsset.Coin(it.derivationIndex) })
 
 /** Mint output coins and immediately hand them to the recipient. Recipient coins always do both. */
-suspend fun CoinageTransaction.mintAndHandOffCoins(valueExponents: List<ValueExponent>): Result<List<Coin>> =
-    mintCoins(valueExponents).onSuccess { handOffCoins(it) }
+suspend fun CoinageTransaction.mintAndHandOffCoins(
+    valueExponents: List<ValueExponent>,
+    provenance: CoinProvenance
+): Result<List<Coin>> = mintCoins(valueExponents, provenance).onSuccess { handOffCoins(it) }

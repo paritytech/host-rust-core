@@ -11,17 +11,21 @@ import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.VoucherAllocator
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclingStatus
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.isInRecycler
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.CoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.getStateOrUntracked
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageRecyclingUseCase
 import io.paritytech.polkadotapp.feature_coinage_impl.data.blockchain.coinage
 import io.paritytech.polkadotapp.feature_coinage_impl.data.blockchain.loadRecyclerWithCoin
 import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.VoucherRingDerivation
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.CoinRepository
+import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.data.signer.origins.CoinageTransactionOrigins
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogD
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogI
@@ -30,7 +34,10 @@ import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetPr
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
 import io.paritytech.polkadotapp.feature_transactions.api.data.ExtrinsicService
 import io.paritytech.polkadotapp.feature_transactions.api.data.MultiExtrinsicBuilder
-import java.util.UUID
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import javax.inject.Inject
 
 class RealCoinageRecyclingUseCase @Inject constructor(
@@ -42,6 +49,7 @@ class RealCoinageRecyclingUseCase @Inject constructor(
     private val chainRegistry: ChainRegistry,
     private val extrinsicService: ExtrinsicService,
     private val transactionService: CoinageTransactionService,
+    private val voucherRepository: VoucherRepository,
     private val dispatchers: CoroutineDispatchers,
     @param:DigitalDollarChainAssetProvider private val chainAssetProvider: ChainAssetProvider
 ) : CoinageRecyclingUseCase {
@@ -52,7 +60,18 @@ class RealCoinageRecyclingUseCase @Inject constructor(
      * locks each coin, which is what the local spent-marking used to stand in for. A coin whose transaction
      * never lands is released when the recovery pass fails it, so there is no rollback to run here.
      */
-    override suspend fun recycle(coins: List<Coin>): Result<Unit> {
+    override suspend fun recycle(coins: List<Coin>): Result<Unit> =
+        recycle(coins, CoinageOperationGroupId.generateNew())
+
+    override suspend fun recycle(coins: List<Coin>, groupId: CoinageOperationGroupId): Result<Unit> {
+        val alreadySubmitted = transactionService.getOperationGroupStatuses(groupId)
+            .getOrElse { return Result.failure(it) }
+
+        if (alreadySubmitted.isNotEmpty()) {
+            coinageLogD("Recycling already submitted group=${groupId.value} transactions=${alreadySubmitted.size}")
+            return Result.success(Unit)
+        }
+
         val idle = coins.filterIdle()
         if (idle.isEmpty()) {
             coinageLogD("Recycling has nothing idle to submit coins=${coins.size}")
@@ -72,19 +91,43 @@ class RealCoinageRecyclingUseCase @Inject constructor(
         return chainConnectionRefCounter.withConnectionEnabled(chainId, "CoinageRecycling") {
             val chain = chainRegistry.getChain(chainId)
 
-            submitRecycleGroup(chain, coinsWithVouchers)
+            submitRecycleGroup(chain, coinsWithVouchers, groupId)
         }
+    }
+
+    override fun observeRecyclingStatus(groupId: CoinageOperationGroupId): Flow<RecyclingStatus> = combine(
+        transactionService.subscribeOperationGroupStatuses(groupId),
+        voucherRepository.subscribeAllVouchers(),
+    ) { states, vouchers ->
+        states.toRecyclingStatus(vouchers)
+    }.distinctUntilChanged()
+
+    private fun List<CoinageTransactionState>.toRecyclingStatus(vouchers: List<RecyclerVoucher>): RecyclingStatus {
+        if (isEmpty() || any { it.status == DurableTxStatus.FAILURE }) return RecyclingStatus.Incomplete
+        if (!all { it.status.isArrived }) return RecyclingStatus.Pending
+
+        val vouchersByIndex = vouchers.associateBy { it.ringVrfKeyIndex }
+        val recycled = flatMap { it.outputs }
+            .filterIsInstance<OwnAsset.Voucher>()
+            .map { vouchersByIndex[it.ringVrfIndex] }
+
+        // Arrival is read at the best head, the recycler location lags behind it, and an unload needs the latter.
+        if (recycled.any { it == null || !it.isInRecycler() }) return RecyclingStatus.Pending
+
+        return RecyclingStatus.AllRecycled(
+            vouchers = recycled.filterNotNull(),
+            finalized = all { it.status == DurableTxStatus.FINALIZED_SUCCESS },
+        )
     }
 
     private suspend fun submitRecycleGroup(
         chain: Chain,
         coinsWithVouchers: List<Pair<Coin, RecyclerVoucher>>,
+        groupId: CoinageOperationGroupId,
     ): Result<Unit> = runCatching {
         val extrinsics = extrinsicService.buildExtrinsics(chain) {
             coinsWithVouchers.forEach { (coin, voucher) -> buildLoadRecyclerExtrinsic(coin, voucher) }
         }.getOrThrow()
-
-        val groupId = CoinageOperationGroupId(UUID.randomUUID().toString())
 
         coinageLogI("Recycling submitting group=${groupId.value} coins=${coinsWithVouchers.size}")
 

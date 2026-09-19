@@ -1,7 +1,7 @@
 package io.paritytech.polkadotapp.feature_connection_status_impl.domain.health
 
-import io.paritytech.polkadotapp.common.data.time.TimeProvider
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainConnectionPresentation
+import io.paritytech.polkadotapp.test_shared.FakeTimeProvider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
@@ -14,7 +14,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
 
 @OptIn(ExperimentalTime::class, ExperimentalCoroutinesApi::class)
 class ConnectionSmootherTest {
@@ -27,14 +26,42 @@ class ConnectionSmootherTest {
     )
 
     @Test
-    fun `rising edge reports connected only after the stability window`() = runTest {
+    fun `a first connect settles immediately`() = runTest {
         val results = collectSmoothed()
+
+        source.emit(RawConnectivity.Connected); runCurrent()
+
+        assertEquals(listOf(ChainConnectionPresentation.Connected), results)
+    }
+
+    @Test
+    fun `a reconnect reports connected only after the stability window`() = runTest {
+        val results = collectSmoothed()
+
+        source.emit(RawConnectivity.Connected); runCurrent()
+        source.emit(RawConnectivity.Pending); runCurrent()
 
         source.emit(RawConnectivity.Connected)
         advanceTimeBy(1_000); runCurrent()
         assertEquals(ChainConnectionPresentation.Connecting, results.last())
 
         advanceTimeBy(2_500); runCurrent() // total 3.5s > 3s
+        assertEquals(ChainConnectionPresentation.Connected, results.last())
+    }
+
+    @Test
+    fun `a reconnect long after its drop aged out still waits out the stability window`() = runTest {
+        val results = collectSmoothed()
+
+        source.emit(RawConnectivity.Connected); runCurrent()
+        source.emit(RawConnectivity.Pending); runCurrent()
+        advanceTimeBy(31_000); runCurrent() // past the 30s flap window, so the drop is purged
+
+        source.emit(RawConnectivity.Connected)
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(ChainConnectionPresentation.Connecting, results.last())
+
+        advanceTimeBy(2_500); runCurrent()
         assertEquals(ChainConnectionPresentation.Connected, results.last())
     }
 
@@ -62,6 +89,21 @@ class ConnectionSmootherTest {
 
         advanceTimeBy(5_500); runCurrent()
         assertEquals(ChainConnectionPresentation.Disconnected, results.last())
+    }
+
+    @Test
+    fun `a settled disconnect repeated faster than the cooldown never reports disconnected`() = runTest {
+        val results = collectSmoothed()
+
+        source.emit(RawConnectivity.Connected)
+        advanceTimeBy(3_500); runCurrent()
+
+        repeat(10) {
+            source.emit(RawConnectivity.Settled); runCurrent()
+            advanceTimeBy(1_000); runCurrent()
+        }
+
+        assertEquals(ChainConnectionPresentation.Connecting, results.last())
     }
 
     @Test
@@ -97,9 +139,5 @@ class ConnectionSmootherTest {
             smoother.smooth(source).collect { results += it }
         }
         return results
-    }
-
-    private class FakeTimeProvider(private val nowMillis: () -> Long) : TimeProvider {
-        override fun now(): Instant = Instant.fromEpochMilliseconds(nowMillis())
     }
 }

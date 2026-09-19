@@ -25,8 +25,10 @@ import io.paritytech.polkadotapp.database.dao.ChatRoomDao
 import io.paritytech.polkadotapp.database.dao.ChatSearchRecentDao
 import io.paritytech.polkadotapp.database.dao.CoinDao
 import io.paritytech.polkadotapp.database.dao.CoinageEntryDao
+import io.paritytech.polkadotapp.database.dao.CoinageInstallationDao
 import io.paritytech.polkadotapp.database.dao.ContactDao
 import io.paritytech.polkadotapp.database.dao.ContactDeviceDao
+import io.paritytech.polkadotapp.database.dao.DurableTxDao
 import io.paritytech.polkadotapp.database.dao.ExternalPaymentDao
 import io.paritytech.polkadotapp.database.dao.FileDownloadDao
 import io.paritytech.polkadotapp.database.dao.FileUploadDao
@@ -34,6 +36,7 @@ import io.paritytech.polkadotapp.database.dao.GamePlayersDao
 import io.paritytech.polkadotapp.database.dao.MessageNotificationSentDao
 import io.paritytech.polkadotapp.database.dao.MessageRevisionDao
 import io.paritytech.polkadotapp.database.dao.MetaAccountDao
+import io.paritytech.polkadotapp.database.dao.PocketCardDao
 import io.paritytech.polkadotapp.database.dao.ProcessedChatMessageDao
 import io.paritytech.polkadotapp.database.dao.ProductDao
 import io.paritytech.polkadotapp.database.dao.ProductFundingOperationDao
@@ -85,6 +88,9 @@ import io.paritytech.polkadotapp.database.migrations.Migration48To49
 import io.paritytech.polkadotapp.database.migrations.Migration54To55Spec
 import io.paritytech.polkadotapp.database.migrations.Migration55To56
 import io.paritytech.polkadotapp.database.migrations.Migration57To58
+import io.paritytech.polkadotapp.database.migrations.Migration60To61
+import io.paritytech.polkadotapp.database.migrations.Migration62To63
+import io.paritytech.polkadotapp.database.migrations.Migration63To64
 import io.paritytech.polkadotapp.database.model.BrowserTabLocal
 import io.paritytech.polkadotapp.database.model.ChatBotStateLocal
 import io.paritytech.polkadotapp.database.model.ChatDraftLocal
@@ -99,11 +105,12 @@ import io.paritytech.polkadotapp.database.model.ChatRoomLocal
 import io.paritytech.polkadotapp.database.model.ChatSearchRecentLocal
 import io.paritytech.polkadotapp.database.model.CoinLocal
 import io.paritytech.polkadotapp.database.model.CoinageEntryInputLocal
-import io.paritytech.polkadotapp.database.model.CoinageEntryLocal
 import io.paritytech.polkadotapp.database.model.CoinageEntryOutputLocal
 import io.paritytech.polkadotapp.database.model.CoinageHandoffLocal
+import io.paritytech.polkadotapp.database.model.CoinageInstallationLocal
 import io.paritytech.polkadotapp.database.model.ContactDeviceLocal
 import io.paritytech.polkadotapp.database.model.ContactLocal
+import io.paritytech.polkadotapp.database.model.DurableTxLocal
 import io.paritytech.polkadotapp.database.model.ExternalPaymentLocal
 import io.paritytech.polkadotapp.database.model.FileDownloadLocal
 import io.paritytech.polkadotapp.database.model.FileUploadLocal
@@ -111,6 +118,8 @@ import io.paritytech.polkadotapp.database.model.GamePlayersLocal
 import io.paritytech.polkadotapp.database.model.MessageNotificationSentLocal
 import io.paritytech.polkadotapp.database.model.MessageRevisionLocal
 import io.paritytech.polkadotapp.database.model.MetaAccountLocal
+import io.paritytech.polkadotapp.database.model.PocketCardFaceLocal
+import io.paritytech.polkadotapp.database.model.PocketCardLocal
 import io.paritytech.polkadotapp.database.model.ProcessedChatMessageLocal
 import io.paritytech.polkadotapp.database.model.ProductFundingOperationLocal
 import io.paritytech.polkadotapp.database.model.ProductIntegrationLocal
@@ -142,7 +151,7 @@ import io.paritytech.polkadotapp.database.model.chain.ChainNodeLocal
 import io.paritytech.polkadotapp.database.model.chain.ChainRuntimeInfoLocal
 
 @Database(
-    version = 60,
+    version = 66,
     entities = [
         ProductFundingOperationLocal::class,
         ChainLocal::class,
@@ -194,11 +203,14 @@ import io.paritytech.polkadotapp.database.model.chain.ChainRuntimeInfoLocal
         BrowserTabLocal::class,
         ChatSearchRecentLocal::class,
         RingVrfKeyRegistrationLocal::class,
-        CoinageEntryLocal::class,
+        DurableTxLocal::class,
+        CoinageInstallationLocal::class,
         CoinageEntryInputLocal::class,
         CoinageEntryOutputLocal::class,
         CoinageHandoffLocal::class,
         ProductTopUpLocal::class,
+        PocketCardLocal::class,
+        PocketCardFaceLocal::class,
     ],
     autoMigrations = [
         // Add ChatMessageReactionLocal
@@ -273,6 +285,12 @@ import io.paritytech.polkadotapp.database.model.chain.ChainRuntimeInfoLocal
         AutoMigration(from = 58, to = 59),
         // Add product_top_ups table (kept indefinitely and resumed on app start)
         AutoMigration(from = 59, to = 60),
+        // Add recycler_vouchers.enteredAt to preserve readiness timers across restarts
+        AutoMigration(from = 61, to = 62),
+        // Key external_payments by (origin, id); add claimedPlanks for partially claimed payments
+        AutoMigration(from = 64, to = 65),
+        // Add pocket_cards (cards the user added to the Pocket) and pocket_card_faces (the newest face drawn for a card)
+        AutoMigration(from = 65, to = 66),
     ]
 )
 @TypeConverters(
@@ -322,6 +340,9 @@ abstract class AppDatabase : RoomDatabase() {
                 Migration48To49(),
                 Migration55To56(),
                 Migration57To58(),
+                Migration60To61(),
+                Migration62To63(),
+                Migration63To64(),
                 *chatMessageContentMigrations.toTypedArray() // 25 -> 26, 31 -> 32, 37 -> 38, 44 -> 45
             )
         }
@@ -416,4 +437,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun chatSearchRecentDao(): ChatSearchRecentDao
 
     abstract fun ringVrfKeyRegistrationDao(): RingVrfKeyRegistrationDao
+
+    abstract fun durableTxDao(): DurableTxDao
+
+    abstract fun coinageInstallationDao(): CoinageInstallationDao
+
+    abstract fun pocketCardDao(): PocketCardDao
 }

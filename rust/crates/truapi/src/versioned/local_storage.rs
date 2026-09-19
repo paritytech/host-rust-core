@@ -33,6 +33,9 @@ truapi_macros::versioned_type! {
     pub enum HostLocalStorageClearRequest { V1 => v01::HostLocalStorageClearRequest }
     pub enum HostLocalStorageClearResponse { V1 }
     pub enum HostLocalStorageClearError { V1 => v01::HostLocalStorageReadError }
+    pub enum HostLocalStorageSubscribeRequest { V1 => v01::HostLocalStorageSubscribeRequest }
+    pub enum HostLocalStorageChangeItem { V1 => v01::HostLocalStorageChangeItem }
+    pub enum HostLocalStorageSubscribeError { V1 => v01::GenericError }
 }
 
 impl IntoLatest for HostLocalStorageReadRequest {

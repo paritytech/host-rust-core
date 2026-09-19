@@ -21,18 +21,19 @@ env:
 jobs:
   distribute_testflight:
     runs-on: macos-26
-    # Held until the iOS cutover. This tree is behind the app repository, so a
-    # build from here would ship stale code and, for this workflow, consume a
-    # TestFlight build number the production record depends on.
-    #
     # This workflow calls the distribute action directly rather than through
     # ios-build-distribute.yml, so it does not inherit that workflow's
-    # github-actions[bot] check and nothing else would stop a hand-started run.
+    # github-actions[bot] check. The allowlist is the only thing standing
+    # between a hand-started run and a TestFlight build on the production
+    # record.
+    # This workflow calls the distribute action directly, so it inherits no
+    # github-actions[bot] check and this list is the only thing between a
+    # dispatch and a TestFlight build on the production record.
     #
-    # Removing this is part of the cutover, tracked on #764.
-    if: false
-    # The condition this replaces, to restore at cutover:
-    #   if: contains('["sergkononenko","ERussel","stepanLav", "den-vasilev", "piroznoe", "kogeler"]', github.actor)
+    # fromJSON, so this is array membership. Against a plain string `contains`
+    # matches a substring, and any actor whose name appears anywhere inside the
+    # list, down to a single letter, would pass.
+    if: contains(fromJSON('["sergkononenko","ERussel","stepanLav","kogeler","TarikGul","pgherveou","filvecchiato","valentinfernandez1"]'), github.actor)
     name: Distribute TestFlight Build
     steps:
       - name: Checkout repository
@@ -43,6 +44,13 @@ jobs:
         with:
           match_auth_required: "true"
           match_repository_pat: ${{ secrets.FASTLANE_RO_PAT }}
+
+      # Package.swift resolves targets at generated paths that are gitignored,
+      # so xcodebuild cannot resolve dependencies until the core is built from
+      # this tree. The app repository got the core as a published package and
+      # needed none of this; here it has to be generated before any build.
+      - name: Bootstrap the in-tree core
+        uses: ./.github/actions/bootstrap-ios-core
 
       - name: Read version and build number
         id: read_marketing_version
@@ -56,6 +64,9 @@ jobs:
       - name: Distribute TestFlight build
         uses: ./hosts/ios/.github/actions/distribute-testflight
         with:
+          # The caller already checked out, and this action's own checkout
+          # cleans ignored files, which is everything the bootstrap generated.
+          perform_checkout: "false"
           ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
           ios_extension_bundle_id: ${{ env.IOS_EXTENSION_BUNDLE_ID }}
           provisioning_profile_specifier: ${{ env.PROVISIONING_PROFILE_SPECIFIER }}

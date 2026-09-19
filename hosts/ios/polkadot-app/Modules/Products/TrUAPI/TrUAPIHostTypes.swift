@@ -11,3 +11,4 @@ typealias TrUAPIHostAllocatableResource = AllocatableResource
 typealias TrUAPIHostVrfTranscriptItem = VrfTranscriptItem
 typealias TrUAPIHostSignVrfRequest = HostAccountSignVrfRequest
 typealias TrUAPIHostRingLocation = RingLocation
+typealias TrUAPIPermissionDecision = PermissionDecision

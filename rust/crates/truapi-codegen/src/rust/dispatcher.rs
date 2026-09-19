@@ -10,10 +10,13 @@
 //!    and matches `_::V1(inner)` internally).
 //! 3. SCALE-encodes the versioned response wrapper back onto the wire.
 //!
-//! Which leg of the exchange a frame carries (request/response, or a
-//! subscription's start/receive/interrupt/stop) is the outer wire's own
-//! `message_type` byte, addressed alongside `(trait, method)` by the
-//! framework — this module never encodes or matches on it.
+//! Which leg of the exchange a frame carries (a request's
+//! request/response/cancel, or a subscription's start/receive/interrupt/stop)
+//! is the outer wire's own `message_type` byte, addressed alongside
+//! `(trait, method)` by the framework. This module never encodes or matches
+//! on it. A request handler receives the cancellation token the framework
+//! registered for that `requestId` and threads it into its `CallContext`, so a
+//! `Cancel` frame reaches the trait method.
 //!
 //! The generated file expects to live inside a `truapi-server` crate
 //! and references `crate::dispatcher::Dispatcher`. The codegen itself
@@ -334,7 +337,7 @@ impl MethodEmission {
             &formatdoc! {
                 r#"
                 let host = {host_expr};
-                dispatcher.on_request(wire_table::{ids}, move |request_id: String, bytes: Vec<u8>| {{
+                dispatcher.on_request(wire_table::{ids}, move |request_id: String, bytes: Vec<u8>, cancel: truapi::CancellationToken| {{
                     let host = host.clone();
                     Box::pin(async move {{
                 "#
@@ -356,7 +359,7 @@ impl MethodEmission {
                     }}
                 }};
                 let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id);
+                let cx = CallContext::with_parts(request_id, cancel);
                 "#
             },
         );

@@ -180,6 +180,15 @@ export interface MethodIds {
 }
 
 /**
+ * Per-call options every generated request method accepts as its last
+ * argument.
+ **/
+export interface CallOptions {
+  /** See {@link RequestParams.signal}. **/
+  signal?: AbortSignal;
+}
+
+/**
  * Options accepted by `TrUApiTransport.request`.
  **/
 export interface RequestParams<Ok, Err> {
@@ -201,6 +210,19 @@ export interface RequestParams<Ok, Err> {
    * into `ResultAsync<Ok, Err | UnsupportedCallError>`.
    **/
   decodeResponse: (payload: Uint8Array) => ResultPayload<Ok, Err>;
+
+  /**
+   * Withdraw the call. Aborting sends a `Cancel` frame on this method's own
+   * address; the promise still settles on the response the host sends, which
+   * for a call the host stopped is `CallError::Cancelled`. A signal already
+   * aborted when the call is made sends nothing and rejects immediately.
+   *
+   * A host that predates the `Cancel` leg drops the frame, so an aborted call
+   * against one settles on its deadline instead. There is no way to detect that
+   * first: `system.featureSupported` answers only about chains, so an abort
+   * against an older host is indistinguishable from one it honoured.
+   **/
+  signal?: AbortSignal;
 }
 
 /**
@@ -353,6 +375,12 @@ export const MESSAGE_TYPE_RECEIVE = 1;
 export const MESSAGE_TYPE_INTERRUPT = 2;
 /** See {@link Payload.messageType}. */
 export const MESSAGE_TYPE_STOP = 3;
+/**
+ * A request's withdrawal, correlated by the same `requestId` and carrying no
+ * payload. The call still settles with exactly one response; this only fires
+ * the handler's cancellation token on the far side.
+ **/
+export const MESSAGE_TYPE_CANCEL = 4;
 
 /**
  * Top-level TrUAPI wire message.

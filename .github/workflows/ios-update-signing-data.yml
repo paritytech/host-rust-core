@@ -6,21 +6,15 @@ concurrency:
 
 on:
   workflow_dispatch:
-  # Held on workflow_dispatch until the build credentials tracked in #672
-  # land. The trigger below is the one this workflow runs on; restoring it
-  # is the change that puts this workflow live.
-#   schedule:
-#     - cron: "0 10 * * *" # 10:00 AM every day
+  schedule:
+    - cron: "0 10 * * *" # 10:00 AM every day
 
 jobs:
   update_signing_data:
-    # Held until the iOS cutover. This tree is behind the app repository.
-    # It runs match with readonly false over the production and safety
-    # identifiers using the read-write Match credential, so it mutates signing
-    # state at Apple rather than only reading it. It had no condition at all.
-    #
-    # Removing this is part of the cutover, tracked on #764.
-    if: false
+    # Runs match with readonly false, so it renews the certificates and
+    # profiles at Apple and pushes the encrypted result back to the match
+    # repository. force_for_new_devices is what picks up a newly registered
+    # device, so the daily run is how a device reaches an ad-hoc build.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v6

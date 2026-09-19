@@ -43,10 +43,9 @@ data class ConnectionSmoothingConfig(
 
 /**
  * Hysteresis over the raw connectivity so reconnect storms read as a steady "connecting" rather than
- * flickering. Rising edges wait out a stability window (extended while flapping) before reporting
- * [ChainConnectionPresentation.Connected]; a settled disconnect waits out a cooldown before reporting
- * [ChainConnectionPresentation.Disconnected]. [timeProvider] is injectable so the time-based logic is
- * testable under virtual time.
+ * flickering. A first connect reports [ChainConnectionPresentation.Connected] at once; every later one
+ * waits out a stability window, extended while flapping. A settled disconnect waits out a cooldown
+ * before reporting [ChainConnectionPresentation.Disconnected].
  */
 @OptIn(ExperimentalCoroutinesApi::class, ExperimentalTime::class)
 class ConnectionSmoother internal constructor(
@@ -58,6 +57,7 @@ class ConnectionSmoother internal constructor(
 
     fun smooth(source: Flow<RawConnectivity>): Flow<ChainConnectionPresentation> = flow {
         val drops = ArrayDeque<Long>()
+        var everConnected = false
 
         val transitions = source
             .runningFold(Transition(null, null)) { acc, state -> Transition(acc.current, state) }
@@ -71,12 +71,12 @@ class ConnectionSmoother internal constructor(
 
                 when {
                     nowConnected -> {
-                        if (!wasConnected) {
-                            // Rising edge: stay pending through a stability window (longer while
-                            // flapping) so a reconnect storm reads as steady "connecting".
+                        val settleFor = settleDelay(everConnected, drops)
+                        if (!wasConnected && settleFor > Duration.ZERO) {
                             emit(ChainConnectionPresentation.Connecting)
-                            delay(if (isFlapping(drops)) config.flapHold else config.stabilityWindow)
+                            delay(settleFor)
                         }
+                        everConnected = true
                         emit(ChainConnectionPresentation.Connected)
                     }
 
@@ -92,17 +92,22 @@ class ConnectionSmoother internal constructor(
         )
     }
 
+    private fun settleDelay(everConnected: Boolean, drops: ArrayDeque<Long>): Duration {
+        purgeOld(drops, now())
+
+        return when {
+            !everConnected -> Duration.ZERO
+            drops.size >= config.flapDropThreshold -> config.flapHold
+            else -> config.stabilityWindow
+        }
+    }
+
     private fun now(): Long = timeProvider.now().toEpochMilliseconds()
 
     private fun recordDrop(drops: ArrayDeque<Long>) {
         val now = now()
         purgeOld(drops, now)
         drops.addLast(now)
-    }
-
-    private fun isFlapping(drops: ArrayDeque<Long>): Boolean {
-        purgeOld(drops, now())
-        return drops.size >= config.flapDropThreshold
     }
 
     private fun purgeOld(drops: ArrayDeque<Long>, now: Long) {

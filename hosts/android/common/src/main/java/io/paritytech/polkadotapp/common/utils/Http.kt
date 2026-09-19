@@ -9,7 +9,6 @@ import okhttp3.RequestBody
 import okhttp3.Response
 import okio.Buffer
 import okio.IOException
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 suspend inline fun Call.await(): Response {
@@ -25,11 +24,11 @@ class ContinuationCallback(
     private val continuation: CancellableContinuation<Response>
 ) : Callback, CompletionHandler {
     override fun onResponse(call: Call, response: Response) {
-        continuation.resume(response)
+        continuation.resume(response) { _, cancelledResponse, _ -> cancelledResponse.close() }
     }
 
     override fun onFailure(call: Call, e: IOException) {
-        if (!call.isCanceled()) {
+        if (continuation.isActive) {
             continuation.resumeWithException(e)
         }
     }

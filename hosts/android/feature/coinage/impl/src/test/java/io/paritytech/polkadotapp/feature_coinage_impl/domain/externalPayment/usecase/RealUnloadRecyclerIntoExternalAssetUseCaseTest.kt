@@ -15,6 +15,8 @@ import io.paritytech.polkadotapp.chains.network.binding.intoBalance
 import io.paritytech.polkadotapp.chains.network.rpc.RpcCalls
 import io.paritytech.polkadotapp.common.domain.model.intoAccountId
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageKeyIndex
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerIndex
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerKey
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
@@ -27,26 +29,30 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.Co
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FAILURE
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING_SUCCESS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageBalanceConverterUseCase
+import io.paritytech.polkadotapp.feature_coinage_impl.PowerOfTwoConversion
 import io.paritytech.polkadotapp.feature_coinage_impl.data.config.CoinageInstanceIdProvider
 import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.VoucherRingDerivation
 import io.paritytech.polkadotapp.feature_coinage_impl.data.helpers.FreeUnloadTokenResolver
 import io.paritytech.polkadotapp.feature_coinage_impl.data.helpers.UnloadTokenResolverFactory
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.RecyclerProofDataProvider
+import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.data.signer.context.CoinageSigningContextProvider
 import io.paritytech.polkadotapp.feature_coinage_impl.data.signer.origins.CoinageTransactionOrigins
+import io.paritytech.polkadotapp.feature_coinage_impl.planks
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingRevision
 import io.paritytech.polkadotapp.feature_people_api.domain.PeopleCollection
 import io.paritytech.polkadotapp.feature_people_api.domain.PeopleMembershipProver
 import io.paritytech.polkadotapp.feature_people_api.domain.useCase.ActivePeopleCollectionUseCase
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
 import io.paritytech.polkadotapp.feature_transactions.api.data.ExtrinsicService
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUCCESS
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -84,6 +90,7 @@ class RealUnloadRecyclerIntoExternalAssetUseCaseTest {
     private val extrinsicService: ExtrinsicService = mockk()
     private val coinageBalanceConverterUseCase: CoinageBalanceConverterUseCase = mockk()
     private val peopleMembershipProver: PeopleMembershipProver = mockk()
+    private val voucherRepository: VoucherRepository = mockk(relaxed = true)
 
     private val coinageInstanceIdProvider: CoinageInstanceIdProvider = mockk {
         coEvery { instanceId() } returns Result.success(0u)
@@ -99,7 +106,7 @@ class RealUnloadRecyclerIntoExternalAssetUseCaseTest {
         activePeopleCollectionUseCase = activePeopleCollectionUseCase,
         unloadTokenResolverFactory = unloadTokenResolverFactory,
         chainRegistry = chainRegistry,
-        voucherRepository = mockk(relaxed = true),
+        voucherRepository = voucherRepository,
         transactionService = transactionService,
         voucherAllocator = mockk(relaxed = true),
         coinAmountBreakdownUseCase = mockk(relaxed = true),
@@ -122,6 +129,8 @@ class RealUnloadRecyclerIntoExternalAssetUseCaseTest {
 
     @Test
     fun `an unload of nothing is refused`() = runBlocking<Unit> {
+        givenNothingSubmittedYet()
+
         val result = useCase.initiateUnload(emptyList(), destination, NO_SURPLUS, groupId)
 
         assertTrue(result.isFailure)
@@ -134,6 +143,7 @@ class RealUnloadRecyclerIntoExternalAssetUseCaseTest {
     @Test
     fun `a voucher that is not in a recycler is refused`() = runBlocking<Unit> {
         val vouchers = listOf(voucherInRecycler(1), voucherOf(2, Location.Onboarding))
+        givenNothingSubmittedYet()
 
         val result = useCase.initiateUnload(vouchers, destination, NO_SURPLUS, groupId)
 
@@ -260,18 +270,49 @@ class RealUnloadRecyclerIntoExternalAssetUseCaseTest {
     fun `an unload whose every transaction finalized reports success`() = runBlocking {
         givenGroupReports(listOf(entry(FINALIZED_SUCCESS), entry(FINALIZED_SUCCESS)))
 
-        assertEquals(ExternalUnloadStatus.Success, statuses().last())
+        assertEquals(ExternalUnloadStatus.FinalizedSuccess, statuses().last())
     }
 
     /**
      * Two of three groups executed and the third did not. Money did move, so this is not a failure — but the
-     * destination got less than it was promised, and the caller has to be able to say so.
+     * destination got less than it was promised, and the caller has to be able to say by how much.
+     *
+     * One executed group unloaded 8 and folded 2 back into a fresh voucher, the other unloaded 4, and the
+     * failed one would have unloaded 16: the destination got 8 - 2 + 4.
      */
     @Test
-    fun `an unload where some transactions executed reports how many`() = runBlocking {
-        givenGroupReports(listOf(entry(FINALIZED_SUCCESS), entry(FINALIZED_SUCCESS), entry(FAILURE)))
+    fun `an unload where some transactions executed reports how many and what reached the destination`() = runBlocking {
+        val withSurplus = voucherInRecycler(1, exponent = 3)
+        val surplus = voucherOf(2, Location.Onboarding, exponent = 1)
+        val plain = voucherInRecycler(3, exponent = 2)
+        val neverUnloaded = voucherInRecycler(4, exponent = 4)
+        givenVouchersKnown(withSurplus, surplus, plain, neverUnloaded)
 
-        assertEquals(ExternalUnloadStatus.PartialSuccess(executed = 2, total = 3), statuses().last())
+        givenGroupReports(
+            listOf(
+                entry(FINALIZED_SUCCESS, unloads = listOf(withSurplus), mints = listOf(surplus)),
+                entry(FINALIZED_SUCCESS, unloads = listOf(plain), mints = emptyList()),
+                entry(FAILURE, unloads = listOf(neverUnloaded), mints = emptyList()),
+            )
+        )
+
+        assertEquals(ExternalUnloadStatus.PartialSuccess(executed = 2, total = 3, claimed = planks(10)), statuses().last())
+    }
+
+    /**
+     * The app died after registering the unload, and by the time the caller retries the vouchers are locked by
+     * it, or already spent. The retry must still join the unload instead of refusing vouchers that were valid
+     * when it was submitted.
+     */
+    @Test
+    fun `a group an earlier attempt already submitted is joined whatever the vouchers look like now`() = runBlocking<Unit> {
+        coEvery { transactionService.getOperationGroupStatuses(groupId) } returns
+            Result.success(listOf(entry(PENDING)))
+
+        val result = useCase.initiateUnload(emptyList(), destination, NO_SURPLUS, groupId)
+
+        assertTrue(result.isSuccess)
+        coVerify(exactly = 0) { transactionService.submitTransactions(any(), any()) }
     }
 
     @Test
@@ -298,7 +339,7 @@ class RealUnloadRecyclerIntoExternalAssetUseCaseTest {
         )
 
         assertEquals(
-            listOf(ExternalUnloadStatus.Submitted, ExternalUnloadStatus.Success),
+            listOf(ExternalUnloadStatus.Submitted, ExternalUnloadStatus.FinalizedSuccess),
             useCase.subscribeUnloadStatus(groupId).take(2).toList(),
         )
     }
@@ -345,27 +386,52 @@ class RealUnloadRecyclerIntoExternalAssetUseCaseTest {
         }
     }
 
+    private fun givenNothingSubmittedYet() {
+        coEvery { transactionService.getOperationGroupStatuses(groupId) } returns Result.success(emptyList())
+    }
+
     private suspend fun statuses() = useCase.subscribeUnloadStatus(groupId).toList()
 
     private fun givenGroupReports(vararg emissions: List<CoinageTransactionState>) {
+        coEvery { coinageBalanceConverterUseCase.create() } returns Result.success(PowerOfTwoConversion)
         every { transactionService.subscribeOperationGroupStatuses(groupId) } returns flowOf(*emissions)
     }
 
-    private fun entry(status: CoinageTransactionStatus) = CoinageTransactionState(
+    private fun givenVouchersKnown(vararg vouchers: RecyclerVoucher) {
+        coEvery { voucherRepository.getByRingVrfKeyIndices(any()) } answers {
+            val keys = firstArg<List<CoinageKeyIndex>>()
+            vouchers.filter { it.ringVrfKeyIndex in keys }
+        }
+    }
+
+    private fun entry(status: DurableTxStatus, unloads: List<RecyclerVoucher>, mints: List<RecyclerVoucher>) =
+        CoinageTransactionState(
+            id = CoinageTransactionId(status.ordinal.toLong()),
+            status = status,
+            inputs = unloads.map { CoinageInput.Voucher(it.ringVrfKeyIndex) },
+            outputs = mints.map { OwnAsset.Voucher(it.ringVrfKeyIndex) },
+        )
+
+    private fun entry(status: DurableTxStatus) = CoinageTransactionState(
         id = CoinageTransactionId(status.ordinal.toLong()),
         status = status,
-        inputs = listOf(CoinageInput.Voucher(status.ordinal)),
-        outputs = listOf(OwnAsset.Voucher(status.ordinal)),
+        inputs = listOf(CoinageInput.Voucher(testKey(status.ordinal))),
+        outputs = listOf(OwnAsset.Voucher(testKey(status.ordinal))),
     )
 
-    private fun voucherInRecycler(index: Int, recycler: Int = index) =
-        voucherOf(index, Location.InRecycler(RecyclerIndex(BigInteger.valueOf(recycler.toLong())), recyclerMembers = 767))
+    private fun voucherInRecycler(index: Int, recycler: Int = index, exponent: Int = 1) = voucherOf(
+        index = index,
+        location = Location.InRecycler(RecyclerIndex(BigInteger.valueOf(recycler.toLong())), recyclerMembers = 767, enteredAt = null),
+        exponent = exponent,
+    )
 
-    private fun voucherOf(index: Int, location: Location) = RecyclerVoucher(
-        ringVrfKeyIndex = index,
+    private fun voucherOf(index: Int, location: Location, exponent: Int = 1) = RecyclerVoucher(
+        ringVrfKeyIndex = testKey(index),
         ringVrfPublicKey = byteArrayOf(index.toByte()).toDataByteArray(),
-        recyclerValue = ValueExponent(1),
+        recyclerValue = ValueExponent(exponent),
         location = location,
+        recyclerFungibility = RecyclerFungibility.NONE,
+        maxRecyclerFungibility = RecyclerFungibility.NONE,
     )
 
     private companion object {

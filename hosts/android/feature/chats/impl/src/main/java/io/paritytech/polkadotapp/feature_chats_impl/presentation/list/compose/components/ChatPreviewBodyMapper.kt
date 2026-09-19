@@ -90,7 +90,12 @@ private fun LastMessageUiModel.toPreviewBody(username: String): ChatPreviewBody 
                 precision = RoundPrecision.DEFAULT
             )
             val text = if (isIncoming) {
-                stringResource(R.string.chat_last_message_payment_incoming, username, value)
+                val incomingRes = if (paymentStatus.isClaimInFlight) {
+                    R.string.chat_last_message_payment_incoming_sending
+                } else {
+                    R.string.chat_last_message_payment_incoming
+                }
+                stringResource(incomingRes, username, value)
             } else {
                 stringResource(R.string.chat_last_message_payment_outgoing, value)
             }.withBold(value)

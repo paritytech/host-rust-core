@@ -162,9 +162,24 @@ Frames are SCALE encoded:
 [requestId: SCALE str][trait: u8][method: u8][message_type: u8][payload bytes...]
 ```
 
-The discriminant is a `(trait, method)` pair: the trait byte names the API trait and the method byte addresses a method within it, so method ids restart at 0 in every trait. Which leg a frame carries (request vs. response, or a subscription's start/stop/interrupt/receive) is named by the `message_type` byte rather than by a separate id, so one method occupies exactly one id regardless of shape. The table is generated from the Rust trait-level `#[wire_trait(id = N)]` annotation plus the method-level `#[wire(id = N)]` annotation, and is written to `src/generated/wire-table.ts`.
+The discriminant is a `(trait, method)` pair: the trait byte names the API trait and the method byte addresses a method within it, so method ids restart at 0 in every trait. Which leg a frame carries (a request's request/response/cancel, or a subscription's start/stop/interrupt/receive) is named by the `message_type` byte rather than by a separate id, so one method occupies exactly one id regardless of shape. The table is generated from the Rust trait-level `#[wire_trait(id = N)]` annotation plus the method-level `#[wire(id = N)]` annotation, and is written to `src/generated/wire-table.ts`.
 
-This layout is wire codec version 2 and is not compatible with codec version 1, which addressed methods with a single flat byte.
+This layout is not compatible with wire codec version 1, which addressed methods with a single flat byte. The codec version a client speaks is `TRUAPI_CODEC_VERSION`, stamped into the generated client from `truapi::WIRE_CODEC_VERSION`.
+
+### Cancelling a call
+
+Every generated request method takes `options?: CallOptions` last. Aborting its `signal` sends a `Cancel` frame on that method's own address, correlated by the same `requestId`:
+
+```ts
+const controller = new AbortController();
+const pending = truapi.signing.createTransaction(request, { signal: controller.signal });
+controller.abort();
+const result = await pending; // Err(CallError.Cancelled) if the host stopped
+```
+
+Cancelling stops the waiting, not necessarily the work. The call still settles with exactly one response, and a host that received the cancel in time answers `Cancelled` whether or not its handler managed to unwind. A cancel that arrives after the response has gone out changes nothing, and the promise resolves with the real result. One that lands while the handler is still unwinding still wins, so a call aborted at the last moment can answer `Cancelled` even though its work completed. A signal already aborted when the call is made sends nothing and rejects immediately.
+
+A host that predates the `Cancel` leg drops the frame with no reply, and the call then settles on the client's own deadline instead. There is no way to detect that first: `system.featureSupported` answers only about chains, so an abort a host never understood looks the same as one it honoured.
 
 The pair `(255, 255)` is reserved for method-independent protocol errors. When a peer rejects an unknown API message with that frame, requests resolve as `CallError.Unsupported` and subscriptions terminate with an `UnsupportedMessageError` cause carrying the unsupported `(trait, method)` pair.
 

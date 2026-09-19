@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use parity_scale_codec::Encode;
 use truapi::api::{
     Account, Chain, Entropy, LocalStorage, Notifications, Permissions, Preimage,
-    ResourceAllocation, Signing, System, Theme,
+    ResourceAllocation, Signing, StatementStore, System, Theme, Worker,
 };
 use truapi::v02;
 use truapi::versioned::account::{
@@ -25,11 +25,13 @@ use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
 };
 use truapi::versioned::local_storage::{
-    HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
+    HostLocalStorageChangeItem, HostLocalStorageClearRequest, HostLocalStorageReadError,
+    HostLocalStorageReadRequest, HostLocalStorageReadResponse, HostLocalStorageSubscribeError,
+    HostLocalStorageSubscribeRequest, HostLocalStorageWriteRequest,
 };
 use truapi::versioned::notifications::{
     HostPushNotificationCancelRequest, HostPushNotificationCancelResponse,
-    HostPushNotificationRequest, HostPushNotificationResponse,
+    HostPushNotificationError, HostPushNotificationRequest, HostPushNotificationResponse,
 };
 use truapi::versioned::permissions::{HostDevicePermissionRequest, HostDevicePermissionResponse};
 use truapi::versioned::preimage::{
@@ -49,12 +51,19 @@ use truapi::versioned::signing::{
     HostSignRawResponse, HostSignRawWithLegacyAccountError, HostSignRawWithLegacyAccountRequest,
     HostSignRawWithLegacyAccountResponse,
 };
+use truapi::versioned::statement_store::{
+    RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+};
 use truapi::versioned::system::{
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostGetProductContextRequest,
     HostGetProductContextResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
+use truapi::versioned::worker::{
+    HostWorkerBeginOperationRequest, HostWorkerBeginOperationResponse,
+    HostWorkerEndOperationRequest,
+};
 use truapi_platform::{
     AuthState, CoreStorage as PlatformCoreStorage, CoreStorageKey, PermissionAuthorizationRequest,
 };
@@ -1253,69 +1262,149 @@ fn bare_localhost_product_allows_dev_product_accounts() {
     assert!(host.is_product_account_valid_for_caller("myapp.dot"));
 }
 
+/// A product destination reaches the platform as a `polkadot://` URL, whatever
+/// the product spelled it as. Asserting only that the call succeeded would not
+/// notice it arriving as `https://`.
 #[test]
-fn navigate_to_uses_dotns_decision_and_then_platform() {
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
-    let cx = CallContext::default();
-    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-        url: "mytestapp.dot".to_string(),
-    });
-    let response = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
-    assert_eq!(response, HostNavigateToResponse::V1);
-}
+fn navigate_to_hands_a_product_destination_over_as_a_polkadot_url() {
+    for spelling in [
+        "mytestapp.dot",
+        "polkadot://mytestapp.dot",
+        "https://mytestapp.dot",
+    ] {
+        let platform = Arc::new(StubPlatform::default());
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+            url: spelling.to_string(),
+        });
 
-#[test]
-fn navigate_to_rejects_empty_input_without_calling_platform() {
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
-    let cx = CallContext::default();
-    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-        url: "".to_string(),
-    });
-    let err = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap_err();
-    match err {
-        CallError::Domain(HostNavigateToError::V1(v01::HostNavigateToError::Unknown {
-            ..
-        })) => {}
-        other => panic!("expected Unknown navigate error, got {other:?}"),
+        let response = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
+
+        assert_eq!(response, HostNavigateToResponse::V1);
+        assert_eq!(
+            platform.navigations.lock().unwrap().as_slice(),
+            ["polkadot://mytestapp.dot".to_string()],
+            "for {spelling}"
+        );
     }
 }
 
+/// A web address still arrives as `https://`, so the two stay distinguishable.
 #[test]
-fn navigate_to_external_denies_without_a_remote_grant() {
+fn navigate_to_hands_a_web_address_over_unchanged() {
+    let platform = Arc::new(StubPlatform::default());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+        url: "https://example.com/path".to_string(),
+    });
+
+    futures::executor::block_on(host.navigate_to(&cx, request)).unwrap();
+
+    assert_eq!(
+        platform.navigations.lock().unwrap().as_slice(),
+        ["https://example.com/path".to_string()]
+    );
+}
+
+#[test]
+fn navigate_to_rejects_invalid_input_without_prompting_or_calling_platform() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    for url in [
+        "",
+        "javascript:alert(1)",
+        "data:text/plain,test",
+        "file:///etc/passwd",
+        "vbscript:msgbox(1)",
+    ] {
+        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+            url: url.to_string(),
+        });
+        assert!(matches!(
+            futures::executor::block_on(host.navigate_to(&cx, request)),
+            Err(CallError::Domain(HostNavigateToError::V1(
+                v01::HostNavigateToError::Unknown { .. }
+            )))
+        ));
+    }
+    assert_eq!(
+        (
+            platform.navigations.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (vec![], vec![], vec![]),
+    );
+}
+
+#[test]
+fn navigate_to_external_denies_without_open_url_permission() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    let urls = [
+        "https://example.com/page",
+        "http://other.example.com/page",
+        "mailto:someone@example.com",
+        "tel:+15551234567",
+        "sms:+15551234567",
+        "maps:?q=Berlin",
+        "polkadot://1exampleaddress",
+        "dot:transfer",
+    ];
+    let mut responses = Vec::new();
+    for url in urls {
+        responses.push(futures::executor::block_on(host.navigate_to(
+            &cx,
+            HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                url: url.to_string(),
+            }),
+        )));
+    }
+    assert_eq!(
+        (
+            responses,
+            platform.navigations.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            vec![
+                Err(CallError::Domain(HostNavigateToError::V1(
+                    v01::HostNavigateToError::PermissionDenied
+                )));
+                urls.len()
+            ],
+            vec![],
+            vec![v01::HostDevicePermissionRequest::OpenUrl],
+            vec![],
+        ),
+    );
+}
+
+#[test]
+fn navigate_to_external_reuses_open_url_grant_across_destinations() {
     let platform = Arc::new(StubPlatform {
         remote_permission_denied: true,
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
-    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-        url: "https://example.com/page".to_string(),
-    });
 
-    let err = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap_err();
-    match err {
-        CallError::Domain(HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied)) => {}
-        other => panic!("expected navigate permission denial, got {other:?}"),
-    }
-    assert!(
-        platform
-            .navigations
-            .lock()
-            .expect("navigation list mutex poisoned")
-            .is_empty(),
-        "a denied navigation must not reach the platform"
-    );
-}
-
-#[test]
-fn navigate_to_external_prompts_for_the_host_then_reuses_the_grant() {
-    let platform = Arc::new(StubPlatform::default());
-    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
-    let cx = CallContext::default();
-
-    for path in ["https://example.com/first", "https://example.com/second"] {
+    let urls = [
+        "https://example.com/first",
+        "https://other.example.com/second",
+        "http://third.example.com/page",
+    ];
+    for url in urls {
         let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-            url: path.to_string(),
+            url: url.to_string(),
         });
         assert_eq!(
             futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
@@ -1323,103 +1412,307 @@ fn navigate_to_external_prompts_for_the_host_then_reuses_the_grant() {
         );
     }
 
-    let asked = platform
-        .remote_permission_requests
-        .lock()
-        .expect("remote permission list mutex poisoned")
-        .clone();
     assert_eq!(
-        asked,
-        vec![v01::RemotePermissionRequest {
-            permission: v01::RemotePermission::Remote {
-                domains: vec!["example.com".to_string()],
-            },
-        }],
-        "the gate asks once, for the target host, and the grant covers later paths"
-    );
-    assert_eq!(
-        platform
-            .navigations
-            .lock()
-            .expect("navigation list mutex poisoned")
-            .len(),
-        2
+        (
+            platform.navigations.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            urls.map(str::to_string).to_vec(),
+            vec![v01::HostDevicePermissionRequest::OpenUrl],
+            vec![],
+        ),
     );
 }
 
 #[test]
-fn navigate_to_dotns_and_localhost_bypass_the_remote_gate() {
-    // Both resolve back into the host's own product surface, so a denied
-    // remote permission must not block in-ecosystem navigation.
+fn navigate_to_internal_targets_do_not_consume_open_url_permission() {
     let platform = Arc::new(StubPlatform {
         remote_permission_denied: true,
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
 
-    for url in ["mytestapp.dot", "localhost:3000"] {
+    for url in [
+        "mytestapp.dot",
+        "localhost:3000",
+        "polkadot://mytestapp.dot/-/pocket/open?card=loyalty",
+    ] {
         let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
             url: url.to_string(),
         });
         assert_eq!(
             futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
             HostNavigateToResponse::V1,
-            "{url} must not consume a remote grant"
+            "{url} stays within the host's product surface"
         );
     }
-    assert!(
-        platform
-            .remote_permission_requests
-            .lock()
-            .expect("remote permission list mutex poisoned")
-            .is_empty()
+    assert_eq!(
+        (
+            platform.device_permission_requests.lock().unwrap().clone(),
+            platform.remote_permission_requests.lock().unwrap().clone(),
+        ),
+        (vec![], vec![]),
     );
 }
 
 #[test]
-fn navigate_to_handoff_schemes_bypass_the_remote_gate() {
-    // Only `http(s)` reaches a domain a grant can name. The other allowed
-    // schemes hand the URL to another app, so a denying platform must not
-    // turn them into a permission error.
+fn navigate_to_consumes_open_url_allow_once_at_handoff() {
+    futures::executor::block_on(async {
+        for url in [
+            "https://example.com/page",
+            "http://other.example.com/page",
+            "mailto:someone@example.com",
+            "tel:+15551234567",
+            "sms:+15551234567",
+            "maps:?q=Berlin",
+            "polkadot://1exampleaddress",
+            "dot:transfer",
+        ] {
+            for request_upfront in [false, true] {
+                let platform = Arc::new(StubPlatform {
+                    device_permission_decisions: Mutex::new(
+                        [
+                            truapi_platform::PermissionDecision::AllowOnce,
+                            truapi_platform::PermissionDecision::Deny,
+                        ]
+                        .into(),
+                    ),
+                    remote_permission_denied: true,
+                    ..Default::default()
+                });
+                let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+                let cx = CallContext::default();
+                if request_upfront {
+                    for _ in 0..2 {
+                        assert_eq!(
+                            host.request_device_permission(
+                                &cx,
+                                HostDevicePermissionRequest::V1(
+                                    v01::HostDevicePermissionRequest::OpenUrl
+                                )
+                            )
+                            .await
+                            .unwrap(),
+                            HostDevicePermissionResponse::V1(v01::HostDevicePermissionResponse {
+                                granted: true
+                            }),
+                        );
+                    }
+                }
+                let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                    url: url.to_string(),
+                });
+                let first = host.navigate_to(&cx, request.clone()).await;
+                let status = host
+                    .permission_authorization_status(PermissionAuthorizationRequest::Device(
+                        v01::HostDevicePermissionRequest::OpenUrl,
+                    ))
+                    .await
+                    .unwrap();
+                let second = host.navigate_to(&cx, request).await;
+                assert_eq!(
+                    (
+                        first,
+                        second,
+                        status,
+                        platform.navigations.lock().unwrap().clone(),
+                        platform.device_permission_requests.lock().unwrap().clone(),
+                        platform.remote_permission_requests.lock().unwrap().clone(),
+                    ),
+                    (
+                        Ok(HostNavigateToResponse::V1),
+                        Err(CallError::Domain(HostNavigateToError::V1(
+                            v01::HostNavigateToError::PermissionDenied
+                        ))),
+                        PermissionAuthorizationStatus::NotDetermined,
+                        vec![url.to_string()],
+                        vec![v01::HostDevicePermissionRequest::OpenUrl; 2],
+                        vec![],
+                    ),
+                    "url={url}, request_upfront={request_upfront}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn device_authorization_consumes_allow_once_for_each_capability() {
+    futures::executor::block_on(async {
+        for capability in [
+            v01::HostDevicePermissionRequest::Camera,
+            v01::HostDevicePermissionRequest::Microphone,
+        ] {
+            for request_upfront in [false, true] {
+                let platform = Arc::new(StubPlatform {
+                    device_permission_decisions: Mutex::new(
+                        [PermissionDecision::AllowOnce, PermissionDecision::Deny].into(),
+                    ),
+                    ..Default::default()
+                });
+                let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+                let cx = CallContext::default();
+                let request = HostDevicePermissionRequest::V1(capability);
+                if request_upfront {
+                    for _ in 0..2 {
+                        assert_eq!(
+                            host.request_device_permission(&cx, request.clone())
+                                .await
+                                .unwrap(),
+                            HostDevicePermissionResponse::V1(v01::HostDevicePermissionResponse {
+                                granted: true
+                            }),
+                        );
+                    }
+                }
+                let first = host.authorize_device_permission(&cx, request.clone()).await;
+                let status = host
+                    .permission_authorization_status(PermissionAuthorizationRequest::Device(
+                        capability,
+                    ))
+                    .await
+                    .unwrap();
+                let second = host.authorize_device_permission(&cx, request).await;
+                assert_eq!(
+                    (
+                        first,
+                        second,
+                        status,
+                        platform.device_permission_requests.lock().unwrap().clone()
+                    ),
+                    (
+                        Ok(HostDevicePermissionResponse::V1(
+                            v01::HostDevicePermissionResponse { granted: true }
+                        )),
+                        Ok(HostDevicePermissionResponse::V1(
+                            v01::HostDevicePermissionResponse { granted: false }
+                        )),
+                        PermissionAuthorizationStatus::NotDetermined,
+                        vec![capability; 2],
+                    ),
+                    "capability={capability}, request_upfront={request_upfront}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn device_authorization_concurrent_calls_cannot_share_one_use_grants() {
+    futures::executor::block_on(async {
+        for capability in [
+            v01::HostDevicePermissionRequest::Camera,
+            v01::HostDevicePermissionRequest::Microphone,
+        ] {
+            let platform = Arc::new(StubPlatform {
+                device_permission_decisions: Mutex::new(
+                    [PermissionDecision::AllowOnce, PermissionDecision::Deny].into(),
+                ),
+                ..Default::default()
+            });
+            let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+            let cx = CallContext::default();
+            let request = HostDevicePermissionRequest::V1(capability);
+            host.request_device_permission(&cx, request.clone())
+                .await
+                .unwrap();
+            let (first, second) = futures::join!(
+                host.authorize_device_permission(&cx, request.clone()),
+                host.authorize_device_permission(&cx, request),
+            );
+            assert_eq!(
+                (
+                    first,
+                    second,
+                    platform.device_permission_requests.lock().unwrap().clone()
+                ),
+                (
+                    Ok(HostDevicePermissionResponse::V1(
+                        v01::HostDevicePermissionResponse { granted: true }
+                    )),
+                    Ok(HostDevicePermissionResponse::V1(
+                        v01::HostDevicePermissionResponse { granted: false }
+                    )),
+                    vec![capability; 2],
+                ),
+                "capability={capability}",
+            );
+        }
+    });
+}
+
+#[test]
+fn device_authorization_reuses_permanent_grants() {
+    futures::executor::block_on(async {
+        let platform = Arc::new(StubPlatform {
+            device_permission_decisions: Mutex::new(
+                [
+                    PermissionDecision::AllowAlways,
+                    PermissionDecision::AllowAlways,
+                    PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let capabilities = [
+            v01::HostDevicePermissionRequest::Camera,
+            v01::HostDevicePermissionRequest::Microphone,
+        ];
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            for capability in capabilities {
+                responses.push(
+                    host.authorize_device_permission(
+                        &CallContext::default(),
+                        HostDevicePermissionRequest::V1(capability),
+                    )
+                    .await,
+                );
+            }
+        }
+        assert_eq!(
+            (
+                responses,
+                platform.device_permission_requests.lock().unwrap().clone()
+            ),
+            (
+                vec![
+                    Ok(HostDevicePermissionResponse::V1(
+                        v01::HostDevicePermissionResponse { granted: true }
+                    ));
+                    4
+                ],
+                capabilities.to_vec(),
+            ),
+        );
+    });
+}
+
+#[test]
+fn device_authorization_storage_failure_does_not_prompt_or_authorize() {
     let platform = Arc::new(StubPlatform {
-        remote_permission_denied: true,
+        permission_storage_error: Some("device permission storage unavailable"),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
-    let cx = CallContext::default();
-
-    let handoffs = [
-        "mailto:someone@example.com",
-        "tel:+15551234567",
-        "polkadot://1exampleaddress",
-        "dot:transfer",
-    ];
-    for url in handoffs {
-        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
-            url: url.to_string(),
-        });
-        assert_eq!(
-            futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
-            HostNavigateToResponse::V1,
-            "{url} has no authorizable domain and must reach the platform"
-        );
-    }
-    assert!(
-        platform
-            .remote_permission_requests
-            .lock()
-            .expect("remote permission list mutex poisoned")
-            .is_empty(),
-        "a hostless scheme must not consume a grant"
-    );
+    let response = futures::executor::block_on(host.authorize_device_permission(
+        &CallContext::default(),
+        HostDevicePermissionRequest::V1(v01::HostDevicePermissionRequest::Camera),
+    ));
     assert_eq!(
-        platform
-            .navigations
-            .lock()
-            .expect("navigation list mutex poisoned")
-            .len(),
-        handoffs.len()
+        (response, platform.device_permission_requests.lock().unwrap().clone()),
+        (
+            Err(CallError::HostFailure {
+                reason: "permission storage failed: GenericError { reason: \"device permission storage unavailable\" }".to_string(),
+            }),
+            vec![],
+        ),
     );
 }
 
@@ -1459,13 +1752,162 @@ fn push_notification_delegates_payload_and_returns_host_id() {
 }
 
 #[test]
+fn push_notification_consumes_allow_once_before_scheduling() {
+    for request_upfront in [false, true] {
+        let platform = Arc::new(StubPlatform {
+            device_permission_decisions: Mutex::new(
+                [
+                    truapi_platform::PermissionDecision::AllowOnce,
+                    truapi_platform::PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            notification_id: 42,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+        let notification = v01::HostPushNotificationRequest {
+            text: "Hello".to_string(),
+            deeplink: None,
+            scheduled_at: None,
+        };
+
+        if request_upfront {
+            assert_eq!(
+                futures::executor::block_on(host.request_device_permission(
+                    &cx,
+                    HostDevicePermissionRequest::V1(
+                        v01::HostDevicePermissionRequest::Notifications
+                    ),
+                ))
+                .unwrap(),
+                HostDevicePermissionResponse::V1(v01::HostDevicePermissionResponse {
+                    granted: true
+                })
+            );
+        }
+        let first = futures::executor::block_on(
+            host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+        );
+        let second = futures::executor::block_on(
+            host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+        );
+
+        assert_eq!(
+            (
+                first,
+                second,
+                platform.pushed_notifications.lock().unwrap().clone(),
+                platform.device_permission_requests.lock().unwrap().clone(),
+            ),
+            (
+                Ok(HostPushNotificationResponse::V1(
+                    v01::HostPushNotificationResponse { id: 42 }
+                )),
+                Err(CallError::Domain(HostPushNotificationError::V1(
+                    v01::HostPushNotificationError::Unknown {
+                        reason: PERMISSION_DENIED_REASON.to_string(),
+                    },
+                ))),
+                vec![notification],
+                vec![v01::HostDevicePermissionRequest::Notifications; 2],
+            ),
+            "request_upfront={request_upfront}"
+        );
+    }
+}
+
+#[test]
+fn push_notification_denial_never_reaches_scheduler() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    let request = HostPushNotificationRequest::V1(v01::HostPushNotificationRequest {
+        text: "Hello".to_string(),
+        deeplink: None,
+        scheduled_at: None,
+    });
+
+    let response = futures::executor::block_on(host.send_push_notification(&cx, request));
+
+    assert_eq!(
+        (
+            response,
+            platform.pushed_notifications.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            Err(CallError::Domain(HostPushNotificationError::V1(
+                v01::HostPushNotificationError::Unknown {
+                    reason: PERMISSION_DENIED_REASON.to_string(),
+                },
+            ))),
+            vec![],
+            vec![v01::HostDevicePermissionRequest::Notifications],
+        )
+    );
+}
+
+#[test]
+fn push_notification_reuses_allow_always() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new(
+            [
+                truapi_platform::PermissionDecision::AllowAlways,
+                truapi_platform::PermissionDecision::Deny,
+            ]
+            .into(),
+        ),
+        notification_id: 42,
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cx = CallContext::default();
+    let notification = v01::HostPushNotificationRequest {
+        text: "Hello".to_string(),
+        deeplink: None,
+        scheduled_at: None,
+    };
+    let first = futures::executor::block_on(
+        host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+    );
+    let second = futures::executor::block_on(
+        host.send_push_notification(&cx, HostPushNotificationRequest::V1(notification.clone())),
+    );
+
+    assert_eq!(
+        (
+            first,
+            second,
+            platform.pushed_notifications.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+        ),
+        (
+            Ok(HostPushNotificationResponse::V1(
+                v01::HostPushNotificationResponse { id: 42 }
+            )),
+            Ok(HostPushNotificationResponse::V1(
+                v01::HostPushNotificationResponse { id: 42 }
+            )),
+            vec![notification; 2],
+            vec![v01::HostDevicePermissionRequest::Notifications],
+        )
+    );
+}
+
+#[test]
 fn cancel_notification_delegates_host_id() {
     let cancelled_notifications = Arc::new(Mutex::new(Vec::new()));
     let platform = Arc::new(StubPlatform {
         cancelled_notifications: cancelled_notifications.clone(),
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
-    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     let cx = CallContext::default();
     let request =
         HostPushNotificationCancelRequest::V1(v01::HostPushNotificationCancelRequest { id: 42 });
@@ -1473,13 +1915,13 @@ fn cancel_notification_delegates_host_id() {
     let response =
         futures::executor::block_on(host.cancel_push_notification(&cx, request)).unwrap();
 
-    assert_eq!(response, HostPushNotificationCancelResponse::V1);
     assert_eq!(
-        cancelled_notifications
-            .lock()
-            .expect("notification cancellation list mutex poisoned")
-            .as_slice(),
-        &[42]
+        (
+            response,
+            cancelled_notifications.lock().unwrap().clone(),
+            platform.device_permission_requests.lock().unwrap().clone(),
+        ),
+        (HostPushNotificationCancelResponse::V1, vec![42], vec![])
     );
 }
 
@@ -1630,6 +2072,68 @@ fn get_account_other_product_accepts_confirmation_then_derives_key() {
         inner.account.public_key,
         test_product_account_public("other.dot", 0).to_vec()
     );
+}
+
+#[test]
+fn get_account_allow_once_does_not_authorize_the_next_disclosure() {
+    futures::executor::block_on(async {
+        let platform = Arc::new(StubPlatform {
+            permission_confirmation_decisions: Mutex::new(
+                [
+                    truapi_platform::PermissionDecision::AllowOnce,
+                    truapi_platform::PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        let session = sso_session_info();
+        install_pairing_session(&host, session.clone());
+        cache_test_product_subtree(&host, &session, "other.dot");
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("other.dot", 0),
+        });
+        let response = host
+            .get_account(&CallContext::default(), request.clone())
+            .await
+            .unwrap();
+        let HostAccountGetResponse::V1(response) = response;
+        let saved = platform
+            .read_core_storage(CoreStorageKey::account_access_authorization(
+                "myapp", "other",
+            ))
+            .await
+            .unwrap();
+        let mut rejected = Vec::new();
+        for _ in 0..2 {
+            rejected.push(matches!(
+                host.get_account(&CallContext::default(), request.clone())
+                    .await,
+                Err(CallError::Domain(HostAccountGetError::V1(
+                    v01::HostAccountGetError::Rejected
+                )))
+            ));
+        }
+        assert_eq!(
+            (
+                response.account.public_key,
+                saved,
+                rejected,
+                platform.account_access_reviews.lock().unwrap().len(),
+            ),
+            (
+                test_product_account_public("other.dot", 0).to_vec(),
+                None,
+                vec![true, true],
+                2,
+            ),
+        );
+    });
 }
 
 #[test]
@@ -1999,6 +2503,57 @@ fn get_user_id_caches_identity_disclosure_grant() {
 }
 
 #[test]
+fn get_user_id_allow_once_does_not_authorize_the_next_disclosure() {
+    futures::executor::block_on(async {
+        let platform = Arc::new(StubPlatform {
+            permission_confirmation_decisions: Mutex::new(
+                [
+                    truapi_platform::PermissionDecision::AllowOnce,
+                    truapi_platform::PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        install_pairing_session(&host, session_info());
+        let response = host
+            .get_user_id(&CallContext::default(), HostGetUserIdRequest::V1)
+            .await
+            .unwrap();
+        let HostGetUserIdResponse::V1(response) = response;
+        let status = host
+            .permission_authorization_status(PermissionAuthorizationRequest::IdentityDisclosure)
+            .await
+            .unwrap();
+        let mut rejected = Vec::new();
+        for _ in 0..2 {
+            rejected.push(matches!(
+                host.get_user_id(&CallContext::default(), HostGetUserIdRequest::V1)
+                    .await,
+                Err(CallError::Domain(HostGetUserIdError::V1(
+                    v01::HostGetUserIdError::PermissionDenied
+                )))
+            ));
+        }
+        assert_eq!(
+            (
+                response.primary_username,
+                status,
+                rejected,
+                platform.identity_disclosure_calls.load(Ordering::SeqCst),
+            ),
+            (
+                "Alice Smith".to_string(),
+                PermissionAuthorizationStatus::NotDetermined,
+                vec![true, true],
+                2,
+            ),
+        );
+    });
+}
+
+#[test]
 fn get_user_id_caches_identity_disclosure_denial() {
     let platform = Arc::new(StubPlatform::default());
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
@@ -2232,7 +2787,7 @@ fn preimage_submit_requires_remote_permission_before_backend_call() {
     match err {
         CallError::Domain(RemotePreimageSubmitError::V1(v01::PreimageSubmitError::Unknown {
             reason,
-        })) => assert_eq!(reason, REMOTE_PERMISSION_DENIED_REASON),
+        })) => assert_eq!(reason, PERMISSION_DENIED_REASON),
         other => panic!("expected preimage permission denial, got {other:?}"),
     }
     assert!(
@@ -2266,7 +2821,7 @@ fn chain_broadcast_requires_remote_permission_before_backend_call() {
     match err {
         CallError::Domain(RemoteChainTransactionBroadcastError::V1(v01::GenericError {
             reason,
-        })) => assert_eq!(reason, REMOTE_PERMISSION_DENIED_REASON),
+        })) => assert_eq!(reason, PERMISSION_DENIED_REASON),
         other => panic!("expected chain broadcast permission denial, got {other:?}"),
     }
     assert!(platform.sent_rpc.lock().unwrap().is_empty());
@@ -2345,6 +2900,483 @@ fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
         Ok(RemotePreimageLookupSubscribeItem::V1(
             v01::RemotePreimageLookupSubscribeItem { value: Some(value) }
         ))
+    );
+}
+
+fn storage_item(
+    value: Option<&[u8]>,
+) -> Result<HostLocalStorageChangeItem, CallError<HostLocalStorageSubscribeError>> {
+    Ok(HostLocalStorageChangeItem::V1(
+        v01::HostLocalStorageChangeItem {
+            value: value.map(<[u8]>::to_vec),
+        },
+    ))
+}
+
+fn subscribe_storage_key(
+    host: &ProductRuntimeHost,
+    key: &str,
+) -> Subscription<HostLocalStorageChangeItem, CallError<HostLocalStorageSubscribeError>> {
+    futures::executor::block_on(LocalStorage::subscribe(
+        host,
+        &CallContext::default(),
+        HostLocalStorageSubscribeRequest::V1(v01::HostLocalStorageSubscribeRequest {
+            key: key.to_string(),
+        }),
+    ))
+}
+
+fn write_storage_key(host: &ProductRuntimeHost, key: &str, value: &[u8]) {
+    futures::executor::block_on(host.write(
+        &CallContext::default(),
+        HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest {
+            key: key.to_string(),
+            value: value.to_vec(),
+        }),
+    ))
+    .expect("storage write");
+}
+
+#[test]
+fn local_storage_subscribe_sees_writes_and_clears_but_not_identical_rewrites() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let mut subscription = subscribe_storage_key(&host, "progress");
+    let next = |subscription: &mut Subscription<
+        HostLocalStorageChangeItem,
+        CallError<HostLocalStorageSubscribeError>,
+    >| { futures::executor::block_on(subscription.next()).expect("storage item") };
+
+    assert_eq!(
+        next(&mut subscription),
+        storage_item(None),
+        "the first item is the current value"
+    );
+
+    write_storage_key(&host, "progress", b"1");
+    assert_eq!(next(&mut subscription), storage_item(Some(b"1")));
+
+    write_storage_key(&host, "progress", b"1");
+    assert!(
+        futures::FutureExt::now_or_never(subscription.next()).is_none(),
+        "a byte-identical rewrite emits nothing"
+    );
+    assert_eq!(
+        platform
+            .local_storage_writes
+            .lock()
+            .expect("local storage writes mutex poisoned")
+            .len(),
+        2,
+        "every write reaches the platform, so a host hanging quota or sync off \
+         one still sees it; the subscription is what drops the repeat"
+    );
+
+    futures::executor::block_on(host.clear(
+        &CallContext::default(),
+        HostLocalStorageClearRequest::V1(v01::HostLocalStorageClearRequest {
+            key: "progress".to_string(),
+        }),
+    ))
+    .expect("storage clear");
+    assert_eq!(next(&mut subscription), storage_item(None));
+}
+
+#[test]
+fn local_storage_subscribe_is_scoped_to_the_calling_product() {
+    let platform = stub_platform();
+    let mine = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let other = ProductRuntimeHost::new(platform, runtime_config("other.dot"), test_spawner());
+    write_storage_key(&mine, "shared", b"mine");
+
+    let mut mine_items = subscribe_storage_key(&mine, "shared");
+    let mut other_items = subscribe_storage_key(&other, "shared");
+    assert_eq!(
+        futures::executor::block_on(mine_items.next()),
+        Some(storage_item(Some(b"mine")))
+    );
+    assert_eq!(
+        futures::executor::block_on(other_items.next()),
+        Some(storage_item(None)),
+        "the same key name in another product is a different key"
+    );
+
+    write_storage_key(&mine, "shared", b"again");
+    assert_eq!(
+        futures::executor::block_on(mine_items.next()),
+        Some(storage_item(Some(b"again")))
+    );
+    assert!(
+        futures::FutureExt::now_or_never(other_items.next()).is_none(),
+        "another product's write never reaches this subscriber"
+    );
+}
+
+#[test]
+fn local_storage_subscribe_interrupts_on_a_platform_stream_failure() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let mut subscription = subscribe_storage_key(&host, "progress");
+    assert_eq!(
+        futures::executor::block_on(subscription.next()),
+        Some(storage_item(None))
+    );
+
+    platform.fail_storage_subscriptions(
+        &host.product_storage_key("myapp.dot", "progress".to_string()),
+        "store unavailable",
+    );
+
+    assert_eq!(
+        futures::executor::block_on(subscription.next()),
+        Some(Err(CallError::HostFailure {
+            reason: "store unavailable".to_string(),
+        })),
+        "a platform failure reaches the product instead of freezing it on the last value"
+    );
+}
+
+#[test]
+fn worker_operations_reach_the_platform_scoped_to_the_calling_product() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+    let begin = |label: Option<&str>| {
+        let HostWorkerBeginOperationResponse::V1(response) =
+            futures::executor::block_on(host.begin_operation(
+                &cx,
+                HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                    label: label.map(str::to_string),
+                }),
+            ))
+            .expect("begin operation");
+        response.id
+    };
+    let end = |id: u32| {
+        futures::executor::block_on(host.end_operation(
+            &cx,
+            HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }),
+        ))
+        .expect("end operation")
+    };
+
+    assert_eq!(begin(Some("funding")), 1);
+    assert_eq!(begin(None), 2);
+    assert_eq!(
+        *platform
+            .begun_operations
+            .lock()
+            .expect("begun operations mutex poisoned"),
+        vec![
+            ("myapp.dot".to_string(), "funding".to_string()),
+            ("myapp.dot".to_string(), String::new()),
+        ],
+        "begin reaches the platform under the calling product; a missing label is empty"
+    );
+
+    end(1);
+    end(99);
+    assert_eq!(
+        *platform
+            .ended_operations
+            .lock()
+            .expect("ended operations mutex poisoned"),
+        vec![("myapp.dot".to_string(), 1), ("myapp.dot".to_string(), 99)],
+        "end reaches the platform under the calling product, unknown ids included"
+    );
+}
+
+#[test]
+fn an_open_operation_holds_worker_demand_until_it_ends() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+    let ledger = &host.services().worker_ledger;
+
+    let HostWorkerBeginOperationResponse::V1(response) =
+        futures::executor::block_on(host.begin_operation(
+            &cx,
+            HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                label: Some("funding".to_string()),
+            }),
+        ))
+        .expect("begin operation");
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        1,
+        "an open operation is demand on the worker, so the host is told to run it"
+    );
+
+    futures::executor::block_on(host.end_operation(
+        &cx,
+        HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id: response.id }),
+    ))
+    .expect("end operation");
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        0,
+        "ending the last operation drops the demand it held"
+    );
+}
+
+#[test]
+fn ending_an_operation_twice_releases_only_the_demand_it_held() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+    let ledger = &host.services().worker_ledger;
+    let begin = || {
+        let HostWorkerBeginOperationResponse::V1(response) =
+            futures::executor::block_on(host.begin_operation(
+                &cx,
+                HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                    label: None,
+                }),
+            ))
+            .expect("begin operation");
+        response.id
+    };
+    let end = |id: u32| {
+        futures::executor::block_on(host.end_operation(
+            &cx,
+            HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id }),
+        ))
+        .expect("end operation");
+    };
+
+    let first = begin();
+    begin();
+    assert_eq!(ledger.count("myapp.dot"), 2);
+
+    end(first);
+    end(first);
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        1,
+        "a repeated end is idempotent, so it cannot drop the demand the other operation holds"
+    );
+}
+
+/// Records every worker-demand transition the ledger reports.
+#[derive(Default)]
+struct DemandRecorder {
+    transitions: Mutex<Vec<(String, crate::host_logic::worker::WorkerTransition)>>,
+}
+
+impl DemandRecorder {
+    fn seen(&self) -> Vec<(String, crate::host_logic::worker::WorkerTransition)> {
+        self.transitions
+            .lock()
+            .expect("demand recorder mutex poisoned")
+            .clone()
+    }
+}
+
+impl crate::host_logic::worker::WorkerDemandObserver for DemandRecorder {
+    fn worker_demand_changed(
+        &self,
+        product_id: &str,
+        transition: crate::host_logic::worker::WorkerTransition,
+    ) {
+        self.transitions
+            .lock()
+            .expect("demand recorder mutex poisoned")
+            .push((product_id.to_string(), transition));
+    }
+}
+
+#[test]
+fn tearing_down_a_connection_reports_the_stop_before_its_last_reference_goes() {
+    use crate::host_logic::worker::WorkerTransition;
+
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let recorder = Arc::new(DemandRecorder::default());
+    assert!(
+        host.services()
+            .worker_ledger
+            .install_demand_observer(recorder.clone())
+    );
+    let cx = CallContext::default();
+
+    futures::executor::block_on(host.begin_operation(
+        &cx,
+        HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label: None }),
+    ))
+    .expect("begin operation");
+
+    host.release_open_operations();
+
+    // A native reconnect drops the replaced connection's last reference only
+    // after the new one exists, so a stop deferred to that point would reach
+    // the host as a stop for the worker it had just restarted.
+    assert_eq!(
+        recorder.seen(),
+        vec![
+            ("myapp.dot".to_string(), WorkerTransition::Start),
+            ("myapp.dot".to_string(), WorkerTransition::Stop),
+        ],
+        "teardown reports the stop, rather than leaving it to the last Arc"
+    );
+
+    drop(host);
+
+    assert_eq!(
+        recorder.seen().len(),
+        2,
+        "the eventual drop has nothing left to report"
+    );
+}
+
+#[test]
+fn a_cancelled_begin_ends_the_operation_the_host_started() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        begin_operation_gate: Mutex::new(Some(gate)),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+
+    // Poll once so the call reaches the host, then drop it the way an aborted
+    // dispatch does while the host is still deciding.
+    let mut begun = Box::pin(host.begin_operation(
+        &cx,
+        HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label: None }),
+    ));
+    assert!(
+        futures::executor::block_on(futures::future::poll_fn(|cx| {
+            std::task::Poll::Ready(futures::FutureExt::poll_unpin(&mut begun, cx).is_pending())
+        })),
+        "the host has not answered yet"
+    );
+    drop(begun);
+
+    // Without the fix the host's call went with the cancelled dispatch, so the
+    // gate may already be gone.
+    let _ = release.send(());
+
+    // Nobody is left to receive the id, so the operation the host started is
+    // ended rather than stranded in its store.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let ended = platform
+            .ended_operations
+            .lock()
+            .expect("ended operations mutex poisoned")
+            .clone();
+        if ended == vec![("myapp.dot".to_string(), 1)] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a cancelled begin leaves the host holding nothing; saw {ended:?}"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(host.services().worker_ledger.count("myapp.dot"), 0);
+}
+
+#[test]
+fn a_failed_end_still_drops_the_demand_the_operation_held() {
+    let platform = Arc::new(StubPlatform {
+        end_operation_error: Some("store unavailable"),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cx = CallContext::default();
+    let ledger = &host.services().worker_ledger;
+
+    let HostWorkerBeginOperationResponse::V1(response) =
+        futures::executor::block_on(host.begin_operation(
+            &cx,
+            HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest {
+                label: None,
+            }),
+        ))
+        .expect("begin operation");
+    assert_eq!(ledger.count("myapp.dot"), 1);
+
+    let ended = futures::executor::block_on(host.end_operation(
+        &cx,
+        HostWorkerEndOperationRequest::V1(v01::HostWorkerEndOperationRequest { id: response.id }),
+    ));
+    assert!(
+        ended.is_err(),
+        "the host's failure still reaches the product"
+    );
+
+    assert_eq!(
+        ledger.count("myapp.dot"),
+        0,
+        "the product declared the operation over, so the core stops counting it \
+         whatever the host made of the call"
+    );
+}
+
+#[test]
+fn dropping_a_connection_releases_the_demand_its_open_operations_held() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let services = host.services().clone();
+    let cx = CallContext::default();
+
+    futures::executor::block_on(host.begin_operation(
+        &cx,
+        HostWorkerBeginOperationRequest::V1(v01::HostWorkerBeginOperationRequest { label: None }),
+    ))
+    .expect("begin operation");
+    assert_eq!(services.worker_ledger.count("myapp.dot"), 1);
+
+    drop(host);
+
+    assert_eq!(
+        services.worker_ledger.count("myapp.dot"),
+        0,
+        "a product that goes away without ending its operations leaves no demand behind"
     );
 }
 
@@ -2788,6 +3820,283 @@ fn auto_signing_vrf_request() -> HostAccountSignVrfRequest {
             value: vec![7],
         }],
     })
+}
+
+/// A pairing host holding an AutoSigning capability, with its SSO script
+/// already spent on the allocation: anything that relays from here fails, so a
+/// call that succeeds was served locally.
+fn granted_pairing_host() -> (Arc<StubPlatform>, ProductRuntimeHost) {
+    let session = sso_session_info();
+    let platform = auto_signing_test_platform(&session, "auto-1");
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session);
+    request_auto_signing(&host, "auto-1");
+    (platform, host)
+}
+
+/// The product account the capability in [`granted_pairing_host`] derives.
+fn granted_keypair() -> schnorrkel::Keypair {
+    let root =
+        crate::host_logic::product_account::derive_root_keypair_from_entropy(&[0xAB; 16]).unwrap();
+    crate::host_logic::product_account::derive_product_keypair(&root, "myapp.dot", index_bytes(0))
+        .unwrap()
+}
+
+#[test]
+fn auto_signing_serves_sign_raw_locally_without_prompt_or_sso() {
+    let (platform, host) = granted_pairing_host();
+
+    let HostSignRawResponse::V1(response) = futures::executor::block_on(host.sign_raw(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .expect("the capability signs locally, with no signing host to relay to");
+
+    assert!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    let signature =
+        schnorrkel::Signature::from_bytes(&response.signature).expect("64-byte signature");
+    let keypair = granted_keypair();
+    assert!(
+        keypair
+            .public
+            .verify_simple(b"substrate", b"<Bytes>hello world</Bytes>", &signature)
+            .is_ok(),
+        "the local signature is over the watermarked bytes, by the product account",
+    );
+}
+
+#[test]
+fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
+    let (platform, host) = granted_pairing_host();
+
+    let HostCreateTransactionResponse::V1(response) =
+        futures::executor::block_on(host.create_transaction(
+            &CallContext::default(),
+            HostCreateTransactionRequest::V1(v01::ProductAccountTxPayload {
+                signer: account_id("myapp.dot", 0),
+                genesis_hash: [1; 32],
+                call_data: vec![0x04, 0x00],
+                extensions: vec![],
+                // V4 needs no chain metadata, so the whole assembly is local.
+                tx_ext_version: 0,
+            }),
+        ))
+        .expect("a V4 transaction assembles locally under the capability");
+
+    assert!(
+        platform
+            .create_transaction_reviews
+            .lock()
+            .expect("create transaction review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    let (signer, _, call) = crate::host_logic::extrinsic::tests::split_v4(&response.transaction);
+    assert_eq!(
+        signer,
+        granted_keypair().public.to_bytes(),
+        "the product account signed it",
+    );
+    assert_eq!(call, vec![0x04, 0x00]);
+}
+
+#[test]
+fn auto_signing_serves_sign_payload_locally_without_prompt() {
+    let (platform, host) = granted_pairing_host();
+    let payload = crate::test_support::sign_payload_data();
+    let preimage = crate::host_logic::transaction::extrinsic_payload_preimage(&payload)
+        .expect("preimage builds");
+
+    let HostSignPayloadResponse::V1(response) = futures::executor::block_on(host.sign_payload(
+        &CallContext::default(),
+        HostSignPayloadRequest::V1(v01::HostSignPayloadRequest {
+            account: account_id("myapp.dot", 0),
+            payload,
+        }),
+    ))
+    .expect("the capability signs the payload locally");
+
+    assert!(
+        platform
+            .sign_payload_reviews
+            .lock()
+            .expect("sign payload review list mutex poisoned")
+            .is_empty(),
+        "the grant waives the prompt",
+    );
+    // A `MultiSignature`: the sr25519 discriminant, then the raw signature.
+    assert_eq!(response.signature.len(), 65);
+    assert_eq!(response.signature[0], 1);
+    let signature =
+        schnorrkel::Signature::from_bytes(&response.signature[1..]).expect("64-byte signature");
+    assert!(
+        granted_keypair()
+            .public
+            .verify_simple(b"substrate", &preimage, &signature)
+            .is_ok(),
+        "the local signature is over the payload preimage, by the product account",
+    );
+}
+
+#[test]
+fn auto_signing_serves_a_product_statement_proof_on_a_pairing_host() {
+    // The SSO raw-signing protocol cannot carry an exact, unwatermarked
+    // payload, so without a capability this role answers `UnableToSign`. The
+    // capability's own key is what makes the operation available at all;
+    // neither role prompts for statement proofs either way.
+    let (_platform, host) = granted_pairing_host();
+
+    let response = futures::executor::block_on(StatementStore::create_proof(
+        &host,
+        &CallContext::default(),
+        RemoteStatementStoreCreateProofRequest::V1(
+            truapi::latest::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("myapp.dot", 0),
+                statement: statement(),
+            },
+        ),
+    ))
+    .expect("the capability signs the statement locally");
+
+    let RemoteStatementStoreCreateProofResponse::V1(inner) = response;
+    let truapi::latest::StatementProof::Sr25519 { signer, signature } = inner.proof else {
+        panic!("expected an sr25519 statement proof");
+    };
+    let keypair = granted_keypair();
+    assert_eq!(
+        signer,
+        keypair.public.to_bytes(),
+        "the product account signed it",
+    );
+    let payload = crate::host_logic::statement_store::unsigned_statement_signing_payload(
+        crate::host_logic::statement_store::statement_fields_from_v01(statement()).unwrap(),
+    )
+    .unwrap();
+    let signature = schnorrkel::Signature::from_bytes(&signature).expect("64-byte signature");
+    assert!(
+        keypair
+            .public
+            .verify_simple(b"substrate", &payload, &signature)
+            .is_ok(),
+        "the signature is over the statement's signing payload",
+    );
+}
+
+#[test]
+fn a_broken_auto_signing_slot_fails_sign_raw_rather_than_prompting() {
+    // The lookup erases a capability it cannot trust as it rejects it, so
+    // falling through to a prompt here would ask the user to approve a
+    // signature the host has already refused to make. This is what the grant
+    // query's `Result` return is for: a `bool` predicate would answer "no
+    // grant" and raise the modal.
+    let session = sso_session_info();
+    let platform = auto_signing_test_platform(&session, "auto-broken");
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session.clone());
+    request_auto_signing(&host, "auto-broken");
+
+    let expected_subtree = test_product_subtree("myapp.dot");
+    let storage_key = core_storage_test_key(CoreStorageKey::AutoSigningKeys);
+    {
+        let mut storage = platform
+            .local_storage
+            .lock()
+            .expect("local storage mutex poisoned");
+        let blob = storage
+            .get_mut(&storage_key)
+            .expect("scoped AutoSigning capability persisted");
+        let expected_offset = blob
+            .windows(expected_subtree.len())
+            .position(|window| window == expected_subtree)
+            .expect("persisted expected subtree is present");
+        blob[expected_offset] ^= 0x01;
+    }
+
+    let restored = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&restored, session);
+    let error = futures::executor::block_on(restored.sign_raw(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            &error,
+            CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Unknown {
+                reason
+            })) if reason == "AutoSigning capability is not for the current product subtree"
+        ),
+        "the broken capability is reported, not silently downgraded: {error:?}",
+    );
+    assert!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .is_empty(),
+        "no prompt is raised for a capability the host just erased",
+    );
+}
+
+#[test]
+fn an_unwatermarked_sign_raw_still_prompts_under_a_grant() {
+    let (platform, host) = granted_pairing_host();
+
+    #[allow(deprecated)]
+    let error = futures::executor::block_on(host.sign_raw_unwatermarked_deprecated(
+        &CallContext::default(),
+        HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        }),
+    ))
+    .expect_err("the stub declines the confirmation");
+
+    assert!(matches!(
+        error,
+        CallError::Domain(HostSignRawError::V1(v01::HostSignPayloadError::Rejected))
+    ));
+    assert_eq!(
+        platform
+            .sign_raw_reviews
+            .lock()
+            .expect("raw signing review list mutex poisoned")
+            .len(),
+        1,
+        "the deprecated API prompts whatever the capability says",
+    );
 }
 
 #[test]
@@ -4478,6 +5787,68 @@ fn subnames_of_one_product_share_one_cached_manifest() {
         assert!(
             read_storage(&host, Some(spelling), "k").is_ok(),
             "{spelling} must resolve the one manifest cached for its product"
+        );
+    }
+}
+
+/// A cancellation the host raised itself must never reach the wire as
+/// `CallError::Cancelled`.
+///
+/// That variant is appended last in `CallError`, so a product built before it
+/// existed cannot decode it. It is reserved for a call the peer withdrew with
+/// a `Cancel` frame, because a peer that never sends one never has to decode
+/// the answer. An internal timeout is not that: it has always reported through
+/// the method's own error type and has to keep doing so.
+///
+/// Every mapper that turns an [`AuthorityError`] into a `CallError` is checked
+/// here, because the tempting simplification is to map `Cancelled` to the new
+/// variant in one of them and leave the rest alone.
+#[test]
+fn an_internal_cancellation_never_becomes_the_cancelled_variant() {
+    use super::{
+        account_get_authority_error, signing_call_error, transaction_call_error, vrf_call_error,
+    };
+    use crate::runtime::authority::{AuthorityCancelError, AuthorityError};
+    use truapi::CancellationReason;
+    use truapi::versioned::signing::{HostCreateTransactionError, HostSignRawError};
+
+    fn assert_domain<E: core::fmt::Debug>(mapper: &str, reason: &str, err: CallError<E>) {
+        assert!(
+            matches!(err, CallError::Domain(_)),
+            "{mapper} must report an internal cancellation ({reason}) through its own \
+             domain error, got {err:?}"
+        );
+    }
+
+    let reasons = [
+        ("explicit", CancellationReason::Cancelled),
+        (
+            "timeout",
+            CancellationReason::TimedOut {
+                timeout: core::time::Duration::from_secs(30),
+            },
+        ),
+    ];
+
+    for (reason_name, reason) in reasons {
+        let cancelled =
+            || AuthorityError::Cancelled(AuthorityCancelError::new("p:1", reason.clone()));
+
+        assert_domain("vrf_call_error", reason_name, vrf_call_error(cancelled()));
+        assert_domain(
+            "account_get_authority_error",
+            reason_name,
+            account_get_authority_error(cancelled()),
+        );
+        assert_domain(
+            "signing_call_error",
+            reason_name,
+            signing_call_error(HostSignRawError::V1, cancelled()),
+        );
+        assert_domain(
+            "transaction_call_error",
+            reason_name,
+            transaction_call_error(HostCreateTransactionError::V1, cancelled()),
         );
     }
 }

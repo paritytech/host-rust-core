@@ -297,7 +297,7 @@ Every frame on the wire is encoded as:
 The `(trait, method)` discriminant pair identifies the method via the
 auto-generated [`crate::generated::wire_table::WIRE_TABLE`], and the
 `message_type` byte names which leg of that method's exchange the frame
-carries (`Request`/`Response`, or a subscription's
+carries (`Request`/`Response`/`Cancel`, or a subscription's
 `Start`/`Receive`/`Interrupt`/`Stop`). The trait
 byte comes from the trait-level `#[wire_trait(id = N)]` annotation; the method
 byte addresses a method within that trait, so method ids restart at 0 in every
@@ -310,3 +310,29 @@ The payload bytes are the SCALE-encoded inner value, inlined without a
 length prefix. The pair is carried as `Payload::trait_id` and
 `Payload::method_id` with the leg in `Payload::message_type`, and the
 dispatcher routes on the pair via pair-keyed tables.
+
+### Cancelling a request
+
+A `Cancel` frame carries no payload and names an in-flight call by its
+`requestId`. The dispatcher holds every in-flight request's
+`CancellationToken` in a registry keyed by that id, reserved before the
+handler is awaited, and a `Cancel` fires the token the id names. Handlers
+reach it through `CallContext::cancel()`.
+
+Cancelling never answers: the call it names still settles with exactly one
+`Response`, and for a withdrawn call the dispatcher substitutes
+`Err(CallError::Cancelled)` whatever the handler made of the token.
+`encode_cancelled_response` builds those bytes without naming either of the
+method's payload types, so one encoder serves every method.
+
+Only a `Cancel` frame triggers that substitution. A token a runtime fired
+itself, such as an attached timeout, still reports through the method's own
+error type, which keeps the `Cancelled` variant off the wire for a peer that
+never asked for it.
+
+A `Cancel` naming nothing in flight is remembered rather than dropped. Each
+transport spawns a task per frame, so a cancel can reach dispatch before the
+request it names; the id goes into a short capped queue, and the request that
+follows answers `Cancelled` without running its handler. A cancel for a call
+that already settled lands in the same queue and is inert there, since ids are
+unique for the life of a connection.

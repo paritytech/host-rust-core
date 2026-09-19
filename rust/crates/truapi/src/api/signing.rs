@@ -21,6 +21,9 @@ use crate::{wire, wire_trait};
 pub trait Signing: Send + Sync {
     /// Construct a transaction for a product account.
     ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
+    ///
     /// Under Extrinsic V5, omitting `VerifyMultiSignature` from `extensions`
     /// lets the host sign with the signer's key. Listing it — as `Disabled`,
     /// with a proof in a later extension — encodes the given bytes verbatim and
@@ -211,6 +214,9 @@ pub trait Signing: Send + Sync {
 
     /// Sign raw bytes or a message.
     ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
+    ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
     /// assert(productContext.isOk(), "getProductContext failed:", productContext);
@@ -237,6 +243,9 @@ pub trait Signing: Send + Sync {
     }
 
     /// Sign an extrinsic payload.
+    ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();

@@ -1,13 +1,10 @@
 import Foundation
-import SubstrateSdk
 
 public enum DotNsContractError: Error {
     case contentHashNotFound
     case contentHashTooShort
     case unsupportedEip1577Prefix(Data)
     case contractCallFailed(Error)
-    case runtimeApiNotFound
-    case callFailed(JSON)
     case tldNotFound
 }
 

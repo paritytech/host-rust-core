@@ -12,12 +12,12 @@ import Coinage
         }
 
         struct CoinInfo: Equatable {
-            let derivationIndex: DerivationIndex
+            let derivationIndex: CoinageKeyIndex
             let exponent: Int16
         }
 
         struct VoucherInfo: Equatable {
-            let derivationIndex: DerivationIndex
+            let derivationIndex: CoinageKeyIndex
             let exponent: Int16
         }
 

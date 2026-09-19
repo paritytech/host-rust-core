@@ -25,6 +25,25 @@ extension UIContentUnavailableConfiguration {
         return configuration
     }
 
+    static func illustrated(
+        image: UIImage,
+        title: String,
+        subtitle: String
+    ) -> UIContentUnavailableConfiguration {
+        var configuration = titleSubtitle(with: title, subtitle: subtitle)
+
+        configuration.image = image
+        configuration.imageProperties.tintColor = .fgSecondary
+        configuration.imageToTextPadding = DSSpacings.extraLarge
+
+        configuration.textProperties.font = UIFont.headlineSmall
+        configuration.secondaryTextProperties.font = UIFont.paragraphLarge
+        configuration.secondaryTextProperties.color = .fgSecondary
+        configuration.textToSecondaryTextPadding = DSSpacings.small
+
+        return configuration
+    }
+
     static func titleSubtitle(with title: String, subtitle: String) -> UIContentUnavailableConfiguration {
         var configuration = UIContentUnavailableConfiguration.empty()
         configuration.image = nil

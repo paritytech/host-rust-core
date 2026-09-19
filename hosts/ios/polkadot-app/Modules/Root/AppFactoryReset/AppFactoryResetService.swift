@@ -6,6 +6,7 @@
     import Keystore_iOS
     import Operation_iOS
     import AlarmKit
+    import Products
 
     final class AppFactoryResetService {
         private let mnemonicBackupHelper: MnemonicBackupHelperProtocol
@@ -27,8 +28,7 @@
                 clearAlarmKitAlarms()
             }
             deleteAllKeychainItems()
-            clearUserDefaultsStandard()
-            clearSharedUserDefaults()
+            eraseAllUserDefaults()
             clearAllNotifications()
             deleteCloudBackup()
             deleteCoreDataDatabases()
@@ -57,10 +57,6 @@
             }
         }
 
-        func clearUserDefaultsStandard() {
-            SettingsManager.shared.removeAll()
-        }
-
         @available(iOS 26.0, *)
         func clearAlarmKitAlarms() {
             guard let alarmIdString = SettingsManager.shared.string(for: .gameAlarmId),
@@ -72,13 +68,6 @@
             } catch {
                 logger.error("Failure to cancel alarm: \(error)")
             }
-        }
-
-        func clearSharedUserDefaults() {
-            let groupName = SharedContainerGroup.name
-            let defaults = UserDefaults(suiteName: groupName)
-            defaults?.removePersistentDomain(forName: groupName)
-            defaults?.synchronize()
         }
 
         func clearAllNotifications() {
@@ -94,6 +83,17 @@
             }
         }
 
+        func eraseAllUserDefaults() {
+            SettingsManager.shared.removeAll()
+
+            for suiteName in [SharedContainerGroup.name, ContentHashCache.suiteName] {
+                let defaults = UserDefaults(suiteName: suiteName)
+                defaults?.removePersistentDomain(forName: suiteName)
+                defaults?.synchronize()
+            }
+        }
+
+        // The stores are open at this point, so they go through the services.
         func deleteCoreDataDatabases() {
             let stores: [(String, CoreDataServiceProtocol)] = [
                 ("UserData", UserDataStorageFacade.shared.databaseService),

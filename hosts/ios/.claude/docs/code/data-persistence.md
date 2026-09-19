@@ -52,7 +52,7 @@ This is documented in CLAUDE.md and enforced in reviews.
 ### Migration
 
 - `Common/Storage/Migration/` — migration strategies
-- UserDataModel has 31 versions — always add a new version for schema changes
+- UserDataModel is versioned — always add a new version for schema changes
 - Test migrations thoroughly
 
 #### Adding a UserDataModel version (all four steps, same PR)
@@ -73,8 +73,39 @@ attributes need a `defaultValueString`. If lightweight isn't possible, add an
 ## UserDefaults
 
 - **Use `SettingsManager`** instead of direct UserDefaults access
-- Located in `Common/UserDefaults/` (5 items)
+- Located in `Common/UserDefaults/`
 - For session data and user preferences
+- The **App Group suite** (`SharedContainerGroup.userDefaults`) holds the ids that index the Keychain:
+  `SettingsKey.installationKeyId` (raw key `io.polkadot.app.entropy.id.v3`;
+  `InstallationKeyIdStore`), `deviceEncryptId`, and the product resource store id. A missing App Group
+  entitlement must trap, never onboard into an empty suite.
+
+## Device backup
+
+What an iOS device backup carries, and what the app does about it:
+
+- **Backed up**: standard UserDefaults, the App Group suite, the `io.products.dotns.cache` suite,
+  Documents and Application Support files (except the chat attachments directory).
+- **Not backed up**: the CoreData directory. Operation-iOS `CoreDataService` creates it with
+  `isExcludedFromBackup` (`CoreDataPersistentSettings.excludeFromiCloudBackup` defaults to `true`; both
+  facades keep the default). Nothing else may create that directory first, or the flag is never set.
+- **Relied upon by coinage**: the current installation is a row in that directory (`CDCurrentInstallation`),
+  so a same-device restore — Keychain back, database gone — starts a new installation and recovers the old
+  one through the contract, instead of keeping Keychain counters for a subtree whose coins were lost
+  (see architecture/coinage.md, Installations).
+- **Not restored onto another device**: every app-side Keychain item (`Keychain()` is
+  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`). The iCloud mnemonic backup is a separate,
+  synchronizable item and is the recovery path.
+- `RestoredBackupGuard` runs first in the serial launch chain built by `RootPresenterFactory`: when the
+  installation key id is present but `hasRootEntropy()` is false — a backup restored onto another
+  device — it calls `LocalStateEraser.eraseUserState()`, which removes only the previous wallet's identity
+  (`username`, `usernameClaimed`, `isPerson`) and progress (`backendSessionId`, `nextSyncUpdateId`, the fiat
+  onramp ids, `voucherInUseDismissed`) from the standard suite. Nothing
+  else is touched: the wallet gate already routes such a launch to onboarding or iCloud recovery, wallet
+  creation writes a new key id, the CoreData directory was never in the backup, `deviceEncryptId` and the
+  product resource store id index Keychain items that self-heal, and preferences belong to the device. A
+  Keychain read error propagates and erases nothing. The TESTNET factory reset wipes every suite, the
+  Keychain and both (open) stores on its own.
 
 ## iCloud
 

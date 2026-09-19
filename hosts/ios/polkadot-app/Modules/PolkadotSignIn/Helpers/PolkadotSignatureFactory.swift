@@ -159,8 +159,9 @@ private extension PolkadotSignatureFactory {
                 // dApp-supplied extension version wins for v5 create-transaction requests
                 .V5(extensionVersion: createTransaction.txExtVersion)
             } else {
-                // fall back to the per-chain default (V4, or V5 with the remote-config extension version)
-                extrinsicVersionProvider.getExtrinsicVersion(for: chain.chainId, isSigned: true)
+                // fall back to the per-chain default, resolved from the runtime (V4 when it cannot verify
+                // a general-transaction signature)
+                try await extrinsicVersionProvider.getExtrinsicVersion(for: chain.chainId, isSigned: true)
             }
 
         var builder: ExtrinsicBuilderProtocol = ExtrinsicBuilder(
