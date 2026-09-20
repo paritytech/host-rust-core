@@ -17,7 +17,7 @@ on:
     types: [labeled, synchronize]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -36,7 +36,7 @@ jobs:
       || (github.event.action == 'synchronize'
           && contains(github.event.pull_request.labels.*.name, 'android-device-build'))
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,14 +69,20 @@ jobs:
       # compile gate this build really does cross-compile.
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
         with:
+          shared-key: host-android-bindings-gate
           save-if: false
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      # The wrapper jar is a tracked binary and its distribution url is a
+      # tracked file, both editable by the pull request being built, and this
+      # job holds a signing key while it runs the result.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
@@ -100,11 +106,29 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
           KEYSTORE_BASE64: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+          KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
+          KEYSTORE_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
         run: |
           set -euo pipefail
           umask 077
 
-          if [ -n "${GOOGLE_SERVICES_JSON_BASE64}" ] && [ -n "${KEYSTORE_BASE64}" ]; then
+          # All five or none. A partial set would otherwise take the signed path
+          # and sign with the throwaway password the build step falls back to,
+          # producing an APK that installs over nothing.
+          present=0
+          for value in "${GOOGLE_SERVICES_JSON_BASE64}" "${KEYSTORE_BASE64}" \
+                       "${KEYSTORE_PASS}" "${KEYSTORE_ALIAS}" "${KEYSTORE_KEY_PASS}"; do
+            if [ -n "${value}" ]; then
+              present=$((present + 1))
+            fi
+          done
+          if [ "${present}" -ne 0 ] && [ "${present}" -ne 5 ]; then
+            echo "::error::Signing is partly configured, ${present} of 5 values are set. Set all five or none."
+            exit 1
+          fi
+
+          if [ "${present}" -eq 5 ]; then
             printf '%s' "${GOOGLE_SERVICES_JSON_BASE64}" | base64 --decode > app/google-services.json
             printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > develop_key.jks
             echo "variant=gp" >> "$GITHUB_OUTPUT"
@@ -164,7 +188,6 @@ jobs:
           SENTRY_ORG: preview
           SENTRY_PROJECT: preview
           TERMS_OF_USE_URL: https://example.invalid/terms
-          DEV_KEYSTORE_FILE: develop_key.jks
           CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS || 'preview' }}
           CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS || 'preview' }}
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS || 'preview' }}
@@ -189,7 +212,11 @@ jobs:
           # A build can produce an unsigned APK without failing, which then
           # installs nowhere. Better to fail here than to hand someone a file
           # that their phone refuses.
-          apksigner="$(ls -d "${ANDROID_HOME}"/build-tools/*/apksigner | sort -V | tail -n1)"
+          apksigner="$(ls -d "${ANDROID_HOME}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "${apksigner}" ]; then
+            echo "::error::No apksigner under ${ANDROID_HOME}/build-tools"
+            exit 1
+          fi
           "${apksigner}" verify "${apks[0]}"
 
           short="${COMMIT:0:9}"
@@ -197,8 +224,13 @@ jobs:
           echo "short=${short}" >> "$GITHUB_OUTPUT"
           echo "apk=hosts/android/polkadot-app-${short}.apk" >> "$GITHUB_OUTPUT"
 
+      - name: Say which build this is
+        run: |
+          echo "Built \`${{ steps.prep.outputs.task }}\`, signed with ${{ steps.prep.outputs.signing }}." \
+            >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the APK
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: android-preview-${{ steps.package.outputs.short }}
           path: ${{ steps.package.outputs.apk }}
