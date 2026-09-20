@@ -55,6 +55,8 @@ on:
       GOOGLE_SERVICE_INFO_RELEASE_BASE64:
         required: true
       GOOGLE_SERVICE_INFO_SAFETY_BASE64:
+        # Read only on the Safetynet branch, so a production run must not
+        # depend on it. It is set today; optional here describes the contract.
         required: false
       KEYCHAIN_PASSWORD:
         required: true
