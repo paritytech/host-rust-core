@@ -108,7 +108,7 @@ jobs:
     steps:
       - name: Check for skip-ci label
         id: check_skip
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const pr = context.payload.pull_request;
@@ -127,7 +127,7 @@ jobs:
     runs-on: macos-26-xlarge
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # The xcframework targets iOS, so this needs the SDK.
       - name: Setup iOS Environment
@@ -180,7 +180,7 @@ jobs:
     timeout-minutes: 30
     runs-on: macos-26-xlarge
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
@@ -241,7 +241,7 @@ jobs:
 
       - name: Setup reviewdog
         if: always()
-        uses: reviewdog/action-setup@v1
+        uses: reviewdog/action-setup@d8a7baabd7f3e8544ee4dbde3ee41d0011c3a93f # v1.5.0
 
       - name: Annotate new warnings (reviewdog)
         if: always() && hashFiles('warnings.rdjson') != ''
@@ -269,7 +269,7 @@ jobs:
       # Upload build artifacts for debugging - only when DEBUG_CI is enabled
       - name: Upload build artifacts
         if: env.DEBUG_CI == 'true' && (failure() || success())
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: build-artifacts-${{ github.run_number }}
           path: |
@@ -291,7 +291,7 @@ jobs:
     runs-on: macos-26-xlarge
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
@@ -367,7 +367,7 @@ jobs:
 
       - name: Upload the preview build
         id: upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: simulator-preview-${{ steps.package.outputs.short }}
           path: ${{ steps.package.outputs.archive }}
@@ -428,7 +428,7 @@ jobs:
     timeout-minutes: 30
     runs-on: macos-26-xlarge
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
@@ -472,7 +472,7 @@ jobs:
       # Upload test artifacts for debugging - only when DEBUG_CI is enabled
       - name: Upload test artifacts
         if: env.DEBUG_CI == 'true' && (failure() || success())
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-artifacts-${{ github.run_number }}
           path: |
