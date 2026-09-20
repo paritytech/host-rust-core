@@ -55,21 +55,21 @@ on:
       GOOGLE_SERVICE_INFO_RELEASE_BASE64:
         required: true
       GOOGLE_SERVICE_INFO_SAFETY_BASE64:
-        required: true
+        required: false
       KEYCHAIN_PASSWORD:
         required: true
       MATCH_PASSWORD:
         required: true
       MELD_BASIC_AUTH_TOKEN:
-        required: true
+        required: false
       NOTIFICATION_BOT_TOKEN:
-        required: true
+        required: false
       NOTIFICATION_BOT_URL:
-        required: true
+        required: false
       SENTRY_AUTH_TOKEN:
-        required: true
+        required: false
       SENTRY_DSN:
-        required: true
+        required: false
 
 env:
   MAIN_BRANCH: main
