@@ -39,6 +39,37 @@ on:
         value: ${{ jobs.prepare_build_metadata.outputs.pr_list_markdown }}
       succeeded:
         value: ${{ jobs.check_build_result.outputs.succeeded }}
+    # Declared rather than inherited, so a caller hands over exactly what this
+    # workflow reads and nothing else.
+    secrets:
+      ASC_ISSUER_ID:
+        required: true
+      ASC_KEY_BASE64:
+        required: true
+      ASC_KEY_ID:
+        required: true
+      FASTLANE_RO_PAT:
+        required: true
+      GOOGLE_SERVICE_INFO_DEV_BASE64:
+        required: true
+      GOOGLE_SERVICE_INFO_RELEASE_BASE64:
+        required: true
+      GOOGLE_SERVICE_INFO_SAFETY_BASE64:
+        required: true
+      KEYCHAIN_PASSWORD:
+        required: true
+      MATCH_PASSWORD:
+        required: true
+      MELD_BASIC_AUTH_TOKEN:
+        required: true
+      NOTIFICATION_BOT_TOKEN:
+        required: true
+      NOTIFICATION_BOT_URL:
+        required: true
+      SENTRY_AUTH_TOKEN:
+        required: true
+      SENTRY_DSN:
+        required: true
 
 env:
   MAIN_BRANCH: main
