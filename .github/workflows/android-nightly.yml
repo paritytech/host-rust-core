@@ -12,10 +12,10 @@
 name: Android nightly
 
 on:
-  # Three hours before the iOS nightly, so a red Android run is dealt with
-  # before the iOS one starts rather than alongside it.
+  # Two hours after the iOS nightly starts, which takes a little over an hour,
+  # so the two never overlap and a night's results arrive in one window.
   schedule:
-    - cron: "0 17 * * 1-5" # 17:00 UTC Monday to Friday
+    - cron: "0 22 * * 1-5" # 22:00 UTC Monday to Friday
   workflow_dispatch:
 
 concurrency:
