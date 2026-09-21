@@ -1,0 +1,174 @@
+# A nightly Android build, published as release assets.
+#
+# The iOS nightly goes to TestFlight; this one has no equivalent store channel,
+# so the artifacts are attached to a prerelease. Firebase App Distribution is
+# where these belong, and the upload is a few lines, but the credential for it
+# does not exist yet and untested distribution code is worse than none.
+name: Android nightly
+
+on:
+  # Three hours before the iOS nightly, so a red Android run is dealt with
+  # before the iOS one starts rather than alongside it.
+  schedule:
+    - cron: "0 17 * * 1-5" # 17:00 UTC Monday to Friday
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # The app tree pins the nightly its codegen runs under, because rustdoc's
+      # JSON format version moves with the toolchain. The value reaches an
+      # action input that is interpolated into a shell command, so it is
+      # constrained to the dated-nightly shape and to a single line.
+      - name: Read the pinned nightly
+        id: nightly
+        run: |
+          set -euo pipefail
+          toolchain="$(sed -n 's/^truapi\.rustNightly=//p' hosts/android/gradle.properties | head -n1)"
+          case "${toolchain}" in
+            nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *)
+              echo "::error::truapi.rustNightly must be a dated nightly, got '${toolchain}'"
+              exit 1
+              ;;
+          esac
+          echo "toolchain=${toolchain}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # pinned nightly
+        with:
+          toolchain: ${{ steps.nightly.outputs.toolchain }}
+          components: rustfmt
+
+      # An APK carries the core for every ABI it ships. The convention plugin
+      # builds four, and only the truapi-host module narrows to three.
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+        with:
+          shared-key: host-android-bindings-gate
+          save-if: false
+
+      # The wrapper jar and its distribution url are both tracked files, and
+      # this job signs what it builds.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # Expressions have no arithmetic, so this is computed once here rather
+      # than recomputed as `1000 + run_number` at each use.
+      - name: Compute the build number
+        id: build
+        run: echo "id=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
+
+      - name: Decode the build inputs
+        working-directory: hosts/android
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in GOOGLE_SERVICES_JSON_BASE64 KEYSTORE_BASE64; do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is not set, so this build cannot be signed or configured"
+              exit 1
+            fi
+          done
+          printf '%s' "${GOOGLE_SERVICES_JSON_BASE64}" | base64 --decode > app/google-services.json
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > develop_key.jks
+
+      # versionCode comes from the environment; the tree falls back to a
+      # constant when it is absent, which would collide across runs.
+      - name: Build the nightly APKs
+        working-directory: hosts/android
+        env:
+          CI_BUILD_ID: ${{ steps.build.outputs.id }}
+          APPLICATION_ID: ${{ vars.APPLICATION_ID }}
+          APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+          CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
+          LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
+          PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
+          TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+          GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
+          GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
+          NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
+          CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
+          CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
+        run: ./gradlew assembleGpNightly assembleVanillaNightly --no-daemon
+
+      - name: Check both APKs came out signed
+        id: package
+        working-directory: hosts/android
+        env:
+          BUILD_ID: ${{ steps.build.outputs.id }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          apksigner="$(ls -d "${ANDROID_HOME}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "${apksigner}" ]; then
+            echo "::error::No apksigner under ${ANDROID_HOME}/build-tools"
+            exit 1
+          fi
+
+          short="${GITHUB_SHA:0:9}"
+          for flavour in gp vanilla; do
+            found=("app/build/outputs/apk/${flavour}/nightly"/*.apk)
+            if [ ${#found[@]} -ne 1 ]; then
+              echo "::error::Expected one ${flavour} APK, found ${#found[@]}"
+              exit 1
+            fi
+            # An unsigned APK installs nowhere, and the build does not fail to
+            # produce one.
+            "${apksigner}" verify "${found[0]}"
+            mv "${found[0]}" "polkadot-app-${flavour}-${BUILD_ID}-${short}.apk"
+          done
+
+          echo "short=${short}" >> "$GITHUB_OUTPUT"
+          echo "tag=android-nightly-${BUILD_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.package.outputs.tag }}
+          SHORT: ${{ steps.package.outputs.short }}
+          BUILD_ID: ${{ steps.build.outputs.id }}
+        working-directory: hosts/android
+        run: |
+          set -euo pipefail
+          notes="$(printf 'Android nightly, build %s, from %s.\n\nInstall with `adb install <file>`, or open the APK on the device.\nThe Google Play flavour is `gp`; `vanilla` ships without Google services.\n' "${BUILD_ID}" "${GITHUB_SHA}")"
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Android nightly ${BUILD_ID}" \
+            --notes "${notes}" \
+            --prerelease \
+            polkadot-app-gp-"${BUILD_ID}"-"${SHORT}".apk \
+            polkadot-app-vanilla-"${BUILD_ID}"-"${SHORT}".apk
