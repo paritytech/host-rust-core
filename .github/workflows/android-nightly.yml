@@ -100,7 +100,7 @@ jobs:
           set -euo pipefail
           umask 077
           for name in GOOGLE_SERVICES_JSON_BASE64 KEYSTORE_BASE64; do
-            if [ -z "${!name}" ]; then
+            if [ -z "${!name-}" ]; then
               echo "::error::${name} is not set, so this build cannot be signed or configured"
               exit 1
             fi
@@ -134,45 +134,53 @@ jobs:
           CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
           CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
-        run: ./gradlew assembleGpNightly assembleVanillaNightly --no-daemon
+        # Only the flavour that is distributed. Building the other one costs
+        # roughly twenty minutes for an artifact nothing consumes; it can be
+        # added back when it has a Firebase application of its own.
+        run: ./gradlew assembleGpNightly --no-daemon
 
-      - name: Check both APKs came out signed
+      - name: Check the APK is signed by the expected key
         id: package
         working-directory: hosts/android
         env:
           BUILD_ID: ${{ steps.build.outputs.id }}
+          EXPECTED_SIGNER: a25eb8df5e015651d6d52849f79b8450b9b36353921600c22e454d4f00372fc6
         run: |
           set -euo pipefail
-          shopt -s nullglob
 
-          # Not under nullglob: a non-matching glob would vanish, ls would print
-          # the working directory, and the guard below would never fire.
-          shopt -u nullglob
-          # || true, or pipefail aborts the step on a non-matching glob before
-          # the message below can explain what was missing.
+          # nullglob stays off here: a non-matching glob would otherwise vanish,
+          # ls would print the working directory, and the guard would not fire.
+          # || true so pipefail does not abort before the message explains it.
           apksigner="$(ls -d "${ANDROID_HOME:-}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1 || true)"
-          shopt -s nullglob
           if [ -z "${apksigner}" ]; then
-            echo "::error::No apksigner under ${ANDROID_HOME}/build-tools"
+            echo "::error::No apksigner under ${ANDROID_HOME:-<unset>}/build-tools"
+            exit 1
+          fi
+
+          shopt -s nullglob
+          found=("app/build/outputs/apk/gp/nightly"/*.apk)
+          shopt -u nullglob
+          if [ ${#found[@]} -ne 1 ]; then
+            echo "::error::Expected one APK, found ${#found[@]}"
+            exit 1
+          fi
+
+          # verify alone passes for an APK signed by any key, so a rotated or
+          # wrong keystore would ship a build that every tester's device
+          # rejects on install. Compare the certificate instead.
+          signer="$("${apksigner}" verify --print-certs "${found[0]}" \
+            | sed -n 's/.*SHA-256 digest: //p' | head -n1)"
+          if [ "${signer}" != "${EXPECTED_SIGNER}" ]; then
+            echo "::error::APK is signed by ${signer}, expected ${EXPECTED_SIGNER}"
             exit 1
           fi
 
           short="${GITHUB_SHA:0:9}"
-          for flavour in gp vanilla; do
-            found=("app/build/outputs/apk/${flavour}/nightly"/*.apk)
-            if [ ${#found[@]} -ne 1 ]; then
-              echo "::error::Expected one ${flavour} APK, found ${#found[@]}"
-              exit 1
-            fi
-            # An unsigned APK installs nowhere, and the build does not fail to
-            # produce one.
-            "${apksigner}" verify "${found[0]}"
-            mv "${found[0]}" "polkadot-app-${flavour}-${BUILD_ID}-${short}.apk"
-          done
+          mv "${found[0]}" "polkadot-app-gp-${BUILD_ID}-${short}.apk"
 
-          # Signing is done, so the key stops being reachable by anything that
-          # runs later in this job.
-          rm -f develop_key.jks
+          # Signing is done, so neither the key nor the configuration is
+          # reachable by anything that runs later in this job.
+          rm -f develop_key.jks app/google-services.json
 
           echo "short=${short}" >> "$GITHUB_OUTPUT"
 

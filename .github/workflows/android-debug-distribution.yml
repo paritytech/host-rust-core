@@ -15,10 +15,17 @@ on:
   pull_request:
     types: [closed]
     branches: [main]
+    # A merge that changes no code still ships an APK to testers otherwise.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}
+  # Keyed on the merge commit, not the workflow. One pending run is kept per
+  # group, so a shared key would have each merge cancel the one queued behind
+  # it and that merge would never be distributed, reported only as cancelled.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.merge_commit_sha || github.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -29,13 +36,24 @@ jobs:
   distribute:
     name: Build and distribute
     # A closed pull request is not necessarily a merged one, and building the
-    # ones that were abandoned would ship code that was rejected.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    # ones that were abandoned would ship code that was rejected. A merged fork
+    # pull request gets neither secrets nor an identity token, so admitting it
+    # would turn every accepted external contribution into a failed run.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.pull_request.merged == true
+          && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # The merge commit, not the pull request's merge preview. That preview is
+      # computed while the request is open, so with two requests in flight the
+      # second to merge would build a tree that does not contain the first and
+      # ship it as though it were main. Empty on dispatch, which falls back to
+      # the default ref.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           persist-credentials: false
 
       # The app tree pins the nightly its codegen runs under, because rustdoc's
@@ -99,7 +117,7 @@ jobs:
           set -euo pipefail
           umask 077
           for name in GOOGLE_SERVICES_JSON_BASE64 KEYSTORE_BASE64; do
-            if [ -z "${!name}" ]; then
+            if [ -z "${!name-}" ]; then
               echo "::error::${name} is not set, so this build cannot be signed or configured"
               exit 1
             fi
@@ -131,42 +149,48 @@ jobs:
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
         run: ./gradlew assembleGpDebug --no-daemon
 
-      - name: Check the APK came out signed
+      - name: Check the APK is signed by the expected key
         id: package
         working-directory: hosts/android
         env:
           BUILD_ID: ${{ steps.build.outputs.id }}
+          EXPECTED_SIGNER: a25eb8df5e015651d6d52849f79b8450b9b36353921600c22e454d4f00372fc6
         run: |
           set -euo pipefail
-          shopt -s nullglob
 
-          # Not under nullglob: a non-matching glob would vanish, ls would print
-          # the working directory, and the guard below would never fire. || true
-          # so pipefail does not abort before the message explains what is
-          # missing.
-          shopt -u nullglob
+          # nullglob stays off here: a non-matching glob would otherwise vanish,
+          # ls would print the working directory, and the guard would not fire.
+          # || true so pipefail does not abort before the message explains it.
           apksigner="$(ls -d "${ANDROID_HOME:-}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1 || true)"
-          shopt -s nullglob
           if [ -z "${apksigner}" ]; then
-            echo "::error::No apksigner under ${ANDROID_HOME:-}/build-tools"
+            echo "::error::No apksigner under ${ANDROID_HOME:-<unset>}/build-tools"
             exit 1
           fi
 
+          shopt -s nullglob
           found=("app/build/outputs/apk/gp/debug"/*.apk)
+          shopt -u nullglob
           if [ ${#found[@]} -ne 1 ]; then
             echo "::error::Expected one APK, found ${#found[@]}"
             exit 1
           fi
-          # An unsigned APK installs nowhere, and the build does not fail to
-          # produce one.
-          "${apksigner}" verify "${found[0]}"
+
+          # verify alone passes for an APK signed by any key, so a rotated or
+          # wrong keystore would ship a build that every tester's device
+          # rejects on install. Compare the certificate instead.
+          signer="$("${apksigner}" verify --print-certs "${found[0]}" \
+            | sed -n 's/.*SHA-256 digest: //p' | head -n1)"
+          if [ "${signer}" != "${EXPECTED_SIGNER}" ]; then
+            echo "::error::APK is signed by ${signer}, expected ${EXPECTED_SIGNER}"
+            exit 1
+          fi
 
           short="${GITHUB_SHA:0:9}"
           mv "${found[0]}" "polkadot-app-debug-${BUILD_ID}-${short}.apk"
 
-          # Signing is done, so the key stops being reachable by anything that
-          # runs later in this job.
-          rm -f develop_key.jks
+          # Signing is done, so neither the key nor the configuration is
+          # reachable by anything that runs later in this job.
+          rm -f develop_key.jks app/google-services.json
 
           echo "short=${short}" >> "$GITHUB_OUTPUT"
 
