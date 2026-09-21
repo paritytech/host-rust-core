@@ -168,6 +168,10 @@ jobs:
             mv "${found[0]}" "polkadot-app-${flavour}-${BUILD_ID}-${short}.apk"
           done
 
+          # Signing is done, so the key stops being reachable by anything that
+          # runs later in this job.
+          rm -f develop_key.jks
+
           echo "short=${short}" >> "$GITHUB_OUTPUT"
 
       # Exchanges the run's OIDC assertion for a short lived credential and
@@ -200,9 +204,14 @@ jobs:
             exit 1
           fi
 
+          # --ignore-scripts, because this job holds a cloud credential and can
+          # mint its own identity assertions, so nothing fetched here should be
+          # able to run code at install time. The CLI works without them.
+          npm install --no-save --no-audit --no-fund --ignore-scripts firebase-tools@14.11.1
+
           notes="Build ${BUILD_ID}, from ${GITHUB_SHA}. gp carries Google services; vanilla does not."
           for flavour in gp vanilla; do
-            npx --yes firebase-tools@14.11.1 appdistribution:distribute \
+            ./node_modules/.bin/firebase appdistribution:distribute \
               "polkadot-app-${flavour}-${BUILD_ID}-${SHORT}.apk" \
               --app "${APP_ID}" \
               --groups "${GROUP}" \
