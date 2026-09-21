@@ -19,15 +19,10 @@ on:
 jobs:
   register_device:
     runs-on: macos-26
-    # Held until the iOS cutover. This tree is behind the app repository.
-    # It registers devices at App Store Connect. Its existing guard is a
-    # substring test against a string literal, so a login that appears anywhere
-    # inside it passes.
-    #
-    # Removing this is part of the cutover, tracked on #764.
-    if: false
-    # The condition this replaces, to restore at cutover:
-    #   if: contains(fromJSON('["sergkononenko","ERussel","stepanLav","kogeler","TarikGul","pgherveou","filvecchiato","valentinfernandez1"]'), github.actor)
+    # Registering a device mutates signing state at Apple, so this is limited
+    # to named people. fromJSON, not a bare string: contains() on a string is a
+    # substring test, which any login appearing inside another would pass.
+    if: contains(fromJSON('["sergkononenko","ERussel","stepanLav","kogeler","TarikGul","pgherveou","filvecchiato","valentinfernandez1"]'), github.actor)
     steps:
       - uses: actions/checkout@v6
 
