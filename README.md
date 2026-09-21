@@ -374,6 +374,20 @@ is Apple bookkeeping rather than CI. The workflows that register a device and
 regenerate the profile are held until the cutover, tracked on #764; the device
 preview itself is tracked on #681.
 
+### An Android build that installs on a phone
+
+Label a pull request `android-device-build` and `android-device-preview.yml`
+attaches an installable APK to the run. Android needs no provisioning, so it
+installs on any phone rather than only on registered devices, and it is signed
+with the shared develop key so a new build replaces the last one rather than
+asking to be uninstalled first.
+
+It builds the flavour that ships. The other one substitutes stubs for Google
+auth, Firebase auth, push and backup, so a preview built from it cannot sign in.
+A pull request opened from a fork cannot reach the configuration and signing key
+this needs, and is told so rather than handed a build that misleads. Push the
+branch to this repository to get one.
+
 ### Building the standalone iOS host app
 
 The targets below build `polkadot-app-ios-v2`, a separate checkout set by
