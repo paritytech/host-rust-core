@@ -582,7 +582,10 @@ jobs:
       - name: Compile the core's Android consumers
         working-directory: hosts/android
         env:
-          APPLICATION_ID: io.paritytech.polkadotapp
+          # The real id, because it is the one the Google configuration is
+          # built for. Inert in this job, which compiles a library module and
+          # never applies the Google Services plugin.
+          APPLICATION_ID: io.parity.polkadotapp
           APPLICATION_NAME: Polkadot
           CURRENCY_SYMBOL: DOT
           FIRESTORE_DATABASE_ID: ci
