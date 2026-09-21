@@ -22,9 +22,10 @@ use parity_scale_codec::Encode;
 use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
-    HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
-    PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
+    HopProvider, HostInfo, JsonRpcConnection, LocaleHost, NativeChatFileExportRequest,
+    NativeChatFilePickRequest, NativeChatFilesHost, NativeChatPickedFile, Navigation,
+    Notifications, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
     RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
@@ -212,6 +213,10 @@ pub struct NativeHostRuntimeConfig {
     /// positional over the FFI and the checksum does not cover their order, so
     /// an insert shifts every field below it.
     pub asset_hub_chain_genesis_hash: Vec<u8>,
+    /// Trusted Coinage asset instance from the wallet's network configuration.
+    /// Required for instance-scoped Coinage runtimes; omit only for legacy use.
+    /// Appended to preserve the order of existing positional FFI record fields.
+    pub coinage_instance_id: Option<u32>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -333,7 +338,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                     actual: config.asset_hub_chain_genesis_hash.len() as u64,
                 }
             })?;
-        let signing = SigningHostConfig::new(
+        let mut signing = SigningHostConfig::new(
             HostInfo {
                 name: config.host_name,
                 icon: config.host_icon,
@@ -349,6 +354,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             asset_hub_chain_genesis_hash,
             config.network_suffix,
         )?;
+        signing.coinage_instance_id = config.coinage_instance_id;
         Ok(Self {
             signing,
             local_session_secret: config.local_session_secret,
@@ -413,6 +419,31 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 #[uniffi::export]
 pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
+}
+
+/// Strictly decoded storage metadata for host-private namespace routing.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NativeCoreStorageKeyDescription {
+    /// Stable core storage slot kind.
+    pub kind: String,
+    /// Product owning this slot, absent for wallet-owned state.
+    pub product_id: Option<String>,
+}
+
+/// Describe exactly one encoded storage key without duplicating SCALE in hosts.
+#[uniffi::export]
+pub fn native_describe_core_storage_key(
+    encoded: Vec<u8>,
+) -> Result<NativeCoreStorageKeyDescription, HostRejection> {
+    let description = truapi_platform::describe_core_storage_key(&encoded).map_err(|error| {
+        HostRejection::Rejected {
+            reason: error.to_string(),
+        }
+    })?;
+    Ok(NativeCoreStorageKeyDescription {
+        kind: description.kind.to_owned(),
+        product_id: description.product_id,
+    })
 }
 
 /// Whether `product_id` is a first-party product the host grants every
@@ -559,6 +590,21 @@ pub trait HostCallbacks: Send + Sync {
     /// connection id, or `None` when unsupported.
     fn chain_connect(&self, genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection>;
 
+    /// Current trusted HOP WSS URLs for the configured Bulletin chain.
+    /// An embedding with no HOP configuration returns an empty allowlist.
+    async fn allowed_hop_endpoints(
+        &self,
+        bulletin_genesis_hash: Vec<u8>,
+    ) -> Result<Vec<String>, HostRejection>;
+
+    /// Open only an exact endpoint from the current trusted Bulletin allowlist.
+    /// HOP ids share the chain send/close and response/closed event namespace.
+    fn hop_connect(
+        &self,
+        bulletin_genesis_hash: Vec<u8>,
+        endpoint: String,
+    ) -> Result<Option<u32>, HostRejection>;
+
     /// Send one JSON-RPC request over a previously opened chain connection.
     fn chain_send(&self, connection_id: u32, request: String) -> Result<(), HostRejection>;
 
@@ -571,9 +617,55 @@ pub trait HostCallbacks: Send + Sync {
         review: UserConfirmationReview,
     ) -> Result<bool, HostRejection>;
 
+    /// Trusted file selection into durable immutable Host custody.
+    async fn pick_chat_files(
+        &self,
+        request: NativeChatFilePickRequest,
+    ) -> Result<Vec<NativeChatPickedFile>, HostRejection>;
+
+    /// Exact bounded read from a Host-private immutable source.
+    async fn read_chat_file(
+        &self,
+        source_id: String,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, HostRejection>;
+
+    /// Idempotently release a durable private source.
+    async fn release_chat_file(&self, source_id: String) -> Result<(), HostRejection>;
+
+    /// Trusted export consent; `None` means user cancellation.
+    async fn begin_chat_file_export(
+        &self,
+        request: NativeChatFileExportRequest,
+    ) -> Result<Option<String>, HostRejection>;
+
+    /// Contiguous bounded write into a partial private export.
+    async fn write_chat_file_export(
+        &self,
+        export_id: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<(), HostRejection>;
+
+    /// Publish an exact-size export through safe native UI.
+    async fn finish_chat_file_export(&self, export_id: String) -> Result<(), HostRejection>;
+
+    /// Idempotently discard a partial export, never a completed user export.
+    async fn cancel_chat_file_export(&self, export_id: String) -> Result<(), HostRejection>;
+
     /// Look up one preimage value by key. The native shim emits this as the
     /// current item in its subscription stream.
     async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
+
+    /// Exact-name AccountId32 candidates from the host's configured,
+    /// authenticated native username service. Every item must contain 32 bytes;
+    /// the core verifies finalized dotNS ownership and the canonical People key.
+    async fn identity_username_candidates(
+        &self,
+        username: String,
+        people_chain_genesis_hash: Vec<u8>,
+    ) -> Result<Vec<Vec<u8>>, HostRejection>;
 
     /// Current host theme, named variant included. The native shim emits this
     /// as the current item in its subscription stream.
@@ -721,6 +813,7 @@ impl NativeTrUApiHostRuntime {
             runtime_config.signing,
             spawner.clone(),
         ));
+        runtime.set_identity_backend_host(platform.clone());
         assert!(
             runtime.worker_ledger().install_demand_observer(platform),
             "a freshly built runtime installs its worker demand observer once"
@@ -1680,6 +1773,74 @@ impl NativeEventBus {
 }
 
 #[async_trait]
+impl NativeChatFilesHost for CallbackPlatform {
+    async fn pick_chat_files(
+        &self,
+        request: NativeChatFilePickRequest,
+    ) -> Result<Vec<NativeChatPickedFile>, v01::GenericError> {
+        self.callbacks
+            .pick_chat_files(request)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn read_chat_file(
+        &self,
+        source_id: String,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, v01::GenericError> {
+        self.callbacks
+            .read_chat_file(source_id, offset, length)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn release_chat_file(&self, source_id: String) -> Result<(), v01::GenericError> {
+        self.callbacks
+            .release_chat_file(source_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn begin_chat_file_export(
+        &self,
+        request: NativeChatFileExportRequest,
+    ) -> Result<Option<String>, v01::GenericError> {
+        self.callbacks
+            .begin_chat_file_export(request)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn write_chat_file_export(
+        &self,
+        export_id: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<(), v01::GenericError> {
+        self.callbacks
+            .write_chat_file_export(export_id, offset, data)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn finish_chat_file_export(&self, export_id: String) -> Result<(), v01::GenericError> {
+        self.callbacks
+            .finish_chat_file_export(export_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn cancel_chat_file_export(&self, export_id: String) -> Result<(), v01::GenericError> {
+        self.callbacks
+            .cancel_chat_file_export(export_id)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+#[async_trait]
 impl Navigation for CallbackPlatform {
     async fn navigate_to(&self, url: String) -> Result<(), v01::HostNavigateToError> {
         self.callbacks.on_core_log(
@@ -1862,6 +2023,7 @@ struct NativeJsonRpcConnection {
     events: Arc<NativeEventBus>,
     response_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     closed: AtomicBool,
+    private_rpc: bool,
 }
 
 impl JsonRpcConnection for NativeJsonRpcConnection {
@@ -1872,8 +2034,13 @@ impl JsonRpcConnection for NativeJsonRpcConnection {
         if let Err(err) = self.callbacks.chain_send(self.id, request) {
             self.callbacks.on_core_log(
                 "truapi.native.callback.chain_send_failed".to_string(),
-                err.to_string(),
+                if self.private_rpc {
+                    "HOP send failed".to_string()
+                } else {
+                    err.to_string()
+                },
             );
+            self.close();
         }
     }
 
@@ -1899,7 +2066,11 @@ impl JsonRpcConnection for NativeJsonRpcConnection {
         if let Err(err) = self.callbacks.chain_close(self.id) {
             self.callbacks.on_core_log(
                 "truapi.native.callback.chain_close_failed".to_string(),
-                err.to_string(),
+                if self.private_rpc {
+                    "HOP close failed".to_string()
+                } else {
+                    err.to_string()
+                },
             );
         }
     }
@@ -1933,6 +2104,47 @@ impl ChainProvider for CallbackPlatform {
             events: self.events.clone(),
             response_rx: Mutex::new(Some(response_rx)),
             closed: AtomicBool::new(false),
+            private_rpc: false,
+        }))
+    }
+}
+
+#[async_trait]
+impl HopProvider for CallbackPlatform {
+    async fn allowed_hop_endpoints(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+    ) -> Result<Vec<String>, v01::GenericError> {
+        self.callbacks
+            .allowed_hop_endpoints(bulletin_genesis_hash.to_vec())
+            .await
+            .map_err(v01::GenericError::from)
+    }
+
+    async fn connect_hop(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+        endpoint: String,
+    ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        let allowed = self.allowed_hop_endpoints(bulletin_genesis_hash).await?;
+        truapi_platform::ensure_allowed_hop_endpoint(&endpoint, &allowed)?;
+        let Some(connection_id) = self
+            .callbacks
+            .hop_connect(bulletin_genesis_hash.to_vec(), endpoint)
+            .map_err(v01::GenericError::from)?
+        else {
+            return Err(v01::GenericError {
+                reason: "HOP provider unavailable".to_string(),
+            });
+        };
+        let response_rx = self.events.register_chain(connection_id);
+        Ok(Box::new(NativeJsonRpcConnection {
+            id: connection_id,
+            callbacks: self.callbacks.clone(),
+            events: self.events.clone(),
+            response_rx: Mutex::new(Some(response_rx)),
+            closed: AtomicBool::new(false),
+            private_rpc: true,
         }))
     }
 }
@@ -2005,6 +2217,40 @@ impl PreimageHost for CallbackPlatform {
         };
         stream::once(current).chain(rx).boxed()
     }
+}
+
+#[async_trait]
+impl truapi_platform::IdentityBackendHost for CallbackPlatform {
+    async fn identity_username_candidates(
+        &self,
+        username: String,
+        people_chain_genesis_hash: [u8; 32],
+    ) -> Result<Vec<[u8; 32]>, v01::GenericError> {
+        let candidates = self
+            .callbacks
+            .identity_username_candidates(username, people_chain_genesis_hash.to_vec())
+            .await
+            .map_err(v01::GenericError::from)?;
+        decode_identity_candidates(candidates)
+    }
+}
+
+fn decode_identity_candidates(
+    candidates: Vec<Vec<u8>>,
+) -> Result<Vec<[u8; 32]>, v01::GenericError> {
+    if candidates.len() > 32 {
+        return Err(v01::GenericError {
+            reason: "too many username candidates".into(),
+        });
+    }
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            candidate.try_into().map_err(|_| v01::GenericError {
+                reason: "username candidate is not AccountId32".into(),
+            })
+        })
+        .collect()
 }
 
 /// [`truapi_platform::ChatPlatform`] served by host-provided
@@ -2138,6 +2384,17 @@ mod tests {
     use truapi::Bytes32;
     use truapi::v01::LegacyAccountTxPayload;
     use truapi_platform::CreateTransactionReview;
+
+    #[test]
+    fn native_identity_candidates_reject_malformed_accounts_and_oversized_sets() {
+        assert_eq!(
+            decode_identity_candidates(vec![vec![3; 32]]).unwrap(),
+            vec![[3; 32]]
+        );
+        assert!(decode_identity_candidates(vec![vec![3; 31]]).is_err());
+        assert!(decode_identity_candidates(vec![vec![3; 33]]).is_err());
+        assert!(decode_identity_candidates(vec![vec![3; 32]; 33]).is_err());
+    }
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
@@ -2489,8 +2746,60 @@ mod tests {
         }
     }
 
+    fn unavailable_chat_files<T>() -> Result<T, HostRejection> {
+        Err(HostRejection::Rejected {
+            reason: "native Chat files unavailable in this fixture".into(),
+        })
+    }
+
     #[async_trait::async_trait]
     impl HostCallbacks for EventCallbacks {
+        async fn pick_chat_files(
+            &self,
+            _: NativeChatFilePickRequest,
+        ) -> Result<Vec<NativeChatPickedFile>, HostRejection> {
+            unavailable_chat_files()
+        }
+        async fn read_chat_file(
+            &self,
+            _: String,
+            _: u64,
+            _: u32,
+        ) -> Result<Vec<u8>, HostRejection> {
+            unavailable_chat_files()
+        }
+        async fn release_chat_file(&self, _: String) -> Result<(), HostRejection> {
+            unavailable_chat_files()
+        }
+        async fn begin_chat_file_export(
+            &self,
+            _: NativeChatFileExportRequest,
+        ) -> Result<Option<String>, HostRejection> {
+            unavailable_chat_files()
+        }
+        async fn write_chat_file_export(
+            &self,
+            _: String,
+            _: u64,
+            _: Vec<u8>,
+        ) -> Result<(), HostRejection> {
+            unavailable_chat_files()
+        }
+        async fn finish_chat_file_export(&self, _: String) -> Result<(), HostRejection> {
+            unavailable_chat_files()
+        }
+        async fn cancel_chat_file_export(&self, _: String) -> Result<(), HostRejection> {
+            unavailable_chat_files()
+        }
+        async fn identity_username_candidates(
+            &self,
+            _: String,
+            _: Vec<u8>,
+        ) -> Result<Vec<Vec<u8>>, HostRejection> {
+            Err(HostRejection::Rejected {
+                reason: "no identity provider in event fixture".into(),
+            })
+        }
         fn on_core_log(&self, _marker: String, _detail: String) {}
         fn worker_demand_changed(&self, product_id: String, transition: WorkerTransition) {
             self.worker_demand
@@ -2546,6 +2855,12 @@ mod tests {
         }
         fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
             Ok(())
+        }
+        async fn allowed_hop_endpoints(&self, _: Vec<u8>) -> Result<Vec<String>, HostRejection> {
+            Ok(Vec::new())
+        }
+        fn hop_connect(&self, _: Vec<u8>, _: String) -> Result<Option<u32>, HostRejection> {
+            Ok(None)
         }
         fn chain_connect(&self, genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection> {
             self.chain_connects
@@ -2755,6 +3070,7 @@ mod tests {
             network_suffix: "paseo".to_string(),
             local_session_secret: Some(vec![7; 32]),
             local_session_lite_username: Some("alice".to_string()),
+            coinage_instance_id: None,
         }
     }
 
@@ -3823,6 +4139,52 @@ mod tests {
         struct Noop;
         #[async_trait::async_trait]
         impl HostCallbacks for Noop {
+            async fn pick_chat_files(
+                &self,
+                _: NativeChatFilePickRequest,
+            ) -> Result<Vec<NativeChatPickedFile>, HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn read_chat_file(
+                &self,
+                _: String,
+                _: u64,
+                _: u32,
+            ) -> Result<Vec<u8>, HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn release_chat_file(&self, _: String) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn begin_chat_file_export(
+                &self,
+                _: NativeChatFileExportRequest,
+            ) -> Result<Option<String>, HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn write_chat_file_export(
+                &self,
+                _: String,
+                _: u64,
+                _: Vec<u8>,
+            ) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn finish_chat_file_export(&self, _: String) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn cancel_chat_file_export(&self, _: String) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn identity_username_candidates(
+                &self,
+                _: String,
+                _: Vec<u8>,
+            ) -> Result<Vec<Vec<u8>>, HostRejection> {
+                Err(HostRejection::Rejected {
+                    reason: "no identity provider in fixture".into(),
+                })
+            }
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
@@ -3868,6 +4230,15 @@ mod tests {
             }
             fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
                 Ok(())
+            }
+            async fn allowed_hop_endpoints(
+                &self,
+                _: Vec<u8>,
+            ) -> Result<Vec<String>, HostRejection> {
+                Ok(Vec::new())
+            }
+            fn hop_connect(&self, _: Vec<u8>, _: String) -> Result<Option<u32>, HostRejection> {
+                Ok(None)
             }
             fn chain_connect(&self, _genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection> {
                 Ok(None)
@@ -3969,6 +4340,52 @@ mod tests {
 
         #[async_trait::async_trait]
         impl HostCallbacks for GatedPermissionCallbacks {
+            async fn pick_chat_files(
+                &self,
+                _: NativeChatFilePickRequest,
+            ) -> Result<Vec<NativeChatPickedFile>, HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn read_chat_file(
+                &self,
+                _: String,
+                _: u64,
+                _: u32,
+            ) -> Result<Vec<u8>, HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn release_chat_file(&self, _: String) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn begin_chat_file_export(
+                &self,
+                _: NativeChatFileExportRequest,
+            ) -> Result<Option<String>, HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn write_chat_file_export(
+                &self,
+                _: String,
+                _: u64,
+                _: Vec<u8>,
+            ) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn finish_chat_file_export(&self, _: String) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn cancel_chat_file_export(&self, _: String) -> Result<(), HostRejection> {
+                unavailable_chat_files()
+            }
+            async fn identity_username_candidates(
+                &self,
+                _: String,
+                _: Vec<u8>,
+            ) -> Result<Vec<Vec<u8>>, HostRejection> {
+                Err(HostRejection::Rejected {
+                    reason: "no identity provider in permission fixture".into(),
+                })
+            }
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
@@ -4021,6 +4438,15 @@ mod tests {
             }
             fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
                 Ok(())
+            }
+            async fn allowed_hop_endpoints(
+                &self,
+                _: Vec<u8>,
+            ) -> Result<Vec<String>, HostRejection> {
+                Ok(Vec::new())
+            }
+            fn hop_connect(&self, _: Vec<u8>, _: String) -> Result<Option<u32>, HostRejection> {
+                Ok(None)
             }
             fn chain_connect(&self, _genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection> {
                 Ok(None)

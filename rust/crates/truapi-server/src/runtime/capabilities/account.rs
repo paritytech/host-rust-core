@@ -30,13 +30,14 @@ use truapi_platform::{
 
 use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::sso::messages::ProductRequest;
-use crate::runtime::authority::ProductDeviceChatAuthorityRequest;
+use crate::runtime::authority::{
+    ProductDeviceChatAuthorityRequest, chat_requires_statement_submit,
+};
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
-    product_device_chat_account_authority_error, product_device_chat_authority_error,
-    remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
-    ring_vrf_proof_error, ring_vrf_register_error, ring_vrf_sign_error, validate_vrf_transcript,
-    vrf_call_error,
+    product_device_chat_authority_error, remote_authority_call, remote_authority_context,
+    ring_vrf_alias_error, ring_vrf_list_error, ring_vrf_proof_error, ring_vrf_register_error,
+    ring_vrf_sign_error, validate_vrf_transcript, vrf_call_error,
 };
 
 #[truapi::async_trait]
@@ -392,45 +393,16 @@ impl Account for ProductRuntimeHost {
         cx: &CallContext,
         request: HostProductDeviceChatRequest,
     ) -> Result<HostProductDeviceChatResponse, CallError<HostProductDeviceChatError>> {
-        let HostProductDeviceChatRequest::V1(request) = request;
-        let product_account_id = match &request {
-            v01::HostProductDeviceChatRequest::Bind {
-                product_account_id, ..
-            }
-            | v01::HostProductDeviceChatRequest::Seal {
-                product_account_id, ..
-            }
-            | v01::HostProductDeviceChatRequest::Open {
-                product_account_id, ..
-            }
-            | v01::HostProductDeviceChatRequest::SignRequestProof {
-                product_account_id, ..
-            }
-            | v01::HostProductDeviceChatRequest::Identity {
-                product_account_id, ..
-            }
-            | v01::HostProductDeviceChatRequest::VerifyPeerDevice {
-                product_account_id, ..
-            } => product_account_id.clone(),
-        };
-        let product_account_id =
-            Self::normalize_product_account_id(product_account_id).map_err(|()| {
+        let HostProductDeviceChatRequest::V1(operation) = request;
+        let calling_product_id =
+            normalize_product_identifier(&self.product_id()).map_err(|_| {
                 CallError::Domain(HostProductDeviceChatError::V1(
-                    v01::HostProductDeviceChatError::Unknown {
-                        reason: "Invalid product account".to_string(),
-                    },
+                    latest::HostProductDeviceChatError::InvalidRequest,
                 ))
             })?;
-        if product_account_id.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostProductDeviceChatError::V1(
-                v01::HostProductDeviceChatError::Unknown {
-                    reason: "product account does not belong to the calling product".to_string(),
-                },
-            )));
-        }
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostProductDeviceChatError::V1(
-                v01::HostProductDeviceChatError::NotConnected,
+                latest::HostProductDeviceChatError::NotConnected,
             )));
         };
         if self
@@ -440,75 +412,34 @@ impl Account for ProductRuntimeHost {
             != PermissionAuthorizationStatus::Authorized
         {
             return Err(CallError::Domain(HostProductDeviceChatError::V1(
-                v01::HostProductDeviceChatError::Rejected,
+                latest::HostProductDeviceChatError::AccessNotGranted,
             )));
         }
+        if chat_requires_statement_submit(&operation) {
+            self.require_remote_permission(
+                v01::RemotePermission::StatementSubmit,
+                HostProductDeviceChatError::V1(
+                    latest::HostProductDeviceChatError::AccessNotGranted,
+                ),
+            )
+            .await?;
+        }
+        if matches!(
+            &operation,
+            latest::HostProductDeviceChatRequest::SendAttachments { .. }
+        ) {
+            self.require_remote_permission(
+                v01::RemotePermission::PreimageSubmit,
+                HostProductDeviceChatError::V1(
+                    latest::HostProductDeviceChatError::AccessNotGranted,
+                ),
+            )
+            .await?;
+        }
         let cx = remote_authority_context(cx);
-        let authority_request = match request {
-            v01::HostProductDeviceChatRequest::Bind {
-                peer_identity_account_id,
-                peer_chat_public_key,
-                ..
-            } => {
-                let device_account_id = self
-                    .product_account_public_key(&cx, &session, &product_account_id)
-                    .await
-                    .map_err(product_device_chat_account_authority_error)?;
-                ProductDeviceChatAuthorityRequest::Bind {
-                    calling_product_id: self.product_id(),
-                    device_account_id,
-                    derivation_index: product_account_id.derivation_index.clone(),
-                    peer_identity_account_id,
-                    peer_chat_public_key,
-                }
-            }
-            v01::HostProductDeviceChatRequest::Seal {
-                peer_chat_public_key,
-                cipher_suite,
-                plaintext,
-                ..
-            } => ProductDeviceChatAuthorityRequest::Seal {
-                calling_product_id: self.product_id(),
-                peer_chat_public_key,
-                cipher_suite,
-                plaintext,
-            },
-            v01::HostProductDeviceChatRequest::Open {
-                peer_chat_public_key,
-                cipher_suite,
-                combined_ciphertext,
-                ..
-            } => ProductDeviceChatAuthorityRequest::Open {
-                calling_product_id: self.product_id(),
-                peer_chat_public_key,
-                cipher_suite,
-                combined_ciphertext,
-            },
-            v01::HostProductDeviceChatRequest::SignRequestProof { payload, .. } => {
-                ProductDeviceChatAuthorityRequest::SignRequestProof {
-                    calling_product_id: self.product_id(),
-                    product_account_id,
-                    payload,
-                }
-            }
-            v01::HostProductDeviceChatRequest::Identity { .. } => {
-                ProductDeviceChatAuthorityRequest::Identity {
-                    calling_product_id: self.product_id(),
-                }
-            }
-            v01::HostProductDeviceChatRequest::VerifyPeerDevice {
-                peer_identity_account_id,
-                peer_chat_public_key,
-                peer_device_account_id,
-                proof,
-                ..
-            } => ProductDeviceChatAuthorityRequest::VerifyPeerDevice {
-                calling_product_id: self.product_id(),
-                peer_identity_account_id,
-                peer_chat_public_key,
-                peer_device_account_id,
-                proof,
-            },
+        let authority_request = ProductDeviceChatAuthorityRequest {
+            calling_product_id,
+            operation,
         };
         remote_authority_call(
             &cx,

@@ -24,13 +24,13 @@ use parity_scale_codec::{Decode, Encode};
 use send_wrapper::SendWrapper;
 use truapi::latest::HostPlatform;
 use truapi::v01;
-#[cfg(feature = "wasm-signing-host")]
-use truapi_platform::SigningHostConfig;
 use truapi_platform::{
-    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
+    ChainProvider, ChatPlatform, HopProvider, HostInfo, JsonRpcConnection, PairingHostConfig,
     PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
     RuntimeConfigValidationError,
 };
+#[cfg(feature = "wasm-signing-host")]
+use truapi_platform::{IdentityBackendHost, SigningHostConfig};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -134,55 +134,119 @@ impl ChainProvider for WasmPlatform {
         &self,
         genesis_hash: [u8; 32],
     ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
-        let chain_connect = self.bridge.chain_connect.clone();
-        let chain_connect = SendWrapper::new(chain_connect);
-        SendWrapper::new(async move {
-            let (response_tx, response_rx) = mpsc::unbounded::<String>();
-            let on_response = Closure::wrap(Box::new(move |json: JsValue| {
-                // The host must hand back JSON-RPC frames as strings. Drop (and
-                // log) non-string values rather than forwarding an empty frame
-                // that would desync request/response correlation.
-                match json.as_string() {
-                    Some(s) => {
-                        let _ = response_tx.unbounded_send(s);
-                    }
-                    None => web_sys::console::error_1(&JsValue::from_str(
-                        "chainConnect onResponse expected a JSON string; dropping non-string value",
-                    )),
-                }
-            }) as Box<dyn FnMut(JsValue)>);
+        connect_js_rpc(self.bridge.chain_connect.clone(), genesis_hash, None).await
+    }
+}
 
-            let genesis_arg = JsValue::from_str(&format!("0x{}", hex::encode(genesis_hash)));
-            let returned = chain_connect
-                .call2(
-                    &JsValue::NULL,
-                    &genesis_arg,
-                    on_response.as_ref().unchecked_ref(),
-                )
-                .map_err(|err| generic(js_to_string(err)))?;
-            let resolved = await_optional_promise(returned).await.map_err(generic)?;
-            if resolved.is_null() || resolved.is_undefined() {
-                return Err(generic("chainConnect returned no connection".into()));
-            }
-            let send_fn = Reflect::get(&resolved, &JsValue::from_str("send"))
-                .map_err(|_| generic("chainConnect must return { send, close }".into()))?
-                .dyn_into::<Function>()
-                .map_err(|_| generic("chainConnect.send must be a function".into()))?;
-            let close_fn = Reflect::get(&resolved, &JsValue::from_str("close"))
-                .map_err(|_| generic("chainConnect.close must be a function".into()))?
-                .dyn_into::<Function>()
-                .map_err(|_| generic("chainConnect.close must be a function".into()))?;
+#[truapi_platform::async_trait]
+impl HopProvider for WasmPlatform {
+    async fn allowed_hop_endpoints(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+    ) -> Result<Vec<String>, v01::GenericError> {
+        let encoded = invoke_bytes_return(
+            &self.bridge.allowed_hop_endpoints,
+            vec![Uint8Array::from(bulletin_genesis_hash.as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes(encoded, "encoded HOP endpoint list did not decode").map_err(generic)
+    }
 
-            Ok(Box::new(JsCallbackJsonRpcConnection {
-                send_fn: SendWrapper::new(send_fn),
-                close_fn: SendWrapper::new(close_fn),
-                closed: AtomicBool::new(false),
-                _on_response: SendWrapper::new(on_response),
-                response_rx: std::sync::Mutex::new(Some(response_rx)),
-            }) as Box<dyn JsonRpcConnection>)
-        })
+    async fn connect_hop(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+        endpoint: String,
+    ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        let allowed = self.allowed_hop_endpoints(bulletin_genesis_hash).await?;
+        truapi_platform::ensure_allowed_hop_endpoint(&endpoint, &allowed)?;
+        connect_js_rpc(
+            self.bridge.hop_connect.clone(),
+            bulletin_genesis_hash,
+            Some(endpoint),
+        )
         .await
     }
+}
+
+/// Keep callback closures alive until an asynchronous host open settles, even
+/// when its Rust caller is cancelled. A late connection is closed, not leaked.
+fn connect_js_rpc(
+    connect: Function,
+    genesis_hash: [u8; 32],
+    endpoint: Option<String>,
+) -> impl Future<Output = Result<Box<dyn JsonRpcConnection>, v01::GenericError>> + Send {
+    SendWrapper::new(async move {
+        let (result_tx, result_rx) = futures::channel::oneshot::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = open_js_rpc(connect, genesis_hash, endpoint).await;
+            if let Err(Ok(connection)) = result_tx.send(result) {
+                connection.close();
+            }
+        });
+        result_rx
+            .await
+            .map_err(|_| generic("JSON-RPC connection open cancelled".into()))?
+    })
+}
+
+async fn open_js_rpc(
+    connect: Function,
+    genesis_hash: [u8; 32],
+    endpoint: Option<String>,
+) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+    let private_rpc = endpoint.is_some();
+    let (response_tx, response_rx) = mpsc::unbounded::<String>();
+    let on_response_tx = response_tx.clone();
+    let on_response = Closure::wrap(Box::new(move |json: JsValue| match json.as_string() {
+        Some(json) => {
+            let _ = on_response_tx.unbounded_send(json);
+        }
+        None => web_sys::console::error_1(&JsValue::from_str(
+            "JSON-RPC onResponse expected a JSON string; dropping non-string value",
+        )),
+    }) as Box<dyn FnMut(JsValue)>);
+    let on_closed_tx = response_tx.clone();
+    let on_closed = Closure::wrap(Box::new(move || {
+        on_closed_tx.close_channel();
+    }) as Box<dyn FnMut()>);
+    let mut args = vec![JsValue::from_str(&format!(
+        "0x{}",
+        hex::encode(genesis_hash)
+    ))];
+    if let Some(endpoint) = endpoint {
+        args.push(JsValue::from_str(&endpoint));
+    }
+    args.push(on_response.as_ref().clone());
+    args.push(on_closed.as_ref().clone());
+    let returned = call_js_function(&connect, &args).map_err(generic)?;
+    let resolved = await_optional_promise(returned).await.map_err(generic)?;
+    if resolved.is_null() || resolved.is_undefined() {
+        return Err(generic("JSON-RPC provider returned no connection".into()));
+    }
+    let close_fn = Reflect::get(&resolved, &JsValue::from_str("close"))
+        .map_err(|_| generic("JSON-RPC connection must return { send, close }".into()))?
+        .dyn_into::<Function>()
+        .map_err(|_| generic("JSON-RPC connection.close must be a function".into()))?;
+    let send_fn = Reflect::get(&resolved, &JsValue::from_str("send"))
+        .ok()
+        .and_then(|send| send.dyn_into::<Function>().ok());
+    let Some(send_fn) = send_fn else {
+        let _ = close_fn.call0(&JsValue::NULL);
+        return Err(generic(
+            "JSON-RPC connection.send must be a function".into(),
+        ));
+    };
+    Ok(Box::new(JsCallbackJsonRpcConnection {
+        send_fn: SendWrapper::new(send_fn),
+        close_fn: SendWrapper::new(close_fn),
+        closed: AtomicBool::new(false),
+        private_rpc,
+        _on_response: SendWrapper::new(on_response),
+        _on_closed: SendWrapper::new(on_closed),
+        response_tx,
+        response_rx: std::sync::Mutex::new(Some(response_rx)),
+    }))
 }
 
 // Account, signing, and statement-store flows live in the Rust core itself.
@@ -276,17 +340,28 @@ struct JsCallbackJsonRpcConnection {
     send_fn: SendWrapper<Function>,
     close_fn: SendWrapper<Function>,
     closed: AtomicBool,
+    private_rpc: bool,
     /// Closure must outlive the connection so JS keeps a live ref to the
     /// response sink. Dropped together with the rest of the struct.
     _on_response: SendWrapper<Closure<dyn FnMut(JsValue)>>,
+    _on_closed: SendWrapper<Closure<dyn FnMut()>>,
+    response_tx: mpsc::UnboundedSender<String>,
     response_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
 }
 
 impl JsonRpcConnection for JsCallbackJsonRpcConnection {
     fn send(&self, request: String) {
+        if self.closed.load(Ordering::Acquire) || self.response_tx.is_closed() {
+            return;
+        }
         let arg = JsValue::from_str(&request);
         if let Err(err) = self.send_fn.call1(&JsValue::NULL, &arg) {
-            web_sys::console::error_1(&err);
+            if self.private_rpc {
+                web_sys::console::error_1(&JsValue::from_str("HOP send failed"));
+            } else {
+                web_sys::console::error_1(&err);
+            }
+            self.close();
         }
     }
 
@@ -310,6 +385,7 @@ impl JsonRpcConnection for JsCallbackJsonRpcConnection {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.response_tx.close_channel();
         let _ = self.close_fn.call0(&JsValue::NULL);
     }
 }
@@ -417,6 +493,24 @@ fn invoke_optional_bytes_return(
             .dyn_into::<Uint8Array>()
             .map(|array| Some(array.to_vec()))
             .map_err(|_| expected.to_string())
+    })
+}
+
+fn invoke_optional_string_return(
+    fn_: &Function,
+    args: Vec<JsValue>,
+) -> impl Future<Output = Result<Option<String>, String>> + Send {
+    let fn_ = fn_.clone();
+    SendWrapper::new(async move {
+        let returned = call_js_function(&fn_, &args)?;
+        let resolved = await_optional_promise(returned).await?;
+        if resolved.is_null() || resolved.is_undefined() {
+            return Ok(None);
+        }
+        resolved
+            .as_string()
+            .map(Some)
+            .ok_or_else(|| "callback must resolve to string, null or undefined".to_string())
     })
 }
 
@@ -586,7 +680,7 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
     let network_suffix =
         get_required_string_at(value, "networkSuffix", "runtimeConfig.networkSuffix")?;
 
-    SigningHostConfig::new(
+    let mut config = SigningHostConfig::new(
         HostInfo {
             name: get_required_string_at(&host, "name", "runtimeConfig.host.name")?,
             icon: get_optional_string_at(&host, "icon", "runtimeConfig.host.icon")?,
@@ -622,7 +716,13 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
         )?,
         network_suffix,
     )
-    .map_err(runtime_config_validation_to_js)
+    .map_err(runtime_config_validation_to_js)?;
+    config.coinage_instance_id = get_optional_u32_at(
+        value,
+        "coinageInstanceId",
+        "runtimeConfig.coinageInstanceId",
+    )?;
+    Ok(config)
 }
 
 fn product_context_from_js(value: &JsValue) -> Result<ProductContext, JsValue> {
@@ -732,6 +832,21 @@ fn get_optional_string_at(
         .as_string()
         .map(Some)
         .ok_or_else(|| JsValue::from_str(&format!("{path} must be a string")))
+}
+
+#[cfg(feature = "wasm-signing-host")]
+fn get_optional_u32_at(value: &JsValue, name: &str, path: &str) -> Result<Option<u32>, JsValue> {
+    let property = Reflect::get(value, &JsValue::from_str(name))?;
+    if property.is_null() || property.is_undefined() {
+        return Ok(None);
+    }
+    property
+        .as_f64()
+        .filter(|number| {
+            number.is_finite() && number.fract() == 0.0 && (0.0..=u32::MAX as f64).contains(number)
+        })
+        .map(|number| Some(number as u32))
+        .ok_or_else(|| JsValue::from_str(&format!("{path} must be an unsigned 32-bit integer")))
 }
 
 fn get_required_string_at(value: &JsValue, name: &str, path: &str) -> Result<String, JsValue> {
@@ -844,6 +959,8 @@ struct WasmPlatformAdapters {
     chat_platform: Option<Arc<dyn ChatPlatform>>,
     status_host: Option<Arc<dyn PermissionStatusHost>>,
     pocket_platform: Option<Arc<dyn PocketPlatform>>,
+    #[cfg(feature = "wasm-signing-host")]
+    identity_backend_host: Option<Arc<dyn IdentityBackendHost>>,
 }
 
 /// Build the platform and the optional capability adapters supplied by the host.
@@ -851,16 +968,47 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     let has_chat = bridge.has_chat();
     let has_permission_status = bridge.has_permission_status();
     let has_pocket = bridge.has_pocket();
+    #[cfg(feature = "wasm-signing-host")]
+    let has_identity_backend = bridge.has_identity_backend();
     let platform = Arc::new(WasmPlatform::new(bridge));
     let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
     let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
     let pocket = has_pocket.then(|| platform.clone() as Arc<dyn PocketPlatform>);
+    #[cfg(feature = "wasm-signing-host")]
+    let identity_backend =
+        has_identity_backend.then(|| platform.clone() as Arc<dyn IdentityBackendHost>);
     WasmPlatformAdapters {
         platform,
         chat_platform: chat,
         status_host: status,
         pocket_platform: pocket,
+        #[cfg(feature = "wasm-signing-host")]
+        identity_backend_host: identity_backend,
     }
+}
+
+fn connection_adapters_from_js(
+    callbacks: Option<&JsValue>,
+) -> Result<Option<crate::host_core::ConnectionAdapters>, JsValue> {
+    let Some(callbacks) = callbacks.filter(|value| !value.is_null() && !value.is_undefined())
+    else {
+        return Ok(None);
+    };
+    let WasmPlatformAdapters {
+        platform,
+        chat_platform,
+        status_host,
+        pocket_platform,
+        ..
+    } = wasm_platform(Arc::new(JsBridge::from_js(callbacks)?));
+    Ok(Some(crate::host_core::ConnectionAdapters {
+        platform,
+        chat_platform,
+        permission_status: status_host,
+        pocket_platform,
+        chat: Arc::new(crate::runtime::ActionChannel::chat()),
+        renderer: Arc::new(crate::runtime::ActionChannel::renderer()),
+    }))
 }
 
 /// Reports every worker demand transition to the host's
@@ -922,6 +1070,7 @@ impl WasmPairingHostRuntime {
             chat_platform,
             status_host,
             pocket_platform,
+            ..
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
@@ -942,11 +1091,13 @@ impl WasmPairingHostRuntime {
     }
 
     /// Build one product-scoped runtime from this pairing host runtime.
+    /// Optional platform callbacks are execution-local; shared authority stays here.
     #[wasm_bindgen(js_name = productRuntime)]
     pub fn product_runtime(
         &self,
         product: JsValue,
         core_callbacks: JsValue,
+        platform_callbacks: Option<JsValue>,
     ) -> Result<WasmProductRuntime, JsValue> {
         let product = product_context_from_js(&product)?;
         let channel = CoreChannel::from_js(&core_callbacks)?;
@@ -955,7 +1106,10 @@ impl WasmPairingHostRuntime {
         let sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
-        let runtime = self.runtime.product_runtime(product, sink);
+        let runtime = match connection_adapters_from_js(platform_callbacks.as_ref())? {
+            Some(adapters) => self.runtime.product_runtime_with(product, adapters, sink),
+            None => self.runtime.product_runtime(product, sink),
+        };
         if let Some(debug_emit) = debug_emit {
             runtime.set_debug_sink(
                 ChannelId(channel_id),
@@ -1203,6 +1357,7 @@ impl WasmSigningHostRuntime {
             chat_platform,
             status_host,
             pocket_platform,
+            identity_backend_host,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
@@ -1210,6 +1365,9 @@ impl WasmSigningHostRuntime {
         let host_config = signing_host_config_from_js(&host_config)?;
         let runtime =
             SigningHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        if let Some(identity_backend_host) = identity_backend_host {
+            runtime.set_identity_backend_host(identity_backend_host);
+        }
         if let Some(status_host) = status_host {
             runtime.set_permission_status_host(status_host);
         }
@@ -1223,18 +1381,23 @@ impl WasmSigningHostRuntime {
     }
 
     /// Build one product-scoped runtime from this signing host.
+    /// Optional platform callbacks are execution-local; custody stays on this host.
     #[wasm_bindgen(js_name = productRuntime)]
     pub fn product_runtime(
         &self,
         product: JsValue,
         core_callbacks: JsValue,
+        platform_callbacks: Option<JsValue>,
     ) -> Result<WasmProductRuntime, JsValue> {
         let product = product_context_from_js(&product)?;
         let channel = CoreChannel::from_js(&core_callbacks)?;
         let sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
-        let runtime = self.runtime.product_runtime(product, sink);
+        let runtime = match connection_adapters_from_js(platform_callbacks.as_ref())? {
+            Some(adapters) => self.runtime.product_runtime_with(product, adapters, sink),
+            None => self.runtime.product_runtime(product, sink),
+        };
         Ok(WasmProductRuntime::from_parts(runtime, channel.dispose))
     }
 
@@ -1515,6 +1678,7 @@ impl WasmProductRuntime {
             chat_platform,
             status_host,
             pocket_platform,
+            ..
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);

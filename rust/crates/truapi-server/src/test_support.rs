@@ -27,12 +27,14 @@ use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest
 use truapi_platform::{
     AccountAccessReview, AuthPresenter, AuthState, ChainProvider, ChatAuthorityReview,
     CoreStorage as PlatformCoreStorage, CoreStorageKey, CreateTransactionReview,
-    Features as PlatformFeatures, HostInfo, JsonRpcConnection, LocaleHost,
-    Navigation as PlatformNavigation, Notifications as PlatformNotifications, PairingHostConfig,
-    Permissions as PlatformPermissions, PlatformInfo, PreimageHost, ProductContext,
-    ProductStorage as PlatformProductStorage, ProductSubtreeReview, ResourceAllocationReview,
-    SignPayloadReview, SignRawReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
-    UserConfirmation, UserConfirmationReview,
+    Features as PlatformFeatures, HopProvider, HostInfo, JsonRpcConnection, LocaleHost,
+    MainPurseChatPaymentReview, NativeChatFileExportRequest, NativeChatFilePickRequest,
+    NativeChatFilesHost, NativeChatPickedFile, Navigation as PlatformNavigation,
+    Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductStorage as PlatformProductStorage,
+    ProductSubtreeReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
+    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -75,6 +77,7 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 /// can exercise its delegation paths without pulling in a real backend.
 #[derive(Default)]
 pub(crate) struct StubPlatform {
+    pub(crate) native_chat_files: Option<Arc<dyn NativeChatFilesHost>>,
     pub(crate) remote_permission_denied: bool,
     /// Every `remote_permission` request, in order, so a test can assert which
     /// domains reached the prompt and that a stored grant suppresses a re-ask.
@@ -99,6 +102,11 @@ pub(crate) struct StubPlatform {
     pub(crate) chat_authority_confirmed: bool,
     pub(crate) chat_authority_error: Option<&'static str>,
     pub(crate) chat_authority_reviews: Arc<parking_lot::Mutex<Vec<ChatAuthorityReview>>>,
+    /// One-shot payment decisions are independent of every reusable permission.
+    /// The derived default denies spending.
+    pub(crate) main_purse_chat_payment_confirmed: bool,
+    pub(crate) main_purse_chat_payment_error: Option<&'static str>,
+    pub(crate) main_purse_chat_payment_reviews: Arc<Mutex<Vec<MainPurseChatPaymentReview>>>,
     pub(crate) sign_payload_confirmed: bool,
     /// Every `SignPayload` review passed to `confirm_user_action`, in order.
     /// Empty proves an AutoSigning grant suppressed the prompt.
@@ -167,6 +175,8 @@ pub(crate) struct StubPlatform {
     /// hashes a host is configured with are same-typed `[u8; 32]` passed
     /// positionally, so a transposed pair still connects and still answers.
     pub(crate) chain_connects: Arc<Mutex<Vec<[u8; 32]>>>,
+    /// Host-private, no-network HOP script. Unconfigured fixtures fail closed.
+    pub(crate) hop_provider: Option<Arc<dyn HopProvider>>,
     /// When set, `connect` fails with this reason.
     pub(crate) chain_connect_error: Option<&'static str>,
     /// When true, the connection's response stream ends instead of staying
@@ -182,6 +192,10 @@ pub(crate) struct StubPlatform {
     /// forged value to exercise the in-core integrity check.
     pub(crate) preimage_lookup_value: Option<Vec<u8>>,
     pub(crate) local_storage: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    /// Mutable per-slot faults let lifecycle tests recover without replacing
+    /// the backing platform (and thereby bypassing process-local ownership).
+    pub(crate) core_read_failures: parking_lot::Mutex<std::collections::HashSet<String>>,
+    pub(crate) core_write_failures: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// When set, product/core storage reads fail with this reason.
     pub(crate) local_storage_error: Option<&'static str>,
     /// When set, only `PermissionAuthorization` reads fail. Narrower than
@@ -879,6 +893,15 @@ impl PlatformCoreStorage for StubPlatform {
         &self,
         key: CoreStorageKey,
     ) -> Result<Option<Vec<u8>>, v01::GenericError> {
+        if self
+            .core_read_failures
+            .lock()
+            .contains(&core_storage_test_key(key.clone()))
+        {
+            return Err(v01::GenericError {
+                reason: "injected core read failure".into(),
+            });
+        }
         if let CoreStorageKey::AuthSession = key {
             if let Some(reason) = self.session_error {
                 return Err(v01::GenericError {
@@ -912,6 +935,15 @@ impl PlatformCoreStorage for StubPlatform {
         key: CoreStorageKey,
         value: Vec<u8>,
     ) -> Result<(), v01::GenericError> {
+        if self
+            .core_write_failures
+            .lock()
+            .contains(&core_storage_test_key(key.clone()))
+        {
+            return Err(v01::GenericError {
+                reason: "injected core write failure".into(),
+            });
+        }
         if let CoreStorageKey::AuthSession = key {
             self.session_writes
                 .lock()
@@ -1556,6 +1588,106 @@ impl ChainProvider for StubPlatform {
     }
 }
 
+#[truapi_platform::async_trait]
+impl HopProvider for StubPlatform {
+    async fn allowed_hop_endpoints(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+    ) -> Result<Vec<String>, v01::GenericError> {
+        match &self.hop_provider {
+            Some(provider) => provider.allowed_hop_endpoints(bulletin_genesis_hash).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn connect_hop(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+        endpoint: String,
+    ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        let provider = self
+            .hop_provider
+            .as_ref()
+            .ok_or_else(|| v01::GenericError {
+                reason: "HOP provider unavailable in this fixture".to_string(),
+            })?;
+        let allowed = provider
+            .allowed_hop_endpoints(bulletin_genesis_hash)
+            .await?;
+        truapi_platform::ensure_allowed_hop_endpoint(&endpoint, &allowed)?;
+        provider.connect_hop(bulletin_genesis_hash, endpoint).await
+    }
+}
+
+#[truapi_platform::async_trait]
+impl NativeChatFilesHost for StubPlatform {
+    async fn pick_chat_files(
+        &self,
+        request: NativeChatFilePickRequest,
+    ) -> Result<Vec<NativeChatPickedFile>, v01::GenericError> {
+        self.chat_files_backend()?.pick_chat_files(request).await
+    }
+
+    async fn read_chat_file(
+        &self,
+        source_id: String,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, v01::GenericError> {
+        self.chat_files_backend()?
+            .read_chat_file(source_id, offset, length)
+            .await
+    }
+
+    async fn release_chat_file(&self, source_id: String) -> Result<(), v01::GenericError> {
+        self.chat_files_backend()?
+            .release_chat_file(source_id)
+            .await
+    }
+
+    async fn begin_chat_file_export(
+        &self,
+        request: NativeChatFileExportRequest,
+    ) -> Result<Option<String>, v01::GenericError> {
+        self.chat_files_backend()?
+            .begin_chat_file_export(request)
+            .await
+    }
+
+    async fn write_chat_file_export(
+        &self,
+        export_id: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<(), v01::GenericError> {
+        self.chat_files_backend()?
+            .write_chat_file_export(export_id, offset, data)
+            .await
+    }
+
+    async fn finish_chat_file_export(&self, export_id: String) -> Result<(), v01::GenericError> {
+        self.chat_files_backend()?
+            .finish_chat_file_export(export_id)
+            .await
+    }
+
+    async fn cancel_chat_file_export(&self, export_id: String) -> Result<(), v01::GenericError> {
+        self.chat_files_backend()?
+            .cancel_chat_file_export(export_id)
+            .await
+    }
+}
+
+impl StubPlatform {
+    fn chat_files_backend(&self) -> Result<&dyn NativeChatFilesHost, v01::GenericError> {
+        self.native_chat_files
+            .as_deref()
+            .ok_or_else(|| v01::GenericError {
+                reason: "native Chat files unavailable in this fixture".into(),
+            })
+    }
+}
+
 impl AuthPresenter for StubPlatform {
     fn auth_state_changed(&self, state: AuthState) {
         self.auth_states
@@ -1643,6 +1775,16 @@ impl UserConfirmation for StubPlatform {
                 self.chat_authority_reviews.lock().push(review);
                 (self.chat_authority_error, self.chat_authority_confirmed)
             }
+            UserConfirmationReview::MainPurseChatPayment(review) => {
+                self.main_purse_chat_payment_reviews
+                    .lock()
+                    .expect("main purse payment review list mutex poisoned")
+                    .push(review);
+                (
+                    self.main_purse_chat_payment_error,
+                    self.main_purse_chat_payment_confirmed,
+                )
+            }
             UserConfirmationReview::ResourceAllocation(review) => {
                 self.resource_allocation_reviews
                     .lock()
@@ -1719,5 +1861,61 @@ impl PreimageHost for StubPlatform {
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, v01::GenericError>> {
         let value = self.preimage_lookup_value.clone();
         Box::pin(stream::once(async move { Ok(value) }))
+    }
+}
+
+#[cfg(test)]
+mod payment_review_tests {
+    use super::*;
+
+    fn payment_review() -> UserConfirmationReview {
+        UserConfirmationReview::MainPurseChatPayment(MainPurseChatPaymentReview {
+            calling_product_id: "chat.paseo".to_string(),
+            recipient_identity: [1; 32],
+            recipient_username: Some("recipient.paseo".to_string()),
+            amount_cents: 125,
+            max_debit_cents: 130,
+            genesis_hash: [2; 32],
+            coinage_instance_id: None,
+            operation_id: [3; 32],
+        })
+    }
+
+    #[test]
+    fn reusable_approvals_never_authorize_main_purse_payments() {
+        let platform = StubPlatform {
+            chat_authority_confirmed: true,
+            sign_payload_confirmed: true,
+            sign_raw_confirmed: true,
+            create_transaction_confirmed: true,
+            resource_allocation_confirmed: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            futures::executor::block_on(platform.confirm_user_action(payment_review())),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn payment_approval_is_explicit_and_prompt_errors_fail_closed() {
+        let mut platform = StubPlatform {
+            main_purse_chat_payment_confirmed: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            futures::executor::block_on(platform.confirm_user_action(payment_review())),
+            Ok(true)
+        );
+        platform.main_purse_chat_payment_error = Some("prompt unavailable");
+        assert!(
+            futures::executor::block_on(platform.confirm_user_action(payment_review())).is_err()
+        );
+        platform.main_purse_chat_payment_error = None;
+        platform.main_purse_chat_payment_confirmed = false;
+        assert_eq!(
+            futures::executor::block_on(platform.confirm_user_action(payment_review())),
+            Ok(false)
+        );
     }
 }

@@ -463,28 +463,73 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
 }
 
 #[test]
-fn product_device_chat_reaches_the_account_authority() {
+fn product_device_chat_initialize_reaches_authorization_at_method_twelve() {
     let core = make_core();
-    let request =
-        account::HostProductDeviceChatRequest::V1(v01::HostProductDeviceChatRequest::Bind {
-            product_account_id: v01::ProductAccountId {
-                dot_ns_identifier: "dotli.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Index(0),
-            },
-            peer_identity_account_id: [0x55; 32],
-            peer_chat_public_key: [
-                0x0f, 0xaa, 0x68, 0x4e, 0xd2, 0x88, 0x67, 0xb9, 0x7f, 0x4a, 0x6a, 0x2d, 0xee, 0x5d,
-                0xf8, 0xce, 0x97, 0x4e, 0x76, 0xb7, 0x01, 0x8e, 0x3f, 0x22, 0xa1, 0xc4, 0xcf, 0x26,
-                0x78, 0x57, 0x0f, 0x20,
-            ],
-        });
-
-    assert_request_returns_domain_error(
+    let request = account::HostProductDeviceChatRequest::V1(
+        truapi::v02::HostProductDeviceChatRequest::Initialize,
+    );
+    let response = dispatch(
         &core,
-        "p:product-device-chat",
-        "account_product_device_chat",
-        request.encode(),
-        account::HostProductDeviceChatError::V1(v01::HostProductDeviceChatError::NotConnected),
+        ProtocolMessage {
+            request_id: "p:product-device-chat".into(),
+            payload: Payload {
+                trait_id: 2,
+                method_id: 12,
+                message_type: MESSAGE_TYPE_REQUEST,
+                value: request.encode(),
+            },
+        },
+    );
+    assert_eq!(response.request_id, "p:product-device-chat");
+    assert_eq!(response.payload.trait_id, 2);
+    assert_eq!(response.payload.method_id, 12);
+    assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
+    assert_eq!(
+        response.payload.value,
+        versioned_result_err_payload(account::HostProductDeviceChatError::V1(
+            truapi::v02::HostProductDeviceChatError::NotConnected,
+        )),
+    );
+}
+
+#[test]
+fn retired_raw_chat_method_cannot_dispatch() {
+    let core = make_core();
+    // The retired V1 Identity request was [V1, Identity, ProductAccountId].
+    // Keep a valid historical payload so rejection cannot be a decode failure.
+    let mut raw_identity = vec![0, 4];
+    v01::ProductAccountId {
+        dot_ns_identifier: "chat.dot".into(),
+        derivation_index: v01::DerivationIndex::Index(0),
+    }
+    .encode_to(&mut raw_identity);
+    let response = dispatch(
+        &core,
+        ProtocolMessage {
+            request_id: "p:retired-chat".into(),
+            payload: Payload {
+                trait_id: 2,
+                method_id: 11,
+                message_type: MESSAGE_TYPE_REQUEST,
+                value: raw_identity,
+            },
+        },
+    );
+    assert_eq!(
+        response,
+        ProtocolMessage {
+            request_id: "p:retired-chat".into(),
+            payload: Payload {
+                trait_id: PROTOCOL_ERROR_TRAIT_ID,
+                method_id: PROTOCOL_ERROR_METHOD_ID,
+                message_type: MESSAGE_TYPE_RESPONSE,
+                value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                    trait_id: 2,
+                    method_id: 11,
+                })
+                .encode(),
+            },
+        },
     );
 }
 

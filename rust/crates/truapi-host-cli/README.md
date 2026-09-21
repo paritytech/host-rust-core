@@ -231,7 +231,7 @@ Commands always start with `/`:
 | `/devices --remove <statement-account-id> --force` | Attempt to disconnect one paired device, then remove its local pairing even if notification fails. |
 | `/approval` | Show whether signing-host confirmations are manual or automatic. |
 | `/approval manual` | Prompt for every future signing-host confirmation. |
-| `/approval automatic` | Approve every future signing-host confirmation automatically. |
+| `/approval automatic` | Approve future non-payment confirmations automatically; main-purse payments still require review. |
 | `/script` | Reopen the session's last TypeScript scratch script (or create one), then run it. |
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
 | `/login` | Start pairing for the selected product, show its QR code, and copy its deeplink to the clipboard. |
@@ -652,6 +652,9 @@ In non-interactive `exec` mode, a TTY gets a plain yes/no prompt and non-TTY
 stdin safely rejects instead of hanging. Same-product Ring-VRF requests do not
 prompt, matching the iOS signing host. Pass `--auto-accept` for unattended
 runs; every auto-approved decision is still printed.
+Main-purse Chat payments are excluded from automatic approval. Each exact
+payment still prompts, including its Host-selected asset, recipient, amount and
+debit ceiling; without an interactive terminal it is rejected.
 
 The interactive signing host can inspect or change its running policy with
 `/approval`, `/approval manual`, and `/approval automatic`. A change applies to
@@ -769,6 +772,15 @@ discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
 
+For instance-scoped Coinage runtimes, `signing-host` and `dev` require an
+operator-selected asset instance for Coinage operations: pass
+`--coinage-instance-id <u32>` or set `TRUAPI_COINAGE_INSTANCE_ID`.
+The flag overrides the environment variable. Zero is a valid explicit value;
+there is no inferred/default asset instance. Obtain it from the trusted network
+configuration, not the purse derivation identifier. Omission preserves legacy
+Coinage support and makes instance-scoped Coinage operations fail closed. The
+selection is retained when switching, importing, or promoting signer sessions.
+
 ## Serving a dev server (one process, no terminal)
 
 `truapi-host dev` is the shorthand for this when the thing being supervised is a
@@ -814,10 +826,10 @@ reports `No connected user` here as it does in the terminal.
 Stopping it: Ctrl-C is handled, so the host logs its own shutdown. `SIGTERM`
 ends the process, which is what a supervising dev server sends.
 
-`--auto-accept` is effectively required, because a process with no terminal has
-nowhere to prompt: confirmations are denied instead, and the startup line says
-so. `--serve` cannot be combined with `--script` or `exec`, which are the
-one-shot modes.
+`--auto-accept` is effectively required for unattended non-payment work, because
+a process with no terminal has nowhere to prompt. Main-purse payments are
+always excluded and are denied in this mode. `--serve` cannot be combined with
+`--script` or `exec`, which are the one-shot modes.
 
 ## Scope / gaps
 

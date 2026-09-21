@@ -17,9 +17,14 @@ mod authority;
 pub(crate) mod bulletin_rpc;
 mod capabilities;
 mod chat;
+mod chat_device;
+mod chat_identity;
+mod coinage_chain;
+mod coinage_store;
 mod dotns_lookup;
 mod identity;
 pub(crate) mod login_failure;
+mod native_chat;
 mod pairing_host;
 pub(crate) mod product_manifest;
 mod product_subtree;
@@ -871,41 +876,10 @@ fn account_get_authority_error(err: AuthorityError) -> CallError<HostAccountGetE
     CallError::Domain(HostAccountGetError::V1(error))
 }
 
-fn product_device_chat_account_authority_error(
-    error: AuthorityError,
-) -> CallError<HostProductDeviceChatError> {
-    let error = match error {
-        AuthorityError::Disconnected => v01::HostProductDeviceChatError::NotConnected,
-        AuthorityError::Rejected => v01::HostProductDeviceChatError::Rejected,
-        AuthorityError::Cancelled(error) => v01::HostProductDeviceChatError::Unknown {
-            reason: error.to_string(),
-        },
-        AuthorityError::Unavailable { reason }
-        | AuthorityError::NotSupported { reason }
-        | AuthorityError::Unknown { reason } => v01::HostProductDeviceChatError::Unknown { reason },
-    };
-    CallError::Domain(HostProductDeviceChatError::V1(error))
-}
-
 fn product_device_chat_authority_error(
     error: ProductDeviceChatAuthorityError,
 ) -> CallError<HostProductDeviceChatError> {
-    let error = match error {
-        ProductDeviceChatAuthorityError::Disconnected => {
-            v01::HostProductDeviceChatError::NotConnected
-        }
-        ProductDeviceChatAuthorityError::Rejected => v01::HostProductDeviceChatError::Rejected,
-        ProductDeviceChatAuthorityError::InvalidPeerKey => {
-            v01::HostProductDeviceChatError::InvalidPeerKey
-        }
-        ProductDeviceChatAuthorityError::InvalidCiphertext => {
-            v01::HostProductDeviceChatError::InvalidCiphertext
-        }
-        ProductDeviceChatAuthorityError::Unavailable(reason) => {
-            v01::HostProductDeviceChatError::Unknown { reason }
-        }
-    };
-    CallError::Domain(HostProductDeviceChatError::V1(error))
+    CallError::Domain(HostProductDeviceChatError::V1(error.into()))
 }
 
 fn ring_vrf_alias_error(err: RingVrfError) -> v01::HostAccountGetAliasError {

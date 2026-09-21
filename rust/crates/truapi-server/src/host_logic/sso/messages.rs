@@ -341,62 +341,19 @@ pub struct CreateTransactionWithLegacyAccountRequest {
     pub payload: CreateTransactionLegacyPayload,
 }
 
-/// Product-device Chat v2 operation carried over encrypted SSO.
+/// Host-owned Chat operations carried over encrypted SSO.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum SsoProductDeviceChatOperation {
-    /// Bind the product device to the wallet identity and derive peer routes.
-    Bind {
-        /// Product account index; the Account Holder re-derives the device
-        /// account instead of trusting a pairing-host supplied public key.
-        derivation_index: v01::DerivationIndex,
-        /// Peer wallet identity account used for directional routing.
-        peer_identity_account_id: [u8; 32],
-        /// Peer's X25519 Chat identity public key.
-        peer_chat_public_key: [u8; 32],
-    },
-    /// Seal an identity-route payload for the peer.
-    Seal {
-        /// Peer's X25519 Chat identity public key.
-        peer_chat_public_key: [u8; 32],
-        /// Explicit legacy or context-bound cipher suite.
-        cipher_suite: v01::HostProductDeviceChatCipherSuite,
-        /// Identity-route plaintext.
-        plaintext: Vec<u8>,
-    },
-    /// Open an authenticated identity-route payload from the peer.
-    Open {
-        /// Peer's X25519 Chat identity public key.
-        peer_chat_public_key: [u8; 32],
-        /// Explicit legacy or context-bound cipher suite.
-        cipher_suite: v01::HostProductDeviceChatCipherSuite,
-        /// Nonce-prefixed ChaCha20-Poly1305 ciphertext and tag.
-        combined_ciphertext: Vec<u8>,
-    },
-    /// Sign a canonical Chat first-contact proof payload as the product device.
-    SignRequestProof {
-        /// Product account index to derive on the signing host.
-        derivation_index: v01::DerivationIndex,
-        /// Canonical SCALE-encoded Chat request proof payload.
-        payload: Vec<u8>,
-    },
-    /// Read the authorized wallet's public Chat identity.
-    Identity,
-    /// Verify an incoming peer's identity-to-device binding.
-    VerifyPeerDevice {
-        /// Peer wallet identity account.
-        peer_identity_account_id: [u8; 32],
-        /// Peer's independently resolved X25519 Chat public key.
-        peer_chat_public_key: [u8; 32],
-        /// Device account authenticated by the signed request.
-        peer_device_account_id: [u8; 32],
-        /// Keyed identity binding from the request.
-        proof: [u8; 32],
-    },
+    /// The removed raw-crypto tags 0 through 5 are deliberately not accepted.
+    #[codec(index = 6)]
+    V2(truapi::latest::HostProductDeviceChatRequest),
 }
 
-/// Product-device Chat v2 response returned by the Account Holder.
-pub type ProductDeviceChatResponse =
-    Result<v01::HostProductDeviceChatResponse, v01::HostProductDeviceChatError>;
+/// Public Chat views and typed failures returned by the signing authority.
+pub type ProductDeviceChatResponse = Result<
+    truapi::versioned::account::HostProductDeviceChatResponse,
+    truapi::versioned::account::HostProductDeviceChatError,
+>;
 
 /// Versioned legacy transaction-creation payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -1034,14 +991,16 @@ mod tests {
     }
 
     #[test]
-    fn product_device_chat_messages_pin_mobile_wire_indices() {
+    fn product_device_chat_messages_preserve_typed_operations_and_failures() {
         let chat_request = ProductRequest {
             calling_product_id: "egui-chat.paseo".to_string(),
-            payload: SsoProductDeviceChatOperation::Bind {
-                derivation_index: DerivationIndex::Index(0),
-                peer_identity_account_id: [0x55; 32],
-                peer_chat_public_key: [0x66; 32],
-            },
+            payload: SsoProductDeviceChatOperation::V2(
+                truapi::latest::HostProductDeviceChatRequest::SendPayment {
+                    peer_identity: [0x55; 32],
+                    request_id: "payment-one".to_string(),
+                    amount_cents: 19,
+                },
+            ),
         };
         let request = RemoteMessage::request("request".to_string(), chat_request);
         let encoded_request = request.encode();
@@ -1052,9 +1011,9 @@ mod tests {
         );
 
         let product_response: ProductDeviceChatResponse =
-            Ok(v01::HostProductDeviceChatResponse::Sealed {
-                combined_ciphertext: vec![0x77; 28],
-            });
+            Err(truapi::versioned::account::HostProductDeviceChatError::V1(
+                truapi::latest::HostProductDeviceChatError::OperationConflict,
+            ));
         let response_envelope = Response {
             responding_to: "request".to_string(),
             payload: product_response,
@@ -1067,11 +1026,24 @@ mod tests {
         };
         let encoded_response = response.encode();
         assert_eq!(encoded_response[10], 25);
+        assert_eq!(
+            RemoteMessage::decode(&mut encoded_response.as_slice()).unwrap(),
+            response
+        );
         let RemoteMessageData::V1(data) = response.data;
         assert_eq!(
             ProductRequest::<SsoProductDeviceChatOperation>::response_from_message(data),
             Some(response_envelope)
         );
+    }
+
+    #[test]
+    fn product_device_chat_rejects_removed_raw_crypto_tags() {
+        for tag in 0..6u8 {
+            let mut legacy = vec![tag];
+            legacy.extend_from_slice(&[0; 256]);
+            assert!(SsoProductDeviceChatOperation::decode(&mut legacy.as_slice()).is_err());
+        }
     }
     #[test]
     fn statement_store_product_sign_messages_pin_extension_wire_indices() {

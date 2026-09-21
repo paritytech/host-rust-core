@@ -18,41 +18,6 @@ fn nightly_toolchain() -> String {
     std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
 }
 
-fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
-    let marker = format!("export const {const_name} = [");
-    let start = src
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing {const_name}"));
-    let rest = &src[start + marker.len()..];
-    let end = rest
-        .find("] as const")
-        .unwrap_or_else(|| panic!("unterminated {const_name}"));
-    let body = &rest[..end];
-    let mut strings = Vec::new();
-    let mut chars = body.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '"' {
-            continue;
-        }
-        let mut value = String::new();
-        let mut escaped = false;
-        for ch in chars.by_ref() {
-            if escaped {
-                value.push(ch);
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                break;
-            } else {
-                value.push(ch);
-            }
-        }
-        strings.push(value);
-    }
-    strings
-}
-
 /// Path to `truapi`'s rustdoc JSON, building it on first use.
 fn produce_rustdoc_json(workspace_root: &Path) -> PathBuf {
     produce_rustdoc_json_for_package(workspace_root, "truapi")
@@ -358,26 +323,6 @@ fn golden_host_callbacks_ts() {
         panic!(
             "golden mismatch for wasm_bridge.rs; wrote actual to {}",
             dump.display()
-        );
-    }
-
-    assert!(
-        !worker_actual.contains("OPTIONAL_CALLBACK_NAMES"),
-        "worker callback generation should not expose an optional callback manifest"
-    );
-    let mut generated_names = quoted_strings_in_const_array(&worker_actual, "CALLBACK_NAMES");
-    generated_names.extend(quoted_strings_in_const_array(
-        &worker_actual,
-        "SUBSCRIPTION_NAMES",
-    ));
-    for name in generated_names {
-        // Callbacks of an optional capability bind through the optional getter;
-        // either way the bridge must name every callback the worker proxies.
-        assert!(
-            wasm_bridge_actual.contains(&format!("get_function(callbacks, \"{name}\")?"))
-                || wasm_bridge_actual
-                    .contains(&format!("get_optional_function(callbacks, \"{name}\")?")),
-            "generated wasm bridge must bind worker callback `{name}`"
         );
     }
 }

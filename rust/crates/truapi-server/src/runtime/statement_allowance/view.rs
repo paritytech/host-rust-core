@@ -197,7 +197,7 @@ async fn execute_no_args(
     decode_response(pallet, function, response)
 }
 
-fn decode_response(
+pub(crate) fn decode_response(
     pallet: &'static str,
     function: &'static str,
     response: Value,

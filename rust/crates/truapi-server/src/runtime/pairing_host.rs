@@ -55,7 +55,7 @@ use crate::subscription::Spawner;
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
-use truapi::{CallContext, CallError, v01};
+use truapi::{CallContext, CallError, latest, v01};
 use truapi_platform::{
     CoreStorageKey, PairingHostConfig, Platform, ProductContext, SignVrfReview,
     UserConfirmationReview, normalize_product_identifier,
@@ -2452,7 +2452,7 @@ impl PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: ProductDeviceChatAuthorityRequest,
-    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+    ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
         let private_session = self
             .current_private_session(session)
             .map_err(|_| ProductDeviceChatAuthorityError::Disconnected)?;
@@ -2740,7 +2740,7 @@ impl ProductAuthority for PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: ProductDeviceChatAuthorityRequest,
-    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+    ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
         PairingHost::product_device_chat(self, cx, session, request).await
     }
 

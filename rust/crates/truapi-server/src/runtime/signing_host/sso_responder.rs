@@ -21,7 +21,6 @@ use truapi::v01;
 
 use super::sso_replay::{ReplayExecution, SsoReplayScope, execute_once};
 use super::{SigningHost, SigningHostSsoService};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
 use crate::host_logic::product_account::derive_sr25519_hard_path;
@@ -56,7 +55,6 @@ use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
-#[cfg(not(target_arch = "wasm32"))]
 const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
 
 /// Upper bound on undecodable request ids acknowledged within one serve loop.
@@ -170,7 +168,6 @@ pub(super) enum AllowanceAllocationError {
     #[error("{0}")]
     StatementStoreRpcClient(#[from] StatementStoreRpcClientError),
     /// Runtime service could not open the required Bulletin RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{context}: {source}")]
     ChainRpcClient {
         /// Client context, naming which chain failed.
@@ -201,6 +198,9 @@ impl AllowanceAllocationError {
     pub(super) fn into_authority_error(self) -> AuthorityError {
         match self {
             Self::Authority(err) => err,
+            Self::StatementAllowance(StatementAllowanceError::SessionInvalidated) => {
+                AuthorityError::Disconnected
+            }
             other => AuthorityError::Unavailable {
                 reason: other.to_string(),
             },
@@ -275,7 +275,8 @@ async fn establish_pairing_session(
     services
         .statement_store
         .submit(statement, "sso-responder handshake")
-        .await?;
+        .await
+        .map_err(|error| error.to_string())?;
     debug!("answered pairing handshake");
 
     Ok(EstablishedPairing {
@@ -758,7 +759,6 @@ async fn register_statement_store_target(
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_bulletin_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -827,16 +827,19 @@ pub(super) async fn allocate_bulletin_allowance(
         period_duration,
     )?;
     signing_host.require_current_session(session)?;
-    let outcome = claim_long_term_storage(statement_allowance::LongTermStorageClaim {
-        rpc: people_rpc,
-        metadata: &chain.metadata,
-        chain_state: &chain.state,
-        entropy: membership.entropy,
-        network_suffix: &network_suffix,
-        target: &target,
-        period,
-        ring: &membership.ring,
-    })
+    let outcome = claim_long_term_storage(
+        statement_allowance::LongTermStorageClaim {
+            rpc: people_rpc,
+            metadata: &chain.metadata,
+            chain_state: &chain.state,
+            entropy: membership.entropy,
+            network_suffix: &network_suffix,
+            target: &target,
+            period,
+            ring: &membership.ring,
+        },
+        || signing_host.require_current_session(session).is_ok(),
+    )
     .await?;
     let statement_allowance::LongTermStorageOutcome::Claimed {
         block_hash,
@@ -989,19 +992,6 @@ pub(super) async fn allocate_smart_contract_allowance(
     Err(AllowanceAllocationError::NativeOnly { resource: "PGAS" })
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_bulletin_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "Bulletin",
-    })
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
     std::time::SystemTime::now()
@@ -1090,7 +1080,11 @@ mod tests {
             config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHost::new(services.clone(), config.network_suffix);
+        let signing_host = SigningHost::new(
+            services.clone(),
+            config.network_suffix,
+            config.coinage_instance_id,
+        );
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         (services, signing_host)

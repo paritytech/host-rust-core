@@ -207,10 +207,10 @@ pub struct Metadata {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct ViewFunctionDef {
-    pub(super) id: [u8; 32],
-    pub(super) inputs: usize,
-    pub(super) output_type: u32,
+pub(crate) struct ViewFunctionDef {
+    pub(crate) id: [u8; 32],
+    pub(crate) inputs: usize,
+    pub(crate) output_type: u32,
 }
 
 /// The transaction-extension version to encode with: the highest the runtime
@@ -435,7 +435,7 @@ impl Metadata {
             .map(Vec::as_slice)
     }
 
-    pub(super) fn view_function(&self, pallet: &str, function: &str) -> Option<ViewFunctionDef> {
+    pub(crate) fn view_function(&self, pallet: &str, function: &str) -> Option<ViewFunctionDef> {
         self.view_functions
             .get(&(pallet.to_string(), function.to_string()))
             .copied()

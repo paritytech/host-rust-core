@@ -304,6 +304,23 @@ impl PairingHostRuntime {
         )
     }
 
+    /// Scope product callbacks without creating another shared authority.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn product_runtime_with(
+        &self,
+        product: ProductContext,
+        adapters: ConnectionAdapters,
+        sink: Arc<dyn FrameSink>,
+    ) -> ProductRuntime {
+        ProductRuntime::new(
+            self.services.clone(),
+            self.pairing_host.clone(),
+            product,
+            adapters,
+            sink,
+        )
+    }
+
     /// Build a product-scoped administration handle from this pairing host.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.product_admin"))]
     pub fn product_admin(&self, product: ProductContext) -> HostAdmin {
@@ -604,7 +621,11 @@ impl SigningHostRuntime {
                  every cross-product grant not already cached is refused"
             );
         }
-        let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
+        let signing_host = SigningHostRole::new(
+            services.clone(),
+            config.network_suffix,
+            config.coinage_instance_id,
+        );
         Self {
             services,
             signing_host,
@@ -620,6 +641,15 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_permission_status_host"))]
     pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
         self.services.install_permission_status_host(host)
+    }
+
+    /// Install the trusted host's authenticated username candidate source once,
+    /// before serving products. Chain ownership and Chat keys remain authoritative.
+    pub fn set_identity_backend_host(
+        &self,
+        host: Arc<dyn truapi_platform::IdentityBackendHost>,
+    ) -> bool {
+        self.services.install_identity_backend_host(host)
     }
 
     /// Install the host's [`PocketPlatform`], which owns the card collection.
@@ -648,9 +678,8 @@ impl SigningHostRuntime {
         )
     }
 
-    /// Build one product connection with adapters scoped to one native
-    /// executable while sharing this runtime's authentication and services.
-    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    /// Scope product callbacks while sharing authentication, custody and services.
+    #[cfg(any(target_arch = "wasm32", feature = "ws-bridge"))]
     pub(crate) fn product_runtime_with(
         &self,
         product: ProductContext,
@@ -716,6 +745,7 @@ impl SigningHostRuntime {
     pub async fn clear_product_state(&self, product_id: &str) -> Result<(), v01::GenericError> {
         self.signing_host
             .clear_product_state(product_id)
+            .await
             .map_err(|error| v01::GenericError {
                 reason: error.to_string(),
             })

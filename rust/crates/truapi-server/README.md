@@ -244,6 +244,44 @@ proof contexts. Configuration keeps local activation and key derivation
 available offline. The core validates supported suffixes but does not
 automatically check that the configured suffix matches the chain.
 
+`SigningHostConfig.coinage_instance_id` is trusted host/network configuration
+for instance-scoped Coinage runtimes. The constructor leaves it `None` for
+legacy ABI compatibility; an embedder sets `Some(instance_id)` before creating
+the signing runtime. Instance-scoped Coinage operations fail closed when it is
+missing. This is an asset instance, not a purse derivation identifier, and is
+not exposed as guest-selected configuration.
+The encrypted wallet snapshot binds this configured selection across restarts;
+changing it for the same root and genesis is rejected before inventory or
+payment work. The trusted review identifies the selected asset alongside the
+chain, recipient, amount, and debit ceiling. The asset instance does not change
+the current iOS MAIN_PURSE/page-0 derivations (`//coinage//4294967295//0/<index>`
+for coins, `//coinage-ring-vrf//4294967295//0//<index>` for vouchers) or create
+a separate allocator. Snapshot version 3 refuses legacy `//pps` snapshots
+without clearing them. Native iOS and Host allocator state is not shared;
+same-wallet use requires reconciliation and one owner, not concurrent allocators.
+
+The signing runtime persists initialized Chat products in the wallet/network-owned
+`CoreStorageKey::NativeChatProducts` slot (index 16). Unlock restores their existing
+devices and background subscriptions only when the current `ChatAuthority` and
+`StatementSubmit` grants remain authorized; it never prompts or generates a
+replacement for missing device state. `clear_product_state` forgets this product
+from reception without deleting wallet custody or received history. This is
+in-process restoration, not an OS background scheduler.
+
+Native `native_describe_core_storage_key` and WASM `describeCoreStorageKey` let
+embedders route permission slots to the same verified-artifact namespace used by
+their product execution. Root callbacks used by restored receivers must resolve
+that current namespace; copying grants into a broader wallet namespace would
+defeat artifact revocation. WASM role handles accept optional execution-local raw
+platform callbacks as the third `productRuntime` argument while retaining one
+shared authority and wallet allocator.
+
+A host retaining another main-purse allocator must reject `MainPurseCoinage`
+storage access explicitly rather than return an absent value and open a second
+purse. This refuses incoming claims as well as outgoing spending. An identity-only
+wallet loader is not another allocator; a single Host runtime may own the purse
+while that loader retains responsibility for secure unlock.
+
 ### The two roles
 
 Both implement the role-neutral **`ProductAuthority`** trait; each owns its

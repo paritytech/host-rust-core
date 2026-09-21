@@ -27,7 +27,7 @@ use crate::host_logic::statement_store::parse_new_statements_result;
 use futures::FutureExt;
 use futures::future::{AbortHandle, Abortable};
 use tracing::{debug, instrument, warn};
-use truapi::{CallContext, latest, v01};
+use truapi::{CallContext, latest};
 
 /// Active peer-disconnect watcher for one SSO session; aborts on drop.
 pub(super) struct SsoDisconnectMonitor {
@@ -495,104 +495,24 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         request: ProductDeviceChatAuthorityRequest,
-    ) -> Result<v01::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
-        let (calling_product_id, operation) = match request {
-            ProductDeviceChatAuthorityRequest::Bind {
-                calling_product_id,
-                derivation_index,
-                peer_identity_account_id,
-                peer_chat_public_key,
-                ..
-            } => (
-                calling_product_id,
-                SsoProductDeviceChatOperation::Bind {
-                    derivation_index,
-                    peer_identity_account_id,
-                    peer_chat_public_key,
-                },
-            ),
-            ProductDeviceChatAuthorityRequest::Seal {
-                calling_product_id,
-                peer_chat_public_key,
-                cipher_suite,
-                plaintext,
-            } => (
-                calling_product_id,
-                SsoProductDeviceChatOperation::Seal {
-                    peer_chat_public_key,
-                    cipher_suite,
-                    plaintext,
-                },
-            ),
-            ProductDeviceChatAuthorityRequest::Open {
-                calling_product_id,
-                peer_chat_public_key,
-                cipher_suite,
-                combined_ciphertext,
-            } => (
-                calling_product_id,
-                SsoProductDeviceChatOperation::Open {
-                    peer_chat_public_key,
-                    cipher_suite,
-                    combined_ciphertext,
-                },
-            ),
-            ProductDeviceChatAuthorityRequest::SignRequestProof {
-                calling_product_id,
-                product_account_id,
-                payload,
-            } => (
-                calling_product_id,
-                SsoProductDeviceChatOperation::SignRequestProof {
-                    derivation_index: product_account_id.derivation_index,
-                    payload,
-                },
-            ),
-            ProductDeviceChatAuthorityRequest::Identity { calling_product_id } => {
-                (calling_product_id, SsoProductDeviceChatOperation::Identity)
-            }
-            ProductDeviceChatAuthorityRequest::VerifyPeerDevice {
-                calling_product_id,
-                peer_identity_account_id,
-                peer_chat_public_key,
-                peer_device_account_id,
-                proof,
-            } => (
-                calling_product_id,
-                SsoProductDeviceChatOperation::VerifyPeerDevice {
-                    peer_identity_account_id,
-                    peer_chat_public_key,
-                    peer_device_account_id,
-                    proof,
-                },
-            ),
-        };
+    ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
         self.call(
             cx,
             session,
             ProductRequest {
-                calling_product_id,
-                payload: operation,
+                calling_product_id: request.calling_product_id,
+                payload: SsoProductDeviceChatOperation::V2(request.operation),
             },
         )
         .await
+        .map_err(|error| ProductDeviceChatAuthorityError::from(remote_authority_error(error)))?
+        .map(|response| {
+            let truapi::versioned::account::HostProductDeviceChatResponse::V1(response) = response;
+            response
+        })
         .map_err(|error| {
-            ProductDeviceChatAuthorityError::Unavailable(remote_authority_error(error).to_string())
-        })?
-        .map_err(|error| match error {
-            v01::HostProductDeviceChatError::NotConnected => {
-                ProductDeviceChatAuthorityError::Disconnected
-            }
-            v01::HostProductDeviceChatError::Rejected => ProductDeviceChatAuthorityError::Rejected,
-            v01::HostProductDeviceChatError::InvalidPeerKey => {
-                ProductDeviceChatAuthorityError::InvalidPeerKey
-            }
-            v01::HostProductDeviceChatError::InvalidCiphertext => {
-                ProductDeviceChatAuthorityError::InvalidCiphertext
-            }
-            v01::HostProductDeviceChatError::Unknown { reason } => {
-                ProductDeviceChatAuthorityError::Unavailable(reason)
-            }
+            let truapi::versioned::account::HostProductDeviceChatError::V1(error) = error;
+            ProductDeviceChatAuthorityError::Domain(error)
         })
     }
 

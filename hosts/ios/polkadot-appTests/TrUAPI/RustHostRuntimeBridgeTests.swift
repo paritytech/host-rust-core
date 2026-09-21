@@ -28,6 +28,7 @@ private func makeHostBridge(
         coreStorage: TrUAPILocalStorage.createCoreLocalStorage(defaults: makeHostDefaults()),
         chainConnections: chainConnections,
         confirmationPresenter: confirmationPresenter,
+        chatFiles: UnavailableNativeChatFiles(),
         logger: Logger.shared
     )
 }
@@ -125,7 +126,8 @@ struct TrUAPIHostRuntimeProviderConfigTests {
                 chainRegistry: MockChainRegistry(),
                 secret: Data([0x01]),
                 liteUsername: nil,
-                networkSuffix: "paseo"
+                networkSuffix: "paseo",
+                coinageInstanceId: 7
             )
         }
     }

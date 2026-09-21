@@ -87,6 +87,14 @@ pub mod latest {
         ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
         VrfSignature,
     };
+    pub use crate::v02::{
+        HostNativeChatAcknowledgment, HostNativeChatAttachment, HostNativeChatAttachmentKind,
+        HostNativeChatAttachmentMetadata, HostNativeChatAttachmentState, HostNativeChatDevice,
+        HostNativeChatInvitation, HostNativeChatMessages, HostNativeChatPayment,
+        HostNativeChatPaymentDirection, HostNativeChatPaymentFailure, HostNativeChatPaymentState,
+        HostNativeChatPeer, HostNativeChatPeerDevice, HostNativeChatRichMessage,
+        HostNativeChatRichMessageKind,
+    };
 
     /// Latest payload type of a versioned envelope.
     pub type LatestOf<T> = <T as Versioned>::Latest;
@@ -185,12 +193,14 @@ pub mod latest {
     /// Per-resource allocation outcomes.
     pub type HostRequestResourceAllocationResponse =
         LatestOf<versioned::resource_allocation::HostRequestResourceAllocationResponse>;
-    /// Product-device Chat v2 identity request.
+    /// Host-owned native Chat request.
     pub type HostProductDeviceChatRequest =
         LatestOf<versioned::account::HostProductDeviceChatRequest>;
-    /// Product-device Chat v2 identity result.
+    /// Safe public view of Host-owned Chat state.
     pub type HostProductDeviceChatResponse =
         LatestOf<versioned::account::HostProductDeviceChatResponse>;
+    /// Host-owned native Chat operation error.
+    pub type HostProductDeviceChatError = LatestOf<versioned::account::HostProductDeviceChatError>;
     /// Extrinsic payload signing request for a product account.
     pub type HostSignPayloadRequest = LatestOf<versioned::signing::HostSignPayloadRequest>;
     /// Signing operation result.

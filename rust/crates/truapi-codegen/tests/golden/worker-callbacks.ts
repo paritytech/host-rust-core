@@ -8,7 +8,7 @@
 import type { RawCallbacks } from "./host-callbacks-adapter.js";
 import type { GenericError } from "@parity/truapi";
 
-import type { ChainConnect } from "../runtime.js";
+import type { ChainConnect, HopConnect } from "../runtime.js";
 
 export const CALLBACK_NAMES = [
   "authStateChanged",
@@ -20,6 +20,15 @@ export const CALLBACK_NAMES = [
   "clearCoreStorage",
   "featureSupported",
   "supportedChains",
+  "allowedHopEndpoints",
+  "identityUsernameCandidates",
+  "pickChatFiles",
+  "readChatFile",
+  "releaseChatFile",
+  "beginChatFileExport",
+  "writeChatFileExport",
+  "finishChatFileExport",
+  "cancelChatFileExport",
   "navigateTo",
   "pushNotification",
   "cancelNotification",
@@ -55,6 +64,7 @@ export interface WorkerCallbackBridge {
     sendError: (error: GenericError) => void,
   ): () => void;
   chainConnect: ChainConnect;
+  hopConnect: HopConnect;
 }
 
 function rawCallbacks(
@@ -68,6 +78,14 @@ function rawCallbacks(
     | "clearCoreStorage"
     | "featureSupported"
     | "supportedChains"
+    | "allowedHopEndpoints"
+    | "pickChatFiles"
+    | "readChatFile"
+    | "releaseChatFile"
+    | "beginChatFileExport"
+    | "writeChatFileExport"
+    | "finishChatFileExport"
+    | "cancelChatFileExport"
     | "navigateTo"
     | "pushNotification"
     | "cancelNotification"
@@ -101,6 +119,42 @@ function rawCallbacks(
     supportedChains: () =>
       bridge.callbackRequest("supportedChains", []) as ReturnType<
         Required<RawCallbacks>["supportedChains"]
+      >,
+    allowedHopEndpoints: (bulletinGenesisHash) =>
+      bridge.callbackRequest("allowedHopEndpoints", [
+        bulletinGenesisHash,
+      ]) as ReturnType<Required<RawCallbacks>["allowedHopEndpoints"]>,
+    pickChatFiles: (request) =>
+      bridge.callbackRequest("pickChatFiles", [request]) as ReturnType<
+        Required<RawCallbacks>["pickChatFiles"]
+      >,
+    readChatFile: (sourceId, offset, length) =>
+      bridge.callbackRequest("readChatFile", [
+        sourceId,
+        offset,
+        length,
+      ]) as ReturnType<Required<RawCallbacks>["readChatFile"]>,
+    releaseChatFile: (sourceId) =>
+      bridge.callbackRequest("releaseChatFile", [sourceId]) as ReturnType<
+        Required<RawCallbacks>["releaseChatFile"]
+      >,
+    beginChatFileExport: (request) =>
+      bridge.callbackRequest("beginChatFileExport", [request]) as ReturnType<
+        Required<RawCallbacks>["beginChatFileExport"]
+      >,
+    writeChatFileExport: (exportId, offset, data) =>
+      bridge.callbackRequest("writeChatFileExport", [
+        exportId,
+        offset,
+        data,
+      ]) as ReturnType<Required<RawCallbacks>["writeChatFileExport"]>,
+    finishChatFileExport: (exportId) =>
+      bridge.callbackRequest("finishChatFileExport", [exportId]) as ReturnType<
+        Required<RawCallbacks>["finishChatFileExport"]
+      >,
+    cancelChatFileExport: (exportId) =>
+      bridge.callbackRequest("cancelChatFileExport", [exportId]) as ReturnType<
+        Required<RawCallbacks>["cancelChatFileExport"]
       >,
     navigateTo: (url) =>
       bridge.callbackRequest("navigateTo", [url]) as ReturnType<
@@ -193,6 +247,18 @@ function chatRawCallbacks(
   };
 }
 
+function identityBackendRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "identityUsernameCandidates">> {
+  return {
+    identityUsernameCandidates: (username, peopleChainGenesisHash) =>
+      bridge.callbackRequest("identityUsernameCandidates", [
+        username,
+        peopleChainGenesisHash,
+      ]) as ReturnType<Required<RawCallbacks>["identityUsernameCandidates"]>,
+  };
+}
+
 function permissionStatusRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<Pick<RawCallbacks, "devicePermissionStatus">> {
@@ -232,6 +298,8 @@ export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   chat?: boolean;
   /** Whether the host serves this capability. */
+  identityBackend?: boolean;
+  /** Whether the host serves this capability. */
   permissionStatus?: boolean;
   /** Whether the host serves this capability. */
   pocket?: boolean;
@@ -245,8 +313,11 @@ export function createWorkerRawCallbacks(
     ...rawCallbacks(bridge),
     ...subscriptionRawCallbacks(bridge),
     chainConnect: bridge.chainConnect,
+    hopConnect: bridge.hopConnect,
   };
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
+  if (capabilities.identityBackend)
+    Object.assign(callbacks, identityBackendRawCallbacks(bridge));
   if (capabilities.permissionStatus)
     Object.assign(callbacks, permissionStatusRawCallbacks(bridge));
   if (capabilities.pocket) Object.assign(callbacks, pocketRawCallbacks(bridge));

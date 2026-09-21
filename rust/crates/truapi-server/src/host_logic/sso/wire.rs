@@ -6,7 +6,7 @@
 
 use core::fmt::Display;
 
-use truapi::{latest::HostAccountSignVrfError, v01::HostProductDeviceChatError};
+use truapi::{latest::HostAccountSignVrfError, versioned::account::HostProductDeviceChatError};
 
 use super::messages::{RemoteMessage, RemoteMessageData, Response, RingVrfError, v1};
 
@@ -52,7 +52,7 @@ impl SsoError for HostAccountSignVrfError {
 
 impl SsoError for HostProductDeviceChatError {
     fn not_connected() -> Self {
-        Self::NotConnected
+        Self::V1(truapi::latest::HostProductDeviceChatError::NotConnected)
     }
 }
 

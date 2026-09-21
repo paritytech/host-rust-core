@@ -22,7 +22,10 @@ import {
   ProductRendererRenderRequest as ProductRendererRenderRequestCodec,
   RendererNode as RendererNodeCodec,
 } from "@parity/truapi";
-import { PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec } from "../generated/host-callbacks.js";
+import {
+  NativeChatPickedFile,
+  PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec,
+} from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type {
@@ -33,9 +36,11 @@ import type {
   SubscriptionName,
   WorkerToMain,
 } from "../worker-protocol.js";
-import { bytesToHex } from "@parity/truapi/scale";
+import { MAX_JSON_RPC_CONNECTIONS } from "../worker-protocol.js";
+import { bytesToHex, Vector } from "@parity/truapi/scale";
 import { startRawSubscription } from "../generated/worker-callbacks.js";
 import { errorMessage, toError } from "../error.js";
+import { createBrowserNativeChatFilesHost } from "./native-chat-files.js";
 
 export type WebWorkerHostConfig = Omit<
   ProductRuntimeConfig,
@@ -44,6 +49,8 @@ export type WebWorkerHostConfig = Omit<
 export type WebWorkerSigningHostConfig = WebWorkerHostConfig & {
   /** Bare dotNS network suffix (`dot`, `paseo`, or `testnet`). */
   networkSuffix: string;
+  /** Trusted u32 asset instance, required for instance-scoped Coinage runtimes. */
+  coinageInstanceId?: number;
 };
 
 export interface WorkerPairingHostRuntime {
@@ -60,7 +67,7 @@ export interface WorkerPairingHostRuntime {
   createProvider(product: {
     productId: string;
     executionKind?: ProductExecutionKind;
-  }): Promise<TrUApiProductProvider>;
+  }, callbacks?: WebWorkerHostCallbacks): Promise<TrUApiProductProvider>;
   disconnectSession(): Promise<void>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
@@ -168,9 +175,15 @@ interface RenderEntry {
   onError: (error: Error) => void;
 }
 
+interface RpcConnectionEntry {
+  connection: ChainConnection | null;
+  closed: boolean;
+}
+
 interface RuntimeState {
   worker: Worker;
   rawCallbacks: RawCallbacks;
+  coreCallbacks: Map<number, RawCallbacks>;
   cores: Map<number, CoreState>;
   pendingCores: Map<
     number,
@@ -181,7 +194,9 @@ interface RuntimeState {
     }
   >;
   subscriptionDisposers: Map<number, () => void>;
-  chainConnections: Map<number, ChainConnection>;
+  chainConnections: Map<number, RpcConnectionEntry>;
+  chatFileExports: Set<string>;
+  disposeNativeChatFiles: () => void;
   pendingDisconnects: Map<
     number,
     { resolve: () => void; reject: (error: Error) => void }
@@ -409,17 +424,46 @@ interface TrUApiDevConsole {
   getLogLevel(): LogLevel | null;
 }
 
+const NATIVE_CHAT_FILE_CALLBACKS: Partial<Record<CallbackName, true>> = {
+  pickChatFiles: true,
+  readChatFile: true,
+  releaseChatFile: true,
+  beginChatFileExport: true,
+  writeChatFileExport: true,
+  finishChatFileExport: true,
+  cancelChatFileExport: true,
+};
+
+/** Reclaim only undelivered selections; delivered sources belong to durable Host state. */
+async function discardChatFileCallback(state: RuntimeState, name: CallbackName, value: unknown): Promise<void> {
+  try {
+    if (name === "pickChatFiles" && value instanceof Uint8Array) {
+      await Promise.all(Vector(NativeChatPickedFile).dec(value).map(
+        (file) => state.rawCallbacks.releaseChatFile(file.sourceId),
+      ));
+    } else if (name === "beginChatFileExport" && typeof value === "string") {
+      state.chatFileExports.delete(value);
+      await state.rawCallbacks.cancelChatFileExport(value);
+    }
+  } catch {
+    // A closed/failed backing store is unavailable; never log private handles or payloads.
+  }
+}
+
 function handleCallbackRequest(
   state: RuntimeState,
   msg: {
     requestId: number;
+    coreId?: number;
     name: CallbackName;
     args: readonly unknown[];
   },
 ): void {
-  const fn = Object.hasOwn(state.rawCallbacks, msg.name)
+  if (state.disposed) return;
+  const callbacks = msg.coreId === undefined ? state.rawCallbacks : state.coreCallbacks.get(msg.coreId);
+  const fn = callbacks && Object.hasOwn(callbacks, msg.name)
     ? (
-        state.rawCallbacks as unknown as Record<
+        callbacks as unknown as Record<
           string,
           (...args: readonly unknown[]) => unknown
         >
@@ -435,23 +479,56 @@ function handleCallbackRequest(
     return;
   }
   Promise.resolve()
-    .then(() => fn(...msg.args))
+    .then(() => {
+      if (state.disposed) throw new Error("Host runtime is unavailable");
+      if (msg.coreId !== undefined && !state.coreCallbacks.has(msg.coreId)) throw new Error("Product callbacks are unavailable");
+      return fn(...msg.args);
+    })
     .then(
-      (value) => {
-        state.worker.postMessage({
-          kind: "callbackResponse",
-          requestId: msg.requestId,
-          ok: true,
-          value,
-        } satisfies MainToWorker);
+      async (value) => {
+        if (state.disposed) {
+          await discardChatFileCallback(state, msg.name, value);
+          return;
+        }
+        if (msg.name === "beginChatFileExport" && typeof value === "string") {
+          state.chatFileExports.add(value);
+        } else if (msg.name === "finishChatFileExport" || msg.name === "cancelChatFileExport") {
+          state.chatFileExports.delete(msg.args[0] as string);
+        }
+        try {
+          state.worker.postMessage({
+            kind: "callbackResponse",
+            requestId: msg.requestId,
+            ok: true,
+            value,
+          } satisfies MainToWorker);
+        } catch {
+          await discardChatFileCallback(state, msg.name, value);
+          if (state.disposed) return;
+          try {
+            state.worker.postMessage({
+              kind: "callbackResponse",
+              requestId: msg.requestId,
+              ok: false,
+              error: "Host callback result could not be serialized",
+            } satisfies MainToWorker);
+          } catch {
+            teardown(state, new Error("Host callback transport is unavailable"), true);
+          }
+        }
       },
       (err) => {
-        state.worker.postMessage({
-          kind: "callbackResponse",
-          requestId: msg.requestId,
-          ok: false,
-          error: errorMessage(err),
-        } satisfies MainToWorker);
+        if (state.disposed) return;
+        try {
+          state.worker.postMessage({
+            kind: "callbackResponse",
+            requestId: msg.requestId,
+            ok: false,
+            error: NATIVE_CHAT_FILE_CALLBACKS[msg.name] ? "Native Chat file operation failed" : errorMessage(err),
+          } satisfies MainToWorker);
+        } catch {
+          teardown(state, new Error("Host callback transport is unavailable"), true);
+        }
       },
     );
 }
@@ -460,6 +537,7 @@ function handleSubscriptionStart(
   state: RuntimeState,
   msg: {
     subId: number;
+    coreId?: number;
     name: SubscriptionName;
     payload: Uint8Array | null;
   },
@@ -482,15 +560,17 @@ function handleSubscriptionStart(
   };
   let dispose: (() => void) | void = undefined;
   try {
+    const callbacks = msg.coreId === undefined ? state.rawCallbacks : state.coreCallbacks.get(msg.coreId);
+    if (!callbacks) throw new Error("Product callbacks are unavailable");
     dispose = startRawSubscription(
-      state.rawCallbacks,
+      callbacks,
       msg.name,
       msg.payload,
       sendItem,
       sendError,
     );
   } catch (err) {
-    console.error(`[truapi worker] ${msg.name} threw on start:`, err);
+    sendError({ reason: errorMessage(err) });
     return;
   }
   if (typeof dispose === "function") {
@@ -514,41 +594,73 @@ function handleSubscriptionStop(
 
 async function handleChainConnectStart(
   state: RuntimeState,
-  msg: { connId: number; genesisHash: string },
+  msg: Extract<WorkerToMain, { kind: "chainConnectStart" | "hopConnectStart" }>,
 ): Promise<void> {
-  const chainConnect = state.rawCallbacks.chainConnect;
+  if (state.disposed) return;
+  if (
+    state.chainConnections.has(msg.connId) ||
+    state.chainConnections.size >= MAX_JSON_RPC_CONNECTIONS
+  ) {
+    state.worker.postMessage({
+      kind: "chainConnectAck",
+      connId: msg.connId,
+      ok: false,
+      error: "JSON-RPC connection limit reached or duplicate connection id",
+    } satisfies MainToWorker);
+    return;
+  }
+  const entry: RpcConnectionEntry = { connection: null, closed: false };
+  state.chainConnections.set(msg.connId, entry);
   const onResponse = (json: string): void => {
-    if (state.disposed) return;
+    if (state.disposed || entry.closed) return;
     state.worker.postMessage({
       kind: "chainResponse",
       connId: msg.connId,
       json,
     } satisfies MainToWorker);
   };
+  const onClosed = (): void => {
+    if (state.disposed || entry.closed) return;
+    handleChainClose(state, msg);
+    state.worker.postMessage({
+      kind: "chainClosed",
+      connId: msg.connId,
+    } satisfies MainToWorker);
+  };
   try {
-    const conn = await chainConnect(msg.genesisHash, onResponse);
-    if (!conn) {
-      state.worker.postMessage({
-        kind: "chainConnectAck",
-        connId: msg.connId,
-        ok: false,
-        error: `chainConnect returned null for genesisHash ${msg.genesisHash}`,
-      } satisfies MainToWorker);
+    const conn = await (msg.kind === "hopConnectStart"
+      ? state.rawCallbacks.hopConnect(msg.genesisHash, msg.endpoint, onResponse, onClosed)
+      : state.rawCallbacks.chainConnect(msg.genesisHash, onResponse, onClosed));
+    if (state.disposed || entry.closed) {
+      state.chainConnections.delete(msg.connId);
+      conn?.close();
       return;
     }
-    state.chainConnections.set(msg.connId, conn);
+    if (!conn) throw new Error(`${msg.kind} returned no connection`);
+    entry.connection = conn;
     state.worker.postMessage({
       kind: "chainConnectAck",
       connId: msg.connId,
       ok: true,
     } satisfies MainToWorker);
   } catch (err) {
-    state.worker.postMessage({
-      kind: "chainConnectAck",
-      connId: msg.connId,
-      ok: false,
-      error: errorMessage(err),
-    } satisfies MainToWorker);
+    state.chainConnections.delete(msg.connId);
+    const report = !state.disposed && !entry.closed;
+    entry.closed = true;
+    try {
+      entry.connection?.close();
+    } catch {
+      console.warn("[truapi worker] JSON-RPC close failed");
+    } finally {
+      if (report) {
+        state.worker.postMessage({
+          kind: "chainConnectAck",
+          connId: msg.connId,
+          ok: false,
+          error: msg.kind === "hopConnectStart" ? "HOP connection unavailable" : errorMessage(err),
+        } satisfies MainToWorker);
+      }
+    }
   }
 }
 
@@ -556,26 +668,38 @@ function handleChainSend(
   state: RuntimeState,
   msg: { connId: number; request: string },
 ): void {
-  const conn = state.chainConnections.get(msg.connId);
-  if (!conn) return;
+  const entry = state.chainConnections.get(msg.connId);
+  if (!entry?.connection || entry.closed) return;
   try {
     if (debugLoggingEnabled(state)) {
-      console.debug("[truapi worker] chainSend", msg.connId, msg.request);
+      console.debug("[truapi worker] chainSend", msg.connId);
     }
-    conn.send(msg.request);
-  } catch (err) {
-    console.warn("[truapi worker] chain send threw:", err);
+    entry.connection.send(msg.request);
+  } catch {
+    console.warn("[truapi worker] JSON-RPC send failed");
+    if (!entry.closed) {
+      handleChainClose(state, msg);
+      if (!state.disposed) {
+        state.worker.postMessage({
+          kind: "chainClosed",
+          connId: msg.connId,
+        } satisfies MainToWorker);
+      }
+    }
   }
 }
 
 function handleChainClose(state: RuntimeState, msg: { connId: number }): void {
-  const conn = state.chainConnections.get(msg.connId);
-  if (!conn) return;
+  const entry = state.chainConnections.get(msg.connId);
+  if (!entry || entry.closed) return;
+  entry.closed = true;
+  // Keep a closed opening entry counted until its late handle can be closed.
+  if (!entry.connection) return;
   state.chainConnections.delete(msg.connId);
   try {
-    conn.close();
-  } catch (err) {
-    console.warn("[truapi worker] chain close threw:", err);
+    entry.connection.close();
+  } catch {
+    console.warn("[truapi worker] JSON-RPC close failed");
   }
 }
 
@@ -818,6 +942,7 @@ function teardown(state: RuntimeState, error: Error, fault: boolean): void {
     closeCoreState(core, error);
   }
   state.cores.clear();
+  state.coreCallbacks.clear();
   for (const fn of state.subscriptionDisposers.values()) {
     try {
       fn();
@@ -826,14 +951,20 @@ function teardown(state: RuntimeState, error: Error, fault: boolean): void {
     }
   }
   state.subscriptionDisposers.clear();
-  for (const conn of state.chainConnections.values()) {
+  for (const entry of state.chainConnections.values()) {
+    entry.closed = true;
     try {
-      conn.close();
+      entry.connection?.close();
     } catch {
       // ignore during teardown
     }
   }
   state.chainConnections.clear();
+  for (const id of state.chatFileExports) {
+    void state.rawCallbacks.cancelChatFileExport(id).catch(() => {});
+  }
+  state.chatFileExports.clear();
+  state.disposeNativeChatFiles();
   // A worker nothing can call any more is not wanted.
   for (const productId of [...state.wantedWorkers]) {
     handleWorkerDemandChanged(state, productId, false);
@@ -897,16 +1028,23 @@ function createWebWorkerHostRuntime(
   host: WebWorkerHostCallbacks,
   options: CreateWebWorkerHostRuntimeOptions,
 ): Promise<WorkerPairingHostRuntime & WorkerSigningHostRuntime> {
-  const callbacks = createWasmRawCallbacks(host);
+  const browserFiles = host.nativeChatFiles ? undefined : createBrowserNativeChatFilesHost();
+  const callbacks = createWasmRawCallbacks({
+    ...host,
+    nativeChatFiles: host.nativeChatFiles ?? browserFiles!,
+  });
 
   return new Promise((resolve, reject) => {
     const state: RuntimeState = {
       worker,
       rawCallbacks: callbacks,
+      coreCallbacks: new Map(),
       cores: new Map(),
       pendingCores: new Map(),
       subscriptionDisposers: new Map(),
       chainConnections: new Map(),
+      chatFileExports: new Set(),
+      disposeNativeChatFiles: () => browserFiles?.dispose(),
       pendingDisconnects: new Map(),
       pendingSessionActivations: new Map(),
       pendingLocalIdentities: new Map(),
@@ -1068,8 +1206,9 @@ function createWebWorkerHostRuntime(
           handleSubscriptionStop(state, msg);
           break;
         case "chainConnectStart":
+        case "hopConnectStart":
           if (debugLoggingEnabled(state)) {
-            console.debug("[truapi worker] chainConnectStart", msg.connId);
+            console.debug("[truapi worker]", msg.kind, msg.connId);
           }
           void handleChainConnectStart(state, msg);
           break;
@@ -1124,6 +1263,7 @@ function createWebWorkerHostRuntime(
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
             pocket: host.pocket !== undefined,
+            identityBackend: host.identityBackend !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
         } satisfies MainToWorker);
@@ -1191,6 +1331,7 @@ function handleCoreError(
   const pending = state.pendingCores.get(coreId);
   if (!pending) return;
   state.pendingCores.delete(coreId);
+  state.coreCallbacks.delete(coreId);
   pending.reject(new Error(error));
 }
 
@@ -1205,6 +1346,7 @@ function handleFrameError(
   const failure = new Error(`worker frame error: ${error}`);
   closeCoreState(core, failure);
   state.cores.delete(coreId);
+  state.coreCallbacks.delete(coreId);
   // Renders left registered would never settle: the worker cancels them with
   // the core, so nothing further arrives to complete the sink.
   failRendersForCore(state, coreId, failure);
@@ -1223,7 +1365,7 @@ function buildRuntime(
 ): WorkerPairingHostRuntime & WorkerSigningHostRuntime {
   const runtime: WorkerPairingHostRuntime & WorkerSigningHostRuntime = {
     coreWireSchemaHash: state.coreWireSchemaHash,
-    createProvider(product): Promise<TrUApiProductProvider> {
+    createProvider(product, callbacks): Promise<TrUApiProductProvider> {
       if (state.disposed) {
         return Promise.reject(
           state.closedError ?? new Error("runtime disposed"),
@@ -1231,6 +1373,7 @@ function buildRuntime(
       }
       return new Promise((resolve, reject) => {
         const coreId = ++state.nextCoreId;
+        if (callbacks) state.coreCallbacks.set(coreId, createWasmRawCallbacks(callbacks));
         state.pendingCores.set(coreId, {
           productId: product.productId,
           resolve,
@@ -1241,9 +1384,18 @@ function buildRuntime(
             kind: "createCore",
             coreId,
             product,
+            ...(callbacks === undefined ? {} : {
+              capabilities: {
+                chat: callbacks.chat !== undefined,
+                permissionStatus: callbacks.permissionStatus !== undefined,
+                pocket: callbacks.pocket !== undefined,
+                identityBackend: callbacks.identityBackend !== undefined,
+              },
+            }),
           } satisfies MainToWorker);
         } catch (err) {
           state.pendingCores.delete(coreId);
+          state.coreCallbacks.delete(coreId);
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
@@ -1624,7 +1776,11 @@ function buildProvider(
       );
     },
     setPermissionAuthorizationStatus(request, status) {
-      if (core.disposed) return Promise.resolve();
+      if (core.disposed) {
+        return Promise.reject(
+          core.closedError ?? new Error("product connection is closed"),
+        );
+      }
       return runtime.setPermissionAuthorizationStatus(
         core.productId,
         request,
@@ -1694,6 +1850,7 @@ function buildProvider(
       if (core.disposed) return;
       closeCoreState(core, new Error("provider disposed"));
       state.cores.delete(core.coreId);
+      state.coreCallbacks.delete(core.coreId);
       // Renders left registered would never settle: the worker cancels them
       // with the core, so nothing further arrives to complete the sink.
       failRendersForCore(state, core.coreId, new Error("provider disposed"));

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use tracing::warn;
-use truapi::{latest as api, v01};
+use truapi::latest as api;
 use truapi_platform::{
     CreateTransactionReview, PermissionAuthorizationStatus, ResourceAllocationReview,
     SignPayloadReview, SignRawReview, StatementStoreProductSignReview, UserConfirmationReview,
@@ -36,8 +36,8 @@ use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::host_logic::statement_store::validate_unsigned_statement_signing_payload;
 use crate::runtime::authority::{
     AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
-    ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
-    SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    chat_requires_statement_submit,
 };
 use crate::runtime::sso_service::{SsoReply, SsoRequestContext};
 
@@ -570,16 +570,22 @@ impl SigningHostSsoService {
             .map_err(|error| error.to_string())
     }
 
-    /// Perform a Chat identity operation without exposing wallet key material.
+    /// Execute the same typed Chat operations as local products; never return secrets.
     async fn product_device_chat(
         &self,
         cx: &SsoRequestContext,
         request: ProductRequest<SsoProductDeviceChatOperation>,
     ) -> ProductDeviceChatResponse {
+        use truapi::versioned::account::{
+            HostProductDeviceChatError as WireError, HostProductDeviceChatResponse as WireResponse,
+        };
+
+        self.signing_host
+            .require_current_session(&cx.session)
+            .map_err(|_| WireError::V1(api::HostProductDeviceChatError::NotConnected))?;
         let calling_product_id = normalize_product_identifier(&request.calling_product_id)
-            .map_err(|_| v01::HostProductDeviceChatError::Unknown {
-                reason: "invalid calling product identifier".to_string(),
-            })?;
+            .map_err(|_| WireError::V1(api::HostProductDeviceChatError::InvalidRequest))?;
+        let SsoProductDeviceChatOperation::V2(operation) = request.payload;
         let permissions = PermissionsService::new(
             self.signing_host.platform.as_ref(),
             self.signing_host.platform.as_ref(),
@@ -588,107 +594,38 @@ impl SigningHostSsoService {
         if permissions
             .check_or_prompt_chat_authority()
             .await
-            .map_err(|error| v01::HostProductDeviceChatError::Unknown {
-                reason: error.reason,
-            })?
+            .map_err(|_| WireError::V1(api::HostProductDeviceChatError::StorageUnavailable))?
             != PermissionAuthorizationStatus::Authorized
         {
-            return Err(v01::HostProductDeviceChatError::Rejected);
+            return Err(WireError::V1(
+                api::HostProductDeviceChatError::AccessNotGranted,
+            ));
         }
-
-        let authority_request = match request.payload {
-            SsoProductDeviceChatOperation::Bind {
-                derivation_index,
-                peer_identity_account_id,
-                peer_chat_public_key,
-            } => {
-                let product_account = api::ProductAccountId {
-                    dot_ns_identifier: calling_product_id.clone(),
-                    derivation_index: derivation_index.clone(),
-                };
-                let device_account_id = self
-                    .signing_host
-                    .product_keypair(&product_account)
-                    .map_err(|error| v01::HostProductDeviceChatError::Unknown {
-                        reason: error.to_string(),
-                    })?
-                    .public
-                    .to_bytes();
-                ProductDeviceChatAuthorityRequest::Bind {
-                    calling_product_id,
-                    device_account_id,
-                    derivation_index,
-                    peer_identity_account_id,
-                    peer_chat_public_key,
-                }
-            }
-            SsoProductDeviceChatOperation::Seal {
-                peer_chat_public_key,
-                cipher_suite,
-                plaintext,
-            } => ProductDeviceChatAuthorityRequest::Seal {
-                calling_product_id,
-                peer_chat_public_key,
-                cipher_suite,
-                plaintext,
-            },
-            SsoProductDeviceChatOperation::Open {
-                peer_chat_public_key,
-                cipher_suite,
-                combined_ciphertext,
-            } => ProductDeviceChatAuthorityRequest::Open {
-                calling_product_id,
-                peer_chat_public_key,
-                cipher_suite,
-                combined_ciphertext,
-            },
-            SsoProductDeviceChatOperation::SignRequestProof {
-                derivation_index,
-                payload,
-            } => ProductDeviceChatAuthorityRequest::SignRequestProof {
-                product_account_id: api::ProductAccountId {
-                    dot_ns_identifier: calling_product_id.clone(),
-                    derivation_index,
-                },
-                calling_product_id,
-                payload,
-            },
-            SsoProductDeviceChatOperation::Identity => {
-                ProductDeviceChatAuthorityRequest::Identity { calling_product_id }
-            }
-            SsoProductDeviceChatOperation::VerifyPeerDevice {
-                peer_identity_account_id,
-                peer_chat_public_key,
-                peer_device_account_id,
-                proof,
-            } => ProductDeviceChatAuthorityRequest::VerifyPeerDevice {
-                calling_product_id,
-                peer_identity_account_id,
-                peer_chat_public_key,
-                peer_device_account_id,
-                proof,
-            },
-        };
+        if chat_requires_statement_submit(&operation)
+            && permissions
+                .check_or_prompt_remote(api::RemotePermissionRequest {
+                    permission: api::RemotePermission::StatementSubmit,
+                })
+                .await
+                .map_err(|_| WireError::V1(api::HostProductDeviceChatError::StorageUnavailable))?
+                != PermissionAuthorizationStatus::Authorized
+        {
+            return Err(WireError::V1(
+                api::HostProductDeviceChatError::AccessNotGranted,
+            ));
+        }
         self.signing_host
-            .product_device_chat(&cx.call, &cx.session, authority_request)
+            .product_device_chat(
+                &cx.call,
+                &cx.session,
+                ProductDeviceChatAuthorityRequest {
+                    calling_product_id,
+                    operation,
+                },
+            )
             .await
-            .map_err(|error| match error {
-                ProductDeviceChatAuthorityError::Disconnected => {
-                    v01::HostProductDeviceChatError::NotConnected
-                }
-                ProductDeviceChatAuthorityError::Rejected => {
-                    v01::HostProductDeviceChatError::Rejected
-                }
-                ProductDeviceChatAuthorityError::InvalidPeerKey => {
-                    v01::HostProductDeviceChatError::InvalidPeerKey
-                }
-                ProductDeviceChatAuthorityError::InvalidCiphertext => {
-                    v01::HostProductDeviceChatError::InvalidCiphertext
-                }
-                ProductDeviceChatAuthorityError::Unavailable(reason) => {
-                    v01::HostProductDeviceChatError::Unknown { reason }
-                }
-            })
+            .map(WireResponse::V1)
+            .map_err(|error| WireError::V1(error.into()))
     }
 }
 
