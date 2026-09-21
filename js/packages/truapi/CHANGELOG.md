@@ -1,5 +1,85 @@
 # @parity/truapi
 
+## 0.18.0
+
+### Minor Changes
+
+- d9eaece: An RFC-0010 `AutoSigning` grant covers `signing.sign_raw`, `signing.sign_payload` and
+  `signing.create_transaction` for the granting product's own accounts: the host serves them from the granted key
+  without a per-call confirmation, and a pairing host serves them without reaching the signing host. The deprecated
+  unwatermarked raw-signing API is never covered and always prompts. A pairing host also signs product statement proofs
+  under the grant, which the SSO raw-signing protocol cannot carry otherwise.
+- 9b54ceb: A `context` grant admits the grantee acting in the granting product's own proof context as well as in its
+  own. Both are matched by product label within one network, so a product's other executables count and a namesake on
+  another network does not.
+
+  Refusing the granting product's context left the scope unusable: `PeopleLite.set_alias_account` verifies against
+  `Score.score_context`, which names the personhood product for every prover, so a grantee held to its own context alone
+  can produce no proof such a chain accepts. A context naming a third product is still refused, as is the `raw:`
+  development context. A grantee's own namesake on another network is refused too, which is new. Both the ring-VRF proof
+  and the contextual alias read follow the same rule, because they come out of one VRF evaluation.
+
+- 33f9222: Host applications running their own statement-store traffic reach the account the paired wallet granted an
+  allowance to: `SessionUiInfo.deviceStatementAccountId` carries the id and `CoreAdmin.getDeviceStatementKey` the
+  sr25519 secret behind it. A signing host also answers `Pending(AllowanceAllocation)` before allocating the device
+  slot, so a pairing host shows progress instead of an already-scanned QR, and `Failed(reason)` if the allocation then
+  fails.
+- c2e5674: `hasTrustedRemotePermissions(productId)` answers whether a product is one the host grants every
+  `RemotePermission` without prompting. It reads the compiled-in list alone: a stored user decision wins over that list,
+  so a host mediating product network access in its own code — a webview interceptor, a `fetch` shim, a service worker —
+  asks it only for the branch where its own store reads undetermined, and a host holding a runtime asks
+  `permissionAuthorizationStatus` instead, which folds both together. Exported on the UniFFI and wasm surfaces.
+- 448c1d4: - Host `device_permission` and `remote_permission` callbacks return `PermissionDecision` (`AllowOnce`,
+  `AllowAlways`, or `Deny`). Native callbacks leave grant storage and consumption to Rust. Embedders must update their
+  callbacks; product-facing responses remain boolean.
+  - Keep one-use grants in memory. Internal `authorize_remote_permission` and `authorize_device_permission` methods
+    consume them using the public request types, without exposing the methods in the public SDK or API documentation.
+  - Normalize remote domains, match legacy wildcard coverage, and keep a shared blessed-domain list.
+  - Require `OpenUrl` for external navigation, including allowed application schemes. A lasting grant covers all
+    external destinations; domain permissions govern outbound network requests.
+  - Require `Notifications` before `send_push_notification`, prompting when undecided and rejecting delivery when
+    denied.
+  - Present per-action confirmations without misleading persistent-permission choices.
+- d3ec891: Request cancellation. Every generated request method takes `options?: CallOptions` last; aborting its
+  `signal` sends a `Cancel` frame on that method's own address, correlated by the same `requestId`. The call still
+  settles with exactly one response: a withdrawn call answers `CallError.Cancelled`, and a cancel that arrives too late
+  is dropped so the real result stands. The client's own deadline sends `Cancel` before it rejects.
+
+  Additive on the wire. `CallError` gains `Cancelled` as its last variant, so every existing discriminant keeps its
+  SCALE index, and `WIRE_CODEC_VERSION` is unchanged. A host that predates the `Cancel` leg drops the frame with no
+  reply and the call settles on the client's deadline instead. A product cannot detect that first, so an abort such a
+  host never understood is indistinguishable from one it honoured.
+
+- e9c45b8: Authorize browser fetch, asynchronous XHR, WebSocket connections, media capture and WebRTC through the
+  internal `authorize_remote_permission` and `authorize_device_permission` APIs. Install the shared sandbox in native
+  product views. Synchronous XHR, `Worker`, `WebTransport` and `getDisplayMedia` screen capture are unavailable.
+
+  Camera and microphone grants are consumed per capture attempt, camera first. A later microphone denial or native
+  capture failure does not restore an already consumed grant. Product consent is enforced by the container; native media
+  delegates enforce OS permission separately.
+
+  Update native integrations: Swift `installProductScripts(into:endpoint:)` now takes a `WKWebView` and is synchronous,
+  without an execution argument. Swift and Kotlin `LocalhostBridgeBootstrap.script` no longer take `webRtcAllowed`.
+
+- ea5e2f9: Add `localStorage.subscribe` and worker pending operations.
+
+  `localStorage.subscribe(key)` streams a key's value within the product's own namespace, emitting the current value
+  immediately and then one item per later write or clear from any of the product's runtimes. A write that leaves the
+  stored bytes unchanged emits nothing.
+
+  `worker.beginOperation` / `worker.endOperation` keep a product's worker runtime alive while it holds at least one open
+  operation. Both are gated to the Worker execution kind. `endOperation` is idempotent. An open operation counts as
+  demand on the product's worker, so it reaches a host through the same worker-demand signal an on-screen surface
+  produces.
+
+  Hosts implement `ProductOperations` and `ProductStorage.subscribeStorage` to back these.
+
+### Patch Changes
+
+- a63b0e8: The generated client stamps `TRUAPI_CODEC_VERSION` from `truapi::WIRE_CODEC_VERSION`, so it speaks the codec
+  version `system.handshake()` accepts. A client advertising any other codec is answered with
+  `UnsupportedProtocolVersion` on the first frame it sends, before a product reaches any other method.
+
 ## 0.17.0
 
 ### Major Changes
@@ -20,6 +100,7 @@
 
   Genesis hashes are now only available asynchronously from a connected host, so code that needed one at module load has
   to resolve it inside the call that uses it.
+
 - a9731b1: Every request, response and subscription item on the wire is an explicit versioned wrapper, empty payloads
   included. `statementStore.submit` resolves a `RemoteStatementStoreSubmitResponse` whose V1 carries no payload, and the
   six subscriptions that take no request data send a payload-less V1 request envelope on their start frame. Two frame
@@ -72,6 +153,7 @@
   executable of one product shares one entry, and an entry stamped in the future is re-read rather than treated as fresh
   forever. Entries written by earlier releases under the full product id are no longer read and nothing evicts them, so
   they sit in core storage until the cache is cleared.
+
 - befde58: The unprefixed name for a versioned type belongs to the newest version any wrapper selects.
   `HostLocalStorageReadError` is the v02 shape; the v01 one is `V01HostLocalStorageReadError`.
 - 0e86a3a: Add the `pocket` service: `listSubscribe` over the calling product's cards, and `removeCard`.
