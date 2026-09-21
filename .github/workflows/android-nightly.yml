@@ -114,7 +114,11 @@ jobs:
           TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
-          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          # Both fall back to an example.com placeholder rather than failing, so
+          # omitting them ships those defaults in an artifact people test with.
+          GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
+          REFERRAL_WEB_HOST: ${{ vars.REFERRAL_WEB_HOST }}
           FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
           GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
           GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
@@ -133,7 +137,11 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
+          # Not under nullglob: a non-matching glob would vanish, ls would print
+          # the working directory, and the guard below would never fire.
+          shopt -u nullglob
           apksigner="$(ls -d "${ANDROID_HOME}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)"
+          shopt -s nullglob
           if [ -z "${apksigner}" ]; then
             echo "::error::No apksigner under ${ANDROID_HOME}/build-tools"
             exit 1
@@ -153,7 +161,9 @@ jobs:
           done
 
           echo "short=${short}" >> "$GITHUB_OUTPUT"
-          echo "tag=android-nightly-${BUILD_ID}" >> "$GITHUB_OUTPUT"
+          # The commit is in the tag because a re-run repeats run_number, and a
+          # tag that already exists makes the publish step fail permanently.
+          echo "tag=android-nightly-${BUILD_ID}-${short}" >> "$GITHUB_OUTPUT"
 
       - name: Publish the release
         env:
@@ -165,8 +175,11 @@ jobs:
         run: |
           set -euo pipefail
           notes="$(printf 'Android nightly, build %s, from %s.\n\nInstall with `adb install <file>`, or open the APK on the device.\nThe Google Play flavour is `gp`; `vanilla` ships without Google services.\n' "${BUILD_ID}" "${GITHUB_SHA}")"
+          # --target, or the tag lands on the default branch as it is at publish
+          # time, which after an hour of building is not what was built.
           gh release create "${TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
             --title "Android nightly ${BUILD_ID}" \
             --notes "${notes}" \
             --prerelease \
