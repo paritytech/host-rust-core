@@ -1,9 +1,14 @@
-# A nightly Android build, published as release assets.
+# A nightly Android build, delivered to Firebase App Distribution.
 #
-# The iOS nightly goes to TestFlight; this one has no equivalent store channel,
-# so the artifacts are attached to a prerelease. Firebase App Distribution is
-# where these belong, and the upload is a few lines, but the credential for it
-# does not exist yet and untested distribution code is worse than none.
+# The iOS nightly goes to TestFlight; App Distribution is this platform's
+# equivalent, and it reaches a named tester group rather than anyone with the
+# link. That matters here beyond convenience: the build embeds configuration
+# that should not be world readable, so a public release asset is not an
+# option.
+#
+# Authentication is federated. The job proves its identity with the run's OIDC
+# token and receives a short lived credential, so no long lived key for this
+# project is stored anywhere.
 name: Android nightly
 
 on:
@@ -18,7 +23,10 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  # id-token to mint the OIDC assertion the identity exchange consumes.
+  # Nothing is written back to the repository, so contents stays read.
+  contents: read
+  id-token: write
 
 jobs:
   nightly:
@@ -161,27 +169,42 @@ jobs:
           done
 
           echo "short=${short}" >> "$GITHUB_OUTPUT"
-          # The commit is in the tag because a re-run repeats run_number, and a
-          # tag that already exists makes the publish step fail permanently.
-          echo "tag=android-nightly-${BUILD_ID}-${short}" >> "$GITHUB_OUTPUT"
 
-      - name: Publish the release
+      # Exchanges the run's OIDC assertion for a short lived credential and
+      # writes it where Application Default Credentials will find it. Neither
+      # input is sensitive; they are secrets because the project layout is not
+      # something a public repository should advertise.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      # The CLI rather than a wrapper action, because the credential written
+      # above is an external account rather than a service account key, and the
+      # CLI resolves it through the standard credential chain instead of
+      # parsing the file itself.
+      - name: Distribute to testers
+        working-directory: hosts/android
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.package.outputs.tag }}
+          APP_ID: ${{ secrets.ANDROID_FIREBASE_NIGHTLY_APP_ID }}
+          GROUP: ${{ vars.ANDROID_FIREBASE_GROUP }}
           SHORT: ${{ steps.package.outputs.short }}
           BUILD_ID: ${{ steps.build.outputs.id }}
-        working-directory: hosts/android
         run: |
           set -euo pipefail
-          notes="$(printf 'Android nightly, build %s, from %s.\n\nInstall with `adb install <file>`, or open the APK on the device.\nThe Google Play flavour is `gp`; `vanilla` ships without Google services.\n' "${BUILD_ID}" "${GITHUB_SHA}")"
-          # --target, or the tag lands on the default branch as it is at publish
-          # time, which after an hour of building is not what was built.
-          gh release create "${TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --target "${GITHUB_SHA}" \
-            --title "Android nightly ${BUILD_ID}" \
-            --notes "${notes}" \
-            --prerelease \
-            polkadot-app-gp-"${BUILD_ID}"-"${SHORT}".apk \
-            polkadot-app-vanilla-"${BUILD_ID}"-"${SHORT}".apk
+
+          # Uploading with no group succeeds and reaches nobody, which is worse
+          # than failing, so it is required rather than defaulted.
+          if [ -z "${GROUP}" ]; then
+            echo "::error::ANDROID_FIREBASE_GROUP is not set, so this build would reach no testers"
+            exit 1
+          fi
+
+          notes="Build ${BUILD_ID}, from ${GITHUB_SHA}. gp carries Google services; vanilla does not."
+          for flavour in gp vanilla; do
+            npx --yes firebase-tools@14.11.1 appdistribution:distribute \
+              "polkadot-app-${flavour}-${BUILD_ID}-${SHORT}.apk" \
+              --app "${APP_ID}" \
+              --groups "${GROUP}" \
+              --release-notes "${notes} Flavour ${flavour}."
+          done
