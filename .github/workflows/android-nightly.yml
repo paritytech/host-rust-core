@@ -148,7 +148,9 @@ jobs:
           # Not under nullglob: a non-matching glob would vanish, ls would print
           # the working directory, and the guard below would never fire.
           shopt -u nullglob
-          apksigner="$(ls -d "${ANDROID_HOME}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)"
+          # || true, or pipefail aborts the step on a non-matching glob before
+          # the message below can explain what was missing.
+          apksigner="$(ls -d "${ANDROID_HOME:-}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1 || true)"
           shopt -s nullglob
           if [ -z "${apksigner}" ]; then
             echo "::error::No apksigner under ${ANDROID_HOME}/build-tools"
@@ -197,23 +199,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Uploading with no group succeeds and reaches nobody, which is worse
-          # than failing, so it is required rather than defaulted.
-          if [ -z "${GROUP}" ]; then
-            echo "::error::ANDROID_FIREBASE_GROUP is not set, so this build would reach no testers"
+          # A group of only separators is parsed to an empty list, and an upload
+          # with no recipients succeeds and reaches nobody, which is worse than
+          # failing. Check what survives parsing, not just the empty string.
+          if [ -z "${GROUP//[[:space:],]/}" ]; then
+            echo "::error::ANDROID_FIREBASE_GROUP names no group, so this build would reach no testers"
             exit 1
           fi
 
-          # --ignore-scripts, because this job holds a cloud credential and can
-          # mint its own identity assertions, so nothing fetched here should be
-          # able to run code at install time. The CLI works without them.
-          npm install --no-save --no-audit --no-fund --ignore-scripts firebase-tools@14.11.1
+          # Installed under its own prefix. This directory has no package.json,
+          # so npm would otherwise walk up and install into the repository root,
+          # leaving nothing to run here.
+          # --ignore-scripts because this job holds a cloud credential and can
+          # mint its own identity assertions, so nothing fetched should run at
+          # install time. The CLI is fully functional without them.
+          cli="${RUNNER_TEMP}/firebase-cli"
+          npm install --prefix "${cli}" --no-save --no-audit --no-fund \
+            --ignore-scripts firebase-tools@14.11.1
 
-          notes="Build ${BUILD_ID}, from ${GITHUB_SHA}. gp carries Google services; vanilla does not."
-          for flavour in gp vanilla; do
-            ./node_modules/.bin/firebase appdistribution:distribute \
-              "polkadot-app-${flavour}-${BUILD_ID}-${SHORT}.apk" \
-              --app "${APP_ID}" \
-              --groups "${GROUP}" \
-              --release-notes "${notes} Flavour ${flavour}."
-          done
+          # Only the flavour that ships. App Distribution keys a release on the
+          # version name and code, which the two flavours share, so uploading
+          # both to one app would have the second replace the first and report
+          # success. Vanilla needs its own app before it can be distributed.
+          "${cli}/node_modules/.bin/firebase" appdistribution:distribute \
+            "polkadot-app-gp-${BUILD_ID}-${SHORT}.apk" \
+            --app "${APP_ID}" \
+            --groups "${GROUP}" \
+            --release-notes "Build ${BUILD_ID}, from ${GITHUB_SHA}."
