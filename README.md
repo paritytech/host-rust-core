@@ -388,6 +388,53 @@ A pull request opened from a fork cannot reach the configuration and signing key
 this needs, and is told so rather than handed a build that misleads. Push the
 branch to this repository to get one.
 
+### Android builds that reach testers
+
+Two workflows deliver through Firebase App Distribution, which reaches a named
+tester group rather than anyone holding a link. That matters beyond
+convenience: these builds carry configuration that should not be public, so
+attaching them to a release is not an option.
+
+`android-nightly.yml` runs on weekdays at 22:00 UTC, two hours after the iOS
+nightly starts, so the two never overlap. `android-debug-distribution.yml` runs
+when a pull request merges to `main`, and answers what `main` does right now.
+It builds the merge commit rather than the pull request's merge preview, which
+is computed while the request is open and would otherwise ship a tree missing
+whatever landed first.
+
+Both authenticate by federation. The run proves its identity with its OIDC
+token and receives a short lived credential, so no long lived key for that
+project is stored here. Both check the delivery target before building, since
+an hour is an expensive place to discover a renamed tester group. That check
+cannot prove the upload will be permitted: listing groups is available to a
+role that cannot write, and only an upload proves an upload.
+
+Both verify the certificate that signed the APK rather than only that one did,
+because a rotated keystore otherwise produces a build every tester's device
+rejects on install, behind a green run.
+
+Release distribution stays in the app repository. It signs with a release
+keystore this repository does not hold.
+
+#### What they read
+
+Secrets: `GOOGLE_SERVICES_JSON_BASE64`, `CI_GITHUB_KEYSTORE_KEY_FILE`,
+`CI_KEYSTORE_PASS`, `CI_KEYSTORE_KEY_ALIAS`, `CI_KEYSTORE_KEY_PASS`,
+`FIRESTORE_DATABASE_ID`, `GOOGLE_OAUTH_ID`, `GOOGLE_PROJECT_ID`,
+`NIGHTLY_FUNDING_MNEMONIC`, `SENTRY_DSN`, `ANDROID_FIREBASE_NIGHTLY_APP_ID`,
+`ANDROID_FIREBASE_APP_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+`GCP_SERVICE_ACCOUNT`.
+
+Variables: `APPLICATION_ID`, `APPLICATION_NAME`, `CURRENCY_SYMBOL`,
+`LOG_COLLECTION_EMAIL`, `PRIVACY_POLICY_URL`, `TERMS_OF_USE_URL`,
+`SENTRY_ORG`, `SENTRY_PROJECT`, `GAME_RESULTS_FALLBACK_URL`,
+`REFERRAL_WEB_HOST`, `ANDROID_FIREBASE_GROUP`, `ANDROID_FIREBASE_DEBUG_GROUP`.
+
+`GOOGLE_PROJECT_ID` carries an `L` suffix. It is interpolated into a Java
+`long` literal, and a twelve digit project number overflows an `int` without
+one. Everything the app needs at runtime beyond these comes from Firebase
+Remote Config, keyed on an `environment` signal the build sets.
+
 ### Building the standalone iOS host app
 
 The targets below build `polkadot-app-ios-v2`, a separate checkout set by
