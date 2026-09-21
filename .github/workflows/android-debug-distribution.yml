@@ -33,8 +33,60 @@ permissions:
   id-token: write
 
 jobs:
+  # Delivery is the one part of this that cannot be checked locally: the
+  # identity exchange and the role behind it only exist in a run. Checking
+  # first means a missing role or a renamed group fails in a couple of minutes
+  # rather than after an hour of building something undeliverable.
+  preflight:
+    name: Check delivery is possible
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.pull_request.merged == true
+          && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Confirm the tester group is reachable
+        env:
+          SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          GROUP: ${{ vars.ANDROID_FIREBASE_DEBUG_GROUP }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GROUP//[[:space:],]/}" ]; then
+            echo "::error::ANDROID_FIREBASE_DEBUG_GROUP names no group, so this build would reach no testers"
+            exit 1
+          fi
+
+          # The project is the account's own domain, so it does not need
+          # storing separately and cannot drift from the identity being used.
+          project="${SERVICE_ACCOUNT#*@}"
+          project="${project%%.*}"
+
+          cli="${RUNNER_TEMP}/firebase-cli"
+          npm install --prefix "${cli}" --no-save --no-audit --no-fund \
+            --ignore-scripts firebase-tools@14.11.1
+
+          # Listing requires the same permission the upload does, so this
+          # fails here for a missing role rather than after the build.
+          "${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+            --project "${project}" > groups.txt
+
+          # Bounded, or a group whose name contains another's would pass for it.
+          if ! grep -qE "(^|[^[:alnum:]_-])${GROUP}([^[:alnum:]_-]|$)" groups.txt; then
+            echo "::error::No tester group named ${GROUP} in ${project}"
+            exit 1
+          fi
+          echo "${GROUP} is reachable in ${project}"
+
   distribute:
     name: Build and distribute
+    needs: preflight
     # A closed pull request is not necessarily a merged one, and building the
     # ones that were abandoned would ship code that was rejected. A merged fork
     # pull request gets neither secrets nor an identity token, so admitting it
