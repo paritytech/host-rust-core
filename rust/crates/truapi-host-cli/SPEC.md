@@ -558,7 +558,7 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 
 | Command | Pairing host | Signing host | Behavior |
 | --- | :---: | :---: | --- |
-| `/script` | yes | yes | Edit and run the remembered script, creating an SDK project when needed. |
+| `/script` | yes | yes | Edit and run the remembered script, creating a project when needed. |
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
 | `/script --run` | yes | yes | Run the remembered script without editing. |
 | `/script --edit` | yes | yes | Edit without running. |

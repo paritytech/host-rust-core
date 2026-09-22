@@ -1,4 +1,4 @@
-//! Persistent Product SDK projects created by the script editor.
+//! Persistent projects created by the script editor.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};

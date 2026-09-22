@@ -436,7 +436,7 @@ fn completions_for_scope(
             &[
                 ("--run", "rerun the remembered script"),
                 ("--edit", "edit without running"),
-                ("--new", "create a Product SDK project"),
+                ("--new", "create a new project"),
             ],
         );
         completions.extend(path_completions(path, "/script"));
@@ -866,7 +866,7 @@ pub const HELP_TEXT: &str = "\
 /script <path>          run an existing JS/TS product script with Bun
 /script --run           rerun the remembered script
 /script --edit          edit without running
-/script --new [dir]     create and edit a Product SDK project
+/script --new [dir]     create and edit a new project
 /log <level>            set error, warn, info, debug, or trace
 /product                show the current product
 /product <id>           switch product and reconnect product clients
@@ -891,7 +891,7 @@ pub const PAIRING_HELP_TEXT: &str = "\
 /script <path>          run an existing JS/TS product script with Bun
 /script --run           rerun the remembered script
 /script --edit          edit without running
-/script --new [dir]     create and edit a Product SDK project
+/script --new [dir]     create and edit a new project
 /login                  pair with a signing host for the current product
 /logout                 disconnect and reset pairing keys
 /log <level>            set error, warn, info, debug, or trace

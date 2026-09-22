@@ -245,7 +245,7 @@ Commands always start with `/`:
 | `/approval` | Show whether signing-host confirmations are manual or automatic. |
 | `/approval manual` | Prompt for every future signing-host confirmation. |
 | `/approval automatic` | Approve every future signing-host confirmation automatically. |
-| `/script` | Edit and run the remembered script, creating a Product SDK project when needed. |
+| `/script` | Edit and run the remembered script, creating a project when needed. |
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
 | `/script --run` | Rerun the remembered script without opening the editor. |
 | `/script --edit` | Edit the remembered script without running it. |
