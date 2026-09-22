@@ -897,8 +897,12 @@ class TrUAPIHostRuntime private constructor(
      * tracked before [establishPairing] runs; the allocation this notice
      * covers is what that call waits on. The returned handle is owed a
      * [notifyPairingFailed] if pairing then fails: the peer has dropped its QR
-     * and waits without a deadline of its own, and the handle holds the
-     * responder secret until it is released.
+     * and waits without a deadline of its own.
+     *
+     * The handle holds the responder statement secret the notice was signed
+     * with, and nothing consumes it, so `destroy()` it once the pairing
+     * settles — on the succeeding path as well as the failing one. Wrapping
+     * the whole pairing in `use { }` covers both.
      */
     suspend fun notifyPairingAllowanceAllocation(deeplink: String): NativeAnnouncedPairing =
         inner.notifyPairingAllowanceAllocation(deeplink)

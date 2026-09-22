@@ -267,6 +267,10 @@ characters, and `nil` where nothing renderable was sent. Safe to render is not
 verified: nothing signs that metadata, so a prompt built from it says what the
 peer calls itself, never who it is.
 
+The handle `notifyPairingAllowanceAllocation` returns holds the responder
+statement secret its notice was signed with, and nothing consumes it, so drop
+the last reference once the pairing settles rather than holding it for the life
+of the session.
 
 `devicePaired` on the runtime bridge reports a device that finished pairing
 with this signing host, carrying the `PairedSsoPeer` the pairing produced. The
