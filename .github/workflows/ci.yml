@@ -169,6 +169,9 @@ jobs:
       - name: Run codegen
         run: ./scripts/codegen.sh
 
+      - name: Type-check headless host scripts
+        run: node scripts/check-host-script-types.mjs
+
       - name: Upload codegen output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -182,6 +185,7 @@ jobs:
             js/packages/truapi/src/explorer/versions.ts
             js/packages/truapi-host/src/generated
             playground/test/generated
+            rust/crates/truapi-host-cli/js/script-types.d.ts
             rust/crates/truapi-server/src/generated
             rust/crates/truapi-server/src/wasm
 

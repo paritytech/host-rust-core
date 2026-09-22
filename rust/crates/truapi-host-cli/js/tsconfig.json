@@ -9,15 +9,23 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "paths": {
-      "@parity/truapi": ["../../../../js/packages/truapi/src/index.ts"]
+      "@parity/truapi": [
+        "../../../../js/packages/truapi/src/index.ts"
+      ],
+      "@parity/truapi/internal": [
+        "../../../../js/packages/truapi/src/internal.ts"
+      ]
     }
   },
   "include": [
     "runner.ts",
     "browser-sandbox.ts",
     "../../../../scripts/build-cli-runner.ts",
-    "../../../../scripts/cli-runner-package.test.ts"
+    "../../../../scripts/cli-runner-package.test.ts",
+    "runner-types.fixture.ts"
   ]
 }
