@@ -67,6 +67,7 @@ const rawStored = await truapi.localStorage.read({ key: "sdk-e2e" });
 assert(rawStored.isOk(), "Raw client reads SDK storage from the same product");
 assert.equal(rawStored.value.value, "0x736861726564");
 await storage.clear("sdk-e2e");
+for (let line = 0; line < 80; line++) console.log("Script output line", line);
 console.log("SDK_E2E_OK");
 `;
 
@@ -163,22 +164,46 @@ function terminalSession(binary, args, environment, cwd) {
     async waitFor(expected, start = 0, timeout = 60000, idle = true) {
       const deadline = Date.now() + timeout;
       let nextRedraw = Date.now() + 500;
+      let nextPage = Date.now() + 500;
+      let pages = 0;
       while (Date.now() < deadline) {
         if (output.length > 0 && Date.now() >= nextRedraw) {
           // Resizing exposes complete frames instead of Ratatui character deltas.
           child.kill("SIGUSR1");
           nextRedraw = Date.now() + 1000;
         }
+        const frameStart = output.lastIndexOf("\x1b[2J");
         const currentFrame = stripVTControlCharacters(
-          output.slice(output.lastIndexOf("\x1b[2J")),
+          output.slice(frameStart),
         ).replace(/\s/g, "");
-        if (
-          stripVTControlCharacters(output.slice(start))
-            .replace(/\s/g, "")
-            .includes(expected.replace(/\s/g, "")) &&
-          (!idle || !currentFrame.includes("Running/script"))
+        const running = currentFrame.includes("Running/script");
+        const activity = stripVTControlCharacters(
+          output.slice(Math.max(frameStart, start)),
         )
+          .replace(/\s/g, "")
+          .match(/Script(running|finished|failed)/g)
+          ?.at(-1);
+        const completion = expected === "Script finished";
+        if (completion && !running && activity === "Scriptfailed") {
+          throw new Error(`Script failed:\n${this.output.slice(-16000)}`);
+        }
+        if (
+          (completion
+            ? activity === "Scriptfinished"
+            : stripVTControlCharacters(output.slice(start))
+                .replace(/\s/g, "")
+                .includes(expected.replace(/\s/g, ""))) &&
+          (!idle || !running)
+        ) {
+          if (pages) child.stdin.write("\x1b[6~".repeat(pages));
           return;
+        }
+        // Completion updates the original activity above potentially long output.
+        if (completion && !running && pages < 20 && Date.now() >= nextPage) {
+          child.stdin.write("\x1b[5~");
+          pages++;
+          nextPage = Date.now() + 500;
+        }
         assert.equal(
           exitCode,
           undefined,
