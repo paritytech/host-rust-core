@@ -21,6 +21,7 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, decodes copied pairing QR images or accepts deeplinks, registers statement allowance on-chain, signs. |
+| `dev` | Run a local development product with the shared container loaded by a script tag. |
 | `identity-check` | Probe the root and the network's `uid.<tld>` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
@@ -52,8 +53,10 @@ moves that one link.
 | `TRUAPI_HOST_BIN_DIR` | Directory the `PATH` symlink goes in, default `~/.local/bin`. |
 
 Product scripts (`--script`, `/script`) work from an installed binary: the
-archive ships a `runner.js` with the `@parity/truapi` client bundled in. You
-still need `bun` on `PATH`, since it executes the runner and your script.
+archive ships a self-contained `runner.js` with the `@parity/truapi` client and
+shared web API permission checks bundled in. You still need `bun` on `PATH`,
+since it executes the runner and your script. The development container is
+shipped separately as `sandbox-assets/container.js`.
 
 Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
 default, so starting either host does not reserve a TCP port. Pass
@@ -113,7 +116,8 @@ Existing `.dot` personhood membership does not transfer to the new keys.
 
 A source build resolves the product-script runner from the checkout, so it also
 needs the generated `@parity/truapi` sources. (An installed release ships its
-own bundled runner and does not.) To build and install the CLI yourself:
+own bundled runner and does not.) Dev also needs the container bundle generated
+by `make headless` or `make cli-runner`. To build and install the CLI yourself:
 
 ```bash
 make headless install  # build dependencies and install truapi-host once
@@ -146,10 +150,15 @@ itself:
 )}
 ```
 
-That script installs the same `window.__HOST_API_PORT__` a native webview host
-injects, so the SDK adopts it with no product-side package, import, or
-environment variable. `--app-port` names the development server's port when it
-is not 3000, and the product id defaults to that origin, so the host and the
+That script installs the SDK bridge and the shared `js/container` sandbox
+synchronously. Keep it before application scripts, without `async` or `defer`.
+It preserves the SDK's existing `__HOST_API_PORT__` interface, so the product
+does not need to update its SDK dependency.
+The SDK and sandbox share one host WebSocket and its temporary permissions.
+`/script` uses the same fetch and WebSocket permission checks in Bun, and the
+XHR wrapper when that API is available. Dev keeps automatic approvals, and the
+app server handles assets and hot reload. `--app-port` names the development
+server's port when it is not 3000, and the product id defaults to that origin, so the host and the
 product cannot disagree about who they are. `--port` changes the bridge and
 frame port, but the development-only tag must change to the same value.
 
@@ -170,8 +179,8 @@ bridge script, so the product tag is unchanged:
 truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id my-product.dot
 ```
 
-A product that would rather name the endpoint itself can skip the tag and call
-the SDK directly, before anything else touches the client:
+For an API connection without installing the container, a product can call
+the SDK directly before anything else touches the client:
 
 ```ts
 import { connectWebSocketHost } from "@parity/truapi/sandbox";
@@ -474,7 +483,18 @@ so its pairing runs only for the current process and `/devices` is unavailable.
 
 A product script is top-level JavaScript or TypeScript (an ES module) run by
 Bun. It can import npm dependencies available beside the script or in a parent
-project. The runner injects three globals before running it:
+project. Before importing it, the runner installs the same fetch and WebSocket
+permission wrappers used by `dev`, plus the XHR wrapper when that API exists.
+Rust decides Allow once, Allow always or Deny; domain grants cover all ports.
+Public SDK calls and permission checks share one product execution.
+
+Scripts retain Bun/Node filesystem, environment, subprocess and import access.
+Both CLI flows use ordinary SDK authorization requests to test permissions on
+patched web APIs. Product code can deliberately bypass these development checks,
+including through native networking in Bun. Native hosts retain their separate
+authorization protection.
+
+The runner injects three globals before running it:
 
 - **`truapi`** — the `@parity/truapi` client connected to the pairing host and
   scoped to the host's `--product-id`. Call `truapi.account.requestLogin(...)`,
@@ -643,13 +663,13 @@ happens.
 
 Both hosts take `--auto-accept`. Without it, confirmations a web/iOS host would
 show as a modal (sign requests, permission prompts, and cross-product Ring-VRF
-requests) are rendered prominently in the signing-host transcript and answered
-directly with `y` or `n` (typed `yes`/`no` plus Enter also works). Approval
+requests) are rendered prominently in the signing-host transcript. Actions use
+`y` to approve and `n` to reject. Permissions use `o` for Allow once, `a` for
+Allow always and `n` for Deny. Typed answers plus Enter also work. Approval
 cards summarize and redact signing payloads rather than dumping debug objects.
-The current command draft is
-restored afterward; Esc safely rejects. Concurrent approvals are serialized.
-In non-interactive `exec` mode, a TTY gets a plain yes/no prompt and non-TTY
-stdin safely rejects instead of hanging. Same-product Ring-VRF requests do not
+The current command draft is restored afterward; Esc rejects. Concurrent
+approvals are serialized. Plain mode offers the same choices when stdin is a
+TTY; non-TTY stdin rejects instead of hanging. Same-product Ring-VRF requests do not
 prompt, matching the iOS signing host. Pass `--auto-accept` for unattended
 runs; every auto-approved decision is still printed.
 
@@ -771,8 +791,8 @@ cleans up a unique temporary Unix socket.
 
 ## Serving a dev server (one process, no terminal)
 
-`truapi-host dev` is the shorthand for this when the thing being supervised is a
-development server; reach for `--serve` when something else owns the process.
+`truapi-host dev` serves the browser bootstrap. Use `--serve` when a separate
+process needs the raw product-frame endpoint.
 
 `signing-host --serve` runs the host as a background service instead of a
 terminal UI, so a dev server or test harness can supervise it:

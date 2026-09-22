@@ -22,7 +22,6 @@ import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.designsystem.colors.PolkadotColorsPalette
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainGlyph
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicator
-import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicator.Speed
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicatorsModel
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthItemModel
 import kotlinx.collections.immutable.persistentListOf
@@ -44,29 +43,27 @@ class ChainHealthIndicatorsScreenshotTest {
     val compose = createComposeRule()
 
     @Test
-    fun healthyIsAFilledDisc() = renderAndAssert("healthy", ChainHealthIndicator.Healthy, FULL_RING, null) { it.fg.primary }
+    fun healthyIsAFilledDisc() = renderAndAssert("healthy", ChainHealthIndicator.Healthy(liveness = null), FULL_RING, null) { it.fg.primary }
 
     @Test
     fun notProducingBlocksIsAThreeQuarterRing() =
         renderAndAssert("not-producing", ChainHealthIndicator.Outage, THREE_QUARTER_MIN, THREE_QUARTER_MAX) { it.stroke.secondary }
 
     @Test
-    fun goodSpeedIsThreeQuartersColourless() =
-        renderAndAssert("speed-good", ChainHealthIndicator.ConnectionSpeed(Speed.Good, arc = 0.75f), THREE_QUARTER_MIN, THREE_QUARTER_MAX) { it.fg.primary }
+    fun threeQuartersProducedIsAThreeQuarterColourlessArc() =
+        renderAndAssert("production-75", production(0.75f), THREE_QUARTER_MIN, THREE_QUARTER_MAX) { it.fg.primary }
 
     @Test
-    fun fairSpeedIsHalfAWarningArc() =
-        renderAndAssert("speed-fair", ChainHealthIndicator.ConnectionSpeed(Speed.Fair, arc = 0.5f), FAIR_MIN, FAIR_MAX) { it.fg.warning }
+    fun halfProducedIsAHalfColourlessArc() =
+        renderAndAssert("production-50", production(0.5f), HALF_MIN, HALF_MAX) { it.fg.primary }
 
     @Test
-    fun lowSpeedIsAQuarterErrorArc() =
-        renderAndAssert("speed-low", ChainHealthIndicator.ConnectionSpeed(Speed.Low, arc = 0.25f), LOW_MIN, LOW_MAX) { it.fg.error }
+    fun underHalfProducedIsAWarningArc() =
+        renderAndAssert("production-45", production(0.45f), HALF_MIN, HALF_MAX) { it.fg.warning }
 
-    // The band picks the colour, the arc picks the length: a Good score near its floor must draw a shorter
-    // ring than one near its ceiling, or the scale has collapsed back to one length per band.
     @Test
-    fun goodSpeedAtItsBandFloorDrawsAShorterArc() =
-        renderAndAssert("speed-good-floor", ChainHealthIndicator.ConnectionSpeed(Speed.Good, arc = 0.5f), FAIR_MIN, FAIR_MAX) { it.fg.primary }
+    fun underAQuarterProducedIsAnErrorArc() =
+        renderAndAssert("production-20", production(0.2f), QUARTER_MIN, QUARTER_MAX) { it.fg.error }
 
     @Test
     fun connectingIsAColourlessRing() =
@@ -76,15 +73,19 @@ class ChainHealthIndicatorsScreenshotTest {
     fun disconnectedIsADottedRing() =
         renderAndAssert("disconnected", ChainHealthIndicator.Disconnected, DOTTED_MIN, DOTTED_MAX) { it.stroke.secondary }
 
+    @Test
+    fun offlineIsTheSameDottedRing() =
+        renderAndAssert("offline", ChainHealthIndicator.Offline, DOTTED_MIN, DOTTED_MAX) { it.stroke.secondary }
+
     // The panel draws the same states larger; a size not threaded through one drawing shows up here as a
     // ring band sampled at the wrong radius.
     @Test
-    fun panelSizeKeepsTheFairArcInItsBand() =
+    fun panelSizeKeepsTheWarningArcInItsBand() =
         renderAndAssert(
-            "speed-fair-panel",
-            ChainHealthIndicator.ConnectionSpeed(Speed.Fair, arc = 0.5f),
-            FAIR_MIN,
-            FAIR_MAX,
+            "production-45-panel",
+            production(0.45f),
+            HALF_MIN,
+            HALF_MAX,
             indicatorSize = ChainIndicatorSize.Panel,
         ) { it.fg.warning }
 
@@ -165,11 +166,13 @@ class ChainHealthIndicatorsScreenshotTest {
     )
 
     private fun item(name: String, glyph: ChainGlyph, indicator: ChainHealthIndicator) = ChainHealthItemModel(
+        chainId = name,
         chainName = name,
         glyph = glyph,
         indicator = indicator,
-        lastBlockAt = null,
     )
+
+    private fun production(share: Float) = ChainHealthIndicator.of(share, BLOCK_TIME)
 
     private fun surroundShare(image: ImageBitmap, expected: Color): Float {
         val pixels = image.toPixelMap()
@@ -208,12 +211,13 @@ class ChainHealthIndicatorsScreenshotTest {
         // The broken ring is dashed, so a ring-band sweep only ever lands on part of it.
         const val DOTTED_MIN = 0.35f
         const val DOTTED_MAX = 0.85f
-        // Each speed band drains the ring by a quarter, so each asserts its own slice and no other's.
+        // Each share asserts its own slice of the ring and no other's.
         const val THREE_QUARTER_MIN = 0.68f
         const val THREE_QUARTER_MAX = 0.86f
-        const val FAIR_MIN = 0.43f
-        const val FAIR_MAX = 0.61f
-        const val LOW_MIN = 0.18f
-        const val LOW_MAX = 0.36f
+        const val HALF_MIN = 0.43f
+        const val HALF_MAX = 0.61f
+        const val QUARTER_MIN = 0.18f
+        const val QUARTER_MAX = 0.36f
+        val BLOCK_TIME = 2.seconds
     }
 }

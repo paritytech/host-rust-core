@@ -1,3 +1,6 @@
+> [!WARNING]
+> This is a prototype, reference implementation, and proof-of-concept. This open source code is developed and published by Parity Technologies for research, experimentation, and developer education only. It has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. The app is a self-custodial wallet that can hold real assets — use at your own risk.
+
 ## Build Project
 
 Clone [paritytech/polkadot-android-community](https://github.com/paritytech/polkadot-android-community)
@@ -45,6 +48,7 @@ fallback — the features they configure are not part of the current production 
 | `CURRENCY_SYMBOL` | Symbol of the in-app digital currency shown in the UI — card title, send/get actions, and every formatted amount. |
 | `TERMS_OF_USE_URL` | Terms-of-use destination shown by the application. |
 | `LOG_COLLECTION_EMAIL` | Recipient used by the debug log-sharing flow. |
+| `CONTACT_EMAIL` | Recipient of the Contact us action on the Legal & Support screen. |
 | `SENTRY_DSN` | Client DSN embedded in debug/nightly manifests for runtime error reporting. Optional; an empty value disables runtime reporting. |
 | `SENTRY_ORG` | Sentry organization slug used by the Gradle plugin. |
 | `SENTRY_PROJECT` | Sentry project slug used by the Gradle plugin. |

@@ -14,6 +14,7 @@ import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
@@ -40,7 +41,7 @@ internal abstract class BaseStorageSource(
         storageKeyBuilder: (RuntimeSnapshot) -> StorageKey,
         childKeyBuilder: ChildKeyBuilder,
         binder: Binder<T>,
-    ) = withContext(coroutineDispatchers.io) {
+    ) = withContext(coroutineDispatchers.computation) {
         val runtime = chainRegistry.getRuntime(chainId)
 
         val storageKey = storageKeyBuilder(runtime)
@@ -59,7 +60,7 @@ internal abstract class BaseStorageSource(
         chainId: String,
         at: BlockHash?,
         query: suspend StorageQueryContext.() -> R,
-    ): R = withContext(coroutineDispatchers.io) {
+    ): R = withContext(coroutineDispatchers.computation) {
         val runtime = chainRegistry.getRuntime(chainId)
         val context = createQueryContext(chainId, at, runtime, subscriptionBuilder = null)
 
@@ -77,6 +78,7 @@ internal abstract class BaseStorageSource(
 
             emitAll(context.subscribe())
         }
+            .flowOn(coroutineDispatchers.computation)
     }
 
     override suspend fun <R> subscribe(
@@ -89,6 +91,7 @@ internal abstract class BaseStorageSource(
         val context = createQueryContext(chainId, at, runtime, subscriptionBuilder)
 
         return subscribe(context)
+            .flowOn(coroutineDispatchers.computation)
     }
 
     override suspend fun <R> subscribeBatched(
@@ -105,5 +108,6 @@ internal abstract class BaseStorageSource(
         sharedSubscription.subscribe(coroutineContext)
 
         return result
+            .flowOn(coroutineDispatchers.computation)
     }
 }

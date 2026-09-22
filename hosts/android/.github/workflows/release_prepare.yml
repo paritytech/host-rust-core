@@ -32,6 +32,8 @@ jobs:
   prepare_release:
     name: Bump version, create PR, and trigger distributions
     runs-on: ubuntu-latest
+    # Held: this configuration ships from host-rust-core.
+    if: false
     #    if: contains('["ERussel","stepanLav", "kogeler"]', github.actor)
     outputs:
       release_branch: ${{ steps.bump_version.outputs.branch_name }}

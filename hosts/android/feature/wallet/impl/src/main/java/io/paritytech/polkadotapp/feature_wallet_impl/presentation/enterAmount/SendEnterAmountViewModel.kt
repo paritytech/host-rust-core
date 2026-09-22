@@ -11,7 +11,7 @@ import io.paritytech.polkadotapp.common.domain.validation.onSuccess
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.presentation.validation.ValidationMixin
-import io.paritytech.polkadotapp.common.utils.orZero
+import io.paritytech.polkadotapp.common.utils.gate
 import io.paritytech.polkadotapp.common.utils.progressStallReport.StalenessReport
 import io.paritytech.polkadotapp.common.utils.progressStallReport.StalenessReportCollector
 import io.paritytech.polkadotapp.common.utils.progressStallReport.launchWithDiagnostics
@@ -33,6 +33,7 @@ import io.paritytech.polkadotapp.feature_wallet_api.presentation.enterAmount.Sen
 import io.paritytech.polkadotapp.feature_wallet_api.presentation.enterAmount.TransferMethodPayload
 import io.paritytech.polkadotapp.feature_wallet_impl.BuildConfig
 import io.paritytech.polkadotapp.feature_wallet_impl.PocketRouter
+import io.paritytech.polkadotapp.feature_wallet_impl.domain.model.AvailableToSendAmount
 import io.paritytech.polkadotapp.feature_wallet_impl.domain.model.SendPlan
 import io.paritytech.polkadotapp.feature_wallet_impl.domain.model.TransferMethod
 import io.paritytech.polkadotapp.feature_wallet_impl.domain.model.reachablePlanks
@@ -42,17 +43,14 @@ import io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.do
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.domain.SendState
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.domain.SendValidationPayload
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.domain.asSendError
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.transactionResult.TransactionSuccessPayload
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
@@ -67,22 +65,14 @@ class SendEnterAmountViewModel @Inject constructor(
     private val tokenAmountMapper: TokenAmountMapper,
 ) : BaseViewModel(), SendEnterAmountContract {
     private val sendProgress = MutableStateFlow<SendProgress>(SendProgress.Idle)
-    private val frozenBalance = MutableStateFlow<BigDecimal?>(null)
 
-    private val balanceFlow: Flow<BigDecimal> = sendProgress
-        .map { it !is SendProgress.Idle }
-        .distinctUntilChanged()
-        .flatMapLatest { inProgress ->
-            if (inProgress) {
-                flowOf(frozenBalance.value.orZero())
-            } else {
-                interactor.tokenBalance()
-                    // Reachable, not spendable: capping the input at the spendable balance would disable
-                    // Send for exactly the amounts the confirmation exists to allow.
-                    .map { it.reachablePlanks() }
-                    .onEach { frozenBalance.value = it }
-            }
-        }
+    private val tokenBalance: Flow<AvailableToSendAmount> = interactor.tokenBalance()
+        .gate(sendProgress.map { it is SendProgress.Idle })
+        .shareInBackground()
+
+    // Reachable, not spendable: capping the input at the spendable balance would disable
+    // Send for exactly the amounts the confirmation exists to allow.
+    private val balanceFlow: Flow<BigDecimal> = tokenBalance.map { it.reachablePlanks() }
 
     private val amountInputMixin = amountInputMixinFactory.create(
         roundPrecision = RoundPrecision.FIAT,
@@ -118,7 +108,7 @@ class SendEnterAmountViewModel @Inject constructor(
 
     override val stalenessReport = StalenessReport(this)
 
-    private val balanceSplit = interactor.tokenBalance()
+    private val balanceSplit = tokenBalance
         .map { balance ->
             val spendable = tokenAmountMapper.mapFrom(balance.chainAsset.withAmount(balance.spendable))
             val offerable = balance.offerable?.let { tokenAmountMapper.mapFrom(balance.chainAsset.withAmount(it)) }
@@ -193,23 +183,27 @@ class SendEnterAmountViewModel @Inject constructor(
                 when (state) {
                     is SendState.Detecting -> sendProgress.value = SendProgress.Settling(Stage.DETECTING)
                     is SendState.Detected -> sendProgress.value = SendProgress.Settling(Stage.DETECTED)
-                    is SendState.Complete -> handleTransactionResult(error = null)
-                    is SendState.Failed -> handleTransactionResult(error = state.error)
+                    is SendState.Complete -> handleTransactionSuccess(state)
+                    is SendState.Failed -> handleTransactionFailure(state.error)
                 }
             }
     }
 
-    private fun handleTransactionResult(error: Throwable?) {
-        return when {
-            payload.showTransactionResult && error == null -> walletRouter.openSuccess()
-            payload.showTransactionResult && error != null -> walletRouter.openFailure()
+    private fun handleTransactionSuccess(state: SendState.Complete) {
+        if (payload.showTransactionResult) {
+            val unfinalizedCoins = state.unfinalizedCoins?.map { it.value }
+            walletRouter.openSuccess(TransactionSuccessPayload(unfinalizedCoins))
+        } else {
+            walletRouter.back()
+        }
+    }
 
-            !payload.showTransactionResult && error != null -> {
-                showPresentationError(error.asSendError().toPresentationError())
-                walletRouter.back()
-            }
-
-            else -> walletRouter.back()
+    private fun handleTransactionFailure(error: Throwable) {
+        if (payload.showTransactionResult) {
+            walletRouter.openFailure()
+        } else {
+            showPresentationError(error.asSendError().toPresentationError())
+            walletRouter.back()
         }
     }
 

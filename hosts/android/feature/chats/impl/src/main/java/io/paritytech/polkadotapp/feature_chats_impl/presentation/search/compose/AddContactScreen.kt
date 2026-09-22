@@ -54,8 +54,7 @@ fun AddContactScreen(contract: AddContactContract) {
         loadingContactId = state.loadingContactId,
         onSearchChange = contract::onSearchChange,
         onSearchResultClick = contract::onSearchResultClick,
-        onCancelClick = contract::onCancelClick,
-        onScanClick = contract::onScanClick
+        onCancelClick = contract::onCancelClick
     )
 }
 
@@ -67,7 +66,6 @@ private fun AddContactScreenInternal(
     onSearchChange: (String) -> Unit,
     onSearchResultClick: (UserSearchResultUiModel) -> Unit,
     onCancelClick: () -> Unit,
-    onScanClick: () -> Unit,
 ) {
     PolkadotSurface {
         Column(
@@ -80,8 +78,7 @@ private fun AddContactScreenInternal(
             SearchHeader(
                 searchQuery = searchQuery,
                 onSearchChange = onSearchChange,
-                onCancelClick = onCancelClick,
-                onScanClick = onScanClick
+                onCancelClick = onCancelClick
             )
 
             VerticalSpacer { extraMedium }
@@ -103,7 +100,7 @@ private fun AddContactScreenInternal(
 
 @Composable
 private fun InitialState() {
-    CenteredMessage(text = stringResource(RCommon.string.chats_empty_state_message))
+    CenteredMessage(text = stringResource(RCommon.string.add_contact_search_prompt))
 }
 
 @Composable
@@ -211,8 +208,7 @@ private fun AddContactScreenInitialPreview() {
             loadingContactId = null,
             onSearchChange = {},
             onSearchResultClick = {},
-            onCancelClick = {},
-            onScanClick = {}
+            onCancelClick = {}
         )
     }
 }
@@ -227,8 +223,7 @@ private fun AddContactScreenLoadingPreview() {
             loadingContactId = null,
             onSearchChange = {},
             onSearchResultClick = {},
-            onCancelClick = {},
-            onScanClick = {}
+            onCancelClick = {}
         )
     }
 }
@@ -243,8 +238,7 @@ private fun AddContactScreenEmptyPreview() {
             loadingContactId = null,
             onSearchChange = {},
             onSearchResultClick = {},
-            onCancelClick = {},
-            onScanClick = {}
+            onCancelClick = {}
         )
     }
 }
@@ -259,8 +253,7 @@ private fun AddContactScreenErrorPreview() {
             loadingContactId = null,
             onSearchChange = {},
             onSearchResultClick = {},
-            onCancelClick = {},
-            onScanClick = {}
+            onCancelClick = {}
         )
     }
 }
@@ -294,8 +287,7 @@ private fun AddContactScreenWithResultsPreview() {
             loadingContactId = loadingAccountId,
             onSearchChange = {},
             onSearchResultClick = {},
-            onCancelClick = {},
-            onScanClick = {}
+            onCancelClick = {}
         )
     }
 }

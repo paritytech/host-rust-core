@@ -127,6 +127,9 @@ abstract class CoinageEntryDao {
     @Query("DELETE FROM coinage_handoff WHERE committed = 0")
     abstract suspend fun deleteUncommittedHandoffs()
 
+    @Query("DELETE FROM coinage_handoff WHERE committed = 0 AND onChainKey IN (:onChainKeys)")
+    abstract suspend fun deleteUncommittedHandoffs(onChainKeys: List<ByteArray>)
+
     // ---- derived views ----
 
     @Transaction

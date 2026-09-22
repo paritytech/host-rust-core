@@ -233,7 +233,7 @@ class RegistrationScenariosTest {
         val id = givenUnwatchedEntry(inputCoin = COIN_A, outputCoin = COIN_B)
         assertFalse(ownedEntries.isOwnedBySubmission(id))
 
-        ownedEntries.acquire(id)
+        ownedEntries.acquire(id, repository.getEntry(id).getOrThrow()!!.txHash)
 
         assertFalse(ownedEntries.isOwnedBySubmission(id))
     }

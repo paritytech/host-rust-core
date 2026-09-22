@@ -281,6 +281,7 @@ class RealUnloadRecyclerIntoExternalAssetUseCase @Inject constructor(
                 extrinsic = buildGroupExtrinsic(chain, prepared, group, destination, personProver).getOrThrow(),
                 inputs = group.vouchers.map { CoinageInput.Voucher(it.ringVrfKeyIndex) },
                 outputs = group.mixedOutput?.newVouchers.orEmpty().map { OwnAsset.Voucher(it.ringVrfKeyIndex) },
+                policy = null,
             )
         }
 

@@ -1,6 +1,8 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase
 
+import io.paritytech.polkadotapp.chains.network.binding.BlockNumber
 import io.paritytech.polkadotapp.common.domain.model.AccountId
+import io.paritytech.polkadotapp.common.utils.reevaluate
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.hasEverBeenOnChain
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageAssetsUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinagePaymentState
@@ -8,12 +10,15 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinagePayme
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinagePaymentStatusUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TrackedCoin
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.CoinageStateReaderFactory
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogW
 import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainViewFactory
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 
@@ -35,12 +40,23 @@ class RealCoinagePaymentStatusUseCase @Inject constructor(
     @param:DigitalDollarChainAssetProvider private val chainAssetProvider: ChainAssetProvider,
 ) : CoinagePaymentStatusUseCase {
     override fun subscribeStatuses(coins: List<AccountId>): Flow<Map<AccountId, CoinagePaymentState>> {
-        return coinageAssetsUseCase.subscribeCoinsBy(coins).map { tracked ->
-            val atFinalized = tracked.presenceAtFinalized()
+        return coinageAssetsUseCase.subscribeCoinsBy(coins)
+            .reevaluate(finalizedHeads())
+            .map { tracked ->
+                val atFinalized = tracked.presenceAtFinalized()
 
-            tracked.associate { it.coin.accountId to CoinagePaymentState(it.coin, it.paymentStatus(atFinalized)) }
-        }
+                tracked.associate { it.coin.accountId to CoinagePaymentState(it.coin, it.paymentStatus(atFinalized)) }
+            }
+            .distinctUntilChanged()
     }
+
+    /**
+     * A peer's claim is not our transaction, so nothing local changes when it finalizes — when the mint
+     * finalized long before, as with exact coins, only a new finalized head can prove it.
+     */
+    private fun finalizedHeads(): Flow<BlockNumber> = chainViewFactory.finalizedHeads(chainAssetProvider.chainId())
+        // Losing the ticks only loses the re-check at finality; the local streams still drive every status.
+        .catch { coinageLogW("Finalized heads subscription failed: $it") }
 
     /**
      * Whether the finalized chain holds each coin whose mint finalized; absent from the map when unknown.

@@ -18,6 +18,7 @@ import {
   PERMISSIONS_AUTHORIZE_DEVICE_PERMISSION,
 } from '@parity/truapi/wire-table';
 import { createPermissionAuthorization } from './network-transport.js';
+import { installFetchGate } from './network.js';
 
 const build = await Bun.build({
   entrypoints: [new URL('./index.ts', import.meta.url).pathname],
@@ -35,7 +36,6 @@ function browser(
   transformReply: (bytes: Uint8Array) => Uint8Array = (bytes) => bytes,
   authorizeWebRtc: () => boolean | Promise<boolean> = () => false,
   authorizeDevice: (request: HostDevicePermissionRequest) => boolean | Promise<boolean> = () => false,
-  mediaAllowed = true,
 ) {
   class BrowserRequest extends Request {
     constructor(input: RequestInfo | URL, init?: RequestInit) {
@@ -210,7 +210,6 @@ function browser(
       return new Response('received');
     },
     __HOST_API_PORT__: sdkPort,
-    __truapi_policy__: { mediaAllowed },
     __truapi_network_port__:
       authorize && transport === 'port' ? privatePort : undefined,
     __truapi_localhost:
@@ -254,6 +253,20 @@ function browser(
 }
 
 describe('container fetch authorization', () => {
+  it('requires permission for every origin when the runtime has no page URL', async () => {
+    const runtime: typeof globalThis = Object.create(globalThis);
+    const requested: string[] = [];
+    installFetchGate(runtime, (url, decide) => {
+      requested.push(url);
+      decide(false);
+      return () => {};
+    });
+    for (const url of ['https://product.example/', 'https://api.example/']) {
+      await expect(runtime.fetch(url)).rejects.toThrow('Network access is not allowed');
+    }
+    expect(requested).toEqual(['https://product.example/', 'https://api.example/']);
+  });
+
   it('uses one Remote decision per WebSocket connection over either private transport', async () => {
     for (const transport of ['port', 'socket'] as const) {
       const authorized: string[] = [];
@@ -388,17 +401,6 @@ describe('container fetch authorization', () => {
       media(false, false, (allowed) => decisions.push(allowed));
       expect(decisions).toEqual([false]);
     }
-  });
-
-  it('lets hosts disable capture without closing fetch authorization', async () => {
-    const realm = browser(() => true, undefined, 'port', (bytes) => bytes,
-      () => false, () => { throw new Error('Unsupported media must not reach the host'); }, false);
-    await expect(runInContext(
-      'navigator.mediaDevices.getUserMedia({ video: true })', realm.context,
-    )).rejects.toMatchObject({ name: 'NotAllowedError' });
-    expect(realm.sent).toEqual([]);
-    await realm.fetch('https://api.example/data');
-    expect(realm.requests.map(request => request.url)).toEqual(['https://api.example/data']);
   });
 
   it('authorizes each peer connection over the private Rust channel', async () => {

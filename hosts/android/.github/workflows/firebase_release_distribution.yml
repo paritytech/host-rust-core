@@ -15,6 +15,7 @@ on:
 env:
   APPLICATION_ID: ${{ vars.APPLICATION_ID }}
   APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+  CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
   CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
   GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
   LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
@@ -32,7 +33,10 @@ jobs:
     name: Check and Build Release
     runs-on: ubuntu-latest
     # Only run if PR is from a release-* branch (and not closed) OR triggered manually
-    if: (startsWith(github.head_ref, 'release-') && github.event.action != 'closed') || github.event_name == 'workflow_dispatch'
+    # Held: this configuration ships from host-rust-core.
+    # The condition this replaces:
+    #   if: (startsWith(github.head_ref, 'release-') && github.event.action != 'closed') || github.event_name == 'workflow_dispatch'
+    if: false
     outputs:
       new_build: ${{ steps.increment_build.outputs.new_build }}
       marketing_version: ${{ steps.increment_build.outputs.marketing_version }}
@@ -258,8 +262,11 @@ jobs:
   create_backport_pr:
     name: Create backport PR to source branch
     runs-on: ubuntu-latest
-    # Only run when release PR is merged (closed + merged flag)
-    if: startsWith(github.head_ref, 'release-') && github.event.action == 'closed' && (github.event.pull_request.merged == true)
+    # Held: it carries back the build-number commit that check_and_build
+    # makes, and that job is held, so there is nothing left to carry.
+    # The condition this replaces:
+    #   if: startsWith(github.head_ref, 'release-') && github.event.action == 'closed' && (github.event.pull_request.merged == true)
+    if: false
 
     steps:
       - name: Extract source_ref from PR body and create backport PR

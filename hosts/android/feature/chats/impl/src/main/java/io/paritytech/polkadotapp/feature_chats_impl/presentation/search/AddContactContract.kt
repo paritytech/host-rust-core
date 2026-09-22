@@ -18,5 +18,4 @@ interface AddContactContract {
     fun onSearchChange(value: String)
     fun onSearchResultClick(result: UserSearchResultUiModel)
     fun onCancelClick()
-    fun onScanClick()
 }

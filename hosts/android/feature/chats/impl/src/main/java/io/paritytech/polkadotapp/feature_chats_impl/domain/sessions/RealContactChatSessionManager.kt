@@ -24,6 +24,7 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.model.ContactAccountId
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ContactDevice
 import io.paritytech.polkadotapp.feature_chats_api.domain.sessions.ContactChatSessionRefCounter
 import io.paritytech.polkadotapp.feature_chats_api.domain.sessions.withSessionsEnabled
+import io.paritytech.polkadotapp.feature_chats_impl.data.notifications.ChatNotificationPayloadEncoder
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.ChatMessageRepository
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.ContactDevicesRepository
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.ContactsRepository
@@ -85,6 +86,7 @@ internal class RealContactChatSessionManager @Inject constructor(
     private val syncContactUsernameUseCase: SyncContactUsernameUseCase,
     private val chatMessageCompactor: ChatMessageCompactor,
     private val incomingChatMessageProcessor: IncomingChatMessageProcessor,
+    private val notificationPayloadEncoder: ChatNotificationPayloadEncoder,
     dispatchers: CoroutineDispatchers
 ) : ContactChatSessionManager, CoroutineScope, ChatSessionCallbacks {
     companion object {
@@ -252,7 +254,8 @@ internal class RealContactChatSessionManager @Inject constructor(
             callbacks = this,
             chatEngine = chatEngine,
             syncContactUsernameUseCase = syncContactUsernameUseCase,
-            incomingChatMessageProcessor = incomingChatMessageProcessor
+            incomingChatMessageProcessor = incomingChatMessageProcessor,
+            notificationPayloadEncoder = notificationPayloadEncoder,
         )
 
         invalidateContact(chatSession, contact)
