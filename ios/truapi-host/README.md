@@ -238,6 +238,54 @@ cannot check are the host's to keep: send a render context only for a surface
 the product's manifest `includes`, and publish a renderer action only from the
 current tree of an open render stream.
 
+The runtime answers other devices pairing with it:
+`notifyPairingAllowanceAllocation(deeplink:)` and
+`notifyPairingFailed(announced:reason:)` are the two notices a peer gets before
+the answer, `establishPairing(deeplink:)` is the answer,
+`resumePairing(peer:)` serves the session for its whole life and belongs in its
+own task, and `disconnectPairedHost(peer:)` ends it. Only
+`.peerDisconnected` from `resumePairing` authorises dropping the stored
+pairing. The host persists the peer between answering and serving, which is why
+those are separate calls.
+
+Two steps around them are the host's. `establishPairing` signs its answer with
+this host's own SSO statement identity, so `.walletSso` has to be allocated
+before it runs, and the peer's device statement account has to be tracked
+alongside it for the peer to author into the session:
+`parsePairingDeeplink(deeplink:)` reads that account out of the deeplink before
+any notice goes out, and a pairing that then fails untracks it again unless the
+device was already paired. `disconnectPairedHost` submits the notice and nothing more, so ending
+a pairing also means cancelling that peer's `resumePairing` task and untracking
+its renewal account; dropping the stored pairing alone leaves both running.
+
+Which undo a failure owes is the thrown case, not the message: `.rejected`
+means the peer may already have been reached and its target tracked, while
+`.undecodableDeeplink` is refused before either happens and leaves nothing to
+undo.
+
+The core prompts for nothing along the way, so asking the user is the host's
+too. `parsePairingDeeplink` returns the peer's `metadata` alongside it for that
+prompt: the host name, version, icon and platform the peer put in its QR,
+trimmed and stripped of the control characters and bidirectional overrides that
+would otherwise rewrite the prompt's own text around them, capped at 512
+characters, and `nil` where nothing renderable was sent. Safe to render is not
+verified: nothing signs that metadata, so a prompt built from it says what the
+peer calls itself, never who it is.
+
+The handle `notifyPairingAllowanceAllocation` returns holds the responder
+statement secret its notice was signed with, and nothing consumes it, so drop
+the last reference once the pairing settles rather than holding it for the life
+of the session.
+
+`devicePaired` on the runtime bridge reports a device that finished pairing
+with this signing host, carrying the `PairedSsoPeer` the pairing produced. The
+core has no chat of its own, so announcing the new device to the user's
+existing contacts is the host's to do. It fires at least once per pairing, so
+a device that pairs again reports again; a resumed pairing reports nothing, so
+the host keeps its own record of which devices it has already seen. It arrives
+on the thread answering the handshake, so hand the device off rather than
+announcing it inline. Defaults to a no-op for a host that answers no pairing.
+
 ## Architecture
 
 ```text
