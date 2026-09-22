@@ -9,7 +9,7 @@ use truapi::versioned::backend::{
 use truapi::{CallContext, CallError};
 
 use crate::host_logic::backend::{screen_request, screen_response};
-use crate::runtime::backend_session::now_ms;
+use crate::runtime::backend_session::{Authorization, now_ms};
 
 /// The status that means the session the core attached is no longer good.
 const UNAUTHORIZED: u16 = 401;
@@ -33,7 +33,8 @@ impl Backend for ProductRuntimeHost {
         // reach this argument.
         let authorization = match self.personhood_prover() {
             Some(prover) => {
-                self.backend_sessions()
+                match self
+                    .backend_sessions()
                     .authorization(
                         host.as_ref(),
                         prover,
@@ -42,6 +43,19 @@ impl Backend for ProductRuntimeHost {
                         now_ms(),
                     )
                     .await
+                {
+                    Authorization::Session(token) => Some(token),
+                    Authorization::Unauthenticated => None,
+                    // This backend wants a person and the core could not
+                    // prove one. Sending the call anyway spends the caller's
+                    // budget to collect the backend's `401`, and reports it as
+                    // though the product had been refused on its merits.
+                    Authorization::Unavailable(reason) => {
+                        return Err(CallError::Domain(HostBackendError::V1(
+                            truapi::latest::HostBackendError::Unknown { reason },
+                        )));
+                    }
+                }
             }
             None => None,
         };
@@ -60,7 +74,13 @@ impl Backend for ProductRuntimeHost {
             && let Some(prover) = self.personhood_prover()
             && let Some(refreshed) = self
                 .backend_sessions()
-                .reauthenticate(host.as_ref(), prover, &self.product, &inner.backend)
+                .reauthenticate(
+                    host.as_ref(),
+                    prover,
+                    &self.product,
+                    &inner.backend,
+                    now_ms(),
+                )
                 .await
         {
             response = host
