@@ -277,6 +277,7 @@ runs. Keep the tag before application scripts, without `async` or `defer`.
 SDK calls and permission checks share one connection. Updated SDKs reuse the
 injected client across reconnects; older SDKs can still start through the
 MessagePort adapter but require a page reload after a disconnect.
+After a failed reconnect, the next API call or return to a visible page tries again.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission

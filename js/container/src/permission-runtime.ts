@@ -10,7 +10,7 @@ export function freezePermissionRuntime(): void {
       Object.defineProperty(this, 'call', { value, writable: true, configurable: true, enumerable: true });
     },
   });
-  // Result objects and decoder state must not invoke hooks supplied by a product.
+  // Block inherited then hooks without preventing products' own toString/valueOf assignments.
   Object.preventExtensions(Object.prototype);
   for (const name of [
     'Object', 'Function', 'Array', 'Map', 'Set', 'WeakMap', 'Promise',

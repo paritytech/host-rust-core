@@ -39,6 +39,7 @@ interface Connection {
 /** Creates a client whose interrupted operations fail and whose later calls reconnect. */
 export function createHostConnection(url: string): HostConnection {
   const createProvider = createWebSocketProviderFactory();
+  const now = performance.now.bind(performance);
   let current: Connection | undefined;
   let stopped = false;
   let receive: ((frame: Uint8Array) => void) | undefined;
@@ -91,7 +92,7 @@ export function createHostConnection(url: string): HostConnection {
     current = connection;
     provider.subscribe((frame) => {
       if (current !== connection) return;
-      connection.checkedAt = Date.now();
+      connection.checkedAt = now();
       if (legacy) {
         const decoded = decodeWireMessage(frame);
         if (decoded.isErr()) return retire(connection, decoded.error);
@@ -106,14 +107,14 @@ export function createHostConnection(url: string): HostConnection {
   }
 
   function ready(connection: Connection): Promise<void> {
-    if (connection.verified && Date.now() - connection.checkedAt < 10_000)
+    if (connection.verified && now() - connection.checkedAt < 10_000)
       return Promise.resolve();
     return (connection.checking ??= Promise.resolve(handshake())
       .then((result) => {
         if (result.isErr()) throw result.error;
         if (current !== connection) throw new ConnectionResetError();
         connection.verified = true;
-        connection.checkedAt = Date.now();
+        connection.checkedAt = now();
         setStatus("connected");
       })
       .catch((error) => {

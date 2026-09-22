@@ -26,6 +26,7 @@ export function browserGlobals() {
     }
   }
   return {
+    performance: { now: () => performance.now() },
     EventTarget: BrowserEvents,
     MessageEvent: BrowserMessage,
     TextEncoder: BrowserEncoder,

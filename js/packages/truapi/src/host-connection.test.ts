@@ -338,42 +338,46 @@ describe("shared SDK connection failure timing", () => {
         expect(condition()).toBe(true);
     }
 
-    it("checks a stale OPEN socket before sending a side effect and bounds an unanswered check", async () => {
-        const fixture = controlledHost();
-        const client = fixture.connection.client;
-        const stale = fixture.sockets[0]!;
-        const initial = client.permissions.requestRemotePermission(permission);
-        stale.open();
-        await untilPrepared(() => stale.sent.length === 2);
-        stale.reply(stale.sent[1]!, Uint8Array.of(0, 0, 0));
-        expect((await initial)._unsafeUnwrap()).toEqual({ granted: false });
-        fixture.advance(10_001);
-        fixture.respond(false);
-        const navigation = Promise.resolve(
-            client.system.navigateTo({ url: "https://example.com" }),
-        ).catch((error) => error);
-        await untilPrepared(() => stale.sent.length === 3);
-        expect([stale.sent[2]!.payload.traitId, stale.sent[2]!.payload.methodId]).toEqual([
-            W.SYSTEM_HANDSHAKE.trait,
-            W.SYSTEM_HANDSHAKE.method,
-        ]);
-        expect(stale.readyState).toBe(WebSocket.OPEN);
-        fixture.advance(10_000);
-        expect((await navigation).name).toBe("ConnectionResetError");
-        fixture.respond(true);
-        fixture.advance(0);
-        fixture.sockets[1]!.open();
-        await untilPrepared(() => fixture.statuses.at(-1) === "connected");
-        expect(
-            fixture.sockets
-                .flatMap((socket) => socket.sent)
-                .filter(
-                    (message) =>
-                        message.payload.traitId === W.SYSTEM_NAVIGATE_TO.trait &&
-                        message.payload.methodId === W.SYSTEM_NAVIGATE_TO.method,
-                ),
-        ).toEqual([]);
-    });
+    it.each([0, -60_000])(
+        "checks a stale OPEN socket before sending a side effect after a %i ms clock adjustment",
+        async (clockAdjustment) => {
+            const fixture = controlledHost();
+            const client = fixture.connection.client;
+            const stale = fixture.sockets[0]!;
+            const initial = client.permissions.requestRemotePermission(permission);
+            stale.open();
+            await untilPrepared(() => stale.sent.length === 2);
+            stale.reply(stale.sent[1]!, Uint8Array.of(0, 0, 0));
+            expect((await initial)._unsafeUnwrap()).toEqual({ granted: false });
+            jest.setSystemTime(Date.now() + clockAdjustment);
+            fixture.advance(10_001);
+            fixture.respond(false);
+            const navigation = Promise.resolve(
+                client.system.navigateTo({ url: "https://example.com" }),
+            ).catch((error) => error);
+            await untilPrepared(() => stale.sent.length === 3);
+            expect([stale.sent[2]!.payload.traitId, stale.sent[2]!.payload.methodId]).toEqual([
+                W.SYSTEM_HANDSHAKE.trait,
+                W.SYSTEM_HANDSHAKE.method,
+            ]);
+            expect(stale.readyState).toBe(WebSocket.OPEN);
+            fixture.advance(10_000);
+            expect((await navigation).name).toBe("ConnectionResetError");
+            fixture.respond(true);
+            fixture.advance(0);
+            fixture.sockets[1]!.open();
+            await untilPrepared(() => fixture.statuses.at(-1) === "connected");
+            expect(
+                fixture.sockets
+                    .flatMap((socket) => socket.sent)
+                    .filter(
+                        (message) =>
+                            message.payload.traitId === W.SYSTEM_NAVIGATE_TO.trait &&
+                            message.payload.methodId === W.SYSTEM_NAVIGATE_TO.method,
+                    ),
+            ).toEqual([]);
+        },
+    );
 
     it("bounds a failed opening without a retry loop and leaves a later call free to reconnect", async () => {
         const fixture = controlledHost();
@@ -503,7 +507,7 @@ describe("shared SDK connection failure timing", () => {
         expect(error.cause).toEqual(cause);
     });
 
-    it.each([
+    const malformedFrames = [
         ["wire envelope", new Uint8Array()],
         [
             "protocol-error payload",
@@ -512,11 +516,20 @@ describe("shared SDK connection failure timing", () => {
                 payload: { traitId: 255, methodId: 255, messageType: 1, value: new Uint8Array() },
             })._unsafeUnwrap(),
         ],
-    ])(
-        "recovers from a malformed %s without approving pending permissions",
-        async (_name, frame) => {
+    ] as const;
+    it.each(
+        malformedFrames.flatMap(([name, frame]) =>
+            [false, true].map((legacyPort) => [name, legacyPort, frame] as const),
+        ),
+    )(
+        "recovers from a malformed %s without approving permissions (legacy port: %s)",
+        async (_name, legacyPort, frame) => {
             const fixture = controlledHost();
             const client = fixture.connection.client;
+            if (legacyPort) {
+                const port = fixture.connection.legacyPort;
+                cleanup.push(() => port.close());
+            }
             fixture.sockets[0]!.open();
             await untilPrepared(() => fixture.statuses.at(-1) === "connected");
             const pending = Promise.resolve(
