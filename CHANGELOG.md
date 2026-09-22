@@ -19,6 +19,10 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Added
 
+- Add shared native and browser Chat main-purse payment authority, explicit
+  payment review and durable receipt state; keep Chat cryptography inside the
+  Host rather than product or platform adapters (#709).
+
 - Add `account.productDeviceChat` for host-private Chat v2 identity binding and
   identity-route sealing/opening through local or paired account authorities,
   guarded by a dedicated, product-scoped Chat-authority permission.
