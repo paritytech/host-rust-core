@@ -24,6 +24,8 @@ export function installContainer(
   freezeAndDelete(window, '__truapi_websocket_connect__');
   installWebSocketGate(window, _authorize.network, _webSocketBackend);
 
+  // Android's WebView interceptor already asks Rust to authorize HTTP.
+  // A second check here would require another grant for "Allow once".
   if (!options.nativeHttp) {
     installFetchGate(window, _authorize.network);
     installXhrGate(window, _authorize.network);
