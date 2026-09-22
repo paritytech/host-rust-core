@@ -75,7 +75,6 @@ private extension RustRuntimeEnvironment {
         let dependencies = makeBridgeDependencies(
             productId: productId,
             routers: routers,
-            executionKind: kind,
             chainConnections: chainConnections,
             osPermissionAsker: osPermissionAsker
         )
@@ -103,13 +102,11 @@ private extension RustRuntimeEnvironment {
     func makeBridgeDependencies(
         productId: ProductId,
         routers: ProductRoutersFacadeProtocol,
-        executionKind: ProductExecutionKind,
         chainConnections: TrUAPIChainConnecting,
         osPermissionAsker: OSPermissionAsking
     ) -> RustProductExecutionBridge.Dependencies {
         RustProductExecutionBridge.Dependencies(
             productId: productId,
-            executionKind: executionKind,
             permissionGuard: ProductPermissionGuard.create(
                 router: routers.productsRouter,
                 fundingProvider: FundingDomainProvider(hostProvider: hostProvider),

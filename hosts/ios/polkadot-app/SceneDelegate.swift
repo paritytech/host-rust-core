@@ -3,11 +3,6 @@ import DesignSystem
 import StructuredConcurrency
 import UIKit
 
-#if targetEnvironment(simulator)
-    import KeyDerivation
-    import Keystore_iOS
-#endif
-
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
@@ -32,12 +27,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         else {
             return
         }
-
-        #if targetEnvironment(simulator)
-            if SPAConfiguration.isSimulatorBrowseRequested {
-                prepareTrUAPISimulatorE2EUser()
-            }
-        #endif
 
         initializeApp(windowScene)
         handleContexts(with: options.urlContexts)
@@ -124,28 +113,11 @@ extension SceneDelegate {
 
 #if targetEnvironment(simulator)
     private extension SceneDelegate {
-        /// Puts a fresh simulator into the state `make ios-chat-run` expects:
-        /// the rust runtime on, and an identity so onboarding does not block it.
-        func prepareTrUAPISimulatorE2EUser() {
-            ThemeSelectionStorage().setSelected()
-            SettingsManager.shared.set(value: true, for: .truApiRuntimeEnabled)
-
-            // A fixed entropy, so a rerun lands on the same identity: every key it
-            // derives is publicly reproducible. Simulator-only and never funded.
-            if (try? RootEntropyManager.shared.hasRootEntropy()) != true {
-                try? RootEntropyManager.shared.createRootEntropy(Data(repeating: 0x42, count: 16))
-            }
-
-            let usernameStorage = UsernameStorage()
-            if usernameStorage.username == nil {
-                usernameStorage.username = Username(value: "truapi-e2e")
-            }
-        }
-
         /// Shows the product's chat, so a custom body is decoded and rendered while
         /// the harness watches. The bot creates the room moments after launch, hence
         /// the retries; each one re-selects the chat tab, so they stop at the first
-        /// rendered body.
+        /// rendered body. It cannot move out of the app: `simctl openurl` on the `chat` deeplink
+        /// raises iOS's "Open in …?" confirmation, which nothing can tap.
         func openTrUAPIE2EChatIfRequested() {
             let environment = ProcessInfo.processInfo.environment
             guard environment["TRUAPI_IOS_E2E_OPEN_CHAT"] == "1",

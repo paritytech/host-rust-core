@@ -89,7 +89,6 @@ private func makeBridge(
         )
     return RustProductExecutionBridge(dependencies: .init(
         productId: productId,
-        executionKind: .app,
         permissionGuard: permissionGuard,
         osPermissionAsker: osPermissionAsker,
         notificationScheduler: notificationScheduler,
@@ -532,7 +531,6 @@ struct RustRuntimeBridgeTests {
         let pool = makeRegistryPool(chainRegistry: chainRegistry)
         let bridge = RustProductExecutionBridge(dependencies: .init(
             productId: "test.dot",
-            executionKind: .app,
             permissionGuard: MockPermissionGuard(),
             osPermissionAsker: MockOSPermissionAsker(),
             notificationScheduler: MockNotificationScheduler(),

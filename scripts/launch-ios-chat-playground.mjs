@@ -23,6 +23,7 @@ import {
   appGroupId,
   bootAndInstallApp,
   capture,
+  captureOptional,
   defaultAppPath,
   delay,
   isLoopback,
@@ -106,17 +107,12 @@ const appData = capture("xcrun", [
   bundle,
   "data",
 ]).trim();
-const connectionMarkers = [
-  resolve(appData, "tmp/truapi-e2e", `connected-chat-${productHost}`),
-];
 const customRendererMarker = resolve(
   appData,
   "tmp/truapi-e2e/custom-renderer-update",
 );
-for (const marker of [...connectionMarkers, customRendererMarker]) {
-  if (existsSync(marker)) {
-    unlinkSync(marker);
-  }
+if (existsSync(customRendererMarker)) {
+  unlinkSync(customRendererMarker);
 }
 const workerDestination = resolve(
   appData,
@@ -193,11 +189,7 @@ try {
 
   launchApp();
 
-  await waitForFiles(
-    connectionMarkers,
-    60_000,
-    "Ensure the selected simulator has completed Polkadot onboarding.",
-  );
+  await waitForFirstActivity(appGroup, chatIdentifier, messageWatermark);
 
   const activeCachedWorkerDestination = currentCachedWorkerDestination();
   if (
@@ -209,15 +201,9 @@ try {
     if (!workerDestinations.includes(activeCachedWorkerDestination)) {
       workerDestinations.push(activeCachedWorkerDestination);
     }
-    for (const marker of [...connectionMarkers, customRendererMarker]) {
-      if (existsSync(marker)) unlinkSync(marker);
-    }
+    if (existsSync(customRendererMarker)) unlinkSync(customRendererMarker);
     launchApp();
-    await waitForFiles(
-      connectionMarkers,
-      60_000,
-      "Ensure the selected simulator has completed Polkadot onboarding.",
-    );
+    await waitForFirstActivity(appGroup, chatIdentifier, messageWatermark);
   }
 
   if (expectDiagnosis) {
@@ -354,6 +340,35 @@ function waitForFiles(files, timeoutMs, hint) {
     message: () =>
       `Timed out waiting for files: ${files.join(", ")}${hint ? `\n${hint}` : ""}`,
   });
+}
+
+/**
+ * Wait for a message the product posted in this run. Watermarked because the room and its
+ * messages survive the previous run, so an unqualified check passes at once and gates nothing.
+ */
+function waitForFirstActivity(appGroup, identifier, afterMessageId) {
+  return waitFor(
+    () => {
+      const database = userDataDatabase(appGroup);
+      if (!existsSync(database)) {
+        return undefined;
+      }
+      const query = `
+        SELECT m.Z_PK
+        FROM ZCDCHATMESSAGE AS m
+        JOIN ZCDCHAT AS chat ON chat.Z_PK = m.ZCHAT
+        WHERE chat.ZIDENTIFIER = ${sqlString(identifier)}
+          AND m.Z_PK > ${afterMessageId}
+        LIMIT 1;
+      `;
+      return captureOptional("sqlite3", [database, query]) || undefined;
+    },
+    {
+      timeoutMs: 60_000,
+      message: () =>
+        `Timed out waiting for the product to post in ${identifier}.\nEnsure the selected simulator has completed Polkadot onboarding.`,
+    },
+  );
 }
 
 function filesHaveEqualContents(first, second) {

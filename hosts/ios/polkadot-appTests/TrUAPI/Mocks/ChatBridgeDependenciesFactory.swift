@@ -12,7 +12,6 @@ func makeChatBridgeDependencies(
     let defaults = UserDefaults(suiteName: "io.parity.tests.chat-bridge") ?? .standard
     return .init(
         productId: productId,
-        executionKind: .worker,
         permissionGuard: MockPermissionGuard(),
         osPermissionAsker: MockOSPermissionAsker(),
         notificationScheduler: MockNotificationScheduler(),
