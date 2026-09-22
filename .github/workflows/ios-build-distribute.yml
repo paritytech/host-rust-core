@@ -409,4 +409,7 @@ jobs:
             <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a>
           bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
           bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
-          matrix_room_ids: ${{ secrets.CI_MATRIX_ROOM_IDS }}
+          # No destination while this is held. Restoring it means a room of
+          # its own and declaring that secret on this workflow, which only
+          # receives what its caller passes.
+          matrix_room_ids: ""
