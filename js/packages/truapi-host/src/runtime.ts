@@ -118,6 +118,15 @@ export interface ProductRuntimeConfig {
     /** URI scheme used for wallet pairing deeplinks. */
     deeplinkScheme: string;
   };
+  /**
+   * dotNS TLD the host's reserved identities derive under, such as `"dot"` or
+   * `"paseo"`.
+   *
+   * Required by a signing host, which derives its own keys and so has to know
+   * which network's identities it is deriving. A pairing host never derives
+   * them -- the paired wallet does -- and ignores this.
+   */
+  networkSuffix?: string;
 }
 
 /**

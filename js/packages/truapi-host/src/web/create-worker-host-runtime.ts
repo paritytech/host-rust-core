@@ -32,6 +32,7 @@ import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
 import { isLoopbackWsUrl } from "../worker-protocol.js";
 import type {
   CallbackName,
+  HostRole,
   MainToWorker,
   SubscriptionName,
   WorkerToMain,
@@ -76,6 +77,14 @@ export interface WorkerPairingHostRuntime {
    * {@link WorkerPairingHostRuntime.activateStoredSession} does.
    */
   activateExternalSession(blob: Uint8Array): Promise<void>;
+  /**
+   * Establish a session from host-held BIP-39 entropy.
+   *
+   * Signing hosts only. A pairing host has no local secret and rejects this:
+   * it waits for a wallet to answer over the statement-store channel instead.
+   */
+  activateLocalSession(secret: Uint8Array, liteUsername?: string): Promise<void>;
+  setGrantAllowancesUnchecked(granted: boolean): Promise<void>;
   /**
    * Drop the active paired session without notifying the peer. Rejects on a
    * disposed runtime, as
@@ -1027,6 +1036,13 @@ export interface CreateWebWorkerPairingHostRuntimeOptions {
    */
   debuggerIndicator?: boolean;
   /**
+   * Host role the worker constructs. Omitted means `"pairing"`.
+   *
+   * `"signing"` requires a worker loading the `testing` WASM bundle, the only
+   * one built with a signing host in it.
+   */
+  role?: HostRole;
+  /**
    * How long `dispose()` waits for open `worker.beginOperation` holds before
    * tearing down anyway. Defaults to 30s.
    */
@@ -1262,6 +1278,7 @@ export function createWebWorkerPairingHostRuntime(
             pocket: host.pocket !== undefined,
           },
           debuggerUrl: debuggerDial,
+          role: options.role,
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
         state.coreWireSchemaHash = msg.schema;
@@ -1482,6 +1499,24 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         kind: "activateExternalSession",
         requestId,
         blob,
+      }));
+    },
+    activateLocalSession(
+      secret: Uint8Array,
+      liteUsername?: string,
+    ): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "activateLocalSession",
+        requestId,
+        secret,
+        liteUsername,
+      }));
+    },
+    setGrantAllowancesUnchecked(granted: boolean): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "setGrantAllowancesUnchecked",
+        requestId,
+        granted,
       }));
     },
     resetSessionState(): Promise<void> {
