@@ -110,7 +110,6 @@ runs:
                    workflow_ref, job_workflow_ref}' <<<"${claims}" >&2 || true
             fi
           fi
-          fi
           exit 1
         fi
         if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
