@@ -7,8 +7,8 @@
 use parity_scale_codec::{Decode, Encode};
 
 use super::StatementAllowanceError;
-use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, AS_RESOURCES, ChainState, Metadata, MetadataError};
+use crate::runtime::personhood::collection::PersonhoodCollection;
 
 /// General-transaction preamble byte: `0b01` (General) | version 5.
 const GENERAL_V5_PREAMBLE: u8 = 0x45;

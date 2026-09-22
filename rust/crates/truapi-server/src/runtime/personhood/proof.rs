@@ -11,7 +11,7 @@ use verifiable::GenerateVerifiable;
 use verifiable::ring::RingDomainSize;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
-use super::StatementAllowanceError;
+use crate::runtime::statement_allowance::StatementAllowanceError;
 
 /// A single-context ring-VRF signature is exactly 785 bytes.
 pub const RING_VRF_PROOF_LEN: usize = 785;

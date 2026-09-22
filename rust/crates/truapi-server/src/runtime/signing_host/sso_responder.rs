@@ -628,9 +628,10 @@ pub(super) async fn allocate_statement_store_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use super::allowance_renewal::{self, StatementRenewalTarget};
+    use crate::runtime::personhood::membership::find_including_rings;
     use crate::runtime::statement_allowance::{
-        self, PooledRegistrationParams, allocated_in, find_including_rings,
-        register_statement_account_pooled, scan_collections,
+        self, PooledRegistrationParams, allocated_in, register_statement_account_pooled,
+        scan_collections,
     };
 
     signing_host.require_current_session(session)?;
@@ -756,10 +757,10 @@ pub(super) async fn allocate_bulletin_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
-    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
+    use crate::runtime::personhood::collection::PersonhoodCollection;
+    use crate::runtime::personhood::membership::find_including_rings;
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_rings,
-        wait_bulletin_authorization,
+        self, claim_long_term_storage, fetch_bulletin_allowance, wait_bulletin_authorization,
     };
 
     signing_host.require_current_session(session)?;
@@ -894,7 +895,8 @@ pub(super) async fn allocate_smart_contract_allowance(
     use truapi::latest::ChainIdentifier;
 
     use crate::host_logic::features;
-    use crate::runtime::statement_allowance::{self, ChainClient, find_including_rings, pgas};
+    use crate::runtime::personhood::membership::find_including_rings;
+    use crate::runtime::statement_allowance::{self, ChainClient, pgas};
 
     signing_host.require_current_session(session)?;
 

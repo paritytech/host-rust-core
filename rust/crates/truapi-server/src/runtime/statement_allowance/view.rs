@@ -153,7 +153,7 @@ async fn read_u32(
     Ok(value)
 }
 
-pub(super) async fn read_resource_u32(
+pub(crate) async fn read_resource_u32(
     rpc: &RpcClient,
     metadata: &Metadata,
     function: &'static str,
@@ -161,7 +161,7 @@ pub(super) async fn read_resource_u32(
     read_u32(rpc, metadata, "Resources", function).await
 }
 
-pub(super) fn supports_resource_u32(metadata: &Metadata, function: &'static str) -> bool {
+pub(crate) fn supports_resource_u32(metadata: &Metadata, function: &'static str) -> bool {
     let Some(definition) = metadata.view_function("Resources", function) else {
         return false;
     };

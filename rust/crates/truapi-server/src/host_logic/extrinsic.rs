@@ -626,7 +626,7 @@ pub(crate) fn build_signed_extrinsic_v5(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
+    use crate::runtime::personhood::collection::PersonhoodCollection;
     use parity_scale_codec::{Compact, Decode};
     use subxt::client::{OfflineClient, OfflineClientAtBlock};
     use subxt::config::substrate::{SpecVersionForRange, SubstrateConfigBuilder};

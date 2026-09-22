@@ -22,6 +22,9 @@ mod dotns_lookup;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
+/// People-chain personhood: collections, rings, and membership proofs.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod personhood;
 pub(crate) mod product_manifest;
 mod product_subtree;
 mod renderer;

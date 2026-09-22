@@ -14,11 +14,11 @@ use verifiable::GenerateVerifiable;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use super::StatementAllowanceError;
-use super::collection::PersonhoodCollection;
 use super::extension::Metadata;
-use super::ring::blake2_128_concat;
 use super::rpc::RpcClient;
 use super::view;
+use crate::runtime::personhood::collection::PersonhoodCollection;
+use crate::runtime::personhood::ring::blake2_128_concat;
 
 /// StatementStore allowance period: one UTC day, in seconds.
 pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;

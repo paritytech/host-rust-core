@@ -19,14 +19,14 @@ use scale_decode::DecodeAsType;
 use sp_crypto_hashing::twox_128;
 use thiserror::Error;
 
-use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, Metadata, MetadataError};
-use super::ring::{self, RingParams, blake2_128_concat, twox_64_concat};
 use super::rpc::RpcClient;
 use super::{
     ChainContext, StatementAllowanceError, duplicate_submit_error, extension, extrinsic, proof,
     slot,
 };
+use crate::runtime::personhood::collection::PersonhoodCollection;
+use crate::runtime::personhood::ring::{self, RingParams, blake2_128_concat, twox_64_concat};
 
 /// How long to wait for Asset Hub to import the ring revision a proof is built
 /// against before giving up.

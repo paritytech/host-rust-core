@@ -32,14 +32,15 @@ use std::time::Duration;
 use futures::lock::Mutex;
 use tracing::{debug, info, warn};
 
-use super::collection::PersonhoodCollection;
 use super::extension::{ChainState, Metadata};
 use super::rpc::RpcClient;
 use super::slot::{STATEMENT_STORE_PERIOD_SECONDS, SlotError};
 use super::{
-    CollectionCandidate, CollectionMembership, PooledRegistrationParams, RegistrationOutcome,
-    StatementAllowanceError, allocated_in, register_statement_account_pooled, scan_collections,
+    PooledRegistrationParams, RegistrationOutcome, StatementAllowanceError, allocated_in,
+    register_statement_account_pooled, scan_collections,
 };
+use crate::runtime::personhood::collection::PersonhoodCollection;
+use crate::runtime::personhood::membership::{CollectionCandidate, CollectionMembership};
 
 /// Cap between renewal ticks for the in-process loop.
 ///
@@ -377,10 +378,10 @@ mod tests {
         use parity_scale_codec::Encode;
         use subxt_rpcs::RpcClient as HostRpcClient;
 
-        use crate::runtime::statement_allowance::CollectionMembership;
+        use crate::runtime::personhood::membership::CollectionMembership;
+        use crate::runtime::personhood::proof;
+        use crate::runtime::personhood::ring::RingParams;
         use crate::runtime::statement_allowance::extension::ChainState;
-        use crate::runtime::statement_allowance::proof;
-        use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
         use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
         use crate::runtime::statement_allowance::test_fixtures;
@@ -479,10 +480,10 @@ mod tests {
         use parity_scale_codec::Encode;
         use subxt_rpcs::RpcClient as HostRpcClient;
 
-        use crate::runtime::statement_allowance::CollectionMembership;
+        use crate::runtime::personhood::membership::CollectionMembership;
+        use crate::runtime::personhood::proof;
+        use crate::runtime::personhood::ring::RingParams;
         use crate::runtime::statement_allowance::extension::ChainState;
-        use crate::runtime::statement_allowance::proof;
-        use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
         use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
         use crate::runtime::statement_allowance::test_fixtures;
@@ -576,10 +577,10 @@ mod tests {
         use parity_scale_codec::Encode;
         use subxt_rpcs::RpcClient as HostRpcClient;
 
-        use crate::runtime::statement_allowance::CollectionMembership;
+        use crate::runtime::personhood::membership::CollectionMembership;
+        use crate::runtime::personhood::proof;
+        use crate::runtime::personhood::ring::RingParams;
         use crate::runtime::statement_allowance::extension::ChainState;
-        use crate::runtime::statement_allowance::proof;
-        use crate::runtime::statement_allowance::ring::RingParams;
         use crate::runtime::statement_allowance::rpc::RpcClient;
         use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
         use crate::runtime::statement_allowance::test_fixtures;

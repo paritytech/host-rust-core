@@ -7,10 +7,10 @@
 //! collections a device can prove membership in, which is why the allowance
 //! path takes a collection rather than assuming one.
 
-use super::StatementAllowanceError;
-use super::extension::Metadata;
-use super::rpc::RpcClient;
-use super::view;
+use crate::runtime::statement_allowance::StatementAllowanceError;
+use crate::runtime::statement_allowance::extension::Metadata;
+use crate::runtime::statement_allowance::rpc::RpcClient;
+use crate::runtime::statement_allowance::view;
 
 /// A personhood ring collection in the People chain's `Members` pallet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::Display)]

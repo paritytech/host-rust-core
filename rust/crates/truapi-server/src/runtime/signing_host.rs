@@ -60,9 +60,19 @@ use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::runtime::statement_allowance::CollectionCandidate;
+use crate::runtime::backend_session::{PersonProof, PersonhoodProver};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::runtime::statement_allowance::collection::PersonhoodCollection;
+use crate::runtime::personhood::collection::PersonhoodCollection;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::personhood::membership::CollectionCandidate;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::personhood::membership::find_including_rings;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::personhood::proof;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::fetch_metadata;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::rpc::RpcClient;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
     development_context_bytes, member_from_entropy, sign_from_entropy,
@@ -1304,44 +1314,34 @@ impl SigningHost {
         &self,
         context: &[u8],
         message: &[u8],
-    ) -> Result<crate::runtime::backend_session::PersonProof, String> {
+    ) -> Result<PersonProof, String> {
         let session = self.current_session().ok_or("no active local session")?;
         let candidates = self
             .reserved_person_collection_candidates(&session)
             .map_err(|err| err.to_string())?;
-        let rpc = crate::runtime::statement_allowance::rpc::RpcClient::new(
+        let rpc = RpcClient::new(
             self.services
                 .statement_store
                 .client("personhood proof")
                 .await
                 .map_err(|err| err.to_string())?,
         );
-        let metadata = crate::runtime::statement_allowance::fetch_metadata(&rpc)
-            .await
-            .map_err(|err| err.to_string())?;
+        let metadata = fetch_metadata(&rpc).await.map_err(|err| err.to_string())?;
         // Every ring back to index 0, because a membership that stopped being
         // re-included still proves against the ring that holds it.
-        let membership = crate::runtime::statement_allowance::find_including_rings(
-            &rpc,
-            &metadata,
-            &candidates,
-            u32::MAX,
-        )
-        .await
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .next()
-        .ok_or("no provable ring membership in any reserved collection")?;
+        let membership = find_including_rings(&rpc, &metadata, &candidates, u32::MAX)
+            .await
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .next()
+            .ok_or("no provable ring membership in any reserved collection")?;
         // Reading the snapshot took chain round trips. Refuse a proof for a
         // session that disconnected or changed underneath them.
         self.require_current_session(&session)
             .map_err(|err| err.to_string())?;
-        let domain =
-            crate::runtime::statement_allowance::proof::domain_for_ring_exponent(
-                membership.ring.exponent,
-            )
+        let domain = proof::domain_for_ring_exponent(membership.ring.exponent)
             .map_err(|err| err.to_string())?;
-        let proof = crate::runtime::statement_allowance::proof::ring_vrf_proof(
+        let proof = proof::ring_vrf_proof(
             domain,
             membership.entropy,
             &membership.ring.members,
@@ -1349,7 +1349,7 @@ impl SigningHost {
             message,
         )
         .map_err(|err| err.to_string())?;
-        Ok(crate::runtime::backend_session::PersonProof {
+        Ok(PersonProof {
             proof,
             ring_index: membership.ring.ring_index,
         })
@@ -1362,12 +1362,8 @@ impl SigningHost {
 /// built here and only its bytes and ring index travel.
 #[cfg(not(target_arch = "wasm32"))]
 #[truapi::async_trait]
-impl crate::runtime::backend_session::PersonhoodProver for SigningHost {
-    async fn prove_person(
-        &self,
-        context: &[u8],
-        message: &[u8],
-    ) -> Result<crate::runtime::backend_session::PersonProof, ()> {
+impl PersonhoodProver for SigningHost {
+    async fn prove_person(&self, context: &[u8], message: &[u8]) -> Result<PersonProof, ()> {
         self.prove_reserved_person(context, message)
             .await
             .map_err(|reason| {
@@ -1417,7 +1413,7 @@ mod tests {
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
-    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
+    use crate::runtime::personhood::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
     use truapi::api::{Account, Entropy, ResourceAllocation, Signing};
     use truapi::latest::{

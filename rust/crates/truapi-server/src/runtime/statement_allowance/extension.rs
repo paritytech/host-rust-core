@@ -24,7 +24,7 @@ use scale_info::{PortableRegistry, TypeDef, TypeDefPrimitive, TypeDefVariant};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
-use super::collection::PersonhoodCollection;
+use crate::runtime::personhood::collection::PersonhoodCollection;
 
 /// Signed-extension identifier that carries the `AsPgas` authorization on Asset Hub.
 pub const AS_PGAS: &str = "AsPgas";

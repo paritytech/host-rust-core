@@ -23,13 +23,12 @@ use crate::host_logic::product_account::{
 };
 use crate::runtime::RuntimeServices;
 use crate::runtime::authority::ProductAuthority;
+use crate::runtime::personhood::membership::find_including_rings;
 use crate::runtime::statement_allowance::renewal::{
     RenewalChainContext, ResolvedRenewalTarget, StatementRenewalReport, next_tick_delay,
     renew_targets,
 };
-use crate::runtime::statement_allowance::{
-    self, fetch_chain_state, fetch_metadata, find_including_rings,
-};
+use crate::runtime::statement_allowance::{self, fetch_chain_state, fetch_metadata};
 
 /// Fallback tick delay when the system clock is unusable.
 const CLOCK_FAILURE_TICK_DELAY: Duration = Duration::from_secs(3_600);

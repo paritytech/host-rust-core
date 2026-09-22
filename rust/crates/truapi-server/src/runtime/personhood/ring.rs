@@ -10,10 +10,10 @@ use scale_decode::DecodeAsType;
 use sp_crypto_hashing::{blake2_128, twox_64, twox_128};
 use thiserror::Error;
 
-use super::StatementAllowanceError;
 use super::collection::PersonhoodCollection;
-use super::extension::{Metadata, MetadataError};
-use super::rpc::RpcClient;
+use crate::runtime::statement_allowance::StatementAllowanceError;
+use crate::runtime::statement_allowance::extension::{Metadata, MetadataError};
+use crate::runtime::statement_allowance::rpc::RpcClient;
 
 /// Error while reading or decoding ring storage.
 #[derive(Debug, Error)]
@@ -194,12 +194,12 @@ fn subscriber_exponent_key(collection: PersonhoodCollection) -> Vec<u8> {
 }
 
 /// `Blake2_128Concat(x)` = `blake2_128(x) ‖ x`.
-pub(super) fn blake2_128_concat(x: &[u8]) -> Vec<u8> {
+pub(crate) fn blake2_128_concat(x: &[u8]) -> Vec<u8> {
     [blake2_128(x).as_slice(), x].concat()
 }
 
 /// `Twox64Concat(x)` = `twox_64(x) ‖ x`.
-pub(super) fn twox_64_concat(x: &[u8]) -> Vec<u8> {
+pub(crate) fn twox_64_concat(x: &[u8]) -> Vec<u8> {
     [twox_64(x).as_slice(), x].concat()
 }
 
@@ -438,8 +438,8 @@ mod tests {
     use scale_info::TypeInfo;
     use subxt_rpcs::RpcClient as HostRpcClient;
 
-    use super::super::rpc::testing::ScriptedRpc;
     use super::*;
+    use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
 
     fn decode_as<Source, Target>(source: Source) -> Target
     where
