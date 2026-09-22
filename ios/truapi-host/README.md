@@ -241,16 +241,22 @@ current tree of an open render stream.
 ## Architecture
 
 ```text
-product app in WKWebView
-  Uint8Array frames via @parity/truapi createWebSocketProvider
-           |
-           v   ws://127.0.0.1:<port>/?t=<token>
-TrUAPIProductExecution.startWsBridge()
-  → libtruapi_server (tokio WS server)
-  → Rust dispatcher
+                 Product app in WKWebView
+                 /                     \
+          Public calls          Network/media requests
+                 |                      |
+                 |              Private permission methods
+                 \                     /
+                   Shared SDK transport
+                           |
+                   Replaceable WebSocket
+                           |  ws://127.0.0.1:<port>/?t=<token>
+                   Shared Rust listener
+                           |
+                   Product execution
 ```
 
-The product running in the `WKWebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, confirmations, preimage, theme, `featureSupported`, `storage`) reach the embedder through `HostCallbacks`.
+The bootstrap supplies the execution endpoint to the shared container, which consumes and removes `window.__truapi_localhost` before product scripts run. The container creates one SDK connection for public calls and private permission checks, then exposes its public client through `window.__HOST_API_CLIENT__`. The Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, confirmations, preimage, theme, `featureSupported`, `storage`) reach the embedder through `HostCallbacks`.
 
 ## Permissions split
 
@@ -512,21 +518,21 @@ execution.close()
 runtime.disconnect()
 ```
 
-The product page reads `window.__truapi_localhost.url` (set by the bootstrap script) and passes it to `@parity/truapi`'s `createWebSocketProvider(url)`.
+The updated `@parity/truapi` SDK keeps the same client across connection loss. The SDK replaces the socket; interrupted operations fail with `ConnectionResetError` and are never replayed. Recreate read/watch subscriptions in the provider that owns them. SDKs 0.16.0 and 0.18.0 can still start through the minimal `__HOST_API_PORT__` adapter, but require a page reload after a disconnect. Remove that adapter once deployed products adopt the injected client.
 
-The shared container captures a private WebSocket connection to the product execution and asks Rust to authorize each fetch or XHR before sending it, and each remote WebSocket before connecting. It parses the URL with captured browser primitives and sends its hostname to `authorize_remote_permission`; Rust normalizes and checks the domain. Swift supplies the endpoint and handles native permission prompts; it does not relay individual network permission messages. An upfront permission request and a network operation are separate, so an Allow once decision is consumed by the next permitted operation rather than persisted.
+The shared container uses the same WebSocket as SDK calls and asks Rust to authorize each fetch or XHR before sending it, and each remote WebSocket before connecting. It parses the URL with captured browser primitives and sends its hostname to `authorize_remote_permission`; Rust normalizes and checks the domain. Swift supplies the endpoint and handles native permission prompts; it does not relay individual network permission messages. An upfront permission request and a network operation are separate, so an Allow once decision is consumed by the next permitted operation rather than persisted.
 
 XHR keeps native request headers, response types and browser CORS behavior. `open()` configures the request synchronously; `send()` waits for permission before sending. Aborting or reopening during that wait cancels the pending send. Synchronous XHR is unsupported because it cannot wait for an asynchronous permission decision.
 
-A remote `WebSocket` starts in `CONNECTING` while Rust checks the same domain permission. Allow once permits that connection and all its messages; a new connection checks again. Closing while permission is pending prevents the connection from opening. Text, binary messages and subprotocols use the native socket after approval. The exact private host bridge endpoint remains available without a Remote permission.
+A remote `WebSocket` starts in `CONNECTING` while Rust checks the same domain permission. Allow once permits that connection and all its messages; a new connection checks again. Closing while permission is pending prevents the connection from opening. Text, binary messages and subprotocols use the native socket after approval. The private host connection uses the browser constructor captured before these gates are installed. Product-created sockets receive no endpoint exemption.
 
 Forwarded WebSocket events and XHR failures before sending are synthetic, with `isTrusted` set to `false`.
 
 WebRTC uses the same private transport. Each peer connection asks Rust for permission at its first network method, such as `createOffer`, and shares that decision across later methods on the connection. Allow once permits one connection. New connections check the current permission without requiring a page reload.
 
-The installer adds the bootstrap and container scripts before loading. It preserves the host's website data store and navigation delegate. Hosts that assemble their own script lists can keep using `LocalhostBridgeBootstrap.script` followed by `ContainerScriptBundle.load()`, with the container injected into every frame.
+To disable WebRTC, call `execution.setPermissionAuthorizationStatus` with a remote `.webRtc` request and `.denied` before loading each product. This overrides saved grants and trusted-product auto-grants, which otherwise skip `remotePermission` callbacks.
 
-Update existing integrations for the changed signatures: `installProductScripts(into:endpoint:)` now takes a `WKWebView`, without an execution argument or `await`. Both the Swift and Kotlin `LocalhostBridgeBootstrap.script` methods drop `webRtcAllowed`. Permission changes apply to new operations instead of requiring a new startup snapshot.
+The installer adds the bootstrap and container scripts before loading. It preserves the host's website data store and navigation delegate. Hosts that assemble their own script lists can keep using `LocalhostBridgeBootstrap.script` followed by `ContainerScriptBundle.load()`, with the container injected into every frame.
 
 `Worker`, `WebTransport` and `getDisplayMedia` screen capture are unavailable. Workers would provide a separate realm with unguarded network APIs; WebTransport has no permission wrapper, and screen capture has no product permission.
 
