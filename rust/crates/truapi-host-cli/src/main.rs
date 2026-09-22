@@ -25,6 +25,7 @@ mod pocket;
 mod product_config;
 mod qr_scanner;
 mod register_name;
+mod script_project;
 mod script_runner;
 mod sessions;
 mod signing_shell;
@@ -69,7 +70,7 @@ use crate::sessions::{
 };
 use crate::signing_shell::{
     ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, PairCommand, ProductCommand,
-    SessionCommand, ShellCommand, parse_command,
+    ScriptCommand, SessionCommand, ShellCommand, parse_command,
 };
 use crate::terminal_ui::{
     ActiveTerminalUi, ActivityState, DriveResult, PairingImageInput, SystemEvent, TerminalUi,
@@ -492,6 +493,10 @@ fn state_base_path(base_path: Option<PathBuf>) -> PathBuf {
     base_path
         .unwrap_or_else(default_base_path)
         .join(STATE_VERSION)
+}
+
+fn script_project_directory(base_path: Option<PathBuf>) -> PathBuf {
+    base_path.unwrap_or_else(default_base_path).join("scripts")
 }
 
 #[tokio::main]
@@ -1059,6 +1064,7 @@ async fn run_pairing_host(
     initial_log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
+    let script_projects = script_project_directory(args.base_path.clone());
     let interactive = args.script.is_none();
     if interactive && !terminal_ui::is_interactive_terminal() {
         invalid_invocation(
@@ -1146,6 +1152,7 @@ async fn run_pairing_host(
                 product,
                 pairing_runtime,
                 storage_platform,
+                script_projects,
                 terminal_ui,
                 log_controller,
             )
@@ -1344,6 +1351,7 @@ struct SigningHostSession {
     signer: Option<ResolvedSigner>,
     cached_user_id: Option<String>,
     last_script: Option<PathBuf>,
+    script_projects: PathBuf,
     catalog: SessionCatalog,
     profile: Option<SessionProfile>,
     network: NetworkConfig,
@@ -1569,6 +1577,7 @@ async fn start_signing_host(
         signer,
         cached_user_id,
         last_script,
+        script_projects: script_project_directory(args.base_path.clone()),
         catalog,
         profile,
         network,
@@ -3162,6 +3171,7 @@ async fn pairing_interactive_loop(
     product: Arc<frame_server::ProductSelection>,
     runtime: Arc<PairingHostRuntime>,
     storage: Arc<CliPlatform>,
+    script_projects: PathBuf,
     mut ui: ActiveTerminalUi,
     log_controller: LogController,
 ) -> Result<()> {
@@ -3226,7 +3236,7 @@ async fn pairing_interactive_loop(
                 }
             }
             ShellCommand::Quit => return Ok(()),
-            ShellCommand::Script(script) => {
+            ShellCommand::Script(command) => {
                 let current_state_path = storage
                     .state_dir()
                     .context("pairing host storage is not configured")?;
@@ -3234,32 +3244,21 @@ async fn pairing_interactive_loop(
                     pairing_state_path = current_state_path;
                     last_script = sessions::session_last_script(&pairing_state_path)?;
                 }
-                let scratch_script_directory = pairing_state_path.join("scripts");
-                let script = match script {
-                    Some(script) => {
-                        remember_script(Some(&pairing_state_path), &mut last_script, script)
-                    }
-                    None => {
-                        let script =
-                            select_script_to_edit(&scratch_script_directory, &mut last_script);
-                        match script {
-                            Ok(script) => match sessions::store_session_last_script(
-                                &pairing_state_path,
-                                &script,
-                            ) {
-                                Ok(()) => edit_script_in(script, &mut ui).await,
-                                Err(error) => Err(error),
-                            },
-                            Err(error) => Err(error),
-                        }
-                    }
-                };
+                let script = select_interactive_script(
+                    &command,
+                    &script_projects,
+                    Some(&pairing_state_path),
+                    &mut last_script,
+                    &mut ui,
+                )
+                .await;
                 match script {
-                    Ok(script) => {
+                    Ok(Some(script)) => {
                         let product_id = product.current();
                         run_pairing_script(&frame_url, &product_id, &script, input, &mut ui)
                             .await?;
                     }
+                    Ok(None) => {}
                     Err(error) => ui.error(error.to_string()),
                 }
             }
@@ -3556,19 +3555,31 @@ async fn signing_interactive_loop(
                 };
                 run_interactive_pairing_image(session, input, &mut ui).await?;
             }
-            ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
-                Ok(script) => {
+            ShellCommand::Script(command) => match select_interactive_script(
+                &command,
+                &session.script_projects,
+                session
+                    .profile
+                    .as_ref()
+                    .map(|profile| profile.path.as_path()),
+                &mut session.last_script,
+                &mut ui,
+            )
+            .await
+            {
+                Ok(Some(script)) => {
                     let product_id = product.current();
                     run_interactive_operation(
                         session,
                         &frame_url,
                         &product_id,
-                        ShellCommand::Script(Some(script)),
+                        ShellCommand::Script(ScriptCommand::Run(Some(script))),
                         input,
                         &mut ui,
                     )
                     .await?;
                 }
+                Ok(None) => {}
                 Err(error) => ui.error(error.to_string()),
             },
             command => {
@@ -3669,7 +3680,7 @@ async fn execute_interactive_operation(
         ShellCommand::Pair(PairCommand::Scan) => {
             bail!("clipboard image paste must be handled by the terminal UI")
         }
-        ShellCommand::Script(Some(script)) => {
+        ShellCommand::Script(ScriptCommand::Run(Some(script))) => {
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
             let script =
                 remember_script(session_path.as_deref(), &mut session.last_script, script)?;
@@ -3686,7 +3697,7 @@ async fn execute_interactive_operation(
                 code: status.code().unwrap_or(1),
             });
         }
-        ShellCommand::Script(None) => bail!("new scripts must be edited by the terminal UI"),
+        ShellCommand::Script(_) => bail!("script selection must be handled by the terminal UI"),
         ShellCommand::Session(SessionCommand::Switch(name)) => {
             switch_session(session, name).await?;
         }
@@ -3733,14 +3744,27 @@ async fn execute_non_interactive_command(
         ShellCommand::Pair(PairCommand::Scan) => bail!(
             "clipboard image paste needs an interactive signing host; use /pair <image-path> or /pair <polkadotapp://pair?...>"
         ),
-        ShellCommand::Script(script) => {
-            let script = match script {
-                Some(script) => {
-                    let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
-                    remember_script(session_path.as_deref(), &mut session.last_script, script)?
-                }
-                None => edit_session_script_plain(session).await?,
+        ShellCommand::Script(command) => {
+            if command.edits() && !terminal_ui::is_interactive_terminal() {
+                bail!(
+                    "/script without a path requires an interactive terminal; use /script --run or /script <path>"
+                );
+            }
+            let script =
+                select_script(&command, &session.script_projects, &mut session.last_script)?;
+            let session_path = session
+                .profile
+                .as_ref()
+                .map(|profile| profile.path.as_path());
+            let script = remember_script(session_path, &mut session.last_script, script)?;
+            let script = if command.edits() {
+                edit_script_plain(script).await?
+            } else {
+                script
             };
+            if !command.runs() {
+                return Ok(None);
+            }
             ensure_signer(session).await?;
             let product_id = product.current();
             let status = script_runner::run(
@@ -3833,23 +3857,43 @@ async fn execute_non_interactive_command(
     Ok(None)
 }
 
-fn scratch_script_directory(session: &SigningHostSession) -> PathBuf {
-    session.profile.as_ref().map_or_else(
-        || std::env::temp_dir().join("truapi-host").join("scripts"),
-        |profile| profile.path.join("scripts"),
-    )
-}
-
 fn select_script_to_edit(
     scratch_script_directory: &std::path::Path,
     last_script: &mut Option<PathBuf>,
 ) -> Result<PathBuf> {
-    if let Some(script) = last_script.as_ref().filter(|script| script.is_file()) {
-        return Ok(script.clone());
+    if let Some(script) = last_script
+        .as_ref()
+        .map(|script| script_project::remembered_script(script))
+        .transpose()?
+        .flatten()
+    {
+        return Ok(script);
     }
-    let script = script_runner::create_scratch_script(scratch_script_directory)?;
+    let script = script_project::create(scratch_script_directory, None)?;
     *last_script = Some(script.clone());
     Ok(script)
+}
+
+fn select_script(
+    command: &ScriptCommand,
+    projects: &Path,
+    last_script: &mut Option<PathBuf>,
+) -> Result<PathBuf> {
+    match command {
+        ScriptCommand::Edit | ScriptCommand::EditOnly => {
+            select_script_to_edit(projects, last_script)
+        }
+        ScriptCommand::New(directory) => script_project::create(projects, directory.as_deref()),
+        ScriptCommand::Run(Some(script)) => Ok(script.clone()),
+        ScriptCommand::Run(None) => last_script
+            .as_ref()
+            .map(|script| script_project::remembered_script(script))
+            .transpose()?
+            .flatten()
+            .context(
+                "no script selected; use /script to create one or /script <path> to select one",
+            ),
+    }
 }
 
 fn remember_script(
@@ -3871,24 +3915,37 @@ fn remember_script(
     Ok(script)
 }
 
-fn session_script_to_edit(session: &mut SigningHostSession) -> Result<PathBuf> {
-    let directory = scratch_script_directory(session);
-    let script = select_script_to_edit(&directory, &mut session.last_script)?;
-    if let Some(profile) = &session.profile {
-        session.catalog.store_last_script(profile, &script)?;
-    }
-    Ok(script)
-}
-
-async fn edit_session_script(
-    session: &mut SigningHostSession,
+async fn select_interactive_script(
+    command: &ScriptCommand,
+    projects: &Path,
+    session_path: Option<&Path>,
+    last_script: &mut Option<PathBuf>,
     ui: &mut ActiveTerminalUi,
-) -> Result<PathBuf> {
-    let script = session_script_to_edit(session)?;
-    edit_script_in(script, ui).await
+) -> Result<Option<PathBuf>> {
+    let script = select_script(command, projects, last_script)?;
+    let script = remember_script(session_path, last_script, script)?;
+    let script = if command.edits() {
+        edit_script_in(script, ui).await?
+    } else {
+        script
+    };
+    Ok(command.runs().then_some(script))
 }
 
 async fn edit_script_in(script: PathBuf, ui: &mut ActiveTerminalUi) -> Result<PathBuf> {
+    match ui
+        .drive(
+            "Preparing script",
+            script_project::prepare(&script, Some(ui.handle())),
+        )
+        .await?
+    {
+        DriveResult::Complete(result) => result?,
+        DriveResult::Cancelled => bail!(
+            "script setup cancelled; project retained at {}",
+            script.display()
+        ),
+    }
     ui.system(format!("Opening {} in your editor", script.display()));
     ui.suspend()?;
     let edit_result = script_runner::edit(&script).await;
@@ -3908,11 +3965,8 @@ async fn edit_script_in(script: PathBuf, ui: &mut ActiveTerminalUi) -> Result<Pa
     Ok(script)
 }
 
-async fn edit_session_script_plain(session: &mut SigningHostSession) -> Result<PathBuf> {
-    if !terminal_ui::is_interactive_terminal() {
-        bail!("/script without a path requires an interactive terminal");
-    }
-    let script = session_script_to_edit(session)?;
+async fn edit_script_plain(script: PathBuf) -> Result<PathBuf> {
+    script_project::prepare(&script, None).await?;
     eprintln!("EDITING_SCRIPT {}", script.display());
     let status = script_runner::edit(&script).await?;
     if !status.success() {
@@ -4451,6 +4505,43 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
     }
 
     #[test]
+    fn rerun_without_a_selected_script_does_not_create_or_edit_a_project() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let projects = temporary.path().join("scripts");
+
+        let error = select_script(&ScriptCommand::Run(None), &projects, &mut None).unwrap_err();
+
+        assert_eq!(
+            (error.to_string(), projects.exists()),
+            (
+                "no script selected; use /script to create one or /script <path> to select one"
+                    .to_string(),
+                false
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_sessions_keeps_managed_script_projects() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let base = Some(temporary.path().to_path_buf());
+        let catalog = SessionCatalog::new(state_base_path(base.clone()), "testnet")?;
+        let profile = catalog.ensure_profile(DEFAULT_SESSION_NAME)?;
+        let projects = script_project_directory(base);
+        let script = select_script_to_edit(&projects, &mut None)?;
+        sessions::store_session_last_script(&profile.path, &script)?;
+
+        catalog.clear(&SessionClearTarget::All)?;
+
+        assert_eq!(
+            (projects, script.is_file(), profile.path.exists()),
+            (temporary.path().join("scripts"), true, false)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn bare_script_selection_reuses_the_last_existing_script() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let mut last_script = None;
@@ -4471,7 +4562,9 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
         let temporary = tempfile::tempdir()?;
         let scripts = temporary.path().join("scripts");
         std::fs::create_dir_all(&scripts)?;
-        let mut last_script = Some(script_runner::create_scratch_script(&scripts)?);
+        let scratch = scripts.join("scratch.ts");
+        std::fs::write(&scratch, "console.log('scratch');")?;
+        let mut last_script = Some(scratch);
         let explicit = temporary.path().join("product-script.ts");
         std::fs::write(&explicit, "console.log('product');")?;
 

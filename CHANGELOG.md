@@ -9,6 +9,8 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Added
 
+- add typed script projects (#549)
+- a TrUAPI-native test host (#294)
 - report a newly paired device to the host (#851)
 - let an Android preview name the commit it came from (#882)
 - distribute Android nightly and debug builds (#864)
@@ -21,6 +23,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Fixed
 
+- mask the signed download link the distributor prints (#906)
 - pass CONTACT_EMAIL to the Android builds (#903)
 - balance the delivery preflight, and shellcheck inline action shell (#902)
 - reconnect the localhost bridge after its socket dies (#872)

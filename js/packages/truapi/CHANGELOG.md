@@ -19,6 +19,12 @@
   Scripts remain in Bun with filesystem, environment, subprocess and import access. Dev keeps its existing app URL,
   assets and hot reload. Public SDK calls and permission checks share one product execution.
 
+### Patch Changes
+
+- 5d5fd1c: Add reusable `/script` projects with dependency installation, editor types and TypeScript checking. Edit,
+  rerun or create projects from the CLI. Missing npm imports use Bun's runtime fallback, and Product SDK scripts
+  discover the active host automatically.
+
 ## 0.18.0
 
 ### Minor Changes

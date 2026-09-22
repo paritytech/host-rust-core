@@ -37,8 +37,12 @@ interface Connection {
 }
 
 /** Creates a client whose interrupted operations fail and whose later calls reconnect. */
-export function createHostConnection(url: string): HostConnection {
-  const createProvider = createWebSocketProviderFactory();
+export function createHostConnection(
+  url: string,
+  createProvider: (
+    url: string,
+  ) => WebSocketWireProvider = createWebSocketProviderFactory(),
+): HostConnection {
   const now = performance.now.bind(performance);
   let current: Connection | undefined;
   let stopped = false;

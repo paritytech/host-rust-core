@@ -6,6 +6,7 @@
 
 - Updated dependencies [a78d73c]
 - Updated dependencies [303b163]
+- Updated dependencies [5d5fd1c]
   - @parity/truapi@0.19.0
 
 ## 0.1.5
