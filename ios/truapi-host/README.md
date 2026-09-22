@@ -258,6 +258,11 @@ device was already paired. `disconnectPairedHost` submits the notice and nothing
 a pairing also means cancelling that peer's `resumePairing` task and untracking
 its renewal account; dropping the stored pairing alone leaves both running.
 
+Which undo a failure owes is the thrown case, not the message: `.rejected`
+means the peer may already have been reached and its target tracked, while
+`.undecodableDeeplink` is refused before either happens and leaves nothing to
+undo.
+
 The core prompts for nothing along the way, so asking the user is the host's
 too. `parsePairingDeeplink` returns the peer's `metadata` alongside it for that
 prompt: the host name, version, icon and platform the peer put in its QR,
