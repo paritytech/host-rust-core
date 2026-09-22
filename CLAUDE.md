@@ -16,8 +16,8 @@ rust/crates/
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
-  truapi-srs-gen/        emits the per-domain ring-VRF prover parameters the web host
-                         serves at runtime, cut from the SRS `verifiable` ships
+  truapi-srs-gen/        emits the per-domain ring-VRF prover parameters the browser core
+                         reads at runtime, cut from the SRS `verifiable` ships
   truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
@@ -120,14 +120,17 @@ scripts/cli-runner-package.test.ts
   without `prover-srs-embedded` on `wasm32`, so the powers of tau are not
   compiled in, and `truapi-srs-gen` publishes one file per ring domain beside
   the WASM bundle (145 KiB for a 255-member ring, 4.5 MiB for a 16127-member
-  one). The core asks the host for the domain in hand through the optional
-  `RingProverParams` capability, on the first local proof that needs it, and
-  checks the bytes against a hash pinned in
-  `truapi-server/src/runtime/ring_prover_params.rs` before installing them. A
-  host that serves none reaches the paired signer instead. Native targets keep
-  the parameters compiled in and serve nothing. The SRS leaves the core by dead
-  code elimination, not by a flag, so `make wasm` fails the build if the data
-  section grows past 1 MiB.
+  one). They are the core's own asset, not a host capability: hosts, bindings
+  and the protocol surface know nothing about them.
+  `truapi-server/src/runtime/ring_prover_params.rs` pins one hash per domain,
+  which both names the file and is what its bytes must come to, and reads it
+  relative to the core's WASM on the first local proof that needs it. A core
+  that cannot read them delegates to the paired signer, as it does when no
+  local key backs the handle; native targets compile them in and the module
+  does nothing. The SRS leaves the core by dead code elimination, not by a
+  flag, so `make wasm` fails the build if the data section grows past 1 MiB,
+  and fails it again if wasm-bindgen stops emitting snippets where that
+  relative read expects them.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever

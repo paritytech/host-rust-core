@@ -3340,51 +3340,10 @@ impl<T> Platform for T where
 {
 }
 
-/// Ring domain a prover needs parameters for.
-///
-/// Mirrors the ring sizes the Members pallet publishes. Hosts serve one
-/// parameter blob per variant; the largest is two orders of magnitude bigger
-/// than the smallest, so the domain is part of the request rather than a
-/// single all-domains download.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-pub enum RingProverDomain {
-    /// 2^11 PCS domain, rings up to 255 members.
-    Domain11,
-    /// 2^12 PCS domain, rings up to 767 members.
-    Domain12,
-    /// 2^16 PCS domain, rings up to 16127 members.
-    Domain16,
-}
-
-/// Host supply of ring-VRF prover parameters.
-///
-/// The core proves with parameters the host provides, rather than carrying
-/// several MiB of them for a capability most sessions never use. A host that
-/// omits this capability cannot prove locally, and the core routes those
-/// requests to the paired signer instead.
-#[async_trait]
-pub trait RingProverParams: Send + Sync {
-    /// Parameter bytes for one ring domain, or `None` when this host serves
-    /// none.
-    ///
-    /// The core checks the bytes against a pinned hash before use, so a host
-    /// may serve them from a cache it does not itself validate.
-    async fn load_ring_prover_params(
-        &self,
-        domain: RingProverDomain,
-    ) -> Result<Option<Vec<u8>>, GenericError>;
-}
-
 /// Capability traits a host may serve but is not required to. A host that
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform:
-    ChatPlatform + PermissionStatusHost + PocketPlatform + RingProverParams
-{
-}
+pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
 
-impl<T> OptionalPlatform for T where
-    T: ChatPlatform + PermissionStatusHost + PocketPlatform + RingProverParams
-{
-}
+impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}

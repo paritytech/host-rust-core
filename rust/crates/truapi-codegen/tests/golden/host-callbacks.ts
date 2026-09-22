@@ -414,16 +414,6 @@ export interface ResourceAllocationReview {
 }
 
 /**
- * Ring domain a prover needs parameters for.
- *
- * Mirrors the ring sizes the Members pallet publishes. Hosts serve one
- * parameter blob per variant; the largest is two orders of magnitude bigger
- * than the smallest, so the domain is part of the request rather than a
- * single all-domains download.
- */
-export type RingProverDomain = "Domain11" | "Domain12" | "Domain16";
-
-/**
  * Decoded session fields a host shell needs to render account UI without
  * parsing the opaque session blob the core persists through `CoreStorage`.
  */
@@ -864,18 +854,6 @@ export const ResourceAllocationReview: S.Codec<ResourceAllocationReview> =
         resources: S.Vector(AllocatableResource),
       }) as S.Codec<ResourceAllocationReview>,
   );
-
-/**
- * Ring domain a prover needs parameters for.
- *
- * Mirrors the ring sizes the Members pallet publishes. Hosts serve one
- * parameter blob per variant; the largest is two orders of magnitude bigger
- * than the smallest, so the domain is part of the request rather than a
- * single all-domains download.
- */
-export const RingProverDomain: S.Codec<RingProverDomain> = S.lazy(
-  (): S.Codec<RingProverDomain> => S.Status("Domain11", "Domain12", "Domain16"),
-);
 
 /**
  * Decoded session fields a host shell needs to render account UI without
@@ -1470,27 +1448,6 @@ export interface ProductStorage {
 }
 
 /**
- * Host supply of ring-VRF prover parameters.
- *
- * The core proves with parameters the host provides, rather than carrying
- * several MiB of them for a capability most sessions never use. A host that
- * omits this capability cannot prove locally, and the core routes those
- * requests to the paired signer instead.
- */
-export interface RingProverParams {
-  /**
-   * Parameter bytes for one ring domain, or ``undefined`` when this host serves
-   * none.
-   *
-   * The core checks the bytes against a pinned hash before use, so a host
-   * may serve them from a cache it does not itself validate.
-   */
-  loadRingProverParams(
-    domain: RingProverDomain,
-  ): Promise<Uint8Array | undefined>;
-}
-
-/**
  * Host theme source.
  */
 export interface ThemeHost {
@@ -1540,7 +1497,6 @@ export interface HostCallbacks {
   chat?: ChatPlatform;
   permissionStatus?: PermissionStatusHost;
   pocket?: PocketPlatform;
-  ringProverParams?: RingProverParams;
 }
 
 export interface RequiredHostCallbacks {
@@ -1560,5 +1516,4 @@ export interface RequiredHostCallbacks {
   chat?: Required<ChatPlatform>;
   permissionStatus?: Required<PermissionStatusHost>;
   pocket?: Required<PocketPlatform>;
-  ringProverParams?: Required<RingProverParams>;
 }

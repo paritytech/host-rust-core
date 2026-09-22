@@ -12,7 +12,6 @@ verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b0
 sp-crypto-hashing = { version = "0.1", default-features = false }
 hex = "0.4"
 derive_more = { version = "2", features = ["display", "error", "from"] }
-serde_json = "1"
 
 [lints]
 workspace = true

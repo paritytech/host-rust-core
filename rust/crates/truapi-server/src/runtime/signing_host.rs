@@ -63,6 +63,7 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
+use crate::runtime::ring_prover_params;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1021,15 +1022,13 @@ impl ProductAuthority for SigningHost {
             .ring_resolver
             .resolve(&request.payload.ring_location, &[candidate])
             .await?;
-        // This role has no one to delegate to, so a host that serves no
-        // parameters reports it rather than reaching for a proof it cannot
-        // make.
-        self.services
-            .ring_prover_params_cache()
-            .ensure(resolved.domain_size)
+        // This role has no one to delegate to, so a core without this ring's
+        // prover parameters reports it rather than reaching for a proof it
+        // cannot make.
+        ring_prover_params::ensure(resolved.domain_size)
             .await
-            .map_err(|reason| RingVrfError::Unknown {
-                reason: format!("ring prover parameters unavailable: {reason:?}"),
+            .map_err(|_| RingVrfError::Unknown {
+                reason: "ring prover parameters unavailable".to_owned(),
             })?;
         // Reject a stale request if the local session disconnected or changed
         // while its chain snapshot was being resolved.

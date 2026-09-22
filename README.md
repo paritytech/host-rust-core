@@ -78,7 +78,7 @@ rust/crates/
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
-  truapi-srs-gen/        Emits the per-domain ring-VRF prover parameters web hosts serve
+  truapi-srs-gen/        Emits the per-domain ring-VRF prover parameters the browser core reads
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`

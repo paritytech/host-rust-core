@@ -2,8 +2,12 @@
 //!
 //! A prover needs `3 * piop_domain_size + 1` powers of tau, so the parameters
 //! for a 255-member ring are a thirty-second of those for a 16127-member one.
-//! Hosts that fetch parameters at runtime fetch only the domain in hand, so
-//! each one is published as its own file.
+//! A core that reads its parameters at runtime reads only the domain in hand,
+//! so each one is published as its own file.
+//!
+//! The file name carries a prefix of the content hash, which is also what the
+//! core pins: it addresses a file by the hash it expects, so a file this tool
+//! emits under a different name is one the core never asks for.
 
 use std::fs;
 use std::io;
@@ -19,14 +23,12 @@ use verifiable::ring::{Bls12_381Params, RingCurveParams, RingDomainSize, ring_se
 pub enum EmitError {
     /// The output directory could not be written.
     Io(io::Error),
-    /// The shipped SRS could not be read or truncated to a domain.
+    /// The shipped SRS could not be read or cut down to a domain.
     #[display("the shipped SRS is unusable for {domain:?}")]
     Srs {
         /// Domain whose parameters could not be produced.
-        domain: &'static str,
+        domain: RingDomainSize,
     },
-    /// The manifest could not be encoded.
-    Manifest(serde_json::Error),
 }
 
 /// One emitted parameter file.
@@ -39,59 +41,31 @@ pub struct Emitted {
     pub bytes: usize,
 }
 
-/// Write one parameter file per ring domain into `out_dir`, plus the manifest
-/// hosts read to address them. Returns what was written, in domain order.
+/// Write one parameter file per ring domain into `out_dir`, returning what was
+/// written in domain order.
 pub fn emit(out_dir: &Path) -> Result<Vec<Emitted>, EmitError> {
     fs::create_dir_all(out_dir)?;
     let srs = Bls12_381Params::srs_raw();
 
-    let mut emitted = Vec::new();
-    let mut manifest = serde_json::Map::new();
-    for domain in RingDomainSize::VARIANTS {
-        let setup = ring_setup_from_srs::<BandersnatchSha512Ell2>(domain, srs).map_err(|_| {
-            EmitError::Srs {
-                domain: domain_key_static(domain),
-            }
-        })?;
-        let mut bytes = Vec::new();
-        setup
-            .pcs_params
-            .serialize_uncompressed(&mut bytes)
-            .map_err(|_| EmitError::Srs {
-                domain: domain_key_static(domain),
-            })?;
+    RingDomainSize::VARIANTS
+        .into_iter()
+        .map(|domain| {
+            let setup = ring_setup_from_srs::<BandersnatchSha512Ell2>(domain, srs)
+                .map_err(|_| EmitError::Srs { domain })?;
+            let mut bytes = Vec::new();
+            setup
+                .pcs_params
+                .serialize_uncompressed(&mut bytes)
+                .map_err(|_| EmitError::Srs { domain })?;
 
-        let hash = hex::encode(blake2_256(&bytes));
-        let file = format!("srs-domain{}-{}.bin", domain.as_power(), &hash[..8]);
-        fs::write(out_dir.join(&file), &bytes)?;
-
-        manifest.insert(
-            domain_key_static(domain).to_string(),
-            serde_json::json!({
-                "file": file,
-                "blake2b256": hash,
-                "bytes": bytes.len(),
-            }),
-        );
-        emitted.push(Emitted {
-            file,
-            hash,
-            bytes: bytes.len(),
-        });
-    }
-
-    fs::write(
-        out_dir.join("srs-manifest.json"),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
-    Ok(emitted)
-}
-
-/// Manifest key for a domain, matching the host-side loader.
-fn domain_key_static(domain: RingDomainSize) -> &'static str {
-    match domain {
-        RingDomainSize::Domain11 => "domain11",
-        RingDomainSize::Domain12 => "domain12",
-        RingDomainSize::Domain16 => "domain16",
-    }
+            let hash = hex::encode(blake2_256(&bytes));
+            let file = format!("srs-domain{}-{}.bin", domain.as_power(), &hash[..8]);
+            fs::write(out_dir.join(&file), &bytes)?;
+            Ok(Emitted {
+                file,
+                hash,
+                bytes: bytes.len(),
+            })
+        })
+        .collect()
 }

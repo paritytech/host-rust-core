@@ -50,6 +50,7 @@ use crate::host_logic::session::{SessionInfo, SessionState, encode_persisted_ses
 use crate::host_logic::session_store::SessionStoreChangeNotifier;
 use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
+use crate::runtime::ring_prover_params;
 use crate::subscription::Spawner;
 
 use futures::StreamExt;
@@ -2312,14 +2313,11 @@ impl PairingHost {
                     &[MemberCandidate { member }],
                 )
                 .await?;
-            // Proving needs this ring's parameters. A host that serves none
-            // cannot prove here at all, so the request goes to the signer
-            // rather than failing: the same answer this call gives when no
-            // local key backs the handle.
-            if self
-                .services
-                .ring_prover_params_cache()
-                .ensure(resolved.domain_size)
+            // A core without this ring's prover parameters cannot prove here
+            // at all, so the request goes to the signer rather than failing:
+            // the same answer this call gives when no local key backs the
+            // handle.
+            if ring_prover_params::ensure(resolved.domain_size)
                 .await
                 .is_err()
             {

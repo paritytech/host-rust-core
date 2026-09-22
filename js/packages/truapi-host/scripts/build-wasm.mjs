@@ -3,8 +3,8 @@
 // `dist/wasm/web/`. wasm-pack is required.
 
 import { execFile } from "node:child_process";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -141,7 +141,7 @@ async function validateDataSection(wasmPath) {
   }
 }
 
-/** Emit the per-domain ring prover parameters the host serves at runtime. */
+/** Emit the per-domain ring prover parameters the core reads at runtime. */
 async function emitRingProverParams(outDir) {
   process.stdout.write(`ring prover params → ${outDir}\n`);
   const { stdout } = await execFileAsync(
@@ -150,6 +150,45 @@ async function emitRingProverParams(outDir) {
     { cwd: repoRoot },
   );
   process.stdout.write(stdout);
+}
+
+/** Every `.js` wasm-bindgen emitted under `snippets/`, recursively. */
+async function snippetFiles(dir) {
+  const found = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = resolve(dir, entry.name);
+    if (entry.isDirectory()) found.push(...(await snippetFiles(path)));
+    else if (entry.name.endsWith(".js")) found.push(path);
+  }
+  return found;
+}
+
+// The core addresses the ring prover parameters relative to the JS snippet
+// wasm-bindgen emits for it, which sits two directories below this output.
+// Nothing at runtime would report a snippet emitted at another depth: the
+// fetch would 404 and the browser would quietly stop proving locally, so the
+// layout is checked here instead.
+const SNIPPET_DEPTH = "../..";
+
+async function validateSnippetDepth(outDir) {
+  const snippets = resolve(outDir, "snippets");
+  const files = await snippetFiles(snippets).catch(() => []);
+  if (files.length === 0) {
+    throw new Error(
+      `no wasm-bindgen snippet under ${snippets}: the core reads its ring ` +
+        "prover parameters through one",
+    );
+  }
+  for (const file of files) {
+    const depth = relative(dirname(file), outDir);
+    if (depth !== SNIPPET_DEPTH) {
+      throw new Error(
+        `${relative(outDir, file)} resolves the output directory as "${depth}", ` +
+          `not "${SNIPPET_DEPTH}": update the URL in ` +
+          "rust/crates/truapi-server/src/runtime/ring_prover_params.rs",
+      );
+    }
+  }
 }
 
 async function validateReleaseWasm(wasmPath) {
@@ -226,6 +265,7 @@ async function build(target, subdir) {
   ]);
   await validateReleaseWasm(wasmPath);
   await validateDataSection(wasmPath);
+  await validateSnippetDepth(outDir);
   await writeCompressedSidecars(wasmPath);
   await emitRingProverParams(outDir);
 }
