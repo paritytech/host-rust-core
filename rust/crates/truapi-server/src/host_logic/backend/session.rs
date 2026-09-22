@@ -26,6 +26,14 @@ pub const CHALLENGE_PATH: &str = "/api/v1/auth/challenge";
 /// Path that exchanges a challenge and a proof for a session token.
 pub const REDEEM_PATH: &str = "/api/v1/auth/redeem";
 
+/// Path that renews a session without a fresh proof.
+///
+/// The session being renewed travels in `Authorization`, so the request itself
+/// carries nothing: the backend reads the credential it already issued and
+/// answers with a later one. A backend that does not serve this path costs one
+/// refused call and the handshake runs instead.
+pub const REFRESH_PATH: &str = "/api/v1/auth/refresh";
+
 /// Longest handshake answer the core reads. A challenge and a JWT are small,
 /// and the tunnel's own megabyte is far more room than either needs.
 const MAX_HANDSHAKE_BODY_BYTES: usize = 8192;
@@ -115,6 +123,21 @@ pub fn redeem_request(
             // A `serde_json::Value` of strings and a number always serializes.
             bytes: serde_json::to_vec(&body).unwrap_or_default(),
         }),
+    }
+}
+
+/// Ask a backend to renew the session it already issued.
+///
+/// The body is empty because the credential is the request: the backend reads
+/// `Authorization`, which the host writes from the session the core passes
+/// beside this.
+pub fn refresh_request(backend: &str) -> HostBackendRequest {
+    HostBackendRequest {
+        backend: backend.to_owned(),
+        method: BackendHttpMethod::Post,
+        path: REFRESH_PATH.to_owned(),
+        query: Vec::new(),
+        body: None,
     }
 }
 

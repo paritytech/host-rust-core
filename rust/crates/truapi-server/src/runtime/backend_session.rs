@@ -132,8 +132,62 @@ impl BackendSessions {
         if let Some(decided) = self.cached(backend, now_ms) {
             return decided;
         }
+        // A session the core holds and the backend has not refused is worth
+        // renewing before it is worth re-proving: the expensive half of the
+        // handshake is a ring-VRF verification and the chain read behind it,
+        // and neither says anything a valid session has not already said. The
+        // backend decides how long that may go on; a refusal here just falls
+        // through to the handshake.
+        if let Some(expiring) = self.expiring_token(backend)
+            && let Some(renewed) = self.refresh(host, product, backend, expiring).await
+        {
+            return Authorization::Session(renewed);
+        }
         self.authenticate(host, prover, product, backend, now_ms)
             .await
+    }
+
+    /// The token of a held session that has aged out of use, if one is held.
+    ///
+    /// Only a `Held` entry qualifies: there is nothing to renew from a backend
+    /// that serves no handshake, and an entry inside its back-off has already
+    /// been answered without asking the backend at all.
+    fn expiring_token(&self, backend: &str) -> Option<String> {
+        let entries = self.entries.lock().expect("backend session mutex poisoned");
+        match entries.get(backend)? {
+            Entry::Held(session) => Some(session.token.clone()),
+            Entry::NoHandshake | Entry::Unavailable { .. } => None,
+        }
+    }
+
+    /// Exchange an expiring session for a later one, or `None` to fall through
+    /// to the handshake.
+    ///
+    /// Nothing is remembered on failure. A backend with no refresh path, or one
+    /// that has decided this session has been renewed for long enough, is
+    /// answering "prove again" — and the handshake that follows carries its own
+    /// back-off if that fails too.
+    async fn refresh(
+        &self,
+        host: &dyn BackendHost,
+        product: &ProductContext,
+        backend: &str,
+        expiring: String,
+    ) -> Option<String> {
+        let response = host
+            .backend_request(product, session::refresh_request(backend), Some(expiring))
+            .await
+            .ok()?;
+        if response.status != 200 {
+            return None;
+        }
+        let renewed = session::parse_session(&response.body).ok()?;
+        if screen_authorization(&renewed.token).is_err() {
+            return None;
+        }
+        let token = renewed.token.clone();
+        self.remember(backend, Entry::Held(renewed));
+        Some(token)
     }
 
     /// Drop a session the backend refused and mint another, once.
@@ -374,11 +428,14 @@ mod tests {
     struct StubBackend {
         challenges: AtomicUsize,
         redeems: AtomicUsize,
+        refreshes: AtomicUsize,
         plain_calls: AtomicUsize,
         /// Status the challenge path answers with.
         challenge_status: u16,
         /// Status the redeem path answers with.
         redeem_status: u16,
+        /// Status the refresh path answers with.
+        refresh_status: u16,
         /// `retry-after` seconds the redeem path sends, when it sends one.
         retry_after: Option<u64>,
         /// Token minted by each redemption, suffixed by the redeem count.
@@ -390,8 +447,18 @@ mod tests {
             Self {
                 challenge_status: 200,
                 redeem_status: 200,
+                refresh_status: 200,
                 expires_at_ms: 10_000,
                 ..Self::default()
+            }
+        }
+
+        /// Serves the handshake but not the refresh path, as a backend that
+        /// only ever mints from a proof does.
+        fn without_refresh() -> Self {
+            Self {
+                refresh_status: 404,
+                ..Self::serving()
             }
         }
 
@@ -434,6 +501,17 @@ mod tests {
                     (
                         self.challenge_status,
                         br#"{"challenge":"AAECAwQF"}"#.to_vec(),
+                    )
+                }
+                session::REFRESH_PATH => {
+                    let nth = self.refreshes.fetch_add(1, Ordering::SeqCst);
+                    (
+                        self.refresh_status,
+                        format!(
+                            r#"{{"token":"renewed-{nth}","expiresAtMs":{}}}"#,
+                            self.expires_at_ms.saturating_add(10_000)
+                        )
+                        .into_bytes(),
                     )
                 }
                 session::REDEEM_PATH => {
@@ -584,7 +662,7 @@ mod tests {
         ));
         // Inside the margin: the token has not expired, but it would while the
         // call it was going to authenticate is in flight.
-        let renewed = futures::executor::block_on(sessions.authorization(
+        let replaced = futures::executor::block_on(sessions.authorization(
             &backend,
             &prover,
             &product(),
@@ -592,8 +670,10 @@ mod tests {
             6_000,
         ));
 
-        assert_eq!(renewed.token(), Some("session-1"));
-        assert_eq!(backend.challenges.load(Ordering::SeqCst), 2);
+        assert!(
+            replaced.token().is_some_and(|token| token != "session-0"),
+            "the margin exists so the token in flight is never the expiring one"
+        );
     }
 
     #[test]
@@ -812,5 +892,67 @@ mod tests {
             0,
             "the product's own call is not sent to collect a refusal"
         );
+    }
+
+    /// An expiring session is renewed rather than re-proved. The ring-VRF
+    /// verification and the chain read behind it say nothing a valid session
+    /// has not already said.
+    #[test]
+    fn an_expiring_session_is_renewed_without_a_second_proof() {
+        let backend = StubBackend::serving();
+        let prover = StubProver::default();
+        let sessions = BackendSessions::default();
+
+        futures::executor::block_on(sessions.authorization(
+            &backend,
+            &prover,
+            &product(),
+            "fiat-onramp",
+            0,
+        ));
+        // Inside the expiry margin: the held token is no longer usable.
+        let renewed = futures::executor::block_on(sessions.authorization(
+            &backend,
+            &prover,
+            &product(),
+            "fiat-onramp",
+            6_000,
+        ));
+
+        assert_eq!(renewed.token(), Some("renewed-0"));
+        assert_eq!(backend.refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            prover.proofs.load(Ordering::SeqCst),
+            1,
+            "renewing must not cost a second proof"
+        );
+        assert_eq!(backend.challenges.load(Ordering::SeqCst), 1);
+    }
+
+    /// A backend with no refresh path is answering "prove again", so the
+    /// handshake runs and the caller is served either way.
+    #[test]
+    fn a_backend_without_a_refresh_path_falls_back_to_the_handshake() {
+        let backend = StubBackend::without_refresh();
+        let prover = StubProver::default();
+        let sessions = BackendSessions::default();
+
+        futures::executor::block_on(sessions.authorization(
+            &backend,
+            &prover,
+            &product(),
+            "fiat-onramp",
+            0,
+        ));
+        let renewed = futures::executor::block_on(sessions.authorization(
+            &backend,
+            &prover,
+            &product(),
+            "fiat-onramp",
+            6_000,
+        ));
+
+        assert_eq!(renewed.token(), Some("session-1"));
+        assert_eq!(prover.proofs.load(Ordering::SeqCst), 2);
     }
 }
