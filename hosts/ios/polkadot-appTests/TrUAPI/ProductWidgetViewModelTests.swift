@@ -64,7 +64,7 @@ private final class ScriptedRenderRuntime: ChatRuntimeProtocol, @unchecked Senda
     func dispose() async {}
 }
 
-@Suite("ProductWidgetViewModel")
+@Suite("ProductWidgetViewModel", .timeLimit(.minutes(1)))
 struct ProductWidgetViewModelTests {
     private func makeViewModel(runtime: ChatRuntimeProtocol) -> ProductWidgetViewModel {
         ProductWidgetViewModel(
@@ -81,11 +81,11 @@ struct ProductWidgetViewModelTests {
 
     /// The cell observes this instance, so a retry that publishes `node` reaches
     /// the screen without the decoder replacing anything.
-    @Test func aFailedStreamIsRetriedOnTheSameInstance() async throws {
+    @Test func aFailedStreamIsRetriedOnTheSameInstance() async {
         let runtime = ScriptedRenderRuntime([.fail(ProductRuntimeError.Closed), .draw])
         let viewModel = makeViewModel(runtime: runtime)
 
-        try await Task.sleep(for: .milliseconds(300))
+        await viewModel.renderTask?.value
 
         #expect(runtime.renderCallCount == 2)
         let node = await MainActor.run { viewModel.node }
@@ -94,11 +94,11 @@ struct ProductWidgetViewModelTests {
 
     /// A drop after the body arrived reopens the stream too — the product must be
     /// able to update the body again — and the tree stays on screen meanwhile.
-    @Test func aStreamThatDrewThenFailedIsReopened() async throws {
+    @Test func aStreamThatDrewThenFailedIsReopened() async {
         let runtime = ScriptedRenderRuntime([.drawThenFail(ProductRuntimeError.Closed), .draw])
         let viewModel = makeViewModel(runtime: runtime)
 
-        try await Task.sleep(for: .milliseconds(300))
+        await viewModel.renderTask?.value
 
         #expect(runtime.renderCallCount == 2)
         let node = await MainActor.run { viewModel.node }
@@ -107,11 +107,11 @@ struct ProductWidgetViewModelTests {
 
     /// Without a cap a permanently broken body would reopen a core render stream
     /// for as long as the bot lives.
-    @Test func retriesAreCapped() async throws {
+    @Test func retriesAreCapped() async {
         let runtime = ScriptedRenderRuntime([.fail(ProductRuntimeError.Closed)])
         let viewModel = makeViewModel(runtime: runtime)
 
-        try await Task.sleep(for: .milliseconds(400))
+        await viewModel.renderTask?.value
 
         #expect(runtime.renderCallCount == 3)
         let node = await MainActor.run { viewModel.node }
@@ -120,24 +120,24 @@ struct ProductWidgetViewModelTests {
 
     /// A disposed runtime fails every stream with `CancellationError`; reopening
     /// would only log the same failure three times.
-    @Test func aDisposedRuntimeIsNotRetried() async throws {
+    @Test func aDisposedRuntimeIsNotRetried() async {
         let runtime = ScriptedRenderRuntime([.fail(CancellationError())])
         // Held for the whole test: a released view model cancels its own task
         // before the first stream opens, which would pass this for the wrong reason.
         let viewModel = makeViewModel(runtime: runtime)
 
-        try await Task.sleep(for: .milliseconds(300))
+        await viewModel.renderTask?.value
 
         #expect(runtime.renderCallCount == 1)
         let node = await MainActor.run { viewModel.node }
         #expect(node == nil)
     }
 
-    @Test func aRenderThatDrawsIsNotRetried() async throws {
+    @Test func aRenderThatDrawsIsNotRetried() async {
         let runtime = ScriptedRenderRuntime([.draw])
         let viewModel = makeViewModel(runtime: runtime)
 
-        try await Task.sleep(for: .milliseconds(200))
+        await viewModel.renderTask?.value
 
         #expect(runtime.renderCallCount == 1)
         let node = await MainActor.run { viewModel.node }

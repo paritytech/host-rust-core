@@ -10,7 +10,10 @@ final class ProductWidgetViewModel: WidgetNodeProviding {
     private let runtime: ChatRuntimeProtocol
     private let tokenResolver: any WidgetDesignTokenResolving
     private let logger: LoggerProtocol
-    private var renderTask: Task<Void, Never>?
+    /// Not private: tests await this instead of a wall clock. Under a loaded
+    /// runner a fixed sleep expires before the loop reopens the stream, which
+    /// reads as "never retried" even though the retry is on its way.
+    private(set) var renderTask: Task<Void, Never>?
     private let retryDelay: Duration
 
     /// Streams opened for one body. The runtime retries the throws that precede
