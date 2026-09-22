@@ -34,10 +34,11 @@ use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
 use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
-    ActionChannel, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
-    PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
-    SigningHostRole, SigningHostSsoService, disconnect_paired_host, establish_pairing,
-    notify_pairing_allowance_allocation, notify_pairing_failed, respond_to_pairing, resume_pairing,
+    ActionChannel, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, DevicePairingObserver,
+    LocalActivation, PairedSsoPeer, PairingHostRole, ProductAuthority, ProductRuntimeHost,
+    ResponderExit, RuntimeServices, SigningHostRole, SigningHostSsoService, disconnect_paired_host,
+    establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,
+    respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -568,6 +569,14 @@ pub struct SigningHostRuntime {
 }
 
 impl SigningHostRuntime {
+    /// Answer resource allocation as granted without performing it.
+    ///
+    /// For test hosts only; see [`SigningHostRole::set_grant_allowances_unchecked`].
+    #[cfg(feature = "test-host")]
+    pub fn set_grant_allowances_unchecked(&self, granted: bool) {
+        self.signing_host.set_grant_allowances_unchecked(granted);
+    }
+
     /// Build a long-lived signing-host runtime around a platform implementation.
     /// Chat is answered `Unsupported`; [`Self::with_chat_platform`] serves it.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.new"))]
@@ -638,6 +647,17 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_pocket_platform"))]
     pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
         self.services.install_pocket_platform(platform)
+    }
+
+    /// Install the host's [`DevicePairingObserver`], told whenever a device
+    /// finishes pairing with this signing host.
+    ///
+    /// Set-once, so the surface that announces a new device cannot change
+    /// hands between two pairings. Returns whether this call installed it.
+    /// Call it before answering any pairing deeplink.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_device_pairing_observer"))]
+    pub fn set_device_pairing_observer(&self, observer: Arc<dyn DevicePairingObserver>) -> bool {
+        self.services.install_device_pairing_observer(observer)
     }
 
     /// Build a product-facing runtime from this signing host.
@@ -1048,8 +1068,8 @@ pub struct HostAdmin {
 }
 
 impl HostAdmin {
-    /// Test-only access to the product-facing runtime this handle wraps.
-    #[cfg(test)]
+    /// Access the execution's product-facing capabilities and permission grants.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn product_runtime(&self) -> &Arc<ProductRuntimeHost> {
         &self.product_runtime
     }
@@ -3310,6 +3330,38 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// A second installer must not take over the announcement between two
+    /// pairings.
+    #[test]
+    fn the_device_pairing_observer_is_installed_once() {
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        struct Inert;
+        impl crate::DevicePairingObserver for Inert {
+            fn device_paired(&self, _device: crate::PairedSsoPeer) {}
+        }
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+            "paseo".to_string(),
+        )
+        .expect("signing host config is valid");
+        let runtime =
+            SigningHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner());
+
+        assert!(runtime.set_device_pairing_observer(Arc::new(Inert)));
+        assert!(!runtime.set_device_pairing_observer(Arc::new(Inert)));
     }
 
     #[test]

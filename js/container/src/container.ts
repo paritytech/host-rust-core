@@ -7,20 +7,29 @@ import {
 import { installWebRtcPolicy } from './webrtc.js';
 import { installFetchGate } from './network.js';
 import { installXhrGate } from './xhr.js';
-import { installWebSocketGate } from './websocket.js';
+import { installWebSocketGate, type WebSocketBackendFactory } from './websocket.js';
 import { installMediaPolicy } from './media.js';
 import type { createPermissionAuthorization } from './network-transport.js';
 
 export type PermissionAuthorization = ReturnType<typeof createPermissionAuthorization>;
 
-export function installContainer(_authorize: PermissionAuthorization): void {
-  const _bridgeUrl: string | undefined = (window as any).__truapi_localhost?.url;
-  const _webSocketBackend = (window as any).__truapi_websocket_connect__;
+export function installContainer(
+  _authorize: PermissionAuthorization,
+  options: { nativeHttp?: boolean } = {},
+): void {
+  const runtime = window as Window & {
+    __truapi_websocket_connect__?: WebSocketBackendFactory;
+  };
+  const _webSocketBackend = runtime.__truapi_websocket_connect__;
   freezeAndDelete(window, '__truapi_websocket_connect__');
-  installWebSocketGate(window, _authorize.network, _bridgeUrl, _webSocketBackend);
+  installWebSocketGate(window, _authorize.network, _webSocketBackend);
 
-  installFetchGate(window, _authorize.network);
-  installXhrGate(window, _authorize.network);
+  // Android's WebView interceptor already asks Rust to authorize HTTP.
+  // A second check here would require another grant for "Allow once".
+  if (!options.nativeHttp) {
+    installFetchGate(window, _authorize.network);
+    installXhrGate(window, _authorize.network);
+  }
   installMediaPolicy(window, _authorize.media);
 
   // --- Network: delete (no future permission path) ---

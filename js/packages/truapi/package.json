@@ -31,6 +31,10 @@
       "types": "./dist/sandbox.d.ts",
       "import": "./dist/sandbox.js"
     },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js"
+    },
     "./scale": {
       "types": "./dist/scale.d.ts",
       "import": "./dist/scale.js"

@@ -1,8 +1,10 @@
 package io.paritytech.polkadotapp.feature_products_impl.presentation.permissionPrompt
 
+import androidx.lifecycle.SavedStateHandle
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.utils.launchUnit
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.PermissionContextHolder
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionContext
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.PermissionDecision
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission.RemotePermission
@@ -14,10 +16,17 @@ import javax.inject.Inject
 
 @HiltViewModel
 class PermissionPromptViewModel @Inject constructor(
-    private val permissionContext: ProductPermissionContext,
+    savedStateHandle: SavedStateHandle,
+    private val holder: PermissionContextHolder,
     private val router: ProductsRouter,
 ) : BaseViewModel(), PermissionPromptContract {
-    override val state: StateFlow<PermissionPromptUiState> = MutableStateFlow(permissionContext.toUiState())
+    private val requestId = savedStateHandle.get<String>(PermissionPromptBottomSheet.REQUEST_ID)
+    private val permissionContext = holder.get()?.takeIf { it.id == requestId }
+    override val state: StateFlow<PermissionPromptUiState?> = MutableStateFlow(permissionContext?.toUiState())
+
+    fun onResume() = launchUnit {
+        if (permissionContext == null || holder.get() !== permissionContext) router.closePermissionPrompt(requestId)
+    }
 
     override fun onAllowAlwaysClicked() = deliver(PermissionDecision.AllowAlways)
 
@@ -25,9 +34,8 @@ class PermissionPromptViewModel @Inject constructor(
 
     override fun onDenyClicked() = deliver(PermissionDecision.Deny)
 
-    private fun deliver(decision: PermissionDecision) = launchUnit {
-        permissionContext.deliver(decision)
-        router.back()
+    private fun deliver(decision: PermissionDecision) {
+        permissionContext?.deliver(decision)
     }
 }
 

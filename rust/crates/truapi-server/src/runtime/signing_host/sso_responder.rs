@@ -21,10 +21,8 @@ use truapi::v01;
 
 use super::sso_replay::{ReplayExecution, SsoReplayScope, execute_once};
 use super::{SigningHost, SigningHostSsoService};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
     ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
@@ -49,17 +47,14 @@ use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::{fresh_statement_expiry, sso_message_id};
 use crate::runtime::sso_service::Dispatch;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
 /// RFC-0022 domain for the responder's persistent SSO X25519 key.
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
-#[cfg(not(target_arch = "wasm32"))]
 const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
 
 /// Upper bound on undecodable request ids acknowledged within one serve loop.
@@ -116,6 +111,7 @@ impl DecodeFailureRequestIds {
 
 /// Terminal outcome of one responder serve loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum ResponderExit {
     /// The pairing host announced `Disconnected`; its durable pairing may be removed.
     PeerDisconnected,
@@ -125,11 +121,63 @@ pub enum ResponderExit {
 
 /// Public key material identifying one pairing host's resumable SSO session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct PairedSsoPeer {
     /// Pairing host's statement-store account id.
     pub statement_account_id: [u8; 32],
     /// Pairing host's X25519 public key.
     pub encryption_public_key: [u8; 32],
+}
+
+/// Peer-supplied description of the host proposing a pairing.
+///
+/// Sanitized for direct rendering: every value is trimmed, stripped of control
+/// characters and bidirectional overrides, capped at
+/// [`MAX_PAIRING_METADATA_CHARS`] characters, and left `None` when nothing
+/// survives. A value the peer did not send is `None` too.
+///
+/// Sanitized is not verified. Nothing signs this metadata, so a prompt built
+/// from it states what the peer calls itself, never who it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct PairingProposalMetadata {
+    /// Human-readable host name.
+    pub host_name: Option<String>,
+    /// Host software version.
+    pub host_version: Option<String>,
+    /// Host icon URL.
+    pub host_icon: Option<String>,
+    /// Platform kind, such as a browser or operating system name.
+    pub platform_type: Option<String>,
+    /// Platform version.
+    pub platform_version: Option<String>,
+}
+
+/// Everything a pairing deeplink offers a host before it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct PairingProposal {
+    /// Key material this pairing would be established and resumed on.
+    pub peer: PairedSsoPeer,
+    /// How the peer describes itself on the pairing prompt.
+    pub metadata: PairingProposalMetadata,
+}
+
+/// Host notified when a device finishes pairing with this signing host.
+///
+/// The core has no chat of its own, so announcing a new device to the user's
+/// existing contacts belongs to the host.
+///
+/// Arrives on the thread answering the handshake, while the pairing call is
+/// still running, so hand the device off rather than announcing it inline.
+pub trait DevicePairingObserver: Send + Sync {
+    /// `device` paired: its handshake answer is on the Statement Store.
+    ///
+    /// At least once per pairing, so a device that pairs again is reported
+    /// again with the same value. The answer reaching the store is not proof
+    /// the peer read it: one that cancelled or timed out waiting leaves a
+    /// device here that never connects.
+    fn device_paired(&self, device: PairedSsoPeer);
 }
 
 struct EstablishedPairing {
@@ -140,13 +188,61 @@ struct EstablishedPairing {
 impl PairedSsoPeer {
     /// Extract the public peer material carried by a pairing deeplink.
     pub fn from_deeplink(deeplink: &str) -> Result<Self, String> {
+        Ok(PairingProposal::from_deeplink(deeplink)?.peer)
+    }
+}
+
+/// Longest metadata value a pairing prompt renders; the rest is dropped.
+pub const MAX_PAIRING_METADATA_CHARS: usize = 512;
+
+impl PairingProposal {
+    /// Decode a pairing deeplink into the peer it advertises and the metadata
+    /// a host prompts with.
+    pub fn from_deeplink(deeplink: &str) -> Result<Self, String> {
         let VersionedHandshakeProposal::V2(proposal) =
             decode_pairing_deeplink(deeplink).map_err(|err| err.to_string())?;
+        let mut metadata = PairingProposalMetadata::default();
+        for v2::MetadataEntry(key, value) in proposal.metadata {
+            let value = sanitize_pairing_metadata(value);
+            match key {
+                v2::MetadataKey::HostName => metadata.host_name = value,
+                v2::MetadataKey::HostVersion => metadata.host_version = value,
+                v2::MetadataKey::HostIcon => metadata.host_icon = value,
+                v2::MetadataKey::PlatformType => metadata.platform_type = value,
+                v2::MetadataKey::PlatformVersion => metadata.platform_version = value,
+                v2::MetadataKey::Custom(_) => {}
+            }
+        }
         Ok(Self {
-            statement_account_id: proposal.device.statement_account_id,
-            encryption_public_key: proposal.device.encryption_public_key,
+            peer: PairedSsoPeer {
+                statement_account_id: proposal.device.statement_account_id,
+                encryption_public_key: proposal.device.encryption_public_key,
+            },
+            metadata,
         })
     }
+}
+
+/// Make one peer-supplied metadata value safe to render.
+///
+/// Control characters and the bidirectional overrides drop out, because a
+/// prompt that concatenates this value with its own text is otherwise a
+/// surface for reordering what the user reads. The cap bounds what an
+/// unbounded field can push into that prompt.
+fn sanitize_pairing_metadata(value: String) -> Option<String> {
+    let value = value
+        .trim()
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+        })
+        .take(MAX_PAIRING_METADATA_CHARS)
+        .collect::<String>();
+    (!value.is_empty()).then_some(value)
 }
 
 /// Failure while deriving or allocating a Statement Store/Bulletin allowance.
@@ -156,30 +252,24 @@ pub(super) enum AllowanceAllocationError {
     #[error("{0}")]
     Authority(#[from] AuthorityError),
     /// The host serves no chain for this role, so there is nothing to claim on.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("host serves no {chain} chain")]
     ChainNotServed {
         /// Role that could not be resolved.
         chain: &'static str,
     },
     /// Reading the host's chain set failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("supported chains: {0}")]
     SupportedChains(String),
     /// Product-account key derivation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     ProductAccount(#[from] ProductAccountError),
     /// Chain state, metadata, ring, slot, proof, or extrinsic allocation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementAllowance(#[from] StatementAllowanceError),
     /// Runtime service could not open the required Statement Store RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementStoreRpcClient(#[from] StatementStoreRpcClientError),
     /// Runtime service could not open the required Bulletin RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{context}: {source}")]
     ChainRpcClient {
         /// Client context, naming which chain failed.
@@ -188,19 +278,10 @@ pub(super) enum AllowanceAllocationError {
         #[source]
         source: RuntimeFailure,
     },
-    /// Allocation helper is unavailable for this target.
-    #[cfg(target_arch = "wasm32")]
-    #[error("signing host: {resource} allowance allocation is native-only")]
-    NativeOnly {
-        /// Resource name.
-        resource: &'static str,
-    },
     /// System time cannot be converted into a UNIX timestamp.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("system clock before UNIX epoch")]
     SystemClockBeforeUnixEpoch,
     /// The signing account is not in any personhood ring.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("signing account is not a personhood ring member; cannot grant {resource} allowance")]
     MissingPersonhoodMembership {
         /// Resource name.
@@ -283,6 +364,10 @@ async fn establish_pairing_session(
     )
     .await?;
     debug!("answered pairing handshake");
+    // The submit is the earliest point the peer could read the answer.
+    if let Some(observer) = services.device_pairing_observer() {
+        observer.device_paired(peer);
+    }
 
     Ok(EstablishedPairing {
         session,
@@ -701,7 +786,6 @@ fn response_cli_summary(
     summary
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_statement_store_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -719,6 +803,14 @@ pub(super) async fn allocate_statement_store_allowance(
     let entropy = signing_host.root_entropy()?;
     let allowance =
         derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
+    // The key is derived locally; only its registration needs the chain. A
+    // host answering allocation as granted hands back the derived key so a
+    // product can sign with it, and skips the registration, so nothing it
+    // signs is accepted by a real statement store.
+    #[cfg(feature = "test-host")]
+    if signing_host.grants_allowances_unchecked() {
+        return Ok(allowance.secret.to_bytes().to_vec());
+    }
     let target = allowance.public.to_bytes();
     let candidates = signing_host.reserved_person_collection_candidates(session)?;
     let client = services
@@ -830,7 +922,6 @@ pub(super) async fn allocate_statement_store_allowance(
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_bulletin_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -847,6 +938,10 @@ pub(super) async fn allocate_bulletin_allowance(
     signing_host.require_current_session(session)?;
     let entropy = signing_host.root_entropy()?;
     let allowance = derive_sr25519_hard_path(&entropy, &["allowance", "bulletin", product_id])?;
+    #[cfg(feature = "test-host")]
+    if signing_host.grants_allowances_unchecked() {
+        return Ok(allowance.secret.to_bytes().to_vec());
+    }
     let target = allowance.public.to_bytes();
 
     let bulletin_rpc = statement_allowance::rpc::RpcClient::new(
@@ -940,19 +1035,6 @@ pub(super) async fn allocate_bulletin_allowance(
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_statement_store_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "statement-store",
-    })
-}
-
 /// Claim an Asset Hub PGAS allowance for the product account `derivation_index`
 /// selects.
 ///
@@ -964,7 +1046,6 @@ pub(super) async fn allocate_statement_store_allowance(
 /// Asset Hub is resolved through the host's chain set rather than a configured
 /// hash, so a host that does not serve it says so instead of claiming against
 /// whatever chain a stale hash happens to reach.
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_smart_contract_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -1061,36 +1142,18 @@ pub(super) async fn allocate_smart_contract_allowance(
     Ok(())
 }
 
-/// PGAS claims need chain access the wasm host does not have.
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_smart_contract_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _derivation_index: v01::DerivationIndex,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<(), AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly { resource: "PGAS" })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_bulletin_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "Bulletin",
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
+/// Wall-clock seconds since the UNIX epoch, used to pick the allowance period.
+///
+/// `std::time::SystemTime` compiles for wasm32 but panics when read, so the
+/// browser takes its clock from `web-time` instead.
 pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(target_arch = "wasm32")]
+    use web_time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|_| AllowanceAllocationError::SystemClockBeforeUnixEpoch)
 }
@@ -1394,6 +1457,168 @@ mod tests {
                 response,
             );
         }
+    }
+
+    fn pairing_deeplink(peer: PairedSsoPeer) -> String {
+        let proposal = VersionedHandshakeProposal::V2(v2::Proposal {
+            device: v2::Device {
+                statement_account_id: peer.statement_account_id,
+                encryption_public_key: peer.encryption_public_key,
+            },
+            metadata: vec![v2::MetadataEntry(
+                v2::MetadataKey::HostName,
+                "paired host".to_string(),
+            )],
+        });
+        format!(
+            "polkadotapp://pair?handshake={}",
+            hex::encode(proposal.encode())
+        )
+    }
+
+    #[derive(Default)]
+    struct RecordingPairingObserver {
+        paired: std::sync::Mutex<Vec<PairedSsoPeer>>,
+    }
+
+    impl RecordingPairingObserver {
+        fn paired(&self) -> Vec<PairedSsoPeer> {
+            self.paired
+                .lock()
+                .expect("paired device list mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl DevicePairingObserver for RecordingPairingObserver {
+        fn device_paired(&self, device: PairedSsoPeer) {
+            self.paired
+                .lock()
+                .expect("paired device list mutex poisoned")
+                .push(device);
+        }
+    }
+
+    fn pairing_fixture(submit_status: &'static str) -> (Arc<RuntimeServices>, Arc<SigningHost>) {
+        signing_fixture(Arc::new(StubPlatform {
+            rpc_method_responses: vec![(
+                "statement_submit",
+                format!(r#"{{"status":"{submit_status}"}}"#),
+            )],
+            ..Default::default()
+        }))
+    }
+
+    /// Without this the host never learns a device paired, so no contact is
+    /// told a new device joined.
+    #[test]
+    fn a_paired_device_is_reported_to_the_host() {
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key([0x42; 32]),
+        };
+        let (services, signing_host) = pairing_fixture("new");
+        let observer = Arc::new(RecordingPairingObserver::default());
+        assert!(services.install_device_pairing_observer(observer.clone()));
+
+        futures::executor::block_on(establish_pairing(
+            services,
+            signing_host,
+            &pairing_deeplink(peer),
+        ))
+        .expect("the handshake is answered");
+
+        assert_eq!(observer.paired(), vec![peer]);
+    }
+
+    /// Reporting a handshake the peer never received would have the host
+    /// announce a device over a session that does not exist.
+    #[test]
+    fn a_handshake_that_never_landed_reports_no_device() {
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key([0x42; 32]),
+        };
+        // Neither "new" nor "known", so the submit is rejected.
+        let (services, signing_host) = pairing_fixture("ignored");
+        let observer = Arc::new(RecordingPairingObserver::default());
+        assert!(services.install_device_pairing_observer(observer.clone()));
+
+        let failure = futures::executor::block_on(establish_pairing(
+            services,
+            signing_host,
+            &pairing_deeplink(peer),
+        ))
+        .expect_err("a rejected handshake submit fails the pairing");
+        // Without this the test would also pass on a failure from earlier,
+        // leaving the rule unexercised.
+        assert!(
+            failure.contains("statement_submit not accepted"),
+            "pairing failed before the handshake submit: {failure}"
+        );
+
+        assert_eq!(observer.paired(), Vec::new());
+    }
+
+    #[test]
+    fn pairing_without_an_observer_still_answers_the_handshake() {
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: x25519_public_key([0x42; 32]),
+        };
+        let (services, signing_host) = pairing_fixture("new");
+
+        futures::executor::block_on(establish_pairing(
+            services,
+            signing_host,
+            &pairing_deeplink(peer),
+        ))
+        .expect("the handshake is answered without an observer");
+    }
+
+    /// The peer writes what the pairing prompt calls it. Rendering that as
+    /// sent lets it reorder or pad out the prompt's own words around itself.
+    #[test]
+    fn proposal_metadata_is_sanitized_before_a_host_prompts_with_it() {
+        let long = "n".repeat(MAX_PAIRING_METADATA_CHARS + 10);
+        let proposal = VersionedHandshakeProposal::V2(v2::Proposal {
+            device: v2::Device {
+                statement_account_id: [0x31; 32],
+                encryption_public_key: [0x42; 32],
+            },
+            metadata: vec![
+                // A right-to-left override and a newline, either of which
+                // rewrites what the surrounding prompt text reads as.
+                v2::MetadataEntry(
+                    v2::MetadataKey::HostName,
+                    "  Wallet\u{202e}trebo\n  ".to_string(),
+                ),
+                v2::MetadataEntry(v2::MetadataKey::HostVersion, long.clone()),
+                v2::MetadataEntry(v2::MetadataKey::HostIcon, "\u{2066}\t ".to_string()),
+                v2::MetadataEntry(v2::MetadataKey::Custom("seat".to_string()), "3".to_string()),
+            ],
+        });
+        let deeplink = format!(
+            "polkadotapp://pair?handshake={}",
+            hex::encode(proposal.encode())
+        );
+
+        assert_eq!(
+            PairingProposal::from_deeplink(&deeplink)
+                .expect("a well-formed deeplink decodes")
+                .metadata,
+            PairingProposalMetadata {
+                host_name: Some("Wallettrebo".to_string()),
+                host_version: Some("n".repeat(MAX_PAIRING_METADATA_CHARS)),
+                // Nothing renderable survived, so the host has no name to show
+                // rather than an empty one.
+                host_icon: None,
+                // Neither key was sent, and a key outside the well-known set
+                // is not one a prompt has a place for.
+                platform_type: None,
+                platform_version: None,
+            }
+        );
     }
 
     #[test]

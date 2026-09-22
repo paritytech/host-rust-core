@@ -12,7 +12,9 @@
 //! bandersnatch ring-VRF aliases and membership proofs, and product-scoped
 //! Statement Store and Bulletin allowance keys (native only).
 
-#[cfg(not(target_arch = "wasm32"))]
+// Allocation uses `track`; the renewal loop around it is driven by native
+// entry points only, so on wasm the rest of the module is not reached yet.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 mod allowance_renewal;
 mod local_activation;
 pub(super) mod ring_vrf;
@@ -27,10 +29,14 @@ use truapi::latest::{
     HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
 };
 
+pub use allowance_renewal::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
-pub use allowance_renewal::{StatementRenewalTarget, TrackedStatementRenewalTarget};
+pub use allowance_renewal::TrackedStatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
-pub use sso_responder::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
+pub use sso_responder::{
+    AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
+    PairingProposal, PairingProposalMetadata, ResponderExit,
+};
 pub(crate) use sso_responder::{
     disconnect_paired_host, establish_pairing, notify_pairing_allowance_allocation,
     notify_pairing_failed, respond_to_pairing, resume_pairing,
@@ -51,7 +57,6 @@ use crate::host_logic::product_account::{
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
     derive_root_keypair_from_entropy,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
 };
@@ -60,9 +65,7 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
@@ -120,6 +123,15 @@ pub(crate) struct SigningHost {
     session_state: Arc<SessionState>,
     auth_state: AuthStateMachine,
     ring_resolver: Arc<dyn RingResolver>,
+    /// Answer resource allocation as granted without performing it.
+    ///
+    /// For test hosts whose suites exercise a product's allowance-dependent
+    /// paths without an on-chain personhood identity. Compiled only into a
+    /// build carrying `test-host`, which is off by default and which neither
+    /// the production browser bundle nor a released native host enables, so a
+    /// shipping host has no way to set it.
+    #[cfg(feature = "test-host")]
+    grant_allowances_unchecked: std::sync::atomic::AtomicBool,
     /// Root BIP-39 entropy held only while a session is active.
     root_entropy: Mutex<Option<Zeroizing<Vec<u8>>>>,
     /// In-memory grants and the activation generation that owns them. The
@@ -130,7 +142,6 @@ pub(crate) struct SigningHost {
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
     /// Serializes replay-ledger updates within each wallet and peer scope.
     sso_replay_locks: SsoReplayLocks,
-    #[cfg(not(target_arch = "wasm32"))]
     renewal: allowance_renewal::RenewalState,
 }
 
@@ -144,6 +155,8 @@ impl SigningHost {
             services,
             platform: platform.clone(),
             network_suffix,
+            #[cfg(feature = "test-host")]
+            grant_allowances_unchecked: std::sync::atomic::AtomicBool::new(false),
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
@@ -151,9 +164,22 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
+    }
+
+    /// Whether allocation is answered as granted without performing it.
+    #[cfg(feature = "test-host")]
+    pub(crate) fn grants_allowances_unchecked(&self) -> bool {
+        self.grant_allowances_unchecked
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Answer resource allocation as granted without performing it.
+    #[cfg(feature = "test-host")]
+    pub(crate) fn set_grant_allowances_unchecked(&self, granted: bool) {
+        self.grant_allowances_unchecked
+            .store(granted, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The shared services this role was built over, for tests that also need
@@ -194,6 +220,8 @@ impl SigningHost {
             services,
             platform: platform.clone(),
             network_suffix: network_suffix.to_string(),
+            #[cfg(feature = "test-host")]
+            grant_allowances_unchecked: std::sync::atomic::AtomicBool::new(false),
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
@@ -201,7 +229,6 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -440,7 +467,6 @@ impl SigningHost {
     /// actually a member of is settled on chain by looking for a ring that
     /// includes each member key, not by local state. That keeps the two hosts
     /// from disagreeing about personhood.
-    #[cfg(not(target_arch = "wasm32"))]
     fn reserved_person_collection_candidates(
         &self,
         session: &AuthoritySession,
@@ -1135,6 +1161,18 @@ impl ProductAuthority for SigningHost {
         request: v01::HostRequestResourceAllocationRequest,
     ) -> Result<v01::HostRequestResourceAllocationResponse, AuthorityError> {
         self.require_current_session(session)?;
+        #[cfg(feature = "test-host")]
+        if self
+            .grant_allowances_unchecked
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            // Nothing is allocated and no proof is built: a suite in this mode
+            // learns that its product handles a grant, not that a host would
+            // have given one.
+            return Ok(v01::HostRequestResourceAllocationResponse {
+                outcomes: vec![v01::AllocationOutcome::Allocated; request.resources.len()],
+            });
+        }
         let mut outcomes = Vec::with_capacity(request.resources.len());
         for resource in request.resources {
             let outcome = match resource {

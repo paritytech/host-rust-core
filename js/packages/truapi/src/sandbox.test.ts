@@ -367,6 +367,19 @@ describe("connectWebSocketHost", () => {
         expect(sandbox.getClientSync()).toBe(client);
     });
 
+    it("uses an explicitly selected WebSocket without reading an injected client", async () => {
+        currentWindow = installFakeWebviewWindow();
+        Object.defineProperty(currentWindow.win, "__HOST_API_CLIENT__", {
+            get() {
+                throw new Error("explicit endpoints must not adopt the injected client");
+            },
+        });
+        const sandbox = await importSandbox();
+        const client = sandbox.connectWebSocketHost(frameServer());
+        expect(client).not.toBeNull();
+        expect(sandbox.getClientSync()).toBe(client);
+    });
+
     it("reports connected once the socket is open", async () => {
         const sandbox = await importSandbox();
         const statuses: string[] = [];
@@ -615,10 +628,10 @@ describe("sandbox after the pipe closes", () => {
         currentWindow = harness;
         const sandbox = await importSandbox();
         const channel = trackChannel();
-        // A locked global, as the container's freeze helpers make one.
+        // A host can prevent deletion while allowing its port to be replaced.
         Object.defineProperty(harness.win, "__HOST_API_PORT__", {
-            get: () => channel.port1,
-            set() {},
+            value: channel.port1,
+            writable: true,
             configurable: false,
         });
         const statuses: string[] = [];
@@ -638,10 +651,10 @@ describe("sandbox after the pipe closes", () => {
         currentWindow = harness;
         const sandbox = await importSandbox();
         const channel = trackChannel();
-        // A locked global, as the container's freeze helpers make one.
+        // A host can prevent deletion while allowing its port to be replaced.
         Object.defineProperty(harness.win, "__HOST_API_PORT__", {
-            get: () => channel.port1,
-            set() {},
+            value: channel.port1,
+            writable: true,
             configurable: false,
         });
         const statuses: string[] = [];
@@ -681,5 +694,20 @@ describe("sandbox after the pipe closes", () => {
 
         expect(harness.win.__HOST_API_PORT__).toBeUndefined();
         expect(sandbox.isCorrectEnvironment()).toBe(true);
+    });
+
+    it("treats a MessagePort from a locked getter as an ordinary terminal connection", async () => {
+        const channel = trackChannel();
+        currentWindow = installFakeWebviewWindow();
+        Object.defineProperty(currentWindow.win, "__HOST_API_PORT__", {
+            get: () => channel.port1,
+        });
+        const sandbox = await importSandbox();
+        const client = sandbox.getClientSync()!;
+        await settle();
+        closePipe(channel.port1);
+        await expect(Promise.resolve(client.system.handshake())).rejects.toThrow(
+            "message port closed unexpectedly",
+        );
     });
 });

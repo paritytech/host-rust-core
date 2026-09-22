@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
 use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::bulletin_rpc::BulletinRpc;
+use crate::runtime::signing_host::DevicePairingObserver;
 use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
@@ -41,6 +42,9 @@ pub(crate) struct RuntimeServices {
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Host observer told when a device finishes pairing with this signing
+    /// host. Unset leaves a paired device unannounced.
+    device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,
     /// Asset Hub the dotNS contracts are deployed on. All-zero says this host
     /// has none, which leaves every manifest unresolvable.
     asset_hub_chain_genesis_hash: [u8; 32],
@@ -54,7 +58,6 @@ pub(crate) struct RuntimeServices {
     pub(crate) bulletin: BulletinRpc,
     /// Runtime metadata and chain state shared by the native allowance
     /// paths, per chain.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) chain_context: crate::runtime::statement_allowance::ChainContextCache,
     /// Values from confirmed in-core submissions, served to `lookup_subscribe`
     /// until the host's content backend has them. Byte-bounded, oldest-first.
@@ -101,12 +104,12 @@ impl RuntimeServices {
             chat_platform: None,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
+            device_pairing_observer: OnceLock::new(),
             asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
             chain,
             statement_store,
             bulletin,
-            #[cfg(not(target_arch = "wasm32"))]
             chain_context: crate::runtime::statement_allowance::ChainContextCache::default(),
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
@@ -190,6 +193,23 @@ impl RuntimeServices {
     /// The host's Pocket adapter, when one is installed.
     pub(crate) fn pocket_platform(&self) -> Option<Arc<dyn truapi_platform::PocketPlatform>> {
         self.pocket_platform.get().cloned()
+    }
+
+    /// Install the host's device-pairing observer.
+    ///
+    /// Set-once, like every optional capability, so the surface that announces
+    /// a new device cannot change hands between two pairings. Returns whether
+    /// this call installed it.
+    pub(crate) fn install_device_pairing_observer(
+        &self,
+        observer: Arc<dyn DevicePairingObserver>,
+    ) -> bool {
+        self.device_pairing_observer.set(observer).is_ok()
+    }
+
+    /// The host's device-pairing observer, when one is installed.
+    pub(crate) fn device_pairing_observer(&self) -> Option<Arc<dyn DevicePairingObserver>> {
+        self.device_pairing_observer.get().cloned()
     }
 
     /// This device's persisted X25519 encryption secret, created on first use.

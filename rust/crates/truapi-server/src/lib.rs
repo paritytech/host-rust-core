@@ -16,11 +16,13 @@
 //! Host-facing bridges:
 //! - [`ws_bridge`] (feature `ws-bridge`): localhost WebSocket bridge for
 //!   native WebView hosts (Android/iOS).
+//! - [`bootstrap`]: the JavaScript those hosts inject to reach that bridge.
 //! - [`native`]: UniFFI surface exposing the native host runtime + callbacks.
 //! - `wasm` (wasm32 only): wasm-bindgen surface exposing `WasmProductRuntime`.
 //! - `native_debug` (non-wasm32 only): a loopback WebSocket [`DebugSink`] that
 //!   streams tapped frames to the `@parity/truapi-debugger` app.
 
+pub mod bootstrap;
 pub(crate) mod chain_runtime;
 pub mod core;
 pub(crate) mod dispatcher;
@@ -66,13 +68,14 @@ pub use host_logic::session::{
 pub use host_logic::worker::{WorkerLedger, WorkerTransition};
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
 pub use native_debug::{DebugSinkError, WsDebugSink};
-#[cfg(not(target_arch = "wasm32"))]
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;
 pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
-#[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;
-pub use runtime::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
+pub use runtime::{
+    AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
+    PairingProposal, PairingProposalMetadata, ResponderExit,
+};
 pub use truapi_platform::{
     CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
     PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,

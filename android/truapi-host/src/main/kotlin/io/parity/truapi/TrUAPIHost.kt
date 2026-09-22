@@ -14,14 +14,14 @@
 //     key-value backends the host persists.
 //   * `TrUAPIHostRuntime` / `TrUAPIProductExecution` - process-owned host state
 //     and independently scoped product connections.
-//   * `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge
-//     endpoint to the product page so it can dial back in.
+//   * `LocalhostBridgeBootstrap` - private endpoint configuration consumed by
+//     the shared browser container before product scripts run.
 //
 // Products running inside a `WebView` connect to the Rust core via the
 // localhost WebSocket bridge. Start it with `execution.startWsBridge()` and load
-// the product page with a `LocalhostBridgeBootstrap.script(...)` snippet
-// injected at document start so the page's `@parity/truapi`
-// `createWebSocketProvider` can dial `ws://127.0.0.1:<port>/?t=<token>`.
+// the product page after injecting `LocalhostBridgeBootstrap.script(...)` and
+// `ContainerScriptBundle.load(...)` at document start. The container publishes
+// `window.__HOST_API_CLIENT__` and a compatibility MessagePort for older SDKs.
 
 package io.parity.truapi
 
@@ -47,6 +47,7 @@ import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostRendererActionSubscribeItem
 import uniffi.truapi.ProductRendererRenderRequest
 import uniffi.truapi.RemotePermission
+import uniffi.truapi.RemotePermissionRequest
 import uniffi.truapi.RendererNode
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.ThemeName
@@ -68,10 +69,14 @@ import uniffi.truapi_server.NativeDevicePermissionStatus
 import uniffi.truapi_server.NativePermissionDecision
 import uniffi.truapi_server.NativeProductExecution
 import uniffi.truapi_server.NativeTrUApiHostRuntime
+import uniffi.truapi_server.NativeAnnouncedPairing
+import uniffi.truapi_server.PairedSsoPeer
+import uniffi.truapi_server.ResponderExit
 import uniffi.truapi_server.ProductRuntimeException
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
+import uniffi.truapi_server.localhostBridgeBootstrapScript
 import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
@@ -405,6 +410,19 @@ interface HostBridge {
     @Throws(HostRejection::class)
     suspend fun endOperation(productId: String, id: UInt) {}
 
+    /**
+     * A device finished pairing with this signing host.
+     *
+     * The core has no chat of its own, so announcing the new device to the
+     * user's existing contacts is the host's to do. At least once per
+     * pairing, and the host keeps its own record of which devices it has
+     * already seen: a resumed pairing reports nothing and the core has no
+     * list to replay. Arrives on the thread answering the handshake, while
+     * the pairing call is still running: marshal the work off rather than
+     * announcing it inline.
+     */
+    fun devicePaired(device: PairedSsoPeer) {}
+
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
 
@@ -508,6 +526,11 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     // Infallible across the FFI for the same reason `onCoreLog` is.
     override fun workerDemandChanged(productId: String, transition: WorkerTransition) {
         runCatching { bridge.workerDemandChanged(productId, transition) }
+    }
+
+    // Infallible across the FFI for the same reason `onCoreLog` is.
+    override fun devicePaired(device: PairedSsoPeer) {
+        runCatching { bridge.devicePaired(device) }
     }
 
     override suspend fun navigateTo(url: String) =
@@ -683,123 +706,11 @@ private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : Nati
  */
 object LocalhostBridgeBootstrap {
     /**
-     * Returns a `<script>`-injectable snippet that publishes the endpoint
-     * metadata on `window.__truapi_localhost`, exposes the legacy
-     * `window.__HOST_API_PORT__` webview transport shape, and fires a
-     * `truapi-native-ready` event. Inject at document start (before the product
-     * page scripts run) so the page can dial the bridge immediately.
+     * Supplies the WebSocket endpoint to the shared browser container.
+     * Inject at document start, before the container and product scripts.
      */
-    fun script(port: UShort, token: String): String {
-        val url = "ws://127.0.0.1:$port/?t=$token"
-        val safeUrl = jsStringLiteral(url)
-        val safeToken = jsStringLiteral(token)
-        return """
-        (function() {
-          var endpoint = { url: $safeUrl, token: $safeToken };
-
-          function createWebSocketMessagePort(url) {
-            var socket = null;
-            var started = false;
-            var queue = [];
-
-            var port = {
-              onmessage: null,
-              onmessageerror: null,
-
-              postMessage: function(message) {
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                  socket.send(message);
-                } else {
-                  queue.push(message);
-                }
-              },
-
-              start: function() {
-                if (started) return;
-                started = true;
-
-                socket = new WebSocket(url);
-                socket.binaryType = "arraybuffer";
-
-                socket.onopen = function() {
-                  var pending = queue;
-                  queue = [];
-                  pending.forEach(function(message) {
-                    socket.send(message);
-                  });
-                };
-
-                socket.onmessage = function(event) {
-                  if (typeof port.onmessage === "function") {
-                    port.onmessage({ data: new Uint8Array(event.data) });
-                  }
-                };
-
-                socket.onerror = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-
-                socket.onclose = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-              },
-
-              close: function() {
-                queue = [];
-                if (socket) {
-                  socket.close();
-                }
-              }
-            };
-
-            return port;
-          }
-
-          window.__truapi_localhost = endpoint;
-          window.__HOST_WEBVIEW_MARK__ = true;
-          window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
-          window.dispatchEvent(new Event('truapi-native-ready'));
-        })();
-        """.trimIndent()
-    }
-
-    /**
-     * Encodes [value] as a complete double-quoted JavaScript string literal,
-     * safe to embed inside a `<script>` body. Escapes quotes, backslashes,
-     * control characters, `/` (closing `</script` tags), and the U+2028 /
-     * U+2029 line terminators that JS treats as newlines.
-     */
-    private fun jsStringLiteral(value: String): String {
-        val sb = StringBuilder(value.length + 2)
-        sb.append('"')
-        for (ch in value) {
-            when (ch.code) {
-                '"'.code -> sb.append("\\\"")
-                '\\'.code -> sb.append("\\\\")
-                '/'.code -> sb.append("\\/")
-                0x0A -> sb.append("\\n")
-                0x0D -> sb.append("\\r")
-                0x09 -> sb.append("\\t")
-                0x08 -> sb.append("\\b")
-                0x0C -> sb.append("\\f")
-                0x2028 -> sb.append("\\u2028")
-                0x2029 -> sb.append("\\u2029")
-                else ->
-                    if (ch.code < 0x20) {
-                        sb.append("\\u")
-                        sb.append(ch.code.toString(16).padStart(4, '0'))
-                    } else {
-                        sb.append(ch)
-                    }
-            }
-        }
-        sb.append('"')
-        return sb.toString()
-    }
+    fun script(port: UShort, token: String): String =
+        localhostBridgeBootstrapScript(port = port, token = token)
 }
 
 /**
@@ -864,6 +775,80 @@ class TrUAPIHostRuntime private constructor(
      */
     fun releaseWorker(productId: String) {
         inner.releaseWorker(productId)
+    }
+
+    /**
+     * Tell the pairing host behind [deeplink] that allowance allocation is
+     * under way, so it leaves its QR screen while the allocation runs.
+     *
+     * Answering needs this host's own statement-store allowance, so register
+     * the `WalletSso` renewal target first. The peer's own device statement
+     * account is the other target, read with `parsePairingDeeplink` and
+     * tracked before [establishPairing] runs; the allocation this notice
+     * covers is what that call waits on. The returned handle is owed a
+     * [notifyPairingFailed] if pairing then fails: the peer has dropped its QR
+     * and waits without a deadline of its own.
+     *
+     * The handle holds the responder statement secret the notice was signed
+     * with, and nothing consumes it, so `destroy()` it once the pairing
+     * settles — on the succeeding path as well as the failing one. Wrapping
+     * the whole pairing in `use { }` covers both.
+     */
+    suspend fun notifyPairingAllowanceAllocation(deeplink: String): NativeAnnouncedPairing =
+        inner.notifyPairingAllowanceAllocation(deeplink)
+
+    /**
+     * Tell a pairing host that already dropped its QR why pairing stopped.
+     *
+     * Takes the handle from [notifyPairingAllowanceAllocation], so the notice
+     * is signed by the account that already reached that peer even if this
+     * host's signer has rotated since.
+     */
+    suspend fun notifyPairingFailed(announced: NativeAnnouncedPairing, reason: String) {
+        inner.notifyPairingFailed(announced, reason)
+    }
+
+    /**
+     * Answer a pairing host's handshake deeplink, without serving the session
+     * it opens.
+     *
+     * The answer is signed by this host's own SSO statement identity, so the
+     * `WalletSso` renewal target has to be allocated for it to reach the
+     * Statement Store at all. The peer's device statement account is the other
+     * tracked target, since this host allocates the allowance the peer authors
+     * its own session statements under; read it from the deeplink with
+     * `parsePairingDeeplink`. A pairing that fails after that leaves the peer's
+     * target to untrack again, unless the device was already paired and the
+     * target still carries a live pairing.
+     *
+     * A device that pairs here reaches [HostBridge.devicePaired]. Serving the
+     * session is [resumePairing], called with the peer this host persisted.
+     */
+    suspend fun establishPairing(deeplink: String) {
+        inner.establishPairing(deeplink)
+    }
+
+    /**
+     * Serve a paired host's SSO session until it ends.
+     *
+     * Runs for the life of the session, so give it its own coroutine. Only
+     * [ResponderExit.PEER_DISCONNECTED] authorises dropping the stored
+     * pairing; after [ResponderExit.SUBSCRIPTION_ENDED] or a thrown error the
+     * peer is still paired and this can be called again.
+     */
+    suspend fun resumePairing(peer: PairedSsoPeer): ResponderExit = inner.resumePairing(peer)
+
+    /**
+     * Tell a paired host this signing host is ending their SSO session.
+     *
+     * Submits the disconnect notice and nothing else. The local side is the
+     * caller's: cancel that peer's [resumePairing] coroutine, which otherwise
+     * keeps answering a host this one no longer considers paired, and untrack
+     * its device statement account, which otherwise keeps being renewed every
+     * period. Dropping the stored pairing alone leaves both running.
+     */
+    suspend fun disconnectPairedHost(peer: PairedSsoPeer) {
+        inner.disconnectPairedHost(peer)
     }
 
     /** Core-owned logout for the process-wide authentication session. */
@@ -1073,6 +1058,11 @@ class TrUAPIProductExecution internal constructor(
     suspend fun permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus = inner.permissionAuthorizationStatus(request)
+
+    /** Authorize one native network operation, consuming an existing Allow once grant. */
+    @Throws(HostRejection::class)
+    suspend fun authorizeRemotePermission(request: RemotePermissionRequest): Boolean =
+        inner.authorizeRemotePermission(request)
 
     /**
      * Update a stored permission authorization status. Passing `NotDetermined`

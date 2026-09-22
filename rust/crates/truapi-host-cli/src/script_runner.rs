@@ -467,7 +467,7 @@ console.log(JSON.stringify({
         fs::write(&executable, "binary")?;
         assert_eq!(
             resolve_runner(None, Some(&executable)),
-            version.join(PACKAGED_RUNNER)
+            version.canonicalize()?.join(PACKAGED_RUNNER)
         );
         Ok(())
     }

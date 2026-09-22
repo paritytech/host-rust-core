@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Calculate build number
         run: |
@@ -72,7 +72,7 @@ jobs:
 
       - name: Collect merged PRs — markdown
         id: collect_prs
-        uses: novasamatech/github-actions/collect-prs@v5
+        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           github_token: ${{ github.token }}
           dst_ref: main
@@ -82,7 +82,7 @@ jobs:
       - name: Collect merged PRs — plain text
         id: collect_prs_plain
         if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/collect-prs@v5
+        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           github_token: ${{ github.token }}
           dst_ref: main
@@ -216,7 +216,7 @@ jobs:
         # The condition this replaces:
         #   if: steps.collect_prs.outputs.should_build == 'true'
         if: false
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -230,7 +230,7 @@ jobs:
         # The condition this replaces:
         #   if: steps.collect_prs.outputs.should_build == 'true'
         if: false
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -244,7 +244,7 @@ jobs:
         # The condition this replaces:
         #   if: steps.collect_prs.outputs.should_build == 'true'
         if: false
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -258,7 +258,7 @@ jobs:
         # The condition this replaces:
         #   if: steps.collect_prs.outputs.should_build == 'true'
         if: false
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -273,7 +273,7 @@ jobs:
         # The condition this replaces:
         #   if: steps.collect_prs.outputs.should_build == 'true'
         if: false
-        uses: novasamatech/github-actions/trigger-allure-testops@v5
+        uses: novasamatech/github-actions/trigger-allure-testops@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           testplan_id: '733'
           launch_name: 'Android Tests - Nightly ${{ env.RELEASE_DATE }}'
@@ -315,7 +315,7 @@ jobs:
         # The condition this replaces:
         #   if: steps.collect_prs.outputs.should_build == 'true'
         if: false
-        uses: novasamatech/github-actions/send-release-notification@v5
+        uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           platform: Android
           pr_list: ${{ steps.collect_prs.outputs.release_notes }}

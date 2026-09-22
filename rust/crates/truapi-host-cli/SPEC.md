@@ -472,10 +472,15 @@ The product includes a development-only blocking tag before product code:
 <script src="http://127.0.0.1:9955/bootstrap.js"></script>
 ```
 
-The JavaScript creates a `MessageChannel`, connects its private side to the
-same-port WebSocket, assigns the public side to `window.__HOST_API_PORT__`, sets
-the native-webview marker, and dispatches `truapi-native-ready`. Frames posted
-before the WebSocket opens are queued. Production builds must omit the tag.
+The script installs the shared browser container and publishes
+`window.__HOST_API_CLIENT__`. SDK calls and authorization requests use this
+stable client, sharing one WebSocket and one Rust execution. The container
+consumes `window.__truapi_localhost` during startup. HTTP and WebSocket share the
+same TCP port. After a disconnect, the SDK replaces the socket. Interrupted calls
+fail, subscriptions end, and neither is replayed. Older SDKs use the compatibility
+`window.__HOST_API_PORT__` MessagePort, which requires a page reload after a
+disconnect.
+Production builds must omit the tag.
 
 On Unix the wrapped command is the leader of a process group retained by the
 CLI. A natural direct-launcher exit preserves its status and still cleans up
@@ -485,9 +490,10 @@ child, then send SIGKILL and wait again if any group member remains. On
 non-Unix platforms the CLI stops and reaps the direct child.
 
 The first blocking bridge tag installs the shared `js/container` bundle before
-application code. The existing SDK message-port interface requires no product
-dependency update. SDK calls and authorization requests share one WebSocket and
-Rust execution. `/script` imports the same web API permission wrappers
+application code. Existing SDKs can start without a product dependency update;
+recovery through a retained client requires the updated SDK. SDK calls and
+authorization requests share one WebSocket and Rust execution. `/script` imports
+the same web API permission wrappers
 into Bun. Dev preserves the app server URL, native assets and hot reload; no
 app proxy is involved.
 
@@ -525,8 +531,8 @@ change:
 - the SSO relationship; or
 - another product's stored data.
 
-Changing the product invalidates all active product WebSockets. Clients must
-reconnect; new connections receive the new product context. Selecting the
+Changing the product invalidates all active product WebSockets. Reload browser
+dev pages; new connections receive the new product context. Selecting the
 already-current normalized id does not reset connections.
 
 Product-scoped entropy is intentionally different for different product ids
@@ -1578,11 +1584,13 @@ consistent. The HTTP response does not grant cross-origin access; browser frame
 access is enforced during the later WebSocket handshake.
 
 The browser SDK and sandbox permission checks share one WebSocket and its
-`ProductRuntime`, as `/script` does. Browser routing uses the SDK's wire codecs
-to correlate authorization replies separately from app messages. CLI checks
-support permission testing, not protection against deliberate product-code
-bypasses. Native hosts retain their separate authorization protection.
-Each page load or script run opens a fresh connection with independent
+`ProductRuntime`, as `/script` does. The shared SDK transport owns the socket
+and uses `host:` request IDs for public calls and internal authorization methods.
+The compatibility MessagePort cannot send or receive frames using those IDs.
+Generated internal methods and their shared JavaScript dependencies are frozen
+before product code runs; public SDK methods remain mutable. The CLI remains a local
+development tool; `/script` retains its Bun/Node capabilities.
+Each page load, reconnect or script run opens a fresh connection with independent
 temporary permissions.
 
 Each accepted WebSocket:

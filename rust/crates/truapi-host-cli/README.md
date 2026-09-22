@@ -152,9 +152,10 @@ itself:
 
 That script installs the SDK bridge and the shared `js/container` sandbox
 synchronously. Keep it before application scripts, without `async` or `defer`.
-It preserves the SDK's existing `__HOST_API_PORT__` interface, so the product
-does not need to update its SDK dependency.
-The SDK and sandbox share one host WebSocket and its temporary permissions.
+Updated SDKs use the injected `__HOST_API_CLIENT__` across reconnects. Older SDKs
+can still start through the `__HOST_API_PORT__` adapter but require a page reload
+after a disconnect. SDK calls and sandbox permission checks share one host
+WebSocket and its temporary permissions.
 `/script` uses the same fetch and WebSocket permission checks in Bun, and the
 XHR wrapper when that API is available. Dev keeps automatic approvals, and the
 app server handles assets and hot reload. `--app-port` names the development
@@ -355,8 +356,9 @@ is resolved. It is hidden from session completion and listing and cannot be
 selected with `/session default`. User session names contain lowercase ASCII
 letters, digits, `.`, `_`, or `-`; they cannot be paths. Switching prepares the
 target while the old session remains active, then stops all responders for the
-old session, resets product WebSocket connections so clients reconnect against
-the new runtime, and restores every paired device saved for the target session.
+old session, resets product WebSocket connections, and restores every paired
+device saved for the target session. Reload browser dev pages to connect to the
+new runtime.
 
 `/session --mnemonic "<phrase>"` brings an already-onboarded account into the
 session catalog. The host derives its `uid.<tld>` identity, reads any existing
@@ -532,8 +534,8 @@ res.match(
 `localhost` identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
-WebSockets so clients reconnect with a new product context; the network,
-pairing relationship, signing-host session, and wallet identity stay active.
+WebSockets. Reload browser dev pages to use the new product context. The
+network, pairing relationship, signing-host session, and wallet identity stay active.
 Product-owned storage, permissions, and derived product accounts are scoped by
 the selected id, so the newly selected product sees its own state. The next
 `/script` also receives the new id through `host.productId`.

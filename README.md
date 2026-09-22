@@ -67,6 +67,8 @@ requests after a bounded deadline; pass `requestTimeoutMs` to `createTransport` 
 See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full client reference.
 
 The [permission model](docs/rfcs/0002-permission-model.md) separates outbound domain access from `OpenUrl` external navigation and requires `Notifications` for push delivery. Hosts preserve the user's `AllowOnce`, `AllowAlways`, or `Deny` choice; Rust owns one-use grants for Rust-backed executions.
+Android permission prompts belong to one request and close when it finishes or is cancelled,
+including cancellation while the app is backgrounded.
 
 ## Repository layout
 
@@ -82,7 +84,10 @@ js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
-                          `/worker-runtime`
+                          `/worker-runtime`, and the test host: `/testing`
+                          (createMockHost), `/testing/playwright`,
+                          `/testing/server`, `/testing/client`,
+                          `/testing/dev-accounts`, `/testing/host-page`
   truapi-provider/         @parity/truapi-provider: WASM ChainProvider backends
                           (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
@@ -136,6 +141,9 @@ dependency. The UniFFI bindings and the container bundle are gitignored build
 outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
+The container publishes the shared client and a temporary MessagePort adapter for
+older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
+CLI and iframe MessagePort transports remain supported.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
@@ -193,7 +201,7 @@ control of quota and of whether the bytes are backed up or encrypted.
 
 1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each trait tagged `#[wire_trait(id = N)]` and each method tagged `#[wire(id = N)]` for a stable byte-level `(trait, method)` dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
 2. `truapi-codegen` reads rustdoc JSON for that crate and generates the TypeScript client under git-ignored paths in `js/packages/truapi/`.
-3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
+3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over WebSocket, `MessagePort`, or `postMessage` in iframe mode to the host.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
 Wire ids are append-only per trait: a trait id is never reassigned and a method id is never renumbered or reused within its trait, so deployed products stay compatible across protocol revisions. New methods take the next free method ids in their own trait and leave every other trait untouched. Trait 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
@@ -266,9 +274,13 @@ reaches it through a development-only `<script>` tag:
 )}
 ```
 
-The host serves that script itself, so the page needs no SDK update, no imports,
-and no environment variables. It installs the SDK bridge and the shared browser
-container before product code runs. Keep the tag before application scripts, without `async` or `defer`.
+The host serves that script itself, with no imports or environment variables
+needed. It installs the shared client and browser container before product code
+runs. Keep the tag before application scripts, without `async` or `defer`.
+SDK calls and permission checks share one connection. Updated SDKs reuse the
+injected client across reconnects; older SDKs can still start through the
+MessagePort adapter but require a page reload after a disconnect.
+After a failed reconnect, the next API call or return to a visible page tries again.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission

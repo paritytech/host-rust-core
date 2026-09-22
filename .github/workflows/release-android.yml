@@ -1,6 +1,6 @@
 # Builds and publishes the Android host AAR (io.parity:truapi-host-android) to
 # GitHub Packages. The AAR bundles the per-ABI Rust core (ws-bridge feature), the
-# UniFFI Kotlin bindings generated from the same source, and the Kotlin shell.
+# UniFFI Kotlin bindings, shared browser container and Kotlin shell.
 name: release-android
 
 on:
@@ -78,6 +78,9 @@ jobs:
       - name: Cross-compile libtruapi_server.so for every ABI
         run: make android-jni
 
+      - name: Build shared browser container
+        run: gradle :truapi-host:copyTrUAPIContainer
+
       - name: Verify AAR inputs
         run: |
           set -e
@@ -86,6 +89,7 @@ jobs:
               || { echo "missing .so for $abi"; exit 1; }
           done
           test -f android/truapi-host/src/main/kotlin/generated/uniffi/truapi_server/truapi_server.kt
+          test -s android/truapi-host/build/generated/truapi-assets/truapi-container.js
 
       - name: Publish to GitHub Packages
         env:

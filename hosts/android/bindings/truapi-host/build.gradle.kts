@@ -1,3 +1,4 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import java.util.Properties
 
 // TrUAPI Android host adapter binding.
@@ -79,6 +80,8 @@ android {
         // (runtime-guarded via Class.forName). See lint.xml.
         lintConfig = file("lint.xml")
     }
+
+    packaging.resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
 }
 
 // truapi owns the `io.parity.truapi` host shell. Sync it from the checkout at
@@ -92,8 +95,11 @@ val syncHostShell by tasks.registering(Sync::class) {
     into(hostShellDir.map { it.dir("io/parity/truapi") })
 }
 
-tasks.matching { it.name.startsWith("compile") && it.name.endsWith("Kotlin") }
-    .configureEach { dependsOn(syncHostShell) }
+// Every Kotlin compilation here consumes the synced shell and the generated
+// bindings, across all four build types and both test source sets.
+tasks.withType<KotlinCompile>().configureEach {
+    dependsOn(syncHostShell, generateUniffiKotlin)
+}
 
 // Override the convention default (`module = "rust/"`) to point at the
 // external truapi-server crate, and build it with the localhost WS bridge.
@@ -178,7 +184,7 @@ val buildHostCdylib by tasks.registering(Exec::class) {
     workingDir = file(truapiDir)
     commandLine("cargo", "build", "-p", "truapi-server", "--profile", "codegen", "--features", "ws-bridge")
     inputs.files(
-        fileTree("$truapiDir/rust/crates") { include("**/*.rs", "**/Cargo.toml") },
+        fileTree("$truapiDir/rust/crates") { include("**/*.rs", "**/*.js", "**/Cargo.toml") },
         "$truapiDir/Cargo.toml",
         "$truapiDir/Cargo.lock",
     ).withPropertyName("rustSources")
@@ -205,13 +211,13 @@ val generateUniffiKotlin by tasks.registering(Exec::class) {
     outputs.dir(outDir).withPropertyName("generatedBindings")
 }
 
-tasks.matching { it.name == "compileDebugKotlin" || it.name == "compileReleaseKotlin" }
-    .configureEach { dependsOn(generateUniffiKotlin) }
-
 // The per-ABI cross-compiles build truapi-server too, so they need the
 // dispatcher just as much as the host-native build does.
 tasks.matching { it.name.startsWith("cargoBuild") }
     .configureEach { dependsOn(generateCoreDispatcher) }
+
+extra["truapiSourceDir"] = file(truapiDir)
+apply(from = file("$truapiDir/android/truapi-container.gradle"))
 
 dependencies {
     // UniFFI Kotlin bindings use JNA for FFI.
@@ -225,4 +231,6 @@ dependencies {
 
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.webkit)
+    androidTestImplementation(libs.squareup.okhttp3.mockwebserver)
 }

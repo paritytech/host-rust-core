@@ -62,6 +62,9 @@ dependencies {
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 
+extra["truapiSourceDir"] = rootProject.projectDir
+apply(from = rootProject.file("android/truapi-container.gradle"))
+
 // Coordinates for the Maven publication. Releases are published to GitHub
 // Packages by .github/workflows/release-android.yml, which passes the real
 // version via -PtruapiHostVersion; local publishes default to 0.0.0-local.
