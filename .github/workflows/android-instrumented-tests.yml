@@ -8,10 +8,11 @@ name: Android instrumented tests
 
 on:
   pull_request:
-    # `labeled` starts it. `synchronize` keeps it on the branch's current
-    # commit once the label is applied, rather than pinned to whichever commit
-    # was head when someone asked.
-    types: [labeled, synchronize]
+    # `labeled` starts it. The rest keep it on the branch's current commit
+    # once the label is applied, rather than pinned to whichever commit was
+    # head when someone asked, and cover a request opened or reopened with
+    # the label already on it.
+    types: [labeled, synchronize, opened, reopened]
   workflow_dispatch:
 
 concurrency:
@@ -32,41 +33,58 @@ jobs:
       github.event_name == 'workflow_dispatch'
       || (github.event.action == 'labeled'
           && github.event.label.name == 'android-instrumented-tests')
-      || (github.event.action == 'synchronize'
+      || (github.event.action != 'labeled'
           && contains(github.event.pull_request.labels.*.name, 'android-instrumented-tests'))
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The tests run against the app, which applies the Google Services
+      # plugin and signs its debug type, so this needs the configuration and
+      # the key rather than compiling bare. Saves its own cache: the key
+      # carries the host triple, so the Linux gate's entry never restores here
+      # and every run would otherwise build the core cold.
       - name: Set up the Android build
         uses: ./.github/actions/setup-android-build
+        with:
+          require_inputs: "true"
+          save_cache: "true"
+          google_services_json_base64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          keystore_base64: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+          keystore_pass: ${{ secrets.CI_KEYSTORE_PASS }}
+          keystore_alias: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          keystore_key_pass: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
 
-      # Configuration rather than credentials, and the same placeholders the
-      # other host gates use. Instrumented tests exercise the app's own code
-      # against a local emulator, so nothing here reaches a real project.
+      # The same values the distribution builds use, because the tests run
+      # against the real configuration rather than a placeholder one: the
+      # application id has to match the Google configuration decoded above,
+      # and the signing config reads the keystore's credentials.
       #
-      # Hardware acceleration needs the emulator's own architecture to match
-      # the runner's, which is why this is arm64 rather than the x86 image the
+      # Hardware acceleration needs the emulator's architecture to match the
+      # runner's, which is why this is arm64 rather than the x86 image the
       # Linux runners would want.
       - name: Run instrumented tests
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         env:
-          APPLICATION_ID: io.parity.polkadotapp
-          APPLICATION_NAME: Polkadot
-          CONTACT_EMAIL: ci@example.invalid
-          CURRENCY_SYMBOL: DOT
-          FIRESTORE_DATABASE_ID: ci
-          GOOGLE_OAUTH_ID: ci
-          GOOGLE_PROJECT_ID: "0"
-          LOG_COLLECTION_EMAIL: ci@example.invalid
-          NIGHTLY_FUNDING_MNEMONIC: ci
-          PRIVACY_POLICY_URL: https://example.invalid/privacy
-          SENTRY_ORG: ci
-          SENTRY_PROJECT: ci
-          TERMS_OF_USE_URL: https://example.invalid/terms
+          APPLICATION_ID: ${{ vars.APPLICATION_ID }}
+          APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+          CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
+          CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
+          LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
+          PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
+          TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+          GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
+          GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
+          NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
+          CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
+          CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
         with:
           api-level: 30
           arch: arm64-v8a
@@ -74,6 +92,9 @@ jobs:
           profile: pixel_5
           disable-animations: true
           working-directory: hosts/android
+          # Flavours are declared only in the app module, so this resolves
+          # there and runs that module's tests. The instrumented tests in the
+          # library modules are not covered, as upstream did not cover them.
           script: ./gradlew connectedGpDebugAndroidTest --no-daemon
 
       # The report says which test failed; the job status only says one did.
