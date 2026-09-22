@@ -83,6 +83,7 @@ jobs:
           APPLICATION_ID: ${{ vars.APPLICATION_ID }}
           APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
           CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
+          CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
           LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
           PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
           TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}

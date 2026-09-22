@@ -76,6 +76,7 @@ jobs:
           GOOGLE_OAUTH_ID: preview
           # Typed as a long, so a non-numeric placeholder is a compile error.
           GOOGLE_PROJECT_ID: "0"
+          CONTACT_EMAIL: preview@example.invalid
           LOG_COLLECTION_EMAIL: preview@example.invalid
           NIGHTLY_FUNDING_MNEMONIC: preview
           PRIVACY_POLICY_URL: https://example.invalid/privacy
