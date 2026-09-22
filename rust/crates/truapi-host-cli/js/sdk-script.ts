@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { createApp } from "@parity/product-sdk";
 
 const app = await createApp({
