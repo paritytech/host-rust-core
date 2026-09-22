@@ -1,4 +1,5 @@
 import Foundation
+import FoundationExt
 import SubstrateSdk
 import Individuality
 import SubstrateOperation
@@ -35,6 +36,7 @@ public actor UnloadQuotaTracker: UnloadQuotaTracking {
     private let consumedTokenChecker: any ConsumedTokenChecking
     private let personOriginProvider: any OriginPersonProviding
     private let viewFunctionFetcher: any ViewFunctionFetching
+    private let dateProvider: any DateProviding
 
     private struct Cache {
         let period: UInt32
@@ -54,12 +56,14 @@ public actor UnloadQuotaTracker: UnloadQuotaTracking {
         runtimeCodingService: RuntimeCodingServiceProtocol,
         consumedTokenChecker: any ConsumedTokenChecking,
         personOriginProvider: any OriginPersonProviding,
-        viewFunctionFetcher: any ViewFunctionFetching
+        viewFunctionFetcher: any ViewFunctionFetching,
+        dateProvider: any DateProviding
     ) {
         self.runtimeCodingService = runtimeCodingService
         self.consumedTokenChecker = consumedTokenChecker
         self.personOriginProvider = personOriginProvider
         self.viewFunctionFetcher = viewFunctionFetcher
+        self.dateProvider = dateProvider
     }
 
     public func remainingQuota() async throws -> UnloadQuota {
@@ -74,8 +78,8 @@ public actor UnloadQuotaTracker: UnloadQuotaTracking {
 
         let maxCounter = wrappedMaxCounter.wrappedValue
 
-        let periods = UnloadTokenPeriodCalculator.validPeriods(
-            currentDate: Date(),
+        let periods = await UnloadTokenPeriodCalculator.validPeriods(
+            currentDate: dateProvider.read(),
             periodDuration: periodDuration
         )
         let currentPeriod = periods.last ?? 0

@@ -11,9 +11,21 @@ struct MemoBuilderTests {
 
     // MARK: - Mock Private Key Deriver
 
-    private final class MockCoinKeyDeriver: CoinKeyDeriving {
-        var derivedKeys: [CoinageKeyIndex: Data] = [:]
-        var shouldThrow: Error?
+    private final class MockCoinKeyDeriver: CoinKeyDeriving, @unchecked Sendable {
+        private let mutex = NSLock()
+
+        private var storedDerivedKeys: [CoinageKeyIndex: Data] = [:]
+        private var storedError: Error?
+
+        var derivedKeys: [CoinageKeyIndex: Data] {
+            get { mutex.withLock { storedDerivedKeys } }
+            set { mutex.withLock { storedDerivedKeys = newValue } }
+        }
+
+        var shouldThrow: Error? {
+            get { mutex.withLock { storedError } }
+            set { mutex.withLock { storedError = newValue } }
+        }
 
         func derivePublicKey(index _: CoinageKeyIndex) throws -> PublicKey {
             Data(repeating: 0, count: 32)

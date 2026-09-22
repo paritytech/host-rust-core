@@ -15,6 +15,8 @@ final class TransferActionButtonModel: ObservableObject {
 typealias TransferActionButtonController = UIHostingController<TransferActionButtonView>
 
 struct TransferActionButtonView: View {
+    static let size: DSButtonStyle.Size = .mediumIncreased
+
     @ObservedObject var model: TransferActionButtonModel
 
     var body: some View {
@@ -28,7 +30,7 @@ struct TransferActionButtonView: View {
                                 lineWidth: 3,
                                 strokeStyle: .fgPrimaryInverted
                             )
-                            .frame(width: 25, height: 25)
+                            .frame(width: 20, height: 20)
                             if let text = model.statusText {
                                 Text(text)
                                     .typography(.titleMedium.emphasized)
@@ -36,14 +38,14 @@ struct TransferActionButtonView: View {
                             }
                         }
                     }
-                    .frame(height: UIConstants.actionHeight)
+                    .frame(height: Self.size.height)
                     .disabled(true)
             } else {
                 DSButton(
                     model.title,
                     style: .primary,
                     shape: .pill,
-                    size: .large,
+                    size: Self.size,
                     leadingIcon: model.isActive ? .iconArrowUp16 : nil,
                     expands: true,
                     action: model.action

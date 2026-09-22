@@ -63,6 +63,10 @@ private struct StubHostProvider: ProductHostProviding {
     func resolveHost(rawString _: String) async throws -> ProductHost? {
         nil
     }
+
+    func resolvePage(destination _: String) async throws -> ProductPage? {
+        nil
+    }
 }
 
 // MARK: - Bridge factory

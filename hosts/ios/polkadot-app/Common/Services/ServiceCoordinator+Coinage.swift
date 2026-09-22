@@ -16,7 +16,7 @@ extension ServiceCoordinator {
     struct CoinageServices {
         let coinageService: CoinageServicing
         /// The one durable transaction engine every domain shares; the coordinator starts and stops it.
-        let durableTransactionEngine: any DurableTxServicing
+        let durableTransactionEngine: DurableTxServices
         let transferMonitor: CoinageTransferMonitoring
         let w3sPaymentTracking: W3sPaymentTracking
         let backupSyncService: CoinageBackupSyncServicing
@@ -49,7 +49,7 @@ extension ServiceCoordinator {
             databaseFactory: databaseFactory,
             externalPaymentStore: externalPaymentStore,
             incomingPaymentStore: incomingPaymentStore,
-            durableEngine: durableEngine,
+            durable: durableEngine,
             chainViewFactory: chainViewFactory
         ) else {
             return nil
@@ -99,7 +99,7 @@ private extension ServiceCoordinator {
         databaseFactory: DatabaseDependencyFactoring,
         externalPaymentStore: ExternalPaymentStoring,
         incomingPaymentStore: IncomingPaymentStoring,
-        durableEngine: any DurableTxServicing,
+        durable: DurableTxServices,
         chainViewFactory: any PinnedChainViewFactoryProtocol
     ) -> CoinageService? {
         let logger = Logger.shared
@@ -194,7 +194,7 @@ private extension ServiceCoordinator {
             databaseFactory: databaseFactory,
             originFactory: coinageOriginFactory,
             extrinsicMonitorFactory: monitorFactory,
-            durableEngine: durableEngine,
+            durable: durable,
             chainViewFactory: chainViewFactory,
             assetLedger: assetLedger,
             rootEntropyManager: RootEntropyManager.shared,
