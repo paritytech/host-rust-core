@@ -293,8 +293,13 @@ Two steps around those calls are the host's. The answer is signed by this
 host's own SSO statement identity, so the `WalletSso` target has to be
 allocated before `establish_pairing` runs, and the peer's device statement
 account has to be tracked alongside it for the peer to author into the session:
-`parse_pairing_deeplink` reads that account out of the deeplink, and a pairing
-that then fails untracks it again unless the device was already paired. And
+`PairingProposal::from_deeplink` reads that account out of the deeplink, and a
+pairing that then fails untracks it again unless the device was already paired.
+The core prompts for nothing on the way, so that prompt is the host's, and the
+same call carries the `PairingProposalMetadata` it names the peer by, trimmed
+and stripped of the control characters and bidirectional overrides that would
+otherwise rewrite the prompt's own text around it. Nothing signs that metadata,
+so it says what the peer calls itself and not who it is. And
 `disconnect_paired_host` submits the notice and nothing more, so ending a
 pairing also means cancelling that peer's `resume_pairing` task and untracking
 its renewal account. `truapi-host-cli` runs both sequences.

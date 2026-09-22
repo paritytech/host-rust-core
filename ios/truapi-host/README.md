@@ -258,6 +258,16 @@ device was already paired. `disconnectPairedHost` submits the notice and nothing
 a pairing also means cancelling that peer's `resumePairing` task and untracking
 its renewal account; dropping the stored pairing alone leaves both running.
 
+The core prompts for nothing along the way, so asking the user is the host's
+too. `parsePairingDeeplink` returns the peer's `metadata` alongside it for that
+prompt: the host name, version, icon and platform the peer put in its QR,
+trimmed and stripped of the control characters and bidirectional overrides that
+would otherwise rewrite the prompt's own text around them, capped at 512
+characters, and `nil` where nothing renderable was sent. Safe to render is not
+verified: nothing signs that metadata, so a prompt built from it says what the
+peer calls itself, never who it is.
+
+
 `devicePaired` on the runtime bridge reports a device that finished pairing
 with this signing host, carrying the `PairedSsoPeer` the pairing produced. The
 core has no chat of its own, so announcing the new device to the user's

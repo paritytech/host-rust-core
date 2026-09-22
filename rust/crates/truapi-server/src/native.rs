@@ -47,7 +47,9 @@ use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, SharedWsBridge, WsBridgeEndpoint, WsBridgeStartError};
-use crate::{DevicePairingObserver, PairedSsoPeer, ResponderExit, SigningHostRuntime};
+use crate::{
+    DevicePairingObserver, PairedSsoPeer, PairingProposal, ResponderExit, SigningHostRuntime,
+};
 
 /// Host-thrown storage failure wrapping the canonical error payload, so its
 /// variants remain defined once in `truapi`.
@@ -419,7 +421,8 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
-/// Read the public peer material out of a pairing deeplink.
+/// Read what a pairing deeplink offers: the peer it advertises, and how that
+/// peer describes itself.
 ///
 /// A host needs the peer's `statement_account_id` before it answers: the
 /// peer's device statement account has to be a tracked renewal target by the
@@ -429,11 +432,16 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
 /// [`HostCallbacks::device_paired`] yields it in time for that, so the host
 /// reads it here first.
 ///
+/// The core prompts for nothing here, so the pairing prompt is the host's, and
+/// [`crate::PairingProposalMetadata`] is what it names the peer by. It arrives
+/// sanitized for rendering but unverified: nothing signs it, so it says what
+/// the peer calls itself and not who it is.
+///
 /// Pure and stateless, and the same decoder the responder itself runs, so a
 /// deeplink this rejects is one no pairing call would have accepted either.
 #[uniffi::export]
-pub fn parse_pairing_deeplink(deeplink: String) -> Result<PairedSsoPeer, NativePairingError> {
-    PairedSsoPeer::from_deeplink(&deeplink)
+pub fn parse_pairing_deeplink(deeplink: String) -> Result<PairingProposal, NativePairingError> {
+    PairingProposal::from_deeplink(&deeplink)
         .map_err(|reason| NativePairingError::Rejected { reason })
 }
 
@@ -3307,32 +3315,59 @@ mod tests {
         reason
     }
 
-    /// The peer a host must register a renewal target for before it answers.
-    /// Without this entry point that account is unreachable from a native
-    /// host, and the answer goes out with no allowance behind it.
-    #[test]
-    fn a_pairing_deeplink_yields_the_peer_it_carries() {
-        let peer = PairedSsoPeer {
-            statement_account_id: [0x31; 32],
-            encryption_public_key: [0x42; 32],
-        };
+    /// Build a deeplink carrying `peer` and `metadata`, the way a pairing host
+    /// puts its QR together.
+    fn proposal_deeplink(
+        peer: PairedSsoPeer,
+        metadata: Vec<crate::host_logic::sso::pairing::v2::MetadataEntry>,
+    ) -> String {
         let proposal = crate::host_logic::sso::pairing::VersionedHandshakeProposal::V2(
             crate::host_logic::sso::pairing::v2::Proposal {
                 device: crate::host_logic::sso::pairing::v2::Device {
                     statement_account_id: peer.statement_account_id,
                     encryption_public_key: peer.encryption_public_key,
                 },
-                metadata: Vec::new(),
+                metadata,
             },
         );
-        let deeplink = format!(
+        format!(
             "polkadotapp://pair?handshake={}",
             hex::encode(parity_scale_codec::Encode::encode(&proposal))
+        )
+    }
+
+    /// The peer a host must register a renewal target for before it answers,
+    /// and the name it prompts with. Without this entry point that account is
+    /// unreachable from a native host, the answer goes out with no allowance
+    /// behind it, and the prompt can only name the peer by its raw key.
+    #[test]
+    fn a_pairing_deeplink_yields_the_proposal_it_carries() {
+        use crate::PairingProposalMetadata;
+        use crate::host_logic::sso::pairing::v2::{MetadataEntry, MetadataKey};
+
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: [0x42; 32],
+        };
+        let deeplink = proposal_deeplink(
+            peer,
+            vec![
+                MetadataEntry(MetadataKey::HostName, "Polkadot Desktop Host".to_string()),
+                MetadataEntry(MetadataKey::PlatformType, "macOS".to_string()),
+                MetadataEntry(MetadataKey::Custom("seat".to_string()), "3".to_string()),
+            ],
         );
 
         assert_eq!(
             parse_pairing_deeplink(deeplink).expect("a well-formed deeplink decodes"),
-            peer
+            PairingProposal {
+                peer,
+                metadata: PairingProposalMetadata {
+                    host_name: Some("Polkadot Desktop Host".to_string()),
+                    platform_type: Some("macOS".to_string()),
+                    ..PairingProposalMetadata::default()
+                },
+            }
         );
 
         for (deeplink, expected) in UNDECODABLE_DEEPLINKS {

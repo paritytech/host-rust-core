@@ -134,6 +134,40 @@ pub struct PairedSsoPeer {
     pub encryption_public_key: [u8; 32],
 }
 
+/// Peer-supplied description of the host proposing a pairing.
+///
+/// Sanitized for direct rendering: every value is trimmed, stripped of control
+/// characters and bidirectional overrides, capped at
+/// [`MAX_PAIRING_METADATA_CHARS`] characters, and left `None` when nothing
+/// survives. A value the peer did not send is `None` too.
+///
+/// Sanitized is not verified. Nothing signs this metadata, so a prompt built
+/// from it states what the peer calls itself, never who it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct PairingProposalMetadata {
+    /// Human-readable host name.
+    pub host_name: Option<String>,
+    /// Host software version.
+    pub host_version: Option<String>,
+    /// Host icon URL.
+    pub host_icon: Option<String>,
+    /// Platform kind, such as a browser or operating system name.
+    pub platform_type: Option<String>,
+    /// Platform version.
+    pub platform_version: Option<String>,
+}
+
+/// Everything a pairing deeplink offers a host before it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct PairingProposal {
+    /// Key material this pairing would be established and resumed on.
+    pub peer: PairedSsoPeer,
+    /// How the peer describes itself on the pairing prompt.
+    pub metadata: PairingProposalMetadata,
+}
+
 /// Host notified when a device finishes pairing with this signing host.
 ///
 /// The core has no chat of its own, so announcing a new device to the user's
@@ -159,13 +193,61 @@ struct EstablishedPairing {
 impl PairedSsoPeer {
     /// Extract the public peer material carried by a pairing deeplink.
     pub fn from_deeplink(deeplink: &str) -> Result<Self, String> {
+        Ok(PairingProposal::from_deeplink(deeplink)?.peer)
+    }
+}
+
+/// Longest metadata value a pairing prompt renders; the rest is dropped.
+pub const MAX_PAIRING_METADATA_CHARS: usize = 512;
+
+impl PairingProposal {
+    /// Decode a pairing deeplink into the peer it advertises and the metadata
+    /// a host prompts with.
+    pub fn from_deeplink(deeplink: &str) -> Result<Self, String> {
         let VersionedHandshakeProposal::V2(proposal) =
             decode_pairing_deeplink(deeplink).map_err(|err| err.to_string())?;
+        let mut metadata = PairingProposalMetadata::default();
+        for v2::MetadataEntry(key, value) in proposal.metadata {
+            let value = sanitize_pairing_metadata(value);
+            match key {
+                v2::MetadataKey::HostName => metadata.host_name = value,
+                v2::MetadataKey::HostVersion => metadata.host_version = value,
+                v2::MetadataKey::HostIcon => metadata.host_icon = value,
+                v2::MetadataKey::PlatformType => metadata.platform_type = value,
+                v2::MetadataKey::PlatformVersion => metadata.platform_version = value,
+                v2::MetadataKey::Custom(_) => {}
+            }
+        }
         Ok(Self {
-            statement_account_id: proposal.device.statement_account_id,
-            encryption_public_key: proposal.device.encryption_public_key,
+            peer: PairedSsoPeer {
+                statement_account_id: proposal.device.statement_account_id,
+                encryption_public_key: proposal.device.encryption_public_key,
+            },
+            metadata,
         })
     }
+}
+
+/// Make one peer-supplied metadata value safe to render.
+///
+/// Control characters and the bidirectional overrides drop out, because a
+/// prompt that concatenates this value with its own text is otherwise a
+/// surface for reordering what the user reads. The cap bounds what an
+/// unbounded field can push into that prompt.
+fn sanitize_pairing_metadata(value: String) -> Option<String> {
+    let value = value
+        .trim()
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+        })
+        .take(MAX_PAIRING_METADATA_CHARS)
+        .collect::<String>();
+    (!value.is_empty()).then_some(value)
 }
 
 /// Failure while deriving or allocating a Statement Store/Bulletin allowance.
@@ -1534,6 +1616,51 @@ mod tests {
             &pairing_deeplink(peer),
         ))
         .expect("the handshake is answered without an observer");
+    }
+
+    /// The peer writes what the pairing prompt calls it. Rendering that as
+    /// sent lets it reorder or pad out the prompt's own words around itself.
+    #[test]
+    fn proposal_metadata_is_sanitized_before_a_host_prompts_with_it() {
+        let long = "n".repeat(MAX_PAIRING_METADATA_CHARS + 10);
+        let proposal = VersionedHandshakeProposal::V2(v2::Proposal {
+            device: v2::Device {
+                statement_account_id: [0x31; 32],
+                encryption_public_key: [0x42; 32],
+            },
+            metadata: vec![
+                // A right-to-left override and a newline, either of which
+                // rewrites what the surrounding prompt text reads as.
+                v2::MetadataEntry(
+                    v2::MetadataKey::HostName,
+                    "  Wallet\u{202e}trebo\n  ".to_string(),
+                ),
+                v2::MetadataEntry(v2::MetadataKey::HostVersion, long.clone()),
+                v2::MetadataEntry(v2::MetadataKey::HostIcon, "\u{2066}\t ".to_string()),
+                v2::MetadataEntry(v2::MetadataKey::Custom("seat".to_string()), "3".to_string()),
+            ],
+        });
+        let deeplink = format!(
+            "polkadotapp://pair?handshake={}",
+            hex::encode(proposal.encode())
+        );
+
+        assert_eq!(
+            PairingProposal::from_deeplink(&deeplink)
+                .expect("a well-formed deeplink decodes")
+                .metadata,
+            PairingProposalMetadata {
+                host_name: Some("Wallettrebo".to_string()),
+                host_version: Some("n".repeat(MAX_PAIRING_METADATA_CHARS)),
+                // Nothing renderable survived, so the host has no name to show
+                // rather than an empty one.
+                host_icon: None,
+                // Neither key was sent, and a key outside the well-known set
+                // is not one a prompt has a place for.
+                platform_type: None,
+                platform_version: None,
+            }
+        );
     }
 
     #[test]
