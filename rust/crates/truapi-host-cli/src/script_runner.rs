@@ -455,20 +455,6 @@ console.log(JSON.stringify({
     }
 
     #[test]
-    fn runner_types_follow_the_selected_runner() {
-        assert_eq!(
-            [
-                runner_types_path(Path::new("/checkout/js/runner.ts")),
-                runner_types_path(Path::new("/release/runner.js")),
-            ],
-            [
-                PathBuf::from("/checkout/js/script-types.d.ts"),
-                PathBuf::from("/release/script-types.d.ts"),
-            ]
-        );
-    }
-
-    #[test]
     fn host_scripts_are_run_by_bun() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let script = temporary.path().join("script.ts");

@@ -374,17 +374,6 @@ are never changed by a host update. `make check-script-sdk` installs the unchang
 template from the public registry and checks its types and `createApp` export.
 CLI releases require this check to pass.
 
-To verify SDK authoring through the packaged CLI:
-
-```bash
-make e2e-cli-sdk
-```
-
-This requires Bun and Python 3. The test installs the CLI archive and creates
-isolated projects under `.agent/tools/` using published dependencies. It checks
-setup recovery, editor types, real host calls, offline reopening, cancellation,
-and error output.
-
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
 and its files live under

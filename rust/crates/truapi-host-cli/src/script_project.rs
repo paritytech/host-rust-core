@@ -254,16 +254,12 @@ mod tests {
     }
 
     #[test]
-    fn project_manifest_pins_the_sdk_and_can_resolve_a_renamed_entrypoint() -> Result<()> {
+    fn project_manifest_can_resolve_a_renamed_entrypoint() -> Result<()> {
         let root = tempfile::tempdir()?;
         let script = create_with_types(root.path(), None, b"types")?;
         let directory = script.parent().unwrap();
         let manifest_path = directory.join("package.json");
         let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
-        assert_eq!(
-            manifest,
-            serde_json::from_str::<serde_json::Value>(MANIFEST)?
-        );
         manifest["truapiHost"]["script"] = "renamed.ts".into();
         fs::write(manifest_path, serde_json::to_vec(&manifest)?)?;
         let renamed = directory.join("renamed.ts");

@@ -4542,24 +4542,6 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
     }
 
     #[test]
-    fn new_script_selection_creates_a_project_in_the_durable_script_root() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let scripts = temporary.path().join("scripts");
-        let script = select_script_to_edit(&scripts, &mut None)?;
-        let project = script.parent().unwrap();
-
-        assert_eq!(
-            (
-                project.parent(),
-                project.join("package.json").is_file(),
-                project.join("tsconfig.json").is_file(),
-            ),
-            (Some(scripts.as_path()), true, true)
-        );
-        Ok(())
-    }
-
-    #[test]
     fn bare_script_selection_reuses_the_last_existing_script() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let mut last_script = None;

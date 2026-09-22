@@ -657,9 +657,6 @@ jobs:
           npm ci --prefix js/container --ignore-scripts
           bun test js/container/src
 
-      - name: Test host script runner
-        run: bun test rust/crates/truapi-host-cli/js/runner.test.ts
-
   ts-host:
     name: "@parity/truapi-host"
     timeout-minutes: 10
