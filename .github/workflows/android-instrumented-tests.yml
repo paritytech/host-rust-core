@@ -1,0 +1,87 @@
+# Instrumented tests, which need a booted emulator and so cannot run on every
+# commit: the runner is macOS, which bills at several times the Linux rate on a
+# public repository, and a cold emulator costs minutes before the first test.
+#
+# Started by a label rather than by every push, and by dispatch so the workflow
+# itself can be exercised without opening a pull request to carry the label.
+name: Android instrumented tests
+
+on:
+  pull_request:
+    # `labeled` starts it. `synchronize` keeps it on the branch's current
+    # commit once the label is applied, rather than pinned to whichever commit
+    # was head when someone asked.
+    types: [labeled, synchronize]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Instrumented tests
+    # Narrow deliberately. `labeled` fires for every label, so matching only on
+    # the label being present would let any other label, added by a person or
+    # by labeler.yml, start a second run that cancels the one already booting
+    # an emulator.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.action == 'labeled'
+          && github.event.label.name == 'android-instrumented-tests')
+      || (github.event.action == 'synchronize'
+          && contains(github.event.pull_request.labels.*.name, 'android-instrumented-tests'))
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the Android build
+        uses: ./.github/actions/setup-android-build
+
+      # Configuration rather than credentials, and the same placeholders the
+      # other host gates use. Instrumented tests exercise the app's own code
+      # against a local emulator, so nothing here reaches a real project.
+      #
+      # Hardware acceleration needs the emulator's own architecture to match
+      # the runner's, which is why this is arm64 rather than the x86 image the
+      # Linux runners would want.
+      - name: Run instrumented tests
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          APPLICATION_ID: io.parity.polkadotapp
+          APPLICATION_NAME: Polkadot
+          CONTACT_EMAIL: ci@example.invalid
+          CURRENCY_SYMBOL: DOT
+          FIRESTORE_DATABASE_ID: ci
+          GOOGLE_OAUTH_ID: ci
+          GOOGLE_PROJECT_ID: "0"
+          LOG_COLLECTION_EMAIL: ci@example.invalid
+          NIGHTLY_FUNDING_MNEMONIC: ci
+          PRIVACY_POLICY_URL: https://example.invalid/privacy
+          SENTRY_ORG: ci
+          SENTRY_PROJECT: ci
+          TERMS_OF_USE_URL: https://example.invalid/terms
+        with:
+          api-level: 30
+          arch: arm64-v8a
+          target: google_apis
+          profile: pixel_5
+          disable-animations: true
+          working-directory: hosts/android
+          script: ./gradlew connectedGpDebugAndroidTest --no-daemon
+
+      # The report says which test failed; the job status only says one did.
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: instrumented-test-report
+          path: hosts/android/app/build/reports/androidTests/
+          retention-days: 5
+          if-no-files-found: ignore
