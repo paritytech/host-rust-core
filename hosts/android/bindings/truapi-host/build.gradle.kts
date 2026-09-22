@@ -205,7 +205,12 @@ val generateUniffiKotlin by tasks.registering(Exec::class) {
     outputs.dir(outDir).withPropertyName("generatedBindings")
 }
 
-tasks.matching { it.name == "compileDebugKotlin" || it.name == "compileReleaseKotlin" }
+// Every Kotlin compilation in this module consumes the generated bindings, so
+// the dependency follows the task's shape rather than a list of names. Naming
+// two of them left `nightly` and `safetynet` compiling the shell against
+// bindings that were never generated, which fails as an unresolved `uniffi`
+// reference rather than as a missing step.
+tasks.matching { it.name.matches(Regex("^compile[A-Z][A-Za-z]*Kotlin$")) }
     .configureEach { dependsOn(generateUniffiKotlin) }
 
 // The per-ABI cross-compiles build truapi-server too, so they need the
