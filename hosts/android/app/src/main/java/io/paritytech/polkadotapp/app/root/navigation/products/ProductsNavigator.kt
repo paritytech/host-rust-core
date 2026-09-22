@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.app.root.navigation.products
 
+import androidx.core.os.bundleOf
 import io.paritytech.polkadotapp.app.R
 import io.paritytech.polkadotapp.app.root.navigation.BaseNavigator
 import io.paritytech.polkadotapp.app.root.navigation.NavigationHolder
@@ -14,12 +15,13 @@ import io.paritytech.polkadotapp.feature_products_api.presentation.PocketAddCard
 import io.paritytech.polkadotapp.feature_products_api.presentation.ProductSettingsPayload
 import io.paritytech.polkadotapp.feature_products_api.presentation.SpaBrowserPayload
 import io.paritytech.polkadotapp.feature_products_api.presentation.SpaSheetPayload
+import io.paritytech.polkadotapp.feature_products_impl.presentation.permissionPrompt.PermissionPromptBottomSheet
 import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 class ProductsNavigator @Inject constructor(
-    navigationHolder: NavigationHolder,
+    private val navigationHolder: NavigationHolder,
     private val dispatchers: CoroutineDispatchers,
 ) : BaseNavigator(navigationHolder), ProductsRouter {
     override suspend fun openSignTransaction() = withContext(dispatchers.main) {
@@ -63,8 +65,21 @@ class ProductsNavigator @Inject constructor(
         )
     }
 
-    override suspend fun openPermissionPrompt() = withContext(dispatchers.main) {
-        performNavigation(R.id.action_global_to_permissionPromptBottomSheet)
+    override suspend fun openPermissionPrompt(requestId: String) = withContext(dispatchers.main) {
+        performNavigation(
+            R.id.action_global_to_permissionPromptBottomSheet,
+            bundleOf(PermissionPromptBottomSheet.REQUEST_ID to requestId),
+        )
+    }
+
+    override suspend fun closePermissionPrompt(requestId: String?) = withContext(dispatchers.main) {
+        val controller = navigationHolder.navController
+        val entry = controller?.currentBackStackEntry
+        if (entry?.destination?.id == R.id.permissionPromptBottomSheet &&
+            entry.arguments?.getString(PermissionPromptBottomSheet.REQUEST_ID) == requestId
+        ) {
+            controller.popBackStack()
+        }
     }
 
     override suspend fun openPaymentRequestPrompt() = withContext(dispatchers.main) {
