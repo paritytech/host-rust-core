@@ -15,7 +15,11 @@ class ChatMessageMappingHelper @Inject constructor(
     private val tokenAmountMapper: TokenAmountMapper,
 ) {
     suspend fun extractTokenAmount(paymentContent: ChatMessage.Content.CoinagePayment): TokenAmountModel {
-        return dollarAssetProvider.extractAmount(paymentContent.totalValue)
+        return extractTokenAmount(paymentContent.totalValue)
+    }
+
+    suspend fun extractTokenAmount(totalValue: Balance): TokenAmountModel {
+        return dollarAssetProvider.extractAmount(totalValue)
     }
 
     suspend fun mapPaymentStatus(

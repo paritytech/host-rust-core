@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
@@ -241,7 +242,7 @@ private fun ColumnScope.RelationBanner(
             is InputMessageRelation.Edit -> TitledBanner(
                 modifier = bannerModifier,
                 title = stringResource(RCommon.string.common_edit),
-                subtitle = active.originalText,
+                subtitle = AnnotatedString(active.originalText),
                 onClose = onClearEdit
             )
 
@@ -263,11 +264,13 @@ private fun ReplyBanner(
     modifier: Modifier = Modifier
 ) {
     val subtitle = when (val content = preview.content) {
-        is ReplyPreview.Content.Text -> content.text
-        is ReplyPreview.Content.Image -> content.caption ?: stringResource(RCommon.string.chat_attachment_name_image)
-        is ReplyPreview.Content.Video -> content.caption ?: stringResource(RCommon.string.chat_attachment_name_video)
-        is ReplyPreview.Content.File -> content.caption ?: content.fileName
-        is ReplyPreview.Content.Payment -> content.paymentSubtitle()
+        is ReplyPreview.Content.Text -> AnnotatedString(content.text)
+        is ReplyPreview.Content.Image ->
+            AnnotatedString(content.caption ?: stringResource(RCommon.string.chat_attachment_name_image))
+        is ReplyPreview.Content.Video ->
+            AnnotatedString(content.caption ?: stringResource(RCommon.string.chat_attachment_name_video))
+        is ReplyPreview.Content.File -> AnnotatedString(content.caption ?: content.fileName)
+        is ReplyPreview.Content.Payment -> content.paymentSubtitle(PolkadotTheme.typography.body.smallEmphasized)
     }
 
     TitledBanner(
@@ -281,7 +284,7 @@ private fun ReplyBanner(
 @Composable
 private fun TitledBanner(
     title: String,
-    subtitle: String,
+    subtitle: AnnotatedString,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {

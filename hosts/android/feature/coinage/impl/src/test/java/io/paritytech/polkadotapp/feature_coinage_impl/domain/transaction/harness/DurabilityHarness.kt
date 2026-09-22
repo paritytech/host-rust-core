@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness
 
+import dagger.Lazy
 import io.mockk.every
 import io.mockk.mockk
 import io.paritytech.polkadotapp.chains.extrinsic.ExtrinsicStatus
@@ -12,9 +13,13 @@ import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.RealCoi
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageEvidenceCollector
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageResourceOracle
 import io.paritytech.polkadotapp.feature_transactions.api.data.ExtrinsicService
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.AsyncDurableSubmissionPolicy
 import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableRecoveryLoop
 import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableRecoveryScheduler
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableSubmissionExecutor
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableSubmissionLauncher
 import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableSubmissionTracker
+import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.DurableVerdictWriter
 import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.RealDurableRecoveryPass
 import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.RealDurableTransactionService
 import io.paritytech.polkadotapp.feature_transactions_impl.domain.durable.SubmissionOwnedTransactions
@@ -53,6 +58,9 @@ class DurabilityHarness(
     val coinDerivation = FakeCoinKeypairDerivation()
     val voucherDerivation = FakeVoucherRingDerivation()
 
+    /** What builds scheduled and retried entries, keyed by policy id. Empty unless a scenario installs one. */
+    var submissionPolicies: Map<String, AsyncDurableSubmissionPolicy> = emptyMap()
+
     /** Statuses the watcher sees for the n-th submission; an empty flow leaves it to the silence timeout. */
     var submissionStatuses: (Int) -> Flow<ExtrinsicStatus> = { emptyFlow() }
 
@@ -66,6 +74,13 @@ class DurabilityHarness(
     val service: RealCoinageTransactionService get() = subsystem.service
     val ownedEntries: SubmissionOwnedTransactions get() = subsystem.ownedEntries
     val recoveryPass: RealDurableRecoveryPass get() = subsystem.pass
+    val engine: RealDurableTransactionService get() = subsystem.engine
+
+    /**
+     * What an app launch starts before anything is scheduled. Direct rather than through the engine's
+     * `startRecovery`, so a scenario's count of recovery requests stays about the work it drives.
+     */
+    fun startExecutor() = subsystem.executor.ensureStarted()
 
     internal fun nextExtrinsicHex(): String = "0x" + (extrinsics++).toString(16).padStart(8, '0')
 
@@ -147,10 +162,14 @@ class DurabilityHarness(
             ),
         )
 
+        val policies = Lazy { submissionPolicies }
+        val verdictWriter = DurableVerdictWriter(ledger.engine, policies)
+
         val pass = RealDurableRecoveryPass(
             repository = ledger.engine,
             chainViewFactory = chain,
             submissionOwned = ownedEntries,
+            verdictWriter = verdictWriter,
             oracles = mapOf(COINAGE_DOMAIN_ID to oracle),
         )
 
@@ -162,13 +181,30 @@ class DurabilityHarness(
         )
         val scheduler = RecordingRecoveryScheduler()
 
-        val engine = RealDurableTransactionService(
+        val launcher = DurableSubmissionLauncher(
             repository = ledger.engine,
-            submissionTracker = submissionTracker(ownedEntries, oracle),
+            submissionTracker = submissionTracker(ownedEntries, oracle, verdictWriter),
             submissionOwned = ownedEntries,
             recoveryLoop = loop,
             recoveryScheduler = scheduler,
             dispatchers = TestCoroutineDispatchers(dispatcher),
+        )
+
+        val executor = DurableSubmissionExecutor(
+            repository = ledger.engine,
+            policies = policies,
+            launcher = launcher,
+            recoveryScheduler = scheduler,
+            chainConnectionRefCounter = connections,
+            dispatchers = TestCoroutineDispatchers(dispatcher),
+        )
+
+        val engine = RealDurableTransactionService(
+            repository = ledger.engine,
+            submissionOwned = ownedEntries,
+            launcher = launcher,
+            executor = executor,
+            recoveryScheduler = scheduler,
         )
 
         val service = RealCoinageTransactionService(
@@ -178,12 +214,13 @@ class DurabilityHarness(
             voucherRingDerivation = voucherDerivation,
         )
 
-        return Subsystem(service, engine, ownedEntries, pass, scheduler, scope)
+        return Subsystem(service, engine, executor, ownedEntries, pass, scheduler, scope)
     }
 
     private fun submissionTracker(
         ownedEntries: SubmissionOwnedTransactions,
         oracle: CoinageResourceOracle,
+        verdictWriter: DurableVerdictWriter,
     ): DurableSubmissionTracker {
         val extrinsicService: ExtrinsicService = mockk()
 
@@ -196,6 +233,7 @@ class DurabilityHarness(
             chainRegistry = mockk(relaxed = true),
             extrinsicService = extrinsicService,
             repository = ledger.engine,
+            verdictWriter = verdictWriter,
             chainViewFactory = chain,
             submissionOwned = ownedEntries,
             resubmitWhenValidFactory = mockk(relaxed = true),
@@ -206,6 +244,7 @@ class DurabilityHarness(
     private class Subsystem(
         val service: RealCoinageTransactionService,
         val engine: RealDurableTransactionService,
+        val executor: DurableSubmissionExecutor,
         val ownedEntries: SubmissionOwnedTransactions,
         val pass: RealDurableRecoveryPass,
         val scheduler: RecordingRecoveryScheduler,

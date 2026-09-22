@@ -45,6 +45,26 @@ class RuleScenariosTest {
      * Asserted as a transition rather than a non-event: the same evidence that leaves the entry PENDING
      * inside the window fails it outside, so a pass that silently skipped the entry could not produce both.
      */
+
+    /**
+     * A retriable entry's window closes with its input still on chain, which proves it never ran.
+     * The pass writes it back to its policy rather than failing it, and its input stays locked meanwhile.
+     */
+    @Test
+    fun `a failure the pass proves is handed back to its policy instead of failing`() = scenario {
+        disableFallbackTxSearch()
+        mintCoinsOnChain(COIN_A, finality = FINALIZED)
+        givenSubmissionPolicy(PolicyBehaviour.HOLD)
+        val id = registerRetriable(inputCoin = COIN_A, COIN_B)
+        releaseSubmissions()
+
+        chainReachesMortalityOf(id, finality = FINALIZED)
+        runPass()
+
+        assertEquals(DurableTxStatus.PENDING_SUBMISSION, statusOf(id))
+        assertEquals(DurableTxStatus.PENDING_SUBMISSION, assetStateOf(COIN_A).consumerStatus)
+    }
+
     @Test
     fun `Rules 3 and 4 do not fire before mortality has expired but do after`() = scenario {
         disableFallbackTxSearch()

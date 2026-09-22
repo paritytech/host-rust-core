@@ -71,12 +71,8 @@ class SettingsViewModel @Inject constructor(
         router.openLinkedDevices()
     }
 
-    fun onPrivacyPolicyClick() {
-        router.openPrivacyPolicy()
-    }
-
-    fun onTermsOfUseClick() {
-        router.openTermsOfUse()
+    fun onLegalAndSupportClick() {
+        router.openLegalAndSupport()
     }
 
     fun onProductsClick() {

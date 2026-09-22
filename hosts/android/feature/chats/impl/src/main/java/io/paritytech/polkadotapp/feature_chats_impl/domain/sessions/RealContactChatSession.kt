@@ -11,6 +11,7 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.model.*
 import io.paritytech.polkadotapp.feature_chats_impl.data.model.decodeAlwaysDecodableChatMessagePart
 import io.paritytech.polkadotapp.feature_chats_impl.data.model.toChatMessage
 import io.paritytech.polkadotapp.feature_chats_impl.data.model.toEncodedMessage
+import io.paritytech.polkadotapp.feature_chats_impl.data.notifications.ChatNotificationPayloadEncoder
 import io.paritytech.polkadotapp.feature_chats_impl.data.notifications.isDisplayableAsPush
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.ChatMessageRepository
 import io.paritytech.polkadotapp.feature_chats_impl.domain.ChatEngine
@@ -47,7 +48,8 @@ class RealContactChatSession(
     private val callbacks: ChatSessionCallbacks,
     private val chatEngine: ChatEngine,
     private val syncContactUsernameUseCase: SyncContactUsernameUseCase,
-    private val incomingChatMessageProcessor: IncomingChatMessageProcessor
+    private val incomingChatMessageProcessor: IncomingChatMessageProcessor,
+    private val notificationPayloadEncoder: ChatNotificationPayloadEncoder,
 ) : ContactChatSession, CoroutineScope by scope {
     private val mainCommunicationSession get() = communicationSessions.main
 
@@ -303,7 +305,7 @@ class RealContactChatSession(
     private suspend fun tryNotifyNewMessageSent(message: ChatMessage) {
         val isVoIP = message.content is ChatMessage.Content.DataChannelOffer
 
-        message.toEncodedMessage()
+        notificationPayloadEncoder.encode(message)
             .map { pushNotificationSession.encrypt(it) }
             .map { encrypted ->
                 callbacks.onShouldNotifyNewMessageSent(

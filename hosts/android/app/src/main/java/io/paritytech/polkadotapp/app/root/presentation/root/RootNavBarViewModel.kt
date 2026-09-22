@@ -19,6 +19,7 @@ import kotlinx.collections.immutable.persistentMapOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.collections.immutable.toImmutableMap
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -36,6 +37,7 @@ class RootNavBarViewModel @Inject constructor(
     private val tabBarVisibilityHolder: TabBarVisibilityHolder,
     private val tabBarOffsetHolder: TabBarOffsetHolder,
     private val bottomNavHeightProvider: BottomNavHeightProvider,
+    scanPanelRequests: ScanPanelRequests,
 ) : BaseViewModel() {
     val currentTab: StateFlow<BottomTab> = navigationHolder.currentTab
     val hidden: StateFlow<Boolean> = tabBarVisibilityHolder.hidden
@@ -50,6 +52,8 @@ class RootNavBarViewModel @Inject constructor(
 
     val isScannerTooltipVisible: StateFlow<Boolean>
         field = MutableStateFlow(interactor.shouldShowScannerTooltip())
+
+    val scanPanelOpenRequests: SharedFlow<Unit> = scanPanelRequests.openRequests
 
     // Selecting a tab always lands on Main (bringing the user there if needed).
     fun onTabSelected(tab: BottomTab) {
@@ -74,8 +78,8 @@ class RootNavBarViewModel @Inject constructor(
         bottomNavHeightProvider.set(value)
     }
 
-    fun openScanner() {
-        rootRouter.openScanner()
+    fun openUsernameSearch() {
+        rootRouter.openAddContact()
     }
 
     fun dismissScannerTooltip() {

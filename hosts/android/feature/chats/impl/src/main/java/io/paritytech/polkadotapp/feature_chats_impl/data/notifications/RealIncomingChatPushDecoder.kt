@@ -9,7 +9,7 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.DecodedC
 import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.IncomingChatPushDecoder
 import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.IncomingChatPushDecoder.Companion.MESSAGE_KEY
 import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.IncomingChatPushDecoder.Companion.PUSH_ID_KEY
-import io.paritytech.polkadotapp.feature_chats_impl.data.model.toChatMessageOrUnsupported
+import io.paritytech.polkadotapp.feature_chats_impl.data.model.toChatPushContent
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.ContactsRepository
 import io.paritytech.polkadotapp.feature_statement_store_api.data.encryption.CommunicationEncryption
 import javax.inject.Inject
@@ -36,15 +36,15 @@ internal class RealIncomingChatPushDecoder @Inject constructor(
 
         contact to encoded
     }.flatMap { (contact, encoded) ->
-        encoded.toChatMessageOrUnsupported(
+        encoded.toChatPushContent(
             authorAccountId = contact.accountId,
             contactAccountId = contact.accountId,
             messageStatus = ChatMessage.Status.NEW
-        ).map { chatMessage ->
+        ).map { pushContent ->
             DecodedChatPush(
                 contact = contact,
                 chatId = ChatId.fromContact(contact.accountId),
-                message = chatMessage
+                content = pushContent
             )
         }
     }

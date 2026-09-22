@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isUnspecified
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.spacer.HorizontalSpacer
 import io.paritytech.polkadotapp.design.components.text.NovaText
@@ -164,7 +165,7 @@ internal fun EnterAmountInput(
         }
 
         NovaText(
-            text = symbol,
+            text = symbol.withCurrencyTickerStyle(PolkadotTheme.typography.title.extraLarge),
             style = PolkadotTheme.typography.title.extraLarge,
             color = PolkadotTheme.colors.fg.secondary
         )

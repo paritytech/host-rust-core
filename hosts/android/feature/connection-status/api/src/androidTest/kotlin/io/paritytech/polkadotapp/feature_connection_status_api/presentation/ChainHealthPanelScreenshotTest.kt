@@ -23,7 +23,6 @@ import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainGlyph
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicator
-import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicator.Speed
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicatorsModel
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthItemModel
 import kotlinx.collections.immutable.persistentListOf
@@ -32,6 +31,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 // Renders the "Network Status" panel in every indicator state, inside the same rounded container the tab
@@ -42,19 +42,19 @@ class ChainHealthPanelScreenshotTest {
     val compose = createComposeRule()
 
     @Test
-    fun speedHigh() = render("speed-high", ChainHealthIndicator.Healthy)
+    fun healthy() = render("healthy", share = 13f / 15f)
 
     @Test
-    fun speedGood() = render("speed-good", ChainHealthIndicator.ConnectionSpeed(Speed.Good, arc = 0.68f))
+    fun producingFourFifths() = render("production-80", share = 0.8f)
 
     @Test
-    fun speedFair() = render("speed-fair", ChainHealthIndicator.ConnectionSpeed(Speed.Fair, arc = 0.38f))
+    fun producingUnderHalf() = render("production-40", share = 0.4f)
 
     @Test
-    fun speedLow() = render("speed-low", ChainHealthIndicator.ConnectionSpeed(Speed.Low, arc = 0.18f))
+    fun producingUnderAQuarter() = render("production-20", share = 0.2f)
 
     @Test
-    fun notProducingBlocks() = render("not-producing", ChainHealthIndicator.Outage)
+    fun notProducingBlocks() = render("not-producing", share = 0f)
 
     @Test
     fun connecting() = render("connecting", ChainHealthIndicator.Connecting)
@@ -63,20 +63,35 @@ class ChainHealthPanelScreenshotTest {
     fun broken() = render("broken", ChainHealthIndicator.Disconnected)
 
     @Test
+    fun offline() = render("offline", ChainHealthIndicator.Offline)
+
+    @Test
     fun mixed() = render(
         "mixed",
-        people = ChainHealthIndicator.ConnectionSpeed(Speed.Good, arc = 0.68f),
-        hub = ChainHealthIndicator.ConnectionSpeed(Speed.Low, arc = 0.18f),
-        bulletin = ChainHealthIndicator.Disconnected,
+        people = item("People Chain", ChainGlyph.People, share = 0.8f, blockTime = 2.seconds),
+        hub = item("Hub Chain", ChainGlyph.AssetHub, share = 0.2f, blockTime = 2.seconds),
+        bulletin = item("Bulletin Chain", ChainGlyph.Bulletin, ChainHealthIndicator.Offline),
     )
 
-    private fun render(name: String, all: ChainHealthIndicator) = render(name, all, all, all)
+    private fun render(name: String, share: Float) = render(
+        name,
+        people = item("People Chain", ChainGlyph.People, share, blockTime = 2.seconds),
+        hub = item("Hub Chain", ChainGlyph.AssetHub, share, blockTime = 2.seconds),
+        bulletin = item("Bulletin Chain", ChainGlyph.Bulletin, share, blockTime = 6.seconds),
+    )
+
+    private fun render(name: String, all: ChainHealthIndicator) = render(
+        name,
+        people = item("People Chain", ChainGlyph.People, all),
+        hub = item("Hub Chain", ChainGlyph.AssetHub, all),
+        bulletin = item("Bulletin Chain", ChainGlyph.Bulletin, all),
+    )
 
     private fun render(
         name: String,
-        people: ChainHealthIndicator,
-        hub: ChainHealthIndicator,
-        bulletin: ChainHealthIndicator,
+        people: ChainHealthItemModel,
+        hub: ChainHealthItemModel,
+        bulletin: ChainHealthItemModel,
     ) {
         compose.setContent {
             CompositionLocalProvider(LocalInspectionMode provides true) {
@@ -93,15 +108,7 @@ class ChainHealthPanelScreenshotTest {
                             color = PolkadotTheme.colors.bg.surface.container,
                             border = BorderStroke(PolkadotTheme.borders.default, PolkadotTheme.colors.stroke.primary),
                         ) {
-                            ChainHealthPanel(
-                                model = ChainHealthIndicatorsModel(
-                                    persistentListOf(
-                                        item("People Chain", ChainGlyph.People, people, 6),
-                                        item("Hub Chain", ChainGlyph.AssetHub, hub, 12),
-                                        item("Bulletin Chain", ChainGlyph.Bulletin, bulletin, 6),
-                                    ),
-                                ),
-                            )
+                            ChainHealthPanel(model = ChainHealthIndicatorsModel(persistentListOf(people, hub, bulletin)))
                         }
                     }
                 }
@@ -113,13 +120,15 @@ class ChainHealthPanelScreenshotTest {
         assertTrue("$name: no screenshot written", file.length() > 0)
     }
 
-    private fun item(name: String, glyph: ChainGlyph, indicator: ChainHealthIndicator, blockSeconds: Int) =
-        ChainHealthItemModel(
-            chainName = name,
-            glyph = glyph,
-            indicator = indicator,
-            lastBlockAt = null,
-        )
+    private fun item(name: String, glyph: ChainGlyph, share: Float, blockTime: Duration) =
+        item(name, glyph, ChainHealthIndicator.of(share, blockTime))
+
+    private fun item(name: String, glyph: ChainGlyph, indicator: ChainHealthIndicator) = ChainHealthItemModel(
+        chainId = name,
+        chainName = name,
+        glyph = glyph,
+        indicator = indicator,
+    )
 
     // AGP hands the output dir over as a runner argument when it collects test outputs; without it the
     // files land in the test app's external files dir, where `adb pull` can reach them.

@@ -1,5 +1,7 @@
 > [!WARNING]
-> This is a prototype, reference implementation, and proof-of-concept. This open source code is provided for research, experimentation, and developer education only. It has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. The app is a self-custodial wallet that can hold real assets — use at your own risk.
+> This is an experimental proof-of-concept: a prototype and reference implementation developed and published by Parity. This open source code is provided for research, experimentation, and developer education only. It has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. The app is a self-custodial wallet that can hold real assets — use at your own risk.
+>
+> Parity does not deploy or operate this code and does not run any service behind it; it may update the code based on community feedback. If you experience problems with an app that was built from or distributed using this code, contact the party who built and distributed it, not Parity.
 
 <div align="center">
 
@@ -44,7 +46,8 @@
   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
   cargo install cargo-ndk
   ```
-- **Python 3** and **Node.js** for build helpers
+- **Node.js** — the Gradle build runs `npm install` / `npm run build` in `feature/products` to bundle the dApp container
+- **Python 3** — used by the Rust Android Gradle plugin's linker wrapper
 
 Point Gradle at your SDK/NDK in `local.properties`:
 ```properties
@@ -54,25 +57,74 @@ ndk.dir=/path/to/android-ndk-r29
 
 </details>
 
-Clone the repo and open it in Android Studio:
+Clone the repo:
 
 ```bash
 git clone https://github.com/paritytech/polkadot-android-community.git
 cd polkadot-android-community
 
-# Optional: bootstrap native toolchain helpers
+# Optional: install the Detekt pre-commit hook
 ./developer-tools/setup.sh
 ```
 
-Signing keys, `google-services.json`, and feature API keys are read from
-`local.properties` or environment variables — see
-[docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for the full list of variables.
+### Configure the build
 
-Select the **gp** flavor with a debug build type and an Android 10+ device or emulator, then build and run.
+Gradle refuses to configure the project — even `./gradlew help` — until every mandatory
+variable below is set. Put them in the untracked `local.properties` (or export them as
+environment variables with the same names):
 
-The app talks to Polkadot system chains (People Chain, Asset Hub, Bulletin Chain); the chain set is
-delivered via remote config, and development and nightly builds are exercised against Polkadot's
-[Paseo](https://github.com/paseo-network) testnet contour.
+```properties
+sdk.dir=/path/to/android-sdk
+
+# Build identity (public values, compiled into the APK)
+APPLICATION_ID=com.example.polkadot
+APPLICATION_NAME=Polkadot
+PRIVACY_POLICY_URL=https://example.com/privacy
+TERMS_OF_USE_URL=https://example.com/terms
+LOG_COLLECTION_EMAIL=logs@example.com
+CONTACT_EMAIL=support@example.com
+CURRENCY_SYMBOL=CASH
+
+# Your Google Cloud / Firebase project (docs/DEPLOYMENT.md §4, §5.2)
+GOOGLE_OAUTH_ID=<OAuth 2.0 web client id used for Google Sign-In>
+GOOGLE_PROJECT_ID=<Google Cloud project number used for Play Integrity>
+FIRESTORE_DATABASE_ID=(default)
+
+# Sentry slugs are mandatory for the Gradle plugin; reporting stays off while SENTRY_DSN is unset
+SENTRY_ORG=my-org
+SENTRY_PROJECT=my-project
+
+# Throwaway funding account for the testnet top-up flow of debug/nightly builds
+NIGHTLY_FUNDING_MNEMONIC=<12 words>
+
+# Dev keystore used to sign debug/nightly builds
+CI_KEYSTORE_PASS=<store password>
+CI_KEYSTORE_KEY_ALIAS=<alias>
+CI_KEYSTORE_KEY_PASS=<key password>
+```
+
+Then provide the three files/services the build and the app depend on:
+
+1. **Dev keystore** at the repo root, matching the `CI_KEYSTORE_*` values:
+   ```bash
+   keytool -genkeypair -v -keystore develop_key.jks -alias <alias> -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. **`app/google-services.json`** from your own Firebase project. Its client list must
+   include `APPLICATION_ID` and the `.debug` / `.nightly` / `.safetynet` suffixed ids.
+3. **Firebase Remote Config values.** The app ships no bundled defaults: its chain list,
+   DotNS contract addresses, and backend endpoints all come from Remote Config, so a
+   fresh Firebase project produces an app that cannot connect to anything. The keys and
+   their shapes are listed in [docs/DEPLOYMENT.md §4.1](./docs/DEPLOYMENT.md#41-remote-config-keys).
+
+The full variable reference, including the optional overrides, is in
+[docs/DEPLOYMENT.md §5](./docs/DEPLOYMENT.md#5-environment-variables--secrets-reference).
+
+Open the project in Android Studio, select the **gp** flavor with a debug build type and an Android 10+ device or emulator, then build and run.
+
+The app talks to Polkadot system chains (People Chain, Asset Hub, Bulletin Chain). Which chains
+and RPC nodes it uses is not hard-coded: the `chains` / `chains_v2` Remote Config keys of your
+Firebase project define the set, so a fork can point the same build at Polkadot, at the
+[Paseo](https://github.com/paseo-network) testnet, or at its own network.
 
 ### Build and test from the command line
 
@@ -86,9 +138,10 @@ delivered via remote config, and development and nightly builds are exercised ag
 
 The project has two flavors (`gp` with Google Play Services, `vanilla` without — it
 keeps Firebase Remote Config, which the app requires and which needs no Play Services
-on the device) and `debug` / `nightly` / `release` build types — e.g.
+on the device) and `debug` / `nightly` / `safetynet` / `release` build types — e.g.
 `./gradlew assembleGpRelease` for a production build (requires the release keystore
-and secrets).
+and secrets). Both flavors read the same set of mandatory variables; `vanilla` merely
+ignores the Google values at runtime.
 
 ## How it works
 
@@ -113,9 +166,9 @@ Polkadot Android is a self-custodial superapp: your keys are created on your pho
 
 A modular **Kotlin** / **Jetpack Compose** codebase: features are split into `api` and `impl` modules wired with Hilt, performance-critical crypto is compiled from **Rust** via the NDK ([`bindings/`](./bindings)), and chain access goes through [substrate-sdk-android](https://github.com/novasamatech/substrate-sdk-android) (JSON-RPC, storage subscriptions, extrinsics).
 
-GitHub Actions validate pull requests and provide the configured Firebase, S3,
-nightly, and release distribution flows. Build-time configuration and the steps
-to sign and publish the app are documented in
+GitHub Actions validate pull requests. The remaining workflows are the maintainers'
+own build and distribution flows; a fork does not need them. Build-time
+configuration and the steps to sign and publish the app are documented in
 [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
 
 Architecture conventions, module layout, and coding standards are documented in [CLAUDE.md](./CLAUDE.md).
@@ -126,14 +179,14 @@ Issues and pull requests are welcome. Read [CONTRIBUTING.md](./CONTRIBUTING.md) 
 
 ## Security
 
-Before deploying this for real use cases, you are responsible for:
+If you build and distribute an app from this code, you are responsible for:
 
-- Reviewing the code yourself — we publish a reference, not a hardened production build.
+- Reviewing the code yourself — this repository is a reference, not a hardened production build.
 - Checking that the dependencies are up to date and free of known vulnerabilities.
-- Securing your own fork or deployment environment (keys, secrets, network configuration).
-- Tracking the latest commits for security fixes; older revisions are not backported.
+- Securing your own fork and build environment (keys, secrets, network configuration) and the services you point the app at.
+- Deciding when to pick up new commits; security fixes land on `main` only and older revisions are not backported.
 
-Report vulnerabilities responsibly following [Parity's security policy](https://github.com/paritytech/.github/blob/main/SECURITY.md) — do not open public issues for security reports. For Parity's disclosure process and Bug Bounty programme, see [parity.io/bug-bounty](https://parity.io/bug-bounty).
+Report vulnerabilities responsibly following [Parity's security policy](https://github.com/paritytech/.github/blob/main/SECURITY.md) — do not open public issues for security reports. For Parity's disclosure process and Bug Bounty programme, see [parity.io/bug-bounty](https://parity.io/bug-bounty). This proof-of-concept is maintained on a best-effort basis: reports are welcome, but there is no commitment to a fix or a timeline.
 
 ## License
 

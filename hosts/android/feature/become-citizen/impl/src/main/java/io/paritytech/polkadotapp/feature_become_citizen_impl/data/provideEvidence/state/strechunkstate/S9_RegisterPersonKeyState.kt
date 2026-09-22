@@ -91,7 +91,7 @@ class RegisterPersonKeyState(
 
     private fun ExtrinsicExecutionResult.canContinue(): Boolean {
         // Attempt to register after successful previous attempt will result in "NotApplied" error
-        // https://github.com/paritytech/individuality/blob/132421e16d85535afe570a0a32feaecfb5c8e5f4/substrate/frame/proof-of-ink/src/lib.rs#L518
+        // https://github.com/paritytech/individuality-community/blob/fce93ef38a15c673a8b0b208362bc46ae755c7d7/pallets/proof-of-ink/src/lib.rs#L483
         return outcome.isOk() || outcome.isModuleError(Modules.PROOF_OF_INK, "NotApplied")
     }
 }

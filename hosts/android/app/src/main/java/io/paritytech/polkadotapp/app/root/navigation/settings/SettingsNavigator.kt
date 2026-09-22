@@ -6,10 +6,13 @@ import io.paritytech.polkadotapp.app.R
 import io.paritytech.polkadotapp.app.root.navigation.BaseNavigator
 import io.paritytech.polkadotapp.app.root.navigation.LegalUrls
 import io.paritytech.polkadotapp.app.root.navigation.NavigationHolder
+import io.paritytech.polkadotapp.app.root.navigation.SupportContact
 import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.presentation.BrowserNavigator
+import io.paritytech.polkadotapp.common.presentation.resources.ContextManager
 import io.paritytech.polkadotapp.common.utils.openAppLanguageSettings
 import io.paritytech.polkadotapp.common.utils.openAppNotificationSettings
+import io.paritytech.polkadotapp.common.utils.openEmail
 import io.paritytech.polkadotapp.common.utils.toPayloadBundle
 import io.paritytech.polkadotapp.feature_backup_api.presentation.BackupConflictPayload
 import io.paritytech.polkadotapp.feature_chats_api.presentation.model.ChatFeedPayload
@@ -22,7 +25,8 @@ import javax.inject.Inject
 class SettingsNavigator @Inject constructor(
     navigationHolder: NavigationHolder,
     @param:ApplicationContext private val context: Context,
-    private val browserNavigator: BrowserNavigator
+    private val browserNavigator: BrowserNavigator,
+    private val contextManager: ContextManager
 ) : BaseNavigator(navigationHolder), SettingsRouter {
     override fun openBackup() {
         performNavigation(R.id.action_global_to_backup_graph)
@@ -86,12 +90,20 @@ class SettingsNavigator @Inject constructor(
         context.openAppLanguageSettings()
     }
 
+    override fun openLegalAndSupport() {
+        performNavigation(R.id.action_global_to_legalAndSupportFragment)
+    }
+
     override fun openPrivacyPolicy() {
         browserNavigator.open(LegalUrls.PRIVACY_POLICY)
     }
 
     override fun openTermsOfUse() {
         browserNavigator.open(LegalUrls.TERMS_OF_USE)
+    }
+
+    override fun openContactUs() {
+        contextManager.requireActivity().openEmail(SupportContact.EMAIL)
     }
 
     override fun openThemes() {
