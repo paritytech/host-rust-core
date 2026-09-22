@@ -9,7 +9,7 @@ interface RootRouter : ReturnableRouter {
 
     fun openMain()
 
-    fun openScanner()
+    fun openAddContact()
 
     fun openActiveProduct()
 

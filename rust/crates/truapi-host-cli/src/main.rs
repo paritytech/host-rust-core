@@ -58,7 +58,8 @@ use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
     AnnouncedPairing, DebugSink, PairedSsoPeer, PairingHostConfig, PairingHostRuntime,
-    ResponderExit, SigningHostConfig, SigningHostRuntime, StatementRenewalTarget, WsDebugSink,
+    PairingProposal, ResponderExit, SigningHostConfig, SigningHostRuntime,
+    StatementRenewalTarget, WsDebugSink,
 };
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
@@ -1865,49 +1866,23 @@ where
     let server = tokio::spawn(frame_server::accept_loop(runtime, product, frame_server));
     let result = body.await;
     server.abort();
+    let _ = server.await;
     result
 }
 
 fn paired_host_from_deeplink(deeplink: &str) -> Result<PairedHost> {
-    use truapi_server::host_logic::sso::pairing::{
-        VersionedHandshakeProposal, decode_pairing_deeplink, v2::MetadataKey,
-    };
-
-    let VersionedHandshakeProposal::V2(proposal) =
-        decode_pairing_deeplink(deeplink).map_err(anyhow::Error::msg)?;
-    let mut metadata = PairedHostMetadata::default();
-    for entry in proposal.metadata {
-        let value = safe_display_metadata(entry.1);
-        match entry.0 {
-            MetadataKey::HostName => metadata.host_name = value,
-            MetadataKey::HostVersion => metadata.host_version = value,
-            MetadataKey::HostIcon => metadata.host_icon = value,
-            MetadataKey::PlatformType => metadata.platform_type = value,
-            MetadataKey::PlatformVersion => metadata.platform_version = value,
-            MetadataKey::Custom(_) => {}
-        }
-    }
+    let proposal = PairingProposal::from_deeplink(deeplink).map_err(anyhow::Error::msg)?;
     Ok(PairedHost::new(
-        proposal.device.statement_account_id,
-        proposal.device.encryption_public_key,
-        metadata,
+        proposal.peer.statement_account_id,
+        proposal.peer.encryption_public_key,
+        PairedHostMetadata {
+            host_name: proposal.metadata.host_name,
+            host_version: proposal.metadata.host_version,
+            host_icon: proposal.metadata.host_icon,
+            platform_type: proposal.metadata.platform_type,
+            platform_version: proposal.metadata.platform_version,
+        },
     ))
-}
-
-fn safe_display_metadata(value: String) -> Option<String> {
-    let value = value
-        .trim()
-        .chars()
-        .filter(|character| {
-            !character.is_control()
-                && !matches!(
-                    character,
-                    '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-                )
-        })
-        .take(512)
-        .collect::<String>();
-    (!value.is_empty()).then_some(value)
 }
 
 fn paired_sso_peer(host: &PairedHost) -> PairedSsoPeer {
@@ -2083,6 +2058,7 @@ async fn run_dev(
     log_controller: LogController,
     debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
+    bootstrap::read_container(&bootstrap::container_path())?;
     let product_id = args
         .product_id
         .unwrap_or_else(|| format!("localhost:{}", args.app_port));
@@ -4392,6 +4368,54 @@ mod cli_tests {
         assert_eq!(args.product_id.as_deref(), Some("playground.paseo"));
         assert_eq!(args.app_port, 3000);
         assert!(args.command.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn script_completion_removes_the_private_frame_socket_before_returning() -> Result<()> {
+        struct UnusedRuntimeFactory;
+
+        impl frame_server::ProductRuntimeFactory for UnusedRuntimeFactory {
+            fn product_runtime(
+                &self,
+                _product: truapi_server::ProductContext,
+                _sink: Arc<dyn truapi_server::FrameSink>,
+            ) -> truapi_server::ProductRuntime {
+                panic!("the completed script must not open a product connection")
+            }
+        }
+
+        for script_failed in [false, true] {
+            let frame_server = frame_server::bind(None).await?;
+            let socket = PathBuf::from(
+                frame_server
+                    .endpoint()
+                    .strip_prefix("ws+unix:")
+                    .context("expected a private Unix socket")?,
+            );
+            let directory = socket.parent().context("socket has no directory")?;
+            assert!(socket.exists());
+            let product = frame_server::ProductSelection::new(
+                "script-cleanup.testnet".to_string(),
+                ProductExecutionKind::App,
+            )?;
+            let result = with_frame_server(
+                Arc::new(UnusedRuntimeFactory),
+                product,
+                frame_server,
+                async move {
+                    anyhow::ensure!(!script_failed, "script failed");
+                    Ok(())
+                },
+            )
+            .await;
+
+            assert_eq!(
+                (result.is_err(), socket.exists(), directory.exists()),
+                (script_failed, false, false),
+            );
+        }
+        Ok(())
     }
 
     #[cfg(unix)]

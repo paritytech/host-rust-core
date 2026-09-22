@@ -24,7 +24,7 @@ runs:
     - name: Upload artifact to Firebase App Distribution
       id: upload
       continue-on-error: true
-      uses: wzieba/Firebase-Distribution-Github-Action@v1.7.0
+      uses: wzieba/Firebase-Distribution-Github-Action@a41b2f7ab3f7c2631b6a73fb2f660b517cef45a9 # v1.7.0
       with:
         appId: ${{ inputs.appId }}
         serviceCredentialsFileContent: ${{ inputs.firebase-token }}
@@ -33,14 +33,14 @@ runs:
         file: ${{ inputs.upload-file }}
 
     - name: Sleep for 60 seconds
-      uses: whatnick/wait-action@master
+      uses: whatnick/wait-action@71008d68ab3939de1475f4938583e4480b5d09a6 # master
       if: steps.upload.outcome=='failure'
       with:
         time: '60s'
 
     - name: Retry upload artifacts
       if: steps.upload.outcome=='failure'
-      uses: wzieba/Firebase-Distribution-Github-Action@v1.7.0
+      uses: wzieba/Firebase-Distribution-Github-Action@a41b2f7ab3f7c2631b6a73fb2f660b517cef45a9 # v1.7.0
       with:
         appId: ${{ inputs.appId }}
         serviceCredentialsFileContent: ${{ inputs.firebase-token }}

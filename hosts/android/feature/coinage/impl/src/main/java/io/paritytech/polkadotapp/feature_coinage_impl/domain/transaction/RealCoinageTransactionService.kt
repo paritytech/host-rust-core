@@ -6,6 +6,7 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.Co
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageRegistrationError
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageScheduledTransactionRequest
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
@@ -24,6 +25,7 @@ import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogI
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogW
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.shortKey
 import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableExtrinsic
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableSubmission
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTransactionService
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxRegistrationError
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
@@ -77,9 +79,28 @@ class RealCoinageTransactionService @Inject constructor(
         val registrations = runCatching { transactions.map { assetRegistration(it.inputs, it.outputs) } }
             .getOrElse { return Result.failure(it) }
 
-        return engine.submitAll(COINAGE_DOMAIN, transactions.map { it.extrinsic }, groupId) { ids ->
+        val submissions = transactions.map { DurableSubmission(it.extrinsic, it.policy) }
+
+        return engine.submitAll(COINAGE_DOMAIN, submissions, groupId) { ids ->
             assetLedger.registerAssets(ids.zip(registrations))
         }.asCoinageError().onFailure(::logRejected)
+    }
+
+    override suspend fun scheduleTransactions(
+        transactions: List<CoinageScheduledTransactionRequest>,
+        groupId: CoinageOperationGroupId,
+    ): Result<List<CoinageTransactionId>> {
+        coinageLogI(
+            "schedule-transactions count=${transactions.size} group=${groupId.value} " +
+                "policies=${transactions.map { it.policy.id }.distinct()}"
+        )
+
+        val registrations = runCatching { transactions.map { assetRegistration(it.inputs, it.outputs) } }
+            .getOrElse { return Result.failure(it) }
+
+        return engine.schedule(COINAGE_DOMAIN, groupId, transactions.map { it.policy }) { ids ->
+            assetLedger.registerAssets(ids.zip(registrations))
+        }.onFailure(::logRejected)
     }
 
     override suspend fun preCommitHandoff(assets: List<OwnAsset>): Result<CoinageHandoffCommit> {
@@ -170,4 +191,8 @@ private class LedgerHandoffCommit(
     override suspend fun commit(): Result<Unit> = assetLedger.commitHandoffs(keys)
         .onSuccess { coinageLogI("handoff-committed keys=${keys.map { it.shortKey() }}") }
         .onFailure { error -> coinageLogW("handoff-commit-failed keys=${keys.map { it.shortKey() }} error=$error") }
+
+    override suspend fun release(): Result<Unit> = assetLedger.releaseUncommittedHandoffs(keys)
+        .onSuccess { coinageLogI("handoff-released keys=${keys.map { it.shortKey() }}") }
+        .onFailure { error -> coinageLogW("handoff-release-failed keys=${keys.map { it.shortKey() }} error=$error") }
 }

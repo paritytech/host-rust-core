@@ -48,13 +48,17 @@ fun ChatMessage.toEncodedMessage(): Result<EncodedMessage> {
 }
 
 private fun ChatMessage.toStatementStoreMessage(): Result<ChatMessageStatement> {
-    return content.toStatementStoreContent()
-        .map { it.wrapInReplyOrSelf(replyToMessageId) }
+    return toWireContent()
         .map {
             val message = ChatMessageV1(it)
             val versioned = VersionedChatMessage.V1(message)
             ChatMessageStatement(id, timestamp.toULong(), versioned)
         }
+}
+
+internal fun ChatMessage.toWireContent(): Result<ChatMessageStatementContent> {
+    return content.toStatementStoreContent()
+        .map { it.wrapInReplyOrSelf(replyToMessageId) }
 }
 
 fun EncodedMessage.decodeChatMessageStatement(): Result<ChatMessageStatement> {
@@ -165,7 +169,7 @@ private fun List<Attachment>.toData() = map {
     it.toFileVariant()
 }.ifEmpty { null }
 
-private fun ChatMessageStatementContent.toChatMessageContent(): ChatMessage.Content {
+internal fun ChatMessageStatementContent.toChatMessageContent(): ChatMessage.Content {
     return when (this) {
         ChatMessageStatementContent.ContactAdded -> ChatMessage.Content.ContactAdded
         is ChatMessageStatementContent.CoinagePayment -> ChatMessage.Content.CoinagePayment(
@@ -206,7 +210,7 @@ private fun ChatMessageStatementContent.toChatMessageContent(): ChatMessage.Cont
     }
 }
 
-private fun ChatMessageStatement.toChatMessage(
+internal fun ChatMessageStatement.toChatMessage(
     authorAccountId: AccountId,
     contactAccountId: AccountId,
     messageStatus: ChatMessage.Status,

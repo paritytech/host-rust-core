@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.ArrowDownward
@@ -173,8 +174,8 @@ private fun PaymentMessageContent(
                 }
 
                 NovaText(
-                    text = formatter.formatToSymbol(message.amount),
-                    style = PolkadotTheme.typography.body.medium,
+                    text = formatter.formatToSymbol(message.amount).withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
+                    style = PolkadotTheme.typography.title.large,
                     color = secondaryTextColor,
                     textAlign = TextAlign.Center
                 )
@@ -303,7 +304,7 @@ private fun PaymentStatusIndicator(
         }
 
         NovaText(
-            text = text,
+            text = text.withCurrencyTickerStyle(PolkadotTheme.typography.body.small),
             style = PolkadotTheme.typography.body.small,
             color = color
         )

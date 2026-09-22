@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.utils.CurrencyConfig
 import io.paritytech.polkadotapp.design.colors.LegacyNovaStableColors
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextButton
@@ -55,7 +56,7 @@ fun WeeklyGameDepositBottomSheetContent(
                 text = stringResource(
                     RCommon.string.chat_bot_weekly_game_deposit_required_subtitle,
                     formattedAmount
-                ),
+                ).withCurrencyTickerStyle(PolkadotTheme.typography.headline.small),
                 style = PolkadotTheme.typography.headline.small,
                 color = NovaPrizesColors.textPrimary
             )
@@ -66,7 +67,7 @@ fun WeeklyGameDepositBottomSheetContent(
                 text = stringResource(
                     RCommon.string.chat_bot_weekly_game_deposit_required_description,
                     CurrencyConfig.symbol
-                ),
+                ).withCurrencyTickerStyle(PolkadotTheme.typography.body.large),
                 style = PolkadotTheme.typography.body.large,
                 color = NovaPrizesColors.textSecondary
             )
@@ -98,7 +99,8 @@ fun WeeklyGameDepositBottomSheetContent(
 
         PolkadotTextButton(
             modifier = Modifier.fillMaxWidth(),
-            text = stringResource(RCommon.string.chat_bot_weekly_game_deposit_required_action, formattedAmount),
+            text = stringResource(RCommon.string.chat_bot_weekly_game_deposit_required_action, formattedAmount)
+                .withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
             enabled = inProgress.not(),
             onClick = onDeposit
         )

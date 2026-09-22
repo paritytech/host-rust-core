@@ -9,6 +9,7 @@ import dagger.multibindings.IntoMap
 import dagger.multibindings.IntoSet
 import io.paritytech.polkadotapp.chains.network.updaters.system.UpdateSystemFactory
 import io.paritytech.polkadotapp.common.data.storage.SingleValueStorageFactory
+import io.paritytech.polkadotapp.common.data.time.TimeProvider
 import io.paritytech.polkadotapp.common.presentation.tabs.TabWarningProvider
 import io.paritytech.polkadotapp.feature_coinage_api.data.updaters.CoinageUpdateSystem
 import io.paritytech.polkadotapp.feature_coinage_api.domain.CoinsInteractor
@@ -102,6 +103,14 @@ import io.paritytech.polkadotapp.feature_coinage_impl.domain.service.RealInstall
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.COINAGE_DOMAIN_ID
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.RealCoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.CoinageResourceOracle
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.COINAGE_CLAIM_POLICY_ID
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.COINAGE_SPLIT_POLICY_ID
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.COINAGE_UNLOAD_POLICY_ID
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.ClaimRebuild
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.CoinageSubmissionParams
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.InputGatedSubmissionPolicy
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.SplitRebuild
+import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.submission.UnloadRebuild
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase.CoinageOnboardingSubmissionUseCase
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase.CoinageTransferSubmissionUseCase
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase.RealClaimReceivedCoinsUseCase
@@ -121,6 +130,8 @@ import io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase.RealShareCo
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.usecase.RealTotalBalanceUseCase
 import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.AsyncDurableSubmissionPolicy
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.SubmissionPolicyKey
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TxCompletionOracle
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TxDomainKey
 import javax.inject.Singleton
@@ -133,6 +144,47 @@ object CoinageStorageModule {
     fun provideRecyclingStrategyStorage(factory: SingleValueStorageFactory): RecyclingStrategyStorage {
         return factory.createRecyclingStrategyStorage()
     }
+}
+
+/** One policy per kind of coinage transaction: the same gating, each with its own rebuild. */
+@Module
+@InstallIn(SingletonComponent::class)
+object CoinageSubmissionPolicyModule {
+    @Provides
+    @IntoMap
+    @SubmissionPolicyKey(COINAGE_SPLIT_POLICY_ID)
+    fun provideSplitSubmissionPolicy(
+        rebuild: SplitRebuild,
+        @DigitalDollarChainAssetProvider chainAssetProvider: ChainAssetProvider,
+        assetLedger: CoinageAssetLedger,
+        timeProvider: TimeProvider,
+    ): AsyncDurableSubmissionPolicy = InputGatedSubmissionPolicy(
+        CoinageSubmissionParams.SPLIT_POLICY_ID, rebuild, chainAssetProvider, assetLedger, timeProvider
+    )
+
+    @Provides
+    @IntoMap
+    @SubmissionPolicyKey(COINAGE_UNLOAD_POLICY_ID)
+    fun provideUnloadSubmissionPolicy(
+        rebuild: UnloadRebuild,
+        @DigitalDollarChainAssetProvider chainAssetProvider: ChainAssetProvider,
+        assetLedger: CoinageAssetLedger,
+        timeProvider: TimeProvider,
+    ): AsyncDurableSubmissionPolicy = InputGatedSubmissionPolicy(
+        CoinageSubmissionParams.UNLOAD_POLICY_ID, rebuild, chainAssetProvider, assetLedger, timeProvider
+    )
+
+    @Provides
+    @IntoMap
+    @SubmissionPolicyKey(COINAGE_CLAIM_POLICY_ID)
+    fun provideClaimSubmissionPolicy(
+        rebuild: ClaimRebuild,
+        @DigitalDollarChainAssetProvider chainAssetProvider: ChainAssetProvider,
+        assetLedger: CoinageAssetLedger,
+        timeProvider: TimeProvider,
+    ): AsyncDurableSubmissionPolicy = InputGatedSubmissionPolicy(
+        CoinageSubmissionParams.CLAIM_POLICY_ID, rebuild, chainAssetProvider, assetLedger, timeProvider
+    )
 }
 
 @Module

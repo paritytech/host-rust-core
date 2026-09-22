@@ -38,4 +38,4 @@ runs:
         PR: ${{ inputs.pr-number }}
         MARKER: ${{ inputs.marker }}
         BODY_FILE: ${{ inputs.body-file }}
-      run: ${{ github.action_path }}/upsert.sh
+      run: '"${{ github.action_path }}/upsert.sh"'

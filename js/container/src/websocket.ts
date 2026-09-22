@@ -36,9 +36,8 @@ interface SocketState {
 }
 
 export function installWebSocketGate(
-  win: Window & typeof globalThis,
+  win: typeof globalThis,
   authorize: NetworkAuthorization,
-  bridgeUrl?: string,
   factory?: WebSocketBackendFactory,
 ): void {
   const NativeSocket = win.WebSocket;
@@ -235,7 +234,7 @@ export function installWebSocketGate(
         apply(send, backend, [data]);
       },
       close(code, reason) {
-        apply(close, backend, [code, reason]);
+        apply(close, backend, code === undefined ? [] : [code, reason]);
       },
     };
     current.backend.binaryType(current.binaryType);
@@ -355,7 +354,7 @@ export function installWebSocketGate(
       try {
         url = new NativeURL(
           originalUrl,
-          baseURI ? apply(baseURI, win.document, []) : win.document.baseURI,
+          baseURI ? apply(baseURI, win.document, []) : win.document?.baseURI,
         );
       } catch {
         throw new NativeError('Invalid WebSocket URL', 'SyntaxError');
@@ -371,8 +370,6 @@ export function installWebSocketGate(
           'WebSocket URLs cannot contain fragments',
           'SyntaxError',
         );
-      if (bridgeUrl !== undefined && originalUrl === bridgeUrl)
-        return new NativeSocket(address, requested) as any;
       const current: SocketState = {
         url: address,
         phase: 0,

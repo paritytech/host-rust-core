@@ -10,12 +10,9 @@ data class CoinageUiState(
     val autoFundAvailable: Boolean,
     val fundInProgress: Boolean,
     val actionsEnabled: Boolean,
-    val coinageWidgetsEnabled: Boolean,
     /**
-     * Gates log sharing alone, separately from [coinageWidgetsEnabled].
-     *
-     * The two flags happen to carry the same value in every build type, so this changes no exposure today —
-     * it keeps the reason legible: sharing a log file is testnet support tooling, not a coinage widget.
+     * Gates the log-sharing button inside the debug card, on top of the card's own gate: sharing a log file
+     * is testnet support tooling, and a build that shows the debug card need not offer it.
      */
     val shareLogsEnabled: Boolean,
     val detailsVisible: Boolean,

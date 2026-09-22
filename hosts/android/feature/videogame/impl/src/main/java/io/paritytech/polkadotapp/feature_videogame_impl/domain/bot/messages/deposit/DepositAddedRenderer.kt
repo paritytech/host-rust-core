@@ -12,6 +12,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.common.R
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_chats_api.domain.middleware.bot.CustomChatMessageRenderer
@@ -54,7 +55,7 @@ class DepositAddedRenderer @Inject constructor(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(PolkadotTheme.spacings.small),
-                        text = formatMessage(it),
+                        text = formatMessage(it).withCurrencyTickerStyle(PolkadotTheme.typography.body.medium),
                         style = PolkadotTheme.typography.body.medium,
                         color = PolkadotTheme.colors.fg.secondary,
                         textAlign = TextAlign.Center

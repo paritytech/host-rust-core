@@ -10,6 +10,7 @@ import io.paritytech.polkadotapp.chains.multiNetwork.connection.withConnectionEn
 import io.paritytech.polkadotapp.chains.repository.ChainStateRepository
 import io.paritytech.polkadotapp.common.utils.combine
 import io.paritytech.polkadotapp.common.utils.network.NetworkStateService
+import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.ChainHealthMonitor
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainHealth
 import io.paritytech.polkadotapp.feature_connection_status_impl.data.ChainHeadDataSource
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.shareIn
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -73,6 +75,7 @@ class RealChainHealthMonitor @Inject constructor(
                 .shareIn(this@channelFlow, SharingStarted.WhileSubscribed(), replay = 1)
 
             val context = ChainMetricContext(
+                chainId = chainId,
                 bestBlockNumber = bestBlock,
                 expectedBlockTime = blockTime,
                 pendingRequests = pendingRequests,
@@ -89,7 +92,9 @@ class RealChainHealthMonitor @Inject constructor(
                     expectedBlockTime = blockTime,
                     readings = readingList,
                 )
-            }.collect { send(it) }
+            }
+                .onEach { chainHealthLog.d("%s is %s with %s", it.chainName, it.connection, it.readings) }
+                .collect { send(it) }
         }
     }
 
@@ -110,7 +115,8 @@ class RealChainHealthMonitor @Inject constructor(
             .map { state -> state?.pendingRequests.orEmpty() }
 
     private suspend fun resolveBlockTime(chainId: ChainId): Duration =
-        runCatching { chainStateRepository.expectedBlockTime(chainId) }
+        runCancellableCatching { chainStateRepository.expectedBlockTime(chainId) }
+            .onFailure { chainHealthLog.w(it, "%s block time unavailable, measuring against %s", chainId, FALLBACK_BLOCK_TIME) }
             .getOrDefault(FALLBACK_BLOCK_TIME)
 
     private companion object {

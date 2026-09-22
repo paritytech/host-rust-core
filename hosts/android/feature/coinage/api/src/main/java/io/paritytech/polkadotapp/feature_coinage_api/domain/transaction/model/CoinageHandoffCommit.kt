@@ -10,4 +10,7 @@ package io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model
  */
 interface CoinageHandoffCommit {
     suspend fun commit(): Result<Unit>
+
+    /** Drops the reservation now, for a payment whose keys never left. A committed handoff is not touched. */
+    suspend fun release(): Result<Unit>
 }

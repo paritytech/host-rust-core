@@ -26,7 +26,6 @@ class RealClaimDeviceEvidenceProvider @Inject constructor(
     private val clientKeypairStore: ClientKeypairStore,
     private val coroutineDispatchers: CoroutineDispatchers
 ) : ClaimDeviceEvidenceProvider {
-
     override suspend fun collectEvidence(): Result<ClaimDeviceEvidence?> = withContext(coroutineDispatchers.io) {
         fetchClaimChallenge()
             .mapCatching { challenge -> buildEvidence(challenge) }

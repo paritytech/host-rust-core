@@ -408,7 +408,8 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="bottom_nav_menu_pocket">Pocket</string>
     <string name="bottom_nav_menu_explore">Browse</string>
     <string name="bottom_nav_menu_settings">Settings</string>
-    <string name="bottom_nav_scanner_tooltip">Use this button to add contacts, send funds, and more</string>
+    <string name="bottom_nav_scanner_tooltip_title">Scan a QR code</string>
+    <string name="bottom_nav_scanner_tooltip_message">Scan to pay or add a contact.</string>
     <string name="tab_bar_no_open_products">No open products</string>
     <string name="tab_bar_close_tab">Close tab</string>
 
@@ -905,6 +906,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="scan_invalid_code_error_message">The scanned QR code is not recognized</string>
     <string name="scan_invalid_code_error_action">Got it</string>
     <string name="scan_point_camera_at_qr_code">Scan the QR code to continue</string>
+    <string name="scan_panel_camera_permission_hint">Allow camera access to scan QR codes</string>
 
     <string name="chat_message_unsupported">Unsupported message content. Please update the app.</string>
     <string name="chat_message_compaction_unavailable">Some messages could not be retrieved and are permanently unavailable.</string>
@@ -1036,8 +1038,8 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="app_not_found_error">No App found</string>
 
     <string name="chats_toolbar_title" translatable="false">Chats</string>
-    <string name="chats_empty_state_title">No active chats</string>
-    <string name="chats_empty_state_message">Start a conversation with someone \nby typing their username</string>
+    <string name="chats_empty_state_title">Add your first contact</string>
+    <string name="chats_empty_state_message">Tap + below to find someone by username</string>
 
     <string name="chat_search_empty_state_title">No results</string>
     <string name="chat_search_empty_state_message">There is no result for “%1$s”. Try a new search</string>
@@ -1054,6 +1056,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="chat_search_error_message">Search failed. Please try again</string>
 
     <string name="add_contact_search_placeholder">Type username</string>
+    <string name="add_contact_search_prompt">Start a conversation with someone \nby typing their username</string>
     <string name="add_contact_bottom_sheet_message">Add a contact\nand start a chat with\n%1$s</string>
     <string name="add_contact_bottom_sheet_description">After you enter the chat, make sure <b>%1$s</b> starts one with you as well, or your message may not be seen.</string>
     <string name="add_contact_bottom_sheet_button_text">Add to Contacts</string>
@@ -1218,7 +1221,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="chat_notification_reaction_added">reacted with %1$s</string>
 
     <string name="chat_notification_contact_added">added you</string>
-    <string name="chat_notification_payment">sent you %1$s. Open to claim</string>
+    <string name="chat_notification_payment">is sending you %1$s</string>
     <string name="chat_notification_request_approved">approved the chat request</string>
 
     <string name="pocket_toolbar_title">Pocket</string>
@@ -1244,6 +1247,8 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="asset_details_balance_CTA_update">Update</string>
 
     <string name="transaction_success_title">Your transaction was sent successfully</string>
+    <string name="transaction_success_finality_pending">The payment went through. You can wait here for the final confirmation report, it usually arrives in ~30 seconds</string>
+    <string name="transaction_success_finality_confirmed">The payment is confirmed</string>
     <string name="send_transaction_failure_title">Payment failed</string>
     <string name="send_transaction_failure_description">Please review the details of your transaction and try to send it again</string>
 
@@ -1275,9 +1280,10 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="settings_section_general">General</string>
     <string name="settings_section_connections">Connections</string>
     <string name="settings_section_security">Security &amp; privacy</string>
-    <string name="settings_section_legal">Legal</string>
     <string name="settings_section_payments">Payments</string>
     <string name="settings_section_debug">Debug</string>
+    <string name="settings_section_legal">Legal</string>
+    <string name="settings_section_support">Support</string>
 
     <string name="settings_notifications">Notifications</string>
     <string name="settings_theme">Theme</string>
@@ -1294,6 +1300,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="settings_privacy_policy">Privacy policy</string>
     <string name="settings_products">Apps</string>
     <string name="settings_blocked_contacts">Blocked contacts</string>
+    <string name="settings_legal_and_support">Legal &amp; Support</string>
     <string name="settings_contact_us">Contact us</string>
     <string name="settings_email_copied">Email copied to clipboard</string>
     <string name="settings_currency">Currency</string>
@@ -1472,22 +1479,24 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="collectibles_title">Collectibles</string>
     <string name="collectibles_unavailable">Collectibles are temporarily unavailable. Please try again later.</string>
 
-    <string name="chain_health_state_speed_high">Speed is High</string>
-    <string name="chain_health_state_speed_good">Speed is Good</string>
-    <string name="chain_health_state_speed_fair">Speed is Fair</string>
-    <string name="chain_health_state_speed_low">Speed is Low</string>
+    <string name="chain_health_state_connected">Connected</string>
     <string name="chain_health_state_not_producing">Not producing blocks</string>
     <string name="chain_health_state_connecting">Connecting…</string>
     <string name="chain_health_state_broken">Chain broken</string>
-    <string name="chain_health_summary">%1$s · Last block %2$s ago</string>
+    <string name="chain_health_state_offline">No internet</string>
+    <string name="chain_health_connected_summary">%1$s · Live %2$s · Block %3$s</string>
+    <string name="chain_health_live_percent">%1$d%%</string>
+    <string name="chain_health_block_interval">~%1$s</string>
+    <string name="chain_health_value_unknown">—</string>
     <string name="chain_health_panel_title">Network Status</string>
-    <string name="chain_health_block_age_seconds">%1$ds</string>
-    <string name="chain_health_block_age_minutes">%1$dm %2$ds</string>
-    <string name="chain_health_block_age_unknown">—</string>
+    <string name="chain_health_duration_seconds">%1$ds</string>
+    <string name="chain_health_duration_minutes">%1$dm %2$ds</string>
     <string name="chain_health_indicator_description">%1$s, %2$s</string>
     <string name="chain_health_chain_people">People Chain</string>
     <string name="chain_health_chain_hub">Hub Chain</string>
     <string name="chain_health_chain_bulletin">Bulletin Chain</string>
+    <string name="chain_health_tooltip_title">Network status</string>
+    <string name="chain_health_tooltip_message">These rings track your connection to each chain.</string>
 
     <string name="splash_waiting_for_network_title">Waiting for network connection…</string>
     <string name="splash_waiting_for_network_message">Turn off Airplane Mode or check your internet</string>

@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.common.R
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.Check
@@ -65,7 +66,7 @@ fun FundingOperationItem(
                     tokenAmountTo = operation.conversion.second,
                     precisionFrom = RoundPrecision.DEFAULT,
                     precisionTo = RoundPrecision.HIGH,
-                ),
+                ).withCurrencyTickerStyle(PolkadotTheme.typography.body.large),
                 style = PolkadotTheme.typography.body.large,
                 color = PolkadotTheme.colors.fg.secondary
             )

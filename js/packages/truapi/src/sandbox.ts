@@ -1,11 +1,10 @@
 /**
  * Sandbox bootstrap for browser-embedded hosts.
  *
- * Detects whether the app runs inside a TrUAPI host (iframe or webview), builds
- * the matching {@link WireProvider}, and exposes a lazily-created, cached
- * {@link TrUApiClient} via {@link getClientSync} so embedders don't
- * re-implement the wiring. {@link subscribeConnectionStatus} surfaces a
- * connected / disconnected signal over that client.
+ * Detects whether the app runs inside a TrUAPI host (iframe or webview), adopts
+ * its client or builds the matching {@link WireProvider}, and exposes a cached
+ * {@link TrUApiClient} via {@link getClientSync}. {@link subscribeConnectionStatus}
+ * surfaces a connected / disconnected signal over that client.
  *
  * @module
  */
@@ -29,6 +28,13 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
 declare global {
   interface Window {
+    /** Public client and connection status supplied by the embedding host. */
+    __HOST_API_CLIENT__?: {
+      readonly client: TrUApiClient;
+      subscribeConnectionStatus(
+        callback: (status: ConnectionStatus) => void,
+      ): () => void;
+    };
     /** Set by webview hosts (Polkadot Desktop / Mobile) to mark the embedding. */
     __HOST_WEBVIEW_MARK__?: boolean;
     /** Injected by webview hosts to carry the host-side `MessagePort`. */
@@ -36,7 +42,7 @@ declare global {
   }
 }
 
-/** Endpoint set by {@link connectWebSocketHost}, and the host when present. */
+/** Endpoint explicitly selected by {@link connectWebSocketHost}. */
 let webSocketEndpoint: string | null = null;
 
 function hostWindow(): Window | null {
@@ -76,14 +82,13 @@ function isIframe(): boolean {
 /**
  * Detect whether the app is running inside a TrUAPI host container: an iframe
  * (including a cross-origin parent), a marked webview, or a window carrying an
- * injected host message port. Synchronous, so it can gate hot paths.
+ * injected host client or message port. Synchronous, so it can gate hot paths.
  */
 export function isCorrectEnvironment(): boolean {
-  // An endpoint handed to `connectWebSocketHost` is the host, wherever the code
-  // runs: a plain browser tab against a loopback socket, or a script in Node.
   if (webSocketEndpoint !== null) return true;
   const win = hostWindow();
   if (!win) return false;
+  if (win.__HOST_API_CLIENT__) return true;
   if (isIframe()) return true;
   if (win.__HOST_WEBVIEW_MARK__ === true) return true;
   if (win.__HOST_API_PORT__ != null) return true;
@@ -263,7 +268,10 @@ function createIframeCompatibilityProvider(
  * Build the {@link WireProvider} matching the detected environment (iframe or
  * webview). `onEstablished` fires once the host channel is live.
  */
-function createSandboxProvider(onEstablished: () => void): WireProvider {
+function createSandboxProvider(
+  endpoint: string | null,
+  onEstablished: () => void,
+): WireProvider {
   // Both branches settle off a promise, so the pipe may be dead by then.
   let closed = false;
   const established = () => {
@@ -276,8 +284,8 @@ function createSandboxProvider(onEstablished: () => void): WireProvider {
     return provider;
   };
 
-  if (webSocketEndpoint !== null) {
-    const provider = watchClose(createWebSocketProvider(webSocketEndpoint));
+  if (endpoint !== null) {
+    const provider = watchClose(createWebSocketProvider(endpoint));
     provider.opened.then(established, () => {});
     return provider;
   }
@@ -295,7 +303,11 @@ function createSandboxProvider(onEstablished: () => void): WireProvider {
   return provider;
 }
 
-let cachedClient: TrUApiClient | null = null;
+let cachedConnection: {
+  client: TrUApiClient;
+  endpoint: string | null;
+  injected: boolean;
+} | null = null;
 let status: ConnectionStatus = "disconnected";
 const statusListeners = new Set<(status: ConnectionStatus) => void>();
 
@@ -311,22 +323,36 @@ function setStatus(next: ConnectionStatus): void {
 
 /**
  * Build (or return the cached) {@link TrUApiClient}. Returns `null` outside a
- * host container or if the provider can't be built. A close drops the cache,
- * so the next call renegotiates.
+ * host container or if the provider can't be built. Host-injected clients retain
+ * their identity across connection resets; other closed pipes renegotiate.
  */
 export function getClientSync(): TrUApiClient | null {
-  if (cachedClient) return cachedClient;
+  if (cachedConnection) return cachedConnection.client;
   if (!isCorrectEnvironment()) return null;
   try {
-    const provider = createSandboxProvider(() => setStatus("connected"));
-    cachedClient = createClient(createTransport(provider));
+    const endpoint = webSocketEndpoint;
+    const injected =
+      endpoint === null ? hostWindow()?.__HOST_API_CLIENT__ : undefined;
+    if (injected) {
+      cachedConnection = { client: injected.client, endpoint, injected: true };
+      injected.subscribeConnectionStatus(setStatus);
+      return cachedConnection.client;
+    }
+    const provider = createSandboxProvider(endpoint, () =>
+      setStatus("connected"),
+    );
+    cachedConnection = {
+      client: createClient(createTransport(provider)),
+      endpoint,
+      injected: false,
+    };
     provider.subscribeClose?.(() => {
       // Cleared first: a listener may call getClientSync from the notify below.
-      cachedClient = null;
-      if (webSocketEndpoint === null) forgetHostPort();
+      cachedConnection = null;
+      if (endpoint === null) forgetHostPort();
       setStatus("disconnected");
     });
-    return cachedClient;
+    return cachedConnection?.client ?? null;
   } catch {
     return null;
   }
@@ -352,7 +378,7 @@ export function getClientSync(): TrUApiClient | null {
  * a different endpoint is accepted.
  */
 export function connectWebSocketHost(url: string): TrUApiClient | null {
-  if (cachedClient !== null && webSocketEndpoint !== url) {
+  if (cachedConnection !== null && cachedConnection.endpoint !== url) {
     throw new Error(
       "connectWebSocketHost must be called before the TrUAPI client is created",
     );
@@ -383,7 +409,7 @@ export function subscribeConnectionStatus(
     // Building the client may establish the channel synchronously (an already
     // injected port), in which case the status is already "connected" here.
     const client = getClientSync();
-    if (client && status === "disconnected") {
+    if (client && !cachedConnection?.injected && status === "disconnected") {
       setStatus("connecting");
     }
   }

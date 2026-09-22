@@ -64,7 +64,10 @@ class TrUAPISessionStarter @Inject constructor(
 
         return bridge
             .attach(runtime, productId, chainDirectory.resolve(), navigation, ProductExecutionKind.APP, installBootstrap)
-            .mapCatching { provider.loadInitialContent() }
+            .mapCatching { execution ->
+                provider.useTrUAPIPermissions(productId, execution)
+                provider.loadInitialContent()
+            }
     }
 
     private fun Uri.origin(): String = buildString {
