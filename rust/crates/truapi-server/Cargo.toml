@@ -35,7 +35,7 @@ truapi = { path = "../truapi" }
 truapi-platform = { path = "../truapi-platform" }
 truapi-macros = { path = "../truapi-macros" }
 truapi-coinage = { path = "../truapi-coinage" }
-useragent-chat-v2 = { git = "https://github.com/paritytech/polkavm-app-kit.git", rev = "57b236fe9e740c83d0ead3d22cc7ca5a85e4ad17", default-features = false }
+truapi-chat-v2 = { path = "../truapi-chat-v2", default-features = false }
 async-trait = "0.1"
 derive_more = { version = "2", features = ["debug", "display", "error", "from"] }
 futures = "0.3"

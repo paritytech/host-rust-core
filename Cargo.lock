@@ -6083,6 +6083,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "truapi-chat-v2"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "hex",
+ "hkdf",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "truapi-client"
 version = "0.16.0"
 dependencies = [
@@ -6286,13 +6301,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "truapi",
+ "truapi-chat-v2",
  "truapi-coinage",
  "truapi-macros",
  "truapi-platform",
  "unicode-normalization",
  "uniffi",
  "url",
- "useragent-chat-v2",
  "verifiable",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -6609,19 +6624,6 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
-]
-
-[[package]]
-name = "useragent-chat-v2"
-version = "0.6.30"
-dependencies = [
- "blake2",
- "chacha20poly1305",
- "hkdf",
- "sha2 0.10.9",
- "thiserror 2.0.19",
- "x25519-dalek",
- "zeroize",
 ]
 
 [[package]]
