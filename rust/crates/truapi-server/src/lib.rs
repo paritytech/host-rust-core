@@ -16,11 +16,13 @@
 //! Host-facing bridges:
 //! - [`ws_bridge`] (feature `ws-bridge`): localhost WebSocket bridge for
 //!   native WebView hosts (Android/iOS).
+//! - [`bootstrap`]: the JavaScript those hosts inject to reach that bridge.
 //! - [`native`]: UniFFI surface exposing the native host runtime + callbacks.
 //! - `wasm` (wasm32 only): wasm-bindgen surface exposing `WasmProductRuntime`.
 //! - `native_debug` (non-wasm32 only): a loopback WebSocket [`DebugSink`] that
 //!   streams tapped frames to the `@parity/truapi-debugger` app.
 
+pub mod bootstrap;
 pub(crate) mod chain_runtime;
 pub mod core;
 pub(crate) mod dispatcher;

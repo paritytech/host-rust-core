@@ -1048,8 +1048,8 @@ pub struct HostAdmin {
 }
 
 impl HostAdmin {
-    /// Test-only access to the product-facing runtime this handle wraps.
-    #[cfg(test)]
+    /// Access the execution's product-facing capabilities and permission grants.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn product_runtime(&self) -> &Arc<ProductRuntimeHost> {
         &self.product_runtime
     }
