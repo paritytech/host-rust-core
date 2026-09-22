@@ -35,7 +35,7 @@ A consumer pins the plain semver tag, not the `@parity/ios-host@<version>` one,
 which SwiftPM cannot see:
 
 ```swift
-.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.12.0")
+.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.18.0")
 ```
 
 `release-ios.yml` runs all three in order and clones and compiles the tag
@@ -77,7 +77,7 @@ The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navig
 Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
 
 ```swift
-.package(url: "https://github.com/paritytech/host-rust-core.git", exact: "0.12.0")
+.package(url: "https://github.com/paritytech/host-rust-core.git", exact: "0.18.0")
 ```
 
 ```swift

@@ -169,7 +169,7 @@ targets from the git checkout with no way to fetch them from an asset, so the
 tag is what a consumer can actually resolve. Apps therefore pin the semver tag:
 
 ```swift
-.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.12.0")
+.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.18.0")
 ```
 
 `ios/truapi-host/scripts/tag-release.sh` builds that commit, reading the
