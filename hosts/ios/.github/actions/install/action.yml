@@ -47,22 +47,25 @@ runs:
 
         printf 'MATCH_GIT_BASIC_AUTHORIZATION=%s\n' "$basic_auth" >> "$GITHUB_ENV"
 
-    - uses: maxim-lobanov/setup-xcode@v1
+    # Pinned: the step above puts a credential for the signing repository
+    # into the job environment, and every later step inherits it.
+    - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
       with:
         xcode-version: ${{ inputs.xcode-version }}
 
-    - uses: ruby/setup-ruby@v1
+    # v1 here is a branch rather than a tag, so it moves on every release.
+    - uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1.324.0
       with:
         bundler-cache: true
         working-directory: hosts/ios
 
     - name: Install Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
       with:
         python-version: "3.13"
 
     - name: Restore SPM cache
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: hosts/ios/source_packages
         key: ${{ runner.os }}-xcode-${{ inputs.xcode-version }}-spm-${{ hashFiles('**/Package.resolved') }}

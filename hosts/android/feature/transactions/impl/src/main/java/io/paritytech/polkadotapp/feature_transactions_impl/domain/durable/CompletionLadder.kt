@@ -2,6 +2,7 @@ package io.paritytech.polkadotapp.feature_transactions_impl.domain.durable
 
 import io.paritytech.polkadotapp.chains.multiNetwork.runtime.repository.ExtrinsicOutcome
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.CheckpointBlock
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableFailureKind
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxEntry
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.HeadKind
@@ -51,7 +52,7 @@ suspend fun evaluateLadder(
 
     // Proven not to have run, and it can no longer run.
     if (windowClosed && scope.provenNotCompleted(tx, HeadKind.FINALIZED)) {
-        return decided(tx, "Rule 3 not completed at F", DurableTxStatus.FAILURE, successDetectedAt = null, view = view)
+        return decided(tx, "Rule 3 not completed at F", DurableTxStatus.FAILURE, successDetectedAt = null, view = view, failure = DurableFailureKind.EXPIRED)
     }
 
     // Short circuits, so a transaction with no positive evidence does not run a body search on every new
@@ -83,7 +84,7 @@ private suspend fun searchForTransaction(
 
             // Inclusion is not success — an extrinsic can be applied and its dispatch still fail.
             ExtrinsicOutcome.FAILURE ->
-                decided(tx, "Rule 5 found, dispatch failed", DurableTxStatus.FAILURE, successDetectedAt = null, view = view)
+                decided(tx, "Rule 5 found, dispatch failed", DurableTxStatus.FAILURE, successDetectedAt = null, view = view, failure = DurableFailureKind.DISPATCH_FAILED)
 
             null ->
                 decided(tx, "Rule 5 found, outcome unreadable", DurableTxStatus.PENDING, successDetectedAt = null, view = view)
@@ -91,7 +92,7 @@ private suspend fun searchForTransaction(
 
         is TransactionSearchResult.NotFound ->
             if (search.wholeRangeRead && windowClosed) {
-                decided(tx, "Rule 5 whole window read, absent", DurableTxStatus.FAILURE, successDetectedAt = null, view = view)
+                decided(tx, "Rule 5 whole window read, absent", DurableTxStatus.FAILURE, successDetectedAt = null, view = view, failure = DurableFailureKind.EXPIRED)
             } else {
                 decided(tx, "Rule 5 window incomplete", DurableTxStatus.PENDING, successDetectedAt = null, view = view)
             }
@@ -151,11 +152,12 @@ private fun decided(
     status: DurableTxStatus,
     successDetectedAt: CheckpointBlock?,
     view: PinnedChainView,
+    failure: DurableFailureKind? = null,
 ): RuleOutcome {
     durabilityLogD(
         "${tx.logId()} rule=\"$rule\" -> $status f=${view.finalizedHead.blockNumber} " +
             "b=${view.bestHead.blockNumber} record=${successDetectedAt?.blockNumber ?: "none"}"
     )
 
-    return RuleOutcome.Decided(Verdict(status, successDetectedAt))
+    return RuleOutcome.Decided(Verdict(status, successDetectedAt, failure))
 }

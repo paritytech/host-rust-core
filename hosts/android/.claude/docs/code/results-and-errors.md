@@ -13,7 +13,8 @@ Fallible operations return `Result<T>`. Errors carry domain meaning via sealed `
 7. **`major`** — Reuse `LoadingState<T>` + `.withLoading("Tag")`. Don't invent per-feature `Loading | Loaded | Failed` sealed hierarchies.
 8. **`minor`** — Method name that implies success but returns `Result` and is easy to mis-call — make the returned object the only operate-able instance, or rename.
 9. **`minor`** — `Throwable.message` straight into UI without a sealed-type mapping — wrap the failure or define an error variant.
-10. **`minor`** — Use `.logFailure("label")` over `.onFailure { Timber.e(it, "label") }` for failure logging. Exception: when the log label requires non-trivial compute (string interpolation of an expensive call, formatting a large object) — then `.onFailure { Timber.e(it, expensiveLabel()) }` defers the compute to the failure path. `logFailure`'s `label: String` is eager.
+10. **`major`** — `runCatching` around a suspending call that can be cancelled (waits, subscriptions, delays) is `runCancellableCatching`: plain `runCatching` turns cancellation into a failed `Result`.
+11. **`minor`** — Use `.logFailure("label")` over `.onFailure { Timber.e(it, "label") }` for failure logging. Exception: when the log label requires non-trivial compute (string interpolation of an expensive call, formatting a large object) — then `.onFailure { Timber.e(it, expensiveLabel()) }` defers the compute to the failure path. `logFailure`'s `label: String` is eager.
 
 ---
 

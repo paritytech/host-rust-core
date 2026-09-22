@@ -8,6 +8,7 @@ import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness
 import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUBMISSION
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -120,6 +121,26 @@ class AssetScenariosTest {
         assertEquals(FAILURE, statusOf(first))
         assertEquals(FAILURE, statusOf(second))
         assertEquals(FAILURE, statusOf(third))
+    }
+
+    /**
+     * A chat payment is saved and its split is scheduled, but not built yet.
+     * A second payment picks the same coin before the first one's extrinsic exists.
+     * The second registration is refused.
+     *
+     * The lock is what scheduling buys: an input is claimed from the moment the payment is saved, not from
+     * the moment its proofs are ready — otherwise every slow build would be a window for a double spend.
+     */
+    @Test
+    fun `inputs of a transaction waiting to be built are refused to a second registration`() = scenario {
+        mintCoinsOnChain(COIN_A, finality = FINALIZED)
+        givenSubmissionPolicy(PolicyBehaviour.HOLD)
+        scheduleRetriable(inputCoin = COIN_A, COIN_B)
+
+        val second = register(inputCoin = COIN_A, outputCoin = COIN_C)
+
+        assertTrue(second.exceptionOrNull() is CoinageRegistrationError.InputAlreadyClaimed)
+        assertEquals(PENDING_SUBMISSION, assetStateOf(COIN_A).consumerStatus)
     }
 
     @Test

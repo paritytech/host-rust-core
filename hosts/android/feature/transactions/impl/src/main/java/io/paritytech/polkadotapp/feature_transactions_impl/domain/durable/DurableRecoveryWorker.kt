@@ -44,6 +44,7 @@ class DurableRecoveryWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
     private val recoveryLoop: DurableRecoveryLoop,
+    private val submissionExecutor: DurableSubmissionExecutor,
     private val chainConnectionRefCounter: ChainConnectionRefCounter,
     private val oracles: Map<String, @JvmSuppressWildcards TxCompletionOracle>,
 ) : CoroutineWorker(appContext, params) {
@@ -77,6 +78,10 @@ class DurableRecoveryWorker @AssistedInject constructor(
         durabilityLogD("Recovery worker run started")
 
         promoteToForeground()
+
+        // A restart after process death reaches this worker without anything having started the executor, and
+        // the loop would keep a transaction waiting to be built alive without anyone building it.
+        submissionExecutor.ensureStarted()
 
         // A connection per chain a domain lives on: the loop watches all of them, and a pass can pin any.
         val chains = oracles.values.mapTo(mutableSetOf()) { it.chainId }

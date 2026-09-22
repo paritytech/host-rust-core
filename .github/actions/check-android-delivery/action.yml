@@ -1,0 +1,96 @@
+name: Check Android delivery is possible
+description: >-
+  Confirms what can be confirmed before an hour of building: that the identity
+  exchange works, that the application id names a project we can reach, and
+  that every tester group exists there by that alias.
+
+  It does not prove the upload will succeed. Listing groups needs
+  firebaseappdistro.groups.list, which the Viewer role also carries, while
+  uploading needs firebaseappdistro.releases.update, which only Admin does.
+  Nothing short of uploading proves the latter, so a green result here means
+  the delivery target is real, not that we may write to it.
+
+inputs:
+  app_id:
+    description: Firebase application id the build will be uploaded to
+    required: true
+  groups:
+    description: Comma separated tester group aliases
+    required: true
+  service_account:
+    description: Service account the identity exchange impersonates
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        APP_ID: ${{ inputs.app_id }}
+        GROUPS: ${{ inputs.groups }}
+        SERVICE_ACCOUNT: ${{ inputs.service_account }}
+      run: |
+        set -euo pipefail
+
+        # Checked here rather than left to the upload, where it surfaces an
+        # hour later as "set the --app option to a valid Firebase app id".
+        if [ -z "${APP_ID//[[:space:]]/}" ]; then
+          echo "::error::No Firebase application id is configured"
+          exit 1
+        fi
+        # A value of only separators parses to an empty list, and an upload
+        # with no recipients succeeds and reaches nobody.
+        if [ -z "${GROUPS//[[:space:],]/}" ]; then
+          echo "::error::No tester group is configured, so a build would reach no testers"
+          exit 1
+        fi
+
+        # The CLI wants a project id, which only the account's own domain
+        # gives us. The upload instead takes the project number out of the
+        # application id and never consults --project, so the two are
+        # reconciled below rather than assumed to agree.
+        project="${SERVICE_ACCOUNT#*@}"
+        project="${project%%.*}"
+        if [ -z "${project}" ] || [ "${project}" = "${SERVICE_ACCOUNT}" ]; then
+          echo "::error::Cannot derive a project from service account '${SERVICE_ACCOUNT}'"
+          exit 1
+        fi
+
+        cli="${RUNNER_TEMP}/firebase-cli"
+        npm install --prefix "${cli}" --no-save --no-audit --no-fund \
+          --ignore-scripts firebase-tools@14.11.1
+
+        json="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+          --project "${project}" --json)"
+
+        # Group resource names carry the project number, and so does the
+        # application id. If they disagree the upload would look for these
+        # groups in a project that does not have them.
+        listed_project="$(jq -r '[.result.groups[]?.name] | first // ""' <<<"${json}" | cut -d/ -f2)"
+        app_project="$(cut -d: -f2 <<<"${APP_ID}")"
+        if [ -n "${listed_project}" ] && [ "${listed_project}" != "${app_project}" ]; then
+          echo "::error::Application id belongs to project ${app_project}, but groups were listed from ${listed_project}"
+          exit 1
+        fi
+
+        # Aliases matched exactly. The table output would match a display
+        # name, a column heading or a row count just as readily.
+        available="$(jq -r '[.result.groups[]?.name | split("/") | last] | join(", ")' <<<"${json}")"
+        missing=()
+        IFS=',' read -ra wanted <<<"${GROUPS}"
+        for raw in "${wanted[@]}"; do
+          alias="${raw//[[:space:]]/}"
+          [ -n "${alias}" ] || continue
+          if ! jq -e --arg a "${alias}" \
+            '[.result.groups[]?.name | split("/") | last] | index($a) != null' \
+            <<<"${json}" >/dev/null; then
+            missing+=("${alias}")
+          fi
+        done
+        if [ ${#missing[@]} -ne 0 ]; then
+          echo "::error::No tester group in ${project} named: ${missing[*]}"
+          echo "Groups that do exist: ${available:-none}"
+          exit 1
+        fi
+
+        echo "Delivery target reachable: ${project}, groups ${GROUPS}"

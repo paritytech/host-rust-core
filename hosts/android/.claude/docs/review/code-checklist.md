@@ -12,6 +12,7 @@ Walk this for every file the diff touches. Cite the rule's doc and section. Tag 
 
 - **blocking** — `getOrThrow()` in a ViewModel, UI mapper, or any main-path code. **`major`** anywhere else outside `Worker.doWork()` and test code. (See `code/results-and-errors.md § getOrThrow — forbidden except at two seams`.)
 - **major** — `runCatching { throw … }` ping-pong.
+- **major** — `runCatching` around a cancellable suspending call instead of `runCancellableCatching` (cancellation becomes a failed `Result`). (`code/results-and-errors.md § Rules at a glance #10`.)
 - **major** — Function returns a hidden default to paper over failure (`.getOrDefault(emptyList())` swallows errors silently).
 - **major** — Imperative `.onSuccess { state.value = ... }.onFailure { state.value = ... }` inside non-terminal flows (use functional composition).
 - **major** — ViewModel surfacing user-facing **strings** or `@StringRes` resolution; should expose sealed `XxxError` and let Compose resolve.
@@ -111,6 +112,8 @@ Walk this for every file the diff touches. Cite the rule's doc and section. Tag 
 
 - **blocking** — Extrinsic submission inside a `Worker` without `ChainConnectionRefCounter.withConnectionEnabled(...)`.
 - **blocking** — Expedited `Worker` request without overriding `getForegroundInfo()`.
+- **blocking** — A worker that keeps an in-process executor alive without starting it in `doWork()` (a restart after process death would run with nothing working).
+- **blocking** — `distinctUntilChanged` on a Room query `Flow` that triggers work (dropped invalidations can strand a row).
 - **major** — Multi-stage worker storing intermediate state in local fields instead of `WorkerStateMachineLocalSession`.
 - **major** — `runCatching { ... }.getOrNull()` in `doWork()` that masks failures as `Result.success()`.
 - **major** — `Worker` dependencies passed via `WorkerParameters.inputData` primitives instead of `@HiltWorker` / `@AssistedInject`.

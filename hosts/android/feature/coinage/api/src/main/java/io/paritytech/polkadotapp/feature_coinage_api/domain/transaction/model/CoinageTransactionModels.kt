@@ -6,6 +6,7 @@ import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableE
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxId
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.OperationGroupId
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.SubmissionPolicy
 
 /**
  * Coinage's transactions are rows of the shared durability ledger, so these name the engine's types rather
@@ -20,9 +21,22 @@ typealias CoinageOperationGroupId = OperationGroupId
 
 typealias CheckpointBlock = io.paritytech.polkadotapp.feature_transactions.api.domain.durable.CheckpointBlock
 
-/** One signed transaction with the assets it consumes and mints. */
+/**
+ * One signed transaction with the assets it consumes and mints.
+ *
+ * [policy] builds it again, with these same assets, once an attempt is proven unable to land; null for a
+ * transaction whose failure is final.
+ */
 data class CoinageTransactionRequest(
     val extrinsic: EnrichedSendableExtrinsic,
+    val inputs: List<CoinageInput>,
+    val outputs: List<OwnAsset>,
+    val policy: SubmissionPolicy?,
+)
+
+/** One transaction that [policy] builds and submits later, with the assets it consumes and mints. */
+data class CoinageScheduledTransactionRequest(
+    val policy: SubmissionPolicy,
     val inputs: List<CoinageInput>,
     val outputs: List<OwnAsset>,
 )

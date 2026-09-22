@@ -1,41 +1,33 @@
 package io.paritytech.polkadotapp.feature_connection_status_api.domain.model
 
 import kotlin.time.Duration
-import kotlin.time.Instant
 
 /**
- * One metric's contribution for a chain: its [score] plus the raw domain value it was derived from.
- * The metric type and its value are one sealed field — adding a metric adds a variant here, a probe
- * that emits it, and a UI branch that formats it. Formatting stays in the presentation layer.
+ * One measurement's contribution to a chain's health. Adding a metric adds a variant here, a probe that
+ * emits it, and a mapper branch that folds it into the indicator.
  */
 sealed interface ChainMetricReading {
-    val score: ChainHealthScore
-
     /**
-     * Fewer than [requiredBlocks] of the [expectedBlocks] means the chain is not producing.
-     * [lastBlockAt] is when the most recent one landed, so a consumer can age it on its own clock.
-     * [expectedBlocks] stays derived from the chain's configured block time, so the outage line cannot
-     * drift towards whatever rate the chain currently runs at.
+     * Blocks the chain produced across the trailing window, as the height difference across it, against the
+     * [expectedBlocks] its configured block time predicts. [producedBlocks] is null while no sample reaches
+     * back a full window: not measured yet, never stalled. [anchorPending] is true while the chain is still
+     * being asked how fast it has been going, so a consumer can keep showing what it showed before.
      */
     data class BlockProduction(
-        val recentBlocks: Int,
+        val producedBlocks: Int?,
         val expectedBlocks: Int,
-        val requiredBlocks: Int,
-        val lastBlockAt: Instant?,
-        override val score: ChainHealthScore,
-    ) : ChainMetricReading
+        val anchorPending: Boolean,
+    ) : ChainMetricReading {
+        val share: Float?
+            get() = producedBlocks?.let { (it.toFloat() / expectedBlocks).coerceAtMost(1f) }
+    }
 
-    /** How long the oldest still-pending socket request has been waiting. */
-    data class PendingRequestLatency(
-        val latency: Duration,
-        val target: Duration,
-        override val score: ChainHealthScore,
-    ) : ChainMetricReading
-
-    /** Average round-trip of recently-completed socket requests (a connection-throughput proxy). */
-    data class ResponseLatency(
-        val latency: Duration,
-        val target: Duration,
-        override val score: ChainHealthScore,
-    ) : ChainMetricReading
+    /** How long the oldest still-pending socket request has waited; past [limit] the node counts as silent. */
+    data class UnansweredRequest(
+        val age: Duration,
+        val limit: Duration,
+    ) : ChainMetricReading {
+        val isOverLimit: Boolean
+            get() = age > limit
+    }
 }

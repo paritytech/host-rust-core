@@ -91,6 +91,7 @@ import io.paritytech.polkadotapp.database.migrations.Migration57To58
 import io.paritytech.polkadotapp.database.migrations.Migration60To61
 import io.paritytech.polkadotapp.database.migrations.Migration62To63
 import io.paritytech.polkadotapp.database.migrations.Migration63To64
+import io.paritytech.polkadotapp.database.migrations.Migration65To66
 import io.paritytech.polkadotapp.database.model.BrowserTabLocal
 import io.paritytech.polkadotapp.database.model.ChatBotStateLocal
 import io.paritytech.polkadotapp.database.model.ChatDraftLocal
@@ -151,7 +152,7 @@ import io.paritytech.polkadotapp.database.model.chain.ChainNodeLocal
 import io.paritytech.polkadotapp.database.model.chain.ChainRuntimeInfoLocal
 
 @Database(
-    version = 66,
+    version = 67,
     entities = [
         ProductFundingOperationLocal::class,
         ChainLocal::class,
@@ -290,7 +291,7 @@ import io.paritytech.polkadotapp.database.model.chain.ChainRuntimeInfoLocal
         // Key external_payments by (origin, id); add claimedPlanks for partially claimed payments
         AutoMigration(from = 64, to = 65),
         // Add pocket_cards (cards the user added to the Pocket) and pocket_card_faces (the newest face drawn for a card)
-        AutoMigration(from = 65, to = 66),
+        AutoMigration(from = 66, to = 67),
     ]
 )
 @TypeConverters(
@@ -343,6 +344,7 @@ abstract class AppDatabase : RoomDatabase() {
                 Migration60To61(),
                 Migration62To63(),
                 Migration63To64(),
+                Migration65To66(),
                 *chatMessageContentMigrations.toTypedArray() // 25 -> 26, 31 -> 32, 37 -> 38, 44 -> 45
             )
         }

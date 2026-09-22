@@ -8,9 +8,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.common.utils.awaitTrue
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -36,12 +34,11 @@ suspend fun <T> NetworkStateService.withNetworkRetries(compute: suspend () -> T)
 
 @SuppressLint("MissingPermission")
 class RealNetworkStateService @Inject constructor(@ApplicationContext context: Context) : NetworkStateService {
-    private val connectivityManager =
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    private val _isNetworkAvailable = MutableStateFlow(isNetworkAvailable())
-    override val isNetworkAvailable: StateFlow<Boolean> = _isNetworkAvailable.asStateFlow()
+    private val presence = NetworkPresence()
+    override val isNetworkAvailable: StateFlow<Boolean> = presence.isAvailable
 
     init {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
@@ -49,27 +46,9 @@ class RealNetworkStateService @Inject constructor(@ApplicationContext context: C
         connectivityManager.registerNetworkCallback(
             networkRequest,
             object : ConnectivityManager.NetworkCallback() {
-                // Callbacks fire per-Network; recompute from the system's active
-                // network so losing one transport while another stays up can't
-                // strand the flag at false.
-                override fun onAvailable(network: Network) = recompute()
+                override fun onAvailable(network: Network) = presence.add(network)
 
-                override fun onLost(network: Network) = recompute()
-
-                override fun onCapabilitiesChanged(
-                    network: Network,
-                    networkCapabilities: NetworkCapabilities,
-                ) = recompute()
+                override fun onLost(network: Network) = presence.remove(network)
             })
-    }
-
-    private fun recompute() {
-        _isNetworkAvailable.value = isNetworkAvailable()
-    }
-
-    private fun isNetworkAvailable(): Boolean {
-        val activeNetwork = connectivityManager.activeNetwork ?: return false
-        val networkCapabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
-        return networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 }

@@ -36,7 +36,7 @@ interface SocketState {
 }
 
 export function installWebSocketGate(
-  win: Window & typeof globalThis,
+  win: typeof globalThis,
   authorize: NetworkAuthorization,
   bridgeUrl?: string,
   factory?: WebSocketBackendFactory,
@@ -235,7 +235,7 @@ export function installWebSocketGate(
         apply(send, backend, [data]);
       },
       close(code, reason) {
-        apply(close, backend, [code, reason]);
+        apply(close, backend, code === undefined ? [] : [code, reason]);
       },
     };
     current.backend.binaryType(current.binaryType);
@@ -355,7 +355,7 @@ export function installWebSocketGate(
       try {
         url = new NativeURL(
           originalUrl,
-          baseURI ? apply(baseURI, win.document, []) : win.document.baseURI,
+          baseURI ? apply(baseURI, win.document, []) : win.document?.baseURI,
         );
       } catch {
         throw new NativeError('Invalid WebSocket URL', 'SyntaxError');

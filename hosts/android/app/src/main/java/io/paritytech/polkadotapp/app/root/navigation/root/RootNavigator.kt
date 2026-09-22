@@ -19,10 +19,7 @@ class RootNavigator @Inject constructor(
         performNavigation(R.id.action_global_to_main_graph)
     }
 
-    override fun openScanner() {
-        if (isCurrentDestination(R.id.scanQrFragment)) return
-        performNavigation(R.id.action_global_to_scan_graph)
-    }
+    override fun openAddContact() = performNavigation(R.id.action_global_to_addContactFragment)
 
     override fun openActiveProduct() = performNavigation(R.id.action_global_to_spaBrowserFragment)
 

@@ -31,7 +31,7 @@ use truapi_platform::{
 };
 
 use crate::chain::WsChainProvider;
-use crate::terminal_ui::{SystemEvent, UiHandle};
+use crate::terminal_ui::{ApprovalKind, SystemEvent, UiHandle};
 
 static NEXT_STORAGE_TEMP_ID: AtomicU32 = AtomicU32::new(0);
 static NEXT_OPERATION_ID: AtomicU32 = AtomicU32::new(1);
@@ -41,7 +41,7 @@ static NEXT_OPERATION_ID: AtomicU32 = AtomicU32::new(1);
 pub enum ApprovalPolicy {
     /// Approve every sensitive action without prompting (`--auto-accept`).
     AutoAccept,
-    /// Prompt on the CLI (y/n) for every sensitive action.
+    /// Prompt on the CLI for sensitive actions and permission decisions.
     Prompt,
 }
 
@@ -374,9 +374,17 @@ impl CliPlatform {
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
     }
 
-    /// Resolve a confirmation: auto-accept, or prompt y/n on the CLI.
     async fn decide(&self, action: &str, detail: String) -> bool {
-        let approved = match self.approval_policy() {
+        self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
+    }
+
+    async fn decide_with(
+        &self,
+        action: &str,
+        detail: String,
+        kind: ApprovalKind,
+    ) -> PermissionDecision {
+        let decision = match self.approval_policy() {
             ApprovalPolicy::AutoAccept => {
                 if let Some(ui) = &self.ui {
                     ui.success(format!("Approved {action} automatically"), Some(detail));
@@ -386,21 +394,21 @@ impl CliPlatform {
                         Some(detail),
                     );
                 }
-                true
+                PermissionDecision::AllowAlways
             }
             ApprovalPolicy::Prompt => {
                 let _guard = self.prompt_lock.lock().await;
                 if let Some(ui) = &self.ui {
-                    ui.confirm(action, detail).await
+                    ui.decide(action, detail, kind).await
                 } else {
-                    prompt_yes_no(action, &detail).await
+                    prompt_decision(action, &detail, kind).await
                 }
             }
         };
         if let Some(path) = &self.approvals_log {
-            record_approval(path, approved, action);
+            record_approval(path, decision != PermissionDecision::Deny, action);
         }
-        approved
+        decision
     }
 }
 
@@ -421,17 +429,18 @@ fn record_approval(path: &Path, approved: bool, action: &str) {
     }
 }
 
-/// Print a confirmation and read a y/n answer from the CLI (default: no).
-async fn prompt_yes_no(action: &str, detail: &str) -> bool {
+async fn prompt_decision(action: &str, detail: &str, kind: ApprovalKind) -> PermissionDecision {
     if !std::io::stdin().is_terminal() {
         eprintln!("approval required for {action}, but stdin is not a terminal; rejecting");
-        return false;
+        return PermissionDecision::Deny;
     }
+    let action = crate::terminal_ui::sanitize_terminal_text(action);
+    let detail = crate::terminal_ui::sanitize_terminal_text(detail);
     let mut stdout = tokio::io::stdout();
     let _ = stdout
         .write_all(
             format!(
-                "\n\u{2500}\u{2500} confirm: {action} \u{2500}\u{2500}\n{detail}\nApprove? [y/N] "
+                "\n\u{2500}\u{2500} confirm: {action} \u{2500}\u{2500}\n{detail}\n{} (default: deny) ", kind.choices()
             )
             .as_bytes(),
         )
@@ -440,9 +449,9 @@ async fn prompt_yes_no(action: &str, detail: &str) -> bool {
     let mut line = String::new();
     let mut reader = BufReader::new(tokio::io::stdin());
     if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
-        return false;
+        return PermissionDecision::Deny;
     }
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    kind.parse(&line).unwrap_or(PermissionDecision::Deny)
 }
 
 #[async_trait]
@@ -719,36 +728,30 @@ impl PermissionStatusHost for CliPlatform {
 impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
-        _request: api::HostDevicePermissionRequest,
+        request: api::HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, api::GenericError> {
-        let granted = self
-            .decide(
+        Ok(self
+            .decide_with(
                 "device permission",
-                "A product requested access to a device capability.".to_string(),
+                format!("A product requested access to {request}."),
+                ApprovalKind::Permission,
             )
-            .await;
-        Ok(if granted {
-            PermissionDecision::AllowAlways
-        } else {
-            PermissionDecision::Deny
-        })
+            .await)
     }
 
     async fn remote_permission(
         &self,
-        _request: api::RemotePermissionRequest,
+        request: api::RemotePermissionRequest,
     ) -> Result<PermissionDecision, api::GenericError> {
-        let granted = self
-            .decide(
-                "remote permission",
-                "A paired product requested a remote capability.".to_string(),
-            )
-            .await;
-        Ok(if granted {
-            PermissionDecision::AllowAlways
-        } else {
-            PermissionDecision::Deny
-        })
+        let detail = match &request.permission {
+            api::RemotePermission::Remote { .. } => format!(
+                "A product requested {request}. This covers all ports on each host, including local services."
+            ),
+            _ => format!("A product requested {request}."),
+        };
+        Ok(self
+            .decide_with("remote permission", detail, ApprovalKind::Permission)
+            .await)
     }
 }
 
@@ -840,6 +843,16 @@ fn storage_user_id(info: &SessionUiInfo) -> Option<&str> {
 
 #[async_trait]
 impl UserConfirmation for CliPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<PermissionDecision, api::GenericError> {
+        let (action, detail) = approval_summary(&review);
+        Ok(self
+            .decide_with(action, detail, ApprovalKind::Permission)
+            .await)
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,
