@@ -1951,12 +1951,6 @@ fn emit_method(
             } else {
                 payload.value_expr.clone()
             };
-            let result_codec = format!("S.Result({response_codec}, {error_codec})");
-            let decode_response = if method.wire.internal {
-                format!("S.decodeAll({result_codec}, payload)")
-            } else {
-                format!("{result_codec}.dec(payload)")
-            };
 
             writedoc!(
                 out,
@@ -1967,7 +1961,7 @@ fn emit_method(
                       payload: {request_codec}.enc({{ tag: \"V{version}\", value: {request_expr} }}),
                       signal: options?.signal,
                       decodeResponse: (payload) => {{
-                        const result = {decode_response};
+                        const result = S.Result({response_codec}, {error_codec}).dec(payload);
                 ",
                 ok_type = response.inner_type_ts,
                 err_type = error.inner_type_ts
@@ -3134,9 +3128,11 @@ mod tests {
         );
         assert!(internal.contains("ids: W.THING_DO_THING"));
         assert!(internal.contains("T.VersionedHiddenRequest.enc"));
-        assert!(internal.contains(
-            "S.decodeAll(S.Result(T.VersionedSharedResponse, T.VersionedSharedError), payload)"
-        ));
+        assert!(
+            internal.contains(
+                "S.Result(T.VersionedSharedResponse, T.VersionedSharedError).dec(payload)"
+            )
+        );
         assert!(internal.contains("signal: options?.signal"));
         assert!(internal.contains("Object.freeze(ThingClient.prototype)"));
         assert!(internal.contains("thing: Object.freeze(new ThingClient(transport))"));
@@ -3159,7 +3155,6 @@ mod tests {
                 "S.Result(T.VersionedSharedResponse, T.VersionedSharedError).dec(payload)"
             )
         );
-        assert!(!source.contains("S.decodeAll"));
 
         let mut method = request_method_with_wrappers(
             "render",
