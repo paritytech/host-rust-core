@@ -65,15 +65,19 @@ runs:
         # it returned is printed. stderr carries only a progress spinner and is
         # kept out of the capture, then shown if anything goes wrong.
         err="${RUNNER_TEMP}/firebase-groups.err"
-        # --debug, because the CLI wraps whatever the credential chain threw in
-        # a generic "have you run firebase login?" and drops the cause. In CI
-        # the cause is the whole answer, and it goes to stderr.
         if ! json="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
-          --project "${project}" --json --debug 2>"${err}")"; then
+          --project "${project}" --json 2>"${err}")"; then
           echo "::error::Could not list tester groups in ${project}"
           printf '%s\n' "${json}" | head -20
-          echo "--- what the credential chain reported ---" >&2
-          tail -60 "${err}" >&2 || true
+          cat "${err}" >&2 || true
+          # The JSON path silences every logger, so the payload above carries
+          # only a summary and the cause is discarded. Asking again without it
+          # turns the console logging back on, which is where the reason the
+          # credentials were refused actually appears. Request and response
+          # lines are logged; authorization headers and token values are not.
+          echo "--- asking again for the reason ---" >&2
+          "${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+            --project "${project}" --debug >&2 2>&1 || true
           exit 1
         fi
         if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
