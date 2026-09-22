@@ -212,7 +212,7 @@ jobs:
             --groups "${GROUP}" \
             --release-notes "Build ${BUILD_ID}, from ${GITHUB_SHA}." > "${out}" 2>&1 || status=$?
 
-          tokens="$(grep -oE 'token=[A-Za-z0-9._~-]+' "${out}" \
+          tokens="$(grep -oE 'token=[^&"[:space:]]+' "${out}" \
             | cut -d= -f2- | sort -u || true)"
           if [ -n "${tokens}" ]; then
             while IFS= read -r token; do
