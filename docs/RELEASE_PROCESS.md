@@ -89,8 +89,10 @@ packages bumped by Changesets. If a version is deliberately left unpublished,
 record that exact `package@version` and a reason in
 [`.github/registry-drift-exceptions.json`](../.github/registry-drift-exceptions.json).
 For example, an entry could be
-`"@parity/truapi-debugger@0.1.2": "Deferred until the standalone debugger release"`.
-An exception applies only to that version; the next bump is checked normally.
+`"@parity/example@1.2.3": "Held while its consumer catches up"`.
+An exception applies only to that version; the next bump is checked normally,
+so a package that should not be published at all is better marked `private` in
+its own manifest, which the check skips outright.
 The exception list is empty by default and does not control publishing.
 
 ### 4. Get the PR reviewed and merged
