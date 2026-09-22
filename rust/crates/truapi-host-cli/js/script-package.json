@@ -5,17 +5,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@parity/product-sdk": "0.29.0"
-  },
   "devDependencies": {
-    "@types/bun": "1.3.14",
-    "typescript": "5.9.3"
+    "@types/bun": "latest",
+    "typescript": "latest"
   },
   "truapiHost": {
     "script": "script.ts"
-  },
-  "overrides": {
-    "@parity/truapi": "0.18.0"
   }
 }

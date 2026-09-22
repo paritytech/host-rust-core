@@ -2,6 +2,6 @@
 "@parity/truapi": patch
 ---
 
-Run the Product SDK quickstart from `/script` with automatic host discovery, persistent projects, published
-dependencies, and TypeScript checks. SDK calls and script permissions share the host connection. Edit, rerun, or create
-a project directly from the CLI.
+Add reusable `/script` projects with dependency installation, editor types and TypeScript checking. Edit, rerun or
+create projects from the CLI. Missing npm imports use Bun's runtime fallback, and Product SDK scripts discover the
+active host automatically.

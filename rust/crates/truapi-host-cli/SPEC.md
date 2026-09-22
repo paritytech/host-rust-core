@@ -963,13 +963,13 @@ write and read of `lastVisit`. The host product id must match `my-app.dot`.
 Default cloud storage uses Paseo, also the CLI's default network. A signed-out
 wallet can return an empty account list.
 
-The template pins published Product SDK 0.29.0, TypeScript, and Bun editor
-types. Release versioning synchronizes the top-level `@parity/truapi` override
-with the CLI's protocol version. SDK scripts use the installed package types and
-`bun run typecheck`; raw TrUAPI scripts can import the adjacent declarations
-locally, allowing multiple scripts to compile together. The registry release
-check validates that override, installs the unchanged template, checks its types,
-and verifies the SDK's `createApp` export, then removes its temporary project and cache.
+The template has no SDK dependency or protocol override. Missing SDK imports
+use Bun's runtime fallback to fetch the latest version. Install a chosen SDK
+locally with `bun add @parity/product-sdk` or an explicit version for editor
+types and `bun run typecheck`. TypeScript and Bun editor types use `latest` in
+the template, with resolved versions recorded in the project's lockfile.
+Raw TrUAPI scripts can import the adjacent declarations locally, allowing
+multiple scripts to compile together.
 
 Dependency setup runs `bun install`, with `--frozen-lockfile` when a Bun
 lockfile exists. Only a successful installation records its manifest and

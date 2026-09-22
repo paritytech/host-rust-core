@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check check-generated check-script-sdk clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
+.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -120,9 +120,6 @@ $(CLI_CONTAINER):
 cli-runner: $(CLI_SCRIPT_TYPES) ## Bundle the product-script runner, browser sandbox, and script types into target/dist.
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 	node scripts/check-host-script-types.mjs
-
-check-script-sdk: ## Verify the default SDK script installs and typechecks against published packages.
-	node scripts/check-script-sdk.mjs
 
 cli-dist: check-generated $(CLI_RUNNER) $(CLI_SCRIPT_TYPES) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
 	rustup target add $(CLI_TARGET)

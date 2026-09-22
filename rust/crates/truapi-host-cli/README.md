@@ -370,12 +370,12 @@ Configure a waiting editor command: an editor process that returns immediately
 also lets execution start immediately. Editor failure preserves the script
 without running it.
 
-New projects pin published Product SDK 0.29.0. Release versioning keeps its
-`@parity/truapi` override aligned with the CLI. Existing project dependencies
-are never changed by a host update. `make check-script-sdk` verifies the override,
-installs the template from the public registry, and checks its types and
-`createApp` export. It removes its temporary project and cache afterward.
-CLI releases require this check to pass.
+New projects leave SDK dependencies and overrides to you. Missing SDK imports
+use Bun's runtime fallback to fetch the latest version. For editor types and
+type checking, run `bun add @parity/product-sdk` in the project, or select a
+version with `bun add @parity/product-sdk@<version>`. The template requests the
+latest TypeScript and Bun editor types; the project lockfile records the
+installed versions. Host updates preserve existing project dependencies.
 
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
