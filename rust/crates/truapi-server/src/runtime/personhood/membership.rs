@@ -123,3 +123,123 @@ pub async fn find_including_rings(
         _ => Ok(memberships),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use subxt_rpcs::RpcClient as HostRpcClient;
+
+    use super::*;
+    use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
+    use crate::runtime::statement_allowance::test_fixtures;
+
+    /// A real `Members.Collections` value from the live People chain, whose
+    /// `ring_size` is `R2e9`. Only that field is projected, so the same value
+    /// serves either collection; hand-encoding one would mean encoding
+    /// `CollectionOwner` and `RingMode` too, and a wrong guess would make these
+    /// tests pass for the wrong reason.
+    const LIVE_COLLECTION: &str = r#""0x000001043e000900""#;
+
+    /// Entropy standing in for a reserved `peopl.<suffix>` person key.
+    const PERSON_ENTROPY: [u8; 32] = [7u8; 32];
+
+    /// One collection resolving: a head, its `Collections` value, ring index 0,
+    /// a single-key ring page, then exhausted pages.
+    fn resolving(entropy: [u8; 32]) -> Vec<String> {
+        vec![
+            r#""0xfinal""#.to_string(),
+            LIVE_COLLECTION.to_string(),
+            r#""0x00000000""#.to_string(),
+            format!(r#""0x04{}""#, hex::encode(proof::member_key(entropy))),
+            "null".to_string(),
+            "null".to_string(),
+        ]
+    }
+
+    fn scripted(responses: Vec<String>) -> RpcClient {
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        RpcClient::new(HostRpcClient::new(scripted))
+    }
+
+    /// The whole path a backend handshake drives: reserved entropy in, a ring
+    /// discovered on chain, and a proof opened against the members that ring
+    /// actually holds.
+    ///
+    /// The cryptography itself is not re-proved here — `verifiable` owns that,
+    /// and three other callers exercise `ring_vrf_proof`. What this pins is the
+    /// wiring between them: that the discovered exponent maps to a usable
+    /// domain, and that the proof is built over the discovered member set
+    /// rather than over anything the caller supplied.
+    #[test]
+    fn a_discovered_membership_yields_a_proof_over_that_ring() {
+        let candidates = [CollectionCandidate {
+            collection: PersonhoodCollection::People,
+            entropy: PERSON_ENTROPY,
+        }];
+        let rpc = scripted(resolving(PERSON_ENTROPY));
+
+        let memberships = futures::executor::block_on(find_including_rings(
+            &rpc,
+            test_fixtures::people(),
+            &candidates,
+            u32::MAX,
+        ))
+        .expect("the scripted ring includes our member key");
+
+        let membership = memberships.first().expect("one membership");
+        assert_eq!(membership.collection(), PersonhoodCollection::People);
+        assert_eq!(membership.entropy, PERSON_ENTROPY);
+        assert_eq!(
+            membership.ring.members,
+            vec![proof::member_key(PERSON_ENTROPY)],
+            "the proof must open over the ring's own members"
+        );
+
+        let domain = proof::domain_for_ring_exponent(membership.ring.exponent)
+            .expect("a live ring exponent has a proof domain");
+        let bytes = proof::ring_vrf_proof(
+            domain,
+            membership.entropy,
+            &membership.ring.members,
+            b"myapp.dot",
+            b"challenge-bytes",
+        )
+        .expect("our member key is in the ring we opened against");
+        assert_eq!(bytes.len(), 785, "a ring-VRF proof is 785 bytes");
+    }
+
+    /// A person in both collections proves against the widest-budget one.
+    ///
+    /// The handshake spends the first membership returned, so the order
+    /// candidates are offered in is what decides which alias a backend sees.
+    #[test]
+    fn the_first_resolving_collection_is_the_one_offered_first() {
+        let candidates = [
+            CollectionCandidate {
+                collection: PersonhoodCollection::People,
+                entropy: PERSON_ENTROPY,
+            },
+            CollectionCandidate {
+                collection: PersonhoodCollection::LitePeople,
+                entropy: [9u8; 32],
+            },
+        ];
+        let mut responses = resolving(PERSON_ENTROPY);
+        responses.extend(resolving([9u8; 32]));
+        let rpc = scripted(responses);
+
+        let memberships = futures::executor::block_on(find_including_rings(
+            &rpc,
+            test_fixtures::people(),
+            &candidates,
+            u32::MAX,
+        ))
+        .expect("both collections resolve");
+
+        assert_eq!(memberships.len(), 2, "both memberships are reported");
+        assert_eq!(
+            memberships[0].collection(),
+            PersonhoodCollection::People,
+            "the handshake takes the first, so People must lead"
+        );
+    }
+}
