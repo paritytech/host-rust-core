@@ -17,7 +17,7 @@ final class RustChatExecutionBridge: RustProductExecutionBridge, ChatHostBridge,
         super.init(dependencies: dependencies)
     }
 
-    func createRoom(roomId: String, name: String, icon: String) async throws -> ChatRoomRegistrationStatus {
+    func createRoom(roomId: String, name: String, icon: String) async throws -> NativeChatRoomRegistrationStatus {
         logger.debug("[truapi:chat-bridge] createRoom \(roomId)")
         // Same validation `postMessage` applies: an empty id names no room, and
         // the chat identifier built from it would be malformed.
@@ -36,7 +36,7 @@ final class RustChatExecutionBridge: RustProductExecutionBridge, ChatHostBridge,
         }
     }
 
-    func registerBot(botId: String, name _: String, icon _: String) async throws -> ChatBotRegistrationStatus {
+    func registerBot(botId: String, name _: String, icon _: String) async throws -> NativeChatBotRegistrationStatus {
         logger.debug("[truapi:chat-bridge] registerBot \(botId) -> rejecting")
         // No native bot registry; the container leaves it unimplemented too.
         throw HostRejection.Rejected(reason: "bot registration is not supported by this host")
