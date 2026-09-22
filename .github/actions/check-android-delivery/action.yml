@@ -60,8 +60,21 @@ runs:
         npm install --prefix "${cli}" --no-save --no-audit --no-fund \
           --ignore-scripts firebase-tools@14.11.1
 
-        json="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
-          --project "${project}" --json)"
+        # The CLI writes a progress spinner to stdout alongside the JSON, so
+        # the payload is taken from the first line that parses rather than the
+        # whole stream. Errors go to the log rather than into the variable,
+        # where a failure would otherwise be silent.
+        raw="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+          --project "${project}" --json 2> >(tee /dev/stderr))" || {
+          echo "::error::Could not list tester groups in ${project}. The service account may lack access to App Distribution there."
+          exit 1
+        }
+        json="$(printf '%s' "${raw}" | sed -n '/^{/,$p')"
+        if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
+          echo "::error::Could not parse the group listing from ${project}"
+          printf '%s\n' "${raw}" | head -20
+          exit 1
+        fi
 
         # Group resource names carry the project number, and so does the
         # application id. If they disagree the upload would look for these
