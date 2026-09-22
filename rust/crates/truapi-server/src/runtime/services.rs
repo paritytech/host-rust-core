@@ -44,6 +44,9 @@ pub(crate) struct RuntimeServices {
     /// Asset Hub the dotNS contracts are deployed on. All-zero says this host
     /// has none, which leaves every manifest unresolvable.
     asset_hub_chain_genesis_hash: [u8; 32],
+    /// People chain this host serves, the one whose rings a personhood proof
+    /// is made against.
+    people_chain_genesis_hash: [u8; 32],
     /// Reference counts per product worker.
     pub(crate) worker_ledger: WorkerLedger,
     /// Shared chainHead-v1 runtime behind the Chain surface.
@@ -102,6 +105,7 @@ impl RuntimeServices {
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
             asset_hub_chain_genesis_hash,
+            people_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
             chain,
             statement_store,
@@ -168,6 +172,11 @@ impl RuntimeServices {
     /// every manifest lookup closed: grants are refused rather than assumed.
     pub(crate) fn asset_hub_chain_genesis_hash(&self) -> Option<[u8; 32]> {
         Some(self.asset_hub_chain_genesis_hash).filter(|hash| *hash != [0u8; 32])
+    }
+
+    /// The People chain this host serves, taken by construction.
+    pub(crate) fn people_chain_genesis_hash(&self) -> [u8; 32] {
+        self.people_chain_genesis_hash
     }
 
     /// The host's live OS permission-status adapter, when one is installed.
