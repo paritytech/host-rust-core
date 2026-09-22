@@ -164,7 +164,7 @@ jobs:
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
           # Goes into the version name, so the installed app can say which
           # commit it came from. Verified below rather than assumed.
-          TRUAPI_COMMIT: ${{ github.event.pull_request.head.sha }}
+          PREVIEW_COMMIT: ${{ github.event.pull_request.head.sha }}
         run: ./gradlew assembleGpDebug --no-daemon
 
       - name: Check exactly one APK came out, and that it is signed
@@ -200,12 +200,19 @@ jobs:
             echo "::error::No aapt2 under ${ANDROID_HOME}/build-tools"
             exit 1
           fi
+          # Matched as a suffix rather than against a whole version string.
+          # The marketing version is a constant in the vendored tree that a
+          # release bump rewrites, and duplicating it here would fail the next
+          # bump as though the stamp were broken.
           stamped="$("${aapt2}" dump badging "${apks[0]}" \
-            | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)"
-          if [ "${stamped}" != "1.0.0+${COMMIT}" ]; then
-            echo "::error::APK names version '${stamped}', expected '1.0.0+${COMMIT}'"
-            exit 1
-          fi
+            | sed -n "s/^package:.*versionName='\([^']*\)'.*/\1/p")"
+          case "${stamped}" in
+            *"+${COMMIT}") ;;
+            *)
+              echo "::error::APK names version '${stamped}', which does not end in '+${COMMIT}'"
+              exit 1
+              ;;
+          esac
           echo "APK reports ${stamped}"
 
           short="${COMMIT:0:9}"
