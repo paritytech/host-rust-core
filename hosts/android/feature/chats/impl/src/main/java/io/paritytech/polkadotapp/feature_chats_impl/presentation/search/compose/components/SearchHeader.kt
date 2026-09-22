@@ -5,16 +5,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.res.stringResource
 import io.paritytech.polkadotapp.design.components.button.common.PolkadotButtonStyle
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotButtonSize
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextButton
-import io.paritytech.polkadotapp.design.components.button.icon.PolkadotIconButton
-import io.paritytech.polkadotapp.design.components.button.icon.PolkadotIconButtonSize
-import io.paritytech.polkadotapp.design.components.icon.NovaIcons
-import io.paritytech.polkadotapp.design.components.icon.vectors.Scanner
 import io.paritytech.polkadotapp.design.components.topbar.PolkadotSearchField
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.common.R as RCommon
@@ -23,9 +22,14 @@ import io.paritytech.polkadotapp.common.R as RCommon
 internal fun SearchHeader(
     searchQuery: String,
     onSearchChange: (String) -> Unit,
-    onScanClick: () -> Unit,
     onCancelClick: () -> Unit
 ) {
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -39,13 +43,7 @@ internal fun SearchHeader(
             onValueChange = onSearchChange,
             onClear = { onSearchChange("") },
             placeholder = stringResource(RCommon.string.add_contact_search_placeholder),
-        )
-
-        PolkadotIconButton(
-            icon = NovaIcons.Scanner,
-            onClick = onScanClick,
-            style = PolkadotButtonStyle.ghost(),
-            size = PolkadotIconButtonSize.small()
+            focusRequester = focusRequester,
         )
 
         PolkadotTextButton(

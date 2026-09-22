@@ -1,6 +1,7 @@
 package io.paritytech.polkadotapp.feature_transactions_impl.domain.durable
 
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxId
+import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionHash
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
@@ -20,28 +21,32 @@ import javax.inject.Singleton
  * longer exists. This is sound only because the client runs in one OS process — if WorkManager is ever
  * configured with `android:process`, this stops being an exclusivity mechanism.
  *
- * Ownership is one-shot: released exactly once and never re-acquired, not even across a resubmission.
+ * Ownership is one-shot per attempt: released exactly once and never re-acquired for the same bytes, not even
+ * across a resubmission. A rebuilt transaction is a new attempt with a new hash, and is owned afresh.
  */
 @Singleton
 class SubmissionOwnedTransactions @Inject constructor() {
     private val mutex = Mutex()
-    private val owned = mutableSetOf<Long>()
-    private val everReleased = mutableSetOf<Long>()
+    private val owned = mutableMapOf<Long, TransactionHash>()
+    private val everReleased = mutableSetOf<Pair<Long, TransactionHash>>()
 
-    suspend fun acquire(id: DurableTxId) = mutex.withLock {
-        if (id.value !in everReleased) {
-            owned += id.value
-            durabilityLogD("entry=${id.value} submission-ownership acquired")
+    /** Returns whether ownership was taken; an attempt already released is never owned again. */
+    suspend fun acquire(id: DurableTxId, txHash: TransactionHash): Boolean = mutex.withLock {
+        if (id.value to txHash !in everReleased) {
+            owned[id.value] = txHash
+            durabilityLogD("entry=${id.value} submission-ownership acquired hash=$txHash")
+            true
         } else {
-            durabilityLogW("entry=${id.value} submission-ownership acquire-ignored reason=already-released")
+            durabilityLogW("entry=${id.value} submission-ownership acquire-ignored reason=already-released hash=$txHash")
+            false
         }
     }
 
-    suspend fun release(id: DurableTxId) = mutex.withLock {
-        owned -= id.value
-        everReleased += id.value
+    suspend fun release(id: DurableTxId, txHash: TransactionHash) = mutex.withLock {
+        if (owned[id.value] == txHash) owned -= id.value
+        everReleased += id.value to txHash
 
-        durabilityLogI("entry=${id.value} submission-ownership released")
+        durabilityLogI("entry=${id.value} submission-ownership released hash=$txHash")
     }
 
     suspend fun isOwnedBySubmission(id: DurableTxId): Boolean = mutex.withLock {

@@ -13,6 +13,8 @@ import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 
 internal val DefaultPopupProperties = PopupProperties(focusable = true)
 
+val NonFocusablePopupProperties = PopupProperties(focusable = false)
+
 @Composable
 fun PolkadotTooltip(
     expanded: Boolean,

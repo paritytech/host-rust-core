@@ -5,6 +5,40 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.18.0] - 2026-09-21
+
+### RFCs
+
+- **Accepted:** Wire message type: an explicit byte for trait, method, and leg
+- **Withdrawn:** Wire message type: an explicit byte for trait, method, and leg
+
+### Added
+
+- report what a vendored tree owes its source (#824)
+- localStorage.subscribe and worker pending operations (#603)
+- cancel an in-flight one-shot request from the wire (#843)
+- expose the device statement account to host applications (#842)
+- resolve the Android core from this tree (#837)
+- extend AutoSigning to the product signing APIs and statement proofs (#751)
+- let hosts ask whether a product is trusted for remote access (#802)
+
+### Changed
+
+- Authorize browser APIs through Rust permissions (#828)
+- Preserve permission decisions in the Rust core (#827)
+- Share one localhost WS listener across native product executions (#600)
+- route subscriptions through one state lock (#823)
+- Add screenshot-triggered issue reports to mobile hosts (#771)
+
+### Fixed
+
+- admit the granting product's own proof context (#850)
+- bound the pairing attempt with a deadline (#845)
+- stamp the generated client with the host's codec version (#848)
+- hand a product destination to the host as a polkadot URL (#832)
+- build the core before the distribution workflows build the app (#833)
+- record the revision hosts/ios is actually at (#822)
+
 ## [0.17.0] - 2026-09-17
 
 ### Added
@@ -18,6 +52,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.17.0, @parity/truapi-host 0.17.0, @parity/truapi-provider 0.2.0 (#819)
 - require versioned wrappers for empty wire payloads (#785)
 - restorable Rust cache, wire-table gate in the rust job (#779)
 - remove genesis constants (#753)

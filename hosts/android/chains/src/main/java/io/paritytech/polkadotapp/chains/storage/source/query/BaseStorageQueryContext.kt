@@ -25,6 +25,8 @@ import io.paritytech.polkadotapp.common.data.substrate.fromByteArrayOrIncompatib
 import io.paritytech.polkadotapp.common.data.substrate.fromHexOrIncompatible
 import io.paritytech.polkadotapp.common.data.substrate.incompatible
 import io.paritytech.polkadotapp.common.utils.ComponentHolder
+import io.paritytech.polkadotapp.common.utils.filterNotNull
+import io.paritytech.polkadotapp.common.utils.mapValuesDiffed
 import io.paritytech.polkadotapp.common.utils.mapValuesNotNull
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -116,14 +118,7 @@ abstract class BaseStorageQueryContext(
     ): Flow<Map<K, V>> {
         val prefixKey = storageKey(runtime, *prefixArgs)
 
-        return observeKeysByPrefix(prefixKey).map { valuesByKey ->
-            applyMappersToEntries(
-                entries = valuesByKey,
-                storageEntry = this,
-                keyExtractor = keyExtractor,
-                binding = binding
-            )
-        }
+        return observeKeysByPrefix(prefixKey).decodeChangedEntries(storageEntry = this, keyExtractor, binding)
     }
 
     override suspend fun <K : Any> StorageEntry.findExistingKeys(
@@ -217,14 +212,7 @@ abstract class BaseStorageQueryContext(
 
         val storageKeys = storageKeys(runtime, keysArguments)
 
-        return observeKeysOrDefault(storageKeys).map { valuesByKey ->
-            applyMappersToEntries(
-                entries = valuesByKey,
-                storageEntry = this,
-                keyExtractor = keyExtractor,
-                binding = binding
-            )
-        }
+        return observeKeysOrDefault(storageKeys).decodeChangedEntries(storageEntry = this, keyExtractor, binding)
     }
 
     @Suppress("OVERRIDE_DEPRECATION", "OverridingDeprecatedMember")
@@ -286,6 +274,25 @@ abstract class BaseStorageQueryContext(
             }
         }
     }
+
+    // A subscription re-emits every key on each change, so only the entries whose raw value moved are decoded again.
+    private fun <K, V> Flow<Map<String, String?>>.decodeChangedEntries(
+        storageEntry: StorageEntry,
+        keyExtractor: (StorageKeyComponents) -> K,
+        binding: DynamicInstanceBinderWithKey<K, V>,
+    ): Flow<Map<K, V>> {
+        return mapValuesDiffed { storageKey, value ->
+            val returnType = storageEntry.type.value ?: incompatible()
+            val key = keyExtractor(ComponentHolder(storageEntry.splitKey(runtime, storageKey)))
+            val decoded = value?.let { returnType.fromHexOrIncompatible(it, runtime) }
+
+            DecodedEntry(key, binding(decoded, key))
+        }.map { entries ->
+            entries.values.associate { it.key to it.value }.filterNotNull()
+        }
+    }
+
+    private class DecodedEntry<K, V>(val key: K, val value: V)
 
     @JvmInline
     private value class MultiQueryResult(val delegate: Map<MultiQueryBuilder.Descriptor<*, *>, Map<Any?, Any?>>) :

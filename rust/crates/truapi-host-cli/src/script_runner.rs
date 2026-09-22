@@ -53,9 +53,14 @@ console.log('user id', result.value);
 /// `@parity/truapi` compiled in, so a downloaded install runs product scripts
 /// without a source checkout.
 const PACKAGED_RUNNER: &str = "runner.js";
+const EMPTY_BUN_CONFIG: &str = if cfg!(windows) {
+    "--config=NUL"
+} else {
+    "--config=/dev/null"
+};
 
 /// Locate the host-script runner.
-fn runner_path() -> PathBuf {
+pub fn runner_path() -> PathBuf {
     resolve_runner(
         std::env::var_os("TRUAPI_HOST_RUNNER"),
         std::env::current_exe().ok().as_deref(),
@@ -72,8 +77,7 @@ fn resolve_runner(explicit: Option<OsString>, executable: Option<&Path>) -> Path
     if let Some(path) = explicit {
         return PathBuf::from(path);
     }
-    let packaged = executable.and_then(packaged_runner);
-    if let Some(packaged) = packaged.filter(|path| path.is_file()) {
+    if let Some(packaged) = executable.and_then(packaged_runner) {
         return packaged;
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("js/runner.ts")
@@ -92,7 +96,8 @@ fn packaged_runner(executable: &Path) -> Option<PathBuf> {
                 .join(PACKAGED_RUNNER),
         );
     }
-    Some(directory.join(PACKAGED_RUNNER))
+    let runner = directory.join(PACKAGED_RUNNER);
+    runner.is_file().then_some(runner)
 }
 
 /// Create a durable, uniquely-named TypeScript scratch file seeded with the
@@ -246,10 +251,8 @@ fn command(
         .canonicalize()
         .with_context(|| format!("script not found: {}", script.display()))?;
 
-    let mut command = Command::new("bun");
+    let mut command = bun_command(&runner, &std::env::current_dir()?)?;
     command
-        .arg("run")
-        .arg(&runner)
         .env("TRUAPI_FRAME_URL", frame_url)
         .env("TRUAPI_PRODUCT_ID", product_id)
         .env("TRUAPI_SCRIPT", &script)
@@ -257,9 +260,114 @@ fn command(
     Ok(command)
 }
 
+fn bun_command(entrypoint: &Path, caller_directory: &Path) -> Result<Command> {
+    let entrypoint = entrypoint
+        .canonicalize()
+        .with_context(|| format!("trusted Bun entrypoint not found: {}", entrypoint.display()))?;
+    let directory = entrypoint
+        .parent()
+        .context("Bun entrypoint has no parent directory")?;
+    let mut command = Command::new("bun");
+    command
+        .args([
+            EMPTY_BUN_CONFIG,
+            "--no-env-file",
+            "--no-macros",
+            "--no-install",
+        ])
+        .arg("run")
+        .arg(&entrypoint)
+        .current_dir(directory)
+        .env("TRUAPI_SCRIPT_CWD", caller_directory);
+    Ok(command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires Bun; run with --include-ignored"]
+    async fn caller_configuration_cannot_execute_before_the_sandbox() -> Result<()> {
+        const TEST_FIXTURE: &str = "TRUAPI_BUN_LAUNCHER_TEST_FIXTURE";
+        if let Some(fixture) = std::env::var_os(TEST_FIXTURE) {
+            let fixture = PathBuf::from(fixture);
+            let product = std::env::current_dir()?;
+            let output = bun_command(&fixture.join("trusted/entry.ts"), &product)?
+                .env_remove("TRUAPI_UNTRUSTED_DOTENV")
+                .output()
+                .await?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8(output.stderr)?, "");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&output.stdout)?,
+                serde_json::json!({
+                    "preloaded": false,
+                    "environment": null,
+                    "dependency": "trusted dependency",
+                    "caller": product,
+                })
+            );
+            return Ok(());
+        }
+
+        let fixture = tempfile::tempdir()?;
+        let product = fixture.path().join("product");
+        let trusted = fixture.path().join("trusted");
+        fs::create_dir_all(&product)?;
+        fs::create_dir_all(trusted.join("node_modules/trusted-dependency"))?;
+        fs::write(
+            product.join("bunfig.toml"),
+            "preload = [\"./preload.ts\"]\n",
+        )?;
+        fs::write(
+            product.join("preload.ts"),
+            "globalThis.preloadExecuted = true; console.log('untrusted preload executed');\n",
+        )?;
+        fs::write(product.join(".env"), "TRUAPI_UNTRUSTED_DOTENV=loaded\n")?;
+        fs::write(product.join("tsconfig.json"), "not valid JSON")?;
+        fs::write(
+            trusted.join("node_modules/trusted-dependency/package.json"),
+            r#"{"name":"trusted-dependency","main":"index.js"}"#,
+        )?;
+        fs::write(
+            trusted.join("node_modules/trusted-dependency/index.js"),
+            "export const value = 'trusted dependency';\n",
+        )?;
+        let entrypoint = trusted.join("entry.ts");
+        fs::write(
+            &entrypoint,
+            r#"import { value } from 'trusted-dependency';
+console.log(JSON.stringify({
+  preloaded: globalThis.preloadExecuted === true,
+  environment: process.env.TRUAPI_UNTRUSTED_DOTENV ?? null,
+  dependency: value,
+  caller: process.env.TRUAPI_SCRIPT_CWD,
+}));
+"#,
+        )?;
+        let output = Command::new(std::env::current_exe()?)
+            .args([
+                "--ignored",
+                "--exact",
+                "script_runner::tests::caller_configuration_cannot_execute_before_the_sandbox",
+            ])
+            .current_dir(&product)
+            .env(TEST_FIXTURE, fixture.path())
+            .output()
+            .await?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
 
     /// The override exists so a packaged install can be pointed at a working
     /// copy; it has to win over the bundle sitting next to the binary.
@@ -348,6 +456,23 @@ mod tests {
     }
 
     #[test]
+    fn an_incomplete_managed_install_does_not_fall_back_to_source_code() -> Result<()> {
+        let install = tempfile::tempdir()?;
+        let version = install
+            .path()
+            .join("versions")
+            .join(env!("CARGO_PKG_VERSION"));
+        fs::create_dir_all(&version)?;
+        let executable = version.join("truapi-host");
+        fs::write(&executable, "binary")?;
+        assert_eq!(
+            resolve_runner(None, Some(&executable)),
+            version.join(PACKAGED_RUNNER)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn scratch_script_starts_as_a_bun_script_with_dependency_free_example() -> Result<()> {
         let temporary = tempfile::tempdir()?;
 
@@ -377,6 +502,7 @@ console.log('user id', result.value);
         let script = temporary.path().join("script.ts");
         fs::write(&script, "console.log('hello');\n")?;
 
+        let runner = runner_path().canonicalize()?;
         let command = command(
             "ws://127.0.0.1:1234",
             "example.dot",
@@ -384,11 +510,19 @@ console.log('user id', result.value);
             ScriptHostRole::SigningHost,
         )?;
         let command = command.as_std();
-        let arguments = command.get_args().collect::<Vec<_>>();
-
         assert_eq!(command.get_program(), std::ffi::OsStr::new("bun"));
-        assert_eq!(arguments[0], std::ffi::OsStr::new("run"));
-        assert_eq!(arguments[1], runner_path());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new(EMPTY_BUN_CONFIG),
+                std::ffi::OsStr::new("--no-env-file"),
+                std::ffi::OsStr::new("--no-macros"),
+                std::ffi::OsStr::new("--no-install"),
+                std::ffi::OsStr::new("run"),
+                runner.as_os_str(),
+            ]
+        );
+        assert_eq!(command.get_current_dir(), runner.parent());
         assert_eq!(
             command
                 .get_envs()

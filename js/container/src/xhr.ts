@@ -15,12 +15,12 @@ interface RequestState {
   startedAt: number;
   waited: number;
   timeout: number;
-  deadline: number | undefined;
+  deadline: ReturnType<typeof setTimeout> | undefined;
   cancel: (() => void) | undefined;
 }
 
 export function installXhrGate(
-  win: Window & typeof globalThis,
+  win: typeof globalThis,
   authorize: NetworkAuthorization,
 ): void {
   const NativeXhr = win.XMLHttpRequest;

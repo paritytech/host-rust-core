@@ -1,5 +1,90 @@
 # @parity/truapi-host
 
+## 0.18.0
+
+### Major Changes
+
+- 26b957f: `navigate_to` hands a host a dotNS product destination as `polkadot://<product_id>.<tld>/<path>` rather than
+  rewriting it to `https://`. That is the form the Pocket deeplink grammar already defines for a product URL, and the
+  one a Pocket target already arrives as, so a host routes on the scheme instead of guessing from the domain. An
+  `http(s)` destination is unchanged and still gated on a per-host grant.
+
+  A host that recognised `https://<name>.<tld>` and converted it back should match `polkadot://` instead.
+
+### Minor Changes
+
+- 9b54ceb: A `context` grant admits the grantee acting in the granting product's own proof context as well as in its
+  own. Both are matched by product label within one network, so a product's other executables count and a namesake on
+  another network does not.
+
+  Refusing the granting product's context left the scope unusable: `PeopleLite.set_alias_account` verifies against
+  `Score.score_context`, which names the personhood product for every prover, so a grantee held to its own context alone
+  can produce no proof such a chain accepts. A context naming a third product is still refused, as is the `raw:`
+  development context. A grantee's own namesake on another network is refused too, which is new. Both the ring-VRF proof
+  and the contextual alias read follow the same rule, because they come out of one VRF evaluation.
+
+- 448c1d4: - Host `device_permission` and `remote_permission` callbacks return `PermissionDecision` (`AllowOnce`,
+  `AllowAlways`, or `Deny`). Native callbacks leave grant storage and consumption to Rust. Embedders must update their
+  callbacks; product-facing responses remain boolean.
+  - Keep one-use grants in memory. Internal `authorize_remote_permission` and `authorize_device_permission` methods
+    consume them using the public request types, without exposing the methods in the public SDK or API documentation.
+  - Normalize remote domains, match legacy wildcard coverage, and keep a shared blessed-domain list.
+  - Require `OpenUrl` for external navigation, including allowed application schemes. A lasting grant covers all
+    external destinations; domain permissions govern outbound network requests.
+  - Require `Notifications` before `send_push_notification`, prompting when undecided and rejecting delivery when
+    denied.
+  - Present per-action confirmations without misleading persistent-permission choices.
+- e9c45b8: Authorize browser fetch, asynchronous XHR, WebSocket connections, media capture and WebRTC through the
+  internal `authorize_remote_permission` and `authorize_device_permission` APIs. Install the shared sandbox in native
+  product views. Synchronous XHR, `Worker`, `WebTransport` and `getDisplayMedia` screen capture are unavailable.
+
+  Camera and microphone grants are consumed per capture attempt, camera first. A later microphone denial or native
+  capture failure does not restore an already consumed grant. Product consent is enforced by the container; native media
+  delegates enforce OS permission separately.
+
+  Update native integrations: Swift `installProductScripts(into:endpoint:)` now takes a `WKWebView` and is synchronous,
+  without an execution argument. Swift and Kotlin `LocalhostBridgeBootstrap.script` no longer take `webRtcAllowed`.
+
+- ea5e2f9: Add `localStorage.subscribe` and worker pending operations.
+
+  `localStorage.subscribe(key)` streams a key's value within the product's own namespace, emitting the current value
+  immediately and then one item per later write or clear from any of the product's runtimes. A write that leaves the
+  stored bytes unchanged emits nothing.
+
+  `worker.beginOperation` / `worker.endOperation` keep a product's worker runtime alive while it holds at least one open
+  operation. Both are gated to the Worker execution kind. `endOperation` is idempotent. An open operation counts as
+  demand on the product's worker, so it reaches a host through the same worker-demand signal an on-screen surface
+  produces.
+
+  Hosts implement `ProductOperations` and `ProductStorage.subscribeStorage` to back these.
+
+### Patch Changes
+
+- 27b8f07: A pairing attempt is bounded. Reading the stored pairing identity, connecting to the statement store,
+  subscribing to the pairing topic and waiting for the wallet's handshake are each raced against a single 300s deadline,
+  beside the cancellation they already honoured. Resolving the session and persisting it carry their own budgets and are
+  not covered by it.
+
+  A peer answering on a different SSO envelope publishes statements this host cannot open, which is indistinguishable
+  from a peer that has not answered yet: both are silence on the topic. The attempt now ends with a reason naming that
+  as the likely cause.
+
+- b7b2c94: Product executions under one host runtime share a single localhost WebSocket listener, each with its own
+  token. Closing a connection disposes the runtime that served it, so its host-core subscriptions and chat state are
+  released rather than held for the life of the listener. Admitted connections are bounded per execution and
+  listener-wide, with the per-execution cap a share of the listener-wide one; handshakes in flight are bounded
+  separately, and a full backlog evicts its oldest entry so a stalled peer cannot lock out other executions.
+- Updated dependencies [d9eaece]
+- Updated dependencies [9b54ceb]
+- Updated dependencies [33f9222]
+- Updated dependencies [c2e5674]
+- Updated dependencies [a63b0e8]
+- Updated dependencies [448c1d4]
+- Updated dependencies [d3ec891]
+- Updated dependencies [e9c45b8]
+- Updated dependencies [ea5e2f9]
+  - @parity/truapi@0.18.0
+
 ## 0.17.0
 
 ### Minor Changes

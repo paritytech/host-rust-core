@@ -53,6 +53,7 @@ import androidx.compose.ui.window.PopupProperties
 import io.paritytech.polkadotapp.app.root.presentation.main.compose.components.ScannerIconWithTooltip
 import io.paritytech.polkadotapp.app.root.presentation.main.compose.icon
 import io.paritytech.polkadotapp.app.root.presentation.main.compose.title
+import io.paritytech.polkadotapp.app.root.presentation.root.compose.components.ScanPanel
 import io.paritytech.polkadotapp.common.presentation.tabs.BottomTab
 import io.paritytech.polkadotapp.common.utils.FeatureOption
 import io.paritytech.polkadotapp.common.utils.isEnabled
@@ -114,12 +115,15 @@ fun RootNavBar(
     chainsHealth: ChainHealthIndicatorsModel,
     networkStatusExpanded: Boolean,
     scannerTooltipVisible: Boolean,
+    scanExpanded: Boolean,
     onTabSelected: (BottomTab) -> Unit,
     onCountClicked: () -> Unit,
     onNetworkStatusClicked: () -> Unit,
     onAppClick: (Long) -> Unit,
     onAppClose: (Long) -> Unit,
     onScanClicked: () -> Unit,
+    onScanHandled: (navigate: (() -> Unit)?) -> Unit,
+    onUsernameSearchClick: () -> Unit,
     onScannerTooltipDismiss: () -> Unit,
 ) {
     val availableTabs = BottomTab.availableEntries
@@ -137,6 +141,9 @@ fun RootNavBar(
             .navigationBarsPadding(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        ExpandablePanel(visible = scanExpanded) {
+            ScanPanel(onScanHandled = onScanHandled, onUsernameSearchClick = onUsernameSearchClick)
+        }
         ExpandablePanel(visible = appsExpanded) {
             OpenAppsRow(apps = apps, onAppClick = onAppClick, onAppClose = onAppClose)
         }
@@ -155,6 +162,7 @@ fun RootNavBar(
                 if (pillBar) {
                     CenterPill(
                         scannerTooltipVisible = scannerTooltipVisible,
+                        scanActive = scanExpanded,
                         onScanClicked = onScanClicked,
                         onScannerTooltipDismiss = onScannerTooltipDismiss,
                         tabsVisible = FeatureOption.BROWSE_TAB.isEnabled,
@@ -165,6 +173,7 @@ fun RootNavBar(
                 } else {
                     ScannerButton(
                         scannerTooltipVisible = scannerTooltipVisible,
+                        active = scanExpanded,
                         onScanClicked = onScanClicked,
                         onScannerTooltipDismiss = onScannerTooltipDismiss,
                         shape = PolkadotTheme.shapes.full,
@@ -224,6 +233,7 @@ private fun ExpandablePanel(visible: Boolean, content: @Composable () -> Unit) {
 @Composable
 private fun CenterPill(
     scannerTooltipVisible: Boolean,
+    scanActive: Boolean,
     onScanClicked: () -> Unit,
     onScannerTooltipDismiss: () -> Unit,
     tabsVisible: Boolean,
@@ -243,6 +253,7 @@ private fun CenterPill(
         ) {
             ScannerButton(
                 scannerTooltipVisible = scannerTooltipVisible,
+                active = scanActive,
                 onScanClicked = onScanClicked,
                 onScannerTooltipDismiss = onScannerTooltipDismiss,
                 shape = RectangleShape,
@@ -277,6 +288,7 @@ private fun CenterPill(
 @Composable
 private fun ScannerButton(
     scannerTooltipVisible: Boolean,
+    active: Boolean,
     onScanClicked: () -> Unit,
     onScannerTooltipDismiss: () -> Unit,
     shape: Shape,
@@ -291,6 +303,7 @@ private fun ScannerButton(
     ) {
         ScannerIconWithTooltip(
             tooltipVisible = scannerTooltipVisible,
+            active = active,
             onTooltipDismiss = onScannerTooltipDismiss,
         )
     }

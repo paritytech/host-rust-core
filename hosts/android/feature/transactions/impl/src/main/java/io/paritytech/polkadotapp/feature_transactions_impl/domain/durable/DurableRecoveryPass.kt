@@ -34,6 +34,7 @@ class RealDurableRecoveryPass @Inject constructor(
     private val repository: DurableTxRepository,
     private val chainViewFactory: PinnedChainViewFactory,
     private val submissionOwned: SubmissionOwnedTransactions,
+    private val verdictWriter: DurableVerdictWriter,
     private val oracles: Map<String, @JvmSuppressWildcards TxCompletionOracle>,
 ) : DurableRecoveryPass {
     // One pass at a time. In memory, so a crash takes it with it and the next launch is free to start.
@@ -122,7 +123,7 @@ class RealDurableRecoveryPass @Inject constructor(
     private suspend fun evaluateRound(domain: TxDomainId, view: PinnedChainView): Result<Int> {
         val all = repository.getAllEntries(domain).getOrElse { return Result.failure(it) }
 
-        val decidable = all.filter { it.status.isLive && !submissionOwned.isOwnedBySubmission(it.id) }
+        val decidable = all.filter { it.status.awaitsVerdict && !submissionOwned.isOwnedBySubmission(it.id) }
         if (decidable.isEmpty()) return Result.success(0)
 
         val ledger = SnapshotLedgerView(all)
@@ -176,7 +177,7 @@ class RealDurableRecoveryPass @Inject constructor(
     private suspend fun write(tx: DurableTxEntry, verdict: Verdict): Boolean {
         if (verdict.status == tx.status && verdict.successDetectedAt == tx.successDetectedAt) return false
 
-        return repository.compareAndSetStatus(tx.id, tx.status, verdict)
+        return verdictWriter.write(tx, verdict)
             .onFailure { durabilityLogW("${tx.logId()} verdict-write-failed to=${verdict.status} error=$it") }
             .getOrDefault(false)
     }

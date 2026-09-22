@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.onLoaded
 import io.paritytech.polkadotapp.design.components.bottomsheet.NovaBottomSheetSurface
 import io.paritytech.polkadotapp.design.components.button.common.PolkadotButtonStyle
@@ -81,7 +82,7 @@ private fun PaymentRequestConfirmContent(
                 RCommon.string.product_payment_request_title,
                 state.productId,
                 formatter.formatTokenAmount(state.amount, precision = RoundPrecision.DEFAULT),
-            ),
+            ).withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
             style = PolkadotTheme.typography.title.large,
             color = PolkadotTheme.colors.fg.primary,
         )

@@ -64,6 +64,9 @@ interface CoinageAssetLedger {
     /** Drops every mark that was never committed — the payments behind them never happened. */
     suspend fun releaseUncommittedHandoffs(): Result<Unit>
 
+    /** Drops the marks on [keys] that were never committed. */
+    suspend fun releaseUncommittedHandoffs(keys: List<AssetPublicKey>): Result<Unit>
+
     suspend fun getHandoffKeys(): Result<Set<AssetPublicKey>>
 
     /** The assets of each of [ids], in one batched read rather than one per transaction. */

@@ -22,8 +22,8 @@ one or more channels. The app is built with Gradle, has native Rust components
 environment variables (see §5). The typical flow is:
 
 1. Provision the toolchain (§2).
-2. Provide a signing keystore (§3) and a Firebase `google-services.json` (§4) — both editions need it, because Remote Config is required for the app to run.
-3. Set the required environment variables / secrets (§5).
+2. Provide a signing keystore (§3), a Firebase `google-services.json` (§4) and the Remote Config values (§4.1) — both editions need them, because Remote Config is required for the app to run.
+3. Set the required environment variables / secrets (§5). Gradle refuses to configure the project while any mandatory one is missing.
 4. Build the edition you want to ship (§6).
 5. Deliver the artifact through a channel of your choice (§7):
    Google Play, Firebase App Distribution, GitHub Releases, object storage, or a
@@ -72,8 +72,8 @@ previously-used CI environment):
 | Clang           | 21                     | Native toolchain                                  |
 | Rust            | stable                 | + targets below                                   |
 | `cargo-ndk`     | latest                 | `cargo install cargo-ndk`                         |
-| Node.js         | 24                     | Build helpers                                     |
-| Python          | 3.13                   | Version-management scripts (§6)                   |
+| Node.js         | 24                     | Required: `feature/products` runs `npm install` / `npm run build` for the dApp container during the Gradle build |
+| Python          | 3.13                   | Required by the Rust Android Gradle plugin (linker wrapper); also used by the version scripts (§6) |
 
 Rust targets:
 
@@ -91,7 +91,17 @@ ndk.dir=/path/to/android-ndk-r29
 sdk.dir=/path/to/android-sdk
 ```
 
-See `.github/README.md` for the local developer bootstrap (`developer-tools/setup.sh`).
+When `cargo`, `rustc` or `python` are not on the PATH Gradle sees (typical for IDE-launched
+builds on macOS), point the Rust plugin at them in the same file:
+
+```properties
+rust.cargoCommand=/Users/me/.cargo/bin/cargo
+rust.rustcCommand=/Users/me/.cargo/bin/rustc
+rust.pythonCommand=/usr/bin/python3
+```
+
+`developer-tools/setup.sh` only installs the Detekt pre-commit hook; it does not install
+any part of the toolchain.
 
 ---
 
@@ -99,12 +109,22 @@ See `.github/README.md` for the local developer bootstrap (`developer-tools/setu
 
 The app defines two signing configs in `app/build.gradle.kts`:
 
-- **`dev`** — used by the `debug` and `nightly` build types.
+- **`dev`** — used by the `debug`, `nightly` and `safetynet` build types.
 - **`release`** — used by the `release` build type.
+
+Every `assemble*` task signs its output, so even a local debug build needs the dev
+keystore and its three `CI_KEYSTORE_*` values (§5.1).
 
 ### 3.1 Generate a keystore
 
 ```bash
+# dev keystore (debug / nightly / safetynet)
+keytool -genkeypair -v \
+  -keystore develop_key.jks \
+  -alias my-dev-key \
+  -keyalg RSA -keysize 2048 -validity 10000
+
+# release keystore
 keytool -genkeypair -v \
   -keystore release_key.jks \
   -alias my-release-key \
@@ -153,7 +173,9 @@ need to point the two editions at different Firebase projects.
 
 `vanilla` needs no separate Firebase app registration: product flavors add no
 `applicationIdSuffix` (only build types do), so both editions share the same
-application ids and therefore the same `google-services.json` entries.
+application ids and therefore the same `google-services.json` entries. The file's
+client list must contain every application id the build produces: `APPLICATION_ID`
+itself (release) plus its `.debug`, `.nightly` and `.safetynet` variants.
 
 Obtain it from **your own** Firebase project (Project settings → Your apps →
 Android app → download `google-services.json`). In CI decode it into this path
@@ -163,20 +185,66 @@ before the build:
 echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
 ```
 
+Firebase services the app uses, so you can enable them in that project:
+
+| Service | Editions | Used for |
+|---------|----------|----------|
+| Remote Config | both | All runtime configuration (§4.1). Mandatory. |
+| Authentication (Google provider) + Firestore | `gp` | Cloud backups: the encryption-key record is stored in the `users-<suffix>` collection (`-debug`, `-nightly`, `-safetynet`, `-production`) of the database named by `FIRESTORE_DATABASE_ID`. Security rules must let a signed-in user read/write their own document. |
+| Cloud Messaging | `gp` | Push notifications. |
+| Crashlytics, Analytics | `gp` | Crash and usage reporting. |
+
+### 4.1 Remote Config keys
+
+`tools/remoteconfig/impl` ships an **empty** defaults file, so every value below has to
+exist in your Firebase project's Remote Config; an unset key reads back as an empty
+string. The chain list is the first thing the app loads after start-up, and it fails
+without it. JSON values are stored as Remote Config strings.
+
+| Key | Type | Needed for | Read by | Description |
+|-----|------|------------|---------|-------------|
+| `chains` | JSON array | app start-up (`release`) | `chains` — `RemoteConfigChainFetcher` | Chain set for `release` builds (`PRODUCTION` environment). |
+| `chains_v2` | JSON array | app start-up (`debug`, `nightly`, `safetynet`) | `chains` — `RemoteConfigChainFetcher` | Chain set for the testnet environments. Same schema as `chains`. |
+| `dot_ns_config` | JSON object | dApps, usernames, funding | `feature/dotns`, `feature/dotns-gateway` | `{ "resolverContractAddress", "registryContractAddress", "popControllerAddress", "popResolverAddress" }` — hex contract addresses of the DotNS deployment. `registryContractAddress` may be omitted; then only legacy name resolution works. |
+| `identity_backend_url` | string (URL) | username registration, Proof-of-Unique-Device | `app` — `RemoteConfigIdentityBackendUrlProvider` | Base URL of your deployment of [device-uniqueness-backend-community](https://github.com/paritytech/device-uniqueness-backend-community). Every identity-backend request is rewritten to this host at runtime. |
+| `transaction_extension_versions` | JSON object | signing on People Chain / Asset Hub | `feature/transactions` | Map `chainId → transaction extension version` (number). A chain missing from the map uses version `0`. |
+| `funding_config` | JSON object | on-ramp / off-ramp funding dApps | `feature/products` | `{ "onrampUrl": "…", "offrampUrl": "…" }` — URLs or DotNS names of the on-ramp and off-ramp products (`https://` is assumed when the scheme is missing). Both fields are required. |
+| `cross_chain_transfers` | JSON object | cross-chain transfers | `feature/cross-chain-transfers` | `{ "chains": [...], "customTeleports": [...] }` — XCM transfer directions. Schema: `feature/cross-chain-transfers/impl/.../data/model/DynamicCrossChainConfigRemote.kt`. |
+| `coinage_instance_id` | string (unsigned integer) | Coinage | `feature/coinage` | Instance id of the Coinage deployment. |
+| `account_data_store_config` | JSON object | Coinage | `feature/coinage` | `{ "contractAddress": "0x…" }` — the account data store contract. |
+| `collectibles_enabled` | boolean | collectibles (optional) | `feature/videogame` | Feature gate for the collectibles webview. |
+| `collectibles_fallback_url` | string (URL) | collectibles (optional) | `feature/videogame` | Fallback URL of the collectibles webview when DotNS resolution fails. |
+
+A chain descriptor in `chains` / `chains_v2` is a JSON object deserialised into
+`chains/src/main/java/io/paritytech/polkadotapp/chains/multiNetwork/chain/remote/model/ChainRemote.kt`
+(`chainId`, `genesisHash`, `name`, `addressPrefix`, `nodes[{url,name}]`, `assets[]`,
+`explorers[]`, `options[]`, `types`, `parentId`, `additional`); the nested models sit next to it.
+
 ---
 
 ## 5. Environment variables / secrets reference
 
-All build-time configuration is read by `Properties.readSecretOrDefault(...)` or
-`readSecretOrNull(...)` in
-`build-logic/convention/src/main/kotlin/Secrets.kt`, with this lookup
-order:
+All build-time configuration is read by the helpers in
+`build-logic/convention/src/main/kotlin/Secrets.kt`, with this lookup order:
 
 1. a key in **`local.properties`**, then
 2. an **environment variable** of the same name.
 
-`readSecretOrDefault` supplies a public default, and `readSecretOrNull` returns
-`null` for optional configuration.
+An empty value counts as missing. Three helpers exist:
+
+- `readSecretOrThrow` — **mandatory**: a missing value fails Gradle configuration
+  (even `./gradlew help`) with `Missing secret '<NAME>'`. Because Gradle configures
+  every module and every flavor regardless of the task you run, these are needed for
+  **any** build, `vanilla` included.
+- `readSecretOrDefault` — falls back to a default (only the signing passwords).
+- `readSecretOrNull` — optional; `null` selects the built-in fallback.
+
+The mandatory set, in the order Gradle reports them when absent:
+`APPLICATION_ID`, `APPLICATION_NAME`, `CONTACT_EMAIL`, `LOG_COLLECTION_EMAIL`,
+`PRIVACY_POLICY_URL`, `TERMS_OF_USE_URL`, `SENTRY_ORG`, `SENTRY_PROJECT`, `CURRENCY_SYMBOL`,
+`NIGHTLY_FUNDING_MNEMONIC`, `GOOGLE_OAUTH_ID`, `FIRESTORE_DATABASE_ID`,
+`GOOGLE_PROJECT_ID`.
+
 In GitHub Actions, non-sensitive values from this section can be mapped from GitHub
 variables while credentials and mnemonics must be mapped from GitHub secrets.
 
@@ -193,50 +261,51 @@ variables while credentials and mnemonics must be mapped from GitHub secrets.
 | `DEV_KEYSTORE_FILE`        | `app` dev signingConfig   | no       | Override path to dev keystore (default `../develop_key.jks`) |
 | `RELEASE_KEYSTORE_FILE`    | `app` release signingConfig| no      | Override path to release keystore (default `../release_key.jks`) |
 
-> Build types: `debug`/`nightly` use the **dev** config, `release` uses the
+> Build types: `debug`/`nightly`/`safetynet` use the **dev** config, `release` uses the
 > **release** config. Missing passwords default to empty so project configuration
-> and unsigned checks can run, but producing a valid signed artifact still requires
-> the matching keystore values.
+> and unit tests can run, but every `assemble*` task signs its APK and fails without
+> the matching keystore file and values.
 
 ### 5.2 App API keys (consumed by the build via `buildConfigField`)
 
-| Variable           | Used by (module)                           | Required (`gp`) | Required (`vanilla`) | Default | Description                          |
-|--------------------|--------------------------------------------|-----------------|----------------------|---------|--------------------------------------|
-| `GOOGLE_OAUTH_ID`  | `tools/auth/impl` `gp` source set          | for Google sign-in | no                | empty   | Google OAuth client id (Sign-In)     |
-| `GOOGLE_PROJECT_ID`| `tools/integrity/impl` `gp` product flavor | for Play Integrity | no                | `0`     | Google Cloud project id (Play Integrity) |
+| Variable           | Used by (module)                           | Required | Description                          |
+|--------------------|--------------------------------------------|----------|--------------------------------------|
+| `GOOGLE_OAUTH_ID`  | `tools/auth/impl` `gp` product flavor      | yes      | OAuth 2.0 **web** client id of your Google Cloud project; passed to Google Sign-In as the ID-token audience (`requestIdToken`). |
+| `GOOGLE_PROJECT_ID`| `tools/integrity/impl` `gp` product flavor | yes      | Google Cloud **project number** (integer) handed to Play Integrity as the cloud project number. |
 
-These values no longer block Gradle configuration when absent. Their integrations
-validate or reject the placeholder when actually invoked. Both `GOOGLE_OAUTH_ID`
-and `GOOGLE_PROJECT_ID` are scoped to the `gp` product flavor in their respective
-modules; `vanilla` builds use no-op/zero values.
+Both are compiled into the `gp` flavor only — `vanilla` uses a no-op sign-in and `0` —
+but the `gp` flavor block is still evaluated when configuring a `vanilla` build, so
+both variables must be present for any build. For a `vanilla`-only fork any
+non-empty value works (`GOOGLE_PROJECT_ID` must still parse as an integer).
 
-#### 5.2.1 App endpoints / values (optional — placeholder defaults)
+#### 5.2.1 App identity, endpoints and values
 
-These are read with the **non-throwing** configuration helpers and fall back to a
-harmless placeholder when unset, so the build still succeeds without them. Depending
-on the consumer, they become an application ID, manifest placeholder, or BuildConfig
-field. Set them in `local.properties` / CI to point at your own infrastructure.
+Depending on the consumer, these become the application ID, a manifest placeholder,
+or a `BuildConfig` field. Mandatory ones have no fallback; optional ones list theirs.
 
-| Variable                    | Used by (module)              | Required | Default (placeholder)          | Description                                                                 |
+| Variable                    | Used by (module)              | Required | Fallback                       | Description                                                                 |
 |-----------------------------|-------------------------------|----------|--------------------------------|-----------------------------------------------------------------------------|
-| `APPLICATION_ID`            | `app`                         | no       | `io.paritytech.polkadotapp`    | Installed application ID; changing it creates a different app identity      |
-| `APPLICATION_NAME`          | `app`                         | no       | `Polkadot`                     | Base/release launcher name                                                   |
+| `APPLICATION_ID`            | `app`                         | yes      | —                              | Installed application ID; build types append `.debug` / `.nightly` / `.safetynet` |
+| `APPLICATION_NAME`          | `app`                         | yes      | —                              | Base/release launcher name                                                   |
 | `DEBUG_APPLICATION_NAME`    | `app` debug build             | no       | `[Debug] <APPLICATION_NAME>`   | Debug launcher name                                                          |
 | `NIGHTLY_APPLICATION_NAME`  | `app` nightly build           | no       | `<APPLICATION_NAME>`           | Nightly launcher name                                                        |
-| `PRIVACY_POLICY_URL`        | `app`                         | no       | `https://example.com/privacy`  | Privacy-policy destination                                                   |
-| `TERMS_OF_USE_URL`          | `app`                         | no       | `https://example.com/terms`    | Terms-of-use destination                                                     |
+| `SAFETYNET_APPLICATION_NAME`| `app` safetynet build         | no       | `[Safetynet] <APPLICATION_NAME>` | Safetynet launcher name                                                    |
+| `PRIVACY_POLICY_URL`        | `app`                         | yes      | —                              | Privacy-policy destination                                                   |
+| `TERMS_OF_USE_URL`          | `app`                         | yes      | —                              | Terms-of-use destination                                                     |
+| `LOG_COLLECTION_EMAIL`      | `app`                         | yes      | —                              | Recipient address for the in-app "collect logs" debug share action          |
+| `CONTACT_EMAIL`             | `app`                         | yes      | —                              | Recipient address for the "Contact us" action on the Legal & Support screen |
+| `CURRENCY_SYMBOL`           | `common`                      | yes      | —                              | Symbol of the in-app digital currency rendered in the UI                     |
+| `FIRESTORE_DATABASE_ID`     | `tools/backup/impl`           | yes      | —                              | Firestore database holding the backup encryption-key records (§4); `(default)` for the project's default database |
+| `NIGHTLY_FUNDING_MNEMONIC`  | `feature/transactions/impl`   | yes      | —                              | Mnemonic of the funding account used to top up accounts on nightly/production test contours |
 | `REFERRAL_WEB_HOST`         | `feature/become-citizen/impl` | no       | `referral.example.com`         | Host of the web app that backs referral (`https`) deeplinks                 |
 | `GAME_RESULTS_FALLBACK_URL` | `feature/videogame/impl`      | no       | `https://example.com/`         | Last-resort URL for the game-results webview (after DotNs + Remote Config)   |
-| `FIRESTORE_DATABASE_ID`     | `tools/backup/impl`            | no       | `(default)`                    | Firestore database used for backup encryption-key records                    |
-| `NIGHTLY_FUNDING_MNEMONIC`  | `feature/transactions/impl`   | for funding | empty                       | Mnemonic of the funding account used to top up accounts on nightly/production test contours |
-| `LOG_COLLECTION_EMAIL`      | `app`                         | no       | `logs@example.com`             | Recipient address for the in-app "collect logs" debug share action          |
-| `CURRENCY_SYMBOL`           | `common`                      | no       | `CASH`                         | Symbol of the in-app digital currency rendered in the UI                     |
 
 > `NIGHTLY_FUNDING_MNEMONIC` controls a funding account — keep it in a secret store
-> or untracked `local.properties`, never commit it. When it is empty, requesting the
-> nightly/production test funding origin fails explicitly instead of silently using
-> a public mnemonic. The separate testnet Alice origin continues to use the public,
-> well-known Substrate development fixture.
+> or untracked `local.properties`, never commit it. The build refuses to configure
+> without it, so a fork that does not use the top-up flow still has to supply a
+> throwaway mnemonic (`python3 scripts/generate-mnemonic.py` produces one). The
+> separate testnet Alice origin continues to use the public, well-known Substrate
+> development fixture.
 >
 > The value is compiled into `BuildConfig` and can therefore be recovered from a
 > distributed APK. GitHub Secrets protect it at rest and mask it in CI logs, but do
@@ -247,13 +316,13 @@ field. Set them in `local.properties` / CI to point at your own infrastructure.
 
 | Variable             | Used by               | Required | Description                                            |
 |----------------------|-----------------------|----------|--------------------------------------------------------|
-| `SENTRY_ORG`         | `app/build.gradle.kts`| no       | Sentry org slug. Default: `your-sentry-org` (placeholder — set to your org) |
-| `SENTRY_PROJECT`     | `app/build.gradle.kts`| no       | Sentry project slug. Default: `your-sentry-project` (placeholder — set to your project) |
+| `SENTRY_ORG`         | `app/build.gradle.kts`| yes      | Sentry org slug handed to the Gradle plugin. Mandatory at configuration time even when you do not use Sentry — any slug works then. |
+| `SENTRY_PROJECT`     | `app/build.gradle.kts`| yes      | Sentry project slug handed to the Gradle plugin. Same rule as `SENTRY_ORG`. |
 | `SENTRY_AUTH_TOKEN`  | Sentry Gradle plugin  | no       | Token for source upload. Only used for `debug`/`nightly` (release variant is ignored). Omit to skip upload. |
 | `SENTRY_DSN`         | `app` debug/nightly manifests (`${sentryDsn}` manifest placeholder) | no | DSN crashes/errors are reported to. Default: empty (Sentry reporting disabled). Only the `debug`/`nightly` manifests reference it; `release` has no DSN meta-data. |
 
-Override `SENTRY_ORG` / `SENTRY_PROJECT` to point crash reporting at **your** Sentry,
-and set `SENTRY_DSN` to the project's DSN (otherwise crash reporting stays disabled).
+Point `SENTRY_ORG` / `SENTRY_PROJECT` at **your** Sentry and set `SENTRY_DSN` to the
+project's DSN; while `SENTRY_DSN` is unset, crash reporting stays disabled.
 
 ### 5.4 Build
 
@@ -291,12 +360,34 @@ step of whatever channel you choose:
 ## 6. Building
 
 Distribution editions: `gp` (Google services — Google Play) and `vanilla` (no GMS —
-GrapheneOS / sideload). Build types: `debug`, `nightly`, `release`.
+GrapheneOS / sideload). Build types: `debug`, `nightly`, `safetynet`, `release`.
+`safetynet` is a `nightly` derivative with the safety-mode flags on (`SAFETY_MODE`,
+`TAB_BAR_CONNECTIVITY_INDICATOR` in `common/build.gradle.kts`); it reuses the nightly
+manifest and the dev signing config.
+
+Build types also pick the on-chain environment and the compile-time feature flags.
+Both are `buildConfigField`s in `common/build.gradle.kts`, consumed through
+`common/src/main/java/io/paritytech/polkadotapp/common/utils/FeatureFlags.kt`; a few
+developer-only options (`DEBUG_MENU`, `SKIP_MOBRULE_CASE`, …) follow `BuildConfig.DEBUG`
+instead. Change them there if your fork needs a different cut.
+
+| Field | `debug` | `nightly` | `safetynet` | `release` | Effect |
+|-------|---------|-----------|-------------|-----------|--------|
+| `TESTNET_ENVIRONMENT` | `TESTNET` | `NIGHTLY` | `NIGHTLY` | `PRODUCTION` | Chain environment. Only `PRODUCTION` reads the `chains` Remote Config key; the others read `chains_v2` (§4.1). Also enables the faucet top-up outside `PRODUCTION`. |
+| `SAFETY_MODE` | off | off | on | on | On hides the full feature set: arbitrary `.dot` products, browse tab, full tab bar, all chat extensions, linked devices, product settings, personhood, collectibles, ID-card rank. |
+| `TAB_BAR_CONNECTIVITY_INDICATOR` | off | off | on | on | Chain-health indicators in the tab bar. |
+| `COINAGE_DEBUG_FEATURES` | on | on | on | off | "Debug features" card under the balance card (breakdown, faucet top-up, log sharing). |
+| `TESTNET_FUND_ENABLED` | on | on | on | off | Log-sharing action on the Coinage card. |
+| `DIM1_ENABLED` | on | on | on | off | DIM1 game entry points in the Peer bot and the weekly-game footer. |
+| `FAQ_ENABLED` | on | on | on | off | FAQ entries in the Peer and tattoo bots. |
+| `ALLOW_SHORT_EVIDENCE_VIDEO` | on | off | off | off | Accept short evidence videos in Proof-of-Ink. |
+| `PEER_BOT_BY_DEFAULT`, `DIM1_BOT_BY_DEFAULT`, `SAMPLE_BOT` | on | off | off | off | Bot chats pre-created for a new account. |
+| `DIM2_BOT_BY_DEFAULT` | on | on | off | off | Same, for the DIM2 bot. |
 
 ### 6.1 `gp` edition (Google Play)
 
 Standard builds for devices with Google Play Services. Requires `google-services.json`
-at `app/src/gp/google-services.json` (§4) and all secrets in §5.
+at `app/google-services.json` (§4) and all secrets in §5.
 
 ```bash
 # Debug (dev signing)
@@ -323,9 +414,10 @@ Play Services on the device.
 Prerequisites that differ from the `gp` edition:
 
 - **`google-services.json` still required** — see §4; Remote Config needs it.
-- **`GOOGLE_OAUTH_ID` not required** — `tools/auth/impl` uses a no-op implementation for `vanilla`.
-- **`GOOGLE_PROJECT_ID` not required** — scoped to the `gp` flavor in `tools/integrity/impl`.
-- All other secrets (signing, Sentry, optional endpoint variables) apply identically.
+- **`GOOGLE_OAUTH_ID` / `GOOGLE_PROJECT_ID` unused at runtime** — `tools/auth/impl`
+  uses a no-op sign-in and `tools/integrity/impl` compiles `0` for `vanilla`. They are
+  still read at configuration time (§5.2), so set them to any non-empty value.
+- All other variables (signing, Sentry, app values) apply identically.
 
 ```bash
 # Debug (dev signing)
@@ -362,8 +454,11 @@ private const val DefaultVersionCode = 28        // versionCode (fallback)
 
 ## 7. Publishing channels (pick what you need)
 
-The repository no longer contains these pipelines. Below is **how** each channel is
-typically wired so you can implement it on your own infrastructure.
+The workflows under `.github/workflows` implement the maintainers' own variants of
+some of these channels (Firebase App Distribution, nightly APKs to object storage);
+they are tied to that infrastructure and are not meant to run unchanged in a fork.
+Below is **how** each channel is typically wired so you can implement it on your own
+infrastructure.
 
 ### Google Play
 
@@ -406,8 +501,8 @@ The workflows under `.github/workflows` use the configuration described above.
 For a fork or another deployment, store non-sensitive branding and endpoint
 configuration as **GitHub Actions variables**, and credentials, signing material,
 and mnemonics as **GitHub Actions secrets**. Expose both as environment variables;
-the Gradle build already reads them via `readSecretOrDefault` and
-`readSecretOrNull`, so no code changes are needed. A minimal sketch:
+the Gradle build reads them through the helpers in §5, so no code changes are needed.
+A minimal sketch follows the table.
 
 The nightly release notification also reads two workflow-only repository variables:
 
@@ -430,19 +525,19 @@ jobs:
       PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
       TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}
       LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
+      CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
+      CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
       REFERRAL_WEB_HOST: ${{ vars.REFERRAL_WEB_HOST }}
       GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
       SENTRY_ORG: ${{ vars.SENTRY_ORG }}
       SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
       SENTRY_DSN: ${{ vars.SENTRY_DSN }}
-      FIRESTORE_DATABASE_ID: ${{ vars.FIRESTORE_DATABASE_ID }}
-      GOOGLE_OAUTH_ID: ${{ vars.GOOGLE_OAUTH_ID }}
-      GOOGLE_PROJECT_ID: ${{ vars.GOOGLE_PROJECT_ID }}
+      FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+      GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
+      GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
       CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
       CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
       CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
-      INTERCOM_API_KEY: ${{ secrets.INTERCOM_API_KEY }}
-      INTERCOM_APP_ID: ${{ secrets.INTERCOM_APP_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -456,8 +551,7 @@ jobs:
         env:
           NIGHTLY_FUNDING_MNEMONIC: ${{ secrets.NIGHTLY_FUNDING_MNEMONIC }}
         run: ./gradlew assembleGpDebug --no-daemon --stacktrace
-      # To build the vanilla edition instead, omit GOOGLE_OAUTH_ID and
-      # GOOGLE_PROJECT_ID (GOOGLE_SERVICES_JSON_BASE64 is still needed), then run:
+      # The vanilla edition needs the same variables and files; only the task differs:
       # - run: ./gradlew assembleVanillaDebug --no-daemon --stacktrace
 ```
 

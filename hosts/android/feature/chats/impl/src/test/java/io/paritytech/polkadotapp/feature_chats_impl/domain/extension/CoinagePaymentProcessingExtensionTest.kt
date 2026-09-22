@@ -485,6 +485,57 @@ class CoinagePaymentProcessingExtensionTest {
     }
 
     /**
+     * The payment is saved, and its transactions are waiting to be built — or to be built again after an
+     * attempt that could never land. Coinage reports a coin whose mint waits like that as still detecting.
+     */
+    @Test
+    fun `an outgoing payment whose transactions are still being built reads as sending`() = runTest {
+        givenPeerHasTaken(claimed = 0, awaiting = 0, detecting = 2, failed = 0, finalized = true)
+
+        val message = outgoingPayment()
+        startWork(message)
+
+        coVerify {
+            context.modifyMessage(
+                message.chatId,
+                message.id,
+                match { it is CoinagePayment && it.status == CoinagePayment.Status.Detecting },
+            )
+        }
+    }
+
+    /** A rebuild can take hours while the payment's inputs are missing, and the message has to be watched throughout. */
+    @Test
+    fun `an outgoing payment is not closed while its transactions await submission`() = runTest {
+        givenPeerHasTaken(claimed = 0, awaiting = 0, detecting = 2, failed = 0, finalized = true)
+
+        startWork(outgoingPayment())
+
+        coVerify(exactly = 0) { context.markMessageProcessed(any(), any()) }
+    }
+
+    /**
+     * The window for rebuilding closed with the payment's inputs gone from the chain, so its coins will never
+     * be minted. Coinage reports that as failed, and the message is closed on it.
+     */
+    @Test
+    fun `an outgoing payment whose build gave up is closed as failed`() = runTest {
+        givenPeerHasTaken(claimed = 0, awaiting = 0, detecting = 0, failed = 2, finalized = true)
+
+        val message = outgoingPayment()
+        startWork(message)
+
+        coVerify {
+            context.modifyMessage(
+                message.chatId,
+                message.id,
+                match { it is CoinagePayment && it.status is CoinagePayment.Status.FailedDetection },
+            )
+        }
+        coVerify(exactly = 1) { context.markMessageProcessed(message.chatId, message.id) }
+    }
+
+    /**
      * The coins cannot be valued — the conversion needs chain metadata, which may not be to hand.
      *
      * The payment still reports its stage, with an amount of zero. Failing to say anything would leave the

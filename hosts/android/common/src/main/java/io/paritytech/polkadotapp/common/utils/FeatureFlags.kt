@@ -25,6 +25,7 @@ object FeatureFlags {
             FeatureOption.COLLECTIBLES -> fullFeatured
 
             FeatureOption.TAB_BAR_CONNECTIVITY_INDICATOR -> BuildConfig.TAB_BAR_CONNECTIVITY_INDICATOR
+            FeatureOption.COINAGE_DEBUG_FEATURES -> BuildConfig.COINAGE_DEBUG_FEATURES
             FeatureOption.ALLOW_SHORT_EVIDENCE_VIDEO -> BuildConfig.ALLOW_SHORT_EVIDENCE_VIDEO
             FeatureOption.SAMPLE_BOT -> BuildConfig.SAMPLE_BOT
             FeatureOption.DIM1_BOT_BY_DEFAULT -> BuildConfig.DIM1_BOT_BY_DEFAULT
@@ -58,6 +59,11 @@ enum class FeatureOption {
     // The rank label and value under the username on the identity card. Off, the card carries the
     // username alone, aligned with the avatar.
     ID_CARD_RANK,
+
+    // The "Debug features" card under the balance card: the holdings breakdown, the faucet top-up and
+    // log sharing. Off on release alone — hence its own BuildConfig field rather than SAFETY_MODE, which
+    // is also set on safetynet builds, where the card is wanted.
+    COINAGE_DEBUG_FEATURES,
     ALL_CHAT_EXTENSIONS,
     LINKED_DEVICES,
     PRODUCT_SETTINGS,
