@@ -511,7 +511,7 @@ jobs:
   # placeholders, where the app module would need values this repository does
   # not hold.
   host-android-bindings:
-    name: Android host app (kotlin compile)
+    name: Android host app (compile and unit tests)
     needs: changes
     if: needs.changes.outputs.host_android == 'true'
     runs-on: ubuntu-latest
@@ -586,7 +586,7 @@ jobs:
       # reads each of them from the environment when it is absent from
       # local.properties. Placeholders are enough to configure the module, and
       # keep the gate independent of secrets this repository does not hold.
-      - name: Compile the core's Android consumers
+      - name: Compile Android consumers and instrumentation, run product unit tests
         working-directory: hosts/android
         env:
           # The real id, because it is the one the Google configuration is
@@ -605,7 +605,10 @@ jobs:
           SENTRY_ORG: ci
           SENTRY_PROJECT: ci
           TERMS_OF_USE_URL: https://example.invalid/terms
-        run: ./gradlew --configure-on-demand :feature:products:impl:compileReleaseKotlin
+        run: >-
+          ./gradlew --configure-on-demand
+          :feature:products:impl:testReleaseUnitTest
+          :bindings:truapi-host:compileDebugAndroidTestKotlin
 
   # The provider ships as its own AAR, so its bindings compile on a path the
   # host gate never touches. `make provider-android-check` generates first and

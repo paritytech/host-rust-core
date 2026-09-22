@@ -20,8 +20,8 @@
 // Products running inside a `WebView` connect to the Rust core via the
 // localhost WebSocket bridge. Start it with `execution.startWsBridge()` and load
 // the product page after injecting `LocalhostBridgeBootstrap.script(...)` and
-// `ContainerScriptBundle.load(...)` at document start. The container exposes a
-// real `window.__HOST_API_PORT__` for the product SDK.
+// `ContainerScriptBundle.load(...)` at document start. The container publishes
+// `window.__HOST_API_CLIENT__` and a compatibility MessagePort for older SDKs.
 
 package io.parity.truapi
 
