@@ -76,7 +76,7 @@ runs:
         if ! json="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
           --project "${project}" --json 2>"${err}")"; then
           echo "::error::Could not list tester groups in ${project}"
-          printf '%s\n' "${json}" | head -20
+          printf '%s\n' "${json}" | head -20 || true
           cat "${err}" >&2 || true
           # The JSON path silences every logger, so the payload above carries
           # only a summary and the cause is discarded. Asking again without it
@@ -95,9 +95,9 @@ runs:
           # claims rather than a credential; the token is never printed.
           if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
             audience="${PROVIDER:-https://iam.googleapis.com}"
-            token="$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            token="$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" \
-              | jq -r '.value // ""')"
+              | jq -r '.value // ""')" || true
             if [ -n "${token}" ]; then
               segment="$(cut -d. -f2 <<<"${token}")"
               case $(( ${#segment} % 4 )) in
@@ -110,12 +110,11 @@ runs:
                    workflow_ref, job_workflow_ref}' <<<"${claims}" >&2 || true
             fi
           fi
-          fi
           exit 1
         fi
         if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
           echo "::error::Could not parse the group listing from ${project}"
-          printf '%s\n' "${json}" | head -20
+          printf '%s\n' "${json}" | head -20 || true
           tail -60 "${err}" >&2 || true
           exit 1
         fi
