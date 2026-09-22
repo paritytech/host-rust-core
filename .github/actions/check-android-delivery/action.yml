@@ -78,6 +78,26 @@ runs:
           echo "--- asking again for the reason ---" >&2
           "${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
             --project "${project}" --debug >&2 2>&1 || true
+
+          # A refusal to impersonate is matched against the subject this run
+          # presents, so when that is what failed, the subject is the first
+          # thing worth seeing. These are identity claims rather than a
+          # credential; the token itself is never printed.
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            token="$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://iam.googleapis.com" \
+              | jq -r '.value // ""')"
+            if [ -n "${token}" ]; then
+              segment="$(cut -d. -f2 <<<"${token}")"
+              case $(( ${#segment} % 4 )) in
+                2) segment="${segment}==" ;;
+                3) segment="${segment}=" ;;
+              esac
+              claims="$(tr '_-' '/+' <<<"${segment}" | base64 -d 2>/dev/null || true)"
+              echo "--- the identity this run presented ---" >&2
+              jq -r '"subject: \(.sub)\nrepository: \(.repository)\nref: \(.ref)"' <<<"${claims}" >&2 || true
+            fi
+          fi
           exit 1
         fi
         if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
