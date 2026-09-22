@@ -342,7 +342,7 @@ survive session clearing, including projects created with `--mnemonic`.
 Each contains `script.ts`, host declarations, `package.json`, and `tsconfig.json`.
 The starter runs the Product SDK quickstart: create an app, connect wallet
 accounts, and write and read local storage. The runner supplies the SDK's host
-connection automatically. The first open installs editor dependencies with
+connection automatically. The first open installs SDK and editor dependencies with
 Bun. Successful setup saves a lockfile; later opens reuse
 the installation without a network request. Setup errors or cancellation keep
 the project so you can fix the problem and retry `/script`.
@@ -371,12 +371,12 @@ also lets execution start immediately. Editor failure preserves the script
 without running it. Managed projects open the editor from their project root,
 so editor commands such as `bun run typecheck` use that project's dependencies.
 
-New projects leave SDK dependencies and overrides to you. Missing SDK imports
-use Bun's runtime fallback to fetch the latest version. For editor types and
-type checking, run `bun add @parity/product-sdk` in the project, or select a
-version with `bun add @parity/product-sdk@<version>`. The template requests the
-latest TypeScript and Bun editor types; the project lockfile records the
-installed versions. Host updates preserve existing project dependencies.
+New projects request the latest Product SDK, TypeScript, and Bun editor types.
+The SDK is installed locally so its dependencies and editor types are available.
+Choose your own version with `bun add @parity/product-sdk@<version>`, or remove
+it with `bun remove @parity/product-sdk` when your script does not use it.
+The project lockfile records installed versions. Host updates preserve existing
+project dependencies.
 
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username

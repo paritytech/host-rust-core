@@ -5,6 +5,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@parity/product-sdk": "latest"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "latest"

@@ -210,7 +210,7 @@ A release archive ships `runner.js` and `script-types.d.ts` beside the binary.
 The runner has `@parity/truapi` and the shared web API permission checks bundled
 in, and the declaration file contains the matching generated client and
 injected-global types, so an installed copy runs product scripts with no source
-tree. New projects install their own editor dependencies. A source build
+tree. New projects install their own SDK and editor dependencies. A source build
 has no runner bundle and falls back to the checkout copies, whose relative
 `@parity/truapi` import means the runner only works from a built tree.
 
@@ -963,12 +963,11 @@ write and read of `lastVisit`. The host product id must match `my-app.dot`.
 Default cloud storage uses Paseo, also the CLI's default network. A signed-out
 wallet can return an empty account list.
 
-The template has no SDK dependency or protocol override. Missing SDK imports
-use Bun's runtime fallback to fetch the latest version. Install a chosen SDK
-locally with `bun add @parity/product-sdk` or an explicit version for editor
+The template requests `latest` for the Product SDK, TypeScript, and Bun editor
+types, with resolved versions recorded in the project's lockfile. It has no
+protocol override. Users can choose their SDK version with `bun add`.
+SDK imports resolve from the local installation, which also provides editor
 types and `bun run typecheck`. The editor opens from the managed project root.
-TypeScript and Bun editor types use `latest` in
-the template, with resolved versions recorded in the project's lockfile.
 Raw TrUAPI scripts can import the adjacent declarations locally, allowing
 multiple scripts to compile together.
 
