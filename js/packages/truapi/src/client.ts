@@ -86,6 +86,8 @@ export interface CreateTransportOptions {
   requestIdPrefix?: string;
   /** Wait for connection readiness before sending a request or starting a subscription. */
   prepare?: (ids: MethodIds) => Promise<void>;
+  /** Replace a failed connection after a malformed frame; otherwise the transport closes permanently. */
+  onProtocolError?: (error: Error) => void;
   /**
    * Maximum time to wait for a matching response before rejecting the request.
    *
@@ -311,26 +313,17 @@ export function createTransport(
     }
 
     for (const request of requests) request.reject(error);
-    const failures: unknown[] = [];
+    // Product callbacks must not stop the provider's remaining close listeners.
     for (const instance of instances) {
       try {
         instance.unsubscribe();
-      } catch (failure) {
-        failures.push(failure);
-      }
+      } catch {}
     }
     for (const subscription of streams) {
       try {
         subscription.onClose?.(error);
-      } catch (failure) {
-        failures.push(failure);
-      }
+      } catch {}
     }
-    if (failures.length)
-      throw new AggregateError(
-        failures,
-        "TrUAPI interruption callbacks failed",
-      );
   }
 
   /** Close permanently; a provider reset only interrupts current operations. */
@@ -339,6 +332,8 @@ export function createTransport(
     closedError = toError(error);
     interruptOperations(closedError);
   }
+
+  const onProtocolError = options.onProtocolError ?? closeWithError;
 
   const unsubscribeClose = provider.subscribeClose?.((error) => {
     closeWithError(error);
@@ -354,7 +349,7 @@ export function createTransport(
 
     const decoded = decodeWireMessage(message);
     if (decoded.isErr()) {
-      closeWithError(decoded.error);
+      onProtocolError(decoded.error);
       return;
     }
     const { requestId, payload } = decoded.value;
@@ -367,7 +362,7 @@ export function createTransport(
       try {
         unsupported = decodeUnsupportedMessage(payload.value);
       } catch (error) {
-        closeWithError(error);
+        onProtocolError(toError(error));
         return;
       }
 

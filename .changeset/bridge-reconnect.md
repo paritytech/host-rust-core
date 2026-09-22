@@ -12,3 +12,5 @@ connection loss.
 Browser permission checks use generated internal SDK calls. Hosts protect their
 shared authorization dependencies before product code runs; public SDK methods
 remain replaceable, but products cannot patch the protected built-in prototypes.
+
+SCALE boolean decoding rejects values other than 0 and 1.

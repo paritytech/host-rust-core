@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createTransport } from "./client.js";
+import { createClient } from "./generated/client.js";
 
 import {
     createIframeProvider,
@@ -115,6 +117,28 @@ describe("createIframeProvider", () => {
 });
 
 describe("createMessagePortProvider", () => {
+    it("notifies later close listeners when a subscription observer throws", () => {
+        const { port1, port2 } = new MessageChannel();
+        const provider = createMessagePortProvider(port1);
+        const client = createClient(createTransport(provider));
+        client.theme.subscribe().subscribe({
+            error() {
+                throw new Error("broken observer");
+            },
+        });
+        const errors: Error[] = [];
+        provider.subscribeClose?.((error) => errors.push(error));
+        try {
+            expect(() => provider.dispose()).not.toThrow();
+            expect(errors.map((error) => error.message)).toEqual([
+                "message port provider disposed",
+            ]);
+        } finally {
+            port1.close();
+            port2.close();
+        }
+    });
+
     it("queues sends, round-trips inbound frames, and errors after dispose", async () => {
         const { port1, port2 } = new MessageChannel();
         const provider = createMessagePortProvider(port1);

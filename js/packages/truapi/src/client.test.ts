@@ -1877,7 +1877,7 @@ describe("recoverable connection resets", () => {
         const errors: unknown[] = [];
         client.theme.subscribe().subscribe({ error: (error) => errors.push(error.cause) });
         const interruption = new Error("connection interrupted");
-        expect(() => fixture.reset(interruption)).toThrow();
+        expect(() => fixture.reset(interruption)).not.toThrow();
         expect(errors).toEqual([interruption]);
         transport.dispose();
     });
