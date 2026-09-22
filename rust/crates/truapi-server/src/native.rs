@@ -6,8 +6,10 @@
 //! [`truapi_platform::Platform`] trait to a corresponding callback. The
 //! resulting platform is fed into [`SigningHostRuntime`] so the rest of the
 //! dispatcher pipeline behaves identically to the WS-bridge and wasm flavors.
-//! A native host therefore owns the signer: there is no pairing flow here, and
-//! the pairing-host-only entry points are inert.
+//! A native host therefore owns the signer, so it never pairs itself with a
+//! wallet and the pairing-host entry points are inert. It does answer other
+//! devices pairing with it: the signing host's responder side is exposed here,
+//! from the handshake answer through serving and ending the session.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +31,6 @@ use truapi_platform::{
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
-use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
 use crate::host_logic::permissions::TemporaryPermissions;
@@ -41,10 +42,14 @@ use crate::host_logic::worker::WorkerTransition;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeRendererObserver, NativeRendererSubscription};
+use crate::runtime::AnnouncedPairing;
 use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, SharedWsBridge, WsBridgeEndpoint, WsBridgeStartError};
+use crate::{
+    DevicePairingObserver, PairedSsoPeer, PairingProposal, ResponderExit, SigningHostRuntime,
+};
 
 /// Host-thrown storage failure wrapping the canonical error payload, so its
 /// variants remain defined once in `truapi`.
@@ -426,6 +431,39 @@ pub fn localhost_bridge_bootstrap_script(port: u16, token: String) -> String {
     crate::bootstrap::script(&format!("ws://127.0.0.1:{port}/?t={token}"))
 }
 
+/// Read what a pairing deeplink offers: the peer it advertises, and how that
+/// peer describes itself.
+///
+/// A host needs the peer's `statement_account_id` before it answers: the
+/// peer's device statement account has to be a tracked renewal target by the
+/// time the session opens, or the peer has no allowance to author its own
+/// session statements under. It is also what a failed pairing untracks again,
+/// unless the device was already paired. Neither the notice, the answer, nor
+/// [`HostCallbacks::device_paired`] yields it in time for that, so the host
+/// reads it here first.
+///
+/// The core prompts for nothing here, so the pairing prompt is the host's, and
+/// [`crate::PairingProposalMetadata`] is what it names the peer by. It arrives
+/// sanitized for rendering but unverified: nothing signs it, so it says what
+/// the peer calls itself and not who it is.
+///
+/// Pure and stateless, and the same decoder the responder itself runs, so a
+/// deeplink this rejects is one no pairing call would have accepted either.
+#[uniffi::export]
+pub fn parse_pairing_deeplink(deeplink: String) -> Result<PairingProposal, NativePairingError> {
+    PairingProposal::from_deeplink(&deeplink)
+        .map_err(|reason| NativePairingError::UndecodableDeeplink { reason })
+}
+
+/// Refuse a deeplink the core's decoder would refuse anyway, so the caller
+/// hears [`NativePairingError::UndecodableDeeplink`] rather than the
+/// [`NativePairingError::Rejected`] every later failure shares.
+fn reject_undecodable_deeplink(deeplink: &str) -> Result<(), NativePairingError> {
+    PairingProposal::from_deeplink(deeplink)
+        .map(|_| ())
+        .map_err(|reason| NativePairingError::UndecodableDeeplink { reason })
+}
+
 /// Whether `product_id` is a first-party product the host grants every
 /// [`truapi::latest::RemotePermission`] without prompting.
 ///
@@ -652,6 +690,19 @@ pub trait HostCallbacks: Send + Sync {
     /// on another thread from inside it.
     fn worker_demand_changed(&self, product_id: String, transition: WorkerTransition);
 
+    /// A device finished pairing with this signing host.
+    ///
+    /// The core has no chat of its own, so announcing the new device to the
+    /// user's existing contacts is the host's to do. At least once per
+    /// pairing, and the host keeps its own record of which devices it has
+    /// already seen: a resumed pairing reports nothing and the core has no
+    /// list to replay.
+    ///
+    /// Arrives on the thread answering the handshake, while the pairing call
+    /// is still running: hand the device off rather than announcing it
+    /// inline.
+    fn device_paired(&self, device: PairedSsoPeer);
+
     /// Read a value from the host's scoped key-value store.
     fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
     /// Write a value to the host's scoped key-value store.
@@ -777,8 +828,14 @@ impl NativeTrUApiHostRuntime {
             spawner.clone(),
         ));
         assert!(
-            runtime.worker_ledger().install_demand_observer(platform),
+            runtime
+                .worker_ledger()
+                .install_demand_observer(platform.clone()),
             "a freshly built runtime installs its worker demand observer once"
+        );
+        assert!(
+            runtime.set_device_pairing_observer(platform),
+            "a freshly built runtime installs its device pairing observer once"
         );
         if let Some(secret) = runtime_config.local_session_secret {
             futures::executor::block_on(runtime.activate_local_session_with_identity(
@@ -893,6 +950,58 @@ pub enum NativeStatementRenewalTarget {
         /// Human-readable name used in logs and reports.
         label: String,
     },
+}
+
+/// A refused pairing call on the signing host's responder side.
+///
+/// The two variants differ in what the host still owes the peer, which is why
+/// they are told apart here rather than by reading `reason`.
+#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+pub enum NativePairingError {
+    /// The deeplink carries no pairing proposal.
+    ///
+    /// Purely local: nothing was announced, no renewal target was tracked and
+    /// no peer is waiting, so there is nothing to undo and nobody to notify.
+    #[error("{reason}")]
+    UndecodableDeeplink {
+        /// Human-readable rejection reason.
+        reason: String,
+    },
+    /// The core refused a call it had already decoded the peer for.
+    ///
+    /// A peer that was announced is still waiting on a
+    /// [`NativeTrUApiHostRuntime::notify_pairing_failed`], and a renewal
+    /// target tracked for it is still tracked.
+    #[error("{reason}")]
+    Rejected {
+        /// Human-readable rejection reason.
+        reason: String,
+    },
+}
+
+impl From<v01::GenericError> for NativePairingError {
+    fn from(error: v01::GenericError) -> Self {
+        Self::Rejected {
+            reason: error.reason,
+        }
+    }
+}
+
+/// Handle to a pairing this host has told the peer it is working on, taken
+/// back by [`NativeTrUApiHostRuntime::notify_pairing_failed`].
+///
+/// Opaque on purpose. The value carries the responder statement secret the
+/// first notice was signed with, so that the second is signed by the same
+/// account even if this host's signer rotates in between. Exposing it as a
+/// record would put that secret on the FFI surface for no caller that needs
+/// to read it.
+///
+/// Nothing consumes the handle, so it holds that secret for as long as the
+/// host keeps a reference: release it once the pairing settles, on the
+/// succeeding path as well as the failing one.
+#[derive(uniffi::Object)]
+pub struct NativeAnnouncedPairing {
+    inner: AnnouncedPairing,
 }
 
 /// A refused renewal-ledger call: tracking, untracking or reading it back.
@@ -1032,6 +1141,108 @@ impl NativeTrUApiHostRuntime {
     /// releasing with none held is a no-op.
     pub fn release_worker(&self, product_id: String) {
         self.runtime.worker_ledger().release(&product_id);
+    }
+
+    /// Tell the pairing host behind `deeplink` that allowance allocation is
+    /// under way, so it leaves its QR screen while the allocation runs.
+    ///
+    /// Answering at all needs this host's own statement-store allowance, so
+    /// register the `WalletSso` renewal target first. The peer's own device
+    /// statement account is the other target, read with
+    /// [`parse_pairing_deeplink`] and tracked before
+    /// [`Self::establish_pairing`] runs; the allocation this notice covers is
+    /// what that call waits on. The returned handle is owed a
+    /// [`Self::notify_pairing_failed`] if the pairing then fails: the peer has
+    /// dropped its QR and waits without a deadline of its own. No handle comes
+    /// back on [`NativePairingError::UndecodableDeeplink`], which is refused
+    /// before anything reaches the peer.
+    pub async fn notify_pairing_allowance_allocation(
+        &self,
+        deeplink: String,
+    ) -> Result<Arc<NativeAnnouncedPairing>, NativePairingError> {
+        reject_undecodable_deeplink(&deeplink)?;
+        self.runtime
+            .notify_pairing_allowance_allocation(&deeplink)
+            .await
+            .map(|inner| Arc::new(NativeAnnouncedPairing { inner }))
+            .map_err(NativePairingError::from)
+    }
+
+    /// Tell a pairing host that already dropped its QR why pairing stopped.
+    ///
+    /// Takes the handle from [`Self::notify_pairing_allowance_allocation`], so
+    /// the notice is signed by the account that already reached that peer even
+    /// if this host's signer has rotated since.
+    pub async fn notify_pairing_failed(
+        &self,
+        announced: Arc<NativeAnnouncedPairing>,
+        reason: String,
+    ) -> Result<(), NativePairingError> {
+        self.runtime
+            .notify_pairing_failed(&announced.inner, reason)
+            .await
+            .map_err(NativePairingError::from)
+    }
+
+    /// Answer a pairing host's handshake deeplink, without serving the session
+    /// it opens.
+    ///
+    /// The answer is signed by this host's own SSO statement identity, so the
+    /// `WalletSso` renewal target has to be allocated for it to reach the
+    /// Statement Store at all. The peer's device statement account is the
+    /// other tracked target, since this host allocates the allowance the peer
+    /// authors its own session statements under; read it from the deeplink
+    /// with [`parse_pairing_deeplink`]. A pairing that fails after that leaves
+    /// the peer's target to untrack again, unless the device was already
+    /// paired and the target still carries a live pairing. That is what
+    /// [`NativePairingError::Rejected`] means here;
+    /// [`NativePairingError::UndecodableDeeplink`] never reached the peer and
+    /// leaves nothing tracked.
+    ///
+    /// A device that pairs here is reported to
+    /// [`HostCallbacks::device_paired`]. Serving the session is
+    /// [`Self::resume_pairing`], which the host calls with the peer it
+    /// persisted.
+    pub async fn establish_pairing(&self, deeplink: String) -> Result<(), NativePairingError> {
+        reject_undecodable_deeplink(&deeplink)?;
+        self.runtime
+            .establish_pairing(&deeplink)
+            .await
+            .map_err(NativePairingError::from)
+    }
+
+    /// Serve a paired host's SSO session until it ends.
+    ///
+    /// Runs for the life of the session, so call it off the host's main
+    /// thread. Only [`ResponderExit::PeerDisconnected`] authorizes dropping
+    /// the stored pairing; after [`ResponderExit::SubscriptionEnded`] or an
+    /// error the peer is still paired and the call can be made again.
+    pub async fn resume_pairing(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<ResponderExit, NativePairingError> {
+        self.runtime
+            .resume_pairing(peer)
+            .await
+            .map_err(NativePairingError::from)
+    }
+
+    /// Tell a paired host this signing host is ending their SSO session.
+    ///
+    /// Submits the disconnect notice and nothing else. The local side is the
+    /// caller's: cancel that peer's [`Self::resume_pairing`] task, which
+    /// otherwise keeps answering a host this one no longer considers paired,
+    /// and untrack its device statement account, which otherwise keeps being
+    /// renewed every period. Dropping the stored pairing alone leaves both
+    /// running.
+    pub async fn disconnect_paired_host(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<(), NativePairingError> {
+        self.runtime
+            .disconnect_paired_host(peer)
+            .await
+            .map_err(NativePairingError::from)
     }
 
     /// Core-owned logout for the process-wide authentication session.
@@ -1620,6 +1831,12 @@ impl crate::host_logic::worker::WorkerDemandObserver for CallbackPlatform {
     fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
         self.callbacks
             .worker_demand_changed(product_id.to_string(), transition);
+    }
+}
+
+impl DevicePairingObserver for CallbackPlatform {
+    fn device_paired(&self, device: PairedSsoPeer) {
+        self.callbacks.device_paired(device);
     }
 }
 
@@ -2710,6 +2927,8 @@ mod tests {
         chain_closes: Mutex<Vec<u32>>,
         /// Worker demand transitions, in arrival order.
         worker_demand: Mutex<Vec<(String, WorkerTransition)>>,
+        /// Devices reported as paired, in arrival order.
+        paired_devices: Mutex<Vec<PairedSsoPeer>>,
         /// Capability this host reports as refused by the OS, if any.
         os_refused: Option<v01::HostDevicePermissionRequest>,
         /// Configurable prompt outcome for grant, denial, and callback failure tests.
@@ -2764,6 +2983,7 @@ mod tests {
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
                 worker_demand: Mutex::new(Vec::new()),
+                paired_devices: Mutex::new(Vec::new()),
                 os_refused: None,
                 remote_permission_result: Ok(NativePermissionDecision::Deny),
                 remote_permission_reply: Mutex::new(None),
@@ -2784,6 +3004,13 @@ mod tests {
                 .lock()
                 .expect("worker demand mutex poisoned")
                 .push((product_id, transition));
+        }
+
+        fn device_paired(&self, device: PairedSsoPeer) {
+            self.paired_devices
+                .lock()
+                .expect("paired device mutex poisoned")
+                .push(device);
         }
         async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
             Ok(())
@@ -3205,6 +3432,229 @@ mod tests {
             native_execution_config(product_id, ProductExecutionKind::App),
         )
         .expect("product execution config should be valid")
+    }
+
+    /// A deeplink that is not hex at all, and one that is hex but not a
+    /// proposal. The two render differently, so asserting on either alone
+    /// passes for a decoder that never saw the second kind.
+    const UNDECODABLE_DEEPLINKS: [(&str, &str); 2] = [
+        ("not-a-deeplink", "invalid pairing deeplink hex"),
+        (
+            "polkadotapp://pair?handshake=ff",
+            "invalid pairing handshake proposal",
+        ),
+    ];
+
+    /// Reads the reason out of either refusal, so a test names the failure it
+    /// expected rather than the enum shape.
+    fn pairing_rejection(failure: NativePairingError) -> String {
+        match failure {
+            NativePairingError::UndecodableDeeplink { reason }
+            | NativePairingError::Rejected { reason } => reason,
+        }
+    }
+
+    /// Build a deeplink carrying `peer` and `metadata`, the way a pairing host
+    /// puts its QR together.
+    fn proposal_deeplink(
+        peer: PairedSsoPeer,
+        metadata: Vec<crate::host_logic::sso::pairing::v2::MetadataEntry>,
+    ) -> String {
+        let proposal = crate::host_logic::sso::pairing::VersionedHandshakeProposal::V2(
+            crate::host_logic::sso::pairing::v2::Proposal {
+                device: crate::host_logic::sso::pairing::v2::Device {
+                    statement_account_id: peer.statement_account_id,
+                    encryption_public_key: peer.encryption_public_key,
+                },
+                metadata,
+            },
+        );
+        format!(
+            "polkadotapp://pair?handshake={}",
+            hex::encode(parity_scale_codec::Encode::encode(&proposal))
+        )
+    }
+
+    /// The peer a host must register a renewal target for before it answers,
+    /// and the name it prompts with. Without this entry point that account is
+    /// unreachable from a native host, the answer goes out with no allowance
+    /// behind it, and the prompt can only name the peer by its raw key.
+    #[test]
+    fn a_pairing_deeplink_yields_the_proposal_it_carries() {
+        use crate::PairingProposalMetadata;
+        use crate::host_logic::sso::pairing::v2::{MetadataEntry, MetadataKey};
+
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: [0x42; 32],
+        };
+        let deeplink = proposal_deeplink(
+            peer,
+            vec![
+                MetadataEntry(MetadataKey::HostName, "Polkadot Desktop Host".to_string()),
+                MetadataEntry(MetadataKey::PlatformType, "macOS".to_string()),
+                MetadataEntry(MetadataKey::Custom("seat".to_string()), "3".to_string()),
+            ],
+        );
+
+        assert_eq!(
+            parse_pairing_deeplink(deeplink).expect("a well-formed deeplink decodes"),
+            PairingProposal {
+                peer,
+                metadata: PairingProposalMetadata {
+                    host_name: Some("Polkadot Desktop Host".to_string()),
+                    platform_type: Some("macOS".to_string()),
+                    ..PairingProposalMetadata::default()
+                },
+            }
+        );
+
+        for (deeplink, expected) in UNDECODABLE_DEEPLINKS {
+            let reason = pairing_rejection(
+                parse_pairing_deeplink(deeplink.to_string())
+                    .expect_err("an undecodable deeplink carries no peer"),
+            );
+            assert!(
+                reason.contains(expected),
+                "{deeplink} did not reach the core's decoder: {reason}"
+            );
+        }
+    }
+
+    /// Both deeplink entry points have to reach the core's own decoder. One
+    /// wired to nothing would answer the same way for every input.
+    ///
+    /// The variant is what a host branches on: an undecodable deeplink
+    /// announced nothing and tracked nothing, so reading it as an ordinary
+    /// refusal would have the host untrack a target it never tracked and
+    /// notify a peer that never heard from it.
+    #[test]
+    fn the_deeplink_entry_points_reject_what_they_cannot_decode() {
+        let host = native_host_runtime_no_session();
+
+        for (deeplink, expected) in UNDECODABLE_DEEPLINKS {
+            let answered =
+                futures::executor::block_on(host.establish_pairing(deeplink.to_string()))
+                    .expect_err("an undecodable deeplink cannot be answered");
+            let announced = futures::executor::block_on(
+                host.notify_pairing_allowance_allocation(deeplink.to_string()),
+            )
+            .err()
+            .expect("an undecodable deeplink cannot be announced");
+
+            for failure in [answered, announced] {
+                assert!(
+                    matches!(failure, NativePairingError::UndecodableDeeplink { .. }),
+                    "{deeplink} was not reported as undecodable: {failure:?}"
+                );
+                let reason = pairing_rejection(failure);
+                assert!(
+                    reason.contains(expected),
+                    "{deeplink} did not reach the core's decoder: {reason}"
+                );
+            }
+        }
+    }
+
+    /// A deeplink that decodes and then fails is the opposite case: the peer
+    /// may have been reached and its renewal target tracked, so the host owes
+    /// both an undo. Sharing one variant with the undecodable case would leave
+    /// that difference readable only by matching on the reason string.
+    #[test]
+    fn a_decodable_deeplink_that_fails_is_not_reported_as_undecodable() {
+        let host = native_host_runtime_no_session();
+        let deeplink = proposal_deeplink(
+            PairedSsoPeer {
+                statement_account_id: [0x31; 32],
+                encryption_public_key: [0x42; 32],
+            },
+            Vec::new(),
+        );
+
+        let answered = futures::executor::block_on(host.establish_pairing(deeplink.clone()))
+            .expect_err("no session means no handshake to answer");
+        let announced =
+            futures::executor::block_on(host.notify_pairing_allowance_allocation(deeplink))
+                .err()
+                .expect("no session means no notice to sign");
+
+        for failure in [answered, announced] {
+            assert!(
+                matches!(failure, NativePairingError::Rejected { .. }),
+                "a decodable deeplink was reported as undecodable: {failure:?}"
+            );
+            let reason = pairing_rejection(failure);
+            assert!(
+                reason.contains("no active local session"),
+                "the core's session check did not reach the host: {reason}"
+            );
+        }
+    }
+
+    /// The two peer entry points have to reach the core's signing host. One
+    /// wired to nothing would answer without a session to answer from.
+    #[test]
+    fn the_peer_entry_points_need_the_core_signing_host() {
+        let host = native_host_runtime_no_session();
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: [0x42; 32],
+        };
+
+        for failure in [
+            pairing_rejection(
+                futures::executor::block_on(host.resume_pairing(peer))
+                    .expect_err("no session means no pairing to serve"),
+            ),
+            pairing_rejection(
+                futures::executor::block_on(host.disconnect_paired_host(peer))
+                    .expect_err("no session means no disconnect to sign"),
+            ),
+        ] {
+            assert!(
+                failure.contains("no active local session"),
+                "the core's session check did not reach the host: {failure}"
+            );
+        }
+    }
+
+    /// Without this a paired device stops at the core and the host never hears
+    /// of it, so no contact is told a new device joined.
+    #[test]
+    fn a_paired_device_reaches_the_host_callbacks() {
+        let (callbacks, _events, platform) = event_platform();
+        let device = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: [0x42; 32],
+        };
+
+        crate::DevicePairingObserver::device_paired(&platform, device);
+
+        assert_eq!(
+            *callbacks
+                .paired_devices
+                .lock()
+                .expect("paired device mutex poisoned"),
+            vec![device]
+        );
+    }
+
+    /// The runtime installs its own observer, so a host cannot be left with a
+    /// pairing nobody forwards.
+    #[test]
+    fn the_native_runtime_installs_the_pairing_observer() {
+        struct Inert;
+        impl crate::DevicePairingObserver for Inert {
+            fn device_paired(&self, _device: PairedSsoPeer) {}
+        }
+
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+
+        assert!(!host.runtime.set_device_pairing_observer(Arc::new(Inert)));
     }
 
     #[test]
@@ -4359,6 +4809,7 @@ mod tests {
 
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
+            fn device_paired(&self, _device: PairedSsoPeer) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
@@ -4526,6 +4977,7 @@ mod tests {
 
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
+            fn device_paired(&self, _device: PairedSsoPeer) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
