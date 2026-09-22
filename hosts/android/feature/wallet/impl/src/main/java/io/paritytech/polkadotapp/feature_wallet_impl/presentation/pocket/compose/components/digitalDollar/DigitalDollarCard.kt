@@ -22,6 +22,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
 import io.paritytech.polkadotapp.common.presentation.loading.dataOrNull
 import io.paritytech.polkadotapp.common.utils.CurrencyConfig
@@ -143,7 +144,8 @@ fun DigitalDollarCard(
                     HorizontalSpacer { extraSmall }
 
                     NovaText(
-                        text = stringResource(RCommon.string.pocket_digital_dollar_card_title, CurrencyConfig.symbol),
+                        text = stringResource(RCommon.string.pocket_digital_dollar_card_title, CurrencyConfig.symbol)
+                            .withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
                         style = PolkadotTheme.typography.title.large,
                         color = PocketCardColors.Primary
                     )
@@ -225,7 +227,7 @@ fun ReadyBalance(amount: TokenAmountModel) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         NovaText(
-            text = LocalTokenAmountFormatter.current.formatFiat(amount),
+            text = LocalTokenAmountFormatter.current.formatFiat(amount).withCurrencyTickerStyle(PolkadotTheme.typography.body.medium),
             style = PolkadotTheme.typography.body.medium,
             color = PocketCardColors.Primary
         )

@@ -12,6 +12,7 @@ on:
 env:
   APPLICATION_ID: ${{ vars.APPLICATION_ID }}
   APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+  CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
   CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
   GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
   LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
@@ -41,7 +42,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Calculate build number
         run: |
@@ -71,7 +72,7 @@ jobs:
 
       - name: Collect merged PRs — markdown
         id: collect_prs
-        uses: novasamatech/github-actions/collect-prs@v5
+        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           github_token: ${{ github.token }}
           dst_ref: main
@@ -81,7 +82,7 @@ jobs:
       - name: Collect merged PRs — plain text
         id: collect_prs_plain
         if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/collect-prs@v5
+        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           github_token: ${{ github.token }}
           dst_ref: main
@@ -97,7 +98,10 @@ jobs:
           keystore_path: develop_key.jks
 
       - name: Build nightly APK
-        if: steps.collect_prs.outputs.should_build == 'true'
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
         env:
           CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
@@ -110,7 +114,10 @@ jobs:
         run: ./gradlew assembleGpNightly --no-daemon --stacktrace
 
       - name: Build vanilla nightly APK
-        if: steps.collect_prs.outputs.should_build == 'true'
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
         env:
           CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
@@ -136,7 +143,10 @@ jobs:
         run: ./gradlew assembleGpSafetynet --no-daemon --stacktrace
 
       - name: Build debug APK
-        if: steps.collect_prs.outputs.should_build == 'true'
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
         env:
           CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
@@ -166,7 +176,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload nightly build to Firebase
-        if: steps.collect_prs.outputs.should_build == 'true'
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
         uses: ./.github/actions/upload-to-firebase
         with:
           appId: ${{ secrets.ANDROID_FIREBASE_NIGHTLY_APP_ID }}
@@ -176,7 +189,10 @@ jobs:
           upload-file: app/build/outputs/apk/gp/nightly/app-gp-nightly.apk
 
       - name: Upload vanilla nightly build to Firebase
-        if: steps.collect_prs.outputs.should_build == 'true'
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
         uses: ./.github/actions/upload-to-firebase
         with:
           appId: ${{ secrets.ANDROID_FIREBASE_NIGHTLY_APP_ID }}
@@ -196,8 +212,11 @@ jobs:
           upload-file: app/build/outputs/apk/gp/safetynet/app-gp-safetynet.apk
 
       - name: Upload to S3
-        if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/s3-upload@v5
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -207,8 +226,11 @@ jobs:
           destination_path: /android/nightly/polkadot-app-${{ env.APP_VERSION_NAME }}-${{ env.APP_VERSION_CODE }}.apk
 
       - name: Upload to S3 (static path)
-        if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/s3-upload@v5
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -218,8 +240,11 @@ jobs:
           destination_path: /android/nightly/polkadot-app.apk
 
       - name: Upload vanilla to S3
-        if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/s3-upload@v5
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -229,8 +254,11 @@ jobs:
           destination_path: /android/nightly/polkadot-app-vanilla-${{ env.APP_VERSION_NAME }}-${{ env.APP_VERSION_CODE }}.apk
 
       - name: Upload vanilla to S3 (static path)
-        if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/s3-upload@v5
+        # Held: this configuration ships from host-rust-core.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: fr-par
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -240,8 +268,12 @@ jobs:
           destination_path: /android/nightly/polkadot-app-vanilla.apk
 
       - name: Trigger Allure TestOps tests
-        if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/trigger-allure-testops@v5
+        # Held: it reports on the nightly build, which is no longer
+        # produced here, so it would describe a frozen artifact.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
+        uses: novasamatech/github-actions/trigger-allure-testops@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           testplan_id: '733'
           launch_name: 'Android Tests - Nightly ${{ env.RELEASE_DATE }}'
@@ -255,11 +287,9 @@ jobs:
         run: |
           TAG="v${{ env.APP_VERSION_NAME }}-${{ env.APP_VERSION_CODE }}"
           RELEASE_NAME="Nightly ${{ env.RELEASE_DATE }}"
-          APK_PATH="app/build/outputs/apk/gp/nightly/app-gp-nightly.apk"
-          PREVIEW_APK_PATH="app/build/outputs/apk/gp/debug/app-preview.apk"
-          VANILLA_APK_PATH="app/build/outputs/apk/vanilla/nightly/app-vanilla-nightly.apk"
+          # Safetynet only. The nightly, vanilla and preview builds are held
+          # above, so attaching them would fail on a file that was never built.
           SAFETYNET_APK_PATH="app/build/outputs/apk/gp/safetynet/app-gp-safetynet.apk"
-          mv app/build/outputs/apk/gp/debug/app-gp-debug.apk "$PREVIEW_APK_PATH"
           RELEASE_NOTES="Nightly ${RELEASE_DATE} (version ${APP_VERSION_NAME} code ${APP_VERSION_CODE})
 
           Merged pull requests:
@@ -277,14 +307,15 @@ jobs:
             --title "$RELEASE_NAME" \
             --notes "$RELEASE_NOTES" \
             --target "${{ github.sha }}" \
-            "$APK_PATH" \
-            "$PREVIEW_APK_PATH" \
-            "$VANILLA_APK_PATH" \
             "$SAFETYNET_APK_PATH"
 
       - name: Send release notification
-        if: steps.collect_prs.outputs.should_build == 'true'
-        uses: novasamatech/github-actions/send-release-notification@v5
+        # Held: it reports on the nightly build, which is no longer
+        # produced here, so it would describe a frozen artifact.
+        # The condition this replaces:
+        #   if: steps.collect_prs.outputs.should_build == 'true'
+        if: false
+        uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           platform: Android
           pr_list: ${{ steps.collect_prs.outputs.release_notes }}

@@ -1,33 +1,24 @@
 package io.paritytech.polkadotapp.feature_transactions_impl.domain.durable
 
-import io.novasama.substrate_sdk_android.extensions.toHexString
-import io.novasama.substrate_sdk_android.runtime.definitions.types.generics.DefaultSignedExtensions
-import io.novasama.substrate_sdk_android.runtime.definitions.types.generics.Era
-import io.novasama.substrate_sdk_android.runtime.definitions.types.generics.findExplicitOrNull
-import io.novasama.substrate_sdk_android.runtime.extrinsic.signer.SendableExtrinsic
-import io.paritytech.polkadotapp.chains.util.extrinsicHash
-import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableExtrinsic
-import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.CheckpointBlock
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableSubmission
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTransactionService
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxId
-import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxRegistrationError
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxState
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.OperationGroupId
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.RegistrationScope
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.SubmissionPolicy
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TxDomainId
 import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxRegistration
 import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxRepository
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxSchedule
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Orchestrates registration, submission tracking and the recovery pass, and exposes the queries.
+ * Orchestrates registration, submission, asynchronous building and the recovery pass, and exposes the queries.
  *
  * It holds no durable state of its own: everything it knows lives in the ledger and everything volatile
  * lives in the collaborators, so process death loses exactly the volatile half — which is what makes
@@ -36,21 +27,18 @@ import javax.inject.Singleton
 @Singleton
 class RealDurableTransactionService @Inject constructor(
     private val repository: DurableTxRepository,
-    private val submissionTracker: DurableSubmissionTracker,
     private val submissionOwned: SubmissionOwnedTransactions,
-    private val recoveryLoop: DurableRecoveryLoop,
+    private val launcher: DurableSubmissionLauncher,
+    private val executor: DurableSubmissionExecutor,
     private val recoveryScheduler: DurableRecoveryScheduler,
-    dispatchers: CoroutineDispatchers,
 ) : DurableTransactionService {
-    private val scope = CoroutineScope(SupervisorJob() + dispatchers.computation)
-
     override suspend fun submit(
         domain: TxDomainId,
         extrinsic: EnrichedSendableExtrinsic,
         groupId: OperationGroupId?,
         onRegister: suspend RegistrationScope.(DurableTxId) -> Unit,
     ): Result<DurableTxId> {
-        val registration = runCatching { extrinsic.toRegistration(domain, groupId) }
+        val registration = runCatching { extrinsic.toRegistration(domain, groupId, policy = null) }
             .getOrElse { return Result.failure(it) }
 
         // Registration commits before submission, so there is never an extrinsic in flight without a record
@@ -60,47 +48,58 @@ class RealDurableTransactionService @Inject constructor(
             onRegister(id)
             // Taken inside the same transaction, so a committed row always has an owner and a pass can
             // never reach it before the watcher does.
-            submissionOwned.acquire(id)
+            submissionOwned.acquire(id, registration.attempt.txHash)
         }.onSuccess { id ->
-            durabilityLogI(
-                "entry-registered ${durabilityLogId(domain, id, registration.txHash, groupId)} " +
-                    "checkpoint=${registration.checkpoint.blockNumber} mortality=${registration.mortalityBlocks} " +
-                    "window=${registration.checkpoint.blockNumber}.." +
-                    "${registration.checkpoint.blockNumber + registration.mortalityBlocks}"
-            )
-            submissionTracker.watch(scope, id, extrinsic) { onSubmissionReleased() }
+            logRegistered(domain, id, registration)
+            launcher.watch(id, extrinsic)
         }.onFailure { durabilityLogW("submit failed domain=${domain.value} error=$it") }
     }
 
     override suspend fun submitAll(
         domain: TxDomainId,
-        extrinsics: List<EnrichedSendableExtrinsic>,
+        submissions: List<DurableSubmission>,
         groupId: OperationGroupId,
         onRegister: suspend RegistrationScope.(List<DurableTxId>) -> Unit,
     ): Result<List<DurableTxId>> {
-        val registrations = runCatching { extrinsics.map { it.toRegistration(domain, groupId) } }
-            .getOrElse { return Result.failure(it) }
+        val registrations = runCatching {
+            submissions.map { it.extrinsic.toRegistration(domain, groupId, it.policy) }
+        }.getOrElse { return Result.failure(it) }
 
         return repository.registerAll(registrations) { ids ->
             onRegister(ids)
-            ids.forEach { submissionOwned.acquire(it) }
+            ids.zip(registrations).forEach { (id, registration) -> submissionOwned.acquire(id, registration.attempt.txHash) }
         }.onSuccess { ids ->
-            ids.zip(registrations).forEach { (id, registration) ->
-                durabilityLogI(
-                    "entry-registered ${durabilityLogId(domain, id, registration.txHash, groupId)} " +
-                        "checkpoint=${registration.checkpoint.blockNumber} " +
-                        "mortality=${registration.mortalityBlocks}"
-                )
-            }
-            ids.zip(extrinsics).forEach { (id, extrinsic) ->
-                submissionTracker.watch(scope, id, extrinsic) { onSubmissionReleased() }
-            }
+            ids.zip(registrations).forEach { (id, registration) -> logRegistered(domain, id, registration) }
+            ids.zip(submissions).forEach { (id, submission) -> launcher.watch(id, submission.extrinsic) }
         }.onFailure { durabilityLogW("submitAll failed domain=${domain.value} group=${groupId.value} error=$it") }
+    }
+
+    override suspend fun schedule(
+        domain: TxDomainId,
+        groupId: OperationGroupId,
+        policies: List<SubmissionPolicy>,
+        onRegister: suspend RegistrationScope.(List<DurableTxId>) -> Unit,
+    ): Result<List<DurableTxId>> {
+        val schedules = policies.map { DurableTxSchedule(domain, groupId, it) }
+
+        return repository.schedule(schedules, onRegister)
+            .onSuccess { ids ->
+                durabilityLogI(
+                    "entries-scheduled domain=${domain.value} group=${groupId.value} " +
+                        "entries=${ids.map { it.value }} policies=${policies.map { it.id.value }.distinct()}"
+                )
+
+                // Nothing is built until the executor reads these rows, so this is safe while an enclosing
+                // transaction has not committed them yet.
+                startRecovery()
+            }
+            .onFailure { durabilityLogW("schedule failed domain=${domain.value} group=${groupId.value} error=$it") }
     }
 
     override fun startRecovery() {
         durabilityLogD("start-recovery")
 
+        executor.ensureStarted()
         recoveryScheduler.ensureRunning()
     }
 
@@ -119,40 +118,31 @@ class RealDurableTransactionService @Inject constructor(
         groupId: OperationGroupId,
     ): Flow<List<DurableTxState>> = repository.subscribeGroupStates(domain, groupId)
 
-    private fun onSubmissionReleased() {
-        // Save a block of latency if a loop is already running, and schedule the worker in case none is.
-        recoveryLoop.manualTrigger()
-        startRecovery()
-    }
-
-    /** Cancels every watcher and pass this instance owns. */
+    /** Cancels every watch, build and pass this instance owns. */
     fun close() {
-        scope.cancel()
+        launcher.close()
+        executor.close()
     }
 
-    /**
-     * The window is the extrinsic's own: its `CheckMortality` era is what the runtime will actually
-     * enforce, so anchoring to anything else would search a range the extrinsic could not have landed in.
-     * The anchor is read off the request rather than re-derived — re-deriving it from a head read at
-     * registration time can name a different block once the head has crossed a period boundary.
-     */
+    private fun logRegistered(domain: TxDomainId, id: DurableTxId, registration: DurableTxRegistration) {
+        val attempt = registration.attempt
+
+        durabilityLogI(
+            "entry-registered ${durabilityLogId(domain, id, attempt.txHash, registration.groupId)} " +
+                "checkpoint=${attempt.checkpoint.blockNumber} mortality=${attempt.mortalityBlocks} " +
+                "window=${attempt.checkpoint.blockNumber}..${attempt.checkpoint.blockNumber + attempt.mortalityBlocks} " +
+                "policy=${registration.policy?.id?.value}"
+        )
+    }
+
     private fun EnrichedSendableExtrinsic.toRegistration(
         domain: TxDomainId,
         groupId: OperationGroupId?,
-    ): DurableTxRegistration {
-        val era = mortalEra() ?: throw DurableTxRegistrationError.NotMortal
-        val anchor = mortality.eraBlockNumber ?: throw DurableTxRegistrationError.MissingEraAnchor
-
-        return DurableTxRegistration(
-            domainId = domain,
-            groupId = groupId,
-            txHash = extrinsicHex.extrinsicHash(),
-            checkpoint = CheckpointBlock(anchor, mortality.blockHash.value.toHexString(withPrefix = true)),
-            mortalityBlocks = era.period.toLong(),
-        )
-    }
+        policy: SubmissionPolicy?,
+    ) = DurableTxRegistration(
+        domainId = domain,
+        groupId = groupId,
+        attempt = toAttempt(),
+        policy = policy,
+    )
 }
-
-/** The runtime enforces this era, so it is the only window a transaction may be recovered against. */
-private fun SendableExtrinsic.mortalEra(): Era.Mortal? =
-    extrinsic.findExplicitOrNull(DefaultSignedExtensions.CHECK_MORTALITY) as? Era.Mortal

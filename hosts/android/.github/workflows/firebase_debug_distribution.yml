@@ -11,6 +11,7 @@ on:
 env:
   APPLICATION_ID: ${{ vars.APPLICATION_ID }}
   APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+  CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
   CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
   GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
   LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
@@ -33,7 +34,10 @@ jobs:
     # unmerged PRs stop here, and so do release-* PRs: those are built and
     # distributed by firebase_release_distribution.yml while the PR is open, so
     # merging one must not also ship a debug build.
-    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true && !startsWith(github.event.pull_request.head.ref, 'release-')) || github.event_name == 'workflow_dispatch'
+    # Held: this configuration ships from host-rust-core.
+    # The condition this replaces:
+    #   if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true && !startsWith(github.event.pull_request.head.ref, 'release-')) || github.event_name == 'workflow_dispatch'
+    if: false
     outputs:
       branch: ${{ steps.target.outputs.branch }}
       firebase_group: ${{ steps.target.outputs.firebase_group }}
@@ -105,7 +109,7 @@ jobs:
       marketing_version: ${{ steps.read_version.outputs.marketing_version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install dependencies
         uses: ./.github/actions/install/
@@ -155,7 +159,7 @@ jobs:
         run: ./gradlew assembleGpDebug --no-daemon --stacktrace
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: apk
           path: app/build/outputs/apk/gp/debug
@@ -166,10 +170,10 @@ jobs:
     needs: [resolve, build]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download built artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: apk
           path: app
@@ -196,16 +200,16 @@ jobs:
       S3_REGION: fr-par
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download built artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: apk
           path: apk
 
       - name: Upload to S3
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: ${{ env.S3_REGION }}
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -215,7 +219,7 @@ jobs:
           destination_path: /android/debug/polkadot-app-${{ needs.build.outputs.marketing_version }}-${{ needs.build.outputs.build_number }}.apk
 
       - name: Upload to S3 (static path)
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: ${{ env.S3_REGION }}
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}

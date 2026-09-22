@@ -1,8 +1,5 @@
 package io.paritytech.polkadotapp.chains.storage.source.query.api
 
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.Scale
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.decode
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.encode
 import io.novasama.substrate_sdk_android.runtime.RuntimeSnapshot
 import io.novasama.substrate_sdk_android.runtime.metadata.module.StorageEntry
 import io.novasama.substrate_sdk_android.runtime.metadata.storageKey
@@ -168,30 +165,34 @@ sealed interface Entry2Encoders<I1, I2, T> {
     fun encodeKey1(key1: I1): Any?
 
     class Auto<I1, I2, T>(
-        private val key1Type: KType,
-        private val key2Type: KType,
-        private val valueType: KType
+        key1Type: KType,
+        key2Type: KType,
+        valueType: KType
     ) : Entry2Encoders<I1, I2, T> {
+        private val key1Codec = ScaleTypeCodec<I1>(key1Type)
+        private val key2Codec = ScaleTypeCodec<I2>(key2Type)
+        private val valueCodec = ScaleTypeCodec<T>(valueType)
+
         override fun decodeValue(instance: Any, key1: I1, key2: I2): T {
-            return Scale.decode(valueType, instance)
+            return valueCodec.decode(instance)
         }
 
         override fun decodeKey(instance1: Any?, instance2: Any?): Pair<I1, I2> {
             return Pair(
-                first = Scale.decode(key1Type, instance1),
-                second = Scale.decode(key2Type, instance2),
+                first = key1Codec.decode(instance1),
+                second = key2Codec.decode(instance2),
             )
         }
 
         override fun encodeKeys(key1: I1, key2: I2): List<Any?> {
             return listOf(
-                Scale.encode(key1Type, key1),
-                Scale.encode(key2Type, key2)
+                key1Codec.encode(key1),
+                key2Codec.encode(key2)
             )
         }
 
         override fun encodeKey1(key1: I1): Any? {
-            return Scale.encode(key1Type, key1)
+            return key1Codec.encode(key1)
         }
     }
 

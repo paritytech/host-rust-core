@@ -38,7 +38,21 @@ jobs:
       build_configuration: "Release"
       distribute_to_external_group: false
       external_group_name: ""
-    secrets: inherit
+    secrets:
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      FASTLANE_RO_PAT: ${{ secrets.FASTLANE_RO_PAT }}
+      GOOGLE_SERVICE_INFO_DEV_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_DEV_BASE64 }}
+      GOOGLE_SERVICE_INFO_RELEASE_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
+      GOOGLE_SERVICE_INFO_SAFETY_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MELD_BASIC_AUTH_TOKEN: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+      NOTIFICATION_BOT_TOKEN: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
+      NOTIFICATION_BOT_URL: ${{ secrets.NOTIFICATION_BOT_URL }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
   send-release-notification:
     name: Send Release Notification

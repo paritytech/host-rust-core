@@ -73,8 +73,8 @@ We use clear, imperative commit messages:
    ("Add", "Fix", "Update" — not "Added" or "Fixing").
 2. A **blank line**, then a description explaining *what* changed and *why*,
    wrapped at 72 characters.
-3. If the change relates to a tracked issue, add a trailing `Issue: <TICKET>`
-   line (e.g. `Issue: PANS-1861`).
+3. If the change relates to a GitHub issue, add a trailing `Issue: #<number>`
+   line (e.g. `Issue: #42`).
 
 Example:
 
@@ -84,7 +84,7 @@ Fix null pointer crash on empty cart checkout
 The cart total calculation assumed at least one item was present.
 Added a guard clause to return early when the item list is empty.
 
-Issue: PANS-1861
+Issue: #42
 ```
 
 ## Pull Request Process

@@ -13,7 +13,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.common.R
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
-import io.paritytech.polkadotapp.design.components.icon.vectors.NewMessage
+import io.paritytech.polkadotapp.design.components.icon.vectors.Add
 import io.paritytech.polkadotapp.design.components.progress.NovaCircularProgressIndicator
 import io.paritytech.polkadotapp.design.components.topbar.PolkadotTopBar
 import io.paritytech.polkadotapp.design.components.topbar.TopBarTitleSize
@@ -33,7 +33,7 @@ fun ChatListHeader(
             actions = persistentListOf(
                 rememberTopBarAction(
                     action = onAddContactClick,
-                    icon = NovaIcons.NewMessage,
+                    icon = NovaIcons.Add,
                 ),
             ),
             titleSize = TopBarTitleSize.Large,

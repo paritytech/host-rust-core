@@ -39,6 +39,39 @@ on:
         value: ${{ jobs.prepare_build_metadata.outputs.pr_list_markdown }}
       succeeded:
         value: ${{ jobs.check_build_result.outputs.succeeded }}
+    # Declared rather than inherited, so a caller hands over exactly what this
+    # workflow reads and nothing else.
+    secrets:
+      ASC_ISSUER_ID:
+        required: true
+      ASC_KEY_BASE64:
+        required: true
+      ASC_KEY_ID:
+        required: true
+      FASTLANE_RO_PAT:
+        required: true
+      GOOGLE_SERVICE_INFO_DEV_BASE64:
+        required: true
+      GOOGLE_SERVICE_INFO_RELEASE_BASE64:
+        required: true
+      GOOGLE_SERVICE_INFO_SAFETY_BASE64:
+        # Read only on the Safetynet branch, so a production run must not
+        # depend on it. It is set today; optional here describes the contract.
+        required: false
+      KEYCHAIN_PASSWORD:
+        required: true
+      MATCH_PASSWORD:
+        required: true
+      MELD_BASIC_AUTH_TOKEN:
+        required: false
+      NOTIFICATION_BOT_TOKEN:
+        required: false
+      NOTIFICATION_BOT_URL:
+        required: false
+      SENTRY_AUTH_TOKEN:
+        required: false
+      SENTRY_DSN:
+        required: false
 
 env:
   MAIN_BRANCH: main

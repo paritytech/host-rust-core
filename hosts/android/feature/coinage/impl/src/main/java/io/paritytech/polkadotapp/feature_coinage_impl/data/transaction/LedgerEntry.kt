@@ -68,6 +68,10 @@ data class LedgerAsset(
     val hasConsumptionProof: Boolean get() = kind == CoinageAssetKind.VOUCHER
 }
 
+fun LedgerAsset.asCoinOrNull(): OwnAsset.Coin? = asset as? OwnAsset.Coin
+
+fun LedgerAsset.asVoucherOrNull(): OwnAsset.Voucher? = asset as? OwnAsset.Voucher
+
 data class RegistrationInput(
     val input: CoinageInput,
     val publicKey: AssetPublicKey,

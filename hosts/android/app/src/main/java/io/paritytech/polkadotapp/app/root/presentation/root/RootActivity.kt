@@ -161,8 +161,13 @@ class RootActivity : AppCompatActivity(R.layout.activity_root) {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
             setContent {
                 val model by viewModel.chainsHealth.collectAsStateWithLifecycle()
+                val tooltipVisible by viewModel.isNetworkStatusTooltipVisible.collectAsStateWithLifecycle()
                 PolkadotTheme {
-                    ChainHealthBar(model = model)
+                    ChainHealthBar(
+                        model = model,
+                        tooltipVisible = tooltipVisible,
+                        onTooltipDismiss = viewModel::dismissNetworkStatusTooltip,
+                    )
                 }
             }
         }

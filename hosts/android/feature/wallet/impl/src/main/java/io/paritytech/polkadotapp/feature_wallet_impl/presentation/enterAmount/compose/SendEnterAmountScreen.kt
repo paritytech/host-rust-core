@@ -17,8 +17,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
 import io.paritytech.polkadotapp.common.presentation.validation.compose.rememberValidationActionHandle
 import io.paritytech.polkadotapp.common.utils.progressStallReport.StallReportContent
@@ -60,7 +62,8 @@ internal fun SendEnterAmountScreen(contract: SendEnterAmountContract) {
         when (state) {
             is LoadingState.Loaded -> SendEnterAmountScreenInternal(
                 state = state.data,
-                stallReport = { contract.stalenessReport.DisplayReport() },
+                // Hidden for now: diagnostics are still collected, just not shown.
+                stallReport = {},
                 onAmountChange = contract::onNewInput,
                 onConfirmClick = contract::onConfirmClick,
                 onBackClick = contract::onBackClick
@@ -182,12 +185,13 @@ private fun SendEnterAmountScreenInternal(
                 is SendProgress.Idle ->
                     if (state.isAmountPositive) {
                         stringResource(RCommon.string.send_enter_amount_send_button, state.input, symbol)
+                            .withCurrencyTickerStyle(PolkadotTheme.typography.title.medium)
                     } else {
-                        stringResource(RCommon.string.common_send)
+                        AnnotatedString(stringResource(RCommon.string.common_send))
                     }
 
-                is SendProgress.Submitting -> stringResource(RCommon.string.send_enter_amount_submitting)
-                is SendProgress.Settling -> stringResource(RCommon.string.send_enter_amount_settling)
+                is SendProgress.Submitting -> AnnotatedString(stringResource(RCommon.string.send_enter_amount_submitting))
+                is SendProgress.Settling -> AnnotatedString(stringResource(RCommon.string.send_enter_amount_settling))
             },
             size = PolkadotButtonSize.large(),
             onClick = onConfirmClick,

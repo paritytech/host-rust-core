@@ -7,7 +7,6 @@ import io.paritytech.polkadotapp.common.presentation.AppLifecycleObserver
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.ChainHealthMonitor
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainConnectionPresentation
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainHealth
-import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainHealthScore
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainMetricReading
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainGlyph
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicator
@@ -19,6 +18,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -27,12 +27,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 import org.mockito.Mockito.mock
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.Instant
 
 class RealChainHealthMixinTest {
     private val monitor: ChainHealthMonitor = mock(ChainHealthMonitor::class.java)
@@ -53,24 +51,69 @@ class RealChainHealthMixinTest {
         val item = mixin.awaitModel().chains.single()
 
         assertEquals(ChainGlyph.AssetHub, item.glyph)
-        assertEquals(ChainHealthIndicator.Healthy, item.indicator)
+        assertEquals(ChainHealthIndicator.Healthy(liveness = null), item.indicator)
     }
 
     @Test
-    fun `the last block's arrival reaches the item so the view can age it`() = runBlocking<Unit> {
-        val landed = Instant.fromEpochMilliseconds(1_700_000_000_000)
-        withMonitorEmitting(health(HUB, blockProduction(lastBlockAt = landed)))
+    fun `the production share and the chain's block time shape the indicator`() = runBlocking<Unit> {
+        withMonitorEmitting(health(HUB, blockProduction(produced = 8)))
         val mixin = createMixin()
 
-        assertEquals(landed, mixin.awaitModel().chains.single().lastBlockAt)
+        val item = mixin.awaitModel().chains.single()
+
+        assertEquals(ChainHealthIndicator.of(share = 0.8f, expectedBlockTime = 6.seconds), item.indicator)
     }
 
     @Test
-    fun `a chain with no block seen yet carries no arrival`() = runBlocking<Unit> {
-        withMonitorEmitting(health(HUB, blockProduction(lastBlockAt = null)))
+    fun `a chain not yet measured is healthy with nothing to print`() = runBlocking<Unit> {
+        withMonitorEmitting(health(HUB, blockProduction(produced = null)))
         val mixin = createMixin()
 
-        assertNull(mixin.awaitModel().chains.single().lastBlockAt)
+        assertEquals(ChainHealthIndicator.Healthy(liveness = null), mixin.awaitModel().chains.single().indicator)
+    }
+
+    @Test
+    fun `what a chain showed before stands while it is asked how fast it has been going`() = runBlocking<Unit> {
+        val healths = withMonitorSequence()
+        val mixin = createMixin()
+
+        healths.emit(listOf(health(HUB, blockProduction(produced = 8))))
+        mixin.awaitModel()
+        healths.emit(listOf(health(HUB, anchorPending())))
+        healths.emit(listOf(health(HUB, anchorPending()), health(PEOPLE, anchorPending())))
+
+        val model = withTimeout(TIMEOUT) { mixin.model.first { it.chains.size == 2 } }
+
+        assertEquals(ChainHealthIndicator.of(share = 0.8f, expectedBlockTime = 6.seconds), model.chains.first().indicator)
+        assertEquals(ChainHealthIndicator.Healthy(liveness = null), model.chains.last().indicator)
+    }
+
+    @Test
+    fun `a chain that was connecting is not held on its way back`() = runBlocking<Unit> {
+        val healths = withMonitorSequence()
+        val mixin = createMixin()
+
+        healths.emit(listOf(health(HUB, connection = ChainConnectionPresentation.Connecting)))
+        mixin.awaitModel()
+        healths.emit(listOf(health(HUB, anchorPending())))
+
+        val model = withTimeout(TIMEOUT) { mixin.model.first { it.chains.single().indicator != ChainHealthIndicator.Connecting } }
+
+        assertEquals(ChainHealthIndicator.Healthy(liveness = null), model.chains.single().indicator)
+    }
+
+    @Test
+    fun `a chain that lost its connection is never held`() = runBlocking<Unit> {
+        val healths = withMonitorSequence()
+        val mixin = createMixin()
+
+        healths.emit(listOf(health(HUB, blockProduction(produced = 8))))
+        mixin.awaitModel()
+        healths.emit(listOf(health(HUB, anchorPending(), connection = ChainConnectionPresentation.Offline)))
+
+        val model = withTimeout(TIMEOUT) { mixin.model.first { it.chains.single().indicator == ChainHealthIndicator.Offline } }
+
+        assertEquals(ChainHealthIndicator.Offline, model.chains.single().indicator)
     }
 
     @Test
@@ -95,6 +138,12 @@ class RealChainHealthMixinTest {
         appLifecycleObserver = lifecycle,
     )
 
+    private fun withMonitorSequence(): MutableSharedFlow<List<ChainHealth>> {
+        val healths = MutableSharedFlow<List<ChainHealth>>(replay = 1)
+        whenever(monitor.observeChainsHealth()).thenReturn(healths)
+        return healths
+    }
+
     private fun withMonitorEmitting(vararg healths: ChainHealth) {
         val observed = flow {
             subscriptions.incrementAndGet()
@@ -111,20 +160,28 @@ class RealChainHealthMixinTest {
         while (!condition()) delay(POLL_INTERVAL_MS)
     }
 
-    private fun health(chainId: String, vararg readings: ChainMetricReading) = ChainHealth(
+    private fun health(
+        chainId: String,
+        vararg readings: ChainMetricReading,
+        connection: ChainConnectionPresentation = ChainConnectionPresentation.Connected,
+    ) = ChainHealth(
         chainId = chainId,
         chainName = chainId,
-        connection = ChainConnectionPresentation.Connected,
+        connection = connection,
         expectedBlockTime = 6.seconds,
         readings = readings.toList(),
     )
 
-    private fun blockProduction(lastBlockAt: Instant?) = ChainMetricReading.BlockProduction(
-        recentBlocks = 5,
-        expectedBlocks = 5,
-        requiredBlocks = 5,
-        lastBlockAt = lastBlockAt,
-        score = ChainHealthScore.Perfect,
+    private fun blockProduction(produced: Int?) = ChainMetricReading.BlockProduction(
+        producedBlocks = produced,
+        expectedBlocks = 10,
+        anchorPending = false,
+    )
+
+    private fun anchorPending() = ChainMetricReading.BlockProduction(
+        producedBlocks = null,
+        expectedBlocks = 10,
+        anchorPending = true,
     )
 
     private class FakeAppLifecycleObserver : AppLifecycleObserver {
