@@ -157,7 +157,7 @@ const appGroup = capture("xcrun", [
 ]).trim();
 const chatIdentifier = `1:${productHost}:${roomId}`;
 const initialDatabase = userDataDatabase(appGroup);
-const messageWatermark = existsSync(initialDatabase)
+let messageWatermark = existsSync(initialDatabase)
   ? latestMessageId(initialDatabase, chatIdentifier)
   : 0;
 
@@ -202,6 +202,11 @@ try {
       workerDestinations.push(activeCachedWorkerDestination);
     }
     if (existsSync(customRendererMarker)) unlinkSync(customRendererMarker);
+    // Re-read: every wait below must ignore what the worker being replaced wrote.
+    const database = userDataDatabase(appGroup);
+    messageWatermark = existsSync(database)
+      ? latestMessageId(database, chatIdentifier)
+      : messageWatermark;
     launchApp();
     await waitForFirstActivity(appGroup, chatIdentifier, messageWatermark);
   }
@@ -366,7 +371,7 @@ function waitForFirstActivity(appGroup, identifier, afterMessageId) {
     {
       timeoutMs: 60_000,
       message: () =>
-        `Timed out waiting for the product to post in ${identifier}.\nEnsure the selected simulator has completed Polkadot onboarding.`,
+        `Timed out waiting for the product to post in ${identifier}.\nEnsure the selected simulator has completed Polkadot onboarding and holds an identity.`,
     },
   );
 }

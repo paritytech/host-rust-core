@@ -1724,16 +1724,18 @@ impl NativeEventBus {
             .remove(&connection_id);
     }
 
-    fn subscribe_chat_rooms(
-        &self,
-        current: v01::HostChatListSubscribeItem,
-    ) -> BoxStream<'static, v01::HostChatListSubscribeItem> {
+    /// Register for later room changes, separately from the snapshot: a mutex
+    /// cannot be held across the host's await the way `subscribe_pocket_cards` does.
+    fn chat_room_changes(&self) -> BoxStream<'static, v01::HostChatListSubscribeItem> {
         let (tx, rx) = mpsc::unbounded();
-        self.chat_room_changes
+        let mut subscribers = self
+            .chat_room_changes
             .lock()
-            .expect("native Chat room subscribers mutex poisoned")
-            .push(tx);
-        stream::once(async move { current }).chain(rx).boxed()
+            .expect("native Chat room subscribers mutex poisoned");
+        subscribers.retain(|tx| !tx.is_closed());
+        subscribers.push(tx);
+        drop(subscribers);
+        rx.boxed()
     }
 
     fn notify_chat_rooms_changed(&self, rooms: Vec<v01::ChatRoom>) {
@@ -2255,17 +2257,16 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         &self,
         _product: &ProductContext,
     ) -> BoxStream<'static, Result<v01::HostChatListSubscribeItem, v01::GenericError>> {
+        // Registered before the snapshot: a change landing while the host answers
+        // must be queued, not dropped.
+        let changes = self.events.chat_room_changes();
         let chat = Arc::clone(&self.chat);
-        let events = Arc::clone(&self.events);
-        // The first item needs the host, so it resolves when the product
-        // subscribes rather than when the stream is built.
         stream::once(async move {
-            let current = v01::HostChatListSubscribeItem {
+            v01::HostChatListSubscribeItem {
                 rooms: chat.list_rooms().await.unwrap_or_default(),
-            };
-            events.subscribe_chat_rooms(current)
+            }
         })
-        .flatten()
+        .chain(changes)
         .map(Ok)
         .boxed()
     }

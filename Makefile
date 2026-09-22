@@ -166,7 +166,7 @@ uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib
 IOS_HOST ?= ../polkadot-app-ios-v2
 IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
 IOS_CONFIGURATION ?= Debug
-IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
+IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E -DTRUAPI_RUNTIME_DEFAULT
 IOS_SIMULATOR_DEVICE ?=
 IOS_XCODE_DESTINATION ?= generic/platform=iOS Simulator
 IOS_BUNDLE ?= io.parity.polkadotapp.develop
