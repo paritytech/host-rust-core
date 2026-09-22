@@ -1,6 +1,7 @@
 import AsyncExtensions
 import Foundation
 import FoundationExt
+import Keystore_iOS
 import Operation_iOS
 import Products
 import StructuredConcurrency
@@ -14,19 +15,28 @@ final class ProductBotProvider: ProductBotProviding {
     private let botFactory: ProductBotFactory
     private let dotNsResolver: DotNsResolverProtocol
     private let productResolver: ProductResolving
+    private let tldProvider: DotNsTldProviding
+    private let settingsManager: SettingsManagerProtocol
     private let logger: LoggerProtocol
+
+    /// Roughly a minute of holding up every other product's bot.
+    private static let tldAttempts = 20
 
     init(
         productProvider: StreamableProvider<Product>,
         botFactory: ProductBotFactory,
         dotNsResolver: DotNsResolverProtocol,
         productResolver: ProductResolving,
+        tldProvider: DotNsTldProviding = DotNsTldProviderFacade.shared,
+        settingsManager: SettingsManagerProtocol = SettingsManager.shared,
         logger: LoggerProtocol = Logger.shared
     ) {
         self.productProvider = productProvider
         self.botFactory = botFactory
         self.dotNsResolver = dotNsResolver
         self.productResolver = productResolver
+        self.tldProvider = tldProvider
+        self.settingsManager = settingsManager
         self.logger = logger
     }
 
@@ -44,6 +54,16 @@ final class ProductBotProvider: ProductBotProviding {
                         products.append(injected)
                     }
                 #endif
+
+                // After the E2E injection, so a launcher naming a host-placed product keeps the
+                // display name it asked for.
+                for hostPlaced in await hostPlacedProducts() {
+                    guard !products.contains(where: { $0.identifier == hostPlaced.identifier }) else {
+                        continue
+                    }
+
+                    products.append(hostPlaced)
+                }
 
                 return await makeBots(for: products)
             }
@@ -74,6 +94,22 @@ final class ProductBotProvider: ProductBotProviding {
 }
 
 private extension ProductBotProvider {
+    /// Unioned into the stream rather than written to the product repository: nothing installs
+    /// them, so nothing can uninstall them either. Pocket refuses to remove a privileged card;
+    /// this gets the same result without a second copy of the collection to keep in step.
+    ///
+    /// The TLD wait is bounded because every other product's bot is built after it, and a device
+    /// that can never read the TLD must not cost the products that do not need it.
+    func hostPlacedProducts() async -> [Product] {
+        guard settingsManager.isHostPlacementEnabled else { return [] }
+
+        guard let tld = await tldProvider.tldRetrying(attempts: Self.tldAttempts) else { return [] }
+
+        return HostPlacedProducts.all.map {
+            Product(id: $0.productId(tld), name: $0.fallbackName)
+        }
+    }
+
     /// The last async seam before a bot is built: the file provider that serves the worker runs
     /// synchronously, so the worker's archive and entry module have to be known by now.
     ///
