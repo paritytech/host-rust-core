@@ -131,6 +131,53 @@ function passed(result) {
   assert.equal(result.status, 0, result.stdout + result.stderr);
 }
 
+test("release sync keeps new script projects on the host protocol version", (t) => {
+  const project = fixture(t);
+  const scriptPackage = "rust/crates/truapi-host-cli/js/script-package.json";
+  for (const path of [
+    "scripts/sync-release-versions.mjs",
+    manifest,
+    "js/packages/truapi-host/package.json",
+    "js/packages/truapi-debugger/package.json",
+    "rust/crates/truapi/Cargo.toml",
+    "rust/crates/truapi-host-cli/Cargo.toml",
+    "package-lock.json",
+    scriptPackage,
+  ]) {
+    project.write(
+      path,
+      readFileSync(new URL(`../../${path}`, import.meta.url)),
+    );
+  }
+  const original = JSON.parse(
+    readFileSync(join(project.cwd, scriptPackage), "utf8"),
+  );
+  project.write(
+    scriptPackage,
+    JSON.stringify({
+      ...original,
+      overrides: { ...original.overrides, "@parity/truapi": "0.0.0" },
+    }),
+  );
+  const check = project.execute(
+    "node scripts/sync-release-versions.mjs --check",
+  );
+  assert.equal(check.status, 1);
+  assert.match(check.stderr, /script-package\.json.*0\.0\.0/);
+  passed(project.execute("node scripts/sync-release-versions.mjs"));
+  const version = JSON.parse(
+    readFileSync(join(project.cwd, manifest), "utf8"),
+  ).version;
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(project.cwd, scriptPackage), "utf8")),
+    {
+      ...original,
+      overrides: { ...original.overrides, "@parity/truapi": version },
+    },
+  );
+  passed(project.execute("node scripts/sync-release-versions.mjs --check"));
+});
+
 for (const path of [
   "rust/crates/truapi-codegen/src/emitter.rs",
   "rust/crates/truapi-host-cli/src/main.rs",

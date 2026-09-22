@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 /**
  * Keep release metadata derived from @parity/truapi's version in sync.
  *
- * Update the tracked Cargo.toml versions and the host and truapi-debugger
- * dependency ranges:
+ * Update the tracked Cargo.toml versions, host and truapi-debugger dependency
+ * ranges, and the script template's protocol override:
  *   npm run sync-release-versions
  *
  * Verify those files and package-lock.json without writing changes:
@@ -31,12 +31,17 @@ const debuggerPath = resolve(
   repoRoot,
   "js/packages/truapi-debugger/package.json",
 );
+const scriptPath = resolve(
+  repoRoot,
+  "rust/crates/truapi-host-cli/js/script-package.json",
+);
 const lockPath = resolve(repoRoot, "package-lock.json");
 const check = process.argv.includes("--check");
 
 const truapi = readJson(truapiPath);
 const host = readJson(hostPath);
 const wireDebugger = readJson(debuggerPath);
+const scriptPackage = readJson(scriptPath);
 if (typeof truapi.version !== "string" || truapi.version.length === 0) {
   fail(`could not read .version from ${truapiPath}`);
 }
@@ -47,6 +52,7 @@ const actualDependency = host.dependencies?.["@parity/truapi"];
 // version skew between them is the exact failure the schema-hash gate exists to
 // catch at runtime - cheaper to catch here, at release time.
 const actualDebuggerDependency = wireDebugger.dependencies?.["@parity/truapi"];
+const actualScriptOverride = scriptPackage.overrides?.["@parity/truapi"];
 const cargoVersionLine = /^version = "([^"]*)"$/m;
 const cargoManifests = cargoPaths.map((path) => {
   const contents = readFile(path);
@@ -75,6 +81,12 @@ if (check) {
   if (actualDebuggerDependency !== expectedDependency) {
     errors.push(
       `js/packages/truapi-debugger/package.json requires ${actualDebuggerDependency ?? "<missing>"}; expected ${expectedDependency}`,
+    );
+  }
+
+  if (actualScriptOverride !== truapi.version) {
+    errors.push(
+      `${relative(repoRoot, scriptPath)} overrides @parity/truapi with ${actualScriptOverride ?? "<missing>"}; expected ${truapi.version}`,
     );
   }
 
@@ -128,7 +140,7 @@ if (check) {
   }
 
   console.log(
-    `${command}: crate manifests, host and truapi-debugger dependencies, and package-lock.json use @parity/truapi ${truapi.version}`,
+    `${command}: crate manifests, host and truapi-debugger dependencies, script template, and package-lock.json use @parity/truapi ${truapi.version}`,
   );
   process.exit(0);
 }
@@ -174,6 +186,19 @@ if (actualDebuggerDependency === expectedDependency) {
   writeFileSync(debuggerPath, `${JSON.stringify(wireDebugger, null, 2)}\n`);
   console.log(
     `${command}: updated truapi-debugger dependency to @parity/truapi ${expectedDependency}`,
+  );
+}
+
+if (actualScriptOverride === truapi.version) {
+  console.log(
+    `${command}: script template already uses @parity/truapi ${truapi.version}`,
+  );
+} else {
+  scriptPackage.overrides ??= {};
+  scriptPackage.overrides["@parity/truapi"] = truapi.version;
+  writeFileSync(scriptPath, `${JSON.stringify(scriptPackage, null, 2)}\n`);
+  console.log(
+    `${command}: updated script template to @parity/truapi ${truapi.version}`,
   );
 }
 

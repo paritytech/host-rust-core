@@ -370,10 +370,11 @@ Configure a waiting editor command: an editor process that returns immediately
 also lets execution start immediately. Editor failure preserves the script
 without running it.
 
-New projects pin published Product SDK 0.29.0 and override its `@parity/truapi`
-dependency to 0.18.0 to match the host's protocol. Existing project dependencies
-are never changed by a host update. `make check-script-sdk` installs the unchanged
-template from the public registry and checks its types and `createApp` export.
+New projects pin published Product SDK 0.29.0. Release versioning keeps its
+`@parity/truapi` override aligned with the CLI. Existing project dependencies
+are never changed by a host update. `make check-script-sdk` verifies the override,
+installs the template from the public registry, and checks its types and
+`createApp` export. It removes its temporary project and cache afterward.
 CLI releases require this check to pass.
 
 Managed sessions isolate signer accounts, product/core storage, and permissions.

@@ -57,7 +57,12 @@ fn runner_types_path(runner: &Path) -> PathBuf {
 /// Read declarations matching the selected installed or checkout runner.
 pub fn script_types() -> Result<Vec<u8>> {
     let path = runner_types_path(&runner_path());
-    fs::read(&path).with_context(|| format!("read host-script types {}", path.display()))
+    fs::read(&path).with_context(|| {
+        format!(
+            "read host-script types {}; for a source build, run `make codegen` at the repository root; for a prebuilt CLI, reinstall it",
+            path.display()
+        )
+    })
 }
 
 /// Locate the host-script runner.

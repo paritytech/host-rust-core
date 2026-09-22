@@ -964,12 +964,12 @@ Default cloud storage uses Paseo, also the CLI's default network. A signed-out
 wallet can return an empty account list.
 
 The template pins published Product SDK 0.29.0, TypeScript, and Bun editor
-types. A top-level package override selects `@parity/truapi` 0.18.0 for the
-host's codec 3 protocol. SDK scripts use the installed package types and
+types. Release versioning synchronizes the top-level `@parity/truapi` override
+with the CLI's protocol version. SDK scripts use the installed package types and
 `bun run typecheck`; raw TrUAPI scripts can import the adjacent declarations
 locally, allowing multiple scripts to compile together. The registry release
-check installs the unchanged template, checks its types, and verifies the SDK's
-`createApp` export.
+check validates that override, installs the unchanged template, checks its types,
+and verifies the SDK's `createApp` export, then removes its temporary project and cache.
 
 Dependency setup runs `bun install`, with `--frozen-lockfile` when a Bun
 lockfile exists. Only a successful installation records its manifest and
