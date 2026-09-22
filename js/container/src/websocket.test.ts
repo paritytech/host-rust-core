@@ -12,6 +12,7 @@ function realm() {
     private selectedProtocol = '';
     private queued = 0;
     readonly sent: any[] = [];
+    closeArguments: any[] = [];
     constructor(
       private address: string,
       readonly requested: string[] = [],
@@ -45,6 +46,7 @@ function realm() {
       this.queued++;
     }
     close(code = 1000, reason = '') {
+      this.closeArguments = Array.from(arguments);
       this.state = 3;
       this.dispatchEvent(
         new CloseEvent('close', { code, reason, wasClean: true }),
@@ -115,8 +117,18 @@ function gated(factory?: (win: any) => any) {
 }
 
 describe('WebSocket connection permission', () => {
-  it('connects only after consent and reuses that consent for all messages on one socket', () => {
+  it('omits an absent close code instead of passing undefined to the native WebIDL conversion', () => {
     const { win, requests, connections } = gated();
+    const socket = new win.WebSocket('wss://api.example');
+    requests[0]!.decide(true);
+    connections[0]!.open();
+    socket.close();
+    expect(connections[0]!.closeArguments).toEqual([]);
+  });
+
+  it.each(['browser', 'script'])('connects only after consent and reuses it for all messages in %s', (runtime) => {
+    const { win, requests, connections } = gated();
+    if (runtime === 'script') delete win.document;
     const socket = new win.WebSocket('https://API.EXAMPLE/chat', ['chat']);
     expect([
       socket.readyState,

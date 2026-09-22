@@ -47,17 +47,22 @@ import io.paritytech.polkadotapp.design.components.icon.vectors.AssetHub
 import io.paritytech.polkadotapp.design.components.icon.vectors.Bulletin
 import io.paritytech.polkadotapp.design.components.icon.vectors.People
 import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
+import io.paritytech.polkadotapp.design.components.tooltip.NonFocusablePopupProperties
+import io.paritytech.polkadotapp.design.components.tooltip.PolkadotTooltip
+import io.paritytech.polkadotapp.design.components.tooltip.PolkadotTooltipContent
+import io.paritytech.polkadotapp.design.components.tooltip.TooltipAlignment
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainGlyph
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicator
-import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicator.Speed
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicatorsModel
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthItemModel
+import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ProductionBand
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.time.Duration.Companion.seconds
 import io.paritytech.polkadotapp.common.R as RCommon
 
 private const val PULSE_MIN_ALPHA = 0.3f
@@ -71,8 +76,9 @@ private const val STEPS_PER_LOBE = 12
 private const val TWO_PI = 2 * PI.toFloat()
 private const val DOT_COUNT = 16
 
-// Floor, quarters and ceiling of a band's quarter of the ring, for the scale preview.
-private val SCALE_STEPS = listOf(0.01f, 0.0625f, 0.125f, 0.1875f, 0.25f)
+private const val PREVIEW_EXPECTED_BLOCKS = 15
+private const val PREVIEW_BLOCKS_PER_ROW = 8
+private val PREVIEW_BLOCK_TIME = 2.seconds
 
 // The design leaves the ring open exactly where the cross sits rather than reporting how far
 // production has fallen. Round caps eat into the gap, so 90 degrees of path reads as 77 on screen.
@@ -113,7 +119,11 @@ object ChainHealthBarDefaults {
 
 /** Always-on, transparent, overlaid at the very top like the system status indicators. */
 @Composable
-fun ChainHealthBar(model: ChainHealthIndicatorsModel) {
+fun ChainHealthBar(
+    model: ChainHealthIndicatorsModel,
+    tooltipVisible: Boolean,
+    onTooltipDismiss: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -123,7 +133,24 @@ fun ChainHealthBar(model: ChainHealthIndicatorsModel) {
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ChainHealthIndicators(model = model)
+        Box {
+            ChainHealthIndicators(model = model)
+
+            PolkadotTooltip(
+                expanded = tooltipVisible,
+                onDismiss = onTooltipDismiss,
+                arrowVisible = true,
+                alignment = TooltipAlignment.Bottom,
+                shape = PolkadotTheme.shapes.tiny,
+                properties = NonFocusablePopupProperties,
+            ) {
+                PolkadotTooltipContent(
+                    title = stringResource(RCommon.string.chain_health_tooltip_title),
+                    message = stringResource(RCommon.string.chain_health_tooltip_message),
+                    onDismiss = onTooltipDismiss,
+                )
+            }
+        }
     }
 }
 
@@ -148,7 +175,6 @@ fun ChainHealthIndicators(
     }
 }
 
-/** One chain's indicator on its own: the glyph inside the disc or ring for its [ChainHealthIndicator]. */
 @Composable
 internal fun ChainIndicator(
     modifier: Modifier = Modifier,
@@ -169,11 +195,11 @@ internal fun ChainIndicator(
             contentAlignment = Alignment.Center,
         ) {
             when (val indicator = item.indicator) {
-                ChainHealthIndicator.Healthy -> HealthyDisc(item, indicatorSize)
+                is ChainHealthIndicator.Healthy -> HealthyDisc(item, indicatorSize)
                 ChainHealthIndicator.Outage -> NotProducingRing(item, indicatorSize)
-                is ChainHealthIndicator.ConnectionSpeed -> SpeedArc(item, indicator, indicatorSize)
+                is ChainHealthIndicator.Production -> ProductionArc(item, indicator, indicatorSize)
                 ChainHealthIndicator.Connecting -> ConnectingRing(item, indicatorSize)
-                ChainHealthIndicator.Disconnected -> DottedRing(item, indicatorSize)
+                ChainHealthIndicator.Disconnected, ChainHealthIndicator.Offline -> DottedRing(item, indicatorSize)
             }
         }
     }
@@ -223,20 +249,20 @@ private fun NotProducingRing(item: ChainHealthItemModel, indicatorSize: ChainInd
 }
 
 @Composable
-private fun SpeedArc(
+private fun ProductionArc(
     item: ChainHealthItemModel,
-    indicator: ChainHealthIndicator.ConnectionSpeed,
+    indicator: ChainHealthIndicator.Production,
     indicatorSize: ChainIndicatorSize,
 ) {
-    val color = when (indicator.speed) {
-        Speed.Good -> PolkadotTheme.colors.fg.primary
-        Speed.Fair -> PolkadotTheme.colors.fg.warning
-        Speed.Low -> PolkadotTheme.colors.fg.error
+    val color = when (indicator.band) {
+        ProductionBand.Plain -> PolkadotTheme.colors.fg.primary
+        ProductionBand.Warning -> PolkadotTheme.colors.fg.warning
+        ProductionBand.Error -> PolkadotTheme.colors.fg.error
     }
     ArcRing(
         // The design fills the ring backwards from the top, so the sweep is negative.
         startAngle = TOP_ANGLE,
-        sweepAngle = -indicator.arc * FULL_SWEEP,
+        sweepAngle = -indicator.liveness.share * FULL_SWEEP,
         color = color,
         indicatorSize = indicatorSize,
         trackColor = PolkadotTheme.colors.stroke.secondary,
@@ -379,41 +405,36 @@ private fun ChainHealthIndicatorsPreview() {
             modifier = Modifier.padding(PolkadotTheme.spacings.medium),
             model = ChainHealthIndicatorsModel(
                 persistentListOf(
-                    previewItem("People", ChainGlyph.People, ChainHealthIndicator.Healthy),
+                    previewItem("People", ChainGlyph.People, ChainHealthIndicator.of(share = 1f, PREVIEW_BLOCK_TIME)),
                     previewItem("Asset Hub", ChainGlyph.AssetHub, ChainHealthIndicator.Outage),
-                    previewItem("Bulletin", ChainGlyph.Bulletin, ChainHealthIndicator.ConnectionSpeed(Speed.Good, arc = 0.68f)),
-                    previewItem("Fair", ChainGlyph.People, ChainHealthIndicator.ConnectionSpeed(Speed.Fair, arc = 0.42f)),
-                    previewItem("Low", ChainGlyph.AssetHub, ChainHealthIndicator.ConnectionSpeed(Speed.Low, arc = 0.18f)),
+                    previewItem("Bulletin", ChainGlyph.Bulletin, ChainHealthIndicator.of(share = 0.8f, PREVIEW_BLOCK_TIME)),
+                    previewItem("Warning", ChainGlyph.People, ChainHealthIndicator.of(share = 0.4f, PREVIEW_BLOCK_TIME)),
+                    previewItem("Error", ChainGlyph.AssetHub, ChainHealthIndicator.of(share = 0.2f, PREVIEW_BLOCK_TIME)),
                     previewItem("Connecting", ChainGlyph.AssetHub, ChainHealthIndicator.Connecting),
                     previewItem("Broken", ChainGlyph.Bulletin, ChainHealthIndicator.Disconnected),
+                    previewItem("Offline", ChainGlyph.People, ChainHealthIndicator.Offline),
                 ),
             ),
         )
     }
 }
 
-/**
- * The speed arc sweeps inside its band rather than snapping between three lengths, which no single
- * state can show. Each row here walks one band from its floor to its ceiling.
- */
+// No state of the app steps the arc through its range, so the gradation is only visible here.
 @Preview(showBackground = true, backgroundColor = 0xFF000000)
 @Composable
-private fun ChainSpeedScalePreview() {
+private fun ChainProductionScalePreview() {
     PolkadotTheme {
         Column(
             modifier = Modifier.padding(PolkadotTheme.spacings.medium),
             verticalArrangement = Arrangement.spacedBy(PolkadotTheme.spacings.small),
         ) {
-            for ((speed, floor) in listOf(Speed.Good to 0.5f, Speed.Fair to 0.25f, Speed.Low to 0f)) {
+            for (produced in (0..PREVIEW_EXPECTED_BLOCKS).chunked(PREVIEW_BLOCKS_PER_ROW)) {
                 ChainHealthIndicators(
                     model = ChainHealthIndicatorsModel(
-                        SCALE_STEPS
-                            .map { step ->
-                                previewItem(
-                                    speed.name,
-                                    ChainGlyph.People,
-                                    ChainHealthIndicator.ConnectionSpeed(speed, floor + step),
-                                )
+                        produced
+                            .map { blocks ->
+                                val share = blocks.toFloat() / PREVIEW_EXPECTED_BLOCKS
+                                previewItem("$blocks", ChainGlyph.People, ChainHealthIndicator.of(share, PREVIEW_BLOCK_TIME))
                             }
                             .toImmutableList(),
                     ),
@@ -424,8 +445,8 @@ private fun ChainSpeedScalePreview() {
 }
 
 private fun previewItem(name: String, glyph: ChainGlyph, indicator: ChainHealthIndicator) = ChainHealthItemModel(
+    chainId = name,
     chainName = name,
     glyph = glyph,
     indicator = indicator,
-    lastBlockAt = null,
 )

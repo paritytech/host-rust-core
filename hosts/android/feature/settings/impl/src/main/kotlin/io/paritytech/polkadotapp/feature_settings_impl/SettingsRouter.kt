@@ -18,8 +18,10 @@ interface SettingsRouter : ReturnableRouter {
     fun openContactChat(accountId: AccountId)
     fun openNotificationSettings()
     fun openLanguageSettings()
+    fun openLegalAndSupport()
     fun openPrivacyPolicy()
     fun openTermsOfUse()
+    fun openContactUs()
     fun openThemes()
 
     // TODO: should not be here, remove after W3S

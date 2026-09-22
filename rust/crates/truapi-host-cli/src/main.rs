@@ -1713,6 +1713,7 @@ where
     let server = tokio::spawn(frame_server::accept_loop(runtime, product, frame_server));
     let result = body.await;
     server.abort();
+    let _ = server.await;
     result
 }
 
@@ -1930,6 +1931,7 @@ async fn run_dev(
     initial_log_filter: String,
     log_controller: LogController,
 ) -> Result<()> {
+    bootstrap::read_container(&bootstrap::container_path())?;
     let product_id = args
         .product_id
         .unwrap_or_else(|| format!("localhost:{}", args.app_port));
@@ -4232,6 +4234,54 @@ mod cli_tests {
         assert_eq!(args.product_id.as_deref(), Some("playground.paseo"));
         assert_eq!(args.app_port, 3000);
         assert!(args.command.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn script_completion_removes_the_private_frame_socket_before_returning() -> Result<()> {
+        struct UnusedRuntimeFactory;
+
+        impl frame_server::ProductRuntimeFactory for UnusedRuntimeFactory {
+            fn product_runtime(
+                &self,
+                _product: truapi_server::ProductContext,
+                _sink: Arc<dyn truapi_server::FrameSink>,
+            ) -> truapi_server::ProductRuntime {
+                panic!("the completed script must not open a product connection")
+            }
+        }
+
+        for script_failed in [false, true] {
+            let frame_server = frame_server::bind(None).await?;
+            let socket = PathBuf::from(
+                frame_server
+                    .endpoint()
+                    .strip_prefix("ws+unix:")
+                    .context("expected a private Unix socket")?,
+            );
+            let directory = socket.parent().context("socket has no directory")?;
+            assert!(socket.exists());
+            let product = frame_server::ProductSelection::new(
+                "script-cleanup.testnet".to_string(),
+                ProductExecutionKind::App,
+            )?;
+            let result = with_frame_server(
+                Arc::new(UnusedRuntimeFactory),
+                product,
+                frame_server,
+                async move {
+                    anyhow::ensure!(!script_failed, "script failed");
+                    Ok(())
+                },
+            )
+            .await;
+
+            assert_eq!(
+                (result.is_err(), socket.exists(), directory.exists()),
+                (script_failed, false, false),
+            );
+        }
+        Ok(())
     }
 
     #[cfg(unix)]

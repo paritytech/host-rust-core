@@ -6,7 +6,7 @@ function getter(prototype: object, name: string) {
 }
 
 export function installFetchGate(
-  win: Window & typeof globalThis,
+  win: typeof globalThis,
   authorize: NetworkAuthorization,
 ): void {
   const nativeFetch = win.fetch.bind(win);
@@ -31,7 +31,7 @@ export function installFetchGate(
       ? `${apply(urlProtocol, url, [])}//${apply(urlHost, url, [])}`
       : value;
   }
-  const productOrigin = origin(new NativeURL(win.location.href));
+  const productOrigin = win.location && origin(new NativeURL(win.location.href));
 
   freezeValue(
     win,

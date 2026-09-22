@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.utils.CurrencyConfig
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
@@ -106,7 +107,8 @@ private fun Header() {
         HorizontalSpacer { small }
 
         NovaText(
-            text = stringResource(RCommon.string.payment_privacy_mode_title, CurrencyConfig.symbol),
+            text = stringResource(RCommon.string.payment_privacy_mode_title, CurrencyConfig.symbol)
+                .withCurrencyTickerStyle(PolkadotTheme.typography.title.small),
             style = PolkadotTheme.typography.title.small,
             color = PolkadotTheme.colors.fg.primary
         )

@@ -41,6 +41,8 @@ class TabBarPullState(
 
     val networkStatusExpanded: Boolean get() = expandedPanel == ExpandedPanel.NetworkStatus
 
+    val scanExpanded: Boolean get() = expandedPanel == ExpandedPanel.Scan
+
     val panelExpanded: Boolean get() = expandedPanel != ExpandedPanel.None
 
     /** Fully-collapsed pull — only the nub showing. */
@@ -63,6 +65,10 @@ class TabBarPullState(
     fun toggleApps() = toggle(ExpandedPanel.Apps)
 
     fun toggleNetworkStatus() = toggle(ExpandedPanel.NetworkStatus)
+
+    fun toggleScan() = toggle(ExpandedPanel.Scan)
+
+    fun openScan() { expandedPanel = ExpandedPanel.Scan }
 
     /** Snap to the screen's default posture: open when [forceShown] (Main), collapsed otherwise. */
     fun snapToDefault(forceShown: Boolean) {
@@ -127,4 +133,4 @@ class TabBarPullState(
     }
 }
 
-private enum class ExpandedPanel { None, Apps, NetworkStatus }
+private enum class ExpandedPanel { None, Apps, NetworkStatus, Scan }

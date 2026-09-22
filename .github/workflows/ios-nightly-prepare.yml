@@ -37,4 +37,3 @@ jobs:
       source_ref: ${{ inputs.source_ref || 'main' }}
       increment_step: ${{ inputs.increment_step || '' }}
       distribution_workflow: ios-nightly-distribution.yml
-    secrets: inherit

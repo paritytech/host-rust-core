@@ -287,6 +287,8 @@ class CoinageEntryDaoTest {
                 mortalityBlocks = 64,
                 successDetectedAt = null,
                 status = status,
+                submissionPolicyId = null,
+                submissionPolicyParams = null,
             )
         )
 

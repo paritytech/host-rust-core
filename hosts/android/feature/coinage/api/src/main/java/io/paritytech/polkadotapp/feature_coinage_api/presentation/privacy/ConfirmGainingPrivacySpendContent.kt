@@ -12,6 +12,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.bottomsheet.NovaBottomSheetSurface
 import io.paritytech.polkadotapp.design.components.button.common.PolkadotButtonStyle
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextButton
@@ -74,7 +75,8 @@ fun ConfirmGainingPrivacySpendContent(
 
         PolkadotTextButton(
             modifier = Modifier.fillMaxWidth(),
-            text = stringResource(RCommon.string.send_gaining_privacy_send_anyway_button, totalAmountText),
+            text = stringResource(RCommon.string.send_gaining_privacy_send_anyway_button, totalAmountText)
+                .withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
             style = PolkadotButtonStyle.tertiary(),
             onClick = onSendAnyway,
         )

@@ -7,6 +7,7 @@ import io.paritytech.polkadotapp.common.utils.toPayloadBundle
 import io.paritytech.polkadotapp.feature_products_api.presentation.SpaSheetPayload
 import io.paritytech.polkadotapp.feature_wallet_api.presentation.enterAmount.SendEnterAmountPayload
 import io.paritytech.polkadotapp.feature_wallet_impl.PocketRouter
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.transactionResult.TransactionSuccessPayload
 import javax.inject.Inject
 
 class PocketNavigator @Inject constructor(
@@ -25,8 +26,10 @@ class PocketNavigator @Inject constructor(
         args = payload.toPayloadBundle()
     )
 
-    override fun openSuccess() =
-        performNavigation(R.id.action_sendEnterAmountFragment_to_transactionSuccessFragment)
+    override fun openSuccess(payload: TransactionSuccessPayload) = performNavigation(
+        actionId = R.id.action_sendEnterAmountFragment_to_transactionSuccessFragment,
+        args = payload.toPayloadBundle()
+    )
 
     override fun openFailure() =
         performNavigation(R.id.action_sendEnterAmountFragment_to_transactionFailureFragment)

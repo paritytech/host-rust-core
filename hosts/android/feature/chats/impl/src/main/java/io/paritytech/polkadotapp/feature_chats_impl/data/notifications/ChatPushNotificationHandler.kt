@@ -5,6 +5,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import io.novasama.substrate_sdk_android.extensions.fromHex
 import io.paritytech.polkadotapp.chains.multiNetwork.ChainRegistry
 import io.paritytech.polkadotapp.chains.multiNetwork.KnownChains
+import io.paritytech.polkadotapp.chains.network.binding.Balance
 import io.paritytech.polkadotapp.common.data.app.AppLifecycleState
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
 import io.paritytech.polkadotapp.common.presentation.AppLifecycleObserver
@@ -15,9 +16,11 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.ChatActiveTracker
 import io.paritytech.polkadotapp.feature_chats_api.domain.middleware.bot.asAnyRenderer
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatId
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessage
+import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.ChatPushContent
 import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.IncomingChatPushDecoder
 import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.IncomingChatPushDecoder.Companion.MESSAGE_KEY
 import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.IncomingChatPushDecoder.Companion.PUSH_ID_KEY
+import io.paritytech.polkadotapp.feature_chats_api.domain.notifications.StrippedChatPushContent
 import io.paritytech.polkadotapp.feature_chats_api.domain.username.FallbackUsernameGenerator
 import io.paritytech.polkadotapp.feature_chats_impl.data.hop.compaction.CompactionExpansionStarter
 import io.paritytech.polkadotapp.feature_chats_impl.data.model.toChatMessageOrUnsupported
@@ -85,30 +88,33 @@ internal class ChatPushNotificationHandler @Inject constructor(
             .onFailure { Timber.e(it, "Failed to decode chat push") }
             .getOrNull() ?: return
 
-        chatEngine.saveMessage(decoded.message, ChatMessageSaveConflictStrategy.IGNORE)
+        val pushContent = decoded.content
+        if (pushContent is ChatPushContent.Full) {
+            chatEngine.saveMessage(pushContent.message, ChatMessageSaveConflictStrategy.IGNORE)
+        }
 
         val callerName = decoded.contact.username
             ?: fallbackUsernameGenerator.generateFromAccountId(decoded.contact.accountId)
 
-        val content = decoded.message.content
-        if (content is ChatMessage.Content.DataChannelOffer) {
-            handleIncomingCallOffer(decoded.chatId, decoded.message, content, callerName)
+        val offer = pushContent.dataChannelOfferOrNull()
+        if (offer != null) {
+            handleIncomingCallOffer(decoded.chatId, pushContent.messageId, offer, callerName)
         } else {
-            publishIncomingMessageNotification(decoded.chatId, decoded.message, callerName)
+            publishIncomingMessageNotification(decoded.chatId, callerName) { pushContent.toMessageText(decoded.chatId) }
         }
     }
 
     private suspend fun handleIncomingCallOffer(
         chatId: ChatId,
-        message: ChatMessage,
+        offerId: String,
         offer: ChatMessage.Content.DataChannelOffer,
         callerName: String,
     ) {
-        if (!processedChatMessageRepository.tryMarkProcessed(message.id)) return
+        if (!processedChatMessageRepository.tryMarkProcessed(offerId)) return
 
         callController.initiateIncomingCall(
             chatId = chatId,
-            offerId = message.id,
+            offerId = offerId,
             callerName = callerName,
             withVideo = offer.purpose == ChatMessage.Content.DataChannelOffer.Purpose.VIDEO_CALL,
         )
@@ -166,21 +172,21 @@ internal class ChatPushNotificationHandler @Inject constructor(
             ?: fallbackUsernameGenerator.generateFromAccountId(contact.accountId)
 
         for (chatMessage in previouslyUnseen.sortedBy { it.timestamp }) {
-            publishIncomingMessageNotification(contactChatId, chatMessage, displayName)
+            publishIncomingMessageNotification(contactChatId, displayName) { chatMessage.content.toMessageText(contactChatId) }
         }
     }
 
     private suspend fun publishIncomingMessageNotification(
         contactChatId: ChatId,
-        chatMessage: ChatMessage,
-        displayName: String
+        displayName: String,
+        formatMessageText: suspend () -> String?,
     ) {
         val appState = appLifecycleObserver.getCurrentState()
         val activeChatId = chatActiveTracker.getActive()
 
         if (activeChatId == contactChatId && appState == AppLifecycleState.FOREGROUND) return
 
-        val messageText = chatMessage.toMessageText()
+        val messageText = formatMessageText()
 
         if (messageText != null) {
             chatNotificationPublisher
@@ -192,23 +198,45 @@ internal class ChatPushNotificationHandler @Inject constructor(
         }
     }
 
-    private suspend fun ChatMessage.toMessageText(): String? {
-        return when (val content = this.content) {
+    private fun ChatPushContent.dataChannelOfferOrNull(): ChatMessage.Content.DataChannelOffer? {
+        val content = when (this) {
+            is ChatPushContent.Full -> message.content
+            is ChatPushContent.Stripped -> (content as? StrippedChatPushContent.Regular)?.content
+        }
+
+        return content as? ChatMessage.Content.DataChannelOffer
+    }
+
+    private suspend fun ChatPushContent.toMessageText(chatId: ChatId): String? {
+        return when (this) {
+            is ChatPushContent.Full -> message.content.toMessageText(chatId)
+
+            is ChatPushContent.Stripped -> when (val content = content) {
+                is StrippedChatPushContent.Regular -> content.content.toMessageText(chatId)
+                is StrippedChatPushContent.CoinagePayment -> paymentText(content.totalValue)
+            }
+        }
+    }
+
+    private suspend fun paymentText(totalValue: Balance): String {
+        val tokenAmount = messageMappingHelper.extractTokenAmount(totalValue)
+
+        val value = tokenAmountFormatter.formatTokenAmount(
+            tokenAmount = tokenAmount,
+            precision = RoundPrecision.DEFAULT
+        )
+
+        return appContext.getString(
+            RCommon.string.chat_notification_payment,
+            value
+        )
+    }
+
+    private suspend fun ChatMessage.Content.toMessageText(chatId: ChatId): String? {
+        return when (val content = this) {
             is ChatMessage.Content.Text -> content.text
 
-            is ChatMessage.Content.CoinagePayment -> {
-                val tokenAmount = messageMappingHelper.extractTokenAmount(content)
-
-                val value = tokenAmountFormatter.formatTokenAmount(
-                    tokenAmount = tokenAmount,
-                    precision = RoundPrecision.DEFAULT
-                )
-
-                appContext.getString(
-                    RCommon.string.chat_notification_payment,
-                    value
-                )
-            }
+            is ChatMessage.Content.CoinagePayment -> paymentText(content.totalValue)
 
             is ChatMessage.Content.ContactAdded -> {
                 appContext.getString(RCommon.string.chat_notification_contact_added)

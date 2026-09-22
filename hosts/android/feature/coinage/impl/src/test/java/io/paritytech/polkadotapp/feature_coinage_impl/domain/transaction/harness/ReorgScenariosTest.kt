@@ -1,8 +1,13 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness
 
 import io.paritytech.polkadotapp.chains.multiNetwork.runtime.repository.ExtrinsicOutcome
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.FINALIZED
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.IN_BEST
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
@@ -195,8 +200,70 @@ class ReorgScenariosTest {
         assertTrue("the transaction's block is final", txBlock <= chain.chain.finalizedHead.number)
         assertEquals(FINALIZED_SUCCESS, statusOf(id))
     }
+
+    /**
+     * A claim of a peer's coin lands in a best-chain block, and a payment of ours spending the claimed coin is
+     * registered on the strength of it.
+     * A fork takes the claim's block away, so the peer's coin is back and ours never existed.
+     * The claim is built again into the same coin, and once it lands the payment spending that coin completes.
+     *
+     * A claim retried into a fresh coin would leave the payment waiting forever on one that will never exist.
+     */
+    @Test
+    fun `a claim a fork invalidated is built again into the same coin`() = scenario {
+        disableFallbackTxSearch()
+        mintCoinsOnChain(PEER_COIN, finality = FINALIZED)
+        val policy = givenSubmissionPolicy(PolicyBehaviour.BUILD)
+
+        val claim = service.submitTransactions(
+            transactions = listOf(
+                CoinageTransactionRequest(
+                    extrinsic = extrinsicAnchoredAtFinalizedHead(),
+                    inputs = listOf(CoinageInput.Coin.Received(coinKeyOf(PEER_COIN))),
+                    outputs = listOf(OwnAsset.Coin(testKey(COIN_B))),
+                    policy = scriptedPolicy(),
+                )
+            ),
+            groupId = CoinageOperationGroupId("claim"),
+        ).getOrThrow().single()
+        val spender = registerRetriable(inputCoin = COIN_B, COIN_C)
+        releaseSubmissions()
+
+        consumeCoinOnChain(PEER_COIN, finality = IN_BEST)
+        mintCoinsOnChain(COIN_B, finality = IN_BEST)
+        runPass()
+        assertEquals(PENDING_SUCCESS, statusOf(claim))
+
+        reorgLastBlocks(2)
+        advanceBlocks(1, finality = IN_BEST)
+        runPass()
+        assertEquals(PENDING, statusOf(claim))
+
+        chainReachesMortalityOf(claim, finality = FINALIZED)
+        runPass()
+        releaseSubmissions()
+
+        assertTrue("the claim was built again", policy.prepared.flatten().contains(claim))
+        assertEquals(PENDING, statusOf(claim))
+        assertEquals(
+            "the rebuilt claim mints the coin the payment spends",
+            listOf(OwnAsset.Coin(testKey(COIN_B))),
+            ledger.coinage.assetsOf(listOf(claim)).getOrThrow().getValue(claim).outputs.map { it.asset },
+        )
+
+        consumeCoinOnChain(PEER_COIN, finality = FINALIZED)
+        mintCoinsOnChain(COIN_B, finality = FINALIZED)
+        runPass()
+        assertEquals(FINALIZED_SUCCESS, statusOf(claim))
+
+        consumeCoinOnChain(COIN_B, finality = FINALIZED)
+        mintCoinsOnChain(COIN_C, finality = FINALIZED)
+        runPass()
+        assertEquals(FINALIZED_SUCCESS, statusOf(spender))
+    }
 }
 
 private const val COIN_A = 1
 private const val COIN_B = 2
 private const val COIN_C = 3
+private const val PEER_COIN = 50

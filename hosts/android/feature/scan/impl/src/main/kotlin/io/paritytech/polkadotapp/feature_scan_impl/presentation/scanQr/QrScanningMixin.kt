@@ -32,6 +32,8 @@ class QrScanningMixin @Inject constructor(
 
     val cameraPermissionDenied = MutableStateFlow(false)
 
+    val cameraPermissionMissing = MutableStateFlow(false)
+
     val postParseActions = MutableSharedFlow<PostParseAction>()
 
     private var pauseDecoding = false
@@ -43,9 +45,13 @@ class QrScanningMixin @Inject constructor(
         when (permissionAsker.askPermission(Manifest.permission.CAMERA)) {
             PermissionResult.GRANTED -> Unit
 
-            PermissionResult.DENIED -> return
+            PermissionResult.DENIED -> {
+                cameraPermissionMissing.enable()
+                return
+            }
 
             PermissionResult.DENIED_FOREVER -> {
+                cameraPermissionMissing.enable()
                 cameraPermissionDenied.enable()
                 return
             }
@@ -70,12 +76,13 @@ class QrScanningMixin @Inject constructor(
         cameraPermissionDenied.disable()
     }
 
-    // The tab host keeps this alive across tab switches, so a stale decode gate would leave the scanner dead
-    // on re-entry and a stale SurfaceRequest would point at an already released surface.
+    // The panel host keeps this alive across panel open/close, so a stale decode gate would leave the scanner
+    // dead on re-entry and a stale SurfaceRequest would point at an already released surface.
     private fun resetScanning() {
         pauseDecoding = false
         surfaceRequest.value = null
         cameraPermissionDenied.disable()
+        cameraPermissionMissing.disable()
     }
 
     context(scope: ComputationalScope)

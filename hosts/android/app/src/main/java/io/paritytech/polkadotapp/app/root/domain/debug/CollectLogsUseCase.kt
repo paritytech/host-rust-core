@@ -24,10 +24,8 @@ class CollectLogsUseCase @Inject constructor(
         zipFile.delete()
 
         ZipOutputStream(FileOutputStream(zipFile)).use { zipOutputStream ->
-            val appLogFile = fileProvider.getFileInScopedStorage("${AppLoggerConstants.LOGS_DIR}/${AppLoggerConstants.LOGS_FILE_NAME}")
-            if (appLogFile.exists()) {
-                addFileToZip(AppLoggerConstants.LOGS_FILE_NAME, appLogFile, zipOutputStream)
-            }
+            addLogFileToZip(AppLoggerConstants.LOGS_FILE_NAME, zipOutputStream)
+            addLogFileToZip(AppLoggerConstants.COINAGE_LOGS_FILE_NAME, zipOutputStream)
 //            TODO: reimplement new game logs and add them here
 //            val gameLogsDir = fileProvider.getFileInScopedStorage(GameLoggerConstants.LOGS_DIR)
 //            if (gameLogsDir.exists()) {
@@ -45,6 +43,13 @@ class CollectLogsUseCase @Inject constructor(
                 mimeType = "application/zip"
             )
         )
+    }
+
+    private fun addLogFileToZip(fileName: String, zos: ZipOutputStream) {
+        val logFile = fileProvider.getFileInScopedStorage("${AppLoggerConstants.LOGS_DIR}/$fileName")
+        if (logFile.exists()) {
+            addFileToZip(fileName, logFile, zos)
+        }
     }
 
     private fun addFileToZip(entryName: String, file: File, zos: ZipOutputStream) {

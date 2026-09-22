@@ -13,8 +13,11 @@ interface RootContract {
     val isOnboarded: Flow<Boolean>
     val bottomNavHeight: StateFlow<Dp>
     val chainsHealth: StateFlow<ChainHealthIndicatorsModel>
+    val isNetworkStatusTooltipVisible: StateFlow<Boolean>
 
     fun onDevResetStartOverClick()
 
     fun onDevResetDismissClick()
+
+    fun dismissNetworkStatusTooltip()
 }

@@ -8,7 +8,7 @@
       "settings.gradle.kts",
       "local.properties"
     ],
-    "ref": "e3beab8c690ac54a3ec0fc1a16703c94db0208e5",
+    "ref": "aef3d1a7418d7033678e7b208d59f871e781beab",
     "source": "https://github.com/paritytech/polkadot-android-community.git"
   },
   "ios": {

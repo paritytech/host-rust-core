@@ -28,7 +28,21 @@ jobs:
       build_configuration: "Nightly"
       distribute_to_external_group: true
       external_group_name: "Daily test builds"
-    secrets: inherit
+    secrets:
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      FASTLANE_RO_PAT: ${{ secrets.FASTLANE_RO_PAT }}
+      GOOGLE_SERVICE_INFO_DEV_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_DEV_BASE64 }}
+      GOOGLE_SERVICE_INFO_RELEASE_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
+      GOOGLE_SERVICE_INFO_SAFETY_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MELD_BASIC_AUTH_TOKEN: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+      NOTIFICATION_BOT_TOKEN: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
+      NOTIFICATION_BOT_URL: ${{ secrets.NOTIFICATION_BOT_URL }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
   # A nightly run ships the same commit to both apps: the production one (via the Nightly
   # configuration above) and the Safetynet one. Kept as a job here rather than a dispatch of
@@ -50,7 +64,21 @@ jobs:
       build_configuration: "Safetynet"
       distribute_to_external_group: true
       external_group_name: "Daily test builds"
-    secrets: inherit
+    secrets:
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      FASTLANE_RO_PAT: ${{ secrets.FASTLANE_RO_PAT }}
+      GOOGLE_SERVICE_INFO_DEV_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_DEV_BASE64 }}
+      GOOGLE_SERVICE_INFO_RELEASE_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
+      GOOGLE_SERVICE_INFO_SAFETY_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MELD_BASIC_AUTH_TOKEN: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
+      NOTIFICATION_BOT_TOKEN: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
+      NOTIFICATION_BOT_URL: ${{ secrets.NOTIFICATION_BOT_URL }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
   auto_merge:
     name: Auto-merge nightly build PR

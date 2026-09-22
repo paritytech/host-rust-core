@@ -11,11 +11,14 @@ import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.Durable
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUCCESS
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -289,6 +292,50 @@ class WatcherScenariosTest {
 
         assertEquals(FINALIZED_SUCCESS, statusOf(healthy))
         assertEquals(PENDING, statusOf(failed))
+    }
+
+    /**
+     * The node refuses a payment's split before it reaches a pool, which proves it can never land.
+     * The payment was registered with a policy that builds it again.
+     * The same entry is rebuilt and submitted once more, minting into the same coin.
+     *
+     * Failing it instead would release the input and leave the recipient holding a key to a coin that will
+     * never exist — the partial payment retries are there to prevent.
+     */
+    @Test
+    fun `a failure the watch proves is handed back to its policy instead of failing`() = scenario {
+        mintCoinsOnChain(COIN_A, finality = FINALIZED)
+        val events = MutableSharedFlow<ExtrinsicStatus>(replay = 4, extraBufferCapacity = 8)
+        submissionStatuses = { n -> if (n == 0) events else emptyFlow() }
+        val policy = givenSubmissionPolicy(PolicyBehaviour.BUILD)
+
+        val id = registerRetriable(inputCoin = COIN_A, COIN_B)
+        val firstAttempt = txHashOf(id)
+
+        events.tryEmit(ExtrinsicStatus.FailedToSubmit(PreSubmissionValidationFailed()))
+        releaseSubmissions()
+
+        assertEquals(PENDING, statusOf(id))
+        assertEquals(listOf(listOf(id)), policy.prepared)
+        assertNotEquals("the rebuilt entry carries a new attempt", firstAttempt, txHashOf(id))
+        assertEquals(2, submissionCount)
+        assertEquals("the input stays locked to the same entry", PENDING, assetStateOf(COIN_A).consumerStatus)
+        assertEquals("the rebuild mints the same coin", PENDING, assetStateOf(COIN_B).minterStatus)
+    }
+
+    /** A policy being installed changes nothing for a transaction that was registered without one. */
+    @Test
+    fun `a failure without a policy stays final`() = scenario {
+        mintCoinsOnChain(COIN_A, finality = FINALIZED)
+        val policy = givenSubmissionPolicy(PolicyBehaviour.BUILD)
+        val (id, _, events) = watchedEntry()
+
+        events.tryEmit(ExtrinsicStatus.FailedToSubmit(PreSubmissionValidationFailed()))
+        releaseSubmissions()
+
+        assertEquals(FAILURE, statusOf(id))
+        assertTrue(policy.prepared.isEmpty())
+        assertEquals(1, submissionCount)
     }
 
     private suspend fun DurabilityHarness.watchedEntry(): Triple<CoinageTransactionId, String, MutableSharedFlow<ExtrinsicStatus>> {
