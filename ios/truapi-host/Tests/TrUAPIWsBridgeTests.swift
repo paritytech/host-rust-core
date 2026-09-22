@@ -210,19 +210,19 @@ final class StubChatHostBridge: ChatHostBridge {
         roomId _: String,
         name _: String,
         icon _: String
-    ) throws -> ChatRoomRegistrationStatus { .new }
+    ) async throws -> ChatRoomRegistrationStatus { .new }
 
     func registerBot(
         botId _: String,
         name _: String,
         icon _: String
-    ) throws -> ChatBotRegistrationStatus { .new }
+    ) async throws -> ChatBotRegistrationStatus { .new }
 
-    func postMessage(roomId _: String, content _: ChatMessageContent) throws -> String {
+    func postMessage(roomId _: String, content _: ChatMessageContent) async throws -> String {
         "message-id"
     }
 
-    func listRooms() throws -> [ChatRoom] { [] }
+    func listRooms() async throws -> [ChatRoom] { [] }
 }
 
 // Conforms to `PocketHostBridge` so a new requirement there fails this job.

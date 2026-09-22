@@ -664,12 +664,13 @@ pub trait HostCallbacks: Send + Sync {
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
 /// pass an implementation to
 /// [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
-/// simply pass `None`. Callbacks run inline on the process-wide dispatch pool
-/// shared by every product execution, so one that blocks stalls the others.
+/// simply pass `None`. Callbacks run on the process-wide dispatch pool shared by
+/// every product execution.
 #[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
 pub trait NativeChatCallbacks: Send + Sync {
     /// Create or resolve a native product Chat room.
-    fn create_room(
+    async fn create_room(
         &self,
         room_id: String,
         name: String,
@@ -677,7 +678,7 @@ pub trait NativeChatCallbacks: Send + Sync {
     ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection>;
 
     /// Register or resolve a native product Chat bot.
-    fn register_bot(
+    async fn register_bot(
         &self,
         bot_id: String,
         name: String,
@@ -691,14 +692,14 @@ pub trait NativeChatCallbacks: Send + Sync {
     /// it must name this message for as long as the host stores it.
     ///
     /// [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
-    fn post_message(
+    async fn post_message(
         &self,
         room_id: String,
         content: v01::ChatMessageContent,
     ) -> Result<String, HostRejection>;
 
     /// Return the current product-scoped native Chat room list.
-    fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
+    async fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
 }
 
 /// Native Pocket collection adapter. Hosts with a Pocket surface pass an
@@ -2203,12 +2204,13 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         let status = self
             .chat
             .create_room(request.room_id, request.name, request.icon)
+            .await
             .map_err(|error| v01::HostChatCreateRoomError::Unknown {
                 reason: error.to_string(),
             })?;
 
         if status == v01::ChatRoomRegistrationStatus::New
-            && let Ok(rooms) = self.chat.list_rooms()
+            && let Ok(rooms) = self.chat.list_rooms().await
         {
             self.events.notify_chat_rooms_changed(rooms);
         }
@@ -2224,6 +2226,7 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         let status = self
             .chat
             .register_bot(request.bot_id, request.name, request.icon)
+            .await
             .map_err(|error| v01::HostChatRegisterBotError::Unknown {
                 reason: error.to_string(),
             })?;
@@ -2241,6 +2244,7 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         let message_id = self
             .chat
             .post_message(request.room_id, request.payload)
+            .await
             .map_err(|error| v01::HostChatPostMessageError::Unknown {
                 reason: error.to_string(),
             })?;
@@ -2251,10 +2255,19 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         &self,
         _product: &ProductContext,
     ) -> BoxStream<'static, Result<v01::HostChatListSubscribeItem, v01::GenericError>> {
-        let current = v01::HostChatListSubscribeItem {
-            rooms: self.chat.list_rooms().unwrap_or_default(),
-        };
-        Box::pin(self.events.subscribe_chat_rooms(current).map(Ok))
+        let chat = Arc::clone(&self.chat);
+        let events = Arc::clone(&self.events);
+        // The first item needs the host, so it resolves when the product
+        // subscribes rather than when the stream is built.
+        stream::once(async move {
+            let current = v01::HostChatListSubscribeItem {
+                rooms: chat.list_rooms().await.unwrap_or_default(),
+            };
+            events.subscribe_chat_rooms(current)
+        })
+        .flatten()
+        .map(Ok)
+        .boxed()
     }
 }
 
@@ -2856,8 +2869,9 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl NativeChatCallbacks for EventCallbacks {
-        fn create_room(
+        async fn create_room(
             &self,
             room_id: String,
             name: String,
@@ -2873,7 +2887,7 @@ mod tests {
                 .expect("room status mutex poisoned"))
         }
 
-        fn register_bot(
+        async fn register_bot(
             &self,
             bot_id: String,
             name: String,
@@ -2897,7 +2911,7 @@ mod tests {
                 .expect("bot status mutex poisoned"))
         }
 
-        fn post_message(
+        async fn post_message(
             &self,
             room_id: String,
             content: v01::ChatMessageContent,
@@ -2920,7 +2934,7 @@ mod tests {
             Ok(format!("message-{}", posted.len()))
         }
 
-        fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
+        async fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
             let mut room_ids: Vec<String> = self
                 .chat_created_rooms
                 .lock()

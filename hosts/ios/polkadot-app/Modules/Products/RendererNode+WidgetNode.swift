@@ -19,6 +19,9 @@ extension RendererNode {
         // Only a root effect reaches this case — `widgetNodes` splices nested ones
         // into their parent. It has one slot to fill, and a box would overlay
         // several children, since it renders as a `ZStack`.
+        //
+        // The effect itself is dropped: `Rainbow` has no counterpart on
+        // `CustomMessageWidgetNode`, so the children draw untinted.
         case let .effect(_, children):
             let mapped = children.widgetNodes(resolver: resolver)
             guard mapped.count > 1 else { return mapped.first }
@@ -66,9 +69,9 @@ private extension RendererNode {
         case .nil, .string:
             return nil
 
-        // There is no image content here, so the picture cannot be drawn. An empty
-        // box keeps the space its modifiers reserved, rather than collapsing the
-        // layout around it.
+        // `ImageProps` carries a source, but `CustomMessageWidgetNode` has no image
+        // case to draw it with. An empty box keeps the space its modifiers reserved,
+        // rather than collapsing the layout around it.
         case let .image(modifiers, _):
             return CustomMessageWidgetNode(
                 content: .box(.init(alignment: .center), children: []),
@@ -131,7 +134,7 @@ private extension RendererNode {
     /// The nodes this one contributes to its parent's children: at most one,
     /// except an `Effect`, which contributes its own. It decorates them without
     /// laying them out, so a container here would impose a layout the product
-    /// never asked for.
+    /// never asked for. The effect itself is dropped here too.
     func widgetNodesInPlace(resolver: any WidgetDesignTokenResolving) -> [CustomMessageWidgetNode] {
         if case let .effect(_, children) = self {
             return children.widgetNodes(resolver: resolver)

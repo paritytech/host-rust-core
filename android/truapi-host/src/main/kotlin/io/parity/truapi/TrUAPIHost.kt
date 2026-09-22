@@ -417,10 +417,9 @@ interface HostBridge {
  * [TrUAPIHostRuntime.openProductExecution] when the host supports the Chat
  * modality; hosts without it pass nothing.
  *
- * Threading: these run inline on the process-wide dispatch pool shared by
- * every product execution, so implementations must be safe to enter
- * concurrently and one that blocks stalls the others. Return promptly and
- * marshal UI work to the main thread.
+ * Threading: these run on the process-wide dispatch pool shared by every
+ * product execution, so implementations must be safe to enter concurrently.
+ * Marshal UI work to the main thread.
  */
 interface ChatHostBridge {
     /**
@@ -429,7 +428,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    fun createRoom(roomId: String, name: String, icon: String): ChatRoomRegistrationStatus
+    suspend fun createRoom(roomId: String, name: String, icon: String): ChatRoomRegistrationStatus
 
     /**
      * Register or resolve a native product Chat bot. The core has bounded and
@@ -437,7 +436,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    fun registerBot(botId: String, name: String, icon: String): ChatBotRegistrationStatus
+    suspend fun registerBot(botId: String, name: String, icon: String): ChatBotRegistrationStatus
 
     /**
      * Persist a product-authored message in native Chat storage. Throw for a
@@ -453,11 +452,11 @@ interface ChatHostBridge {
      * may name a message in another room, or none at all.
      */
     @Throws(HostRejection::class)
-    fun postMessage(roomId: String, content: ChatMessageContent): String
+    suspend fun postMessage(roomId: String, content: ChatMessageContent): String
 
     /** Return the current product-scoped native Chat rooms. */
     @Throws(HostRejection::class)
-    fun listRooms(): List<ChatRoom>
+    suspend fun listRooms(): List<ChatRoom>
 }
 
 /**
@@ -648,22 +647,22 @@ private inline fun <T> withStorageException(operation: () -> T): T =
  * [NativeChatCallbacks] interface.
  */
 private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeChatCallbacks {
-    override fun createRoom(
+    override suspend fun createRoom(
         roomId: String,
         name: String,
         icon: String,
     ): ChatRoomRegistrationStatus = withHostRejection { bridge.createRoom(roomId, name, icon) }
 
-    override fun registerBot(
+    override suspend fun registerBot(
         botId: String,
         name: String,
         icon: String,
     ): ChatBotRegistrationStatus = withHostRejection { bridge.registerBot(botId, name, icon) }
 
-    override fun postMessage(roomId: String, content: ChatMessageContent): String =
+    override suspend fun postMessage(roomId: String, content: ChatMessageContent): String =
         withHostRejection { bridge.postMessage(roomId, content) }
 
-    override fun listRooms(): List<ChatRoom> = withHostRejection { bridge.listRooms() }
+    override suspend fun listRooms(): List<ChatRoom> = withHostRejection { bridge.listRooms() }
 }
 
 /**
