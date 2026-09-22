@@ -273,6 +273,48 @@ Signing uses canonical request and result types. Product-scoped VRF requests use
 `ProductRequest<P>` to attach the caller to a canonical payload. Both product and
 SSO signing encode `with_signed_transaction` with the one-byte `OptionBool` codec.
 
+When a device finishes pairing, the signing host reports it to the embedder's
+[`DevicePairingObserver`](src/runtime/signing_host/sso_responder.rs), installed
+once through `SigningHostRuntime::set_device_pairing_observer`, and on a native
+host to `HostCallbacks::device_paired`. It carries the `PairedSsoPeer` that
+pairing produced, which is also what `resume_pairing` and
+`disconnect_paired_host` take.
+
+A native host reaches the responder through
+`NativeTrUApiHostRuntime`: `notify_pairing_allowance_allocation` and
+`notify_pairing_failed` for the two notices a peer gets before the answer,
+`establish_pairing` for the answer itself, `resume_pairing` to serve the
+session, and `disconnect_paired_host` to end it. Answering and serving are
+separate calls rather than one `respond_to_pairing`, because the host persists
+the peer between them and it is the host's stored record that `resume_pairing`
+is called with afterwards.
+
+Two steps around those calls are the host's. The answer is signed by this
+host's own SSO statement identity, so the `WalletSso` target has to be
+allocated before `establish_pairing` runs, and the peer's device statement
+account has to be tracked alongside it for the peer to author into the session:
+`parse_pairing_deeplink` reads that account out of the deeplink, and a pairing
+that then fails untracks it again unless the device was already paired. The
+core prompts for nothing on the way, so that prompt is the host's, and the same
+call carries the `PairingProposalMetadata` it names the peer by, trimmed and
+stripped of the control characters and bidirectional overrides that would
+otherwise rewrite the prompt's own text around it. Nothing signs that metadata,
+so it says what the peer calls itself and not who it is. In process the same
+decoder is `PairingProposal::from_deeplink`. And
+`disconnect_paired_host` submits the notice and nothing more, so ending a
+pairing also means cancelling that peer's `resume_pairing` task and untracking
+its renewal account. `truapi-host-cli` runs both sequences.
+
+The report fires once the handshake answer is on the Statement Store, which is
+the earliest point the peer could read it. It is not proof that the peer did:
+a pairing host races cancellation against the answer arriving and gives up
+after its own deadline, either of which leaves a reported device that never
+connects. The report is at least once per pairing, so a device that pairs
+again is reported again with the same value. Resuming a stored pairing reports
+nothing, so the host owns the record of which devices it has already seen; the
+core keeps no list to replay. The core has no chat of its own, so announcing a
+new device to the user's existing contacts belongs to the embedder.
+
 The `host_logic::sso::messages::v1::RemoteMessage` enum owns the SCALE wire
 contract. Its response variants wrap named result payloads in `Response<P>`,
 which carries `responding_to` once. Macros generate request/response pairing
